@@ -296,6 +296,104 @@ pub fn mount_uikit_window(
     }
 }
 
+/// Performs the application entry's once-per-process `startup::initialize`.
+///
+/// It installs the executors a realized window's tasks run on. Called once
+/// from the `Tests/native_app.rs` harness's main thread before any trial
+/// runs.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+pub fn initialize_process() {
+    let _ = crate::startup::initialize();
+}
+
+/// A scene window filled by the production `windows::realize`.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+pub struct RealizedScene {
+    /// The scene's root host, which places the window content.
+    pub root: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
+    /// The scene window.
+    pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+    _host: crate::windows::WindowHost,
+}
+
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+impl core::fmt::Debug for RealizedScene {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RealizedScene")
+            .field("root", &self.root)
+            .field("window", &self.window)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Fills an already shown scene window through the production `windows::realize`.
+///
+/// The window has appeared before `declaration`'s content arrives, and the
+/// theme is installed from the root controller's scheme as
+/// `windows::connect` installs it.
+///
+/// This is the order a launch takes when the declaration lands after the
+/// scene's window displayed: the window is key and visible with the empty
+/// root `windows::connect` gives it, and `realize` then adds the content.
+/// The wait is on the root controller's `viewDidAppear:`, the signal the
+/// window displayed.
+///
+/// # Panics
+/// Panics when the root controller does not appear within
+/// [`MAIN_QUEUE_DEADLINE`].
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+#[must_use]
+pub fn realize_into_shown_scene(
+    mtm: MainThreadMarker,
+    declaration: &waterui::window::Window,
+    env: &Environment,
+    window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+) -> RealizedScene {
+    let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
+    window.setRootViewController(Some(&controller));
+    window.makeKeyAndVisible();
+    assert!(
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            controller.appearance_counts().did_appear >= 1
+        }),
+        "the root controller's viewDidAppear: did not run within \
+         {MAIN_QUEUE_DEADLINE}s of showing its scene window"
+    );
+    let root = objc2::Message::retain(controller.host_view());
+    let mut env = env.clone();
+    env.insert(crate::first_paint::FirstPaint::default());
+    let theme = alloc::rc::Rc::new(crate::theme::install(&mut env, controller.color_scheme()));
+    let observation =
+        controller.observe_color_scheme(move |scheme| crate::theme::refresh(&theme, scheme));
+    let host = crate::windows::realize(
+        declaration,
+        crate::windows::Pending {
+            session_id: String::new(),
+            window: window.clone(),
+            controller,
+            observation,
+        },
+        &env,
+        mtm,
+    );
+    RealizedScene {
+        root,
+        window,
+        _host: host,
+    }
+}
+
+/// The frame `root` resolves for `content` — what its placement handler
+/// gives the content.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+#[must_use]
+pub fn content_frame(
+    root: &cocoa_ui::uikit::HostView,
+    content: &cocoa_ui::PlatformView,
+) -> cocoa_ui::Rect {
+    crate::native_layout::LayoutContext::of(root).content_frame(content)
+}
+
 /// `mount_uikit` at a fixed window frame — trials that assert geometry
 /// inside a window sized for the case rather than the screen's.
 #[cfg(target_os = "ios")]

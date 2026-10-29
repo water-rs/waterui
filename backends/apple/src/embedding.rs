@@ -473,6 +473,31 @@ fn create_root(
     HostView::new(mtm, cocoa_ui::view::bounds(host))
 }
 
+/// Joins window content to its root `host` in the one order that never
+/// leaves content in a live window unplaced.
+///
+/// The root's placement handler is installed and applied first, so the
+/// content already carries its content frame when `join` adds it to the
+/// host and adopts its view controllers. Joined first, a layout pass that
+/// runs before the handler exists lays the whole subtree out at zero size
+/// inside the live window — a split collapses, a navigation stack and its
+/// floating bar settle at 0x0 — and `UIKit` keeps the inset it derived
+/// there (water-rs/waterui#3744). This is a placement, not a forced
+/// layout; every later pass runs through the same handler.
+pub(crate) fn place_then_join<R>(
+    host: &HostView,
+    place: impl Fn(&HostView) + 'static,
+    join: impl FnOnce() -> R,
+) -> R {
+    let place = Rc::new(place);
+    host.set_layout_handler({
+        let place = Rc::clone(&place);
+        move |host| place(host)
+    });
+    place(host);
+    join()
+}
+
 pub(crate) fn mount_content(
     root: &HostView,
     view: waterui::AnyView,
@@ -480,32 +505,35 @@ pub(crate) fn mount_content(
     keepalive: &mut KeepAlive,
 ) -> Rc<Mounted> {
     let leaf = crate::dispatch::render(view, env);
-    let content = Rc::new(leaf.mount(root));
-    crate::primary_content::forward(root, content.view());
-    let placed = Rc::clone(&content);
+    let placed = cocoa_ui::view::retain_base(leaf.view());
     crate::inspector::install(root, env, keepalive);
-    root.set_layout_handler(move |root| {
-        let frame = crate::native_layout::LayoutContext::of(root).content_frame(placed.view());
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the layout contract uses f32 points"
-        )]
-        let proposal = waterui_core::layout::ProposalSize::new(
-            Some(frame.size.width as f32),
-            Some(frame.size.height as f32),
-        );
-        // The root fills platform geometry, which sits on the device-pixel
-        // grid, so its own layout origin discarded nothing.
-        crate::proposal::place(
-            placed.view(),
-            frame,
-            Some(proposal),
-            cocoa_ui::view::SubpixelOffset::ZERO,
-        );
-        // Placement changes the child's bounds after the host's own layout.
-        // Complete that child's pending layout before this placement finishes.
-        cocoa_ui::view::layout_immediately(placed.view());
-    });
+    let content = place_then_join(
+        root,
+        move |root| {
+            let frame = crate::native_layout::LayoutContext::of(root).content_frame(&placed);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the layout contract uses f32 points"
+            )]
+            let proposal = waterui_core::layout::ProposalSize::new(
+                Some(frame.size.width as f32),
+                Some(frame.size.height as f32),
+            );
+            // The root fills platform geometry, which sits on the device-pixel
+            // grid, so its own layout origin discarded nothing.
+            crate::proposal::place(
+                &placed,
+                frame,
+                Some(proposal),
+                cocoa_ui::view::SubpixelOffset::ZERO,
+            );
+            // Placement changes the child's bounds after the host's own layout.
+            // Complete that child's pending layout before this placement finishes.
+            cocoa_ui::view::layout_immediately(&placed);
+        },
+        || Rc::new(leaf.mount(root)),
+    );
+    crate::primary_content::forward(root, content.view());
     content
 }
 
