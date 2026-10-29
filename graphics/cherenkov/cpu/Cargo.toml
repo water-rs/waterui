@@ -18,7 +18,7 @@ bounded-bins = []
 
 [dependencies]
 arrayvec = "0.7"
-cherenkov = { version = "0.0.0", path = ".." }
+cherenkov = { version = "0.0.0", path = "..", features = ["workers"] }
 cherenkov-stroke = { version = "0.0.0", path = "../stroke" }
 fearless_simd = { version = "1.1", default-features = false, features = ["std"] }
 filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
@@ -30,9 +30,6 @@ rayon = "1"
 rustc-hash = "2"
 tracing = "0.1"
 cherenkov-simd = { version = "0.0.0", path = "../simd", default-features = false, features = ["std"] }
-
-[target.'cfg(any(target_vendor = "apple", target_os = "android"))'.dependencies]
-libc = "0.2"
 
 [dev-dependencies]
 cherenkov = { path = "..", features = ["testing"] }
