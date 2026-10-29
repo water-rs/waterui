@@ -381,8 +381,10 @@ mod embedded_menus {
 /// that counts the builds it receives.
 #[cfg(target_os = "ios")]
 mod main_menu {
-    use cocoa_ui::uikit::native_test::main_menu_builds;
+    use cocoa_ui::uikit::native_test::{main_menu_builds, pump_main_until};
     use libtest_mimic::Trial;
+
+    use waterui_apple::native_test_support::MAIN_QUEUE_DEADLINE;
 
     /// The `main_menu::` trials.
     pub fn trials() -> Vec<Trial> {
@@ -396,11 +398,13 @@ mod main_menu {
     }
 
     /// `build_menus` is the main menu system's build handler: `UIKit` has
-    /// built the main menu through it by the time the application is up.
+    /// built the main menu through it once the application is up. The
+    /// build time is `UIKit`'s, not a launch-time guarantee, so the case
+    /// waits for the build.
     fn the_main_menu_builds_through_the_build_menus_handler() {
         assert!(
-            main_menu_builds() > 0,
-            "`UIKit` built the main menu through the handler as the application launched"
+            pump_main_until(MAIN_QUEUE_DEADLINE, || main_menu_builds() > 0),
+            "`UIKit` built the main menu through the handler"
         );
     }
 }
