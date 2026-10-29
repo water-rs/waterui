@@ -1,14 +1,14 @@
 //! `apple_available!` expands to a runtime check on every Apple target.
+//!
+//! At a deployment target that already meets 27.0 the macro is always true and
+//! warns at its call site, so this test exists only below it.
 
-#![cfg(target_vendor = "apple")]
+#![cfg(all(target_vendor = "apple", not(waterui_apple_os_met = "27.0")))]
 
 use waterui_macros::apple_available;
 
 #[test]
 fn the_selection_asks_the_runtime_for_the_version_on_every_platform() {
-    // At a deployment target below 27.0 the answer is the host's OS version;
-    // at 27.0 or above the macro warns that it is always true, and the
-    // workspace's `-D warnings` build would have refused this test.
     assert_eq!(
         apple_available!(27.0),
         waterui_apple_os::objc2::available!(macos = 27.0, ios = 27.0)
