@@ -27,7 +27,7 @@ vello-cpu = ["dep:vello_cpu", "dep:vello_common", "vello_cpu/multithreading"]
 # (#2691). `skia-bindings/no-compile` turns the source-build fallback into
 # a panic so every bench build linking Skia must use the prebuilt binaries.
 skia = ["dep:skia-safe", "dep:ash", "dep:skia-bindings"]
-skia-metal = ["dep:skia-safe", "dep:objc2", "dep:objc2-metal", "dep:skia-bindings"]
+skia-metal = ["dep:skia-safe", "dep:objc2", "dep:objc2-metal", "objc2-metal/block2", "dep:block2", "dep:skia-bindings"]
 # The platform-buffer producers `external-cost` uses are target-gated
 # below; their `dep:` entries resolve only on the matching target.
 cherenkov = [
@@ -101,6 +101,8 @@ skia-safe = { version = "0.153", optional = true, features = ["vulkan", "ganesh"
 [target.'cfg(target_vendor = "apple")'.dependencies]
 skia-safe = { version = "0.153", optional = true, features = ["metal", "graphite"] }
 objc2 = { version = "0.6.3", optional = true, default-features = false }
+# skia-metal's completion marker: `MTLCommandBuffer::addCompletedHandler`.
+block2 = { version = "0.6.2", optional = true, default-features = false, features = ["alloc"] }
 objc2-metal = { version = "0.3.2", optional = true, default-features = false, features = [
     "MTLDevice", "MTLCommandQueue", "MTLCommandBuffer",
     # `CFTimeInterval` for `MTLCommandBuffer::GPUStartTime`/`GPUEndTime`.

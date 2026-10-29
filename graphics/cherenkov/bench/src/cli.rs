@@ -832,10 +832,7 @@ fn alloc_diag_cmd(
         blobs: &blobs,
     };
     engine.prepare(&input)?;
-    let (period, window_hint) = match rate {
-        Some(hz) => pacing(hz, frames).map(|(p, w)| (Some(p), w))?,
-        None => (None, Duration::from_secs(30)),
-    };
+    let (period, window_hint) = frame_period(rate, frames)?;
     run_frames(
         &mut engine,
         &input,
@@ -1613,6 +1610,47 @@ fn scroll_frame_input<'a>(
     }
 }
 
+/// Sleeps until the measured frame `n`'s deadline when pacing is on and
+/// returns how many deadlines that frame missed (0 or 1). The first
+/// measured frame only misses when its wake-up overshoots.
+fn pace_frame(n: u32, period: Option<Duration>, start: Instant) -> u32 {
+    let Some(period) = period else { return 0 };
+    let Some(deadline) = period.checked_mul(n).and_then(|d| start.checked_add(d)) else {
+        return 0;
+    };
+    let now = Instant::now();
+    if now < deadline {
+        std::thread::sleep(deadline - now);
+        // A wake-up past the tolerance still started the frame
+        // late - a missed deadline all the same.
+        u32::from(Instant::now().saturating_duration_since(deadline) > PACING_TOLERANCE)
+    } else {
+        u32::from(n > 0)
+    }
+}
+
+/// Fails when a frame's completion presence disagrees with what the
+/// adapter declared it measures.
+fn check_completion(
+    engine: &dyn Engine,
+    signal: crate::CompletionSignal,
+    frame: u32,
+    has_completion: bool,
+) -> Result<(), BenchError> {
+    match (signal, has_completion) {
+        (crate::CompletionSignal::Measured(_), true)
+        | (crate::CompletionSignal::Unavailable(_), false) => Ok(()),
+        (crate::CompletionSignal::Measured(_), false) => Err(BenchError::Engine(format!(
+            "{}: frame {frame} carries no completion although the adapter measures one",
+            engine.info().name
+        ))),
+        (crate::CompletionSignal::Unavailable(_), true) => Err(BenchError::Engine(format!(
+            "{}: frame {frame} carries a completion although the adapter reports none",
+            engine.info().name
+        ))),
+    }
+}
+
 /// The warmup + measured frame loop.
 ///
 /// With `--rate` each measured frame starts on `start + n / rate` —
@@ -1648,12 +1686,17 @@ fn run_frames(
     let mut samples = Vec::with_capacity(frames as usize);
     let total_frames = warmup + frames;
     let mut memory_samples = Vec::with_capacity(warmup as usize);
+    let signal = engine.completion_signal();
+    let mut completions = Vec::with_capacity(frames as usize);
     for frame in 0..total_frames {
         if frame == warmup {
-            // The counters' accumulation restarts from an idle GPU, so
-            // the first measured frame's sample holds that frame alone.
+            // The measured window opens on an idle GPU: warmup frames
+            // still queued would otherwise complete inside it, so the
+            // completion intervals would time the backlog draining instead
+            // of the sustained frame rate, and the counters' first sample
+            // would hold more than the first measured frame.
+            engine.wait_idle()?;
             if let Some(counters) = gpu_counters.as_deref_mut() {
-                engine.wait_idle()?;
                 counters.sample()?;
             }
             // The energy window and the pacing clock both open
@@ -1664,23 +1707,8 @@ fn run_frames(
             gpu_clock = crate::gpu_clock::Snapshot::read()?;
             start = Instant::now();
         }
-        if frame >= warmup
-            && let Some(period) = period
-            && let Some(deadline) = period
-                .checked_mul(frame - warmup)
-                .and_then(|d| start.checked_add(d))
-        {
-            let now = Instant::now();
-            if now < deadline {
-                std::thread::sleep(deadline - now);
-                // A wake-up past the tolerance still started the frame
-                // late — a missed deadline all the same.
-                if Instant::now().saturating_duration_since(deadline) > PACING_TOLERANCE {
-                    missed_deadlines += 1;
-                }
-            } else if frame > warmup {
-                missed_deadlines += 1;
-            }
+        if frame >= warmup {
+            missed_deadlines += pace_frame(frame - warmup, period, start);
         }
         let cpu_start = affinity::current_cpu();
         let t0 = Instant::now();
@@ -1696,6 +1724,11 @@ fn run_frames(
         }
         let latency_seconds = wait_for_completion.then(|| t0.elapsed().as_secs_f64());
         let cpu_end = affinity::current_cpu();
+        // The completion step runs after every timed interval of the frame
+        // has closed - submit's and, under --wait-for-completion, the
+        // latency wait's - so arming the signal times into neither.
+        let completion = engine.completion()?;
+        check_completion(&*engine, signal, frame, completion.is_some())?;
         let frame_counters = match gpu_counters.as_deref_mut() {
             Some(counters) if frame >= warmup => {
                 engine.wait_idle()?;
@@ -1723,7 +1756,12 @@ fn run_frames(
                 phases: submit.phases,
                 composition: submit.composition.clone(),
                 gpu_counters: frame_counters,
+                completed_seconds: None,
+                completion_interval_seconds: None,
             });
+            if let Some(completion) = completion {
+                completions.push((t1, completion));
+            }
         }
         attribute_gpu(&mut samples, warmup, submit.gpu);
         if wait_for_completion {
@@ -1733,6 +1771,11 @@ fn run_frames(
         }
     }
     attribute_gpu(&mut samples, warmup, engine.finish_gpu()?);
+    // finish_gpu has waited for every submission, so every in-flight
+    // completion callback has run.
+    if !completions.is_empty() {
+        attribute_completions(&mut samples, start, completions)?;
+    }
     Ok(Window {
         samples,
         memory_samples,
@@ -1764,6 +1807,55 @@ fn pause_before_frame(frame: u32) -> Result<(), BenchError> {
             _ if byte[0] == b'\n' => break,
             _ => {}
         }
+    }
+    Ok(())
+}
+
+/// Stores each measured frame's completion instant, relative to the window
+/// start, and the interval since the previous measured frame's completion.
+/// `completions` holds one `(submission start, completion)` per sample.
+///
+/// # Errors
+/// A completion that is missing after the final wait, precedes its own
+/// submission, or precedes the previous frame's completion — the backend
+/// signal would then not describe these frames.
+fn attribute_completions(
+    samples: &mut [FrameSample],
+    start: Instant,
+    completions: Vec<(Instant, crate::Completion)>,
+) -> Result<(), BenchError> {
+    assert_eq!(
+        samples.len(),
+        completions.len(),
+        "one completion per measured frame"
+    );
+    let mut previous: Option<Instant> = None;
+    for (index, (sample, (submitted, completion))) in
+        samples.iter_mut().zip(completions).enumerate()
+    {
+        let at = match completion {
+            crate::Completion::Finished(at) => at,
+            crate::Completion::InFlight(resolve) => {
+                resolve().map_err(|e| BenchError::Engine(format!("measured frame {index}: {e}")))?
+            }
+        };
+        if at < submitted {
+            return Err(BenchError::Engine(format!(
+                "measured frame {index}: completion precedes its submission by {:?}",
+                submitted - at
+            )));
+        }
+        if let Some(previous) = previous {
+            if at < previous {
+                return Err(BenchError::Engine(format!(
+                    "measured frame {index}: completion precedes the previous frame's by {:?}",
+                    previous - at
+                )));
+            }
+            sample.completion_interval_seconds = Some(at.duration_since(previous).as_secs_f64());
+        }
+        sample.completed_seconds = Some(at.duration_since(start).as_secs_f64());
+        previous = Some(at);
     }
     Ok(())
 }
@@ -1864,6 +1956,25 @@ fn warn_uncontrolled_placement(pinned: Option<&[u32]>) -> bool {
     heterogeneous
 }
 
+/// The pacing period and energy-window hint for `--rate`, or the
+/// unpaced defaults.
+fn frame_period(
+    rate: Option<f64>,
+    frames: u32,
+) -> Result<(Option<Duration>, Duration), BenchError> {
+    rate.map_or_else(
+        || Ok((None, Duration::from_secs(30))),
+        |hz| pacing(hz, frames).map(|(p, w)| (Some(p), w)),
+    )
+}
+
+fn scene_name(dir: &Path) -> String {
+    dir.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn measure_scene(
     engine: &mut dyn Engine,
     dir: &Path,
@@ -1894,10 +2005,7 @@ fn measure_scene(
     engine.prepare(&input)?;
     let prepare_seconds = t_prepare.elapsed().as_secs_f64();
     let prepare_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
-    let (period, window_hint) = match rate {
-        Some(hz) => pacing(hz, frames).map(|(p, w)| (Some(p), w))?,
-        None => (None, Duration::from_secs(30)),
-    };
+    let (period, window_hint) = frame_period(rate, frames)?;
     let window = run_frames(
         &mut *engine,
         &input,
@@ -1941,16 +2049,18 @@ fn measure_scene(
     let pacing = rate.map(|hz| pacing_report(hz, frames, missed_deadlines, window_seconds));
     let placement = measure_placement(pinned, heterogeneous, prepare_cpu, &samples);
     let percentiles = frame_percentiles(&samples);
+    let (completion_signal, completion_unavailable) = match engine.completion_signal() {
+        crate::CompletionSignal::Measured(signal) => (Some(signal), None),
+        crate::CompletionSignal::Unavailable(reason) => (None, Some(reason)),
+    };
     Ok(MeasureReport {
         engine: engine.info().name,
         info: engine.info().clone(),
         gpu_timing_unavailable: engine.gpu_timing_unavailable(),
+        completion_signal,
+        completion_unavailable,
         wait_for_completion,
-        scene: dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
+        scene: scene_name(dir),
         width: scene.width,
         height: scene.height,
         native,
@@ -2029,10 +2139,15 @@ fn frame_percentiles(samples: &[FrameSample]) -> Percentiles {
     let enc: Vec<f64> = samples.iter().map(|s| s.encode_seconds).collect();
     let sub: Vec<f64> = samples.iter().map(|s| s.submit_seconds).collect();
     let gpu: Vec<f64> = samples.iter().filter_map(|s| s.gpu_seconds).collect();
+    let interval: Vec<f64> = samples
+        .iter()
+        .filter_map(|s| s.completion_interval_seconds)
+        .collect();
     Percentiles {
         encode_seconds: percentiles(&enc).unwrap_or([0.0; 3]),
         submit_seconds: percentiles(&sub).unwrap_or([0.0; 3]),
         gpu_seconds: percentiles(&gpu),
+        completion_interval_seconds: percentiles(&interval),
         passes: pass_percentiles(samples),
         phases: phase_percentiles(samples),
     }
@@ -2395,11 +2510,7 @@ fn sweep_scene(
         })
         .collect();
     Ok(CapacityReport {
-        scene: dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
+        scene: scene_name(dir),
         budget_ms: opts.budget_ms,
         frames: opts.frames,
         warmup: opts.warmup,
@@ -2505,6 +2616,7 @@ mod completion_tests {
     struct Probe {
         events: Vec<&'static str>,
         pending_frame: Option<u64>,
+        awaiting_completion: bool,
     }
 
     impl Engine for Probe {
@@ -2524,6 +2636,7 @@ mod completion_tests {
         fn submit(&mut self, frame: u64, _: bool) -> Result<crate::Submit, BenchError> {
             self.events.push("submit");
             self.pending_frame = Some(frame);
+            self.awaiting_completion = true;
             Ok(crate::Submit {
                 image: None,
                 gpu: Vec::new(),
@@ -2533,6 +2646,17 @@ mod completion_tests {
                 render_seconds: None,
                 readback_seconds: None,
             })
+        }
+        fn completion_signal(&self) -> crate::CompletionSignal {
+            crate::CompletionSignal::Measured("test probe")
+        }
+        fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+            assert!(
+                std::mem::take(&mut self.awaiting_completion),
+                "one completion step per submit"
+            );
+            self.events.push("arm completion");
+            Ok(Some(crate::Completion::Finished(Instant::now())))
         }
         fn wait_idle(&mut self) -> Result<(), BenchError> {
             self.events.push("complete");
@@ -2558,8 +2682,7 @@ mod completion_tests {
         }
     }
 
-    #[test]
-    fn completes_each_frame_before_draining_its_timestamps() {
+    fn run_probe(wait_for_completion: bool) -> (Probe, Window) {
         let scene = Scene::new(1, 1, cherenkov_scene::Color::srgb(0.0, 0.0, 0.0));
         let blobs = std::collections::BTreeMap::new();
         let input = EncodeInput {
@@ -2578,26 +2701,104 @@ mod completion_tests {
                 period: None,
                 window_hint: Duration::ZERO,
                 measure_energy: false,
-                wait_for_completion: true,
+                wait_for_completion,
             },
             None,
         )
         .unwrap();
+        (engine, window)
+    }
+
+    #[test]
+    fn arms_completion_after_submit_returns() {
+        let (engine, window) = run_probe(false);
+        // The step follows submit as a separate call, so the submit
+        // interval the loop times excludes it.
+        assert_eq!(
+            engine.events,
+            [
+                "encode",
+                "submit",
+                "arm completion",
+                "encode",
+                "submit",
+                "arm completion",
+                "collect timestamps"
+            ]
+        );
+        assert!(
+            window.samples.iter().all(
+                |sample| sample.completed_seconds.is_some() && sample.latency_seconds.is_none()
+            )
+        );
+        assert_eq!(window.samples[0].completion_interval_seconds, None);
+        assert!(window.samples[1].completion_interval_seconds.is_some());
+    }
+
+    #[test]
+    fn completes_each_frame_before_draining_its_timestamps() {
+        let (engine, window) = run_probe(true);
+        // The step follows the latency wait, so latency_seconds excludes it.
         assert_eq!(
             engine.events,
             [
                 "encode",
                 "submit",
                 "complete",
+                "arm completion",
                 "collect timestamps",
                 "encode",
                 "submit",
                 "complete",
+                "arm completion",
                 "collect timestamps",
                 "collect timestamps"
             ]
         );
         assert_eq!(window.samples.len(), 2);
         assert!(window.samples.iter().all(|sample| sample.latency_seconds.is_some() && sample.gpu_seconds == Some(0.001)));
+        assert!(
+            window
+                .samples
+                .iter()
+                .all(|sample| sample.completed_seconds.is_some())
+        );
+        assert_eq!(window.samples[0].completion_interval_seconds, None);
+        assert!(window.samples[1].completion_interval_seconds.is_some());
+    }
+
+    #[test]
+    fn completions_out_of_submission_order_fail() {
+        let sample = |_| FrameSample {
+            encode_seconds: 0.0,
+            submit_seconds: 0.0,
+            gpu_wait_seconds: 0.0,
+            gpu_seconds: None,
+            latency_seconds: None,
+            completed_seconds: None,
+            completion_interval_seconds: None,
+            cpu_start: None,
+            cpu_end: None,
+            migrated: false,
+            passes: Vec::new(),
+            phases: Vec::new(),
+            composition: None,
+            gpu_counters: None,
+        };
+        let start = Instant::now();
+        let early = start + Duration::from_millis(1);
+        let late = start + Duration::from_millis(2);
+        let mut samples: Vec<_> = (0..2).map(sample).collect();
+        let reordered = vec![
+            (start, crate::Completion::Finished(late)),
+            (start, crate::Completion::Finished(early)),
+        ];
+        assert!(attribute_completions(&mut samples, start, reordered).is_err());
+        let (_send, never_called) = crate::Completion::callback();
+        let never_ran = vec![
+            (start, crate::Completion::Finished(early)),
+            (start, never_called),
+        ];
+        assert!(attribute_completions(&mut samples, start, never_ran).is_err());
     }
 }

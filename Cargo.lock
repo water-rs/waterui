@@ -1689,6 +1689,7 @@ name = "cherenkov-bench"
 version = "0.0.0"
 dependencies = [
  "ash",
+ "block2 0.6.2",
  "bytemuck",
  "cherenkov",
  "cherenkov-cpu",

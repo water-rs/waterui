@@ -533,6 +533,8 @@ pub struct Cherenkov {
     present: Option<PresentKind>,
     /// The scene's declared display headroom for `submit`'s presentation.
     headroom: f32,
+    /// When the last submit's raster work ended.
+    completed: crate::ObservedCompletion,
 }
 
 /// The features this slice executes faithfully.
@@ -1384,6 +1386,7 @@ impl Cherenkov {
             counters: Counters::default(),
             present: None,
             headroom: 1.0,
+            completed: crate::ObservedCompletion::default(),
         })
     }
 }
@@ -1587,7 +1590,9 @@ impl Engine for Cherenkov {
             render_error,
         )?;
         let phases = self.engine.stats().phases;
-        let render_seconds = render_at.elapsed().as_secs_f64();
+        let rendered = std::time::Instant::now();
+        let render_seconds = rendered.duration_since(render_at).as_secs_f64();
+        self.completed.record(rendered);
         let readback_at = std::time::Instant::now();
         let image = if readback {
             let rb = self
@@ -1650,6 +1655,16 @@ impl Engine for Cherenkov {
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(
+            "the host instant Engine::render returned, after the CPU raster work it ran ended",
+        )
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        self.completed.take(Self::NAME)
     }
 
     fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {

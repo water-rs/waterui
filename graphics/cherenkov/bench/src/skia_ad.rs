@@ -963,6 +963,8 @@ pub struct SkiaCpu {
     prepared: Option<SkiaPrepared>,
     size: (u32, u32),
     counters: Counters,
+    /// When the last submit began, by which the raster work had ended.
+    completed: crate::ObservedCompletion,
 }
 
 impl std::fmt::Debug for SkiaCpu {
@@ -1010,6 +1012,7 @@ impl SkiaCpu {
             prepared: None,
             size: (0, 0),
             counters: Counters::default(),
+            completed: crate::ObservedCompletion::default(),
         }
     }
 }
@@ -1073,6 +1076,7 @@ impl Engine for SkiaCpu {
             .ok_or_else(|| BenchError::Engine("skia-cpu: submit before prepare".into()))?;
         // Rasterization happened inside `encode`'s canvas calls on the
         // raster surface; the submit itself only snapshots and reads.
+        self.completed.record(render_at);
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = Instant::now();
         let image = if readback {
@@ -1094,6 +1098,17 @@ impl Engine for SkiaCpu {
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(
+            "the host instant submit began: raster canvas calls run synchronously in encode, so the \
+             frame's raster work has ended by then",
+        )
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        self.completed.take(Self::NAME)
     }
 
     fn wait_idle(&mut self) -> Result<(), BenchError> {
@@ -1134,6 +1149,10 @@ pub struct SkiaVk {
     _bctx: skia_safe::gpu::vk::BackendContext<'static>,
     vk_instance: &'static ash::Instance,
     vk_physical_device: ash::vk::PhysicalDevice,
+    /// The semaphores each frame's completion goes through; `None` when
+    /// the driver cannot export a semaphore as a sync file, and the
+    /// adapter then reports no completion.
+    completion: Option<CompletionSemaphores>,
     /// Prepared scene state: the Ganesh surface and resolved `Cmd` list.
     prepared: Option<SkiaPrepared>,
     size: (u32, u32),
@@ -1207,7 +1226,12 @@ impl SkiaVk {
         let qcis = [vk::DeviceQueueCreateInfo::default()
             .queue_family_index(qfam)
             .queue_priorities(&prios)];
-        let dci = vk::DeviceCreateInfo::default().queue_create_infos(&qcis);
+        let sync_fd = sync_fd_exportable(instance, pd, api)?;
+        let extensions = [ash::khr::external_semaphore_fd::NAME.as_ptr()];
+        let enabled: &[*const std::ffi::c_char] = if sync_fd { &extensions } else { &[] };
+        let dci = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&qcis)
+            .enabled_extension_names(enabled);
         // SAFETY: `pd`/`qfam` are valid; the device is leaked and outlives
         // every user of it.
         let device: &'static ash::Device = Box::leak(Box::new(
@@ -1275,6 +1299,7 @@ impl SkiaVk {
             _bctx: bctx,
             vk_instance: instance,
             vk_physical_device: pd,
+            completion: sync_fd.then(|| CompletionSemaphores::new(instance, device)),
             prepared: None,
             size: (0, 0),
             counters: Counters::default(),
@@ -1291,6 +1316,25 @@ impl Engine for SkiaVk {
 
     fn gpu_timing_unavailable(&self) -> Option<&'static str> {
         Some("This Skia Ganesh Vulkan version does not implement GPU timing statistics")
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        if self.completion.is_some() {
+            crate::CompletionSignal::Measured(
+                "the kernel's signal timestamp (CLOCK_MONOTONIC) of the sync file exported from a \
+                 binary semaphore Ganesh signals once the frame's flush has executed \
+                 (FlushInfo::set_signal_semaphores): the driver's own fence time, read after the run \
+                 drains. The semaphore is created and exported outside the timed submit, which only \
+                 attaches it to the flush. A sync file exported already signaled carries no time; \
+                 that frame's instant is then the export's return, an upper bound",
+            )
+        } else {
+            crate::CompletionSignal::Unavailable(
+                "this Vulkan driver cannot export a semaphore as a sync file \
+                 (VK_KHR_external_semaphore_fd, SYNC_FD), the only host-observable form of the binary \
+                 semaphore Ganesh signals",
+            )
+        }
     }
 
     fn finish_gpu(&mut self) -> Result<Vec<crate::GpuSample>, BenchError> {
@@ -1338,6 +1382,11 @@ impl Engine for SkiaVk {
             surface,
             cmds: build_cmds(input.scene, input.blobs, Self::NAME, &mut self.counters)?,
         });
+        if let Some(semaphores) = &mut self.completion {
+            // The first frame's semaphore, created outside the timed loop;
+            // each completion step creates the next frame's.
+            semaphores.prepare()?;
+        }
         Ok(())
     }
 
@@ -1361,9 +1410,13 @@ impl Engine for SkiaVk {
             ));
         }
         let render_at = Instant::now();
-        self.dctx.flush(None);
-        if !self.dctx.submit(skia_safe::gpu::SyncCpu::No) {
-            return Err(BenchError::Gpu("Skia Vulkan submission failed".into()));
+        if let Some(semaphores) = &mut self.completion {
+            semaphores.flush_signaling(&mut self.dctx)?;
+        } else {
+            self.dctx.flush(None);
+            if !self.dctx.submit(skia_safe::gpu::SyncCpu::No) {
+                return Err(BenchError::Gpu("Skia Vulkan submission failed".into()));
+            }
         }
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = Instant::now();
@@ -1386,6 +1439,13 @@ impl Engine for SkiaVk {
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        self.completion
+            .as_mut()
+            .map(CompletionSemaphores::export_submitted)
+            .transpose()
     }
 
     fn counters(&self) -> Counters {
@@ -1417,6 +1477,349 @@ impl Engine for SkiaVk {
     }
 }
 
+/// Whether `pd` can export a binary semaphore as a sync file, which needs
+/// Vulkan 1.1 on both sides and `VK_KHR_external_semaphore_fd`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn sync_fd_exportable(
+    instance: &ash::Instance,
+    pd: ash::vk::PhysicalDevice,
+    api: u32,
+) -> Result<bool, BenchError> {
+    use ash::vk;
+    // SAFETY: `instance` and `pd` are live handles.
+    let props = unsafe { instance.get_physical_device_properties(pd) };
+    if api < vk::API_VERSION_1_1 || props.api_version < vk::API_VERSION_1_1 {
+        return Ok(false);
+    }
+    // SAFETY: `instance` and `pd` are live handles.
+    let extensions = unsafe { instance.enumerate_device_extension_properties(pd) }
+        .map_err(|e| BenchError::Gpu(format!("vulkan: device extensions: {e}")))?;
+    if !extensions
+        .iter()
+        .any(|e| e.extension_name_as_c_str() == Ok(ash::khr::external_semaphore_fd::NAME))
+    {
+        return Ok(false);
+    }
+    let info = vk::PhysicalDeviceExternalSemaphoreInfo::default()
+        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+    let mut external = vk::ExternalSemaphoreProperties::default();
+    // SAFETY: the instance and the device are Vulkan 1.1, checked above.
+    unsafe { instance.get_physical_device_external_semaphore_properties(pd, &info, &mut external) };
+    Ok(external
+        .external_semaphore_features
+        .contains(vk::ExternalSemaphoreFeatureFlags::EXPORTABLE))
+}
+
+/// The binary semaphores the Skia Vulkan completion signal goes through.
+///
+/// Only attaching a semaphore to Ganesh's flush happens inside the timed
+/// submit ([`Self::flush_signaling`]). Creating it ([`Self::prepare`] for
+/// the first frame, [`Self::export_submitted`] for each next one) and
+/// exporting it as a sync file ([`Self::export_submitted`]) run in the
+/// frame loop's completion step, after the frame's timed intervals.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+struct CompletionSemaphores {
+    device: &'static ash::Device,
+    export: ash::khr::external_semaphore_fd::Device,
+    /// The semaphore the next submit's flush signals, with Skia's handle
+    /// for it.
+    next: Option<(ash::vk::Semaphore, skia_safe::gpu::BackendSemaphore)>,
+    /// The semaphore the last submit's flush signals, awaiting export.
+    /// `Some` only while `next` is `None`.
+    submitted: Option<ash::vk::Semaphore>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl CompletionSemaphores {
+    fn new(instance: &ash::Instance, device: &'static ash::Device) -> Self {
+        Self {
+            device,
+            export: ash::khr::external_semaphore_fd::Device::new(instance, device),
+            next: None,
+            submitted: None,
+        }
+    }
+
+    fn error(e: impl std::fmt::Display) -> BenchError {
+        BenchError::Gpu(format!("skia-vulkan completion: {e}"))
+    }
+
+    /// Readies the first frame's semaphore. A frame submitted without a
+    /// completion step (a single readback render) is drained first and its
+    /// semaphore destroyed.
+    ///
+    /// # Errors
+    /// [`BenchError::Gpu`] when Vulkan fails.
+    fn prepare(&mut self) -> Result<(), BenchError> {
+        if let Some(semaphore) = self.submitted.take() {
+            self.drain_and_destroy(semaphore)?;
+        }
+        self.arm()
+    }
+
+    /// Creates the semaphore the next submit's flush signals, unless one
+    /// is ready.
+    fn arm(&mut self) -> Result<(), BenchError> {
+        use ash::vk::{self, Handle};
+
+        if self.next.is_some() {
+            return Ok(());
+        }
+        let mut export_info = vk::ExportSemaphoreCreateInfo::default()
+            .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+        let create = vk::SemaphoreCreateInfo::default().push_next(&mut export_info);
+        // SAFETY: `device` is the live, leaked device Skia renders on.
+        let semaphore =
+            unsafe { self.device.create_semaphore(&create, None) }.map_err(Self::error)?;
+        // SAFETY: `semaphore` stays alive until this type destroys it, after
+        // every Skia operation on it has completed.
+        let backend = unsafe {
+            skia_safe::gpu::backend_semaphores::make_vk(
+                semaphore.as_raw() as skia_safe::gpu::vk::Semaphore
+            )
+        };
+        self.next = Some((semaphore, backend));
+        Ok(())
+    }
+
+    /// Flushes and submits Ganesh's pending work with the ready semaphore
+    /// for it to signal. It adds no submission and waits for nothing.
+    ///
+    /// # Errors
+    /// [`BenchError::Gpu`] when no semaphore is ready (the previous
+    /// frame's completion step did not run) or Skia does not submit it.
+    fn flush_signaling(
+        &mut self,
+        dctx: &mut skia_safe::gpu::DirectContext,
+    ) -> Result<(), BenchError> {
+        let (semaphore, mut backend) = self.next.take().ok_or_else(|| {
+            Self::error(
+                "submit without a ready semaphore: the previous frame's completion step did not run",
+            )
+        })?;
+        let mut info = skia_safe::gpu::FlushInfo::default();
+        // SAFETY: `backend` outlives the flush below, its only consumer.
+        unsafe { info.set_signal_semaphores(std::slice::from_mut(&mut backend)) };
+        let submitted = dctx.flush(&info) == skia_safe::gpu::SemaphoresSubmitted::Yes
+            && dctx.submit(skia_safe::gpu::SyncCpu::No);
+        if !submitted {
+            return Err(self.discard(
+                semaphore,
+                Self::error("Skia did not submit the frame with its signal semaphore"),
+            ));
+        }
+        self.submitted = Some(semaphore);
+        Ok(())
+    }
+
+    /// The completion step: readies the next frame's semaphore, then
+    /// exports the submitted frame's as a sync file whose kernel signal
+    /// timestamp is the frame's completion.
+    ///
+    /// # Errors
+    /// [`BenchError::Gpu`] when no frame awaits export or Vulkan fails; the
+    /// submitted semaphore is destroyed once the device has drained.
+    fn export_submitted(&mut self) -> Result<crate::Completion, BenchError> {
+        use ash::vk;
+
+        let semaphore = self
+            .submitted
+            .take()
+            .ok_or_else(|| Self::error("completion requested without a submitted frame"))?;
+        if let Err(error) = self.arm() {
+            return Err(self.discard(semaphore, error));
+        }
+        let get = vk::SemaphoreGetFdInfoKHR::default()
+            .semaphore(semaphore)
+            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+        // SAFETY: the semaphore was created exportable as SYNC_FD and its
+        // signal operation was submitted by the last flush.
+        let fd = match unsafe { self.export.get_semaphore_fd(&get) } {
+            Ok(fd) => fd,
+            Err(e) => return Err(self.discard(semaphore, Self::error(e))),
+        };
+        let exported = Instant::now();
+        let device = self.device;
+        let destroy = move || {
+            // SAFETY: runs once, after every operation on `semaphore`
+            // completed.
+            unsafe { device.destroy_semaphore(semaphore, None) };
+        };
+        if fd == -1 {
+            // The signal had already happened, so the driver exported no
+            // fence and the semaphore has no pending operation.
+            destroy();
+            return Ok(crate::Completion::Finished(exported));
+        }
+        // SAFETY: a non-negative fd from vkGetSemaphoreFdKHR is a sync file
+        // the caller owns.
+        let file = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+        Ok(crate::Completion::InFlight(Box::new(move || {
+            let signaled = sync_file::signaled_at(&file);
+            drop(file);
+            destroy();
+            signaled
+        })))
+    }
+
+    /// Waits for the device to finish all submitted work, then destroys
+    /// `semaphore`. A wait that fails for any reason but device loss may
+    /// leave work pending that references the semaphore, which is then
+    /// leaked rather than destroyed while in use.
+    ///
+    /// # Errors
+    /// [`BenchError::Gpu`] when the wait fails.
+    fn drain_and_destroy(&self, semaphore: ash::vk::Semaphore) -> Result<(), BenchError> {
+        // SAFETY: the device is live, and the adapter's thread is the only
+        // one submitting to its queue.
+        let drained = unsafe { self.device.device_wait_idle() };
+        if matches!(drained, Ok(()) | Err(ash::vk::Result::ERROR_DEVICE_LOST)) {
+            // SAFETY: no pending operation references the semaphore: the
+            // device drained, or was lost, which completes all its work.
+            unsafe { self.device.destroy_semaphore(semaphore, None) };
+        }
+        drained.map_err(|e| Self::error(format!("draining the device to destroy a semaphore: {e}")))
+    }
+
+    /// Destroys `semaphore` after a failure and returns `error`, extended
+    /// by the drain's own failure.
+    fn discard(&self, semaphore: ash::vk::Semaphore, error: BenchError) -> BenchError {
+        match self.drain_and_destroy(semaphore) {
+            Ok(()) => error,
+            Err(drain) => BenchError::Gpu(format!("{error}; {drain}")),
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl Drop for CompletionSemaphores {
+    fn drop(&mut self) {
+        if let Some((semaphore, _)) = self.next.take() {
+            // SAFETY: no flush ever received this semaphore.
+            unsafe { self.device.destroy_semaphore(semaphore, None) };
+        }
+        if let Some(semaphore) = self.submitted.take()
+            && let Err(e) = self.drain_and_destroy(semaphore)
+        {
+            tracing::warn!("skia-vulkan: the last submitted completion semaphore leaks: {e}");
+        }
+    }
+}
+
+/// The signal time a Linux sync file's fences record (`linux/sync_file.h`).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod sync_file {
+    use std::os::fd::{AsRawFd, OwnedFd};
+    use std::time::{Duration, Instant};
+
+    use crate::BenchError;
+
+    /// `struct sync_fence_info`.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct FenceInfo {
+        obj_name: [u8; 32],
+        driver_name: [u8; 32],
+        status: i32,
+        flags: u32,
+        timestamp_ns: u64,
+    }
+
+    /// `struct sync_file_info`.
+    #[repr(C)]
+    struct FileInfo {
+        name: [u8; 32],
+        status: i32,
+        flags: u32,
+        num_fences: u32,
+        pad: u32,
+        sync_fence_info: u64,
+    }
+
+    /// `SYNC_IOC_FILE_INFO`.
+    const FILE_INFO: libc::Ioctl = libc::_IOWR::<FileInfo>(SYNC_IOC_MAGIC, 4);
+
+    /// `SYNC_IOC_MAGIC`, the character `'>'`.
+    const SYNC_IOC_MAGIC: u32 = 0x3E;
+
+    const UNSIGNALED: FenceInfo = FenceInfo {
+        obj_name: [0; 32],
+        driver_name: [0; 32],
+        status: 0,
+        flags: 0,
+        timestamp_ns: 0,
+    };
+
+    fn file_info(file: &OwnedFd, fences: &mut [FenceInfo]) -> Result<FileInfo, BenchError> {
+        let mut info = FileInfo {
+            name: [0; 32],
+            status: 0,
+            flags: 0,
+            num_fences: u32::try_from(fences.len()).expect("fence count fits u32"),
+            pad: 0,
+            sync_fence_info: fences.as_mut_ptr() as u64,
+        };
+        // SAFETY: `info` is a valid `sync_file_info` whose array pointer
+        // holds `num_fences` entries; the kernel writes only those.
+        if unsafe { libc::ioctl(file.as_raw_fd(), FILE_INFO, &raw mut info) } != 0 {
+            return Err(BenchError::Engine(format!(
+                "sync file info: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(info)
+    }
+
+    /// The instant the last of `file`'s fences signaled.
+    ///
+    /// # Errors
+    /// The sync file cannot be read, is unsignaled or failed, or records a
+    /// signal time later than now.
+    pub fn signaled_at(file: &OwnedFd) -> Result<Instant, BenchError> {
+        let count = file_info(file, &mut [])?.num_fences as usize;
+        let mut fences = vec![UNSIGNALED; count];
+        let info = file_info(file, &mut fences)?;
+        if info.status != 1 || fences.is_empty() || fences.iter().any(|f| f.status != 1) {
+            return Err(BenchError::Engine(format!(
+                "the frame's sync file is not signaled after the drain (status {})",
+                info.status
+            )));
+        }
+        let signaled_ns = fences
+            .iter()
+            .map(|f| f.timestamp_ns)
+            .max()
+            .expect("fences is non-empty");
+        // Instant reads CLOCK_MONOTONIC on Linux, the clock the kernel
+        // stamps fences with; one reading of each anchors the two.
+        let now = Instant::now();
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a valid out-pointer.
+        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts) } != 0 {
+            return Err(BenchError::Engine(format!(
+                "clock_gettime: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let now_ns = u64::try_from(ts.tv_sec).expect("monotonic seconds are non-negative")
+            * 1_000_000_000
+            + u64::try_from(ts.tv_nsec).expect("nanoseconds are non-negative");
+        let ago = now_ns.checked_sub(signaled_ns).ok_or_else(|| {
+            BenchError::Engine(format!(
+                "the sync file signaled at {signaled_ns} ns, after now ({now_ns} ns)"
+            ))
+        })?;
+        now.checked_sub(Duration::from_nanos(ago)).ok_or_else(|| {
+            BenchError::Engine(format!(
+                "the sync file's signal time ({ago} ns ago) predates the host clock's origin"
+            ))
+        })
+    }
+}
+
 /// `skia-metal`: Skia Graphite on Metal, Apple platforms only.
 #[cfg(all(feature = "skia-metal", target_vendor = "apple"))]
 mod graphite_metal {
@@ -1432,7 +1835,7 @@ mod graphite_metal {
 
     use objc2::rc::Retained;
     use objc2::runtime::ProtocolObject;
-    use objc2_metal::{MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice};
+    use objc2_metal::{MTLCommandBuffer, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice};
     use skia_safe::gpu::graphite::{self, mtl as gmtl};
     use skia_safe::gpu::{Mipmapped, graphite::surfaces};
     use skia_safe::wrapper::PointerWrapper;
@@ -1456,8 +1859,10 @@ mod graphite_metal {
     pub struct SkiaMtl {
         info: EngineInfo,
         device: Retained<ProtocolObject<dyn MTLDevice>>,
-        /// Retained for the lifetime of the Graphite backend context.
-        _queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+        /// The queue Graphite submits on, retained for the lifetime of the
+        /// backend context; each frame's completion marker is committed on
+        /// it after Graphite's submission.
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
         _bctx: gmtl::BackendContext,
         ctx: graphite::Context,
         recorder: graphite::Recorder,
@@ -1468,6 +1873,8 @@ mod graphite_metal {
         recording: Option<graphite::Recording>,
         size: (u32, u32),
         counters: Counters,
+        /// Whether a submitted frame awaits [`Engine::completion`].
+        awaiting_completion: bool,
     }
 
     impl std::fmt::Debug for SkiaMtl {
@@ -1530,7 +1937,7 @@ mod graphite_metal {
                                    — `submit` inserts it on the shared Metal queue",
                 },
                 device,
-                _queue: queue,
+                queue,
                 _bctx: bctx,
                 ctx,
                 recorder,
@@ -1538,7 +1945,36 @@ mod graphite_metal {
                 recording: None,
                 size: (0, 0),
                 counters: Counters::default(),
+                awaiting_completion: false,
             })
+        }
+
+        /// Commits an empty command buffer on Graphite's queue, after the
+        /// frame's submission, whose completed handler stamps the frame's
+        /// completion. It records no GPU work and nothing waits on it; the
+        /// frame loop calls it outside the timed submit.
+        ///
+        /// # Errors
+        /// [`BenchError::Gpu`] when the queue cannot create the buffer.
+        fn commit_completion_marker(&self) -> Result<crate::Completion, BenchError> {
+            let marker = self.queue.commandBuffer().ok_or_else(|| {
+                BenchError::Gpu(
+                    "skia-metal: commandBuffer returned nil for the completion marker".into(),
+                )
+            })?;
+            let (send, completion) = crate::Completion::deferred_callback();
+            let handler = block2::RcBlock::new(
+                move |_: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                    // A dropped receiver means the run already failed; the
+                    // frame loop reports a missing instant itself.
+                    let _ = send.send(Instant::now());
+                },
+            );
+            // SAFETY: `handler` is a live block; Metal copies it before
+            // `addCompletedHandler:` returns, so dropping ours is sound.
+            unsafe { marker.addCompletedHandler(block2::RcBlock::as_ptr(&handler)) };
+            marker.commit();
+            Ok(completion)
         }
 
         /// Reads the render target as premultiplied `f16` linear-P3
@@ -1678,6 +2114,7 @@ mod graphite_metal {
             } else {
                 None
             };
+            self.awaiting_completion = true;
             Ok(Submit {
                 image,
                 gpu: Vec::new(),
@@ -1691,6 +2128,28 @@ mod graphite_metal {
 
         fn gpu_timing_unavailable(&self) -> Option<&'static str> {
             Some("This Skia Graphite Metal version does not implement GPU timing statistics")
+        }
+
+        fn completion_signal(&self) -> crate::CompletionSignal {
+            crate::CompletionSignal::Measured(
+                "the instant Metal ran the completed handler of an empty command buffer the adapter \
+                 commits on Graphite's queue after each submit, outside the timed submit \
+                 (skia-safe exposes no Graphite finished proc); Metal completes a queue's command \
+                 buffers in commit order, so the instant bounds the frame's completion from above \
+                 by the handler's dispatch latency, at the cost of one empty commit per frame",
+            )
+        }
+
+        fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+            if !std::mem::take(&mut self.awaiting_completion) {
+                return Err(BenchError::Engine(
+                    "skia-metal: completion requested without a submitted frame".into(),
+                ));
+            }
+            // Nothing has been committed on the queue since the frame's
+            // submit returned, so the marker follows the frame's last
+            // command buffer.
+            self.commit_completion_marker().map(Some)
         }
 
         fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
