@@ -299,6 +299,13 @@ fn trials() -> Vec<Trial> {
     }
     #[cfg(target_os = "ios")]
     {
+        tests.push(Trial::test(
+            "resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch",
+            || {
+                resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch();
+                Ok(())
+            },
+        ));
         tests.extend(tabs::trials());
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
@@ -1361,6 +1368,46 @@ mod resolve {
                 );
             }
         }
+    }
+
+    /// water-rs/waterui#3596: the radio style's `UIPickerView` wheel asks
+    /// its delegate for the row height and gets `SwiftUI`'s wheel pitch,
+    /// not `UIKit`'s 32 pt style default for a wheel this tall.
+    #[cfg(target_os = "ios")]
+    pub fn a_wheel_picker_spaces_rows_at_the_swiftui_pitch() {
+        use cocoa_ui::objc2_ui_kit::UIPickerView;
+        use cocoa_ui::uikit::WHEEL_ROW_HEIGHT;
+
+        let selection = binding(0_i32);
+        let items = vec![
+            waterui::text!("One").tag(0),
+            waterui::text!("Two").tag(1),
+            waterui::text!("Three").tag(2),
+        ];
+        let leaf = render(picker("Mode", items, &selection).style(PickerStyle::Radio));
+        let size = leaf
+            .layout()
+            .measure(ProposalSize::new(Some(300.0), None))
+            .size;
+        let row = leaf.view();
+        cocoa_ui::view::set_frame(
+            row,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(row);
+        let wheels: Vec<_> = cocoa_ui::view::subviews(row)
+            .into_iter()
+            .filter(|view| view.downcast_ref::<UIPickerView>().is_some())
+            .collect();
+        assert_eq!(wheels.len(), 1, "the radio picker hosts one wheel");
+        let wheel = wheels[0]
+            .downcast_ref::<UIPickerView>()
+            .expect("filtered to wheels above");
+        assert_eq!(
+            wheel.rowSizeForComponent(0).height.to_bits(),
+            WHEEL_ROW_HEIGHT.to_bits(),
+            "the wheel's row height"
+        );
     }
 
     /// water-rs/waterui#1101: a semantic label leaves 8 pt between its

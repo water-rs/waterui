@@ -44,6 +44,18 @@ const CHEVRON_PADDING: f64 = 4.0;
 /// default `UIFont.systemFont(ofSize: 21)` the picker uses.
 const WHEEL_FONT_SIZE: f64 = 21.0;
 
+/// The height of one wheel row, in points.
+///
+/// It is the row pitch `SwiftUI`'s `.wheel`/`.inline` picker gives its
+/// `UIPickerView`: its coordinator's
+/// `pickerView(_:rowHeightForComponent:)` returns a constant 30 (the
+/// `UIKitWheelPicker` coordinator in `SwiftUI.framework`). Without the
+/// delegate method `UIKit` falls back to its style default
+/// (`-[_UIPickerViewStyle_iOS defaultRowHeightForSize:]`: 32 pt for a
+/// wheel at least 216 pt tall, 24 pt below), which spaces the rows 2 pt
+/// further apart than the platform's own picker.
+pub const WHEEL_ROW_HEIGHT: f64 = 30.0;
+
 /// Shared with the menu's `UIAction`s and the wheel's delegate: the
 /// selection closure, the current titles and the font wheel rows adopt.
 struct Shared {
@@ -106,8 +118,9 @@ define_class!(
         }
     }
 
-    // SAFETY: the row view is built and labelled on the main thread, and
-    // `didSelectRow` only forwards the row index.
+    // SAFETY: the row view is built and labelled on the main thread, the
+    // row height is a constant `CGFloat` (`f64` on every supported Apple
+    // target), and `didSelectRow` only forwards the row index.
     unsafe impl UIPickerViewDelegate for WheelDelegate {
         #[unsafe(method_id(pickerView:viewForRow:forComponent:reusingView:))]
         fn view_for_row(
@@ -142,6 +155,11 @@ define_class!(
             // SAFETY: `setFont:` accepts any `UIFont` or none.
             unsafe { label.setFont(Some(&font)) };
             label.into_super()
+        }
+
+        #[unsafe(method(pickerView:rowHeightForComponent:))]
+        fn row_height(&self, _picker_view: &UIPickerView, _component: isize) -> f64 {
+            WHEEL_ROW_HEIGHT
         }
 
         #[unsafe(method(pickerView:didSelectRow:inComponent:))]
