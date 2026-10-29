@@ -17,6 +17,8 @@ use waterui::graphics::color::{
     working::{self},
 };
 use waterui::reactive::{Binding, SignalExt};
+#[cfg(target_os = "macos")]
+use waterui::reactive::{Signal, SignalIdentity};
 use waterui::text::font::{self, FontWeight, ResolvedFont};
 use waterui::theme::{self, color};
 use waterui_backend_core::Environment;
@@ -44,6 +46,56 @@ impl core::fmt::Debug for ThemeSignals {
             .field("colors", &self.colors.len())
             .field("fonts", &self.fonts.len())
             .finish_non_exhaustive()
+    }
+}
+
+/// The theme slots that stand for `AppKit`'s dynamic system label colors,
+/// keyed by the identity of the signal this backend installed for each.
+///
+/// A resolved color no longer says where it came from, but the signal that
+/// produced it does: a theme token resolves to the very signal installed in
+/// its slot, and `.foreground(token)` re-installs that same signal, while an
+/// app color, a theme the app installs, or a color derived from a token
+/// (`with_opacity`, `lighten`, ...) is a different signal. The text leaf
+/// draws a run whose color signal is one of these as the matching dynamic
+/// `NSColor`, which `AppKit` renders vibrant inside an
+/// `NSVisualEffectView`; every other run draws its resolved value.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy)]
+pub struct SystemLabelSlots {
+    slots: [(SignalIdentity, cocoa_ui::appkit::colors::AppColor); 2],
+}
+
+#[cfg(target_os = "macos")]
+impl SystemLabelSlots {
+    /// Reads the identities of the `Foreground` and `MutedForeground`
+    /// signals [`install`] put in `env`.
+    fn installed(env: &Environment) -> Self {
+        use cocoa_ui::appkit::colors::AppColor;
+        fn identity<S: 'static>(env: &Environment) -> SignalIdentity {
+            theme::installed_color_signal::<S>(env)
+                .expect("the slot is installed before its identity is read")
+                .identity()
+                .expect("a theme slot is a binding, which has an identity")
+        }
+        Self {
+            slots: [
+                (identity::<color::Foreground>(env), AppColor::Label),
+                (
+                    identity::<color::MutedForeground>(env),
+                    AppColor::SecondaryLabel,
+                ),
+            ],
+        }
+    }
+
+    /// The system label color `signal` stands for: `Some` only when it is
+    /// one of this backend's own label slots.
+    pub fn system_color(&self, signal: &impl Signal) -> Option<cocoa_ui::appkit::colors::AppColor> {
+        let identity = signal.identity()?;
+        self.slots
+            .iter()
+            .find_map(|&(slot, color)| (slot == identity).then_some(color))
     }
 }
 
@@ -137,6 +189,9 @@ pub fn install(env: &mut Environment, scheme: ColorScheme) -> ThemeSignals {
             ErrorForeground => |s| Some(colors::resolve(P::White, s)),
         }
     }
+
+    #[cfg(target_os = "macos")]
+    env.insert(SystemLabelSlots::installed(env));
 
     macro_rules! fonts {
         ($( $slot:ident => $style:ident ),* $(,)?) => {
