@@ -154,6 +154,27 @@ class Host(unittest.TestCase):
 
 
 class Sampling(unittest.TestCase):
+    def test_joined_worker_cost_is_counted_with_its_lowering_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            write_dump(root, 1, ('after', MARKER), [
+                (RUN, ROOT, 1, 40), (WAITER, JOB, 1, 200),
+                (JOB, chain(ALLOC, JOB, WAITER), 1, 5),
+                (JOB, chain('memcpy', JOB, WAITER), 1, 8),
+            ])
+            write_dump(root, 2, ('after', ROOT), [
+                (RUN, ROOT, 0, 60), (WAITER, JOB, 1, 100),
+                (JOB, chain(ALLOC, JOB, WAITER), 1, 2),
+                (JOB, chain('memcpy', JOB, WAITER), 1, 4),
+            ])
+            [sample] = ir_gate.call_samples(root, 'cpu', ROOT, [2], count=1, workers=(JOB,))
+            self.assertEqual(sample['ncalls'], 1)
+            self.assertEqual(sample['worker_calls'], 2)
+            self.assertEqual(sample['ir'], 400)
+            self.assertEqual(sample['rust_ir'], 381)
+            self.assertEqual(sample['allocs'], 2)
+            self.assertEqual(sample['mem_calls'], 2)
+
     def test_span_subtracts_only_calls_under_the_root(self):
         # run.1 closes the call in flight when instrumentation switched on,
         # run.2 is another root's return before the root is entered, run.3
