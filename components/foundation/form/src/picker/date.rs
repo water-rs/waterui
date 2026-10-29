@@ -15,13 +15,13 @@ use waterui_core::{AnyView, Environment, Native, NativeView, View};
 #[non_exhaustive]
 pub struct DatePickerConfig {
     /// The label displayed for the date picker.
-    pub label: Label,
+    label: Label,
     /// The binding to the selected value.
-    pub value: Binding<DateTime>,
+    value: Binding<DateTime>,
     /// The range of valid values.
-    pub range: RangeInclusive<DateTime>,
+    range: RangeInclusive<DateTime>,
     /// The type of date picker.
-    pub ty: DatePickerType,
+    ty: DatePickerType,
 }
 
 impl DatePickerConfig {

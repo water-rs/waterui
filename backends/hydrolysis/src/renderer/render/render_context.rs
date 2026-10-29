@@ -19,9 +19,9 @@ use waterui_text::styled::StyledStr;
 #[non_exhaustive]
 pub struct RenderContext {
     /// The transform placing the widget's local drawing space in the scene.
-    pub local: kurbo::Affine,
+    local: kurbo::Affine,
     /// The widget's bounds in its local space.
-    pub bounds: kurbo::Rect,
+    bounds: kurbo::Rect,
 }
 
 impl RenderContext {

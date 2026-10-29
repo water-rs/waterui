@@ -107,13 +107,13 @@ const fn cpu_clock_elapsed(_start: CpuClockSample) -> Duration {
 #[non_exhaustive]
 pub struct MainThreadStallProbeConfig {
     /// Emit `info` once this ratio of frame budget is reached.
-    pub info_ratio: f64,
+    info_ratio: f64,
     /// Emit `warn` once this ratio of frame budget is reached.
-    pub warn_ratio: f64,
+    warn_ratio: f64,
     /// Per-task cool-down for `info` logs.
-    pub info_cooldown: Duration,
+    info_cooldown: Duration,
     /// Per-task cool-down for `warn` logs.
-    pub warn_cooldown: Duration,
+    warn_cooldown: Duration,
 }
 
 impl MainThreadStallProbeConfig {
@@ -158,17 +158,17 @@ impl Default for MainThreadStallProbeConfig {
 #[non_exhaustive]
 pub struct TaskPollSample {
     /// Type name of the spawned future.
-    pub task_type: &'static str,
+    task_type: &'static str,
     /// Whether this poll finished the future.
-    pub poll_ready: bool,
+    poll_ready: bool,
     /// Wall-clock duration spent in this poll.
-    pub wall: Duration,
+    wall: Duration,
     /// CPU time consumed by this thread during this poll.
-    pub cpu: Duration,
+    cpu: Duration,
     /// Frame budget used for thresholding.
-    pub frame_budget: Duration,
+    frame_budget: Duration,
     /// Refresh rate used to derive frame budget.
-    pub refresh_hz: f64,
+    refresh_hz: f64,
 }
 
 impl TaskPollSample {

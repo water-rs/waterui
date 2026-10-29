@@ -350,14 +350,14 @@ impl IntoWindowIcon for Binding<Option<WindowIcon>> {
 #[non_exhaustive]
 pub struct Monitor {
     /// Bounds in the global logical coordinate space window frames use.
-    pub frame: Rect,
+    frame: Rect,
     /// `frame` minus what the desktop reserves (menu bar, dock, panels, taskbar).
     /// Equal to `frame` where the platform reports no work area.
-    pub visible_frame: Rect,
+    visible_frame: Rect,
     /// Physical pixels per logical point.
-    pub scale_factor: f64,
+    scale_factor: f64,
     /// The platform's name for the display, when it reports one.
-    pub name: Option<Str>,
+    name: Option<Str>,
 }
 
 impl Monitor {
@@ -432,13 +432,13 @@ pub enum MonitorSelector {
 #[non_exhaustive]
 pub struct WindowPlacement {
     /// The monitor a backend resolves before calling `place`.
-    pub monitor: MonitorSelector,
+    monitor: MonitorSelector,
     /// Computes the window frame from the resolved monitor's geometry.
     ///
     /// Backends call it once per show, immediately before the window becomes
     /// visible; `place` answers in the same global logical space
     /// [`Monitor::frame`] is expressed in.
-    pub place: Rc<dyn Fn(&Monitor) -> Rect>,
+    place: Rc<dyn Fn(&Monitor) -> Rect>,
 }
 
 impl WindowPlacement {

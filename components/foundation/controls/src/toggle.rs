@@ -54,15 +54,15 @@ pub struct ToggleConfig {
     /// has a name to announce, even when
     /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
     /// removes the visible chrome.
-    pub label: Label,
+    label: Label,
     /// The binding to the toggle state.
-    pub toggle: Binding<bool>,
+    toggle: Binding<bool>,
     /// The visual style of the toggle.
     ///
     /// The native payload a backend receives is resolved: its style is never
     /// [`ToggleStyle::Automatic`], and its label's display mode is the
     /// effective one.
-    pub style: ToggleStyle,
+    style: ToggleStyle,
 }
 
 impl ToggleConfig {

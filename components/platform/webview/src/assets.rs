@@ -58,12 +58,12 @@ pub enum AssetMethod {
 #[non_exhaustive]
 pub struct AssetRequest {
     /// The request method.
-    pub method: AssetMethod,
+    method: AssetMethod,
     /// The URL path as received — leading `/`, still percent-encoded. The
     /// server owns decoding and resolution against its fixed asset set.
-    pub path: Str,
+    path: Str,
     /// The query string without `?`, when one was sent.
-    pub query: Option<Str>,
+    query: Option<Str>,
 }
 
 impl AssetRequest {
@@ -102,11 +102,11 @@ impl AssetRequest {
 #[non_exhaustive]
 pub struct AssetResponse {
     /// The HTTP status code.
-    pub status: u16,
+    status: u16,
     /// Response headers as name/value pairs.
-    pub headers: Vec<(Str, Str)>,
+    headers: Vec<(Str, Str)>,
     /// The response body.
-    pub body: Vec<u8>,
+    body: Vec<u8>,
 }
 
 impl AssetResponse {

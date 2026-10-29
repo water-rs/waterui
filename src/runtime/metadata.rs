@@ -59,14 +59,14 @@ pub mod context_menu {
     #[non_exhaustive]
     pub struct ContextMenu {
         /// The menu items to display in the context menu.
-        pub items: Computed<Vec<MenuItem>>,
+        items: Computed<Vec<MenuItem>>,
         /// The custom preview shown while the menu is open. `None` uses
         /// the platform's default presentation of the source view.
-        pub preview: Option<AnyView>,
+        preview: Option<AnyView>,
         /// An interactive view presented alongside the menu — a
         /// pointer-interactive `NSMenuItem` view row on macOS, alongside
         /// the preview and commands in a native popover on iOS.
-        pub accessory: Option<AnyView>,
+        accessory: Option<AnyView>,
     }
 
     impl ContextMenu {
@@ -198,9 +198,9 @@ pub mod context_menu {
     #[non_exhaustive]
     pub struct ContextMenuView<Content> {
         /// The wrapped content view.
-        pub content: Content,
+        content: Content,
         /// The context menu to resolve.
-        pub menu: ContextMenu,
+        menu: ContextMenu,
     }
 
     impl<Content> ContextMenuView<Content> {
@@ -486,16 +486,16 @@ pub mod anchored_overlay {
     #[non_exhaustive]
     pub struct AnchorPlacement {
         /// The edge of the anchor the overlay is placed against.
-        pub edge: AnchorEdge,
+        edge: AnchorEdge,
         /// How the overlay lines up with the anchor along that edge.
-        pub alignment: EdgeAlignment,
+        alignment: EdgeAlignment,
         /// The distance between the anchor and the overlay, in points.
-        pub gap: f32,
+        gap: f32,
         /// Whether the overlay moves to the opposite edge when the preferred
         /// edge has no room for it.
-        pub flip: bool,
+        flip: bool,
         /// How the overlay is kept inside the window.
-        pub clamp: Clamp,
+        clamp: Clamp,
     }
 
     impl AnchorPlacement {

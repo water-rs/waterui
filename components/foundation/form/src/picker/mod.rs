@@ -57,13 +57,13 @@ pub struct PickerConfig {
     /// has a name to announce, even when
     /// [`LabelDisplayMode::Hidden`](waterui_controls::label::LabelDisplayMode::Hidden)
     /// removes the visible chrome.
-    pub label: Label,
+    label: Label,
     /// The items to display in the picker.
-    pub items: Computed<Vec<PickerItem<Id>>>,
+    items: Computed<Vec<PickerItem<Id>>>,
     /// The binding to the currently selected item.
-    pub selection: Binding<Id>,
+    selection: Binding<Id>,
     /// The visual style of the picker.
-    pub style: PickerStyle,
+    style: PickerStyle,
 }
 
 impl PickerConfig {

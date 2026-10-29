@@ -20,9 +20,9 @@ use crate::{
 #[non_exhaustive]
 pub struct LivePhotoSource {
     /// The URL for the still image component of the live photo.
-    pub image: Url,
+    image: Url,
     /// The URL for the video component of the live photo.
-    pub video: Url,
+    video: Url,
 }
 
 impl LivePhotoSource {

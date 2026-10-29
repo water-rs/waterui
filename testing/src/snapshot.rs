@@ -19,11 +19,11 @@ use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 #[non_exhaustive]
 pub struct Snapshot {
     /// Frame width in pixels.
-    pub width: u32,
+    width: u32,
     /// Frame height in pixels.
-    pub height: u32,
+    height: u32,
     /// Pixel data in RGBA8 row-major order.
-    pub rgba8: Vec<u8>,
+    rgba8: Vec<u8>,
 }
 
 impl Snapshot {

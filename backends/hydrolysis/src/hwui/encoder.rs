@@ -61,11 +61,11 @@ mod hit;
 #[non_exhaustive]
 pub struct PlatformViewBinding {
     /// The layer whose node hosts the view.
-    pub layer: LayerId,
+    layer: LayerId,
     /// The placement id of the view.
-    pub view: u64,
+    view: u64,
     /// The view's bounds in the layer's local coordinates.
-    pub bounds: kurbo::Rect,
+    bounds: kurbo::Rect,
 }
 
 impl PlatformViewBinding {
@@ -105,9 +105,9 @@ impl PlatformViewBinding {
 #[non_exhaustive]
 pub struct Recycle {
     /// The emptied op vector.
-    pub ops: Vec<TreeOp<HwuiTarget>>,
+    ops: Vec<TreeOp<HwuiTarget>>,
     /// The pictures this commit replaced.
-    pub recycled: Vec<(LayerId, Picture)>,
+    recycled: Vec<(LayerId, Picture)>,
 }
 
 impl Recycle {
@@ -135,13 +135,13 @@ impl Recycle {
 #[non_exhaustive]
 pub struct Frame<'a> {
     /// The command buffer, header included.
-    pub words: &'a [u32],
+    words: &'a [u32],
     /// What sampling the tree's animations reported.
-    pub sampling: Sampling,
+    sampling: Sampling,
     /// Whether recorded-content operands still animate.
-    pub content_animating: bool,
+    content_animating: bool,
     /// The window clear the frame asks the host to draw first.
-    pub clear: Option<u64>,
+    clear: Option<u64>,
 }
 
 impl<'a> Frame<'a> {

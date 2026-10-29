@@ -95,15 +95,15 @@ impl Debug for NavigationView {
 #[non_exhaustive]
 pub struct NavigationDestinationState {
     /// Whether a user or system initiated pop may begin.
-    pub pop_enabled: Computed<bool>,
+    pop_enabled: Computed<bool>,
     /// Called for a real user/system pop request, including a denied request.
-    pub pop_attempted: Option<BoxedAction>,
+    pop_attempted: Option<BoxedAction>,
     /// Called after the destination becomes active.
-    pub appear: Option<BoxedAction>,
+    appear: Option<BoxedAction>,
     /// Called after the destination ceases to be active.
-    pub disappear: Option<BoxedAction>,
+    disappear: Option<BoxedAction>,
     /// Called only after a completed pop removes the destination.
-    pub pop: Option<BoxedAction>,
+    pop: Option<BoxedAction>,
 }
 
 impl NavigationDestinationState {
@@ -768,9 +768,9 @@ pub enum NavigationToolbarPlacement {
 #[non_exhaustive]
 pub struct NavigationToolbarItem {
     /// Semantic placement resolved by each platform backend.
-    pub placement: NavigationToolbarPlacement,
+    placement: NavigationToolbarPlacement,
     /// Item content.
-    pub content: AnyView,
+    content: AnyView,
     /// The item's name, when it was declared as a semantic label.
     ///
     /// Kept beside the content rather than only inside it, because the
@@ -780,9 +780,9 @@ pub struct NavigationToolbarItem {
     /// commonly shows the text. Once the label is erased into a view, no
     /// backend can tell the name from the icon, so both travel separately and
     /// each platform draws what its own chrome calls for.
-    pub title: Option<Text>,
+    title: Option<Text>,
     /// The item's icon, when it was declared as a semantic label.
-    pub icon: Option<ToolbarItemIcon>,
+    icon: Option<ToolbarItemIcon>,
 }
 
 impl NavigationToolbarItem {
@@ -818,6 +818,11 @@ impl NavigationToolbarItem {
     /// Sets the item content.
     pub fn set_content(&mut self, content: AnyView) {
         self.content = content;
+    }
+
+    /// Sets the item's icon.
+    pub fn set_icon(&mut self, icon: Option<ToolbarItemIcon>) {
+        self.icon = icon;
     }
 
     /// The item's name, when it was declared as a semantic label.
@@ -923,7 +928,7 @@ impl NavigationToolbarItem {
 #[non_exhaustive]
 pub struct NavigationToolbar {
     /// Semantic toolbar items in declaration order.
-    pub items: Vec<NavigationToolbarItem>,
+    items: Vec<NavigationToolbarItem>,
 }
 
 impl NavigationToolbar {
@@ -1058,9 +1063,9 @@ impl BarColor {
 #[non_exhaustive]
 pub struct NavigationLink<Label, Content> {
     /// The label view displayed for this link
-    pub label: Label,
+    label: Label,
     /// A function that creates the destination view when the link is activated
-    pub content: Content,
+    content: Content,
 }
 
 impl<Label, Content> NavigationLink<Label, Content> {
@@ -1083,9 +1088,9 @@ impl<Label, Content> NavigationLink<Label, Content> {
 #[non_exhaustive]
 pub struct NavigationValueLink<Label, T> {
     /// The label view displayed for this link.
-    pub label: Label,
+    label: Label,
     /// The route value pushed when the link is activated.
-    pub value: T,
+    value: T,
 }
 
 impl<Label, T> NavigationValueLink<Label, T> {

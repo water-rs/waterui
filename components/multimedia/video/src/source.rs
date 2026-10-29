@@ -327,13 +327,13 @@ mod drm_tests {
 #[non_exhaustive]
 pub struct SubtitleTrack {
     /// Location of the subtitle asset.
-    pub source: Url,
+    source: Url,
     /// Human-readable label shown in track pickers.
-    pub label: Option<String>,
+    label: Option<String>,
     /// Optional BCP-47 language tag.
-    pub language: Option<String>,
+    language: Option<String>,
     /// `true` when the track is forced narrative text.
-    pub forced: bool,
+    forced: bool,
 }
 
 impl SubtitleTrack {
@@ -400,17 +400,17 @@ impl SubtitleTrack {
 #[non_exhaustive]
 pub struct MediaItem {
     /// Stable identity used by playlists and item-transition events.
-    pub id: MediaItemId,
+    id: MediaItemId,
     /// The primary video source.
-    pub source: Url,
+    source: Url,
     /// Transport strategy used to load the item.
-    pub delivery: Delivery,
+    delivery: Delivery,
     /// Sidecar subtitle tracks associated with this item.
-    pub subtitle_tracks: Vec<SubtitleTrack>,
+    subtitle_tracks: Vec<SubtitleTrack>,
     /// User-provided metadata used for system media sessions and now playing UI.
-    pub metadata: MediaMetadata,
+    metadata: MediaMetadata,
     /// Platform-CDM request policy for protected content.
-    pub drm: Option<DrmConfiguration>,
+    drm: Option<DrmConfiguration>,
 }
 
 impl MediaItem {

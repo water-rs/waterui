@@ -223,9 +223,9 @@ impl From<[f32; 4]> for ParamValue {
 #[non_exhaustive]
 pub struct Param {
     /// The member name in the snippet's `Params` struct.
-    pub name: String,
+    name: String,
     /// The member type.
-    pub ty: ParamType,
+    ty: ParamType,
 }
 
 impl Param {

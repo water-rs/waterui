@@ -106,22 +106,22 @@ impl NativeView for PlatformView {
 #[non_exhaustive]
 pub struct PlatformViewPlacement {
     /// The retained node's stable placement id.
-    pub id: u64,
+    id: u64,
     /// What the host mounts for this leaf — a factory `kind` or a registered
     /// `instance`. Flattened so the JSON reads as before for factories.
     #[cfg_attr(
         any(test, target_os = "android", target_arch = "wasm32"),
         serde(flatten)
     )]
-    pub source: PlatformViewSource,
+    source: PlatformViewSource,
     /// The leaf's laid-out x origin under this frame's transforms.
-    pub x: f32,
+    x: f32,
     /// The leaf's laid-out y origin under this frame's transforms.
-    pub y: f32,
+    y: f32,
     /// The leaf's laid-out width under this frame's transforms.
-    pub width: f32,
+    width: f32,
     /// The leaf's laid-out height under this frame's transforms.
-    pub height: f32,
+    height: f32,
     /// The effective clip the frame's paint layers impose (scroll viewports,
     /// `.clip()`), as `[x, y, width, height]` — present only when it actually
     /// cuts the frame.
@@ -129,12 +129,12 @@ pub struct PlatformViewPlacement {
         any(test, target_os = "android", target_arch = "wasm32"),
         serde(skip_serializing_if = "Option::is_none")
     )]
-    pub clip: Option<[f32; 4]>,
+    clip: Option<[f32; 4]>,
     /// Paint order among this frame's interactive content: a larger `order`
     /// is later — the host stacks embedded children by it.
-    pub order: u32,
+    order: u32,
     /// Whether any of the frame remains visible inside its clip.
-    pub visible: bool,
+    visible: bool,
 }
 
 impl PlatformViewPlacement {

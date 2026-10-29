@@ -31,12 +31,12 @@ pub struct AnimatedMeshGradientConfig {
     /// The flow's phase is the engine clock times `speed`, so a new speed
     /// takes effect from the current clock rather than continuing the old
     /// phase.
-    pub speed: f32,
+    speed: f32,
     /// UV warp strength (controls flow intensity).
-    pub warp: f32,
+    warp: f32,
     /// The 4×4 mesh palette, row-major, the first row along the bottom
     /// edge. The palette is opaque: alpha is ignored.
-    pub palette: [WorkingColor; ANIMATED_MESH_PALETTE_LEN],
+    palette: [WorkingColor; ANIMATED_MESH_PALETTE_LEN],
 }
 
 impl AnimatedMeshGradientConfig {

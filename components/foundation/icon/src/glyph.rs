@@ -71,11 +71,11 @@ fn codepoint_to_string(codepoint: char) -> Str {
 #[non_exhaustive]
 pub struct IconGlyph {
     /// The Unicode codepoint for this icon in the font.
-    pub codepoint: char,
+    codepoint: char,
     /// The font family name (e.g., "MaterialIcons-Regular", "FontAwesome7Free-Solid").
-    pub font_family: &'static str,
+    font_family: &'static str,
     /// The font size in points. Default is 24.0.
-    pub size: f32,
+    size: f32,
 }
 
 impl IconGlyph {

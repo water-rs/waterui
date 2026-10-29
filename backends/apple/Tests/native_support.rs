@@ -1356,18 +1356,18 @@ pub mod menus {
     #[non_exhaustive]
     pub struct MenuRow {
         /// The row's title.
-        pub title: String,
+        title: String,
         /// Its key equivalent — `""` for none.
-        pub key_equivalent: String,
+        key_equivalent: String,
         /// The modifiers its key equivalent takes.
-        pub modifiers: NSEventModifierFlags,
+        modifiers: NSEventModifierFlags,
         /// The name of the selector the row sends, when it sends one —
         /// `performClose:` on the standard Close item.
-        pub action: Option<String>,
+        action: Option<String>,
         /// Whether the row reports enabled after a validation pass.
-        pub enabled: bool,
+        enabled: bool,
         /// Whether the row is a separator.
-        pub separator: bool,
+        separator: bool,
     }
 
     impl MenuRow {

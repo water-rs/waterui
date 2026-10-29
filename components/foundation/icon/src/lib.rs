@@ -92,7 +92,7 @@ use waterui_core::{impl_constant, raw_view};
 #[non_exhaustive]
 pub struct SystemIcon {
     /// The name of the system icon.
-    pub name: Str,
+    name: Str,
 }
 
 impl SystemIcon {

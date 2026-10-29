@@ -603,16 +603,16 @@ pub struct TouchScrollConfig {
     /// How far a touch may travel from its down point before a scroll view
     /// claims the gesture — the platform's scaled touch slop, in logical
     /// units.
-    pub touch_slop: f32,
+    touch_slop: f32,
     /// The release speed under which the gesture settles without a fling, in
     /// logical units per second.
-    pub min_fling_velocity: f32,
+    min_fling_velocity: f32,
     /// The release speed a fling starts at at most, in logical units per
     /// second.
-    pub max_fling_velocity: f32,
+    max_fling_velocity: f32,
     /// The scroll physics family: how a fling decelerates and what an edge
     /// does to a drag or fling that reaches it.
-    pub physics: ScrollPhysics,
+    physics: ScrollPhysics,
 }
 
 impl TouchScrollConfig {
@@ -764,9 +764,9 @@ impl ScrollPlatform {
 #[non_exhaustive]
 pub struct ScrollPhysics {
     /// How a released fling decelerates.
-    pub deceleration: FlingDeceleration,
+    deceleration: FlingDeceleration,
     /// What a drag or a fling that reaches a content edge does there.
-    pub overscroll: Overscroll,
+    overscroll: Overscroll,
 }
 
 impl ScrollPhysics {
@@ -825,7 +825,7 @@ pub enum FlingDeceleration {
 #[non_exhaustive]
 pub struct ExponentialDecay {
     /// The velocity factor per millisecond.
-    pub rate_per_ms: f64,
+    rate_per_ms: f64,
 }
 
 impl ExponentialDecay {
@@ -886,33 +886,33 @@ pub enum Overscroll {
 pub struct EdgeStretch {
     /// The relaxing spring's natural angular frequency, in rad/s —
     /// `NATURAL_FREQUENCY`.
-    pub natural_frequency: f64,
+    natural_frequency: f64,
     /// The relaxing spring's damping ratio, below 1 — `DAMPING_RATIO`.
-    pub damping_ratio: f64,
+    damping_ratio: f64,
     /// What a fling's speed at the edge is multiplied by to start the
     /// spring — `ON_ABSORB_VELOCITY_ADJUSTMENT`.
-    pub absorb_velocity_scale: f64,
+    absorb_velocity_scale: f64,
     /// The stretch intensity's linear share per unit of pull —
     /// `LINEAR_STRETCH_INTENSITY`.
-    pub linear_intensity: f64,
+    linear_intensity: f64,
     /// The stretch intensity's exponential share at full pull —
     /// `EXP_STRETCH_INTENSITY`.
-    pub exponential_intensity: f64,
+    exponential_intensity: f64,
     /// The pull over which the exponential share builds up —
     /// `SCROLL_DIST_AFFECTED_BY_EXP_STRETCH`.
-    pub exponential_distance: f64,
+    exponential_distance: f64,
     /// The speed a relaxing stretch close to rest finishes at linearly, in
     /// logical units per second — `LINEAR_VELOCITY_TAKE_OVER`.
-    pub linear_take_over_velocity: f64,
+    linear_take_over_velocity: f64,
     /// The stretch, in logical units, under which a relaxing spring this
     /// slow finishes linearly — `LINEAR_DISTANCE_TAKE_OVER`.
-    pub linear_take_over_distance: f64,
+    linear_take_over_distance: f64,
     /// The spring speed under which it counts as at rest, in logical units
     /// per second — `VELOCITY_THRESHOLD`.
-    pub rest_velocity: f64,
+    rest_velocity: f64,
     /// The stretch, in logical units, under which a slow spring counts as
     /// at rest — `VALUE_THRESHOLD`.
-    pub rest_distance: f64,
+    rest_distance: f64,
 }
 
 impl EdgeStretch {
@@ -1019,11 +1019,11 @@ impl EdgeStretch {
 pub struct RubberBand {
     /// The resistance `c` in `(1 − 1 / (x·c/d + 1)) · d` — the band's
     /// slope at the edge.
-    pub coefficient: f64,
+    coefficient: f64,
     /// How a release past the edge returns onto it.
-    pub release: ReleaseReturn,
+    release: ReleaseReturn,
     /// How a fling that reaches the edge bounces past it and back.
-    pub bounce: EdgeBounce,
+    bounce: EdgeBounce,
 }
 
 impl RubberBand {
@@ -1081,10 +1081,10 @@ impl RubberBand {
 #[non_exhaustive]
 pub struct ReleaseReturn {
     /// The period `2π / ω` of the decay rate `ω`, in seconds.
-    pub response: f64,
+    response: f64,
     /// The period `2π / ω_h` of the rate `ω_h` that sets the velocity a
     /// release moving toward the content crosses the edge with, in seconds.
-    pub handover_response: f64,
+    handover_response: f64,
 }
 
 impl ReleaseReturn {
@@ -1146,10 +1146,10 @@ impl ReleaseReturn {
 #[non_exhaustive]
 pub struct EdgeBounce {
     /// The spring that carries the offset past the edge and back onto it.
-    pub spring: SpringBack,
+    spring: SpringBack,
     /// The share of the fling's velocity at the edge that the spring
     /// starts with.
-    pub entry_velocity_scale: f64,
+    entry_velocity_scale: f64,
 }
 
 impl EdgeBounce {
@@ -1210,9 +1210,9 @@ impl EdgeBounce {
 #[non_exhaustive]
 pub struct SpringBack {
     /// The undamped period, in seconds: `ω0 = 2π / response`.
-    pub response: f64,
+    response: f64,
     /// The damping ratio `ζ`: 1 is critical, above 1 overdamped.
-    pub damping_ratio: f64,
+    damping_ratio: f64,
 }
 
 impl SpringBack {
@@ -1250,10 +1250,10 @@ pub struct SplineDeceleration {
     /// `SplineScroller`'s `mPhysicalCoeff` — the physical-pixel acceleration
     /// scale the spline's distance and duration derive from, in logical
     /// units per second².
-    pub physical_coeff: f64,
+    physical_coeff: f64,
     /// `SplineScroller`'s `mFlingFriction` —
     /// `ViewConfiguration.getScrollFriction()` on Android.
-    pub friction: f64,
+    friction: f64,
 }
 
 impl SplineDeceleration {
@@ -1288,19 +1288,19 @@ impl SplineDeceleration {
 #[non_exhaustive]
 pub struct TextInputState {
     /// Left edge of the input field, in logical points.
-    pub x: f64,
+    x: f64,
     /// Top edge of the input field, in logical points.
-    pub y: f64,
+    y: f64,
     /// Width of the input field, in logical points.
-    pub width: f64,
+    width: f64,
     /// Height of the input field, in logical points.
-    pub height: f64,
+    height: f64,
     /// The field's purpose, which selects the platform's input treatment.
-    pub purpose: TextInputPurpose,
+    purpose: TextInputPurpose,
     /// The renderer's count of primary presses on editable targets. A
     /// platform with a soft keyboard shows it when this changes, which is
     /// how a tap on the already-focused field re-opens a dismissed keyboard.
-    pub activation: u64,
+    activation: u64,
 }
 
 impl TextInputState {

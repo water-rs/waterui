@@ -37,9 +37,9 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 #[non_exhaustive]
 pub struct Target {
     /// Endpoint published by the target application.
-    pub addr: SocketAddr,
+    addr: SocketAddr,
     /// One-time session token.
-    pub token: String,
+    token: String,
 }
 
 impl Target {

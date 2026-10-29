@@ -309,9 +309,9 @@ impl InvalidShortcutKey {
 #[non_exhaustive]
 pub struct Shortcut {
     /// The key the shortcut fires on.
-    pub key: ShortcutKey,
+    key: ShortcutKey,
     /// Modifier flags required alongside the key.
-    pub modifiers: ShortcutModifiers,
+    modifiers: ShortcutModifiers,
 }
 
 impl Shortcut {
@@ -485,21 +485,21 @@ pub enum CommandRole {
 #[non_exhaustive]
 pub struct Command {
     /// The semantic label for the command.
-    pub label: Label,
+    label: Label,
     /// The action to perform when the command is selected.
-    pub action: SharedAction<()>,
+    action: SharedAction<()>,
     /// Whether the command is currently disabled.
-    pub disabled: Computed<bool>,
+    disabled: Computed<bool>,
     /// Whether the command is currently selected or checked.
-    pub selected: Computed<bool>,
+    selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
-    pub shortcut: Option<Shortcut>,
+    shortcut: Option<Shortcut>,
     /// What the command does, which decides its presentation.
-    pub role: CommandRole,
+    role: CommandRole,
     /// An optional secondary line shown under the label.
-    pub subtitle: Option<Str>,
+    subtitle: Option<Str>,
     /// Local state layered onto the environment when the action runs.
-    pub captured_env: Environment,
+    captured_env: Environment,
     identity: Rc<()>,
 }
 

@@ -82,13 +82,13 @@ fn leaf(
         !projection.is_spherical(),
         "spherical video projection is not supported by the web video element realization"
     );
-    match playback.playback_policy.power {
+    match playback.playback_policy.get_power() {
         PlaybackPowerPolicy::PlatformManaged => {}
         PlaybackPowerPolicy::RequireAudioOffload
         | PlaybackPowerPolicy::RequireAudioVideoTunneling => {
             panic!(
                 "{:?} cannot be satisfied by the web video element realization",
-                playback.playback_policy.power
+                playback.playback_policy.get_power()
             )
         }
         other => panic!("hydrolysis web video: unsupported playback power policy {other:?}"),
@@ -314,8 +314,8 @@ impl Player {
     /// Loads `media` into the element, unless it is the source already
     /// loaded.
     fn load(&self, media: &MediaItem) {
-        let url = media.source.to_string();
-        let key = (url.clone(), media.delivery);
+        let url = media.source().to_string();
+        let key = (url.clone(), media.get_delivery());
         if self.source_key.borrow().as_ref() == Some(&key) {
             return;
         }
@@ -335,17 +335,18 @@ impl Player {
             track.remove();
         }
 
-        if media.delivery == Delivery::Dash {
+        if media.get_delivery() == Delivery::Dash {
             self.fail("MPEG-DASH is not supported by the web video element realization");
             return;
         }
-        if media.drm.is_some() {
+        if media.get_drm().is_some() {
             self.fail(
                 "DRM-protected sources are not supported by the web video element realization",
             );
             return;
         }
-        if media.delivery == Delivery::Hls && self.element.can_play_type(HLS_MIME).is_empty() {
+        if media.get_delivery() == Delivery::Hls && self.element.can_play_type(HLS_MIME).is_empty()
+        {
             self.fail("this browser's video element does not play HLS");
             return;
         }
@@ -362,32 +363,31 @@ impl Player {
             .element
             .owner_document()
             .expect("hydrolysis web video: the element has no document");
-        let mut infos = Vec::with_capacity(media.subtitle_tracks.len());
-        let mut tracks = Vec::with_capacity(media.subtitle_tracks.len());
-        for (index, track) in media.subtitle_tracks.iter().enumerate() {
+        let mut infos = Vec::with_capacity(media.subtitle_tracks().len());
+        let mut tracks = Vec::with_capacity(media.subtitle_tracks().len());
+        for (index, track) in media.subtitle_tracks().iter().enumerate() {
             let element: HtmlTrackElement = document
                 .create_element("track")
                 .expect("hydrolysis web video: failed to create a <track> element")
                 .unchecked_into();
             element.set_kind("subtitles");
-            element.set_src(track.source.as_ref());
-            if let Some(language) = &track.language {
+            element.set_src(track.source().as_ref());
+            if let Some(language) = track.get_language() {
                 element.set_srclang(language);
             }
             let label = track
-                .label
-                .clone()
-                .or_else(|| track.language.clone())
-                .unwrap_or_else(|| format!("Subtitles {}", index + 1));
+                .get_label()
+                .or_else(|| track.get_language())
+                .map_or_else(|| format!("Subtitles {}", index + 1), ToOwned::to_owned);
             element.set_label(&label);
             self.element
                 .append_child(&element)
                 .expect("hydrolysis web video: failed to add a subtitle track");
             infos.push(SubtitleTrackInfo::new(
                 label,
-                track.language.clone(),
+                track.get_language().map(ToOwned::to_owned),
                 Vec::new(),
-                track.forced,
+                track.get_forced(),
                 SubtitleTrackOrigin::Sidecar,
             ));
             tracks.push(element);

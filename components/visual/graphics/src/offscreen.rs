@@ -78,11 +78,11 @@ pub enum OffscreenError {
 #[non_exhaustive]
 pub struct OffscreenImage {
     /// Width in pixels.
-    pub width: u32,
+    width: u32,
     /// Height in pixels.
-    pub height: u32,
+    height: u32,
     /// `width * height * 4` bytes of straight-alpha sRGB8.
-    pub rgba8: Vec<u8>,
+    rgba8: Vec<u8>,
 }
 
 impl OffscreenImage {

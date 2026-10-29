@@ -628,7 +628,7 @@ impl PlatformWindow for AndroidHostWindow {
         if self.platform_view_focus.is_holding() && state.is_none() {
             return;
         }
-        let soft_input = state.map(|state| state.activation);
+        let soft_input = state.map(|state| state.activation());
         if soft_input == self.soft_input {
             return;
         }

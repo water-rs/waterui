@@ -333,13 +333,13 @@ pub struct ButtonConfig {
     /// and the spoken text used by assistive technology. Hooks receiving a
     /// `ButtonConfig` get a typed `Label`, so they can wrap or restyle it but
     /// cannot strip away the semantic identity.
-    pub label: Label,
+    label: Label,
     /// The action to execute when the button is clicked.
-    pub action: BoxedAction<()>,
+    action: BoxedAction<()>,
     /// The visual style of the button.
-    pub style: ButtonStyle,
+    style: ButtonStyle,
     /// How large the button is drawn.
-    pub size: ControlSize,
+    size: ControlSize,
 }
 
 impl ButtonConfig {

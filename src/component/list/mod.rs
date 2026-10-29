@@ -158,24 +158,24 @@ impl<Id: 'static + Ord + Clone> ListSelection<Id> {
 #[non_exhaustive]
 pub struct ListConfig {
     /// Content items to be displayed in the list.
-    pub contents: SharedAnyViews<ListItem>,
+    contents: SharedAnyViews<ListItem>,
     /// The list's selection bindings, keyed by the same erased row ids
     /// `contents.get_id` returns. `ListSelection::None` when the list is not
     /// selectable.
-    pub selection: ListSelection<RawId>,
+    selection: ListSelection<RawId>,
     /// Read-only signal for edit mode state.
-    pub editing: Computed<bool>,
+    editing: Computed<bool>,
     /// Optional callback when any item is deleted.
-    pub on_delete: Option<OnDelete>,
+    on_delete: Option<OnDelete>,
     /// Optional callback when items are moved/reordered.
-    pub on_move: Option<OnMove>,
+    on_move: Option<OnMove>,
     /// Optional programmatic item-index scroll controller.
-    pub scroll_controller: Option<ScrollController<usize>>,
+    scroll_controller: Option<ScrollController<usize>>,
     /// Whether rows carry semantic section markers.
-    pub uses_sections: bool,
+    uses_sections: bool,
     /// The minimum height of a row, from [`ListMinRowHeight`] in the list's
     /// environment. `None` uses the theme's one-line row height.
-    pub min_row_height: Option<f32>,
+    min_row_height: Option<f32>,
 }
 
 impl ListConfig {
@@ -933,9 +933,9 @@ where
 #[non_exhaustive]
 pub struct ListSection {
     /// Title shown above the section.
-    pub label: Option<Text>,
+    label: Option<Text>,
     /// Footer text shown below the section.
-    pub footer: Option<Text>,
+    footer: Option<Text>,
 }
 
 impl ListSection {
@@ -1020,16 +1020,16 @@ impl ListSection {
 #[non_exhaustive]
 pub struct ListItem {
     /// The view content to display for this item.
-    pub content: AnyView,
+    content: AnyView,
     /// Read-only signal indicating whether this item can be deleted.
-    pub deletable: Computed<bool>,
+    deletable: Computed<bool>,
     /// When `Some`, this item starts a new logical section. The backend uses
     /// this marker to group subsequent items into native chrome (iOS inset
     /// grouped sections, macOS group rows, Material section headers).
-    pub section: Option<ListSection>,
+    section: Option<ListSection>,
     /// The insets between the row's edges and its content. `None` uses the
     /// theme's row insets.
-    pub insets: Option<EdgeInsets>,
+    insets: Option<EdgeInsets>,
 }
 
 impl ListItem {

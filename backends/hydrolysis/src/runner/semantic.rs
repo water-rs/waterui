@@ -32,19 +32,19 @@ use std::sync::Arc;
 #[non_exhaustive]
 pub struct SemanticPumpResult {
     /// Whether the pump rebuilt the view tree.
-    pub rebuilt: bool,
+    rebuilt: bool,
     /// The frame's CPU/GPU stage profile.
-    pub profile: FrameProfile,
+    profile: FrameProfile,
     #[cfg(feature = "accessibility")]
     /// The accessibility tree update the frame produced.
-    pub tree_update: Option<AccessibilityTreeUpdate>,
+    tree_update: Option<AccessibilityTreeUpdate>,
     #[cfg(feature = "accessibility")]
     /// The content types the emitted tree's text fields declared — the map
     /// the update publishes beside it.
-    pub content_types: AccessibilityContentTypes,
+    content_types: AccessibilityContentTypes,
     #[cfg(feature = "accessibility")]
     /// The accessibility node holding UI focus.
-    pub ui_focus: Option<accesskit::NodeId>,
+    ui_focus: Option<accesskit::NodeId>,
 }
 
 impl SemanticPumpResult {

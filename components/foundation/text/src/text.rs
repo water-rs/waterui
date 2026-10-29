@@ -32,9 +32,9 @@ pub trait Formatter<T>: Clone {
 #[non_exhaustive]
 pub struct TextConfig {
     /// The rich text content to be displayed.
-    pub content: Computed<StyledStr>,
+    content: Computed<StyledStr>,
     /// Paragraph alignment for multiline layout.
-    pub paragraph_alignment: Computed<HorizontalAlignment>,
+    paragraph_alignment: Computed<HorizontalAlignment>,
     /// Maximum number of laid-out lines, or `None` for no limit.
     ///
     /// Text that does not fit the limit is truncated at its last visible
@@ -42,7 +42,7 @@ pub struct TextConfig {
     /// machinery provides one. This is `SwiftUI`'s `lineLimit`: a control
     /// label capped at one line stays a label under compression instead of
     /// folding into a paragraph.
-    pub line_limit: Option<NonZeroUsize>,
+    line_limit: Option<NonZeroUsize>,
 }
 
 impl TextConfig {

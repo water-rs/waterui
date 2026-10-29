@@ -21,13 +21,13 @@ use crate::calendar::{
 #[non_exhaustive]
 pub struct MultiDatePickerConfig {
     /// The label displayed for the picker.
-    pub label: Label,
+    label: Label,
     /// The selected dates as an ordered vector for backend/FFI transport.
-    pub value: Binding<Vec<Date>>,
+    value: Binding<Vec<Date>>,
     /// The valid date range.
-    pub range: RangeInclusive<Date>,
+    range: RangeInclusive<Date>,
     /// Passively decorated dates.
-    pub decorated: Computed<Vec<Date>>,
+    decorated: Computed<Vec<Date>>,
     visible_month: Binding<VisibleMonth>,
 }
 
