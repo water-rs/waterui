@@ -4716,7 +4716,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#48493b6c9dae93cc7237f0555f885dc4d7abd236"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#e4f35d8232f66f9a8595eeedef69f5c4c49835f1"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -8741,7 +8741,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -9295,7 +9295,6 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "reply-example"
 version = "0.1.0"
 dependencies = [
- "hydrolysis",
  "hydrolysis-m3",
  "waterui",
  "waterui-icons-material-icon",
