@@ -4165,6 +4165,16 @@ impl Renderer for GpuRenderer {
     fn trim(&mut self, pressure: Pressure) {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("trim");
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Free cached encoders now and in-flight storage after retirement.
+            // Normal frames retain their command-buffer reuse.
+            let device = self.device.clone();
+            self.queue.on_submitted_work_done(move || {
+                device.free_unused_command_encoders();
+            });
+            self.device.free_unused_command_encoders();
+        }
         self.gpu_cov.trim();
         if self.gpu_cov.arena_generation() != self.bound_arena_gen {
             let atlas = &self.atlas;
