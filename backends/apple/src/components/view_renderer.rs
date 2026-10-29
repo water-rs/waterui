@@ -119,23 +119,23 @@ async fn capture_leaf_to_rgba(
 ) -> Result<(alloc::vec::Vec<u8>, u32, u32), RenderError> {
     let view = leaf.view();
     let proposed = cocoa_ui::Size::new(
-        f64::from(request.size.width),
-        f64::from(request.size.height),
+        f64::from(request.size().width),
+        f64::from(request.size().height),
     );
     cocoa_ui::view::set_frame(
         view,
         cocoa_ui::Rect::new(0.0, 0.0, proposed.width, proposed.height),
     );
     let host = host::CaptureHost::attach(view, proposed, mtm)?;
-    lay_out(view, request.size);
+    lay_out(view, request.size());
     // The capture window cannot present, so the surfaces inside never
     // attach: the drive keeps their frames — and the content their scenes
     // settle — moving from here until the terminal capture. Declared
     // after `host` so the scopes it opened end before the leaf unhosts.
     #[cfg(feature = "gpu_surface")]
     let drive = crate::capture_image::CaptureDrive::begin(view, env, mtm);
-    crate::content::await_content(ledger, view, request.content_deadline).await?;
-    lay_out(view, request.size);
+    crate::content::await_content(ledger, view, request.content_deadline()).await?;
+    lay_out(view, request.size());
 
     #[cfg(feature = "gpu_surface")]
     let captured = {

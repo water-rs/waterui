@@ -69,6 +69,29 @@ pub mod context_menu {
         pub accessory: Option<AnyView>,
     }
 
+    impl ContextMenu {
+        /// The menu items to display in the context menu.
+        #[must_use]
+        pub const fn items(&self) -> &Computed<Vec<MenuItem>> {
+            &self.items
+        }
+
+        /// The custom preview shown while the menu is open. `None` uses
+        /// the platform's default presentation of the source view.
+        #[must_use]
+        pub const fn get_preview(&self) -> Option<&AnyView> {
+            self.preview.as_ref()
+        }
+
+        /// An interactive view presented alongside the menu — a
+        /// pointer-interactive `NSMenuItem` view row on macOS, alongside
+        /// the preview and commands in a native popover on iOS.
+        #[must_use]
+        pub const fn get_accessory(&self) -> Option<&AnyView> {
+            self.accessory.as_ref()
+        }
+    }
+
     impl MetadataKey for ContextMenu {}
 
     impl ContextMenu {
@@ -182,6 +205,25 @@ pub mod context_menu {
         pub content: Content,
         /// The context menu to resolve.
         pub menu: ContextMenu,
+    }
+
+    impl<Content> ContextMenuView<Content> {
+        /// Wraps `content` with the `menu` to resolve against the environment.
+        pub const fn new(content: Content, menu: ContextMenu) -> Self {
+            Self { content, menu }
+        }
+
+        /// The wrapped content view.
+        #[must_use]
+        pub const fn content(&self) -> &Content {
+            &self.content
+        }
+
+        /// The context menu to resolve.
+        #[must_use]
+        pub const fn menu(&self) -> &ContextMenu {
+            &self.menu
+        }
     }
 
     impl<Content: View> View for ContextMenuView<Content> {
@@ -462,6 +504,39 @@ pub mod anchored_overlay {
         pub flip: bool,
         /// How the overlay is kept inside the window.
         pub clamp: Clamp,
+    }
+
+    impl AnchorPlacement {
+        /// The edge of the anchor the overlay is placed against.
+        #[must_use]
+        pub const fn get_edge(&self) -> AnchorEdge {
+            self.edge
+        }
+
+        /// How the overlay lines up with the anchor along that edge.
+        #[must_use]
+        pub const fn get_alignment(&self) -> EdgeAlignment {
+            self.alignment
+        }
+
+        /// The distance between the anchor and the overlay, in points.
+        #[must_use]
+        pub const fn get_gap(&self) -> f32 {
+            self.gap
+        }
+
+        /// Whether the overlay moves to the opposite edge when the preferred
+        /// edge has no room for it.
+        #[must_use]
+        pub const fn get_flip(&self) -> bool {
+            self.flip
+        }
+
+        /// How the overlay is kept inside the window.
+        #[must_use]
+        pub const fn get_clamp(&self) -> Clamp {
+            self.clamp
+        }
     }
 
     impl Default for AnchorPlacement {

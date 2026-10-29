@@ -96,6 +96,25 @@ pub struct SecureFieldConfig {
     pub value: Binding<Secure>,
 }
 
+impl SecureFieldConfig {
+    /// The label displayed for the secure field.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: Label) {
+        self.label = label;
+    }
+
+    /// The binding to the secure value being edited.
+    #[must_use]
+    pub const fn value(&self) -> &Binding<Secure> {
+        &self.value
+    }
+}
+
 configurable!(
     /// A secure text entry field for passwords and sensitive data.
     ///

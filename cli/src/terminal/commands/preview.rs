@@ -419,7 +419,7 @@ async fn load_hydrolysis_scenario(
         .iter()
         .map(parse_scenario_event)
         .collect::<Result<Vec<_>>>()?;
-    events.sort_by_key(|event| event.at_ms);
+    events.sort_by_key(HydrolysisPreviewScenarioEvent::at_ms);
     Ok(Some(HydrolysisPreviewScenario::new(
         scenario.captures_ms,
         events,

@@ -89,7 +89,7 @@ impl Frames {
     fn pump(&mut self, runtime: &mut HeadlessRuntime) -> FrameCounters {
         let at = self.start + Duration::from_millis(self.next * 16);
         self.next += 1;
-        runtime.pump_at(true, at).profile.counters
+        runtime.pump_at(true, at).profile().counters()
     }
 }
 
@@ -140,7 +140,7 @@ fn interaction_cycle_records_chrome_once() {
     });
     let mut hovered = FrameWorkCounters::default();
     for _ in 0..16 {
-        hovered = frames.pump(&mut runtime).frame_work;
+        hovered = frames.pump(&mut runtime).frame_work();
     }
     assert_eq!(chrome.state(), InteractionState::HOVERED);
     assert_eq!(
@@ -194,7 +194,7 @@ fn press_focus_move_needs_no_tree_pass() {
     // no animation frames, so every mark this test may produce is the
     // focus move's — anything beyond the operands is the bug.
     let mut focus_chrome = chrome();
-    focus_chrome.press = PressFeedback::Tint;
+    focus_chrome.set_press(PressFeedback::Tint);
     let theme = MinimalTestTheme::default().with_button_chrome(focus_chrome);
     let mut runtime = runtime_with(button("Chrome").action(|| {}), theme);
     let mut frames = Frames {
@@ -226,7 +226,7 @@ fn press_focus_move_needs_no_tree_pass() {
     });
     let at = frames.start + Duration::from_millis(frames.next * 16);
     let result = runtime.pump_at(true, at);
-    let work = result.profile.counters.frame_work;
+    let work = result.profile().counters().frame_work();
 
     assert!(
         the_chrome(&runtime)
@@ -241,7 +241,7 @@ fn press_focus_move_needs_no_tree_pass() {
     );
     assert_eq!(work.semantic_builds, 0, "a focus move builds nothing");
     let update = result
-        .tree_update
+        .tree_update()
         .expect("the focus move publishes an accessibility update");
     assert_eq!(
         update.focus, button_node,
@@ -265,7 +265,7 @@ fn tap_release_needs_no_tree_pass() {
     // animation frames, so every mark this test may produce is the
     // activation's — anything beyond the live operands is the bug.
     let mut tap_chrome = chrome();
-    tap_chrome.press = PressFeedback::Tint;
+    tap_chrome.set_press(PressFeedback::Tint);
     let theme = MinimalTestTheme::default().with_button_chrome(tap_chrome);
     let activations = Rc::new(Cell::new(0));
     let tapped = Rc::clone(&activations);
@@ -310,7 +310,7 @@ fn tap_release_needs_no_tree_pass() {
         y: CENTER,
         button: PointerButton::Primary,
     });
-    let released = frames.pump(&mut runtime).frame_work;
+    let released = frames.pump(&mut runtime).frame_work();
 
     assert_eq!(activations.get(), 1, "the release committed the tap");
     assert_eq!(
@@ -346,7 +346,7 @@ fn keyboard_activation_needs_no_tree_pass() {
     // The same static-tint fixture as the tap's: no animation frames, so
     // every mark is the activation's.
     let mut tap_chrome = chrome();
-    tap_chrome.press = PressFeedback::Tint;
+    tap_chrome.set_press(PressFeedback::Tint);
     let theme = MinimalTestTheme::default().with_button_chrome(tap_chrome);
     let activations = Rc::new(Cell::new(0));
     let tapped = Rc::clone(&activations);
@@ -399,7 +399,7 @@ fn keyboard_activation_needs_no_tree_pass() {
     }
 
     push_enter(&mut runtime, KeyState::Released);
-    let released = frames.pump(&mut runtime).frame_work;
+    let released = frames.pump(&mut runtime).frame_work();
 
     assert_eq!(
         activations.get(),

@@ -66,6 +66,42 @@ pub struct PickerConfig {
     pub style: PickerStyle,
 }
 
+impl PickerConfig {
+    /// The label displayed for the picker.
+    ///
+    /// Always present: it is required at construction so assistive technology
+    /// has a name to announce, even when
+    /// [`LabelDisplayMode::Hidden`](waterui_controls::label::LabelDisplayMode::Hidden)
+    /// removes the visible chrome.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: Label) {
+        self.label = label;
+    }
+
+    /// The items to display in the picker.
+    #[must_use]
+    pub const fn items(&self) -> &Computed<Vec<PickerItem<Id>>> {
+        &self.items
+    }
+
+    /// The binding to the currently selected item.
+    #[must_use]
+    pub const fn selection(&self) -> &Binding<Id> {
+        &self.selection
+    }
+
+    /// The visual style of the picker.
+    #[must_use]
+    pub const fn style(&self) -> PickerStyle {
+        self.style
+    }
+}
+
 configurable!(
     /// A control for selecting from a list of options.
     ///

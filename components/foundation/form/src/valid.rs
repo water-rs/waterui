@@ -141,6 +141,20 @@ where
 #[non_exhaustive]
 pub struct OutOfRange<T>(pub Range<T>);
 
+impl<T> OutOfRange<T> {
+    /// Reports a value outside `range`.
+    #[must_use]
+    pub const fn new(range: Range<T>) -> Self {
+        Self(range)
+    }
+
+    /// The range the value fell outside of.
+    #[must_use]
+    pub const fn range(&self) -> &Range<T> {
+        &self.0
+    }
+}
+
 impl<T: Display> Display for OutOfRange<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -158,7 +172,7 @@ impl<T: Display + Debug + Ord + Clone + 'static> Validator<T> for Range<T> {
     fn validate(&self, value: T) -> Result<(), Self::Err> {
         self.contains(&value)
             .then_some(())
-            .ok_or(OutOfRange(self.clone()))
+            .ok_or_else(|| OutOfRange::new(self.clone()))
     }
 }
 

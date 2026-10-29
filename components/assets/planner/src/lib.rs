@@ -70,6 +70,61 @@ pub struct ThemeConfig {
 }
 
 impl ThemeConfig {
+    /// Window or page background color.
+    #[must_use]
+    pub const fn background(&self) -> Option<HexColor> {
+        self.background
+    }
+
+    /// Sets the `background`.
+    pub const fn set_background(&mut self, background: Option<HexColor>) {
+        self.background = background;
+    }
+
+    /// Main surface color.
+    #[must_use]
+    pub const fn surface(&self) -> Option<HexColor> {
+        self.surface
+    }
+
+    /// Secondary surface color.
+    #[must_use]
+    pub const fn surface_variant(&self) -> Option<HexColor> {
+        self.surface_variant
+    }
+
+    /// Border color.
+    #[must_use]
+    pub const fn border(&self) -> Option<HexColor> {
+        self.border
+    }
+
+    /// Primary foreground color.
+    #[must_use]
+    pub const fn foreground(&self) -> Option<HexColor> {
+        self.foreground
+    }
+
+    /// Muted foreground color.
+    #[must_use]
+    pub const fn muted_foreground(&self) -> Option<HexColor> {
+        self.muted_foreground
+    }
+
+    /// Accent color.
+    #[must_use]
+    pub const fn accent(&self) -> Option<HexColor> {
+        self.accent
+    }
+
+    /// Foreground color used on accent surfaces.
+    #[must_use]
+    pub const fn accent_foreground(&self) -> Option<HexColor> {
+        self.accent_foreground
+    }
+}
+
+impl ThemeConfig {
     /// Returns whether no theme colors are configured.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
@@ -114,6 +169,20 @@ pub struct BundleMount {
 }
 
 impl BundleMount {
+    /// Logical mount name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// Filesystem root for this mount.
+    #[must_use]
+    pub const fn root(&self) -> &PathBuf {
+        &self.root
+    }
+}
+
+impl BundleMount {
     /// The mount `name` rooted at `root`.
     #[must_use]
     pub const fn new(name: String, root: PathBuf) -> Self {
@@ -145,6 +214,38 @@ pub struct BundleMountMeta {
     /// `include_bundle!`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<PathBuf>,
+}
+
+impl BundleMountMeta {
+    /// Logical mount name; `"assets"` is the main application asset root.
+    #[must_use]
+    pub const fn mount(&self) -> &str {
+        self.mount.as_str()
+    }
+
+    /// Absolute path of the mounted directory at expansion time.
+    #[must_use]
+    pub const fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    /// Sets the `path`.
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
+    /// Absolute path of the toolchain project that produces `path` — the
+    /// frontend root for a web mount (`include_web!`), `None` for a plain
+    /// `include_bundle!`.
+    #[must_use]
+    pub const fn project(&self) -> Option<&PathBuf> {
+        self.project.as_ref()
+    }
+
+    /// Sets the toolchain project that produces `path`.
+    pub fn set_project(&mut self, project: Option<PathBuf>) {
+        self.project = project;
+    }
 }
 
 impl BundleMountMeta {
@@ -303,6 +404,49 @@ pub struct PlannedAsset {
 }
 
 impl PlannedAsset {
+    /// Mount name, empty for the main application asset root.
+    #[must_use]
+    pub const fn mount(&self) -> &str {
+        self.mount.as_str()
+    }
+
+    /// Absolute source path on disk.
+    #[must_use]
+    pub const fn source_path(&self) -> &PathBuf {
+        &self.source_path
+    }
+
+    /// Sets the `source_path`.
+    pub fn set_source_path(&mut self, source_path: PathBuf) {
+        self.source_path = source_path;
+    }
+
+    /// Path relative to the asset mount.
+    #[must_use]
+    pub const fn relative_path(&self) -> &PathBuf {
+        &self.relative_path
+    }
+
+    /// Logical path exposed to generated code.
+    #[must_use]
+    pub const fn logical_path(&self) -> &PathBuf {
+        &self.logical_path
+    }
+
+    /// Inferred asset kind.
+    #[must_use]
+    pub const fn kind(&self) -> AssetKind {
+        self.kind
+    }
+
+    /// Inferred semantic role.
+    #[must_use]
+    pub const fn role(&self) -> AssetRole {
+        self.role
+    }
+}
+
+impl PlannedAsset {
     /// The asset at `source_path`, mounted under `mount` at `relative_path`
     /// and exposed to generated code as `logical_path`, with its kind and
     /// role.
@@ -369,6 +513,48 @@ pub struct BundleManifest {
     pub mounts: Vec<BundleMount>,
     /// Planned assets across the main root and all mounts.
     pub assets: Vec<PlannedAsset>,
+}
+
+impl BundleManifest {
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (PathBuf, PathBuf, Vec<BundleMount>, Vec<PlannedAsset>) {
+        (self.crate_root, self.assets_root, self.mounts, self.assets)
+    }
+
+    /// Root directory of the application crate.
+    #[must_use]
+    pub const fn crate_root(&self) -> &PathBuf {
+        &self.crate_root
+    }
+
+    /// Main application assets directory.
+    #[must_use]
+    pub const fn assets_root(&self) -> &PathBuf {
+        &self.assets_root
+    }
+
+    /// Additional bundle mounts discovered from `include_bundle!`.
+    #[must_use]
+    pub const fn mounts(&self) -> &[BundleMount] {
+        self.mounts.as_slice()
+    }
+
+    /// The mounts the bundle declares, for in-place edits.
+    pub const fn mounts_mut(&mut self) -> &mut Vec<BundleMount> {
+        &mut self.mounts
+    }
+
+    /// Planned assets across the main root and all mounts.
+    #[must_use]
+    pub const fn assets(&self) -> &[PlannedAsset] {
+        self.assets.as_slice()
+    }
+
+    /// The planned assets, for in-place edits.
+    pub const fn assets_mut(&mut self) -> &mut Vec<PlannedAsset> {
+        &mut self.assets
+    }
 }
 
 impl BundleManifest {

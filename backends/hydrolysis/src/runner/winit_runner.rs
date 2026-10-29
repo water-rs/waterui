@@ -1261,8 +1261,8 @@ impl WinitRunner {
         // destroyed, never re-shown) — so the resolved rect is written into
         // `frame` here, before the attributes carry it into the map request.
         if let Some(placement) = window.placement.as_ref() {
-            let monitor = self.resolve_placement_monitor(event_loop, placement.monitor);
-            window.frame.set((placement.place)(&monitor));
+            let monitor = self.resolve_placement_monitor(event_loop, placement.monitor());
+            window.frame.set((placement.place())(&monitor));
         }
         let attributes =
             native_window_attributes(&window, &self.env, activates, self.window_icon.clone());

@@ -135,8 +135,8 @@ fn asset_constructor_tokens(
     bundle: &TokenStream2,
     asset: &PlannedAsset,
 ) -> TokenStream2 {
-    let relative = asset.relative_path.to_string_lossy().replace('\\', "/");
-    match asset.kind {
+    let relative = asset.relative_path().to_string_lossy().replace('\\', "/");
+    match asset.kind() {
         AssetKind::Font => quote! { #waterui::FontAsset::new(#bundle, #relative) },
         AssetKind::Image => quote! { #waterui::ImageAsset::new(#bundle, #relative) },
         AssetKind::Video => quote! { #waterui::VideoAsset::new(#bundle, #relative) },
@@ -174,9 +174,9 @@ fn emit_module(
     let mut asset_tokens = Vec::new();
     for asset in &node.assets {
         let ident = syn_ident(&asset.item_name());
-        let ty = asset_type_tokens(waterui, asset.kind);
+        let ty = asset_type_tokens(waterui, asset.kind());
         let ctor = asset_constructor_tokens(waterui, bundle, asset);
-        let doc = format!("Returns the `{}` asset.", asset.logical_path.display());
+        let doc = format!("Returns the `{}` asset.", asset.logical_path().display());
         asset_tokens.push(quote! {
             #[doc = #doc]
             pub fn #ident() -> #ty {
@@ -238,7 +238,7 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
     let mut node = ModuleNode::default();
     let mut tracking = Vec::with_capacity(planned.len());
     for asset in planned {
-        let file = LitStr::new(asset.source_path.to_string_lossy().as_ref(), span);
+        let file = LitStr::new(asset.source_path().to_string_lossy().as_ref(), span);
         tracking.push(quote! {
             const _: &[u8] = include_bytes!(#file);
         });

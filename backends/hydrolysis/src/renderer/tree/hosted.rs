@@ -56,26 +56,26 @@ impl<E: crate::text::TextEngine> WidgetBehavior<E> for HostedNode {
         renderer.read_signal(&runtime.focused);
         let key = InteractionKey::for_rc(runtime, 0);
         let (_, slot, _) =
-            renderer.bind_control_interaction_target(key.clone(), ctx.bounds, env, false);
+            renderer.bind_control_interaction_target(key.clone(), ctx.bounds(), env, false);
         let focus = Rc::clone(runtime);
-        renderer.register_interactive_pointer_target(ctx.bounds, slot, move |_, _, _| {
+        renderer.register_interactive_pointer_target(ctx.bounds(), slot, move |_, _, _| {
             focus.content.request_focus();
             true
         });
         emit_graphics_image_accessibility(renderer, Some(ctx), env, None, None, true);
         renderer.register_retained(
             NativeViewOcclusion {
-                bounds: ctx.bounds,
+                bounds: ctx.bounds(),
                 order: 0,
                 sink: runtime.occlusion.clone(),
                 hosted: (key, Rc::clone(runtime)),
             },
-            ctx.bounds,
+            ctx.bounds(),
             |regs| &mut regs.native_view_occlusions,
         );
         renderer.program().program_mut().producer = Some(mount::ProducerContent::Hosted {
             runtime: Rc::clone(runtime),
-            bounds: ctx.bounds,
+            bounds: ctx.bounds(),
         });
     }
 

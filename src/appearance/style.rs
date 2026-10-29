@@ -129,6 +129,38 @@ pub struct Shadow {
     pub silhouette: ClipShape,
 }
 
+impl Shadow {
+    /// The color of the shadow, including alpha for opacity.
+    #[must_use]
+    pub const fn color(&self) -> &Color {
+        &self.color
+    }
+
+    /// The offset of the shadow from the original element.
+    #[must_use]
+    pub const fn offset(&self) -> &Vector<f32> {
+        &self.offset
+    }
+
+    /// The blur radius of the shadow in pixels.
+    #[must_use]
+    pub const fn radius(&self) -> f32 {
+        self.radius
+    }
+
+    /// The shape of the element casting the shadow.
+    ///
+    /// Backends that rasterize the shadow themselves blur this shape, so it
+    /// must be the caster's own shape — the one it is filled or clipped with —
+    /// or the shadow will not follow the element's outline. It carries the
+    /// shape's [`ShapeKind`](waterui_shape::ShapeKind), so a normalized corner
+    /// radius and an absolute one can never be confused.
+    #[must_use]
+    pub const fn silhouette(&self) -> &ClipShape {
+        &self.silhouette
+    }
+}
+
 impl MetadataKey for Shadow {}
 
 impl Shadow {
@@ -318,6 +350,26 @@ pub struct Scale {
     pub anchor: Anchor,
 }
 
+impl Scale {
+    /// Scale factor along X axis (1.0 = no scale)
+    #[must_use]
+    pub const fn x(&self) -> &Computed<f32> {
+        &self.x
+    }
+
+    /// Scale factor along Y axis (1.0 = no scale)
+    #[must_use]
+    pub const fn y(&self) -> &Computed<f32> {
+        &self.y
+    }
+
+    /// Anchor point for the scale transform
+    #[must_use]
+    pub const fn anchor(&self) -> Anchor {
+        self.anchor
+    }
+}
+
 impl MetadataKey for Scale {}
 
 impl Scale {
@@ -395,6 +447,20 @@ pub struct Rotation {
     pub angle: Computed<f32>,
     /// Anchor point for the rotation transform
     pub anchor: Anchor,
+}
+
+impl Rotation {
+    /// Rotation angle in degrees (positive = clockwise)
+    #[must_use]
+    pub const fn angle(&self) -> &Computed<f32> {
+        &self.angle
+    }
+
+    /// Anchor point for the rotation transform
+    #[must_use]
+    pub const fn anchor(&self) -> Anchor {
+        self.anchor
+    }
 }
 
 impl MetadataKey for Rotation {}

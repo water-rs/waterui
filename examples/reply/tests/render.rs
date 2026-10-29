@@ -6,8 +6,8 @@ use waterui::Environment;
 use waterui_testing::{Snapshot, mount_app};
 
 fn pixel(snapshot: &Snapshot, x: u32, y: u32) -> [u8; 4] {
-    let offset = ((y * snapshot.width + x) * 4) as usize;
-    snapshot.rgba8[offset..offset + 4]
+    let offset = ((y * snapshot.width() + x) * 4) as usize;
+    snapshot.rgba8()[offset..offset + 4]
         .try_into()
         .expect("pixel in bounds")
 }

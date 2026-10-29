@@ -129,10 +129,8 @@ impl HwuiSurface {
     }
 
     fn commit(&mut self, changes: ChangeSet<HwuiTarget>) -> Result<(), HwuiError> {
-        let mut recycle = self.encoder.commit(changes)?;
-        self.shared
-            .borrow_mut()
-            .recycle(recycle.ops, &mut recycle.recycled);
+        let (ops, mut recycled) = self.encoder.commit(changes)?.into_parts();
+        self.shared.borrow_mut().recycle(ops, &mut recycled);
         Ok(())
     }
 }

@@ -785,7 +785,7 @@ mod platform {
     ) -> NavSearch {
         let config = NavSearch {
             placeholder: search_prompt(search, env).snapshot().to_plain().to_string(),
-            text: search.text.snapshot().to_string(),
+            text: search.text().snapshot().to_string(),
             // `.automatic`: on iOS 26 a page pushed by a collapsed split
             // carries the field in the bottom toolbar, matching the
             // platform's own `.searchable` presentation; `Stacked` would
@@ -793,12 +793,12 @@ mod platform {
             placement: None,
             hides_when_scrolling: Some(false),
         };
-        let binding = search.text.clone();
+        let binding = search.text().clone();
         controller.set_search_change_handler(move |text| {
             binding.set(Str::from(text));
         });
         let target = controller.clone();
-        keep.bind(&search.text.clone(), move |text| {
+        keep.bind(&search.text().clone(), move |text| {
             target.set_search_text(text.as_ref());
         });
         let target = controller.clone();
@@ -1202,8 +1202,8 @@ mod platform {
                         .to_plain()
                         .as_ref(),
                 );
-                field.set_text(search.text.snapshot().as_ref());
-                let binding = search.text.clone();
+                field.set_text(search.text().snapshot().as_ref());
+                let binding = search.text().clone();
                 field.set_change_handler(move |field| {
                     binding.set(Str::from(field.text()));
                 });

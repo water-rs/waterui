@@ -562,14 +562,14 @@ fn the_focused_surface_places_the_input_method_panel() {
         .focused_text_input_state()
         .expect("a focused surface publishes its caret");
     assert!(
-        (state.x - (SURFACE_ORIGIN_X + 10.0)).abs() < 0.01
-            && (state.y - (SURFACE_ORIGIN_Y + 20.0)).abs() < 0.01,
+        (state.x() - (SURFACE_ORIGIN_X + 10.0)).abs() < 0.01
+            && (state.y() - (SURFACE_ORIGIN_Y + 20.0)).abs() < 0.01,
         "the surface reports its caret in its own coordinates and the backend \
          projects it into the window (got {}, {})",
-        state.x,
-        state.y
+        state.x(),
+        state.y()
     );
-    assert!((state.width - 2.0).abs() < 0.01 && (state.height - 18.0).abs() < 0.01);
+    assert!((state.width() - 2.0).abs() < 0.01 && (state.height() - 18.0).abs() < 0.01);
 }
 
 #[test]
@@ -692,11 +692,11 @@ fn scene_content_that_wants_input_is_routed_like_a_surface() {
         .focused_text_input_state()
         .expect("focused content publishes its caret");
     assert!(
-        (state.x - (SURFACE_ORIGIN_X + 10.0)).abs() < 0.01
-            && (state.y - (SURFACE_ORIGIN_Y + 20.0)).abs() < 0.01,
+        (state.x() - (SURFACE_ORIGIN_X + 10.0)).abs() < 0.01
+            && (state.y() - (SURFACE_ORIGIN_Y + 20.0)).abs() < 0.01,
         "the content's caret is projected into the window (got {}, {})",
-        state.x,
-        state.y
+        state.x(),
+        state.y()
     );
 
     // Idle frames later — the targets re-emitted from scratch each time — the
@@ -1214,7 +1214,7 @@ fn context_menu_claims_the_secondary_button_over_an_input_surface() {
     });
     let update = runtime
         .pump_at(false, start + Duration::from_millis(100))
-        .tree_update
+        .into_tree_update()
         .expect("the click frame must publish an accessibility tree");
     assert!(
         super::popup_windows::find_by_label(&update, Role::Button, "Copy").is_some(),
@@ -1263,7 +1263,7 @@ fn an_empty_context_menu_mounts_no_popup_and_keeps_the_secondary_press() {
     });
     let update = runtime
         .pump_at(false, start + Duration::from_millis(100))
-        .tree_update
+        .into_tree_update()
         .expect("the click frame must publish an accessibility tree");
     assert!(
         super::popup_windows::find_by_label(&update, Role::Button, "Inspect element").is_none(),

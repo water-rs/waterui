@@ -39,6 +39,32 @@ pub struct KeyPress {
 }
 
 impl KeyPress {
+    /// What the key means under the current layout and modifiers.
+    #[must_use]
+    pub const fn key(&self) -> &Key {
+        &self.key
+    }
+
+    /// Where the key sits on the keyboard, independent of layout.
+    #[must_use]
+    pub const fn code(&self) -> Code {
+        self.code
+    }
+
+    /// The modifiers held with the key.
+    #[must_use]
+    pub const fn modifiers(&self) -> Modifiers {
+        self.modifiers
+    }
+
+    /// Whether this press is an auto-repeat of a held key.
+    #[must_use]
+    pub const fn repeat(&self) -> bool {
+        self.repeat
+    }
+}
+
+impl KeyPress {
     /// A press of `key` at `code` with `modifiers` held, an auto-repeat when
     /// `repeat`.
     #[must_use]

@@ -31,11 +31,7 @@ use crate::protocol::perf_report_to_protocol;
 
 /// Run shape used when no `WATERUI_BENCH_*` run variable is set: benches then
 /// act as cheap correctness tests under a plain `cargo nextest run`.
-const SMOKE_CONFIG: PerfConfig = PerfConfig {
-    warmups: 0,
-    samples: 2,
-    repetitions: 1,
-};
+const SMOKE_CONFIG: PerfConfig = PerfConfig::new(0, 2, 1);
 
 /// Executes one bench body and applies full-run reporting and budgets.
 ///
@@ -54,10 +50,8 @@ pub fn run_bench(
     run: impl FnOnce(PerfConfig) -> PerfReport,
 ) {
     let full_run = run_config_from_env();
-    let config = full_run.map_or(SMOKE_CONFIG, |config| PerfConfig {
-        warmups: config.warmups,
-        samples: config.samples,
-        repetitions: config.repetitions,
+    let config = full_run.map_or(SMOKE_CONFIG, |config| {
+        PerfConfig::new(config.warmups(), config.samples(), config.repetitions())
     });
 
     let report = run(config);
@@ -85,9 +79,9 @@ fn run_config_from_env() -> Option<BenchRunConfig> {
     }
     let defaults = PerfConfig::default();
     Some(BenchRunConfig::new(
-        warmups.unwrap_or(defaults.warmups),
-        samples.unwrap_or(defaults.samples),
-        repetitions.unwrap_or(defaults.repetitions),
+        warmups.unwrap_or_else(|| defaults.warmups()),
+        samples.unwrap_or_else(|| defaults.samples()),
+        repetitions.unwrap_or_else(|| defaults.repetitions()),
     ))
 }
 
@@ -111,15 +105,21 @@ fn merge_budgets(attribute: BenchBudgets, caps: BenchBudgets) -> BenchBudgets {
         }
     }
     BenchBudgets::default()
-        .with_max_p95_us(tighter(attribute.max_p95_us, caps.max_p95_us))
-        .with_max_mean_us(tighter(attribute.max_mean_us, caps.max_mean_us))
-        .with_max_rebuild_ratio(tighter(attribute.max_rebuild_ratio, caps.max_rebuild_ratio))
-        .with_max_scene_layers(tighter(attribute.max_scene_layers, caps.max_scene_layers))
-        .with_max_gpu_surface_layers(tighter(
-            attribute.max_gpu_surface_layers,
-            caps.max_gpu_surface_layers,
+        .with_max_p95_us(tighter(attribute.max_p95_us(), caps.max_p95_us()))
+        .with_max_mean_us(tighter(attribute.max_mean_us(), caps.max_mean_us()))
+        .with_max_rebuild_ratio(tighter(
+            attribute.max_rebuild_ratio(),
+            caps.max_rebuild_ratio(),
         ))
-        .with_max_clip_layers(tighter(attribute.max_clip_layers, caps.max_clip_layers))
+        .with_max_scene_layers(tighter(
+            attribute.max_scene_layers(),
+            caps.max_scene_layers(),
+        ))
+        .with_max_gpu_surface_layers(tighter(
+            attribute.max_gpu_surface_layers(),
+            caps.max_gpu_surface_layers(),
+        ))
+        .with_max_clip_layers(tighter(attribute.max_clip_layers(), caps.max_clip_layers()))
 }
 
 /// Panics with a precise message when any measurement exceeds the budgets.
@@ -129,51 +129,51 @@ fn enforce_budgets(crate_name: &str, bench_name: &str, budgets: BenchBudgets, re
         let violation = |metric: &str, actual: String, limit: String| -> ! {
             panic!(
                 "bench `{crate_name}::{bench_name}` measurement `{name}`: {metric} {actual} exceeded budget {limit}",
-                name = measurement.name,
+                name = measurement.name(),
             )
         };
-        if let Some(limit) = budgets.max_p95_us {
-            let actual = micros(stats.p95);
+        if let Some(limit) = budgets.max_p95_us() {
+            let actual = micros(stats.p95());
             if actual > limit {
                 violation("frame p95", format!("{actual}us"), format!("{limit}us"));
             }
         }
-        if let Some(limit) = budgets.max_mean_us {
-            let actual = micros(stats.mean);
+        if let Some(limit) = budgets.max_mean_us() {
+            let actual = micros(stats.mean());
             if actual > limit {
                 violation("frame mean", format!("{actual}us"), format!("{limit}us"));
             }
         }
-        if let Some(limit) = budgets.max_rebuild_ratio {
+        if let Some(limit) = budgets.max_rebuild_ratio() {
             let actual = rebuild_ratio(&stats);
             if actual > limit {
                 violation("rebuild ratio", format!("{actual:.4}"), format!("{limit}"));
             }
         }
-        if let Some(limit) = budgets.max_scene_layers
-            && stats.scene_layers > limit
+        if let Some(limit) = budgets.max_scene_layers()
+            && stats.scene_layers() > limit
         {
             violation(
                 "scene layers",
-                stats.scene_layers.to_string(),
+                stats.scene_layers().to_string(),
                 limit.to_string(),
             );
         }
-        if let Some(limit) = budgets.max_gpu_surface_layers
-            && stats.gpu_content_layers > limit
+        if let Some(limit) = budgets.max_gpu_surface_layers()
+            && stats.gpu_content_layers() > limit
         {
             violation(
                 "GPU surface layers",
-                stats.gpu_content_layers.to_string(),
+                stats.gpu_content_layers().to_string(),
                 limit.to_string(),
             );
         }
-        if let Some(limit) = budgets.max_clip_layers
-            && stats.clip_layers > limit
+        if let Some(limit) = budgets.max_clip_layers()
+            && stats.clip_layers() > limit
         {
             violation(
                 "clip layers",
-                stats.clip_layers.to_string(),
+                stats.clip_layers().to_string(),
                 limit.to_string(),
             );
         }
@@ -182,7 +182,7 @@ fn enforce_budgets(crate_name: &str, bench_name: &str, budgets: BenchBudgets, re
 
 /// Share of sampled frames that performed a structural rebuild.
 fn rebuild_ratio(stats: &PerfStats) -> f64 {
-    if stats.samples == 0 {
+    if stats.samples() == 0 {
         return 0.0;
     }
     #[expect(
@@ -190,7 +190,7 @@ fn rebuild_ratio(stats: &PerfStats) -> f64 {
         reason = "frame counts are far below f64's integer-exact range"
     )]
     {
-        stats.rebuilt_frames as f64 / stats.samples as f64
+        stats.rebuilt_frames() as f64 / stats.samples() as f64
     }
 }
 

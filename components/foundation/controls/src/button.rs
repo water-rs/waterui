@@ -342,6 +342,47 @@ pub struct ButtonConfig {
     pub size: ControlSize,
 }
 
+impl ButtonConfig {
+    /// The semantic label displayed on the button.
+    ///
+    /// [`Label`] carries both the visual chrome (text + icon + display mode)
+    /// and the spoken text used by assistive technology. Hooks receiving a
+    /// `ButtonConfig` get a typed `Label`, so they can wrap or restyle it but
+    /// cannot strip away the semantic identity.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The action to execute when the button is clicked.
+    #[must_use]
+    pub const fn action(&self) -> &BoxedAction<()> {
+        &self.action
+    }
+
+    /// The action to execute when the button is clicked, for calling it.
+    pub const fn action_mut(&mut self) -> &mut BoxedAction<()> {
+        &mut self.action
+    }
+
+    /// Takes the `action` out of the value.
+    pub fn into_action(self) -> BoxedAction<()> {
+        self.action
+    }
+
+    /// The visual style of the button.
+    #[must_use]
+    pub const fn style(&self) -> ButtonStyle {
+        self.style
+    }
+
+    /// How large the button is drawn.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+}
+
 impl_debug!(ButtonConfig);
 
 impl NativeView for ButtonConfig {}
@@ -725,20 +766,20 @@ mod tests {
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command
-                .label
+                .label()
                 .semantic_text()
                 .resolve(&Environment::default())
-                .content
+                .content()
                 .snapshot()
                 .to_plain()
                 .as_str(),
             "Edit"
         );
         let icon = command
-            .label
+            .label()
             .semantic_icon()
             .expect("semantic label icon should be preserved");
-        assert_eq!(icon.name.as_str(), "magnifyingglass");
+        assert_eq!(icon.name().as_str(), "magnifyingglass");
     }
 
     #[test]
@@ -755,10 +796,10 @@ mod tests {
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command
-                .label
+                .label()
                 .semantic_text()
                 .resolve(&Environment::default())
-                .content
+                .content()
                 .snapshot()
                 .to_plain()
                 .as_str(),
@@ -766,7 +807,7 @@ mod tests {
         );
         assert_eq!(
             command
-                .label
+                .label()
                 .clone()
                 .resolve(&Environment::default())
                 .accessibility_label()
@@ -776,9 +817,9 @@ mod tests {
             "Edit document"
         );
         let icon = command
-            .label
+            .label()
             .semantic_icon()
             .expect("icon should be preserved when only the spoken text is overridden");
-        assert_eq!(icon.name.as_str(), "magnifyingglass");
+        assert_eq!(icon.name().as_str(), "magnifyingglass");
     }
 }

@@ -213,8 +213,8 @@ mod tests {
             r#"{"family":"accessoryRectangular","displaySize":{"width":170.0,"height":44.0}}"#,
         )
         .unwrap();
-        assert_eq!(context.family, WidgetFamily::AccessoryRectangular);
-        assert_eq!(context.display_size.width, 170.0);
+        assert_eq!(context.family(), WidgetFamily::AccessoryRectangular);
+        assert_eq!(context.display_size().width, 170.0);
     }
 
     #[test]
@@ -250,7 +250,7 @@ mod tests {
             r#"{"fn":"steps","kind":"steps","displayName":"Steps","description":"Today","families":["systemSmall","systemMedium"]}"#,
         )
         .unwrap();
-        assert_eq!(declaration.function, "steps");
-        assert_eq!(declaration.families, ["systemSmall", "systemMedium"]);
+        assert_eq!(declaration.function(), "steps");
+        assert_eq!(declaration.families(), ["systemSmall", "systemMedium"]);
     }
 }

@@ -196,6 +196,45 @@ pub struct Tab {
     pub role: TabRole,
 }
 
+impl Tab {
+    /// Semantic tab label, kept as a builder so a tab in a `Vec` stays
+    /// cloneable — the collection materializes one label per mount.
+    #[must_use]
+    pub const fn label(&self) -> &AnyViewBuilder<AnyView> {
+        &self.label
+    }
+
+    /// The label's icon, lifted out so native chrome can place it itself.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&TabIcon> {
+        self.icon.as_ref()
+    }
+
+    /// Stable lazily built tab root.
+    #[must_use]
+    pub const fn content(&self) -> &AnyViewBuilder<NavigationView> {
+        &self.content
+    }
+
+    /// Optional reactive badge count.
+    #[must_use]
+    pub const fn get_badge(&self) -> Option<&Computed<i32>> {
+        self.badge.as_ref()
+    }
+
+    /// Whether the native tab item is enabled.
+    #[must_use]
+    pub const fn get_enabled(&self) -> &Computed<bool> {
+        &self.enabled
+    }
+
+    /// The part the tab plays in the container's chrome.
+    #[must_use]
+    pub const fn get_role(&self) -> TabRole {
+        self.role
+    }
+}
+
 impl_debug!(Tab);
 
 impl Tab {
@@ -296,6 +335,43 @@ pub struct TabsLayout {
     pub minimize_behavior: TabBarMinimizeBehavior,
     /// A view the platform floats above the tab bar, when it has such a slot.
     pub bottom_accessory: Option<AnyView>,
+}
+
+impl TabsLayout {
+    /// Currently selected tab identifier.
+    #[must_use]
+    pub const fn selection(&self) -> &Binding<Id> {
+        &self.selection
+    }
+
+    /// The tab collection, keyed by erased tab identity.
+    #[must_use]
+    pub const fn tabs(&self) -> &SharedAnyViews<Tab> {
+        &self.tabs
+    }
+
+    /// Native adaptive style.
+    #[must_use]
+    pub const fn get_style(&self) -> NativeTabStyle {
+        self.style
+    }
+
+    /// How the bar behaves while content scrolls.
+    #[must_use]
+    pub const fn get_minimize_behavior(&self) -> TabBarMinimizeBehavior {
+        self.minimize_behavior
+    }
+
+    /// A view the platform floats above the tab bar, when it has such a slot.
+    #[must_use]
+    pub const fn get_bottom_accessory(&self) -> Option<&AnyView> {
+        self.bottom_accessory.as_ref()
+    }
+
+    /// Takes the `bottom_accessory` out of the value, leaving none behind.
+    pub const fn take_bottom_accessory(&mut self) -> Option<AnyView> {
+        self.bottom_accessory.take()
+    }
 }
 
 impl TabsLayout {

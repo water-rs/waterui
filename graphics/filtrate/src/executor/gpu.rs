@@ -321,7 +321,7 @@ impl Gpu {
     pub(super) fn segment_stages(&self) -> Vec<core::ops::Range<usize>> {
         self.passes
             .iter()
-            .map(|pass| pass.plan.segment.stages.clone())
+            .map(|pass| pass.plan.segment.stages())
             .collect()
     }
 
@@ -487,7 +487,7 @@ impl GpuPass {
                 }
             })?;
 
-        let uses_space = plan.segment.args.contains(&SegmentArg::WorkingSpace);
+        let uses_space = plan.segment.args().contains(&SegmentArg::WorkingSpace);
         Ok(Self {
             plan,
             pipeline: shared.pipeline,
@@ -578,11 +578,11 @@ impl GpuPass {
         size: (u32, u32),
         sequence: u64,
     ) -> Option<usize> {
-        if self.plan.segment.uniform.size == 0 {
+        if self.plan.segment.uniform().size() == 0 {
             return None;
         }
-        let mut words = alloc::vec![0u32; self.plan.segment.uniform.size as usize / 4];
-        if let Some(offset) = self.plan.segment.uniform.input_size {
+        let mut words = alloc::vec![0u32; self.plan.segment.uniform().size() as usize / 4];
+        if let Some(offset) = self.plan.segment.uniform().input_size() {
             let first = offset as usize / 4;
             words[first] = (size.0 as f32).to_bits();
             words[first + 1] = (size.1 as f32).to_bits();
@@ -674,7 +674,7 @@ fn layout_entries(plan: &PassPlan, resizes_output: bool) -> Vec<wgpu::BindGroupL
     if resizes_output {
         entries.push(entry(entry::scale_binding(plan), uniform));
     }
-    for arg in &plan.segment.args {
+    for arg in plan.segment.args() {
         match *arg {
             SegmentArg::InputSampler => entries.push(entry(
                 binding::SAMPLER,

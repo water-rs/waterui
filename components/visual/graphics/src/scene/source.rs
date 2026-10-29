@@ -134,6 +134,43 @@ pub struct ShaderSource {
     pub animated: bool,
 }
 
+impl ShaderSource {
+    /// Creates a `ShaderSource` from its parts.
+    #[must_use]
+    pub const fn new(source: Cow<'static, str>, language: ShaderLanguage, animated: bool) -> Self {
+        Self {
+            source,
+            language,
+            animated,
+        }
+    }
+
+    /// The fragment's source text in `language`.
+    #[must_use]
+    pub const fn source(&self) -> &Cow<'static, str> {
+        &self.source
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Cow<'static, str>, ShaderLanguage, bool) {
+        (self.source, self.language, self.animated)
+    }
+
+    /// The language `source` is written in.
+    #[must_use]
+    pub const fn language(&self) -> ShaderLanguage {
+        self.language
+    }
+
+    /// Whether the fragment samples `uniforms.time`, so the engine
+    /// re-renders it every frame.
+    #[must_use]
+    pub const fn get_animated(&self) -> bool {
+        self.animated
+    }
+}
+
 impl std::fmt::Debug for ShaderSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ShaderSource")

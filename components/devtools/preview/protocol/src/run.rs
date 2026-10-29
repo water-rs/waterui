@@ -37,6 +37,33 @@ pub struct PreviewRunConfig {
     pub content_deadline_ms: u64,
 }
 
+impl PreviewRunConfig {
+    /// Viewport width in logical units.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+
+    /// Viewport height in logical units.
+    #[must_use]
+    pub const fn height(&self) -> f32 {
+        self.height
+    }
+
+    /// What the run produces.
+    #[must_use]
+    pub const fn mode(&self) -> &PreviewRunMode {
+        &self.mode
+    }
+
+    /// How long, in milliseconds, an image or scenario capture waits for
+    /// content its views owe after mount before the run fails naming them.
+    #[must_use]
+    pub const fn content_deadline_ms(&self) -> u64 {
+        self.content_deadline_ms
+    }
+}
+
 /// What a preview run produces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[expect(
@@ -83,6 +110,56 @@ pub struct ScenarioEvent {
     pub dy: f32,
     /// Whether scroll delta values are line units instead of logical units.
     pub is_line_delta: bool,
+}
+
+impl ScenarioEvent {
+    /// Event timestamp in milliseconds from scenario start.
+    #[must_use]
+    pub const fn at_ms(&self) -> u64 {
+        self.at_ms
+    }
+
+    /// Event kind.
+    #[must_use]
+    pub const fn kind(&self) -> ScenarioEventKind {
+        self.kind
+    }
+
+    /// Pointer x coordinate in logical units.
+    #[must_use]
+    pub const fn x(&self) -> f32 {
+        self.x
+    }
+
+    /// Pointer y coordinate in logical units.
+    #[must_use]
+    pub const fn y(&self) -> f32 {
+        self.y
+    }
+
+    /// Pointer button for down/up events.
+    #[must_use]
+    pub const fn button(&self) -> ScenarioPointerButton {
+        self.button
+    }
+
+    /// Scroll delta along the x axis for scroll events.
+    #[must_use]
+    pub const fn dx(&self) -> f32 {
+        self.dx
+    }
+
+    /// Scroll delta along the y axis for scroll events.
+    #[must_use]
+    pub const fn dy(&self) -> f32 {
+        self.dy
+    }
+
+    /// Whether scroll delta values are line units instead of logical units.
+    #[must_use]
+    pub const fn is_line_delta(&self) -> bool {
+        self.is_line_delta
+    }
 }
 
 impl ScenarioEvent {

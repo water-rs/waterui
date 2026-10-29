@@ -132,13 +132,13 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
             clippy::cast_possible_truncation,
             reason = "the proposal's width is clamped to at least 1.0 and a display size always fits u32"
         )]
-        let width = request.size.width.max(1.0).round() as u32;
+        let width = request.size().width.max(1.0).round() as u32;
         #[expect(
             clippy::cast_sign_loss,
             clippy::cast_possible_truncation,
             reason = "the proposal's height is clamped to at least 1.0 and a display size always fits u32"
         )]
-        let height = request.size.height.max(1.0).round() as u32;
+        let height = request.size().height.max(1.0).round() as u32;
 
         let (frame, adapter, device, queue, device_loss, format) =
             self.acquire_frame(width, height).await;
@@ -175,8 +175,8 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
         // flush spawned run before the ledger is checked again.
         ledger
             .wait(
-                request.content_deadline,
-                waterui::task::sleep(request.content_deadline),
+                request.content_deadline(),
+                waterui::task::sleep(request.content_deadline()),
                 || {
                     renderer.drain_producer_wakes();
                     let _ = renderer.flush_window_tree(

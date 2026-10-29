@@ -479,7 +479,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         env: &Environment,
     ) -> StyledStr {
         let resolved = text.resolve(env);
-        self.read_signal(&resolved.content)
+        self.read_signal(resolved.content())
     }
 
     pub(crate) fn set_frame_instant(&mut self, at: Instant) {

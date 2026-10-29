@@ -121,10 +121,11 @@ impl ArtifactSymbols {
     /// decode.
     pub fn bundle_mount_meta(&self, leaf: &str) -> Result<BundleMountMeta> {
         let mut meta = BundleMountMeta::from_payload(&self.meta_record(leaf)?)?;
-        meta.path = dunce::simplified(&meta.path).to_path_buf();
-        meta.project = meta
-            .project
-            .map(|project| dunce::simplified(&project).to_path_buf());
+        meta.set_path(dunce::simplified(meta.path()).to_path_buf());
+        let project = meta
+            .project()
+            .map(|project| dunce::simplified(project).to_path_buf());
+        meta.set_project(project);
         Ok(meta)
     }
 
@@ -679,14 +680,14 @@ mod tests {
             let meta = symbols
                 .bundle_mount_meta("waterui_meta_bundle_web")
                 .expect("payload should decode as BundleMountMeta");
-            assert_eq!(meta.mount, "web");
+            assert_eq!(meta.mount(), "web");
             assert!(
-                meta.path.ends_with("dist"),
+                meta.path().ends_with("dist"),
                 "the default out dir is dist: {}",
-                meta.path.display()
+                meta.path().display()
             );
             assert_eq!(
-                meta.project.as_deref(),
+                meta.project().map(PathBuf::as_path),
                 Some(
                     dunce::canonicalize(project.join("web"))
                         .as_deref()

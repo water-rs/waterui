@@ -268,6 +268,32 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// The silhouette every chrome layer follows.
+    #[must_use]
+    pub const fn shape(&self) -> CornerShape {
+        self.shape
+    }
+
+    /// The container fill per interaction state.
+    #[must_use]
+    pub const fn fill(&self) -> &StateValue<Paint> {
+        &self.fill
+    }
+
+    /// The border per interaction state; `None` draws none.
+    #[must_use]
+    pub const fn get_border(&self) -> Option<&StateValue<Border>> {
+        self.border.as_ref()
+    }
+
+    /// The elevation per interaction state.
+    #[must_use]
+    pub const fn get_elevation(&self) -> &StateValue<Elevation> {
+        &self.elevation
+    }
+}
+
+impl Surface {
     /// A flat, borderless surface of `shape` filled with `fill`.
     #[must_use]
     pub fn new(shape: CornerShape, fill: impl Into<StateValue<Paint>>) -> Self {
@@ -484,6 +510,51 @@ pub struct Chrome {
     /// The motion this widget's interaction feedback runs with; `None`
     /// uses the theme's [`WidgetTheme::interaction_motion`](super::WidgetTheme::interaction_motion).
     pub motion: Option<InteractionMotion>,
+}
+
+impl Chrome {
+    /// The container.
+    #[must_use]
+    pub const fn surface(&self) -> &Surface {
+        &self.surface
+    }
+
+    /// The interaction tint.
+    #[must_use]
+    pub const fn state_layer(&self) -> StateLayer {
+        self.state_layer
+    }
+
+    /// What a press shows.
+    #[must_use]
+    pub const fn press(&self) -> PressFeedback {
+        self.press
+    }
+
+    /// Sets the `press`.
+    pub const fn set_press(&mut self, press: PressFeedback) {
+        self.press = press;
+    }
+
+    /// What keyboard focus shows.
+    #[must_use]
+    pub const fn focus(&self) -> FocusIndicator {
+        self.focus
+    }
+
+    /// A fixed frame size centred in the widget's bounds; `None` fills
+    /// them.
+    #[must_use]
+    pub const fn size(&self) -> Option<Size> {
+        self.size
+    }
+
+    /// The motion this widget's interaction feedback runs with; `None`
+    /// uses the theme's [`WidgetTheme::interaction_motion`](super::WidgetTheme::interaction_motion).
+    #[must_use]
+    pub const fn get_motion(&self) -> Option<&InteractionMotion> {
+        self.motion.as_ref()
+    }
 }
 
 impl Chrome {

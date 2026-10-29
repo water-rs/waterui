@@ -23,8 +23,8 @@ fn a_system_symbol_stays_a_symbol() {
 
     // A symbol the platform knows by name: the backend renders it natively
     // rather than receiving a bitmap.
-    match tab.icon {
-        Some(TabIcon::System(icon)) => assert_eq!(icon.name.as_str(), "house"),
+    match tab.icon() {
+        Some(TabIcon::System(icon)) => assert_eq!(icon.name().as_str(), "house"),
         other => panic!("expected a system symbol, got {other:?}"),
     }
 }
@@ -35,7 +35,7 @@ fn a_packaged_icon_arrives_as_a_view() {
 
     // Not a platform symbol, so the backend has to draw it: the icon crosses as
     // a view for the host to rasterize.
-    match tab.icon {
+    match tab.icon() {
         Some(TabIcon::View(_)) => {}
         other => panic!("expected an icon view, got {other:?}"),
     }
@@ -44,7 +44,10 @@ fn a_packaged_icon_arrives_as_a_view() {
 #[test]
 fn a_label_without_an_icon_carries_none() {
     let tab = tab("Plain");
-    assert!(tab.icon.is_none(), "a title-only tab has no icon to place");
+    assert!(
+        tab.icon().is_none(),
+        "a title-only tab has no icon to place"
+    );
 }
 
 #[test]
@@ -62,13 +65,13 @@ fn erasing_tab_identity_keeps_the_icon() {
     // C ABI carries, which is the only form a backend ever sees.
     let layout = tabs.into_layout();
     match &layout
-        .tabs
+        .tabs()
         .snapshot()
         .get_view(0)
         .expect("a mounted tab")
-        .icon
+        .icon()
     {
-        Some(TabIcon::System(icon)) => assert_eq!(icon.name.as_str(), "house"),
+        Some(TabIcon::System(icon)) => assert_eq!(icon.name().as_str(), "house"),
         other => panic!("expected the symbol to survive erasure, got {other:?}"),
     }
 }

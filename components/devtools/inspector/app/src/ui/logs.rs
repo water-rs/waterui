@@ -42,7 +42,9 @@ pub fn view(model: Model) -> impl View {
         when(empty, || {
             parts::empty_state("Nothing logged at this level yet.")
         })
-        .otherwise(move || List::for_each(SignalCollection::new(rows.clone()), row_view)),
+        .otherwise(move || {
+            List::for_each(SignalCollection::new(rows.clone()), |row| row_view(&row))
+        }),
     ))
     .alignment(HorizontalAlignment::Leading)
 }
@@ -63,11 +65,11 @@ fn visible_rows(
         .map(|(rows, (query, minimum))| {
             let query = query.to_lowercase();
             rows.into_iter()
-                .filter(|row| row.level >= minimum)
+                .filter(|row| row.level() >= minimum)
                 .filter(|row| {
                     query.is_empty()
-                        || str::contains(&row.message.to_lowercase(), query.as_str())
-                        || str::contains(&row.target.to_lowercase(), query.as_str())
+                        || str::contains(&row.message().to_lowercase(), query.as_str())
+                        || str::contains(&row.target().to_lowercase(), query.as_str())
                 })
                 .collect()
         })
@@ -98,16 +100,19 @@ fn level_picker(minimum: &Binding<LogLevel>) -> impl View {
         .spacing(4.0)
 }
 
-fn row_view(row: LogRow) -> ListItem {
+fn row_view(row: &LogRow) -> ListItem {
     ListItem::new(
         hstack((
-            text(row.level.name())
+            text(row.level().name())
                 .caption()
-                .foreground(parts::level_color(row.level))
+                .foreground(parts::level_color(row.level()))
                 .width(52.0),
-            vstack((text(row.message), origin_view(row.target, row.origin)))
-                .alignment(HorizontalAlignment::Leading)
-                .spacing(2.0),
+            vstack((
+                text(row.message().clone()),
+                origin_view(row.target().clone(), row.origin().cloned()),
+            ))
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(2.0),
         ))
         .spacing(10.0)
         .padding_with(EdgeInsets::new(6.0, 6.0, 12.0, 12.0)),

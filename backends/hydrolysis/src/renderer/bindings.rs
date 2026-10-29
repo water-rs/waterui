@@ -122,24 +122,24 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     #[must_use]
     pub fn focused_text_input_state(&self) -> Option<TextInputState> {
         if let Some(caret) = self.focused_embedded_ime_caret() {
-            return Some(TextInputState {
-                x: caret.x0,
-                y: caret.y0,
-                width: caret.width().max(1.0),
-                height: caret.height().max(1.0),
-                purpose: crate::platform::TextInputPurpose::Normal,
-                activation: self.text_editing.activations(),
-            });
+            return Some(TextInputState::new(
+                caret.x0,
+                caret.y0,
+                caret.width().max(1.0),
+                caret.height().max(1.0),
+                crate::platform::TextInputPurpose::Normal,
+                self.text_editing.activations(),
+            ));
         }
         let target = self.text_editing.focused_target()?;
-        Some(TextInputState {
-            x: target.cursor_area.x0,
-            y: target.cursor_area.y0,
-            width: target.cursor_area.width().max(1.0),
-            height: target.cursor_area.height().max(1.0),
-            purpose: target.purpose,
-            activation: self.text_editing.activations(),
-        })
+        Some(TextInputState::new(
+            target.cursor_area.x0,
+            target.cursor_area.y0,
+            target.cursor_area.width().max(1.0),
+            target.cursor_area.height().max(1.0),
+            target.purpose,
+            self.text_editing.activations(),
+        ))
     }
 
     /// The focused text input's accessibility node — UI focus is the text

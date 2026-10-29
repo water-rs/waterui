@@ -164,7 +164,7 @@ fn run_scenario(
     // Initial structural build.
     let initial = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial capture");
     super::structural_transitions::save(&initial, case, "initial");
     let _ = diagnostics.take();
@@ -182,20 +182,21 @@ fn run_scenario(
             pixels < 400 * 640 / 20,
             "small property animation repainted {pixels} pixels"
         );
+        let counters = result.profile().counters();
         if frame == parametric_frames {
-            let final_image = result.snapshot.as_ref().expect("final capture");
-            super::structural_transitions::save(final_image, case, "animated");
+            let final_image = result.into_snapshot().expect("final capture");
+            super::structural_transitions::save(&final_image, case, "animated");
             assert_ne!(
-                initial.rgba8, final_image.rgba8,
+                initial.rgba8(),
+                final_image.rgba8(),
                 "animation must change visible content"
             );
         }
-        let counters = result.profile.counters;
         metrics.parametric_frames += 1;
-        if counters.rebuild_iterations > 0 {
+        if counters.rebuild_iterations() > 0 {
             metrics.frames_rebuilt += 1;
         }
-        metrics.measurement_misses += counters.measurement_cache_misses;
+        metrics.measurement_misses += counters.measurement_cache_misses();
     }
     metrics
 }
@@ -236,12 +237,13 @@ fn dynamic_content_change_patches_without_rebuild() {
     value.set(1);
     let result = runtime.pump_at(false, start + Duration::from_millis(16));
     assert_eq!(
-        result.profile.counters.rebuild_iterations, 0,
+        result.profile().counters().rebuild_iterations(),
+        0,
         "a same-size Dynamic content change must patch in isolation, not rebuild: {:?}",
-        result.profile.counters
+        result.profile().counters()
     );
     assert!(
-        !result.rebuilt,
+        !result.rebuilt(),
         "a reactive patch frame must not perform a structural rebuild"
     );
 }
@@ -284,7 +286,7 @@ fn dynamic_size_change_reflows_without_rebuild() {
     );
     let expected = truth_runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("ground-truth frame must produce a snapshot");
 
     let value = Binding::container(0_i32);
@@ -301,16 +303,17 @@ fn dynamic_size_change_reflows_without_rebuild() {
     value.set(1);
     let result = runtime.pump_at(true, start + Duration::from_millis(16));
     assert_eq!(
-        result.profile.counters.rebuild_iterations, 0,
+        result.profile().counters().rebuild_iterations(),
+        0,
         "a size-changing Dynamic change must reflow via incremental relayout, not a \
          whole-window structural rebuild, which is visible as a flicker: {:?}",
-        result.profile.counters
+        result.profile().counters()
     );
     let snapshot = result
-        .snapshot
+        .into_snapshot()
         .expect("reflowed frame must produce a snapshot");
     assert!(
-        snapshot.rgba8 == expected.rgba8,
+        snapshot.rgba8() == expected.rgba8(),
         "the incremental reflow must place the grown content and shifted rows exactly \
          as a static composition would; a mismatch means the in-place relayout is wrong"
     );
@@ -357,25 +360,26 @@ fn collection_add_patches_without_rebuild() {
     let start = Instant::now();
     let empty = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("empty overlay frame must produce a snapshot");
 
     list.push(SelfId::new(1));
     let result = runtime.pump_at(true, start + Duration::from_millis(16));
     assert_eq!(
-        result.profile.counters.rebuild_iterations, 0,
+        result.profile().counters().rebuild_iterations(),
+        0,
         "adding a collection item must patch in isolation, not rebuild: {:?}",
-        result.profile.counters
+        result.profile().counters()
     );
     assert!(
-        !result.rebuilt,
+        !result.rebuilt(),
         "a collection add patch frame must not perform a structural rebuild"
     );
     let added = result
-        .snapshot
+        .into_snapshot()
         .expect("collection-add frame must produce a snapshot");
     assert!(
-        added.rgba8 != empty.rgba8,
+        added.rgba8() != empty.rgba8(),
         "the added item must actually appear (the reactive collection must reconcile \
          the new id into the rendered tree, not just avoid a rebuild)"
     );
@@ -392,26 +396,27 @@ fn collection_remove_patches_without_rebuild() {
     let start = Instant::now();
     let three = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("three-item overlay frame must produce a snapshot");
 
     // Remove the last (topmost) item so the composited overlay pixels change.
     let _removed = list.remove(2);
     let result = runtime.pump_at(true, start + Duration::from_millis(16));
     assert_eq!(
-        result.profile.counters.rebuild_iterations, 0,
+        result.profile().counters().rebuild_iterations(),
+        0,
         "removing a collection item must patch in isolation, not rebuild: {:?}",
-        result.profile.counters
+        result.profile().counters()
     );
     assert!(
-        !result.rebuilt,
+        !result.rebuilt(),
         "a collection remove patch frame must not perform a structural rebuild"
     );
     let two = result
-        .snapshot
+        .into_snapshot()
         .expect("collection-remove frame must produce a snapshot");
     assert!(
-        two.rgba8 != three.rgba8,
+        two.rgba8() != three.rgba8(),
         "the removed item must actually disappear (the reactive collection must evict \
          the departed id from the rendered tree)"
     );
@@ -446,12 +451,13 @@ fn fixed_scroll_refreshes_window_frame_without_rebuild() {
     });
     let result = runtime.pump_at(false, start + Duration::from_millis(16));
     assert_eq!(
-        result.profile.counters.rebuild_iterations, 0,
+        result.profile().counters().rebuild_iterations(),
+        0,
         "fixed scroll must re-composite via the window frame, not rebuild: {:?}",
-        result.profile.counters
+        result.profile().counters()
     );
     assert!(
-        !result.rebuilt,
+        !result.rebuilt(),
         "a fixed scroll refresh frame must not perform a structural rebuild"
     );
 }
@@ -565,7 +571,8 @@ fn steady_state_transform_animation_retains_the_tree() {
         let at = start + Duration::from_millis(u64::from(frame) * 16);
         let result = runtime.pump_at(false, at);
         assert_eq!(
-            result.profile.counters.rebuild_iterations, 0,
+            result.profile().counters().rebuild_iterations(),
+            0,
             "steady-state animation frame must retain the tree"
         );
     }
@@ -600,7 +607,7 @@ fn dynamic_growth_from_empty_renders_content_without_rebuild() {
     );
     let expected = static_runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("static overlay frame must produce a snapshot");
 
     // Mirror the runtime window composition: overlay Dynamic layered in a ZStack
@@ -620,16 +627,17 @@ fn dynamic_growth_from_empty_renders_content_without_rebuild() {
     handler.set(overlay_content());
     let result = runtime.pump_at(true, start + Duration::from_millis(16));
     assert_eq!(
-        result.profile.counters.rebuild_iterations, 0,
+        result.profile().counters().rebuild_iterations(),
+        0,
         "growing a Dynamic from empty must reflow via incremental relayout of the \
          retained tree, not a whole-window structural rebuild: {:?}",
-        result.profile.counters
+        result.profile().counters()
     );
     let snapshot = result
-        .snapshot
+        .into_snapshot()
         .expect("reflowed overlay frame must produce a snapshot");
     assert!(
-        snapshot.rgba8 == expected.rgba8,
+        snapshot.rgba8() == expected.rgba8(),
         "the reflow must place the overlay content at its grown bounds; a mismatch with \
          the statically composed frame means a stale zero-size capture was replayed"
     );
@@ -686,7 +694,7 @@ fn reused_collection_item_reactive_background_tracks_on_selection() {
     );
     let expected = truth_runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("ground-truth frame must produce a snapshot");
 
     // Subject: start with the first item selected, then select the second. The
@@ -706,16 +714,17 @@ fn reused_collection_item_reactive_background_tracks_on_selection() {
     selected.set(1);
     let result = runtime.pump_at(true, start + Duration::from_millis(16));
     assert_eq!(
-        result.profile.counters.rebuild_iterations, 0,
+        result.profile().counters().rebuild_iterations(),
+        0,
         "the size-tracking sibling's reflow must be an incremental relayout of the \
          retained tree, not a whole-window structural rebuild: {:?}",
-        result.profile.counters
+        result.profile().counters()
     );
     let snapshot = result
-        .snapshot
+        .into_snapshot()
         .expect("reflowed frame must produce a snapshot");
     assert!(
-        snapshot.rgba8 == expected.rgba8,
+        snapshot.rgba8() == expected.rgba8(),
         "a retained collection item must apply its nested reactive background update \
          on selection; a mismatch means the active-indicator pill stayed on the stale \
          (previously selected) item"
@@ -764,7 +773,7 @@ fn collection_membership_exit_animates_then_settles() {
     );
     let expected = truth_runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("ground-truth frame must produce a snapshot");
 
     // Subject: rows 0, 1, 2; remove the middle row and watch it collapse out.
@@ -780,7 +789,7 @@ fn collection_membership_exit_animates_then_settles() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame must produce a snapshot");
 
     let _ = list.remove(1);
@@ -788,25 +797,25 @@ fn collection_membership_exit_animates_then_settles() {
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
     let mid = runtime
         .pump_at(true, start + Duration::from_millis(516))
-        .snapshot
+        .into_snapshot()
         .expect("mid-transition frame must produce a snapshot");
     assert!(
-        mid.rgba8 != before.rgba8,
+        mid.rgba8() != before.rgba8(),
         "~500ms into a 1000ms exit the removed row must be visibly collapsing, \
          not still rendered at rest"
     );
     assert!(
-        mid.rgba8 != expected.rgba8,
+        mid.rgba8() != expected.rgba8(),
         "~500ms into a 1000ms exit the removed row must still be partially \
          visible, not already settled"
     );
 
     let settled = runtime
         .pump_at(true, start + Duration::from_millis(1_616))
-        .snapshot
+        .into_snapshot()
         .expect("settled frame must produce a snapshot");
     assert!(
-        settled.rgba8 == expected.rgba8,
+        settled.rgba8() == expected.rgba8(),
         "after the exit animation completes the collection must render \
          pixel-identical to a fresh build of the settled membership"
     );
@@ -831,7 +840,7 @@ fn collection_membership_enter_animates_then_settles() {
     );
     let expected = truth_runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("ground-truth frame must produce a snapshot");
 
     // Subject: rows 0 and 2; insert row 1 between them and watch it grow in.
@@ -846,7 +855,7 @@ fn collection_membership_enter_animates_then_settles() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame must produce a snapshot");
 
     list.insert(1, SelfId::new(1));
@@ -854,23 +863,23 @@ fn collection_membership_enter_animates_then_settles() {
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
     let mid = runtime
         .pump_at(true, start + Duration::from_millis(516))
-        .snapshot
+        .into_snapshot()
         .expect("mid-transition frame must produce a snapshot");
     assert!(
-        mid.rgba8 != before.rgba8,
+        mid.rgba8() != before.rgba8(),
         "~500ms into a 1000ms enter the inserted row must be visibly growing in"
     );
     assert!(
-        mid.rgba8 != expected.rgba8,
+        mid.rgba8() != expected.rgba8(),
         "~500ms into a 1000ms enter the inserted row must not yet be at rest"
     );
 
     let settled = runtime
         .pump_at(true, start + Duration::from_millis(1_616))
-        .snapshot
+        .into_snapshot()
         .expect("settled frame must produce a snapshot");
     assert!(
-        settled.rgba8 == expected.rgba8,
+        settled.rgba8() == expected.rgba8(),
         "after the enter animation completes the collection must render \
          pixel-identical to a fresh build of the grown membership"
     );
@@ -878,10 +887,10 @@ fn collection_membership_enter_animates_then_settles() {
 
 /// The bottom-right pixel — the window background the rows draw over.
 fn background_pixel(snapshot: &crate::runner::HeadlessSnapshot) -> [u8; 4] {
-    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
-    let height = usize::try_from(snapshot.height).expect("snapshot height fits usize");
+    let width = usize::try_from(snapshot.width()).expect("snapshot width fits usize");
+    let height = usize::try_from(snapshot.height()).expect("snapshot height fits usize");
     let offset = ((height - 1) * width + width - 1) * 4;
-    snapshot.rgba8[offset..offset + 4]
+    snapshot.rgba8()[offset..offset + 4]
         .try_into()
         .expect("a pixel is 4 bytes")
 }
@@ -891,15 +900,15 @@ fn background_pixel(snapshot: &crate::runner::HeadlessSnapshot) -> [u8; 4] {
 /// rather than reconstructed from the fixture's `srgb` values, so it matches
 /// whatever the surface's color pipeline produces.
 fn bottom_row_color(snapshot: &crate::runner::HeadlessSnapshot) -> [u8; 4] {
-    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
-    let height = usize::try_from(snapshot.height).expect("snapshot height fits usize");
+    let width = usize::try_from(snapshot.width()).expect("snapshot width fits usize");
+    let height = usize::try_from(snapshot.height()).expect("snapshot height fits usize");
     let background = background_pixel(snapshot);
     for y in (0..height).rev() {
         let mut counts: std::collections::HashMap<[u8; 4], usize> =
             std::collections::HashMap::new();
         for x in 0..width {
             let offset = (y * width + x) * 4;
-            let pixel: [u8; 4] = snapshot.rgba8[offset..offset + 4]
+            let pixel: [u8; 4] = snapshot.rgba8()[offset..offset + 4]
                 .try_into()
                 .expect("a pixel is 4 bytes");
             if pixel != background && pixel[3] == 255 {
@@ -920,13 +929,13 @@ fn bottom_row_color(snapshot: &crate::runner::HeadlessSnapshot) -> [u8; 4] {
 /// own scanline carries the row's exact color in quantity while the blended
 /// boundary pixels above it do not.
 fn top_edge(snapshot: &crate::runner::HeadlessSnapshot, color: [u8; 4]) -> Option<usize> {
-    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
-    let height = usize::try_from(snapshot.height).expect("snapshot height fits usize");
+    let width = usize::try_from(snapshot.width()).expect("snapshot width fits usize");
+    let height = usize::try_from(snapshot.height()).expect("snapshot height fits usize");
     (0..height).find(|&y| {
         (0..width)
             .filter(|&x| {
                 let offset = (y * width + x) * 4;
-                snapshot.rgba8[offset..offset + 4] == color
+                snapshot.rgba8()[offset..offset + 4] == color
             })
             .count()
             >= 4
@@ -958,7 +967,7 @@ fn collection_membership_exit_reinsertion_adds_an_independent_instance() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame must produce a snapshot");
     let sibling = bottom_row_color(&before);
     let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
@@ -970,7 +979,7 @@ fn collection_membership_exit_reinsertion_adds_an_independent_instance() {
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
     let mid = runtime
         .pump_at(true, start + Duration::from_millis(516))
-        .snapshot
+        .into_snapshot()
         .expect("mid-exit frame must produce a snapshot");
     let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-exit");
     assert!(
@@ -985,7 +994,7 @@ fn collection_membership_exit_reinsertion_adds_an_independent_instance() {
     list.insert(1, SelfId::new(1));
     let reversal = runtime
         .pump_at(true, start + Duration::from_millis(532))
-        .snapshot
+        .into_snapshot()
         .expect("reversal frame must produce a snapshot");
     let reversal_edge =
         top_edge(&reversal, sibling).expect("the bottom row renders on the reversal frame");
@@ -1001,10 +1010,10 @@ fn collection_membership_exit_reinsertion_adds_an_independent_instance() {
     // finishes at ~1532ms.
     let settled = runtime
         .pump_at(true, start + Duration::from_millis(1_616))
-        .snapshot
+        .into_snapshot()
         .expect("settled frame must produce a snapshot");
     assert!(
-        settled.rgba8 == before.rgba8,
+        settled.rgba8() == before.rgba8(),
         "after both clocks settle, the restored membership must render \
          pixel-identical to the initial rest frame"
     );
@@ -1033,7 +1042,7 @@ fn collection_membership_enter_reversal_holds_the_allocated_slot() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame must produce a snapshot");
     let sibling = bottom_row_color(&before);
     let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
@@ -1044,7 +1053,7 @@ fn collection_membership_enter_reversal_holds_the_allocated_slot() {
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
     let mid = runtime
         .pump_at(true, start + Duration::from_millis(516))
-        .snapshot
+        .into_snapshot()
         .expect("mid-enter frame must produce a snapshot");
     let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-enter");
     assert!(
@@ -1060,7 +1069,7 @@ fn collection_membership_enter_reversal_holds_the_allocated_slot() {
     let _ = list.remove(1);
     let reversal = runtime
         .pump_at(true, start + Duration::from_millis(532))
-        .snapshot
+        .into_snapshot()
         .expect("reversal frame must produce a snapshot");
     let reversal_edge =
         top_edge(&reversal, sibling).expect("the bottom row renders on the reversal frame");
@@ -1075,10 +1084,10 @@ fn collection_membership_enter_reversal_holds_the_allocated_slot() {
     // original membership.
     let settled = runtime
         .pump_at(true, start + Duration::from_millis(1_616))
-        .snapshot
+        .into_snapshot()
         .expect("settled frame must produce a snapshot");
     assert!(
-        settled.rgba8 == before.rgba8,
+        settled.rgba8() == before.rgba8(),
         "after the resumed exit completes, the original membership must render \
          pixel-identical to the initial rest frame"
     );
@@ -1097,7 +1106,7 @@ fn pump_until_filters_render(
         let result = runtime.pump_at(true, start + Duration::from_millis(16 * u64::from(frame)));
         if runtime.renderer().applied_filter_stats().0 == expected_filters {
             return result
-                .snapshot
+                .into_snapshot()
                 .expect("a frame that ran the filters must produce a snapshot");
         }
     }
@@ -1105,8 +1114,8 @@ fn pump_until_filters_render(
 }
 
 fn pixel(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {
-    let index = ((y * snapshot.width + x) * 4) as usize;
-    snapshot.rgba8[index..index + 4]
+    let index = ((y * snapshot.width() + x) * 4) as usize;
+    snapshot.rgba8()[index..index + 4]
         .try_into()
         .expect("four channels per pixel")
 }
@@ -1212,7 +1221,7 @@ fn collection_removal_after_idle_holds_the_sibling_slot() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame must produce a snapshot");
     let sibling = bottom_row_color(&before);
 
@@ -1224,7 +1233,7 @@ fn collection_removal_after_idle_holds_the_sibling_slot() {
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
     let seeded = runtime
         .pump_at(true, start + Duration::from_millis(1_032))
-        .snapshot
+        .into_snapshot()
         .expect("pre-removal frame must produce a snapshot");
     let resting_edge =
         top_edge(&seeded, sibling).expect("the bottom row renders before the removal");
@@ -1237,7 +1246,7 @@ fn collection_removal_after_idle_holds_the_sibling_slot() {
     let _ = list.remove(2);
     let event = runtime
         .pump_at(true, start + Duration::from_secs(10))
-        .snapshot
+        .into_snapshot()
         .expect("removal event frame must produce a snapshot");
     let event_edge = top_edge(&event, sibling).expect("the bottom row renders at the event");
     assert!(
@@ -1253,7 +1262,7 @@ fn collection_removal_after_idle_holds_the_sibling_slot() {
             true,
             start + Duration::from_secs(10) + Duration::from_millis(500),
         )
-        .snapshot
+        .into_snapshot()
         .expect("mid-exit frame must produce a snapshot");
     let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-exit");
     assert!(
@@ -1269,7 +1278,7 @@ fn collection_removal_after_idle_holds_the_sibling_slot() {
             true,
             start + Duration::from_secs(10) + Duration::from_millis(1_001),
         )
-        .snapshot
+        .into_snapshot()
         .expect("settled frame must produce a snapshot");
     let settled_edge = top_edge(&settled, sibling).expect("the bottom row renders after the exit");
     assert!(
@@ -1300,7 +1309,7 @@ fn collection_insertion_after_idle_starts_absent_then_grows() {
     );
     let expected = truth_runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("ground-truth frame must produce a snapshot");
 
     let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
@@ -1318,7 +1327,7 @@ fn collection_insertion_after_idle_starts_absent_then_grows() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame must produce a snapshot");
     let sibling = bottom_row_color(&before);
     let before_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
@@ -1336,7 +1345,7 @@ fn collection_insertion_after_idle_starts_absent_then_grows() {
     list.insert(1, SelfId::new(1));
     let event = runtime
         .pump_at(true, start + Duration::from_secs(10))
-        .snapshot
+        .into_snapshot()
         .expect("insertion event frame must produce a snapshot");
     let event_edge = top_edge(&event, sibling).expect("the bottom row renders at the event");
     assert!(
@@ -1362,14 +1371,14 @@ fn collection_insertion_after_idle_starts_absent_then_grows() {
             true,
             start + Duration::from_secs(10) + Duration::from_millis(500),
         )
-        .snapshot
+        .into_snapshot()
         .expect("mid-enter frame must produce a snapshot");
     let settled = runtime
         .pump_at(
             true,
             start + Duration::from_secs(10) + Duration::from_millis(1_001),
         )
-        .snapshot
+        .into_snapshot()
         .expect("settled frame must produce a snapshot");
     let mid_contrast = rgb_contrast(pixel_at(&mid, 200, band_y), band_bg);
     let settled_contrast = rgb_contrast(pixel_at(&settled, 200, band_y), band_bg);
@@ -1400,9 +1409,9 @@ fn rgb_contrast(pixel: [u8; 4], reference: [u8; 4]) -> u32 {
 
 /// The RGBA value of one pixel in `snapshot`.
 fn pixel_at(snapshot: &crate::runner::HeadlessSnapshot, x: usize, y: usize) -> [u8; 4] {
-    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
+    let width = usize::try_from(snapshot.width()).expect("snapshot width fits usize");
     let offset = (y * width + x) * 4;
-    snapshot.rgba8[offset..offset + 4]
+    snapshot.rgba8()[offset..offset + 4]
         .try_into()
         .expect("a pixel is 4 bytes")
 }
@@ -1483,7 +1492,7 @@ fn reduced_pixel_transition_runs_as_opacity() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame must produce a snapshot");
     let sibling = bottom_row_color(&before);
     let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
@@ -1503,7 +1512,7 @@ fn reduced_pixel_transition_runs_as_opacity() {
     // fading, so the sibling's top edge is unchanged.
     let event = runtime
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("removal event frame must produce a snapshot");
     let event_edge = top_edge(&event, sibling).expect("the bottom row renders at the event");
     assert!(
@@ -1512,7 +1521,7 @@ fn reduced_pixel_transition_runs_as_opacity() {
     );
     let mid = runtime
         .pump_at(true, start + Duration::from_millis(516))
-        .snapshot
+        .into_snapshot()
         .expect("mid-exit frame must produce a snapshot");
     let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-exit");
     assert!(
@@ -1529,7 +1538,7 @@ fn reduced_pixel_transition_runs_as_opacity() {
     // After the clock completes the slot releases and the sibling moves up.
     let settled = runtime
         .pump_at(true, start + Duration::from_millis(1_616))
-        .snapshot
+        .into_snapshot()
         .expect("settled frame must produce a snapshot");
     let settled_edge = top_edge(&settled, sibling).expect("the bottom row renders after the exit");
     assert!(
@@ -1561,7 +1570,7 @@ fn blur_transition_on_a_collection_item_blurs_the_ghost() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame must produce a snapshot");
     let sibling = bottom_row_color(&before);
     let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
@@ -1571,10 +1580,10 @@ fn blur_transition_on_a_collection_item_blurs_the_ghost() {
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
     let mid = runtime
         .pump_at(true, start + Duration::from_millis(516))
-        .snapshot
+        .into_snapshot()
         .expect("mid-exit frame must produce a snapshot");
     assert!(
-        mid.rgba8 != before.rgba8,
+        mid.rgba8() != before.rgba8(),
         "halfway through the blur removal the ghost is not drawn at rest"
     );
     let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-exit");
@@ -1584,7 +1593,7 @@ fn blur_transition_on_a_collection_item_blurs_the_ghost() {
     );
     let settled = runtime
         .pump_at(true, start + Duration::from_millis(1_616))
-        .snapshot
+        .into_snapshot()
         .expect("settled frame must produce a snapshot");
     let settled_edge = top_edge(&settled, sibling).expect("the bottom row renders after the exit");
     assert!(
@@ -1621,7 +1630,7 @@ fn transition_inside_an_erased_collection_row_is_owned_by_the_row() {
     );
     let expected = truth_runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("ground-truth frame must produce a snapshot");
 
     let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
@@ -1639,24 +1648,24 @@ fn transition_inside_an_erased_collection_row_is_owned_by_the_row() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame must produce a snapshot");
     let _ = list.remove(0);
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
     let mid = runtime
         .pump_at(true, start + Duration::from_millis(516))
-        .snapshot
+        .into_snapshot()
         .expect("mid-exit frame must produce a snapshot");
     assert!(
-        mid.rgba8 != before.rgba8 && mid.rgba8 != expected.rgba8,
+        mid.rgba8() != before.rgba8() && mid.rgba8() != expected.rgba8(),
         "halfway through the removal the erased row's ghost is fading"
     );
     let settled = runtime
         .pump_at(true, start + Duration::from_millis(1_616))
-        .snapshot
+        .into_snapshot()
         .expect("settled frame must produce a snapshot");
     assert!(
-        settled.rgba8 == expected.rgba8,
+        settled.rgba8() == expected.rgba8(),
         "after the removal the stack renders pixel-identical to a fresh build"
     );
 }
@@ -1691,7 +1700,7 @@ fn absolute_collection_row_removal_fades_then_settles() {
     );
     let expected = truth_runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("ground-truth frame must produce a snapshot");
 
     let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
@@ -1709,24 +1718,24 @@ fn absolute_collection_row_removal_fades_then_settles() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame must produce a snapshot");
     let _ = list.remove(1);
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
     let mid = runtime
         .pump_at(true, start + Duration::from_millis(516))
-        .snapshot
+        .into_snapshot()
         .expect("mid-exit frame must produce a snapshot");
     assert!(
-        mid.rgba8 != before.rgba8 && mid.rgba8 != expected.rgba8,
+        mid.rgba8() != before.rgba8() && mid.rgba8() != expected.rgba8(),
         "halfway through the removal the top row's ghost is fading over the row under it"
     );
     let settled = runtime
         .pump_at(true, start + Duration::from_millis(1_616))
-        .snapshot
+        .into_snapshot()
         .expect("settled frame must produce a snapshot");
     assert!(
-        settled.rgba8 == expected.rgba8,
+        settled.rgba8() == expected.rgba8(),
         "after the removal the overlay renders pixel-identical to a fresh build"
     );
 }

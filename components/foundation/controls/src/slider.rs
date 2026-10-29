@@ -36,6 +36,101 @@ pub struct SliderConfig {
     pub value_indicator: Option<ValueFormatter>,
 }
 
+impl SliderConfig {
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Label,
+        AnyView,
+        AnyView,
+        RangeInclusive<f64>,
+        Binding<f64>,
+        ControlSize,
+        Option<ValueFormatter>,
+    ) {
+        (
+            self.label,
+            self.min_value_label,
+            self.max_value_label,
+            self.range,
+            self.value,
+            self.size,
+            self.value_indicator,
+        )
+    }
+
+    /// Creates a `SliderConfig` from its parts.
+    #[must_use]
+    pub const fn new(
+        label: Label,
+        min_value_label: AnyView,
+        max_value_label: AnyView,
+        range: RangeInclusive<f64>,
+        value: Binding<f64>,
+        size: ControlSize,
+        value_indicator: Option<ValueFormatter>,
+    ) -> Self {
+        Self {
+            label,
+            min_value_label,
+            max_value_label,
+            range,
+            value,
+            size,
+            value_indicator,
+        }
+    }
+
+    /// The label displayed for the slider.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: Label) {
+        self.label = label;
+    }
+
+    /// The label for the minimum value of the slider.
+    #[must_use]
+    pub const fn min_value_label(&self) -> &AnyView {
+        &self.min_value_label
+    }
+
+    /// The label for the maximum value of the slider.
+    #[must_use]
+    pub const fn max_value_label(&self) -> &AnyView {
+        &self.max_value_label
+    }
+
+    /// The range of values the slider can take.
+    #[must_use]
+    pub const fn range(&self) -> &RangeInclusive<f64> {
+        &self.range
+    }
+
+    /// The binding to the current value of the slider.
+    #[must_use]
+    pub const fn value(&self) -> &Binding<f64> {
+        &self.value
+    }
+
+    /// How large the slider is drawn.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
+    /// How the value indicator shown above the thumb while it is dragged
+    /// formats the value; `None` shows no indicator.
+    #[must_use]
+    pub const fn value_indicator(&self) -> Option<&ValueFormatter> {
+        self.value_indicator.as_ref()
+    }
+}
+
 /// Formats a slider's value for its value indicator.
 #[derive(Clone)]
 pub struct ValueFormatter(Rc<dyn Fn(f64) -> Str>);

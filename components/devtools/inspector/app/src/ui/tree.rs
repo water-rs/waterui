@@ -42,12 +42,12 @@ pub fn view(model: Model) -> impl View {
             move || {
                 let revealed = revealed.clone();
                 List::for_each(rows.clone(), move |row: TreeRow| {
-                    let id = row.id;
+                    let id = row.id();
                     let is_revealed = revealed
                         .clone()
                         .map(move |node| node == Some(id))
                         .computed();
-                    row_view(row, is_revealed)
+                    row_view(&row, is_revealed)
                 })
             }
         }),
@@ -74,8 +74,8 @@ fn rows(model: &Model, filter: &Binding<Str>) -> SignalCollection<Computed<Vec<T
                     .filter(|row| {
                         // `SignalExt::contains` shadows the inherent `str`
                         // method here, so call it by path.
-                        str::contains(&row.role.to_lowercase(), query.as_str())
-                            || row.label.as_ref().is_some_and(|label| {
+                        str::contains(&row.role().to_lowercase(), query.as_str())
+                            || row.label().as_ref().is_some_and(|label| {
                                 str::contains(&label.to_lowercase(), query.as_str())
                             })
                     })
@@ -90,30 +90,30 @@ fn rows(model: &Model, filter: &Binding<Str>) -> SignalCollection<Computed<Vec<T
 /// A node the application asked to inspect is marked, so that opening the
 /// inspector on an element lands the eye on that element rather than on the
 /// top of a long tree.
-fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem {
+fn row_view(row: &TreeRow, revealed: Computed<bool>) -> ListItem {
     #[expect(
         clippy::cast_precision_loss,
         reason = "a view tree deep enough to lose f32 precision could not be rendered"
     )]
-    let indent = (row.depth as f32) * 14.0;
+    let indent = (row.depth() as f32) * 14.0;
 
     let content = hstack((
         spacer().width(indent),
         vstack((
             hstack((
-                text(row.role).sub_headline().foreground(Accent),
-                label_view(row.label),
-                hidden_badge(row.hidden),
+                text(row.role().clone()).sub_headline().foreground(Accent),
+                label_view(row.label().cloned()),
+                hidden_badge(row.hidden()),
                 revealed_badge(revealed),
             ))
             .spacing(8.0),
-            detail_view(row.value, row.bounds),
+            detail_view(row.value().cloned(), row.bounds().cloned()),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(2.0),
     ))
     .padding_with(EdgeInsets::new(6.0, 6.0, 12.0, 12.0))
-    .opacity(if row.enabled { 1.0 } else { 0.55 });
+    .opacity(if row.enabled() { 1.0 } else { 0.55 });
 
     ListItem::new(content)
 }

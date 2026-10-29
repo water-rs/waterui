@@ -116,10 +116,10 @@ mod platform {
         let search_bar = bar.search.as_ref().map(|search| {
             let field = SearchBar::new(mtm);
             field.set_change_handler({
-                let text = search.text.clone();
+                let text = search.text().clone();
                 move |value| text.set(Str::from(value))
             });
-            keep.bind(&search.text, {
+            keep.bind(search.text(), {
                 let field = field.clone();
                 move |text: Str| field.set_text(text.as_ref())
             });
@@ -406,10 +406,10 @@ mod platform {
         let search_field = bar.search.as_ref().map(|search| {
             let field = SearchField::new(mtm);
             field.set_change_handler({
-                let text = search.text.clone();
+                let text = search.text().clone();
                 move |field| text.set(Str::from(field.text()))
             });
-            keep.bind(&search.text, {
+            keep.bind(search.text(), {
                 let field = field.clone();
                 move |text: Str| field.set_text(text.as_ref())
             });

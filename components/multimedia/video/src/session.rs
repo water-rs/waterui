@@ -198,7 +198,7 @@ impl ControllerState {
         let items = self.snapshot();
         let mut indices = (0..items.len()).collect::<Vec<_>>();
         if self.bindings.shuffle.snapshot() {
-            indices.sort_by_key(|index| items[*index].id.into_bytes());
+            indices.sort_by_key(|index| items[*index].get_id().into_bytes());
         }
         indices
     }
@@ -228,11 +228,11 @@ impl ControllerState {
                 len: items.len(),
             })?;
         let duration_seconds = item
-            .metadata
+            .get_metadata()
             .duration()
             .map_or(0.0, |duration| duration.as_secs_f64());
         self.bindings.current_item_index.set(index);
-        self.bindings.current_item_id.set(item.id);
+        self.bindings.current_item_id.set(item.get_id());
         self.bindings.source.set(item);
         self.bindings.track_catalog.set(TrackCatalog::default());
         self.bindings.live_window.set(None);
@@ -426,7 +426,7 @@ impl PlayerController {
         let index = state
             .snapshot()
             .iter()
-            .position(|item| item.id == id)
+            .position(|item| item.get_id() == id)
             .ok_or(PlaybackError::ItemNotFound(id))?;
         state.select_index(index)
     }
@@ -522,14 +522,14 @@ impl PlayerController {
         }
         let removed_index = items
             .iter()
-            .position(|item| item.id == id)
+            .position(|item| item.get_id() == id)
             .ok_or(PlaybackError::ItemNotFound(id))?;
         let current_id = state.bindings.current_item_id.snapshot();
         let removed = state.playlist.items.clone().remove(removed_index);
         let remaining = state.snapshot();
         let selected = remaining
             .iter()
-            .position(|item| item.id == current_id)
+            .position(|item| item.get_id() == current_id)
             .unwrap_or_else(|| removed_index.min(remaining.len() - 1));
         state.select_index(selected)?;
         Ok(removed)
@@ -556,7 +556,7 @@ impl PlayerController {
         }
         let source = items
             .iter()
-            .position(|item| item.id == id)
+            .position(|item| item.get_id() == id)
             .ok_or(PlaybackError::ItemNotFound(id))?;
         let item = items.remove(source);
         items.insert(destination, item);
@@ -564,7 +564,7 @@ impl PlayerController {
         let _ = state.playlist.items.clone().replace(items.clone());
         let current = items
             .iter()
-            .position(|item| item.id == current_id)
+            .position(|item| item.get_id() == current_id)
             .expect("moving an item must preserve the active media identity");
         state.bindings.current_item_index.set(current);
         state.update_navigation();
@@ -750,12 +750,12 @@ impl PlaybackSession {
             position_seconds: Binding::f64(0.0),
             duration_seconds: Binding::f64(
                 first
-                    .metadata
+                    .get_metadata()
                     .duration()
                     .map_or(0.0, |duration| duration.as_secs_f64()),
             ),
             phase: binding(PlaybackPhase::Idle),
-            current_item_id: binding(first.id),
+            current_item_id: binding(first.get_id()),
             current_item_index: binding(0_usize),
             repeat: binding(RepeatMode::Off),
             shuffle: Binding::bool(false),
@@ -841,10 +841,10 @@ mod tests {
         let controller = session.controller();
 
         let removed = controller
-            .remove_item(first.id)
+            .remove_item(first.get_id())
             .expect("item must be removable");
 
-        assert_eq!(removed.id, first.id);
+        assert_eq!(removed.get_id(), first.get_id());
         assert_eq!(
             controller
                 .state
@@ -852,7 +852,7 @@ mod tests {
                 .bindings
                 .current_item_id
                 .snapshot(),
-            second.id
+            second.get_id()
         );
     }
 
@@ -862,7 +862,7 @@ mod tests {
         let session = PlaybackSession::new(Playlist::single(only.clone()));
 
         assert_eq!(
-            session.controller().remove_item(only.id),
+            session.controller().remove_item(only.get_id()),
             Err(PlaybackError::CannotRemoveFinalItem)
         );
     }
@@ -1024,7 +1024,7 @@ mod tests {
             .expect("the shuffled predecessor must exist");
 
         let state = controller.state.borrow();
-        assert_eq!(state.bindings.current_item_id.snapshot(), third.id);
+        assert_eq!(state.bindings.current_item_id.snapshot(), third.get_id());
         assert_eq!(state.bindings.current_item_index.snapshot(), 2);
         assert_eq!(state.snapshot(), vec![first, second, third]);
     }

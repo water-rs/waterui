@@ -384,10 +384,10 @@ async fn run_preview_binary(
     )
     .await?;
 
-    match config.mode {
+    match config.mode() {
         PreviewRunMode::Scenario {
-            ref output_dir,
-            ref captures_ms,
+            output_dir,
+            captures_ms,
             ..
         } => {
             for capture_ms in captures_ms {
@@ -395,7 +395,7 @@ async fn run_preview_binary(
                 expect_nonempty_output(&frame_path, "scenario frame").await?;
             }
         }
-        PreviewRunMode::Image { ref output } => {
+        PreviewRunMode::Image { output } => {
             expect_nonempty_output(output, "output").await?;
         }
         PreviewRunMode::Semantic => {

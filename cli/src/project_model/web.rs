@@ -168,7 +168,7 @@ pub fn decode_web_mount(symbols: &ArtifactSymbols) -> eyre::Result<Option<Bundle
     let mut frontend = None;
     for leaf in symbols.leaves_with_prefix(BUNDLE_META_PREFIX) {
         let meta = symbols.bundle_mount_meta(&leaf)?;
-        if meta.project.is_none() {
+        if meta.project().is_none() {
             continue;
         }
         if frontend.replace(meta).is_some() {
@@ -197,8 +197,7 @@ pub async fn build_frontend(
     meta: &BundleMountMeta,
 ) -> eyre::Result<()> {
     let root = meta
-        .project
-        .as_ref()
+        .project()
         .expect("build_frontend is only called for mounts that declare a project");
     let pm = package_manager.binary();
     // Not interactive: a bundler never reads the terminal. Under `water
@@ -219,10 +218,10 @@ pub async fn build_frontend(
             crate::utils::format_failure_stream("stdout", &output.stdout),
         );
     }
-    if !meta.path.is_dir() {
+    if !meta.path().is_dir() {
         bail!(
             "`{pm} run build` did not produce `{}`; set `out_dir` on `include_web!` to the bundler's output directory",
-            meta.path.display()
+            meta.path().display()
         );
     }
     Ok(())

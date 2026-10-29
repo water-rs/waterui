@@ -196,8 +196,11 @@ fn containers(
     Ok(Some(match component {
         "VStack" => {
             let attributes = VStackAttributes::from_js(config, bridge)?;
-            let alignment = HorizontalAlignment::from(attributes.alignment.unwrap_or_default());
-            let spacing = attributes.spacing.unwrap_or_else(default_vertical_spacing);
+            let alignment = HorizontalAlignment::from(attributes.alignment().unwrap_or_default());
+            let spacing = attributes
+                .spacing()
+                .cloned()
+                .unwrap_or_else(default_vertical_spacing);
             match collection::splice(children::content(bridge, children)?) {
                 Spliced::Lazy(items) => collection::into_vstack(&items, alignment, Some(spacing)),
                 Spliced::Fixed(views) => {
@@ -207,9 +210,10 @@ fn containers(
         }
         "HStack" => {
             let attributes = HStackAttributes::from_js(config, bridge)?;
-            let alignment = VerticalAlignment::from(attributes.alignment.unwrap_or_default());
+            let alignment = VerticalAlignment::from(attributes.alignment().unwrap_or_default());
             let spacing = attributes
-                .spacing
+                .spacing()
+                .cloned()
                 .unwrap_or_else(default_horizontal_spacing);
             match collection::splice(children::content(bridge, children)?) {
                 Spliced::Lazy(items) => collection::into_hstack(&items, alignment, Some(spacing)),
@@ -220,7 +224,7 @@ fn containers(
         }
         "ZStack" => {
             let attributes = ZStackAttributes::from_js(config, bridge)?;
-            let alignment = Alignment::from(attributes.alignment.unwrap_or_default());
+            let alignment = Alignment::from(attributes.alignment().unwrap_or_default());
             match collection::splice(children::content(bridge, children)?) {
                 Spliced::Lazy(items) => collection::into_zstack(&items, alignment),
                 Spliced::Fixed(views) => AnyView::new(ZStack::new(alignment, views)),
@@ -234,7 +238,7 @@ fn containers(
                 children::content(bridge, children)?,
             )
             .spacing(default_vertical_spacing());
-            AnyView::new(match attributes.axis.unwrap_or_default() {
+            AnyView::new(match attributes.axis().unwrap_or_default() {
                 ScrollAxis::Vertical => ScrollView::vertical(content),
                 ScrollAxis::Horizontal => ScrollView::horizontal(content),
                 ScrollAxis::Both => ScrollView::both(content),
@@ -249,10 +253,10 @@ fn containers(
             )
             .spacing(default_vertical_spacing());
             let mut card = Card::new(content);
-            if let Some(title) = attributes.title {
+            if let Some(title) = attributes.title().cloned() {
                 card = card.title(title);
             }
-            if let Some(subtitle) = attributes.subtitle {
+            if let Some(subtitle) = attributes.subtitle().cloned() {
                 card = card.subtitle(subtitle);
             }
             AnyView::new(card)
@@ -265,8 +269,8 @@ fn containers(
                 children::content(bridge, children)?,
             )
             .spacing(default_vertical_spacing());
-            let content = attributes.content;
-            AnyView::new(match attributes.expanded {
+            let content = attributes.content().clone();
+            AnyView::new(match attributes.expanded().cloned() {
                 Some(expanded) => Accordion::with_toggle(&expanded, header, content),
                 None => Accordion::new(header, content),
             })
@@ -286,7 +290,7 @@ fn leaves(
         "Spacer" => {
             let attributes = SpacerAttributes::from_js(config, bridge)?;
             children::none(component, children)?;
-            AnyView::new(Spacer::new(attributes.min_length.unwrap_or_default()))
+            AnyView::new(Spacer::new(attributes.min_length().unwrap_or_default()))
         }
         "Divider" => {
             children::none(component, children)?;
@@ -300,14 +304,17 @@ fn leaves(
         "Badge" => {
             let attributes = BadgeAttributes::from_js(config, bridge)?;
             children::none(component, children)?;
-            AnyView::new(Badge::new(attributes.value, Rebuilt(attributes.content)))
+            AnyView::new(Badge::new(
+                attributes.value().clone(),
+                Rebuilt(attributes.content().clone()),
+            ))
         }
         "Avatar" => {
             let attributes = AvatarAttributes::from_js(config, bridge)?;
             children::none(component, children)?;
-            let avatar = Avatar::new(Text::new(attributes.name), || ());
+            let avatar = Avatar::new(Text::new(attributes.name().clone()), || ());
             #[cfg(feature = "media")]
-            let avatar = match attributes.image {
+            let avatar = match attributes.image().cloned() {
                 Some(source) => avatar.image(source.map(|url| url.0).computed()),
                 None => avatar,
             };
@@ -317,8 +324,8 @@ fn leaves(
         "Image" => {
             let attributes = ImageAttributes::from_js(config, bridge)?;
             children::none(component, children)?;
-            let photo = Photo::new(attributes.src.map(|url| url.0).computed());
-            AnyView::new(if attributes.resizable.unwrap_or(false) {
+            let photo = Photo::new(attributes.src().map(|url| url.0).computed());
+            AnyView::new(if attributes.resizable().unwrap_or(false) {
                 photo.resizable()
             } else {
                 photo
@@ -369,7 +376,7 @@ fn collections(
             let attributes = ColumnAttributes::from_js(config, bridge)?;
             children::none(component, &[])?;
             AnyView::new(Carried::new(TableColumn::new(
-                attributes.label,
+                attributes.label().clone(),
                 children::texts(bridge, children)?,
             )))
         }
@@ -395,15 +402,15 @@ fn navigation(
             )
             .spacing(default_vertical_spacing());
             AnyView::new(NavigationStack::new(NavigationView::new(
-                title_of(attributes.title),
+                title_of(attributes.title().cloned()),
                 root,
             )))
         }
         "NavigationLink" => {
             let attributes = NavigationLinkAttributes::from_js(config, bridge)?;
             let label = children::label(bridge, component, None, children)?;
-            let destination = attributes.destination;
-            let title = title_of(attributes.title);
+            let destination = attributes.destination().clone();
+            let title = title_of(attributes.title().cloned());
             AnyView::new(NavigationLink::new(label, move || {
                 NavigationView::new(title.clone(), destination.build())
             }))
@@ -420,7 +427,7 @@ fn navigation(
                 .map(|(value, _)| SelfId::new(value))
                 .collect::<Vec<_>>();
             AnyView::new(Tabs::new(
-                &attributes.value,
+                attributes.value(),
                 ForEach::new(nami::collection::List::from(ids), move |id: SelfId<Str>| {
                     tabs.get(&id.into_inner())
                         .expect("a keyed tab collection reports a tab for every id")
@@ -431,10 +438,10 @@ fn navigation(
         "Tab" => {
             let attributes = TabAttributes::from_js(config, bridge)?;
             let label = children::label(bridge, component, None, children)?;
-            let content = attributes.content;
-            let title = title_of(attributes.title);
+            let content = attributes.content().clone();
+            let title = title_of(attributes.title().cloned());
             AnyView::new(Carried::new((
-                attributes.value,
+                attributes.value().clone(),
                 Tab::new(label, move || {
                     NavigationView::new(title.clone(), content.build())
                 }),
@@ -459,60 +466,60 @@ fn controls(
 ) -> Result<AnyView, JsError> {
     match component {
         "Button" => {
-            let attributes = ButtonAttributes::from_js(config, bridge)?;
-            let label = children::label(bridge, component, attributes.label, children)?;
+            let mut attributes = ButtonAttributes::from_js(config, bridge)?;
+            let label = children::label(bridge, component, attributes.take_label(), children)?;
             let button = Button::new(label);
-            Ok(match attributes.on_tap {
+            Ok(match attributes.on_tap().cloned() {
                 Some(action) => AnyView::new(button.action(move || action.call(()))),
                 None => AnyView::new(button),
             })
         }
         "Toggle" => {
-            let attributes = ToggleAttributes::from_js(config, bridge)?;
-            let label = children::label(bridge, component, attributes.label, children)?;
-            Ok(AnyView::new(Toggle::new(label, &attributes.value)))
+            let mut attributes = ToggleAttributes::from_js(config, bridge)?;
+            let label = children::label(bridge, component, attributes.take_label(), children)?;
+            Ok(AnyView::new(Toggle::new(label, attributes.value())))
         }
         "Slider" => {
-            let attributes = SliderAttributes::from_js(config, bridge)?;
-            let label = children::label(bridge, component, attributes.label, children)?;
-            Ok(AnyView::new(Slider::new(label, &attributes.value)))
+            let mut attributes = SliderAttributes::from_js(config, bridge)?;
+            let label = children::label(bridge, component, attributes.take_label(), children)?;
+            Ok(AnyView::new(Slider::new(label, attributes.value())))
         }
         "Stepper" => {
-            let attributes = StepperAttributes::from_js(config, bridge)?;
-            let label = children::label(bridge, component, attributes.label, children)?;
-            let stepper = Stepper::new(label, &attributes.value);
-            Ok(AnyView::new(match attributes.step {
+            let mut attributes = StepperAttributes::from_js(config, bridge)?;
+            let label = children::label(bridge, component, attributes.take_label(), children)?;
+            let stepper = Stepper::new(label, attributes.value());
+            Ok(AnyView::new(match attributes.step().cloned() {
                 Some(step) => stepper.step(step),
                 None => stepper,
             }))
         }
         "TextField" => {
-            let attributes = TextFieldAttributes::from_js(config, bridge)?;
-            let label = children::label(bridge, component, attributes.label, children)?;
-            let field = TextField::new(label, &attributes.value);
-            Ok(AnyView::new(match attributes.prompt {
+            let mut attributes = TextFieldAttributes::from_js(config, bridge)?;
+            let label = children::label(bridge, component, attributes.take_label(), children)?;
+            let field = TextField::new(label, attributes.value());
+            Ok(AnyView::new(match attributes.prompt().cloned() {
                 Some(prompt) => field.prompt(Text::new(prompt)),
                 None => field,
             }))
         }
         "Picker" => {
-            let attributes = PickerAttributes::from_js(config, bridge)?;
-            let label = children::label(bridge, component, attributes.label, children)?;
+            let mut attributes = PickerAttributes::from_js(config, bridge)?;
+            let label = children::label(bridge, component, attributes.take_label(), children)?;
             Ok(AnyView::new(Picker::new(
                 label,
-                options(&attributes.options),
-                &attributes.value,
+                options(attributes.options()),
+                attributes.value(),
             )))
         }
         "Progress" => {
             let attributes = ProgressAttributes::from_js(config, bridge)?;
             let label = children::label_or_none(bridge, children)?;
-            progress_of(attributes, label)
+            progress_of(&attributes, label)
         }
         "Link" => {
             let attributes = LinkAttributes::from_js(config, bridge)?;
             let label = children::label(bridge, component, None, children)?;
-            Ok(AnyView::new(Link::new(label, attributes.url)))
+            Ok(AnyView::new(Link::new(label, attributes.url().clone())))
         }
         // `create` checked the catalog before dispatching, so a name reaching
         // here is one the catalog declares and this match does not build.
@@ -533,16 +540,16 @@ fn controls(
 /// one, and the two carry different styles: `loading` is indeterminate, so it
 /// has no meaning beside a total and the pair is refused rather than silently
 /// dropping one of them.
-fn progress_of(attributes: ProgressAttributes, label: Option<Label>) -> Result<AnyView, JsError> {
-    let style = attributes.style.unwrap_or_default();
-    let Some(value) = attributes.value else {
+fn progress_of(attributes: &ProgressAttributes, label: Option<Label>) -> Result<AnyView, JsError> {
+    let style = attributes.style().unwrap_or_default();
+    let Some(value) = attributes.value().cloned() else {
         let progress = Progress::infinity();
         return Ok(AnyView::new(match label {
             Some(label) => progress.label(label),
             None => progress,
         }));
     };
-    if let Some(total) = attributes.total {
+    if let Some(total) = attributes.total().cloned() {
         let progress = Progress::new(value).total(total);
         let progress = match style {
             ProgressStyleValue::Linear => progress.linear(),
@@ -648,7 +655,9 @@ fn options(options: &Computed<Vec<PickerOption>>) -> Computed<Vec<PickerItem<Str
         .map(|options| {
             options
                 .into_iter()
-                .map(|option| PickerItem::new(option.value, Text::new(option.label)))
+                .map(|option| {
+                    PickerItem::new(option.value().clone(), Text::new(option.label().clone()))
+                })
                 .collect()
         })
         .computed()

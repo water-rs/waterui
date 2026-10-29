@@ -885,8 +885,7 @@ async fn start_web_dev_server(
         return Ok(None);
     };
     let root = meta
-        .project
-        .as_ref()
+        .project()
         .expect("web_mount only returns a mount that declares a project");
     let package_manager = project.manifest().web().map_or_else(
         web::PackageManager::default,

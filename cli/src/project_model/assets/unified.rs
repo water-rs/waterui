@@ -112,7 +112,7 @@ pub async fn stage_for_apple(
         .manifest()
         .theme()
         .as_ref()
-        .and_then(|theme| theme.accent);
+        .and_then(|theme| theme.accent());
 
     let icon = load_project_icon(&manifest)?;
     write_apple_app_icon(&icon, &xcassets_dest).await?;
@@ -224,7 +224,7 @@ fn with_bundled_fonts(
         }
     }
     staged
-        .assets
+        .assets_mut()
         .extend(planned.into_iter().map(|(logical_path, source_path)| {
             PlannedAsset::new(
                 String::new(),
@@ -283,8 +283,8 @@ async fn stage_bundle(
 /// recorded stamp vouches only for a bundle whose files are all still
 /// there — one removed since must be restaged, not shipped without it.
 async fn assets_present(manifest: &BundleManifest, dest_root: &Path) -> bool {
-    for asset in &manifest.assets {
-        match fs::metadata(dest_root.join(&asset.logical_path)).await {
+    for asset in manifest.assets() {
+        match fs::metadata(dest_root.join(asset.logical_path())).await {
             Ok(metadata) if metadata.is_file() => {}
             _ => return false,
         }
@@ -389,7 +389,7 @@ fn launch_assets_from(project: &Project, manifest: &BundleManifest) -> eyre::Res
 fn load_project_icon(manifest: &BundleManifest) -> eyre::Result<IconSource> {
     manifest.root_artwork(AssetRole::AppIcon).map_or_else(
         || Ok(IconSource::default_logo()),
-        |icon| IconSource::load(&icon.source_path),
+        |icon| IconSource::load(icon.source_path()),
     )
 }
 
@@ -541,14 +541,14 @@ pub async fn stage_hicolor_icons(project: &Project, icons_root: &Path) -> eyre::
 /// that produced it owns the artifact enumeration, so this stays pure.
 pub fn scan_project_fonts(manifest: &BundleManifest) -> eyre::Result<Vec<super::ResolvedFont>> {
     manifest
-        .assets
+        .assets()
         .iter()
-        .filter(|asset| asset.kind == AssetKind::Font)
+        .filter(|asset| asset.kind() == AssetKind::Font)
         .map(|asset| {
-            let name = detect_font_family(&asset.source_path)?;
+            let name = detect_font_family(asset.source_path())?;
             Ok(super::ResolvedFont {
                 name,
-                path: asset.source_path.clone(),
+                path: asset.source_path().clone(),
             })
         })
         .collect()
@@ -576,7 +576,7 @@ fn plan_main_assets(project: &Project) -> eyre::Result<Vec<PlannedAsset>> {
         // declared wholesale and keep every file they name.
         Ok(plan_mount(&assets_dir, "")?
             .into_iter()
-            .filter(|asset| asset.logical_path != Path::new("README.md"))
+            .filter(|asset| asset.logical_path() != Path::new("README.md"))
             .collect())
     } else {
         Ok(Vec::new())
@@ -611,13 +611,13 @@ pub async fn build_manifest(
     for leaf in symbols.leaves_with_prefix(BUNDLE_META_PREFIX) {
         let meta = symbols.bundle_mount_meta(&leaf)?;
         // The `assets` mount is the main root, already planned above.
-        if meta.mount == "assets" {
+        if meta.mount() == "assets" {
             continue;
         }
-        if !seen.insert(meta.mount.clone()) {
+        if !seen.insert(meta.mount().to_owned()) {
             bail!(
                 "include_bundle mount '{}' is declared more than once",
-                meta.mount
+                meta.mount()
             );
         }
         // An `include_web!` mount carries the toolchain project that produces
@@ -626,17 +626,20 @@ pub async fn build_manifest(
         // the frontend build rides that same exactly-once guarantee. In
         // dev-server mode the app opens the bundler's URL instead, so neither
         // the build nor the staged copy happens.
-        if meta.project.is_some() {
+        if meta.project().is_some() {
             if dev_server {
                 continue;
             }
             crate::web::build_frontend(project.host(), package_manager, &meta).await?;
         }
-        assets.extend(plan_mount(&meta.path, &meta.mount)?);
-        mounts.push(BundleMount::new(meta.mount, meta.path));
+        assets.extend(plan_mount(meta.path(), meta.mount())?);
+        mounts.push(BundleMount::new(
+            meta.mount().to_owned(),
+            meta.path().clone(),
+        ));
     }
 
-    assets.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+    assets.sort_by(|left, right| left.logical_path().cmp(right.logical_path()));
     Ok(BundleManifest::new(
         project.root().to_path_buf(),
         project.assets_dir(),
@@ -648,13 +651,13 @@ pub async fn build_manifest(
 async fn copy_manifest_assets(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
     let workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let copies: Vec<_> = manifest
-        .assets
+        .assets()
         .iter()
         .map(|asset| {
             copy_asset(
-                asset.kind,
-                asset.source_path.clone(),
-                dest_root.join(&asset.logical_path),
+                asset.kind(),
+                asset.source_path().clone(),
+                dest_root.join(asset.logical_path()),
             )
         })
         .collect();
@@ -739,9 +742,9 @@ fn optimize_image(bytes: &[u8], source: &Path) -> eyre::Result<Vec<u8>> {
 /// manifest order. The sources are read on a blocking thread.
 async fn manifest_stamp(manifest: &BundleManifest) -> eyre::Result<String> {
     let sources: Vec<(PathBuf, PathBuf)> = manifest
-        .assets
+        .assets()
         .iter()
-        .map(|asset| (asset.logical_path.clone(), asset.source_path.clone()))
+        .map(|asset| (asset.logical_path().clone(), asset.source_path().clone()))
         .collect();
     smol::unblock(move || {
         let mut hasher = Sha256::new();
@@ -762,9 +765,9 @@ async fn manifest_stamp(manifest: &BundleManifest) -> eyre::Result<String> {
 /// the caller adds beside them.
 fn staged_bundle_files(manifest: &BundleManifest, extras: &[&str]) -> BTreeSet<PathBuf> {
     manifest
-        .assets
+        .assets()
         .iter()
-        .map(|asset| asset.logical_path.clone())
+        .map(|asset| asset.logical_path().clone())
         .chain(
             std::iter::once(SYNC_STAMP_FILE)
                 .chain(extras.iter().copied())
@@ -1182,14 +1185,14 @@ const fn android_platform_theme_slots(
         (
             "android:colorBackground",
             "waterui_background",
-            theme.background,
+            theme.background(),
         ),
-        ("android:colorPrimary", "waterui_accent", theme.accent),
-        ("android:colorAccent", "waterui_accent", theme.accent),
+        ("android:colorPrimary", "waterui_accent", theme.accent()),
+        ("android:colorAccent", "waterui_accent", theme.accent()),
         (
             "android:textColorPrimary",
             "waterui_foreground",
-            theme.foreground,
+            theme.foreground(),
         ),
     ]
 }
@@ -1272,7 +1275,7 @@ fn android_colors(
     launch: &LaunchAssets,
 ) -> eyre::Result<AndroidColorTables> {
     let accent = theme
-        .and_then(|theme| theme.accent)
+        .and_then(ThemeConfig::accent)
         .unwrap_or(DEFAULT_ACCENT);
     let mut colors = vec![AndroidColor {
         name: "ic_launcher_background",
@@ -1411,7 +1414,7 @@ mod tests {
             assert_eq!(
                 assets
                     .iter()
-                    .map(|asset| asset.logical_path.as_path())
+                    .map(|asset| asset.logical_path().as_path())
                     .collect::<Vec<_>>(),
                 [Path::new("note.txt")],
                 "the scaffold README stays out of the package"

@@ -73,6 +73,26 @@ pub struct BenchRunConfig {
 }
 
 impl BenchRunConfig {
+    /// Unrecorded frames run before sampling.
+    #[must_use]
+    pub const fn warmups(&self) -> u32 {
+        self.warmups
+    }
+
+    /// Recorded frames per measurement.
+    #[must_use]
+    pub const fn samples(&self) -> u32 {
+        self.samples
+    }
+
+    /// Independent measurement repetitions.
+    #[must_use]
+    pub const fn repetitions(&self) -> u32 {
+        self.repetitions
+    }
+}
+
+impl BenchRunConfig {
     /// `warmups` unrecorded frames, then `repetitions` measurements of
     /// `samples` recorded frames each.
     #[must_use]
@@ -101,6 +121,44 @@ pub struct BenchBudgets {
     pub max_gpu_surface_layers: Option<u64>,
     /// Maximum allowed clip layers pushed by one frame.
     pub max_clip_layers: Option<u64>,
+}
+
+impl BenchBudgets {
+    /// Maximum allowed 95th-percentile frame time, in microseconds.
+    #[must_use]
+    pub const fn max_p95_us(&self) -> Option<u64> {
+        self.max_p95_us
+    }
+
+    /// Maximum allowed mean frame time, in microseconds.
+    #[must_use]
+    pub const fn max_mean_us(&self) -> Option<u64> {
+        self.max_mean_us
+    }
+
+    /// Maximum allowed share of sampled frames that rebuilt (0.0..=1.0).
+    #[must_use]
+    pub const fn max_rebuild_ratio(&self) -> Option<f64> {
+        self.max_rebuild_ratio
+    }
+
+    /// Maximum allowed compositor scene layers submitted by one frame.
+    #[must_use]
+    pub const fn max_scene_layers(&self) -> Option<u64> {
+        self.max_scene_layers
+    }
+
+    /// Maximum allowed embedded GPU surface layers submitted by one frame.
+    #[must_use]
+    pub const fn max_gpu_surface_layers(&self) -> Option<u64> {
+        self.max_gpu_surface_layers
+    }
+
+    /// Maximum allowed clip layers pushed by one frame.
+    #[must_use]
+    pub const fn max_clip_layers(&self) -> Option<u64> {
+        self.max_clip_layers
+    }
 }
 
 /// One `with_<budget>` builder method per budget; `None` leaves the metric

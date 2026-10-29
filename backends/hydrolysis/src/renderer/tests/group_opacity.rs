@@ -92,11 +92,11 @@ fn pumped(
 fn pixel(runtime: &mut HeadlessRuntime, x: usize, y: usize) -> [u8; 4] {
     let snapshot = runtime
         .pump_snapshot()
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame carries pixels");
     let (x, y) = (x * SCALE_PX, y * SCALE_PX);
-    let offset = (y * snapshot.width as usize + x) * 4;
-    snapshot.rgba8[offset..offset + 4]
+    let offset = (y * snapshot.width() as usize + x) * 4;
+    snapshot.rgba8()[offset..offset + 4]
         .try_into()
         .expect("a pixel is four bytes")
 }

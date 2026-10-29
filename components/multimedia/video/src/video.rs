@@ -740,6 +740,50 @@ pub struct PlaybackPolicy {
     pub power: PlaybackPowerPolicy,
 }
 
+impl PlaybackPolicy {
+    /// `true` for realtime streams (low-latency/live), `false` for VOD/static files.
+    #[must_use]
+    pub const fn realtime(&self) -> bool {
+        self.realtime
+    }
+
+    /// Minimum buffered duration before starting playback for VOD.
+    #[must_use]
+    pub const fn vod_start_buffer_ms(&self) -> u32 {
+        self.vod_start_buffer_ms
+    }
+
+    /// Minimum buffered duration to resume after a VOD stall.
+    #[must_use]
+    pub const fn vod_resume_buffer_ms(&self) -> u32 {
+        self.vod_resume_buffer_ms
+    }
+
+    /// Buffer level below which VOD enters buffering state.
+    #[must_use]
+    pub const fn vod_stall_buffer_ms(&self) -> u32 {
+        self.vod_stall_buffer_ms
+    }
+
+    /// For realtime mode, drop video frames that are later than this threshold.
+    #[must_use]
+    pub const fn live_max_video_late_ms(&self) -> u32 {
+        self.live_max_video_late_ms
+    }
+
+    /// Bounded segmented-network and adaptive-selection policy.
+    #[must_use]
+    pub const fn network(&self) -> NetworkPlaybackPolicy {
+        self.network
+    }
+
+    /// Required platform power path for this session.
+    #[must_use]
+    pub const fn get_power(&self) -> PlaybackPowerPolicy {
+        self.power
+    }
+}
+
 /// Power-path requirement for media playback.
 ///
 /// Required modes fail during player preparation when the platform, codec,

@@ -236,6 +236,29 @@ pub struct BundleFile {
 }
 
 impl BundleFile {
+    /// The bundle's location, relative to the manifest's own URL.
+    #[must_use]
+    pub const fn url(&self) -> &str {
+        self.url.as_str()
+    }
+
+    /// The bundle file's length in bytes. A download is read under this
+    /// bound: a response that declares or delivers more is refused without
+    /// being buffered, so the signed manifest — not the server — decides how
+    /// much memory a fetch may take.
+    #[must_use]
+    pub const fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// The SHA-256 digest of the bundle file's bytes.
+    #[must_use]
+    pub const fn sha256(&self) -> &Sha256Digest {
+        &self.sha256
+    }
+}
+
+impl BundleFile {
     /// The bundle file at `url`, `size` bytes long, hashing to `sha256`.
     #[must_use]
     pub fn new(url: impl Into<String>, size: u64, sha256: Sha256Digest) -> Self {
@@ -270,6 +293,62 @@ pub struct BundleManifest {
     /// text of that locale's translation file. Empty when it ships none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub translations: BTreeMap<String, String>,
+}
+
+impl BundleManifest {
+    /// The bundle version. A larger number is newer: the loader prefers the
+    /// newest verified bundle, and a published bundle is only ever preferred
+    /// to the baseline when its version is greater than the baseline's.
+    #[must_use]
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Sets the `version`.
+    pub const fn set_version(&mut self, version: u64) {
+        self.version = version;
+    }
+
+    /// The runtime the bundle was built for.
+    #[must_use]
+    pub const fn runtime(&self) -> RuntimeFingerprint {
+        self.runtime
+    }
+
+    /// The bundle file.
+    #[must_use]
+    pub const fn bundle(&self) -> &BundleFile {
+        &self.bundle
+    }
+
+    /// Every module the bundle carries, with the props contract hash each was
+    /// built against.
+    #[must_use]
+    pub const fn modules(&self) -> &BTreeMap<String, ContractHash> {
+        &self.modules
+    }
+
+    /// The contract hashes of the bundle's modules, for in-place edits.
+    pub const fn modules_mut(&mut self) -> &mut BTreeMap<String, ContractHash> {
+        &mut self.modules
+    }
+
+    /// The translation catalog the bundle ships, as locale tag to the TOML
+    /// text of that locale's translation file. Empty when it ships none.
+    #[must_use]
+    pub const fn translations(&self) -> &BTreeMap<String, String> {
+        &self.translations
+    }
+
+    /// The translation catalog the bundle ships, for in-place edits.
+    pub const fn translations_mut(&mut self) -> &mut BTreeMap<String, String> {
+        &mut self.translations
+    }
+
+    /// Sets the `translations`.
+    pub fn set_translations(&mut self, translations: BTreeMap<String, String>) {
+        self.translations = translations;
+    }
 }
 
 impl BundleManifest {
@@ -339,6 +418,25 @@ pub struct SignedManifest {
     pub manifest: BundleManifest,
     /// The ed25519 signature over [`BundleManifest::signed_bytes`].
     pub signature: SignatureBytes,
+}
+
+impl SignedManifest {
+    /// The manifest the signature covers.
+    #[must_use]
+    pub const fn manifest(&self) -> &BundleManifest {
+        &self.manifest
+    }
+
+    /// The manifest the signature covers, for in-place edits.
+    pub const fn manifest_mut(&mut self) -> &mut BundleManifest {
+        &mut self.manifest
+    }
+
+    /// The ed25519 signature over [`BundleManifest::signed_bytes`].
+    #[must_use]
+    pub const fn signature(&self) -> &SignatureBytes {
+        &self.signature
+    }
 }
 
 impl SignedManifest {

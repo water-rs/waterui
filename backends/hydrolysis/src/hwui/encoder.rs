@@ -67,6 +67,26 @@ pub struct PlatformViewBinding {
 }
 
 impl PlatformViewBinding {
+    /// The layer whose node hosts the view.
+    #[must_use]
+    pub const fn layer(&self) -> LayerId {
+        self.layer
+    }
+
+    /// The placement id of the view.
+    #[must_use]
+    pub const fn view(&self) -> u64 {
+        self.view
+    }
+
+    /// The view's bounds in the layer's local coordinates.
+    #[must_use]
+    pub const fn bounds(&self) -> kurbo::Rect {
+        self.bounds
+    }
+}
+
+impl PlatformViewBinding {
     /// A binding of `view` inside `layer` at `bounds`.
     #[must_use]
     pub const fn new(layer: LayerId, view: u64, bounds: kurbo::Rect) -> Self {
@@ -88,6 +108,26 @@ pub struct Recycle {
     pub recycled: Vec<(LayerId, Picture)>,
 }
 
+impl Recycle {
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<TreeOp<HwuiTarget>>, Vec<(LayerId, Picture)>) {
+        (self.ops, self.recycled)
+    }
+
+    /// The emptied op vector.
+    #[must_use]
+    pub const fn ops(&self) -> &[TreeOp<HwuiTarget>] {
+        self.ops.as_slice()
+    }
+
+    /// The pictures this commit replaced.
+    #[must_use]
+    pub const fn recycled(&self) -> &[(LayerId, Picture)] {
+        self.recycled.as_slice()
+    }
+}
+
 /// One encoded frame.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -100,6 +140,32 @@ pub struct Frame<'a> {
     pub content_animating: bool,
     /// The window clear the frame asks the host to draw first.
     pub clear: Option<u64>,
+}
+
+impl<'a> Frame<'a> {
+    /// The command buffer, header included.
+    #[must_use]
+    pub const fn words(&self) -> &'a [u32] {
+        self.words
+    }
+
+    /// What sampling the tree's animations reported.
+    #[must_use]
+    pub const fn sampling(&self) -> &Sampling {
+        &self.sampling
+    }
+
+    /// Whether recorded-content operands still animate.
+    #[must_use]
+    pub const fn content_animating(&self) -> bool {
+        self.content_animating
+    }
+
+    /// The window clear the frame asks the host to draw first.
+    #[must_use]
+    pub const fn clear(&self) -> Option<u64> {
+        self.clear
+    }
 }
 
 /// How a layer's node sits in its parent's list.

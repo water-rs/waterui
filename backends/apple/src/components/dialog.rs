@@ -283,7 +283,7 @@ fn present(state: &Rc<DialogState>) {
             action
                 .title()
                 .resolve(&state.env)
-                .content
+                .content()
                 .snapshot()
                 .to_semantic()
                 .as_ref(),
@@ -341,7 +341,7 @@ fn present(state: &Rc<DialogState>) {
         let title = action
             .title()
             .resolve(&state.env)
-            .content
+            .content()
             .snapshot()
             .to_semantic()
             .to_string();
@@ -445,10 +445,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
             child: mounted,
             env: ctx.env().clone(),
             is_presented: dialog.is_presented().clone(),
-            title: dialog.title().resolve(ctx.env()).content,
+            title: dialog.title().resolve(ctx.env()).content().clone(),
             message: dialog
                 .message_text()
-                .map(|message| message.resolve(ctx.env()).content),
+                .map(|message| message.resolve(ctx.env()).content().clone()),
             dialog,
             alert: RefCell::new(None),
         });

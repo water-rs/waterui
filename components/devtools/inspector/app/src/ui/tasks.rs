@@ -29,7 +29,7 @@ pub fn view(model: Model) -> impl View {
                 move || {
                     vstack((
                         task_header(),
-                        List::for_each(SignalCollection::new(tasks.clone()), task_row),
+                        List::for_each(SignalCollection::new(tasks.clone()), |row| task_row(&row)),
                     ))
                     .alignment(HorizontalAlignment::Leading)
                 }
@@ -62,16 +62,16 @@ fn task_header() -> impl View {
     .spacing(8.0)
 }
 
-fn task_row(row: TaskRow) -> ListItem {
-    let over = row.over_budget;
+fn task_row(row: &TaskRow) -> ListItem {
+    let over = row.over_budget();
 
     ListItem::new(
         hstack((
-            text(row.id),
+            text(row.id().clone()),
             spacer(),
-            column(text(Str::from(row.polls.to_string()))),
-            column(text(parts::format_us(row.mean_us))),
-            column(text(parts::format_us(u64::from(row.max_us)))),
+            column(text(Str::from(row.polls().to_string()))),
+            column(text(parts::format_us(row.mean_us()))),
+            column(text(parts::format_us(u64::from(row.max_us())))),
             column(text(Str::from(over.to_string())).foreground(if over > 0 {
                 Color::from(Orange)
             } else {
@@ -95,15 +95,15 @@ fn column(content: impl View) -> impl View {
 fn stall_row(row: StallRow) -> ListItem {
     let summary = Str::from(format!(
         "{} · {:.0}% of budget · {}",
-        row.task_type,
-        row.usage_pct,
-        parts::format_us(row.wall_us)
+        row.task_type(),
+        row.usage_pct(),
+        parts::format_us(row.wall_us())
     ));
 
     ListItem::new(
         vstack((
             text(summary).sub_headline().foreground(Orange),
-            backtrace_view(&row.backtrace),
+            backtrace_view(row.backtrace()),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(4.0)

@@ -31,6 +31,40 @@ pub struct WidgetDeclaration {
     pub families: Vec<String>,
 }
 
+impl WidgetDeclaration {
+    /// The attributed function's name — the `waterui_widget_*` export's
+    /// suffix after the crate name.
+    #[must_use]
+    pub const fn function(&self) -> &str {
+        self.function.as_str()
+    }
+
+    /// The `WidgetConfiguration` kind string; defaults to `function`.
+    #[must_use]
+    pub const fn kind(&self) -> &str {
+        self.kind.as_str()
+    }
+
+    /// The name shown in the widget gallery.
+    #[must_use]
+    pub const fn display_name(&self) -> &str {
+        self.display_name.as_str()
+    }
+
+    /// The description shown in the widget gallery.
+    #[must_use]
+    pub const fn description(&self) -> &str {
+        self.description.as_str()
+    }
+
+    /// The `WidgetFamily` case names the widget supports
+    /// (`systemSmall`, `systemMedium`, …).
+    #[must_use]
+    pub const fn families(&self) -> &[String] {
+        self.families.as_slice()
+    }
+}
+
 /// What a `#[widget_intent]` action declares — the `waterui_meta_intent_*`
 /// record payload. `kind` names the generated `Swift` `AppIntent` type
 /// (`swift_type` is its stable hash-derived identifier).

@@ -70,20 +70,20 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let core = renderer.new_core();
                 let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
                 let guards = [
-                    config.content.watch({
+                    config.content().watch({
                         let invalidate = Rc::clone(&invalidate);
                         move |_| invalidate()
                     }),
-                    config.paragraph_alignment.watch(move |_| invalidate()),
+                    config.paragraph_alignment().watch(move |_| invalidate()),
                 ];
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
                     accessibility_identity: Rc::new(()),
                     core,
-                    content: config.content,
-                    alignment: config.paragraph_alignment,
-                    line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
+                    content: config.content().clone(),
+                    alignment: config.paragraph_alignment().clone(),
+                    line_limit: config.line_limit().map(core::num::NonZeroUsize::get),
                     layout_dirty,
                     _guards: guards,
                     tap_span_targets: RefCell::new(Vec::new()),
@@ -580,9 +580,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let view = match view.downcast::<Metadata<GestureObserver>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                let GestureObserver {
-                    gesture, action, ..
-                } = value;
+                let (gesture, action) = value.into_parts();
                 // A node has no `content` at flush, so resolve the two
                 // content-derived pieces now (the default a11y label string and
                 // the gesture group identity) and store them in the effect.
@@ -619,13 +617,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<ScrollView>>() {
             Ok(scroll) => {
-                let ScrollViewParts {
-                    axis,
-                    content,
-                    controller,
-                    offset,
-                    ..
-                } = (*scroll).into_inner().into_inner();
+                let (axis, content, controller, offset) =
+                    (*scroll).into_inner().into_inner().into_parts();
                 let content = normalize_layout_view(content, env);
                 // A scroll surface owns §7.1 for its subtree: the layout
                 // pass hands the surface its facts and the child lays out
@@ -834,7 +827,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Err(view) => view,
         };
         let view = match view.downcast::<Native<TabsLayout>>() {
-            Ok(tabs) => return Self::build_tabs((*tabs).into_inner(), env, renderer),
+            Ok(tabs) => return Self::build_tabs(&(*tabs).into_inner(), env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<Native<Spacer>>() {

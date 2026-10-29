@@ -633,9 +633,10 @@ enum RecordedFontSource {
 
 impl From<FontDeclaration> for RecordedFont {
     fn from(font: FontDeclaration) -> Self {
+        let (name, source, crate_name, platforms) = font.into_parts();
         Self {
-            name: font.name,
-            source: match font.source {
+            name,
+            source: match source {
                 FontSource::Local {
                     crate_root,
                     relative_path,
@@ -646,8 +647,8 @@ impl From<FontDeclaration> for RecordedFont {
                 FontSource::Remote { url } => RecordedFontSource::Remote { url },
                 FontSource::BuiltIn => RecordedFontSource::BuiltIn,
             },
-            crate_name: font.crate_name,
-            platforms: font.platforms,
+            crate_name,
+            platforms,
         }
     }
 }
@@ -1272,9 +1273,9 @@ async fn resolve_fonts_with(
     let mut resolved = Vec::with_capacity(satisfied.len());
     for (decl, path) in satisfied {
         let path = path?;
-        debug!("Resolved font '{}' -> {}", decl.name, path.display());
+        debug!("Resolved font '{}' -> {}", decl.name(), path.display());
         resolved.push(ResolvedFont {
-            name: decl.name,
+            name: decl.name().to_owned(),
             path,
         });
     }
@@ -1297,14 +1298,17 @@ fn resolve_declarations(declarations: Vec<FontDeclaration>) -> Vec<FontDeclarati
     // Group by name
     let mut by_name: HashMap<String, Vec<FontDeclaration>> = HashMap::new();
     for decl in declarations {
-        by_name.entry(decl.name.clone()).or_default().push(decl);
+        by_name
+            .entry(decl.name().to_owned())
+            .or_default()
+            .push(decl);
     }
 
     let mut resolved: Vec<FontDeclaration> = by_name
         .into_values()
         .map(|mut decls| {
             // Sort by priority: Local > Remote > BuiltIn, take the first.
-            decls.sort_by_key(|d| match &d.source {
+            decls.sort_by_key(|d| match &d.source() {
                 FontSource::Local { .. } => 0,
                 FontSource::Remote { .. } => 1,
                 FontSource::BuiltIn => 2,
@@ -1312,7 +1316,7 @@ fn resolve_declarations(declarations: Vec<FontDeclaration>) -> Vec<FontDeclarati
             decls.into_iter().next().unwrap()
         })
         .collect();
-    resolved.sort_by(|left, right| left.name.cmp(&right.name));
+    resolved.sort_by(|left, right| left.name().cmp(right.name()));
     resolved
 }
 
@@ -1362,8 +1366,8 @@ async fn satisfy_font(
     registry: &FontRegistry,
     fetch: FontFetch,
 ) -> eyre::Result<PathBuf> {
-    let name = &decl.name;
-    match &decl.source {
+    let name = &decl.name();
+    match &decl.source() {
         FontSource::Local {
             crate_root,
             relative_path,
@@ -1380,7 +1384,7 @@ async fn satisfy_font(
                 format!(
                     "font '{name}' has an invalid local path '{}' (declared by {})",
                     relative_path.display(),
-                    decl.crate_name
+                    decl.crate_name()
                 )
             }),
         },
@@ -1410,8 +1414,8 @@ async fn satisfy_font(
 fn unsatisfiable_local_font(decl: &FontDeclaration, expected: &Path) -> eyre::Report {
     eyre::eyre!(
         "font '{}' is declared by {} at '{}', which does not exist in that crate",
-        decl.name,
-        decl.crate_name,
+        decl.name(),
+        decl.crate_name(),
         expected.display(),
     )
 }
@@ -1423,8 +1427,8 @@ fn unsatisfiable_builtin_font(decl: &FontDeclaration) -> eyre::Report {
         "font '{}' is declared by {} by name alone, but no font of that name \
          is in the built-in registry — give the declaration a `local_path` or a \
          `remote_path`",
-        decl.name,
-        decl.crate_name
+        decl.name(),
+        decl.crate_name()
     )
 }
 
@@ -1890,17 +1894,17 @@ async fn fetch_declared_font(
     registry: &FontRegistry,
     fetch: FontFetch,
 ) -> eyre::Result<FetchOutcome> {
-    let outcome = match &decl.source {
+    let outcome = match &decl.source() {
         // Whatever fetching cannot fix — a crate-local file that is not
         // there — is reported exactly as the build reports it.
         FontSource::Local { .. } => {
             match satisfy_font(host, decl, cache_dir, registry, fetch).await {
                 Ok(path) => FetchOutcome::Satisfied {
-                    name: decl.name.clone(),
+                    name: decl.name().to_owned(),
                     path,
                 },
                 Err(error) => FetchOutcome::Unsatisfiable {
-                    name: decl.name.clone(),
+                    name: decl.name().to_owned(),
                     error,
                 },
             }
@@ -1909,24 +1913,24 @@ async fn fetch_declared_font(
             match declaration_origin(decl, registry) {
                 Some(origin) => {
                     if let Some(path) =
-                        cached_font_entry(host, &decl.name, origin.url, cache_dir).await?
+                        cached_font_entry(host, decl.name(), origin.url, cache_dir).await?
                     {
                         FetchOutcome::Satisfied {
-                            name: decl.name.clone(),
+                            name: decl.name().to_owned(),
                             path,
                         }
                     } else {
                         let path =
-                            fetch_remote_font(host, &decl.name, origin, cache_dir, fetch).await?;
+                            fetch_remote_font(host, decl.name(), origin, cache_dir, fetch).await?;
                         FetchOutcome::Fetched {
-                            name: decl.name.clone(),
+                            name: decl.name().to_owned(),
                             path,
                         }
                     }
                 }
                 // Only a `BuiltIn` declaration reaches this arm.
                 None => FetchOutcome::Unsatisfiable {
-                    name: decl.name.clone(),
+                    name: decl.name().to_owned(),
                     error: unsatisfiable_builtin_font(decl),
                 },
             }
@@ -1942,9 +1946,9 @@ fn declaration_origin<'a>(
     decl: &'a FontDeclaration,
     registry: &'a FontRegistry,
 ) -> Option<FontOrigin<'a>> {
-    match &decl.source {
+    match &decl.source() {
         FontSource::Remote { url } => Some(FontOrigin { url, sha256: None }),
-        FontSource::BuiltIn => registry.origin(&decl.name),
+        FontSource::BuiltIn => registry.origin(decl.name()),
         FontSource::Local { .. } => None,
     }
 }
@@ -2706,9 +2710,9 @@ mod tests {
         let declarations =
             manifest_font_declarations(&manifest, Path::new("/project")).expect("declarations");
         assert_eq!(declarations.len(), 1);
-        assert_eq!(declarations[0].name, "Inter");
-        assert_eq!(declarations[0].crate_name, "Demo");
-        assert!(matches!(declarations[0].source, FontSource::BuiltIn));
+        assert_eq!(declarations[0].name(), "Inter");
+        assert_eq!(declarations[0].crate_name(), "Demo");
+        assert!(matches!(declarations[0].source(), FontSource::BuiltIn));
     }
 
     #[test]
@@ -2743,7 +2747,7 @@ mod tests {
         let FontSource::Local {
             crate_root,
             relative_path,
-        } = &declarations[0].source
+        } = &declarations[0].source()
         else {
             panic!("expected a local font source");
         };

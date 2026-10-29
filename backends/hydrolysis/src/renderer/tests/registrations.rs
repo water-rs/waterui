@@ -407,7 +407,7 @@ fn the_platform_view_table_holds_each_view_once_after_n_frames() {
         // A snapshot pump renders the frame like a real host's encoded
         // frame; publish runs once per encoded frame, as the host does.
         let pump = runtime.pump_at(true, at);
-        assert!(pump.profile.counters.rendered);
+        assert!(pump.profile().counters().rendered());
         sink.table().borrow_mut().publish();
     }
 
@@ -418,7 +418,10 @@ fn the_platform_view_table_holds_each_view_once_after_n_frames() {
         2,
         "each platform view holds its placement once, got {placements:?}"
     );
-    let mut ids: Vec<u64> = placements.iter().map(|placement| placement.id).collect();
+    let mut ids: Vec<u64> = placements
+        .iter()
+        .map(crate::platform_view::PlatformViewPlacement::id)
+        .collect();
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 2, "no view may record twice in one frame");
@@ -445,13 +448,13 @@ fn each_runtime_mints_platform_view_ids_from_its_own_sink() {
             MinimalTestTheme::default(),
         );
         let pump = runtime.pump_at(true, Instant::now());
-        assert!(pump.profile.counters.rendered);
+        assert!(pump.profile().counters().rendered());
         sink.table().borrow_mut().publish();
         let placements = sink.table().borrow().placements().to_vec();
         let [placement] = placements.as_slice() else {
             panic!("the probe view is placed exactly once, got {placements:?}");
         };
-        placement.id
+        placement.id()
     };
     let first = first_published_id();
     let second = first_published_id();
@@ -489,10 +492,10 @@ fn only_an_interactive_target_above_a_platform_view_takes_its_press() {
     let [placed] = core.materialized_platform_views.as_slice() else {
         panic!("the probe view is placed exactly once");
     };
-    let view = placed.placement.id;
+    let view = placed.placement.id();
     let decorated = kurbo::Point::new(
-        f64::from(placed.placement.x) + 10.0,
-        f64::from(placed.placement.y) + 10.0,
+        f64::from(placed.placement.x()) + 10.0,
+        f64::from(placed.placement.y()) + 10.0,
     );
     assert!(
         !core.platform_view_occluded(view, decorated),

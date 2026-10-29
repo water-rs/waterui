@@ -421,31 +421,32 @@ fn merge_manifests(
         .next()
         .ok_or_else(|| eyre::eyre!("No Apple resource manifests were built"))?;
     for manifest in manifests {
-        for asset in manifest.assets {
+        let (_, _, mounts, assets) = manifest.into_parts();
+        for asset in assets {
             if let Some(existing) = merged
-                .assets
+                .assets()
                 .iter()
-                .find(|existing| existing.logical_path == asset.logical_path)
+                .find(|existing| existing.logical_path() == asset.logical_path())
             {
                 if existing != &asset {
                     bail!(
                         "Apple slices declare conflicting assets at {}",
-                        asset.logical_path.display()
+                        asset.logical_path().display()
                     );
                 }
             } else {
-                merged.assets.push(asset);
+                merged.assets_mut().push(asset);
             }
         }
-        for mount in manifest.mounts {
-            if !merged.mounts.contains(&mount) {
-                merged.mounts.push(mount);
+        for mount in mounts {
+            if !merged.mounts().contains(&mount) {
+                merged.mounts_mut().push(mount);
             }
         }
     }
     merged
-        .assets
-        .sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+        .assets_mut()
+        .sort_by(|left, right| left.logical_path().cmp(right.logical_path()));
     Ok(merged)
 }
 
@@ -696,16 +697,16 @@ mod tests {
             resource_manifest("desktop.json"),
         ])
         .unwrap();
-        assert_eq!(merged.assets.len(), 2);
-        assert_eq!(merged.assets[0].logical_path, Path::new("desktop.json"));
-        assert_eq!(merged.assets[1].logical_path, Path::new("phone.json"));
+        assert_eq!(merged.assets().len(), 2);
+        assert_eq!(merged.assets()[0].logical_path(), Path::new("desktop.json"));
+        assert_eq!(merged.assets()[1].logical_path(), Path::new("phone.json"));
     }
 
     #[test]
     fn resource_union_rejects_conflicting_platform_definitions() {
         let first = resource_manifest("shared.json");
         let mut second = first.clone();
-        second.assets[0].source_path = PathBuf::from("/other/shared.json");
+        second.assets_mut()[0].set_source_path(PathBuf::from("/other/shared.json"));
         assert!(merge_manifests(vec![first, second]).is_err());
     }
 

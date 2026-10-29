@@ -88,6 +88,14 @@ pub struct Cursor {
     pub style: Computed<CursorStyle>,
 }
 
+impl Cursor {
+    /// The cursor style to display, can be reactive.
+    #[must_use]
+    pub const fn style(&self) -> &Computed<CursorStyle> {
+        &self.style
+    }
+}
+
 impl MetadataKey for Cursor {}
 
 impl Cursor {

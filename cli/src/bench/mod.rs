@@ -187,14 +187,14 @@ pub async fn run_bench_suite(
         .arg("-E")
         .arg(nextest_filter_expression(options.filter.as_deref()))
         .current_dir(&options.path)
-        .env(BENCH_WARMUPS_ENV, options.config.warmups.to_string());
+        .env(BENCH_WARMUPS_ENV, options.config.warmups().to_string());
     // Cargo runs in the project and reads its CLI-managed deployment targets
     // from .cargo/config.toml, just like the user's own cargo commands.
     command
-        .env(BENCH_SAMPLES_ENV, options.config.samples.to_string())
+        .env(BENCH_SAMPLES_ENV, options.config.samples().to_string())
         .env(
             BENCH_REPETITIONS_ENV,
-            options.config.repetitions.to_string(),
+            options.config.repetitions().to_string(),
         )
         .env(BENCH_REPORT_DIR_ENV, &report_dir)
         .kill_on_drop(true);
@@ -259,26 +259,29 @@ fn apply_budget_cap_envs(command: &mut smol::process::Command, caps: BenchBudget
             command.env(name, value);
         }
     };
-    set(BENCH_MAX_P95_US_ENV, caps.max_p95_us.map(|v| v.to_string()));
+    set(
+        BENCH_MAX_P95_US_ENV,
+        caps.max_p95_us().map(|v| v.to_string()),
+    );
     set(
         BENCH_MAX_MEAN_US_ENV,
-        caps.max_mean_us.map(|v| v.to_string()),
+        caps.max_mean_us().map(|v| v.to_string()),
     );
     set(
         BENCH_MAX_REBUILD_RATIO_ENV,
-        caps.max_rebuild_ratio.map(|v| v.to_string()),
+        caps.max_rebuild_ratio().map(|v| v.to_string()),
     );
     set(
         BENCH_MAX_SCENE_LAYERS_ENV,
-        caps.max_scene_layers.map(|v| v.to_string()),
+        caps.max_scene_layers().map(|v| v.to_string()),
     );
     set(
         BENCH_MAX_GPU_SURFACE_LAYERS_ENV,
-        caps.max_gpu_surface_layers.map(|v| v.to_string()),
+        caps.max_gpu_surface_layers().map(|v| v.to_string()),
     );
     set(
         BENCH_MAX_CLIP_LAYERS_ENV,
-        caps.max_clip_layers.map(|v| v.to_string()),
+        caps.max_clip_layers().map(|v| v.to_string()),
     );
 }
 

@@ -450,11 +450,11 @@ fn wire(
     ctx: &RenderContext<'_>,
 ) {
     // `value` and `decorated` both drive `syncFromModel`.
-    leaf.watch(&config.value, {
+    leaf.watch(config.value(), {
         let state = Rc::clone(state);
         move |_| sync_from_model(&state.borrow())
     });
-    leaf.watch(&config.decorated, {
+    leaf.watch(config.decorated(), {
         let state = Rc::clone(state);
         move |_| sync_from_model(&state.borrow())
     });
@@ -504,7 +504,7 @@ fn wire(
 
     // The label's semantic text is spoken on the control — on `AppKit` the
     // picker and the toggle button get it (`additionalTargets`).
-    let accessibility_label = config.label.accessibility_label();
+    let accessibility_label = config.label().accessibility_label();
     leaf.bind(&accessibility_label, {
         let state = Rc::clone(state);
         move |styled| {
@@ -532,13 +532,13 @@ fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf 
     let host_view: &PlatformView = &host;
 
     let label = ctx
-        .render(waterui_backend_core::AnyView::new(config.label.clone()))
+        .render(waterui_backend_core::AnyView::new(config.label().clone()))
         .mount(host_view);
     cocoa_ui::view::hide_from_accessibility(label.view());
 
     let decorated_keys = Rc::new(RefCell::new(
         config
-            .decorated
+            .decorated()
             .snapshot()
             .iter()
             .map(|day| parts_of(*day))
@@ -551,9 +551,9 @@ fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf 
         #[cfg(target_os = "macos")]
         mtm,
         label,
-        value: config.value.clone(),
-        decorated: config.decorated.clone(),
-        range: config.range.clone(),
+        value: config.value().clone(),
+        decorated: config.decorated().clone(),
+        range: config.range().clone(),
         decorated_keys: Rc::clone(&decorated_keys),
         #[cfg(target_os = "ios")]
         calendar: platform::CalendarView::new(mtm),
@@ -625,7 +625,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         if let Some(hook) = ctx.env().get::<Hook<MultiDatePickerConfig>>() {
             return ctx.render(hook.apply(ctx.env(), config));
         }
-        config.label = config.label.resolve(ctx.env());
+        let label = config.label().clone().resolve(ctx.env());
+        config.set_label(label);
         render(config, ctx)
     });
 }
@@ -674,9 +675,9 @@ fn platform_font(
     resolved: &waterui::text::font::ResolvedFont,
 ) -> Retained<cocoa_ui::Font> {
     use waterui::text::font::FontDesign;
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    match resolved.family.as_deref() {
+    let size = f64::from(resolved.size());
+    let weight = platform_weight(resolved.weight());
+    match resolved.family() {
         Some(family) if !family.is_empty() => {
             let mut resolved_font = None;
             for candidate in family
@@ -694,7 +695,7 @@ fn platform_font(
             }
             resolved_font.unwrap_or_else(|| panic!("WaterUI: font family '{family}' not found"))
         }
-        _ => match resolved.design {
+        _ => match resolved.design() {
             FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
             FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
         },

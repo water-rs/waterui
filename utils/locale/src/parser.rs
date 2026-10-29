@@ -114,6 +114,32 @@ pub struct DualPluralForms {
 }
 
 impl DualPluralForms {
+    /// one + one
+    #[must_use]
+    pub fn one_one(&self) -> Option<&str> {
+        self.one_one.as_deref()
+    }
+
+    /// one + other
+    #[must_use]
+    pub fn one_other(&self) -> Option<&str> {
+        self.one_other.as_deref()
+    }
+
+    /// other + one
+    #[must_use]
+    pub fn other_one(&self) -> Option<&str> {
+        self.other_one.as_deref()
+    }
+
+    /// other + other (fallback, required)
+    #[must_use]
+    pub const fn other_other(&self) -> &str {
+        self.other_other.as_str()
+    }
+}
+
+impl DualPluralForms {
     /// Get the translation for two plural categories.
     #[must_use]
     pub fn get(&self, cat1: PluralCategory, cat2: PluralCategory) -> &str {

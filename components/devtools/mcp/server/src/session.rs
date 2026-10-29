@@ -143,7 +143,7 @@ impl ToolDispatch for SessionHandle {
         async move {
             handle
                 .request(|reply| Command::Snapshot {
-                    format: args.format,
+                    format: args.format(),
                     reply,
                 })
                 .await
@@ -206,8 +206,8 @@ impl ToolDispatch for SessionHandle {
         async move {
             handle
                 .request(|reply| Command::TypeText {
-                    text: args.text,
-                    settle: args.settle,
+                    text: args.text().to_owned(),
+                    settle: args.settle(),
                     reply,
                 })
                 .await
@@ -337,57 +337,57 @@ fn selector_from<R: RuntimeDriver>(
     app: &mut SemanticApp<R>,
     args: &SelectorArgs,
 ) -> Result<Selector, String> {
-    if args.within.is_some() && args.children_of.is_some() {
+    if args.within().is_some() && args.children_of().is_some() {
         return Err("`within` and `children_of` are mutually exclusive".to_owned());
     }
     let mut selector = Selector::default();
-    if let Some(role) = &args.role {
+    if let Some(role) = &args.role() {
         selector = selector.role(resolve_role(role)?);
     }
-    if let Some(label) = &args.label {
-        selector = selector.label(label.clone());
+    if let Some(label) = args.label() {
+        selector = selector.label(label.to_owned());
     }
-    if let Some(label_contains) = &args.label_contains {
-        selector = selector.label_contains(label_contains.clone());
+    if let Some(label_contains) = args.label_contains() {
+        selector = selector.label_contains(label_contains.to_owned());
     }
-    if let Some(identifier) = &args.identifier {
-        selector = selector.identifier(identifier.clone());
+    if let Some(identifier) = args.identifier() {
+        selector = selector.identifier(identifier.to_owned());
     }
-    if let Some(value) = &args.value {
-        selector = selector.value(value.clone());
+    if let Some(value) = args.value() {
+        selector = selector.value(value.to_owned());
     }
-    if let Some(value_contains) = &args.value_contains {
-        selector = selector.value_contains(value_contains.clone());
+    if let Some(value_contains) = args.value_contains() {
+        selector = selector.value_contains(value_contains.to_owned());
     }
-    if let Some(enabled) = args.enabled {
+    if let Some(enabled) = args.enabled() {
         selector = selector.enabled(enabled);
     }
-    if let Some(selected) = args.selected {
+    if let Some(selected) = args.selected() {
         selector = selector.selected(selected);
     }
-    if let Some(checked) = args.checked {
+    if let Some(checked) = args.checked() {
         selector = selector.checked(checked);
     }
-    if args.mixed.unwrap_or(false) {
+    if args.mixed().unwrap_or(false) {
         selector = selector.mixed();
     }
-    if let Some(expanded) = args.expanded {
+    if let Some(expanded) = args.expanded() {
         selector = selector.expanded(expanded);
     }
-    if let Some(busy) = args.busy {
+    if let Some(busy) = args.busy() {
         selector = selector.busy(busy);
     }
-    if let Some(hidden) = args.hidden {
+    if let Some(hidden) = args.hidden() {
         selector = selector.hidden(hidden);
     }
     let mut scope = |id: u64| -> Result<waterui_testing::ElementRef<R>, String> {
         app.element(NodeId::from(AccessibilityNodeId(id)))
             .ok_or_else(|| format!("scope anchor node #{id} is not in the current tree"))
     };
-    if let Some(id) = args.within {
+    if let Some(id) = args.within() {
         selector = selector.within(scope(id)?);
     }
-    if let Some(id) = args.children_of {
+    if let Some(id) = args.children_of() {
         selector = selector.children_of(scope(id)?);
     }
     Ok(selector)
@@ -477,7 +477,7 @@ impl<'a> Session<'a> {
     }
 
     fn find(&mut self, args: &FindArgs) -> ToolResult {
-        let selector = match selector_from(&mut self.app, &args.criteria) {
+        let selector = match selector_from(&mut self.app, args.criteria()) {
             Ok(selector) => selector,
             Err(error) => return ToolResult::error(error),
         };
@@ -495,12 +495,12 @@ impl<'a> Session<'a> {
     }
 
     fn act(&mut self, args: &ActArgs) -> ToolResult {
-        if matches!(args.action, ActAction::ClearFocus) {
+        if matches!(args.action(), ActAction::ClearFocus) {
             self.app.queue_clear_ui_focus();
-            return self.finish_input(args.settle);
+            return self.finish_input(args.settle());
         }
-        let Some(node) = args.node else {
-            return ToolResult::error(format!("act `{}` requires `node`", args.action.as_str()));
+        let Some(node) = args.node() else {
+            return ToolResult::error(format!("act `{}` requires `node`", args.action().as_str()));
         };
         let node_id = NodeId::from(AccessibilityNodeId(node));
         let revision = self.app.tree().revision();
@@ -521,17 +521,17 @@ impl<'a> Session<'a> {
             return ToolResult::error(format!(
                 "node {} does not support `{}`; supported actions: {supported}",
                 tree::node_line(&node_snapshot, self.app.tree().focus() == node_id),
-                args.action.as_str(),
+                args.action().as_str(),
             ));
         }
         let handled = self.app.queue_action(node_id, action, data);
         if !handled {
             return ToolResult::error(format!(
                 "the runtime did not handle `{}` on node #{node}",
-                args.action.as_str(),
+                args.action().as_str(),
             ));
         }
-        self.finish_input(args.settle)
+        self.finish_input(args.settle())
     }
 
     /// Resolves the point an input tool dispatches at: viewport `x`/`y`
@@ -563,12 +563,15 @@ impl<'a> Session<'a> {
     }
 
     fn pointer(&mut self, args: &PointerArgs) -> ToolResult {
-        let tool = format!("pointer {}", tree::snake_case(&format!("{:?}", args.kind)));
-        let (x, y) = match self.pointer_point(&tool, args.node, args.x, args.y) {
+        let tool = format!(
+            "pointer {}",
+            tree::snake_case(&format!("{:?}", args.kind()))
+        );
+        let (x, y) = match self.pointer_point(&tool, args.node(), args.x(), args.y()) {
             Ok(point) => point,
             Err(result) => return result,
         };
-        match args.kind {
+        match args.kind() {
             PointerKind::Tap => {
                 self.app.queue_pointer_down(x, y);
                 self.app.queue_pointer_up(x, y);
@@ -579,15 +582,15 @@ impl<'a> Session<'a> {
             PointerKind::Hover => self.app.queue_hover_at(x, y),
             PointerKind::SecondaryClick => self.app.queue_secondary_click(x, y),
             PointerKind::Drag => {
-                let (Some(to_x), Some(to_y)) = (args.to_x, args.to_y) else {
+                let (Some(to_x), Some(to_y)) = (args.to_x(), args.to_y()) else {
                     return ToolResult::error("`drag` requires `to_x` and `to_y`");
                 };
-                let anchor = args.to_node.or(args.node);
+                let anchor = args.to_node().or_else(|| args.node());
                 let (to_x, to_y) = match self.pointer_point(&tool, anchor, to_x, to_y) {
                     Ok(point) => point,
                     Err(result) => return result,
                 };
-                let steps = args.steps.map_or_else(DragOptions::default, |steps| {
+                let steps = args.steps().map_or_else(DragOptions::default, |steps| {
                     DragOptions::default().with_steps(steps)
                 });
                 self.app.queue_drag_from_to_with(x, y, to_x, to_y, steps);
@@ -596,36 +599,36 @@ impl<'a> Session<'a> {
                 self.app.queue_scroll_at(
                     x,
                     y,
-                    args.dx.unwrap_or(0.0),
-                    args.dy.unwrap_or(0.0),
-                    matches!(args.unit, Some(ScrollUnit::Line)),
+                    args.dx().unwrap_or(0.0),
+                    args.dy().unwrap_or(0.0),
+                    matches!(args.unit(), Some(ScrollUnit::Line)),
                 );
             }
             PointerKind::Magnify => {
-                let Some(factor) = args.factor else {
+                let Some(factor) = args.factor() else {
                     return ToolResult::error("`magnify` requires `factor`");
                 };
                 self.app.queue_magnify_at(x, y, factor);
             }
         }
-        self.finish_input(args.settle)
+        self.finish_input(args.settle())
     }
 
     fn drop_files(&mut self, args: &DropFilesArgs) -> ToolResult {
-        if args.paths.is_empty() {
+        if args.paths().is_empty() {
             return ToolResult::error("`drop_files` requires at least one path");
         }
-        let (x, y) = match self.pointer_point("drop_files", args.node, args.x, args.y) {
+        let (x, y) = match self.pointer_point("drop_files", args.node(), args.x(), args.y()) {
             Ok(point) => point,
             Err(result) => return result,
         };
-        self.app.queue_drop_files_at(x, y, &args.paths);
-        self.finish_input(args.settle)
+        self.app.queue_drop_files_at(x, y, args.paths());
+        self.finish_input(args.settle())
     }
 
     fn key(&mut self, args: &KeyArgs) -> ToolResult {
         let mut modifiers = waterui_testing::Modifiers::default();
-        for name in &args.modifiers {
+        for name in args.modifiers() {
             match name.as_str() {
                 "shift" => modifiers.shift = true,
                 "ctrl" => modifiers.control = true,
@@ -638,15 +641,15 @@ impl<'a> Session<'a> {
                 }
             }
         }
-        let mut chars = args.key.chars();
+        let mut chars = args.key().chars();
         let key = if let (Some(ch), None) = (chars.next(), chars.next()) {
             KeyCode::Character(ch.to_string())
         } else {
-            KeyCode::Named(args.key.clone())
+            KeyCode::Named(args.key().to_owned())
         };
         self.app.queue_key_press(key.clone(), modifiers);
         self.app.queue_key_release(key, modifiers);
-        self.finish_input(args.settle)
+        self.finish_input(args.settle())
     }
 
     /// Answers an input dispatch: `settle` (the default) pumps the runtime to
@@ -665,9 +668,9 @@ impl<'a> Session<'a> {
 
     fn advance(&mut self, args: &AdvanceArgs) -> ToolResult {
         let duration = args
-            .duration_ms
+            .duration_ms()
             .map_or(VIRTUAL_FRAME, Duration::from_millis);
-        if args.screenshot.unwrap_or(false) {
+        if args.screenshot().unwrap_or(false) {
             // The readback pump inside `snapshot` is the last frame of the
             // advance, so the image lands exactly `duration` past the previous
             // instant.
@@ -689,38 +692,39 @@ impl<'a> Session<'a> {
 
     fn wait(&mut self, args: &WaitArgs) -> ToolResult {
         let mut expectations = Vec::new();
-        if let Some(expect) = &args.exists {
-            match selector_from(&mut self.app, &expect.selector) {
+        if let Some(expect) = &args.exists() {
+            match selector_from(&mut self.app, expect.selector()) {
                 Ok(selector) => expectations.push(apply_inverted(
                     self.app.expect_exists(selector),
-                    expect.inverted,
+                    expect.inverted(),
                 )),
                 Err(error) => return ToolResult::error(error),
             }
         }
-        if let Some(expect) = &args.not_exists {
-            match selector_from(&mut self.app, &expect.selector) {
+        if let Some(expect) = &args.not_exists() {
+            match selector_from(&mut self.app, expect.selector()) {
                 Ok(selector) => expectations.push(apply_inverted(
                     self.app.expect_not_exists(selector),
-                    expect.inverted,
+                    expect.inverted(),
                 )),
                 Err(error) => return ToolResult::error(error),
             }
         }
-        if let Some(value_eq) = &args.value_eq {
-            match selector_from(&mut self.app, &value_eq.selector) {
+        if let Some(value_eq) = &args.value_eq() {
+            match selector_from(&mut self.app, value_eq.selector()) {
                 Ok(selector) => expectations.push(apply_inverted(
-                    self.app.expect_value_eq(selector, value_eq.value.clone()),
-                    value_eq.inverted,
+                    self.app
+                        .expect_value_eq(selector, value_eq.value().to_owned()),
+                    value_eq.inverted(),
                 )),
                 Err(error) => return ToolResult::error(error),
             }
         }
-        if let Some(expect) = &args.focus {
-            match selector_from(&mut self.app, &expect.selector) {
+        if let Some(expect) = &args.focus() {
+            match selector_from(&mut self.app, expect.selector()) {
                 Ok(selector) => expectations.push(apply_inverted(
                     self.app.expect_ui_focus(selector),
-                    expect.inverted,
+                    expect.inverted(),
                 )),
                 Err(error) => return ToolResult::error(error),
             }
@@ -730,8 +734,9 @@ impl<'a> Session<'a> {
                 "`wait` requires at least one of `exists`, `not_exists`, `value_eq`, or `focus`",
             );
         }
-        let timeout = Duration::from_millis(args.timeout_ms.unwrap_or(5000));
-        let options = WaitOptions::new(timeout).enforce_order(args.enforce_order.unwrap_or(false));
+        let timeout = Duration::from_millis(args.timeout_ms().unwrap_or(5000));
+        let options =
+            WaitOptions::new(timeout).enforce_order(args.enforce_order().unwrap_or(false));
         let status = match self.app.wait_for(&expectations, options) {
             WaitResult::Completed => "fulfilled",
             WaitResult::TimedOut => "timed out",
@@ -744,7 +749,7 @@ impl<'a> Session<'a> {
 
     fn screenshot(&mut self) -> ToolResult {
         let mut snapshot = self.app.snapshot();
-        crate::png::flatten_alpha_over_white(&mut snapshot.rgba8);
+        crate::png::flatten_alpha_over_white(snapshot.rgba8_mut());
         match crate::png::encode(&snapshot) {
             Ok(bytes) => ToolResult::image(bytes, "image/png"),
             Err(error) => ToolResult::error(format!("failed to encode screenshot: {error}")),
@@ -776,11 +781,10 @@ fn act_request(
     node: &waterui_testing::NodeSnapshot,
 ) -> Result<(Action, Option<ActionData>), String> {
     let value = || {
-        args.value
-            .clone()
-            .ok_or_else(|| format!("action `{}` requires `value`", args.action.as_str()))
+        args.value()
+            .ok_or_else(|| format!("action `{}` requires `value`", args.action().as_str()))
     };
-    match args.action {
+    match args.action() {
         ActAction::Click => Ok((Action::Click, None)),
         ActAction::Focus => Ok((Action::Focus, None)),
         ActAction::Increment => Ok((Action::Increment, None)),

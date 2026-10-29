@@ -279,21 +279,21 @@ fn bind_params<'s>(
     check_inputs(stage, snippet)?;
     let mut composed = Stage::new(snippet);
     for (param, source) in snippet.params().iter().zip(stage.params) {
-        let components = components(param.ty);
+        let components = components(param.ty());
         match *source {
             ParamSource::Constant(values) => {
-                let value = param_value(param.ty, values).ok_or_else(|| {
+                let value = param_value(param.ty(), values).ok_or_else(|| {
                     mismatch(
                         stage.name,
                         format!(
                             "parameter `{}` is {:?}, but its constant has {} components",
-                            param.name,
-                            param.ty,
+                            param.name(),
+                            param.ty(),
                             values.len()
                         ),
                     )
                 })?;
-                composed = composed.constant(&param.name, value);
+                composed = composed.constant(param.name(), value);
             }
             ParamSource::Param(offset) => {
                 let first = stage.param_base + offset;
@@ -302,12 +302,12 @@ fn bind_params<'s>(
                         stage.name,
                         format!(
                             "parameter `{}` reads filter parameters {first}..{}, but the filter has {param_count}",
-                            param.name,
+                            param.name(),
                             first + components
                         ),
                     ));
                 }
-                dynamic.insert((index, param.name.clone()), (first, components));
+                dynamic.insert((index, param.name().to_owned()), (first, components));
             }
         }
     }
@@ -349,19 +349,19 @@ fn passes(
                 // sample; a point-sampled fold works anywhere.
                 let folded = match (fold, folded) {
                     (true, Some(folded))
-                        if folded.sampler == SamplerFilter::Point
-                            || filterable(folded.segment.stages.start) =>
+                        if folded.sampler() == SamplerFilter::Point
+                            || filterable(folded.segment().stages().start) =>
                     {
                         Some(folded)
                     }
                     _ => None,
                 };
-                match (folded, filterable(plain.stages.start), manual) {
+                match (folded, filterable(plain.stages().start), manual) {
                     // The colour prefix runs inside the stage's samples:
                     // this pass replaces it.
                     (Some(folded), _, _) => {
                         selected.pop();
-                        selected.push((folded.segment, Some(folded.sampler)));
+                        selected.push((folded.segment().clone(), Some(folded.sampler())));
                     }
                     // The input has no hardware filtering: texel loads
                     // implement the sample, bound with a point sampler.
@@ -376,7 +376,7 @@ fn passes(
 
     let mut pass_of_stage = alloc::vec![0; expanded.len()];
     for (pass, (segment, _)) in selected.iter().enumerate() {
-        for stage in segment.stages.clone() {
+        for stage in segment.stages().clone() {
             pass_of_stage[stage] = pass;
         }
     }
@@ -388,7 +388,7 @@ fn passes(
             // piece has no shape or auxiliary inputs.
             let (name, shape, aux) = match sampler {
                 Some(_) => {
-                    let stage = &expanded[segment.stages.end - 1];
+                    let stage = &expanded[segment.stages().end - 1];
                     let aux = stage
                         .aux
                         .iter()
@@ -400,16 +400,16 @@ fn passes(
                         .collect();
                     (stage.name, stage.shape, aux)
                 }
-                None => (expanded[segment.stages.start].name, None, Vec::new()),
+                None => (expanded[segment.stages().start].name, None, Vec::new()),
             };
             let uniforms = segment
-                .uniform
-                .members
+                .uniform()
+                .members()
                 .iter()
                 .map(|member| {
-                    let (param, components) = dynamic[&(member.stage, member.param.clone())];
+                    let (param, components) = dynamic[&(member.stage(), member.param().to_owned())];
                     UniformSlot {
-                        offset: member.offset,
+                        offset: member.offset(),
                         param,
                         components,
                     }

@@ -525,7 +525,7 @@ fn uikit_runtime(view: impl View) -> HeadlessRuntime {
 }
 
 fn uikit_band() -> RubberBand {
-    match TouchScrollConfig::uikit_default().physics.overscroll {
+    match TouchScrollConfig::uikit_default().physics().overscroll() {
         Overscroll::RubberBand(band) => band,
         Overscroll::Clamped | Overscroll::Stretch(_) => panic!("the UIKit family rubber-bands"),
     }

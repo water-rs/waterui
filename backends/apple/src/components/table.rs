@@ -545,7 +545,7 @@ fn materialize_column(
     // `TextConfig` — `paragraph_alignment`, `line_limit` — is consumed and
     // released here, as `WuiTableColumnNode` releases the alignment signal.
     let label_config = column.label().resolve(&env);
-    let label_content = label_config.content;
+    let label_content = label_config.content().clone();
 
     // A label `content` event only records the reload request while a
     // transaction is active; otherwise it drains immediately — the watch

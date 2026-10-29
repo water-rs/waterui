@@ -208,9 +208,9 @@ fn emit_bench_human(shell: &Shell, report: &BenchReport) {
         shell,
         "Bench report: {} (warmups={} samples={} repetitions={})",
         bench_target_label(report),
-        report.config.warmups,
-        report.config.samples,
-        report.config.repetitions
+        report.config.warmups(),
+        report.config.samples(),
+        report.config.repetitions()
     );
     for measurement in &report.measurements {
         note!(
@@ -284,30 +284,30 @@ fn budget_headroom_lines(budgets: &BenchBudgets, measurement: &PerfMeasurement) 
         )
     }
     let mut lines = Vec::new();
-    if let Some(limit) = budgets.max_p95_us {
+    if let Some(limit) = budgets.max_p95_us() {
         lines.push(count_line("frame p95 us", measurement.p95_us, limit));
     }
-    if let Some(limit) = budgets.max_mean_us {
+    if let Some(limit) = budgets.max_mean_us() {
         lines.push(count_line("frame mean us", measurement.mean_us, limit));
     }
-    if let Some(limit) = budgets.max_rebuild_ratio {
+    if let Some(limit) = budgets.max_rebuild_ratio() {
         let actual = rebuild_ratio(measurement);
         lines.push(format!(
             "rebuild ratio {actual:.3}/{limit} ({})",
             headroom(actual, limit)
         ));
     }
-    if let Some(limit) = budgets.max_scene_layers {
+    if let Some(limit) = budgets.max_scene_layers() {
         lines.push(count_line("scene layers", measurement.scene_layers, limit));
     }
-    if let Some(limit) = budgets.max_gpu_surface_layers {
+    if let Some(limit) = budgets.max_gpu_surface_layers() {
         lines.push(count_line(
             "gpu-surface layers",
             measurement.gpu_surface_layers,
             limit,
         ));
     }
-    if let Some(limit) = budgets.max_clip_layers {
+    if let Some(limit) = budgets.max_clip_layers() {
         lines.push(count_line("clip layers", measurement.clip_layers, limit));
     }
     lines

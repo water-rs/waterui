@@ -1152,10 +1152,7 @@ pub trait ViewExt: View + Sized {
         self,
         menu: impl crate::metadata::context_menu::IntoContextMenu,
     ) -> crate::metadata::context_menu::ContextMenuView<Self> {
-        crate::metadata::context_menu::ContextMenuView {
-            content: self,
-            menu: menu.into_context_menu(),
-        }
+        crate::metadata::context_menu::ContextMenuView::new(self, menu.into_context_menu())
     }
 
     /// Presents `overlay` next to this view, above all other content in the

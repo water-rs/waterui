@@ -49,16 +49,8 @@ pub struct SliderRenderState<E: crate::text::TextEngine> {
 
 impl<E: crate::text::TextEngine> SliderRenderState<E> {
     pub(crate) fn from_config(config: SliderConfig) -> Self {
-        let SliderConfig {
-            label,
-            min_value_label,
-            max_value_label,
-            range,
-            value,
-            size,
-            value_indicator,
-            ..
-        } = config;
+        let (label, min_value_label, max_value_label, range, value, size, value_indicator) =
+            config.into_parts();
         Self {
             label_view: RetainedSubview::new(AnyView::new(label.clone())),
             label,
@@ -520,10 +512,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
             bubble.x1,
             bubble.y1,
         );
-        let text_ctx = RenderContext {
-            local: ctx.local,
-            bounds: text_rect,
-        };
+        let text_ctx = RenderContext::new(ctx.local, text_rect);
         ctx.renderer_mut()
             .render_styled_text(text_ctx, label, HorizontalAlignment::Center, env);
     }

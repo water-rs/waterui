@@ -107,13 +107,12 @@ impl<C: ListContent> ListContent for Section<C> {
         // produced no items, the section is silently dropped — this matches
         // how SwiftUI renders an empty Section{}.
         if sink.len() > start {
-            sink.set_section(
-                start,
-                ListSection {
-                    label: self.label,
-                    footer: self.footer,
-                },
-            );
+            sink.set_section(start, {
+                let mut section = ListSection::default();
+                section.set_label(self.label);
+                section.set_footer(self.footer);
+                section
+            });
         }
     }
 }

@@ -629,7 +629,7 @@ fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
     });
     pump(&mut runtime);
     assert!(
-        runtime.pump_at(true, Instant::now()).snapshot.is_some(),
+        runtime.pump_at(true, Instant::now()).snapshot().is_some(),
         "the lazy stack's grouped rows render a snapshot"
     );
     let layers = material_layers(&runtime);
@@ -914,16 +914,17 @@ fn snap(view: impl Fn() -> AnyView + 'static) -> crate::HeadlessSnapshot {
     let mut snapshot = None;
     for frame in 0..8 {
         let pumped = runtime.pump_at(true, start + Duration::from_millis(frame * 16));
-        if pumped.snapshot.is_some() {
-            snapshot = pumped.snapshot;
+        let frame = pumped.into_snapshot();
+        if frame.is_some() {
+            snapshot = frame;
         }
     }
     snapshot.expect("a snapshot")
 }
 
 fn px(snap: &crate::HeadlessSnapshot, x: usize, y: usize) -> [u8; 4] {
-    let i = (y * snap.width as usize + x) * 4;
-    snap.rgba8[i..i + 4].try_into().unwrap()
+    let i = (y * snap.width() as usize + x) * 4;
+    snap.rgba8()[i..i + 4].try_into().unwrap()
 }
 
 /// A `.material_group()`'s scope gets a plain layer at the scope's paint
@@ -948,7 +949,7 @@ fn a_scopes_groups_capture_beneath_its_anchor() {
     };
     let (grouped_runtime, grouped) = {
         let mut runtime = rendered(scope_view(true));
-        let snap = runtime.pump_snapshot().snapshot.expect("a snapshot");
+        let snap = runtime.pump_snapshot().into_snapshot().expect("a snapshot");
         (runtime, snap)
     };
     // The solo `Thick` member's own first-member capture holds only the
@@ -1589,7 +1590,7 @@ fn a_scope_inside_a_scroll_view_anchors_under_the_inner_layer() {
         )))
     });
     assert!(
-        runtime.pump_at(true, Instant::now()).snapshot.is_some(),
+        runtime.pump_at(true, Instant::now()).snapshot().is_some(),
         "the scrolled member's frame renders a snapshot"
     );
     let layers = material_layers(&runtime);
@@ -1657,10 +1658,7 @@ fn a_partial_descent_replays_the_enclosing_material_group_scope() {
     inner.cell.set_parent(&group.core().cell);
     let mut retained = RetainedSubview::new(member(Material::Regular));
     let rect = SceneRect::new(0.0, 0.0, 160.0, 60.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let proposal = ProposalSize::new(Some(160.0), Some(60.0));
     let root = renderer.core.root_core.clone();
     renderer

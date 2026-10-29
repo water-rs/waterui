@@ -130,6 +130,130 @@ pub struct TextRun {
 }
 
 impl TextRun {
+    /// The byte range the run covers, on character boundaries.
+    #[must_use]
+    pub const fn range(&self) -> &Range<usize> {
+        &self.range
+    }
+
+    /// Sets the `range`.
+    pub const fn set_range(&mut self, range: Range<usize>) {
+        self.range = range;
+    }
+
+    /// The CSS `font-family` list, each family registered with the provider
+    /// or known to the system; `None` is the platform default.
+    #[must_use]
+    pub fn family(&self) -> Option<&str> {
+        self.family.as_deref()
+    }
+
+    /// Sets the `family`.
+    pub fn set_family(&mut self, family: Option<String>) {
+        self.family = family;
+    }
+
+    /// The font size in pixels.
+    #[must_use]
+    pub const fn size(&self) -> f32 {
+        self.size
+    }
+
+    /// Sets the `size`.
+    pub const fn set_size(&mut self, size: f32) {
+        self.size = size;
+    }
+
+    /// The weight, 1 to 1000.
+    #[must_use]
+    pub const fn weight(&self) -> u16 {
+        self.weight
+    }
+
+    /// Sets the `weight`.
+    pub const fn set_weight(&mut self, weight: u16) {
+        self.weight = weight;
+    }
+
+    /// Italic.
+    #[must_use]
+    pub const fn italic(&self) -> bool {
+        self.italic
+    }
+
+    /// Sets the `italic`.
+    pub const fn set_italic(&mut self, italic: bool) {
+        self.italic = italic;
+    }
+
+    /// Underlined.
+    #[must_use]
+    pub const fn underline(&self) -> bool {
+        self.underline
+    }
+
+    /// Sets the `underline`.
+    pub const fn set_underline(&mut self, underline: bool) {
+        self.underline = underline;
+    }
+
+    /// Struck through.
+    #[must_use]
+    pub const fn strikethrough(&self) -> bool {
+        self.strikethrough
+    }
+
+    /// Sets the `strikethrough`.
+    pub const fn set_strikethrough(&mut self, strikethrough: bool) {
+        self.strikethrough = strikethrough;
+    }
+
+    /// The foreground `ColorLong`; `None` draws with the paint's colour.
+    #[must_use]
+    pub const fn foreground(&self) -> Option<u64> {
+        self.foreground
+    }
+
+    /// Sets the `foreground`.
+    pub const fn set_foreground(&mut self, foreground: Option<u64>) {
+        self.foreground = foreground;
+    }
+
+    /// The background `ColorLong`.
+    #[must_use]
+    pub const fn background(&self) -> Option<u64> {
+        self.background
+    }
+
+    /// Sets the `background`.
+    pub const fn set_background(&mut self, background: Option<u64>) {
+        self.background = background;
+    }
+
+    /// An explicit line height in pixels.
+    #[must_use]
+    pub const fn line_height(&self) -> Option<f32> {
+        self.line_height
+    }
+
+    /// Sets the `line_height`.
+    pub const fn set_line_height(&mut self, line_height: Option<f32>) {
+        self.line_height = line_height;
+    }
+
+    /// Extra letter spacing in pixels.
+    #[must_use]
+    pub const fn letter_spacing(&self) -> f32 {
+        self.letter_spacing
+    }
+
+    /// Sets the `letter_spacing`.
+    pub const fn set_letter_spacing(&mut self, letter_spacing: f32) {
+        self.letter_spacing = letter_spacing;
+    }
+}
+
+impl TextRun {
     /// A run in the platform's default family at `size` pixels and `weight`
     /// (1 to 1000), without decorations or explicit colours or spacing.
     #[must_use]
@@ -206,6 +330,108 @@ pub struct ShapeRequest<'a> {
 }
 
 impl<'a> ShapeRequest<'a> {
+    /// The text.
+    #[must_use]
+    pub const fn text(&self) -> &'a str {
+        self.text
+    }
+
+    /// The style runs, each over a byte range of `text`.
+    #[must_use]
+    pub const fn runs(&self) -> &'a [TextRun] {
+        self.runs
+    }
+
+    /// The paragraph's base paint, sent as row zero of every packed request:
+    /// a zero-length run whose size, weight, family and line height set the
+    /// styled text's defaults — required even when `text` is empty.
+    #[must_use]
+    pub const fn default_style(&self) -> &TextRun {
+        &self.default_style
+    }
+
+    /// The BCP 47 locale shaping and line breaking follow; empty is the
+    /// root locale.
+    #[must_use]
+    pub const fn locale(&self) -> &'a str {
+        self.locale
+    }
+
+    /// Sets the `locale`.
+    pub const fn set_locale(&mut self, locale: &'a str) {
+        self.locale = locale;
+    }
+
+    /// The wrap width; `None` lays every paragraph out on one line.
+    #[must_use]
+    pub const fn max_width(&self) -> Option<f32> {
+        self.max_width
+    }
+
+    /// Sets the `max_width`.
+    pub const fn set_max_width(&mut self, max_width: Option<f32>) {
+        self.max_width = max_width;
+    }
+
+    /// The most lines laid out; `None` lays out every line.
+    #[must_use]
+    pub const fn max_lines(&self) -> Option<usize> {
+        self.max_lines
+    }
+
+    /// Sets the `max_lines`.
+    pub const fn set_max_lines(&mut self, max_lines: Option<usize>) {
+        self.max_lines = max_lines;
+    }
+
+    /// Whether the last allowed line ends in an ellipsis when text remains;
+    /// needs [`ShapeRequest::max_lines`].
+    #[must_use]
+    pub const fn ellipsis(&self) -> bool {
+        self.ellipsis
+    }
+
+    /// Sets the `ellipsis`.
+    pub const fn set_ellipsis(&mut self, ellipsis: bool) {
+        self.ellipsis = ellipsis;
+    }
+
+    /// The line alignment.
+    #[must_use]
+    pub const fn alignment(&self) -> TextAlignment {
+        self.alignment
+    }
+
+    /// Sets the `alignment`.
+    pub const fn set_alignment(&mut self, alignment: TextAlignment) {
+        self.alignment = alignment;
+    }
+
+    /// Whether the paragraph runs right to left.
+    #[must_use]
+    pub const fn right_to_left(&self) -> bool {
+        self.right_to_left
+    }
+
+    /// Sets the `right_to_left`.
+    pub const fn set_right_to_left(&mut self, right_to_left: bool) {
+        self.right_to_left = right_to_left;
+    }
+
+    /// Whether a family neither registered nor known to the system is an
+    /// error (the seam's strict resolution) rather than skipped.
+    #[must_use]
+    pub const fn strict_families(&self) -> bool {
+        self.strict_families
+    }
+
+    /// Sets the `strict_families`.
+    pub const fn set_strict_families(&mut self, strict_families: bool) {
+        self.strict_families = strict_families;
+    }
+}
+
+impl<'a> ShapeRequest<'a> {
     /// `text` with `runs` over the `default_style` base paint, unwrapped
     /// and unlimited, start-aligned, left to right, in the root locale,
     /// skipping unknown families.
@@ -246,6 +472,52 @@ pub struct PackedRequest {
     pub max_lines: i32,
     /// The [`paragraph`] flags.
     pub paragraph: i32,
+}
+
+impl PackedRequest {
+    /// The number of runs: row zero is always the default style's base
+    /// paint, the rest the text's style runs.
+    #[must_use]
+    pub const fn span_count(&self) -> i32 {
+        self.span_count
+    }
+
+    /// The runs, `SPAN_WORDS` per run, offsets in UTF-16 units.
+    #[must_use]
+    pub const fn spans(&self) -> &[i32] {
+        self.spans.as_slice()
+    }
+
+    /// The distinct family lists the runs index, names joined by
+    /// [`FAMILY_SEPARATOR`].
+    #[must_use]
+    pub const fn families(&self) -> &[String] {
+        self.families.as_slice()
+    }
+
+    /// The BCP 47 locale.
+    #[must_use]
+    pub const fn locale(&self) -> &str {
+        self.locale.as_str()
+    }
+
+    /// The wrap width, [`UNBOUNDED`] when unbounded.
+    #[must_use]
+    pub const fn max_width(&self) -> f32 {
+        self.max_width
+    }
+
+    /// The line limit, [`NO_LINE_LIMIT`] without one.
+    #[must_use]
+    pub const fn max_lines(&self) -> i32 {
+        self.max_lines
+    }
+
+    /// The [`paragraph`] flags.
+    #[must_use]
+    pub const fn paragraph(&self) -> i32 {
+        self.paragraph
+    }
 }
 
 const fn refused(reason: String) -> HwuiError {

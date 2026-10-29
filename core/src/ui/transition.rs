@@ -86,6 +86,20 @@ pub struct TransitionGeometry {
 }
 
 impl TransitionGeometry {
+    /// The untransformed layout slot, in logical pixels.
+    #[must_use]
+    pub const fn size(&self) -> Size {
+        self.size
+    }
+
+    /// Resolves leading and trailing edges.
+    #[must_use]
+    pub const fn direction(&self) -> LayoutDirection {
+        self.direction
+    }
+}
+
+impl TransitionGeometry {
     /// A slot of `size` laid out in `direction`.
     #[must_use]
     pub const fn new(size: Size, direction: LayoutDirection) -> Self {
@@ -109,6 +123,32 @@ pub struct TransitionFrame {
     pub scale_factor: f32,
     /// Resolves leading and trailing edges.
     pub direction: LayoutDirection,
+}
+
+impl TransitionFrame {
+    /// The retained slot in window logical coordinates.
+    #[must_use]
+    pub const fn source(&self) -> Rect {
+        self.source
+    }
+
+    /// The window's full overlay size in logical pixels.
+    #[must_use]
+    pub const fn window(&self) -> Size {
+        self.window
+    }
+
+    /// Device pixels per logical pixel.
+    #[must_use]
+    pub const fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    /// Resolves leading and trailing edges.
+    #[must_use]
+    pub const fn direction(&self) -> LayoutDirection {
+        self.direction
+    }
 }
 
 crate::impl_constant!(TransitionFrame);
@@ -150,6 +190,43 @@ pub struct TransitionProperties {
     pub rotation: f32,
     /// Gaussian blur radius.
     pub blur: f32,
+}
+
+impl TransitionProperties {
+    /// Multiplicative alpha.
+    #[must_use]
+    pub const fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
+    /// Multiplicative horizontal and vertical scale.
+    #[must_use]
+    pub const fn scale(&self) -> [f32; 2] {
+        self.scale
+    }
+
+    /// Physical horizontal and vertical displacement.
+    #[must_use]
+    pub const fn translation(&self) -> [f32; 2] {
+        self.translation
+    }
+
+    /// Clockwise rotation in top-left coordinates.
+    #[must_use]
+    pub const fn rotation(&self) -> f32 {
+        self.rotation
+    }
+
+    /// Gaussian blur radius.
+    #[must_use]
+    pub const fn blur(&self) -> f32 {
+        self.blur
+    }
+
+    /// Sets the `blur`.
+    pub const fn set_blur(&mut self, blur: f32) {
+        self.blur = blur;
+    }
 }
 
 impl TransitionProperties {
@@ -195,6 +272,26 @@ pub struct TransitionContext {
     pub progress: Computed<f32>,
     /// Window-relative geometry, host-updated per placement including scroll/resize.
     pub frame: Computed<TransitionFrame>,
+}
+
+impl TransitionContext {
+    /// Event selecting the insertion or removal effect.
+    #[must_use]
+    pub const fn phase(&self) -> TransitionPhase {
+        self.phase
+    }
+
+    /// Absence in `[0, 1]`; subscribe instead of rebuilding the effect each frame.
+    #[must_use]
+    pub const fn progress(&self) -> &Computed<f32> {
+        &self.progress
+    }
+
+    /// Window-relative geometry, host-updated per placement including scroll/resize.
+    #[must_use]
+    pub const fn frame(&self) -> &Computed<TransitionFrame> {
+        &self.frame
+    }
 }
 
 /// A structural view effect.
@@ -499,6 +596,20 @@ pub struct TransitionSpec {
     pub transition: AnyTransition,
     /// Timing shared by all combined effects.
     pub animation: Animation,
+}
+
+impl TransitionSpec {
+    /// Reusable effect declaration.
+    #[must_use]
+    pub const fn transition(&self) -> &AnyTransition {
+        &self.transition
+    }
+
+    /// Timing shared by all combined effects.
+    #[must_use]
+    pub const fn animation(&self) -> &Animation {
+        &self.animation
+    }
 }
 
 impl MetadataKey for TransitionSpec {}

@@ -53,6 +53,32 @@ pub struct Request {
     pub is_binary: bool,
 }
 
+impl Request {
+    /// Correlates the reply with the pending promise in the page.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The handler name the page asked for.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// The payload, already decoded to bytes.
+    #[must_use]
+    pub const fn payload(&self) -> &[u8] {
+        self.payload.as_slice()
+    }
+
+    /// Whether the payload arrived as binary rather than JSON.
+    #[must_use]
+    pub const fn is_binary(&self) -> bool {
+        self.is_binary
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct RawRequest {
     id: u64,

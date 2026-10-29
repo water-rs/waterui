@@ -127,6 +127,38 @@ pub struct ColorValue {
     pub opacity: Option<f32>,
 }
 
+impl ColorValue {
+    /// Red, in linear light. Outside 0–1 for a wide-gamut colour.
+    #[must_use]
+    pub const fn red(&self) -> f32 {
+        self.red
+    }
+
+    /// Green, in linear light.
+    #[must_use]
+    pub const fn green(&self) -> f32 {
+        self.green
+    }
+
+    /// Blue, in linear light.
+    #[must_use]
+    pub const fn blue(&self) -> f32 {
+        self.blue
+    }
+
+    /// The extended-range headroom; `1` for an ordinary colour.
+    #[must_use]
+    pub const fn headroom(&self) -> Option<f32> {
+        self.headroom
+    }
+
+    /// Alpha; `1` when the colour is opaque.
+    #[must_use]
+    pub const fn opacity(&self) -> Option<f32> {
+        self.opacity
+    }
+}
+
 impl From<ColorValue> for WorkingColor {
     /// The channels are the working colour itself: a theme token that echoes
     /// them back stays the same colour. A `headroom` past one on channels
@@ -178,7 +210,6 @@ pub fn color_of(value: &Computed<ColorValue>) -> Color {
 /// `gap` without the object being rebuilt — the same thing a Rust author
 /// composes by hand when one edge of a `Computed<EdgeInsets>` moves.
 #[derive(Debug, Clone, TsType)]
-#[non_exhaustive]
 pub struct EdgeValues {
     /// The top inset.
     pub top: Option<Computed<f32>>,
@@ -349,6 +380,39 @@ pub struct ShadowValue {
     pub corner_radius: Option<f32>,
 }
 
+impl ShadowValue {
+    /// The shadow's colour; black when it is left out, as `Shadow::splat` uses.
+    #[must_use]
+    pub const fn color(&self) -> Option<ColorValue> {
+        self.color
+    }
+
+    /// The horizontal offset, in points.
+    #[must_use]
+    pub const fn x(&self) -> Option<f32> {
+        self.x
+    }
+
+    /// The vertical offset, in points.
+    #[must_use]
+    pub const fn y(&self) -> Option<f32> {
+        self.y
+    }
+
+    /// The blur radius, in points.
+    #[must_use]
+    pub const fn radius(&self) -> f32 {
+        self.radius
+    }
+
+    /// The corner radius of the view casting the shadow, so the silhouette
+    /// follows its shape.
+    #[must_use]
+    pub const fn corner_radius(&self) -> Option<f32> {
+        self.corner_radius
+    }
+}
+
 /// The border `border` draws, which is the Rust [`Border`] spelled as an
 /// object.
 ///
@@ -363,6 +427,26 @@ pub struct BorderValue {
     /// The corner radius, in points; square corners when left out.
     #[ts(rename = "cornerRadius")]
     pub corner_radius: Option<f32>,
+}
+
+impl BorderValue {
+    /// The border's colour.
+    #[must_use]
+    pub const fn color(&self) -> ColorValue {
+        self.color
+    }
+
+    /// The stroke width, in points.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+
+    /// The corner radius, in points; square corners when left out.
+    #[must_use]
+    pub const fn corner_radius(&self) -> Option<f32> {
+        self.corner_radius
+    }
 }
 
 /// A shape named by a string, for the shapes that carry no parameter.
@@ -387,6 +471,15 @@ pub struct RoundedShape {
     /// rounded, which is what [`ShapeName::Capsule`] says directly.
     #[ts(rename = "cornerRadius")]
     pub corner_radius: f32,
+}
+
+impl RoundedShape {
+    /// The corner radius, as a fraction of the shorter side: `0.5` is fully
+    /// rounded, which is what [`ShapeName::Capsule`] says directly.
+    #[must_use]
+    pub const fn corner_radius(&self) -> f32 {
+        self.corner_radius
+    }
 }
 
 /// What `clip` accepts: a named shape, or a rounded rectangle's radius.
@@ -762,4 +855,19 @@ pub struct PickerOption {
     pub value: Str,
     /// The option's label, localized like any other text.
     pub label: TextContent,
+}
+
+impl PickerOption {
+    /// The value written into the picker's `value` signal when this option is
+    /// chosen.
+    #[must_use]
+    pub const fn value(&self) -> &Str {
+        &self.value
+    }
+
+    /// The option's label, localized like any other text.
+    #[must_use]
+    pub const fn label(&self) -> &TextContent {
+        &self.label
+    }
 }

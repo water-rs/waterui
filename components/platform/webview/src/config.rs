@@ -46,6 +46,68 @@ pub struct WebViewConfig {
     pub state: StateDeclarations,
 }
 
+impl WebViewConfig {
+    /// Creates a `WebViewConfig` from its parts.
+    #[must_use]
+    pub const fn new(
+        asset_server: Option<AssetServer>,
+        bridge_origins: OriginPolicy,
+        navigation_policy: Option<NavigationPolicy>,
+        scripts: Vec<UserScript>,
+        state: StateDeclarations,
+    ) -> Self {
+        Self {
+            asset_server,
+            bridge_origins,
+            navigation_policy,
+            scripts,
+            state,
+        }
+    }
+
+    /// The server behind the engine's local asset origin, when the view was
+    /// opened with one.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn asset_server(&self) -> Option<&AssetServer> {
+        self.asset_server.as_ref()
+    }
+
+    /// Sets the `asset_server`.
+    pub fn set_asset_server(&mut self, asset_server: Option<AssetServer>) {
+        self.asset_server = asset_server;
+    }
+
+    /// Which documents may reach the bridge, for the view's whole life.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn bridge_origins(&self) -> &OriginPolicy {
+        &self.bridge_origins
+    }
+
+    /// The policy that decides navigations the page initiates; `None`
+    /// allows them all.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn navigation_policy(&self) -> Option<&NavigationPolicy> {
+        self.navigation_policy.as_ref()
+    }
+
+    /// The application's scripts, in the order they run. Keys are unique.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn scripts(&self) -> &[UserScript] {
+        self.scripts.as_slice()
+    }
+
+    /// The keys the page mirrors — names and writability, never values.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn state(&self) -> &StateDeclarations {
+        &self.state
+    }
+}
+
 impl Default for WebViewConfig {
     /// A view with no asset origin, no script and a bridge no document may
     /// reach.
@@ -184,6 +246,27 @@ pub struct UserScript {
     pub source: Str,
     /// When in a document's load it runs.
     pub time: ScriptInjectionTime,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl UserScript {
+    /// Names the script. Injecting again under the key replaces it.
+    #[must_use]
+    pub const fn key(&self) -> &Str {
+        &self.key
+    }
+
+    /// The program.
+    #[must_use]
+    pub const fn source(&self) -> &Str {
+        &self.source
+    }
+
+    /// When in a document's load it runs.
+    #[must_use]
+    pub const fn time(&self) -> ScriptInjectionTime {
+        self.time
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

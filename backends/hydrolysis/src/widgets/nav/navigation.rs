@@ -175,7 +175,7 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let Bar {
             title,
             subtitle,
-            toolbar,
+            mut toolbar,
             search,
             color,
             hidden,
@@ -190,9 +190,10 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let mut leading = Vec::new();
         let mut trailing = Vec::new();
         let mut bottom = Vec::new();
-        for item in toolbar.items {
-            let retained = RetainedSubview::new(toolbar_item_view(item.content, env));
-            match item.placement {
+        for item in toolbar.take_items() {
+            let (placement, content, ..) = item.into_parts();
+            let retained = RetainedSubview::new(toolbar_item_view(content, env));
+            match placement {
                 NavigationToolbarPlacement::Principal => principal.push(retained),
                 NavigationToolbarPlacement::Cancellation
                 | NavigationToolbarPlacement::TopBarLeading => leading.push(retained),
@@ -209,9 +210,9 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             // A search field shows only its placeholder, so the prompt doubles
             // as the accessible name and the visible label is suppressed.
             RetainedSubview::new(AnyView::new(
-                TextField::new(search.prompt.clone(), &search.text)
+                TextField::new(search.prompt().clone(), search.text())
                     .hide_label()
-                    .prompt(search.prompt.clone()),
+                    .prompt(search.prompt().clone()),
             ))
         });
         Self {
@@ -352,10 +353,10 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
                     let bar_height =
                         navigation_base_bar_height_for_display_mode(display_mode, theme);
                     let bar_rect = kurbo::Rect::new(
-                        ctx.bounds.x0,
-                        ctx.bounds.y0,
-                        ctx.bounds.x1,
-                        (ctx.bounds.y0 + bar_height).min(ctx.bounds.y1),
+                        ctx.bounds().x0,
+                        ctx.bounds().y0,
+                        ctx.bounds().x1,
+                        (ctx.bounds().y0 + bar_height).min(ctx.bounds().y1),
                     );
                     let title_height = if matches!(display_mode, NavigationTitleDisplayMode::Large)
                     {
@@ -2061,10 +2062,7 @@ fn record_navigation_page<E: crate::text::TextEngine>(
         renderer.push_accessibility_suppression();
     }
     renderer.begin_navigation_page(presented.matched);
-    let page_ctx = RenderContext {
-        local: renderer.program().origin(),
-        bounds,
-    };
+    let page_ctx = RenderContext::new(renderer.program().origin(), bounds);
     let record = |renderer: &mut HydrolysisRenderer<E>, page_ctx: RenderContext| {
         record_page_body(
             renderer, state, slot_key, identity, env, size, safe_area, background, page_ctx,
@@ -2100,8 +2098,8 @@ fn record_page_body<E: crate::text::TextEngine>(
     background: Paint,
     page_ctx: RenderContext,
 ) {
-    let origin = page_ctx.local;
-    let bounds = page_ctx.bounds;
+    let origin = page_ctx.local();
+    let bounds = page_ctx.bounds();
     renderer
         .scene_mut()
         .fill_paint(peniko::Fill::NonZero, origin, background, &bounds);
@@ -2380,7 +2378,7 @@ fn present_page_transition<E: crate::text::TextEngine>(
         page_area,
         PagePresentation {
             layer: transform * local,
-            alpha: paint.properties.opacity,
+            alpha: paint.properties.opacity(),
             clip: Some(local.transform_rect_bbox(paint_bounds)),
             clip_space: transform,
             hit,
@@ -2476,8 +2474,8 @@ fn present_navigation_pages<E: crate::text::TextEngine>(
             },
         ),
         NavigationPresentation::Layers(resolved) => {
-            let outgoing = (&from, &from_env, resolved.outgoing);
-            let incoming = (&to, &to_env, resolved.incoming);
+            let outgoing = (&from, &from_env, resolved.outgoing());
+            let incoming = (&to, &to_env, resolved.incoming());
             let order = match direction {
                 NavigationTransitionDirection::Push => [outgoing, incoming],
                 NavigationTransitionDirection::Pop => [incoming, outgoing],
@@ -2494,7 +2492,7 @@ fn present_navigation_pages<E: crate::text::TextEngine>(
                     page_area.clone(),
                     PagePresentation {
                         layer: transform * local,
-                        alpha: layer.opacity,
+                        alpha: layer.opacity(),
                         clip: Some(local.transform_rect_bbox(paint_bounds)),
                         clip_space: transform,
                         hit: page.identity == active_identity,
@@ -2570,7 +2568,7 @@ pub fn navigation_stack_accessibility<E: crate::text::TextEngine>(
                 let metrics = theme
                     .expect("rendered navigation stack accessibility passes the theme")
                     .navigation_metrics();
-                let back_bounds = navigation_back_button_rect(ctx.bounds, metrics);
+                let back_bounds = navigation_back_button_rect(ctx.bounds(), metrics);
                 let _ = renderer.register_accessibility_node(
                     back_node,
                     back_bounds,

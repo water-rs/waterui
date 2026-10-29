@@ -63,7 +63,7 @@ fn shape_path(shape: &ResolvedShape, bounds: cocoa_ui::Rect) -> Option<PathBuild
     }
     let (w, h) = (bounds.size.width, bounds.size.height);
     let mut builder = PathBuilder::new();
-    match shape.kind {
+    match shape.kind() {
         ShapeKind::Rect => builder.rect(bounds),
         ShapeKind::Circle | ShapeKind::Ellipse => builder.ellipse_in_rect(bounds),
         ShapeKind::RoundedRect { corner_radius } => {
@@ -106,7 +106,7 @@ fn shape_path(shape: &ResolvedShape, bounds: cocoa_ui::Rect) -> Option<PathBuild
         }
         ShapeKind::Capsule => builder.rounded_rect(bounds, w.min(h) / 2.0),
         ShapeKind::CustomPath => {
-            for command in &shape.commands {
+            for command in shape.commands() {
                 apply_command(&mut builder, command, w, h, bounds);
             }
         }
@@ -220,8 +220,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         }
 
         let mut leaf = NativeLeaf::new(&*view, ShapeSubView);
-        layer.set_fill_color(Some(&cg_color(&shape.fill.snapshot())));
-        leaf.bind(&shape.fill, {
+        layer.set_fill_color(Some(&cg_color(&shape.fill().snapshot())));
+        leaf.bind(shape.fill(), {
             let layer = layer;
             let view = view;
             move |color| {

@@ -68,6 +68,28 @@ pub struct ButtonSpec {
 }
 
 impl ButtonSpec {
+    /// The button's style.
+    #[must_use]
+    pub const fn style(&self) -> ButtonStyle {
+        self.style
+    }
+
+    /// The button's control size.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
+    /// Whether the label resolved to `IconOnly`: the bounds are the theme's
+    /// touch target, and the chrome is the icon-button container centred
+    /// inside them.
+    #[must_use]
+    pub const fn icon_only(&self) -> bool {
+        self.icon_only
+    }
+}
+
+impl ButtonSpec {
     /// The spec of a `style` button of `size`.
     #[must_use]
     pub const fn new(style: ButtonStyle, size: ControlSize, icon_only: bool) -> Self {

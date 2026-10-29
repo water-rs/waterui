@@ -50,6 +50,77 @@ pub struct FrameStageTimes {
     pub readback: Duration,
 }
 
+impl FrameStageTimes {
+    /// Runtime and reactive update plus the retained-tree patch: viewport
+    /// setup, frame-boundary bookkeeping and `RenderNode::patch`.
+    #[must_use]
+    pub const fn update(&self) -> Duration {
+        self.update
+    }
+
+    /// Sets the `update`.
+    pub fn set_update(&mut self, update: Duration) {
+        self.update = update;
+    }
+
+    /// Measure and layout of the retained tree.
+    #[must_use]
+    pub const fn layout(&self) -> Duration {
+        self.layout
+    }
+
+    /// Sets the `layout`.
+    pub fn set_layout(&mut self, layout: Duration) {
+        self.layout = layout;
+    }
+
+    /// The retained tree's record into its nodes' programs.
+    #[must_use]
+    pub const fn encode(&self) -> Duration {
+        self.encode
+    }
+
+    /// Sets the `encode`.
+    pub fn set_encode(&mut self, encode: Duration) {
+        self.encode = encode;
+    }
+
+    /// Timestamped span covering the frame's layer-content submits — the
+    /// engine's render and the effect passes around it. `None` when the
+    /// device lacks `TIMESTAMP_QUERY`.
+    #[must_use]
+    pub const fn content_gpu(&self) -> Option<Duration> {
+        self.content_gpu
+    }
+
+    /// Timestamped span covering the final surface pass — the presenter's
+    /// conversion submit, or the whole-window render on the direct
+    /// GPU-surface path. `None` like `content_gpu`.
+    #[must_use]
+    pub const fn compositor_gpu(&self) -> Option<Duration> {
+        self.compositor_gpu
+    }
+
+    /// CPU time spent waiting for GPU work: the queue drain each marker does
+    /// plus the blocking timestamp resolve — the wait for this frame's GPU
+    /// submits to complete.
+    #[must_use]
+    pub const fn gpu_wait(&self) -> Duration {
+        self.gpu_wait
+    }
+
+    /// CPU time spent reading the presented texture back for a snapshot.
+    #[must_use]
+    pub const fn readback(&self) -> Duration {
+        self.readback
+    }
+
+    /// Sets the `readback`.
+    pub fn set_readback(&mut self, readback: Duration) {
+        self.readback = readback;
+    }
+}
+
 /// Which GPU a runtime renders on — attribution for a frame-profile report.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -62,6 +133,42 @@ pub struct GpuIdentity {
     /// here even when the adapter has it, when the device request ran before
     /// the feature was wired in.
     pub device_features: wgpu::Features,
+}
+
+impl GpuIdentity {
+    /// Creates a `GpuIdentity` from its parts.
+    #[must_use]
+    pub const fn new(
+        adapter: wgpu::AdapterInfo,
+        adapter_features: wgpu::Features,
+        device_features: wgpu::Features,
+    ) -> Self {
+        Self {
+            adapter,
+            adapter_features,
+            device_features,
+        }
+    }
+
+    /// `Adapter::get_info` for the adapter the device was requested from.
+    #[must_use]
+    pub const fn adapter(&self) -> &wgpu::AdapterInfo {
+        &self.adapter
+    }
+
+    /// Features the adapter advertises.
+    #[must_use]
+    pub const fn adapter_features(&self) -> &wgpu::Features {
+        &self.adapter_features
+    }
+
+    /// Features the device was opened with — `TIMESTAMP_QUERY` may be absent
+    /// here even when the adapter has it, when the device request ran before
+    /// the feature was wired in.
+    #[must_use]
+    pub const fn device_features(&self) -> &wgpu::Features {
+        &self.device_features
+    }
 }
 
 /// The timestamp query set plus its resolve and staging buffers, created once

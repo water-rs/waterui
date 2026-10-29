@@ -185,9 +185,9 @@ fn platform_font(
     resolved: &ResolvedFont,
     italic: bool,
 ) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    let mut font = match resolved.family.as_deref() {
+    let size = f64::from(resolved.size());
+    let weight = platform_weight(resolved.weight());
+    let mut font = match resolved.family() {
         Some(family) if !family.is_empty() => {
             let mut resolved_font = None;
             for candidate in family_candidates(family) {
@@ -205,7 +205,7 @@ fn platform_font(
                 )
             })
         }
-        _ => match resolved.design {
+        _ => match resolved.design() {
             FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
             FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
         },
@@ -252,8 +252,8 @@ fn render_attributed(state: &StyledPush) -> Retained<objc2_foundation::NSAttribu
             background: backgrounds[i].as_deref(),
             underline: chunk.underline,
             strikethrough: chunk.strikethrough,
-            letter_spacing: f64::from(chunk.font.letter_spacing),
-            line_height: chunk.font.line_height.map_or(0.0, f64::from),
+            letter_spacing: f64::from(chunk.font.letter_spacing()),
+            line_height: chunk.font.line_height().map_or(0.0, f64::from),
         })
         .collect();
     cocoa_ui::text::build(state.mtm, &runs).into_super()
@@ -294,17 +294,23 @@ fn apply_styled(state: &Rc<RefCell<StyledPush>>, styled: &StyledStr) {
     let mut chunks = Vec::with_capacity(styled.chunks().len());
     let mut guards: Vec<Box<dyn Any>> = Vec::new();
     for (index, (text, style)) in styled.chunks().iter().enumerate() {
-        let font = style.font.resolve(&env);
-        let foreground = style.foreground.as_ref().map(|color| color.resolve(&env));
-        let background = style.background.as_ref().map(|color| color.resolve(&env));
+        let font = style.get_font().resolve(&env);
+        let foreground = style
+            .get_foreground()
+            .as_ref()
+            .map(|color| color.resolve(&env));
+        let background = style
+            .get_background()
+            .as_ref()
+            .map(|color| color.resolve(&env));
         chunks.push(Chunk {
             text: text.clone(),
             font: font.snapshot(),
             foreground: foreground.as_ref().map(Signal::snapshot),
             background: background.as_ref().map(Signal::snapshot),
-            italic: style.italic,
-            underline: style.underline,
-            strikethrough: style.strikethrough,
+            italic: style.get_italic(),
+            underline: style.get_underline(),
+            strikethrough: style.get_strikethrough(),
         });
 
         guards.push(Box::new(font.watch({
@@ -496,7 +502,7 @@ fn wire_prompt(
         mtm,
         ctx.env(),
         platform::colors::placeholder_text(),
-        &prompt.content.snapshot(),
+        &prompt.content().snapshot(),
         {
             let field = field.clone();
             move |state| {
@@ -505,8 +511,8 @@ fn wire_prompt(
             }
         },
     );
-    leaf.watch(&prompt.content, restyle(&state));
-    leaf.bind(&prompt.paragraph_alignment, {
+    leaf.watch(prompt.content(), restyle(&state));
+    leaf.bind(prompt.paragraph_alignment(), {
         let field = field.clone();
         move |alignment| apply_alignment(&field, alignment)
     });
@@ -634,16 +640,16 @@ pub fn install(dispatcher: &mut Dispatcher) {
         #[cfg(target_os = "ios")]
         let field = {
             let field = TextField::new(mtm);
-            field.set_keyboard(keyboard(&config.keyboard));
+            field.set_keyboard(keyboard(config.keyboard()));
             field
         };
         #[cfg(target_os = "macos")]
-        let field = TextField::new(mtm, config.line_limit.map(core::num::NonZero::get));
+        let field = TextField::new(mtm, config.line_limit().map(core::num::NonZero::get));
 
         // The declared content type is the whole one-time-code feature on
         // both kits — `UITextContentType`/`NSTextContentType` is what the
         // system offers an SMS code for.
-        if let Some(declared) = config.content_type {
+        if let Some(declared) = config.content_type() {
             field.set_content_type(content_type(declared));
         }
 
@@ -653,10 +659,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The label renders above the field; its semantic text names the
         // control while the visual label leaves the accessibility tree —
         // `WuiControlAccessibility`'s split.
-        let accessibility_label = config.label.accessibility_label();
+        let accessibility_label = config.label().accessibility_label();
         let host_view: &PlatformView = &host;
         let mounted = ctx
-            .render(waterui_backend_core::AnyView::new(config.label))
+            .render(waterui_backend_core::AnyView::new(config.label().clone()))
             .mount(host_view);
         view::hide_from_accessibility(mounted.view());
 
@@ -683,7 +689,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             mtm,
             ctx.env(),
             platform_color(&Foreground.resolve(ctx.env()).snapshot()),
-            &config.value.snapshot(),
+            &config.value().snapshot(),
             {
                 let field = field.clone();
                 move |state| {
@@ -697,10 +703,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
             },
         );
 
-        wire_value(&mut leaf, &config.value, ctx, &field, &value_state);
+        wire_value(&mut leaf, config.value(), ctx, &field, &value_state);
 
         // Return submits through the configured action.
-        if let Some(on_submit) = config.on_submit {
+        if let Some(on_submit) = config.on_submit().cloned() {
             let env = ctx.env().clone();
             #[cfg(target_os = "ios")]
             leaf.keep(field.install_submit_handler(move |_| on_submit.call(&env)));
@@ -710,7 +716,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The prompt renders into the placeholder under the placeholder
         // color — `WuiStyledStrRenderer`'s `defaultForegroundColor`.
-        wire_prompt(mtm, &mut leaf, ctx, &field, &config.prompt);
+        wire_prompt(mtm, &mut leaf, ctx, &field, config.prompt());
 
         // Announce the label's semantic text on the field.
         leaf.bind(&accessibility_label, {
@@ -737,9 +743,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         install_selection_menu(
             mtm,
             ctx.env(),
-            &config.selection_menu,
+            config.selection_menu(),
             &field,
-            &config.value,
+            config.value(),
         );
 
         leaf.keep(state);

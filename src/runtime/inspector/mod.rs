@@ -76,6 +76,20 @@ pub struct InspectorEndpointInfo {
     pub token: String,
 }
 
+impl InspectorEndpointInfo {
+    /// Bound socket address.
+    #[must_use]
+    pub const fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// One-time token clients must present.
+    #[must_use]
+    pub const fn token(&self) -> &str {
+        self.token.as_str()
+    }
+}
+
 // The token is a credential: it travels in the advertisement and the
 // `Hello`, never into diagnostics.
 impl std::fmt::Debug for InspectorEndpointInfo {
@@ -104,6 +118,44 @@ pub struct InspectorServerConfig {
     pub stall_ratio: f64,
     /// Name reported to the inspector.
     pub app_name: String,
+}
+
+impl InspectorServerConfig {
+    /// Address to bind.
+    #[must_use]
+    pub const fn host(&self) -> &IpAddr {
+        &self.host
+    }
+
+    /// Port to bind; `0` picks an ephemeral one.
+    #[must_use]
+    pub const fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// One-time connection token.
+    #[must_use]
+    pub const fn token(&self) -> &str {
+        self.token.as_str()
+    }
+
+    /// How often task occupancy is aggregated and published.
+    #[must_use]
+    pub const fn task_window(&self) -> Duration {
+        self.task_window
+    }
+
+    /// Fraction of the frame budget above which a poll is reported as a stall.
+    #[must_use]
+    pub const fn stall_ratio(&self) -> f64 {
+        self.stall_ratio
+    }
+
+    /// Name reported to the inspector.
+    #[must_use]
+    pub const fn app_name(&self) -> &str {
+        self.app_name.as_str()
+    }
 }
 
 // The token is a credential: the config carries it to the endpoint,

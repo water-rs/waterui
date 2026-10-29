@@ -152,8 +152,9 @@ macro_rules! impl_label_style_methods {
             /// The semantic text of the label is always retained for assistive
             /// technology regardless of the chosen visual mode.
             #[must_use]
-            pub const fn label_style(mut self, mode: $crate::label::LabelDisplayMode) -> Self {
-                self.0.label.set_display_mode(mode);
+            pub fn label_style(mut self, mode: $crate::label::LabelDisplayMode) -> Self {
+                let label = self.0.label().clone().display_mode(mode);
+                self.0.set_label(label);
                 self
             }
 
@@ -163,7 +164,7 @@ macro_rules! impl_label_style_methods {
             /// Shortcut for [`Self::label_style`] with
             /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden).
             #[must_use]
-            pub const fn hide_label(self) -> Self {
+            pub fn hide_label(self) -> Self {
                 self.label_style($crate::label::LabelDisplayMode::Hidden)
             }
         }
@@ -684,7 +685,7 @@ impl Label {
             .accessibility_text
             .as_ref()
             .unwrap_or_else(|| self.semantic_text());
-        self.accessibility_label = Some(accessibility_text.resolve(env).content);
+        self.accessibility_label = Some(accessibility_text.resolve(env).content().clone());
         self
     }
 }
@@ -829,7 +830,7 @@ mod tests {
         label
             .semantic_text()
             .resolve(env)
-            .content
+            .content()
             .snapshot()
             .to_plain()
             .into_string()

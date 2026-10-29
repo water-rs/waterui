@@ -404,13 +404,13 @@ where
         + cherenkov::ShaderPaintCapability,
 {
     fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError> {
-        match source.language {
+        match source.language() {
             ShaderLanguage::Wgsl => {
                 let shader = Self::shader(
                     self,
                     cherenkov::ShaderSource {
-                        source: source.source,
-                        animated: source.animated,
+                        source: source.source().clone(),
+                        animated: source.get_animated(),
                     },
                 )?;
                 Ok(Handle::new(shader))
@@ -1135,15 +1135,15 @@ impl SceneResources {
         let Some(backend) = self.table.shaders.clone() else {
             return Err(ResourceError::Unsupported("shader paint"));
         };
-        let bytes = match &source.source {
+        let bytes = match &source.source() {
             Cow::Borrowed(text) => SourceBytes::Static(text.as_bytes()),
             Cow::Owned(text) => SourceBytes::Shared(Arc::from(text.as_bytes())),
         };
         self.intern(
             |table| &table.shaders_cache,
             ShaderShape {
-                animated: source.animated,
-                language: source.language,
+                animated: source.get_animated(),
+                language: source.language(),
             },
             bytes,
             EntryKey::Shader,
