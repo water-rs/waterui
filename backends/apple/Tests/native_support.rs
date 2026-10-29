@@ -550,6 +550,14 @@ pub mod toolbar_reach {
     /// boundary at any backing scale.
     const TOLERANCE: f64 = 0.5;
 
+    /// The gap `SwiftUI` leaves between the safe-area top and a list's
+    /// first row.
+    const LIST_GAP: f64 = 10.0;
+
+    /// How far the first row may stray from [`LIST_GAP`] below the
+    /// titlebar.
+    const LIST_GAP_TOLERANCE: f64 = 2.0;
+
     /// The window-coordinate tops a case measures against.
     struct Edges {
         /// The top of the window, which a full-size content view reaches.
@@ -646,7 +654,8 @@ pub mod toolbar_reach {
     }
 
     /// Asserts the list's scroll view runs under the toolbar to the
-    /// window's top edge.
+    /// window's top edge, and its first row rests [`LIST_GAP`] below the
+    /// titlebar's bottom.
     fn assert_list_reaches_the_top(root: &NSView, edges: &Edges) {
         let list = find::<ListSurface>(root, &|_| true).expect("the window hosts the list");
         let top = top_in_window(&list, list.bounds());
@@ -655,6 +664,20 @@ pub mod toolbar_reach {
             "the list's scroll view must reach the window top {} under the toolbar \
              (safe-area top {}), but its top is {top}",
             edges.window,
+            edges.safe
+        );
+        let first_row = top_in_window(&list.table_view(), list.rect_of_row(0));
+        assert!(
+            first_row <= edges.safe + TOLERANCE,
+            "the list's first row must sit below the titlebar's bottom {}, but its top is \
+             {first_row}",
+            edges.safe
+        );
+        let expected = edges.safe - LIST_GAP;
+        assert!(
+            (first_row - expected).abs() <= LIST_GAP_TOLERANCE,
+            "the list's first row must rest {LIST_GAP}pt below the titlebar's bottom {}, at \
+             {expected}, but its top is {first_row}",
             edges.safe
         );
     }

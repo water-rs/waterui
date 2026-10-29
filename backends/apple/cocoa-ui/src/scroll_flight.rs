@@ -397,16 +397,14 @@ impl ScrollFlight {
     /// `-[NSScrollView scrollClipView:toPoint:]` → `scrollToPoint:`,
     /// which the kit clip view overrides to call
     /// [`clip_will_scroll`](Self::clip_will_scroll). `AppKit`'s own
-    /// corrections are not the user's: on the kit scroll surface a window
-    /// resize rewrites the clip from `-[NSScrollView layout]` →
-    /// `_updateTitlebarAdjacencyState` → `setContentInsets:` (traced
-    /// from the surface's native correction case), which its `-layout`
-    /// runs inside [`own_writes`](Self::own_writes). The list turns
-    /// automatic content insets off, so its resize reaches no unflagged
-    /// `scrollToPoint:` even without the wrapper; its `-layout` keeps the
-    /// wrapper for the same exemption. A growing document and the clip's
-    /// frame changes reach no unflagged `scrollToPoint:` on either
-    /// (verified by the native correction cases). Overriding
+    /// corrections are not the user's: both kit scroll surfaces turn
+    /// `AppKit`'s automatic content insets off and set the safe-area
+    /// insets from their own `-layout`, which moves the clip with the
+    /// inset change and runs inside [`own_writes`](Self::own_writes)
+    /// (`appkit::scroll::layout_with_safe_area_insets`). A growing
+    /// document and the clip's frame changes reach no unflagged
+    /// `scrollToPoint:` on either (verified by the native correction
+    /// cases). Overriding
     /// `scrollToPoint:` on the clip keeps the scroll view
     /// responsive-scrolling compatible (`+isCompatibleWithResponsiveScrolling`
     /// stays `YES`, as it does for responder-action overrides; a
@@ -502,13 +500,9 @@ impl ScrollFlight {
     /// scroll views' `-[NSScrollView layout]` and `setFrameSize:` — a
     /// resize re-tiles the clip, and a list's table resizes with it, so
     /// the clip re-clamps to the new document frame through
-    /// `scrollToPoint:`. On the scroll surface that
-    /// layout's content-inset update (`_updateTitlebarAdjacencyState` →
-    /// `setContentInsets:`) rewrites the clip through `scrollToPoint:`
-    /// when the window resizes — `AppKit`'s own correction, not the
-    /// user's scroll. The list sets its insets itself, so that path
-    /// stays quiet there; its layout runs inside this all the same, for
-    /// the same exemption.
+    /// `scrollToPoint:`. That layout's safe-area inset update moves the
+    /// clip with the inset change when the window's bands change — the
+    /// surface's own correction, not the user's scroll.
     pub fn own_writes(&self, body: impl FnOnce()) {
         let outer = self.writing.replace(true);
         body();
