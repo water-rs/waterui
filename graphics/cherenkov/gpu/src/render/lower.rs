@@ -7082,12 +7082,13 @@ mod tests {
                         elements: geometry.into_iter().collect(),
                         rule: FillRule::NonZero,
                     };
-                    let mut stroke = kurbo::Stroke::new(1.0);
-                    if kind == Kind::RoundedStroke {
-                        stroke = kurbo::Stroke::new(8.0)
+                    let mut stroke = if kind == Kind::RoundedStroke {
+                        kurbo::Stroke::new(8.0)
                             .with_join(kurbo::Join::Round)
-                            .with_caps(kurbo::Cap::Round);
-                    }
+                            .with_caps(kurbo::Cap::Round)
+                    } else {
+                        kurbo::Stroke::new(1.0)
+                    };
                     if kind == Kind::Dashed {
                         stroke = stroke.with_dashes(0.5, [3.0, 2.0]);
                     }
