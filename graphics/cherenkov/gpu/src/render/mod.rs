@@ -6664,6 +6664,7 @@ impl GpuRenderer {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[expect(clippy::too_many_lines, reason = "temporary stage attribution")]
     fn lower_all(
         &mut self,
         pending: &mut [SurfaceState],
@@ -6671,6 +6672,7 @@ impl GpuRenderer {
         inputs: &[projective::Inputs],
         mut prepared: FxHashMap<SurfaceId, Lowered>,
     ) -> Vec<Result<Lowered, RenderError>> {
+        let diagnostic_start = Instant::now();
         let coverage_options = self.coverage_options();
         let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
             .iter()
@@ -6771,11 +6773,26 @@ impl GpuRenderer {
         // (#169 A3): a dry run decides fit / repack / recycle before any
         // placement or upload happens, so a failed placement never
         // enqueues uploads into an atlas the same preparation abandons.
+        let lower_ms = diagnostic_start.elapsed().as_secs_f64() * 1e3;
+        let raster_count: usize = results
+            .iter()
+            .filter_map(|result| result.as_ref().ok())
+            .map(|lowered| lowered.pending.len())
+            .sum();
+        let commit_start = Instant::now();
         self.commit_rasters(pending, &mut results);
+        tracing::info!(
+            lower_ms,
+            commit_ms = commit_start.elapsed().as_secs_f64() * 1e3,
+            raster_count,
+            surface_count = pending.len(),
+            "diagnostic map preparation"
+        );
         results
     }
 
     #[cfg(target_arch = "wasm32")]
+    #[expect(clippy::too_many_lines, reason = "temporary stage attribution")]
     fn lower_all(
         &mut self,
         pending: &mut [SurfaceState],
@@ -7155,6 +7172,7 @@ impl GpuRenderer {
         clippy::too_many_arguments,
         reason = "one surface's prepared inputs and lowering resources"
     )]
+    #[expect(clippy::too_many_lines, reason = "temporary stage attribution")]
     fn lower_content(
         surf: &mut SurfaceState,
         frame: &SurfaceFrame<'_>,
@@ -7249,6 +7267,17 @@ impl GpuRenderer {
                     &surf.plan,
                 )
             });
+            tracing::info!(
+                prepare_ms = lowering.diagnostic_ms[0],
+                gpu_candidate_ms = lowering.diagnostic_ms[1],
+                cpu_leaf_ms = lowering.diagnostic_ms[2],
+                geometry_ms = lowering.diagnostic_ms[3],
+                resolve_ms = lowering.diagnostic_ms[4],
+                emit_ms = lowering.diagnostic_ms[5],
+                cpu_leaves = lowering.diagnostic_counts[0],
+                gpu_leaves = lowering.diagnostic_counts[1],
+                "diagnostic map leaf attribution"
+            );
             lowered.commands += lowering.commands_lowered;
             lowered.layers = lowering.layers_composed;
             lowered.glyphs = lowering.glyphs_rasterized();
