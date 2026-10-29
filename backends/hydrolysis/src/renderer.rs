@@ -788,6 +788,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// resolve a viewport-dependent decision (a navigation split's
     /// collapsed-column mode) read what a layout would have seen.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn set_window_frame(&mut self, frame: kurbo::Rect) {
         self.window_frame = frame;
     }

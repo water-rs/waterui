@@ -2676,6 +2676,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// semantic runtime's keyboard contract. Rendered runtimes keep the
     /// [`KeyboardActivation::PressRelease`] default.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn use_semantic_keyboard_activation(&mut self) {
         self.hit_test.keyboard_activation = KeyboardActivation::Semantic;
     }
@@ -2686,6 +2687,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// no target is dead even when a frame happens to emit no pointer
     /// targets at all.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn use_semantic_walk(&mut self) {
         self.semantic_walk = true;
     }

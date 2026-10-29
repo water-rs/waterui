@@ -7,7 +7,7 @@
 //! - [`fonts`]: resource font registration and CJK fallbacks
 //! - [`diagnostics`]: opt-in frame timing reports
 
-#[cfg(feature = "accessibility")]
+#[cfg(all(feature = "accessibility", hydrolysis_gpu_painter))]
 use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
@@ -150,7 +150,11 @@ use window::{FrameReader, render_window_with_capture};
 // accessibility-action path.
 #[cfg(any(
     hydrolysis_winit,
-    all(not(target_arch = "wasm32"), feature = "accessibility")
+    all(
+        not(target_arch = "wasm32"),
+        feature = "accessibility",
+        hydrolysis_gpu_painter
+    )
 ))]
 use window::runtime_window_origin;
 // The winit runner pumps events and window semantics through these.
