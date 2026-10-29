@@ -520,24 +520,29 @@ mod platform {
                 // a hidden bar and one promoted into the window toolbar get
                 // the same zero-height layout.
                 let bar_height = if view::is_hidden(&header) { 0.0 } else { 52.0 };
-                let y = chrome.origin.y + chrome.size.height - bar_height;
+                // `HostView` is flipped: the smallest y is the top edge, so
+                // the header docks at the safe rect's origin and the content
+                // region starts below it.
+                let y = chrome.origin.y;
                 if bar_height > 0.0 {
                     view::set_frame(
                         &header,
                         Rect::new(chrome.origin.x, y, chrome.size.width, bar_height),
                     );
+                    // The title, items and search field are subviews of the
+                    // header, so they sit in its local coordinates.
                     let title_size = title.measure(WrapWidth::Free).size;
                     view::set_frame(
                         title,
                         Rect::new(
-                            chrome.origin.x + (chrome.size.width - title_size.width) / 2.0,
-                            y + (bar_height - title_size.height) / 2.0,
+                            (chrome.size.width - title_size.width) / 2.0,
+                            (bar_height - title_size.height) / 2.0,
                             title_size.width,
                             title_size.height,
                         ),
                     );
-                    let mut left = chrome.origin.x + 12.0;
-                    let mut right = chrome.origin.x + chrome.size.width - 12.0;
+                    let mut left = 12.0;
+                    let mut right = chrome.size.width - 12.0;
                     for item in &bar.items {
                         let size = bar_item_frame(item).size;
                         let leading = matches!(
@@ -558,34 +563,30 @@ mod platform {
                         }
                         view::set_frame(
                             item.leaf.view(),
-                            Rect::new(
-                                x,
-                                y + (bar_height - size.height) / 2.0,
-                                size.width,
-                                size.height,
-                            ),
+                            Rect::new(x, (bar_height - size.height) / 2.0, size.width, size.height),
                         );
                     }
                     if let Some(field) = &search_field {
                         let width = 220.0_f64.min(chrome.size.width / 3.0);
                         view::set_frame(
                             field,
-                            Rect::new(right - width, y + (bar_height - 28.0) / 2.0, width, 28.0),
+                            Rect::new(right - width, (bar_height - 28.0) / 2.0, width, 28.0),
                         );
                     }
                 }
                 // The content's region is everything the shown bar leaves;
                 // `region_frame` hands a scroll surface the whole region and
                 // clips anything else to the safe-area rect (§7.1).
+                let region_top = if bar_height > 0.0 {
+                    y + bar_height
+                } else {
+                    bounds.origin.y
+                };
                 let region = Rect::new(
                     bounds.origin.x,
-                    bounds.origin.y,
+                    region_top,
                     bounds.size.width,
-                    if bar_height > 0.0 {
-                        y - bounds.origin.y
-                    } else {
-                        bounds.size.height
-                    },
+                    bounds.origin.y + bounds.size.height - region_top,
                 );
                 for sub in view::subviews(host) {
                     if **sub == ***header {

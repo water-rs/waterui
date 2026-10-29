@@ -738,11 +738,16 @@ mod platform {
                     }
                 } else {
                     let height = view::fitting_size(chrome.view()).height;
+                    // `HostView` is flipped: the smallest y is the top edge,
+                    // so the strip docks at the safe rect's top and the
+                    // panes fill what lies below it.
+                    let strip_top = context.safe_rect().origin.y + 8.0;
+                    let panes_top = strip_top + height + 8.0;
                     place(
                         chrome.view(),
                         Rect::new(
                             bounds.origin.x + 8.0,
-                            bounds.origin.y + bounds.size.height - height - 8.0,
+                            strip_top,
                             bounds.size.width - 16.0,
                             height,
                         ),
@@ -752,9 +757,9 @@ mod platform {
                             tab.pane.view(),
                             Rect::new(
                                 bounds.origin.x,
-                                bounds.origin.y,
+                                panes_top,
                                 bounds.size.width,
-                                bounds.size.height - height - 8.0,
+                                bounds.origin.y + bounds.size.height - panes_top,
                             ),
                         );
                     }
