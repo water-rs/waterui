@@ -357,8 +357,13 @@ fn rgba_target(
         .ok_or(CaptureFailure::TargetAllocation { width, height })
 }
 
-/// `view`'s subtree rendered into an owned `RGBA8` raster at `scale`
-/// pixels per point — `ceil(bounds * scale)` physical pixels.
+/// `view`'s subtree rendered into an owned `RGBA8` raster at the backing
+/// scale of the window it is captured in — `ceil(bounds * scale)` physical
+/// pixels.
+///
+/// The scale is resolved here, after a windowless view has been rehosted:
+/// a detached view has no screen and answers `1.0`, while the capture
+/// window sits on the screen the image will be shown on.
 ///
 /// The compositor's native raster pass (`CALayer.renderInContext` into
 /// shared-buffer memory) and output pass (`CapturableSurface` external
@@ -389,7 +394,6 @@ fn rgba_target(
 pub async fn capture_rgba(
     view: &cocoa_ui::PlatformView,
     env: &Environment,
-    scale: f64,
     mtm: cocoa_ui::MainThreadMarker,
 ) -> Result<CapturedRgba, CaptureFailure> {
     let view = cocoa_ui::view::retain_base(view);
@@ -399,6 +403,7 @@ pub async fn capture_rgba(
         // capture reads its actual bounds.
         cocoa_ui::view::layout_immediately(&view);
     }
+    let scale = cocoa_ui::view::backing_scale_factor(&view).max(1.0);
 
     let bounds = cocoa_ui::view::bounds(&view);
     if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
@@ -833,8 +838,7 @@ pub async fn template_image(
     max_side: f64,
 ) -> Retained<PlatformImage> {
     let bounds = cocoa_ui::view::bounds(view);
-    let scale = cocoa_ui::view::backing_scale_factor(view);
-    let captured = capture_rgba(view, env, scale.max(1.0), view.mtm())
+    let captured = capture_rgba(view, env, view.mtm())
         .await
         .unwrap_or_else(|error| terminal_capture_failure(&error));
     if captured.width == 0 || captured.height == 0 {
@@ -849,19 +853,10 @@ pub async fn template_image(
     )
     .expect("CGImage creation from captured pixels failed");
     let shrink = (max_side / f64::max(bounds.size.width, bounds.size.height)).min(1.0);
-
-    #[cfg(target_os = "macos")]
-    {
-        cocoa_ui::bitmap::template_image(
-            &image,
-            cocoa_ui::Size::new(bounds.size.width * shrink, bounds.size.height * shrink),
-        )
-    }
-    #[cfg(target_os = "ios")]
-    {
-        cocoa_ui::bitmap::template_image(&image, scale / shrink)
-            .expect("UIImage template conversion failed")
-    }
+    cocoa_ui::bitmap::template_image(
+        &image,
+        cocoa_ui::Size::new(bounds.size.width * shrink, bounds.size.height * shrink),
+    )
 }
 
 /// `view` rasterized as a non-template `NSImage` at its exact logical
@@ -880,8 +875,7 @@ pub async fn drag_image(
     env: &Environment,
 ) -> Retained<cocoa_ui::objc2_app_kit::NSImage> {
     let bounds = cocoa_ui::view::bounds(view);
-    let scale = cocoa_ui::view::backing_scale_factor(view);
-    let captured = capture_rgba(view, env, scale.max(1.0), view.mtm())
+    let captured = capture_rgba(view, env, view.mtm())
         .await
         .unwrap_or_else(|error| terminal_capture_failure(&error));
     if captured.width == 0 || captured.height == 0 {
