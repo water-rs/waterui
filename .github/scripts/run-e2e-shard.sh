@@ -174,6 +174,9 @@ status_diag_bounded() {
     --deadline-at "${at}" --receipt "${receipts_file}" \
     --max-seconds 20 -- "$@" 2>&1 || echo "(${label} exited $?)"
 }
+status_diag_appearance() {
+  status_diag_bounded appearance xcrun simctl ui "${SIMULATOR_UDID}" appearance
+}
 status_diag_list() {
   status_diag_bounded status-bar-list xcrun simctl status_bar "${SIMULATOR_UDID}" list
 }
@@ -272,6 +275,8 @@ capture_frame() {
       echo "=== screenshot ${target##*/} start $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
       echo "--- status_bar list before ---"
       status_diag_list
+      echo "--- simulator appearance ---"
+      status_diag_appearance
     } >> "${diag3608}" 2>&1
     local shot_rc=0
     "${command_deadline}" run --label "capture:simctl-io-screenshot" \

@@ -1073,13 +1073,17 @@ mod imp {
         #[cfg(feature = "gpu_surface")]
         {
             pending.window.setAlpha(0.0);
+            probe_3608("alpha0", &pending.window);
             // Owned by the scene `KeepAlive` (drop cancels); the window edge
             // is weak for the same reason as the macOS reveal.
             let window = Weak::from_retained(&pending.window);
             keepalive.keep(executor_core::spawn_local(async move {
                 crate::components::gpu_surface::wait_for_first_frames(&reveal_view).await;
                 if let Some(window) = window.load() {
+                    probe_3608("pre-reveal", &window);
                     window.setAlpha(1.0);
+                    probe_3608("post-reveal", &window);
+                    schedule_probe_3608(&window, mtm);
                 }
             }));
         }
@@ -1108,6 +1112,56 @@ mod imp {
         WindowHost {
             controller: pending.controller,
             _keepalive: keepalive,
+        }
+    }
+
+    /// Temporary diagnostic for #3608: logs the scene's resolved status bar
+    /// state. Never merged.
+    #[allow(deprecated, reason = "diagnostic reads the VC's preferred style")]
+    fn probe_3608(tag: &str, window: &cocoa_ui::objc2_ui_kit::UIWindow) {
+        use cocoa_ui::objc2_ui_kit::UITraitEnvironment;
+        let scene = window.windowScene().expect("scene window");
+        let manager = scene.statusBarManager();
+        let ms = cocoa_ui::process::time_since_start().map_or(0, |d| d.as_millis());
+        let vc_style = window
+            .rootViewController()
+            .map(|vc| vc.preferredStatusBarStyle().0);
+        // SAFETY: `userInterfaceStyle` is a plain getter on a live trait collection.
+        let (window_style, scene_style) = unsafe {
+            (
+                window.traitCollection().userInterfaceStyle().0,
+                scene.traitCollection().userInterfaceStyle().0,
+            )
+        };
+        cocoa_ui::log::Log::new("dev.waterui", "StatusBar3608").notice(&format!(
+            "sb3608 tag={tag} t_ms={ms} alpha={} hidden={} key={} activation={:?} \
+             sb_style={:?} sb_hidden={:?} vc_style={vc_style:?} \
+             window_ui_style={:?} scene_ui_style={:?}",
+            window.alpha(),
+            window.isHidden(),
+            window.isKeyWindow(),
+            scene.activationState().0,
+            manager.as_ref().map(|m| m.statusBarStyle().0),
+            manager.as_ref().map(|m| m.isStatusBarHidden()),
+            window_style,
+            scene_style,
+        ));
+    }
+
+    /// Samples the probe 1 s, 5 s and 20 s after the reveal.
+    fn schedule_probe_3608(
+        window: &Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+        mtm: MainThreadMarker,
+    ) {
+        for (tag, seconds) in [("reveal+1s", 1), ("reveal+5s", 5), ("reveal+20s", 20)] {
+            let bound = dispatch2::MainThreadBound::new(window.clone(), mtm);
+            let when = dispatch2::DispatchTime::try_from(std::time::Duration::from_secs(seconds))
+                .expect("probe delay fits a dispatch time");
+            let _ = dispatch2::DispatchQueue::main().after(when, move || {
+                let mtm =
+                    MainThreadMarker::new().expect("the main queue's work runs on the main thread");
+                probe_3608(tag, bound.get(mtm));
+            });
         }
     }
 
