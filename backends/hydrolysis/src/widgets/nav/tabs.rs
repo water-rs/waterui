@@ -229,6 +229,7 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
 
     /// Each tab's live badge count, read through `renderer` so a change
     /// schedules a frame. A tab without a badge reads zero.
+    #[cfg(feature = "accessibility")]
     fn badge_counts(&self, renderer: &mut crate::renderer::SemanticCore<E>) -> Vec<i32> {
         self.tabs
             .iter()

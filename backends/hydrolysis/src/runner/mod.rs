@@ -131,7 +131,10 @@ pub use semantic::{SemanticPumpResult, SemanticRuntime};
     hydrolysis_gpu_painter
 ))]
 use window::RuntimeWindow;
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(
+    any(not(target_arch = "wasm32"), feature = "web"),
+    hydrolysis_gpu_painter
+))]
 use window::{advance_runtime, handle_input_events};
 // One frame's entry is shared by the winit pump, the headless `run`, the
 // `#[cfg(test)]` suite, and the browser runner; the Android host reaches it
