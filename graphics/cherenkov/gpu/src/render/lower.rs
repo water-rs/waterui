@@ -4594,17 +4594,18 @@ impl<'a> Lowering<'a> {
             (replaced, emission.revision)
         } else {
             // An unchanged retained emission has already passed visibility testing.
-            if let Op::Glyphs { local, bounds, .. } = op {
-                // Coverage cells carry a one-pixel apron and integer rounding can
-                // extend another pixel beyond the outline. Cull against this
-                // target, including the enlarged target of a silhouette capture.
-                let placed = (self.transform * *local).transform_rect_bbox(*bounds);
+            let visibility = match op {
+                Op::Glyphs { local, bounds, .. } => Some((*local, *bounds)),
+                Op::Path { local, outline, .. } => Some((*local, outline.get(source).bounds())),
+                _ => None,
+            };
+            if let Some((local, bounds)) = visibility {
+                // Include the atlas apron and integer rounding. The active
+                // target includes filter/silhouette capture expansion.
+                let placed = (self.transform * local).transform_rect_bbox(bounds);
                 let visible = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
                 if placed.inflate(2.0, 2.0).intersect(visible).is_zero_area() {
-                    // Offscreen emissions must not pin their old atlas shelves.
-                    // The existing storage compaction reclaims their ranges.
                     *cache = Realization::default();
-                    // Keep operation indices stable within this command run.
                     self.frame.commands.push(super::damage::Command {
                         instances_end: self.frame.instances.len(),
                         revision: self.frame.revision,
@@ -7124,9 +7125,9 @@ mod tests {
             let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
             let mut previous_geometry = None;
             let mut previous_draw = std::ptr::null();
-            if has_compute && large {
-                // A culled GPU candidate must not outline/rasterize on the CPU,
-                // and its empty retained emission must not hide it after a move.
+            {
+                // Offscreen paths prepare neither CPU nor GPU geometry, and
+                // become visible normally when moved back into the target.
                 let mut frame = Frame::default();
                 let mut anchors = AnchorScratch::default();
                 let mut raster = path::EmitScratch::new();
@@ -7135,7 +7136,7 @@ mod tests {
                     (128, 128),
                     &mut anchors,
                     &mut raster,
-                    Some(test_limit()),
+                    has_compute.then(test_limit),
                 );
                 lowering.begin_pass(Target::Part(0), None);
                 lowering.transform = Affine::translate((1000.25, 1000.25));
@@ -7152,7 +7153,9 @@ mod tests {
                 assert_eq!(lowering.paths_rasterized(), 0);
                 assert!(lowering.pending.is_empty());
                 assert!(lowering.frame.instances.is_empty());
-                assert!(cache.data.as_ref().unwrap().geometry.is_none());
+                assert!(cache.data.is_none());
+                assert!(retained.storage.geometry.entries.is_empty());
+                assert!(retained.storage.gpu_paths.is_empty());
             }
 
             let templates_before = retained.storage.templates.len();
