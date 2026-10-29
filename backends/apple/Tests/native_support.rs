@@ -1259,3 +1259,166 @@ pub fn inspector_tree(
 ) -> Vec<waterui::inspector::protocol::TreeNode> {
     crate::inspector::recordable_tree(root)
 }
+
+/// Navigation chrome drawn in content sits at the top of its host.
+///
+/// A borderless window has no toolbar to take the chrome, so a page's
+/// header and a tab host's strip are drawn in content. `HostView` is
+/// flipped, so both must dock at the smallest y of the host, the top, with
+/// the content below them.
+#[cfg(target_os = "macos")]
+pub mod chrome_top {
+    use cocoa_ui::objc2_app_kit::{NSSegmentedControl, NSTextField, NSView};
+    use cocoa_ui::{MainThreadMarker, Retained};
+    use waterui::navigation::{NavigationView, Tab, Tabs, tab_style};
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui::window::{WindowState, WindowStyle};
+    use waterui_core::layout::{Point, Rect, Size};
+
+    use super::{MAIN_QUEUE_DEADLINE, pump_main_until, window_environment};
+
+    /// The text the fixtures show as their content.
+    const MARKER: &str = "chrome-top-marker";
+
+    /// The gap the tab host leaves between the page top and its strip.
+    const STRIP_INSET: f64 = 8.0;
+
+    /// The title the page's in-content header shows.
+    const TITLE: &str = "chrome-top-title";
+
+    /// Half a point: the distance at which an edge counts as reaching a
+    /// boundary at any backing scale.
+    const TOLERANCE: f64 = 0.5;
+
+    /// `rect`, a rect in `view`'s coordinates, in window coordinates —
+    /// where y grows upward whatever the view's own orientation.
+    fn in_window(view: &NSView, rect: cocoa_ui::objc2_foundation::NSRect) -> (f64, f64) {
+        let frame = view.convertRect_toView(rect, None);
+        (frame.origin.y, frame.origin.y + frame.size.height)
+    }
+
+    /// The first text field under `root` showing `string`.
+    fn label(root: &NSView, string: &str) -> Option<Retained<NSTextField>> {
+        for sub in root.subviews() {
+            if let Ok(field) = sub.clone().downcast::<NSTextField>()
+                && field.stringValue().to_string() == string
+            {
+                return Some(field);
+            }
+            if let Some(found) = label(&sub, string) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The first segmented control under `root`.
+    fn strip(root: &NSView) -> Option<Retained<NSSegmentedControl>> {
+        for sub in root.subviews() {
+            if let Ok(control) = sub.clone().downcast::<NSSegmentedControl>() {
+                return Some(control);
+            }
+            if let Some(found) = strip(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Realizes `content` as a borderless window through the production
+    /// root, lays it out and hands `check` the content view.
+    fn realized<V: waterui::View>(
+        mtm: MainThreadMarker,
+        content: impl Fn() -> V + 'static,
+        check: impl FnOnce(&NSView),
+    ) {
+        let (mut env, _theme) = window_environment(mtm);
+        env.insert(crate::first_paint::FirstPaint::default());
+        let declaration =
+            waterui::window::Window::new("Chrome Top", binding(WindowState::Normal), content)
+                .style(WindowStyle::Borderless);
+        declaration
+            .frame
+            .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
+        let host = crate::windows::realize(declaration, &env, mtm);
+        let native = host.window().native();
+        let root = native
+            .contentView()
+            .expect("the realized window has a content view");
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                root.layoutSubtreeIfNeeded();
+                label(&root, MARKER).is_some()
+            }),
+            "the window must realize the fixture"
+        );
+        root.layoutSubtreeIfNeeded();
+        check(&root);
+        native.close();
+        drop(host);
+    }
+
+    /// Window → standalone `NavigationView`: its in-content header sits at
+    /// the top of the page and the content below it.
+    pub fn a_standalone_page_header_sits_above_its_content(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationView::new(TITLE, text(MARKER)),
+            |root| {
+                let (_, window_top) = in_window(root, root.bounds());
+                let title = label(root, TITLE).expect("the in-content header shows the title");
+                let header =
+                    cocoa_ui::view::superview(&title).expect("the title sits in the header");
+                let (header_bottom, header_top) = in_window(&header, header.bounds());
+                let content = label(root, MARKER).expect("the page shows its content");
+                let (_, content_top) = in_window(&content, content.bounds());
+                assert!(
+                    (header_top - window_top).abs() <= TOLERANCE,
+                    "the header must dock at the page top {window_top}, but its top is \
+                     {header_top}"
+                );
+                assert!(
+                    content_top <= header_bottom + TOLERANCE,
+                    "the content must start below the header's bottom {header_bottom}, but \
+                     its top is {content_top}"
+                );
+            },
+        );
+    }
+
+    /// Window → `Tabs` with the segmented strip: the strip sits at the top
+    /// of the page and the selected pane below it.
+    pub fn a_tab_strip_sits_above_its_panes(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || {
+                Tabs::new(
+                    &binding(0usize),
+                    vec![
+                        Tab::container("First", || text(MARKER)),
+                        Tab::container("Second", || text("second")),
+                    ],
+                )
+                .style(tab_style::Automatic)
+            },
+            |root| {
+                let (_, window_top) = in_window(root, root.bounds());
+                let strip = strip(root).expect("the host draws the segmented strip");
+                let (strip_bottom, strip_top) = in_window(&strip, strip.bounds());
+                let content = label(root, MARKER).expect("the selected pane shows its content");
+                let (_, content_top) = in_window(&content, content.bounds());
+                assert!(
+                    (window_top - strip_top - STRIP_INSET).abs() <= TOLERANCE,
+                    "the strip must sit {STRIP_INSET}pt below the page top {window_top}, but \
+                     its top is {strip_top}"
+                );
+                assert!(
+                    content_top <= strip_bottom + TOLERANCE,
+                    "the pane must start below the strip's bottom {strip_bottom}, but its top \
+                     is {content_top}"
+                );
+            },
+        );
+    }
+}

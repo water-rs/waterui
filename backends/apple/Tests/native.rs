@@ -123,8 +123,22 @@ fn embedding_trials() -> Vec<Trial> {
 /// so the registrars stay one-per-line.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 fn navigation_trials() -> Vec<Trial> {
-    use waterui_apple::native_test_support::toolbar_reach;
+    use waterui_apple::native_test_support::{chrome_top, toolbar_reach};
     vec![
+        Trial::test(
+            "navigation::chrome_top::a_standalone_page_header_sits_above_its_content",
+            || {
+                chrome_top::a_standalone_page_header_sits_above_its_content(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::chrome_top::a_tab_strip_sits_above_its_panes",
+            || {
+                chrome_top::a_tab_strip_sits_above_its_panes(mtm());
+                Ok(())
+            },
+        ),
         Trial::test(
             "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
             || {
