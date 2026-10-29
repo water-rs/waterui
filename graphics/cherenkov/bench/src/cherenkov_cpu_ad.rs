@@ -1618,6 +1618,10 @@ impl Engine for Cherenkov {
                 let (width, height) = self.stream_size;
                 let mut pixels = Vec::with_capacity(width as usize * height as usize);
                 for (y, band) in receiver.try_iter() {
+                    if y == 0 && !pixels.is_empty() {
+                        assert_eq!(pixels.len(), width as usize * height as usize);
+                        pixels.clear();
+                    }
                     assert_eq!(y as usize, pixels.len() / width as usize);
                     pixels.extend(band);
                 }
