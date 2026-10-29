@@ -69,8 +69,8 @@ pub struct SystemLabelSlots {
 #[cfg(target_os = "macos")]
 impl SystemLabelSlots {
     /// Reads the identities of the `Foreground` and `MutedForeground`
-    /// signals [`install`] put in `env`.
-    fn installed(env: &Environment) -> Self {
+    /// signals installed in `env`: [`install`]'s, or a test harness's.
+    pub(crate) fn installed(env: &Environment) -> Self {
         use cocoa_ui::appkit::colors::AppColor;
         fn identity<S: 'static>(env: &Environment) -> SignalIdentity {
             theme::installed_color_signal::<S>(env)

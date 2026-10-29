@@ -1031,6 +1031,10 @@ pub fn render_environment() -> Environment {
         &mut env,
         binding(Subheadline::DEFAULT).computed(),
     );
+    // Text resolves its colour against the label slots the Apple theme
+    // installs beside the colour slots.
+    #[cfg(target_os = "macos")]
+    env.insert(crate::theme::SystemLabelSlots::installed(&env));
     env
 }
 /// The view's current pixels through the production
@@ -1101,15 +1105,18 @@ pub type ListSurface = cocoa_ui::uikit::TableView;
 
 /// The offset that puts `row`'s top edge at the viewport's top.
 ///
-/// Read before any clamp: `rectOfRow`'s origin on `AppKit`;
-/// `rectForRowAtIndexPath`'s origin in section 0 minus the adjusted top
-/// inset on `UIKit`, read as the table stands now, since `UIKit` sizes
-/// unseen rows by estimate.
+/// Read before any clamp: `rectOfRow`'s origin minus the top content inset
+/// on `AppKit`; `rectForRowAtIndexPath`'s origin in section 0 minus the
+/// adjusted top inset on `UIKit`, read as the table stands now, since
+/// `UIKit` sizes unseen rows by estimate.
 #[must_use]
 pub fn list_row_top(table: &ListSurface, row: usize) -> cocoa_ui::Point {
     #[cfg(target_os = "macos")]
     {
-        cocoa_ui::Point::new(0.0, table.rect_of_row(row).origin.y)
+        cocoa_ui::Point::new(
+            0.0,
+            table.rect_of_row(row).origin.y - table.contentInsets().top,
+        )
     }
     #[cfg(target_os = "ios")]
     {
