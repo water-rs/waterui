@@ -974,6 +974,12 @@ impl TemplateContext {
         &self.hydrolysis_android_entry().painter_module
     }
 
+    /// Whether the selected host uses the retained HWUI session painter.
+    #[must_use]
+    pub fn hydrolysis_android_is_hwui(&self) -> bool {
+        self.hydrolysis_android_entry().painter_module == "hwui"
+    }
+
     /// The generated app's `minSdk`.
     #[must_use]
     pub const fn hydrolysis_android_min_api_level(&self) -> u32 {
@@ -1526,7 +1532,8 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserTemplateContext, HydrolysisAndroidPreviewTemplateEntry, LaunchTemplateEntry,
+        BrowserTemplateContext, HydrolysisAndroidEmbeddedTemplateEntry,
+        HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry, LaunchTemplateEntry,
         ResolvedFramework, ResolvedWebViewBackend, TemplateContext, TemplateNamespace, embedded,
         generated_profiles, gtk4, local_backend_sources, normalize_path_for_config,
         render_scaffold_template,
@@ -1818,6 +1825,78 @@ mod tests {
             gtk4_manifest["dependencies"].get("waterui").is_some(),
             "gtk4 manifest must depend on waterui for `configure_environment!`"
         );
+    }
+
+    #[test]
+    fn hydrolysis_android_hwui_session_factory_reaches_both_hosts() {
+        use crate::hydrolysis::android::HydrolysisAndroidPainter;
+
+        for painter in [
+            HydrolysisAndroidPainter::Gpu,
+            HydrolysisAndroidPainter::Hwui,
+        ] {
+            let app = HydrolysisAndroidTemplateEntry {
+                native_library_name: "waterui_test_hydrolysis".to_owned(),
+                host_project_dir: "../android-host/rev/android".to_owned(),
+                project_root: "..".to_owned(),
+                painter_dependency: painter.gradle_dependency(),
+                painter_module: painter.host_module().to_owned(),
+                min_api_level: 31,
+                painter_band_import: painter.band_import(),
+                painter_band_class: painter.band_class(),
+            };
+            let standalone = project_ctx().with_hydrolysis_android(app.clone());
+            let embedded_context = project_ctx().with_hydrolysis_android_embedded(
+                HydrolysisAndroidEmbeddedTemplateEntry {
+                    app,
+                    host_version: "test".to_owned(),
+                    host_modules: vec!["host".to_owned(), painter.host_module().to_owned()],
+                    compile_sdk: 37,
+                },
+            );
+            let activity = render_embedded(
+                TemplateNamespace::HydrolysisAndroid,
+                &embedded::HYDROLYSIS_ANDROID,
+                "app/src/main/java/MainActivity.kt.tpl",
+                &standalone,
+            );
+            let waterui = render_embedded(
+                TemplateNamespace::HydrolysisAndroidEmbedded,
+                &embedded::HYDROLYSIS_ANDROID_EMBEDDED,
+                "waterui/src/main/java/WaterUi.kt.tpl",
+                &embedded_context,
+            );
+            let is_hwui = painter == HydrolysisAndroidPainter::Hwui;
+            for (label, rendered) in [("MainActivity", &activity), ("WaterUi", &waterui)] {
+                assert_eq!(
+                    is_hwui,
+                    rendered.contains("import dev.waterui.hydrolysis.hwui.HwuiPainter"),
+                    "{painter} {label} HwuiPainter import: {rendered}"
+                );
+            }
+            // `SessionPainter` names the standalone override's return type;
+            // the embedded path passes `{ HwuiPainter() }` without it.
+            assert_eq!(
+                is_hwui,
+                activity.contains("SessionPainter"),
+                "{painter} standalone SessionPainter surface: {activity}"
+            );
+            assert_eq!(
+                is_hwui,
+                activity.contains("override fun createPainter(): SessionPainter = HwuiPainter()"),
+                "{painter} standalone factory: {activity}"
+            );
+            assert_eq!(
+                is_hwui,
+                waterui.contains("createPainter = { HwuiPainter() },"),
+                "{painter} embedded factory: {waterui}"
+            );
+            assert_eq!(
+                painter == HydrolysisAndroidPainter::Gpu,
+                activity.contains("import dev.waterui.hydrolysis.gpu.HydrolysisGpuBand"),
+                "{painter} standalone band import: {activity}"
+            );
+        }
     }
 
     #[test]
