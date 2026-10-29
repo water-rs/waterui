@@ -40,6 +40,9 @@ pub enum AppColor {
     Label,
     /// `NSColor.secondaryLabelColor`.
     SecondaryLabel,
+    /// `NSColor.textColor`: the opaque primary text color — black in the
+    /// light and vibrant-light appearances, white in the dark ones.
+    Text,
     /// `NSColor.controlAccentColor`.
     ControlAccent,
     /// `NSColor.alternateSelectedControlTextColor`.
@@ -66,6 +69,7 @@ pub fn dynamic(color: AppColor) -> Retained<NSColor> {
         AppColor::Separator => NSColor::separatorColor(),
         AppColor::Label => NSColor::labelColor(),
         AppColor::SecondaryLabel => NSColor::secondaryLabelColor(),
+        AppColor::Text => NSColor::textColor(),
         AppColor::ControlAccent => NSColor::controlAccentColor(),
         AppColor::AlternateSelectedControlText => NSColor::alternateSelectedControlTextColor(),
         AppColor::SelectedContentBackground => NSColor::selectedContentBackgroundColor(),

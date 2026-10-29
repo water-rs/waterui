@@ -280,6 +280,13 @@ fn trials() -> Vec<Trial> {
                     Ok(())
                 },
             ),
+            Trial::test(
+                "material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color",
+                || {
+                    material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color();
+                    Ok(())
+                },
+            ),
         ]);
         #[cfg(target_os = "macos")]
         tests.extend(material_reduce_transparency::trials());
@@ -2775,11 +2782,14 @@ mod split {
 /// fixed one (#3623).
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod material_vibrancy {
-    use cocoa_ui::objc2_app_kit::{NSColor, NSForegroundColorAttributeName, NSVisualEffectView};
+    use cocoa_ui::objc2_app_kit::{
+        NSColor, NSFont, NSFontAttributeName, NSFontDescriptorSymbolicTraits,
+        NSForegroundColorAttributeName, NSGlassEffectView, NSVisualEffectView,
+    };
     use cocoa_ui::objc2_foundation::NSObjectProtocol as _;
     use cocoa_ui::{PlatformView, Retained, view};
     use waterui::ViewExt as _;
-    use waterui::background::Material;
+    use waterui::background::{Glass, Material};
     use waterui::graphics::Color;
     use waterui::graphics::color::Working;
     use waterui::layout::stack::vstack;
@@ -2982,6 +2992,103 @@ mod material_vibrancy {
                 && !label_valued.isEqual(Some(secondary.as_ref())),
             "an explicit color equal in value to the light-mode label color is not a system label color"
         );
+    }
+
+    /// Text inside Liquid Glass (#3695): a bold default-token label keeps its
+    /// bold weight and draws in the opaque `NSColor.textColor`, as `SwiftUI`
+    /// draws `.primary` inside `glassEffect`, not in the vibrant
+    /// `labelColor` that `NSGlassEffectView`'s vibrant-light content
+    /// appearance resolves to black at 0.698 alpha. The muted token stays
+    /// `secondaryLabelColor`, and an explicit color stays as written.
+    pub fn glass_text_draws_bold_in_the_opaque_text_color() {
+        let (env, theme) = window_environment(mtm());
+        refresh_theme(&theme, cocoa_ui::ColorScheme::Light);
+        let content = vstack((
+            text("Now Playing").bold(),
+            text("muted").muted(),
+            text("explicit").foreground(Color::srgb(200, 30, 30)),
+        ))
+        .padding()
+        .background(Glass::regular());
+        let leaf = waterui_apple::dispatch::render(AnyView::new(content), &env);
+
+        let mut found = Vec::new();
+        glass_labels(leaf.view(), &mut found, false);
+        assert_eq!(found.len(), 3, "the three texts realize three labels");
+        assert!(
+            found.iter().all(|(_, inside)| *inside),
+            "every text sits inside the NSGlassEffectView"
+        );
+        let label = |name: &str| {
+            found
+                .iter()
+                .find(|(label, _)| {
+                    label
+                        .source_text()
+                        .expect("attributed text")
+                        .string()
+                        .to_string()
+                        == name
+                })
+                .map(|(label, _)| label.clone())
+                .expect("the text is realized")
+        };
+
+        let title = label("Now Playing");
+        let text_color = NSColor::textColor();
+        assert!(
+            color_of(&title).isEqual(Some(text_color.as_ref())),
+            "a default-token text inside glass draws as NSColor.textColor"
+        );
+        let font = font_of(&title);
+        assert!(
+            font.fontDescriptor()
+                .symbolicTraits()
+                .contains(NSFontDescriptorSymbolicTraits::TraitBold),
+            "a bold text inside glass keeps its bold weight, got {font:?}"
+        );
+        let secondary = NSColor::secondaryLabelColor();
+        assert!(
+            color_of(&label("muted")).isEqual(Some(secondary.as_ref())),
+            "a muted-token text inside glass draws as NSColor.secondaryLabelColor"
+        );
+        let explicit = color_of(&label("explicit"));
+        assert!(
+            !explicit.isEqual(Some(text_color.as_ref()))
+                && !explicit.isEqual(Some(secondary.as_ref())),
+            "an explicit color inside glass is not a system text color"
+        );
+    }
+
+    /// Every kit label under `root`, each with whether an
+    /// `NSGlassEffectView` is among its ancestors.
+    fn glass_labels(
+        root: &PlatformView,
+        out: &mut Vec<(Retained<Label>, bool)>,
+        inside_glass: bool,
+    ) {
+        for sub in view::subviews(root) {
+            let inside = inside_glass || sub.downcast_ref::<NSGlassEffectView>().is_some();
+            if let Ok(label) = sub.clone().downcast::<Label>() {
+                out.push((label, inside));
+            }
+            glass_labels(&sub, out, inside);
+        }
+    }
+
+    /// The font a label draws its first character in.
+    fn font_of(label: &Label) -> Retained<NSFont> {
+        let text = label
+            .source_text()
+            .expect("the label carries attributed text");
+        // SAFETY: index 0 is within a non-empty string; a null effective
+        // range is permitted.
+        let font = unsafe {
+            text.attribute_atIndex_effectiveRange(NSFontAttributeName, 0, core::ptr::null_mut())
+        }
+        .expect("the label text carries a font");
+        font.downcast::<NSFont>()
+            .expect("the font attribute is an NSFont")
     }
 }
 

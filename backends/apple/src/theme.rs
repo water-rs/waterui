@@ -89,6 +89,28 @@ impl SystemLabelSlots {
         }
     }
 
+    /// The slots as text inside Liquid Glass draws them: the default
+    /// foreground stands for the opaque `NSColor.textColor` rather than
+    /// `labelColor`.
+    ///
+    /// In the light appearance `NSGlassEffectView` gives its content view the
+    /// vibrant-light appearance, where `labelColor` is black at 0.698 alpha
+    /// and draws plus-darker, so glass text loses almost a third of its ink.
+    /// `SwiftUI` draws `.primary` text inside `glassEffect` at full strength: its
+    /// `liquid_glass` reference capture reaches pure black at every glyph
+    /// stem. `textColor` is the system's opaque primary text color in every
+    /// appearance. The muted slot keeps `secondaryLabelColor`.
+    #[must_use]
+    pub const fn in_glass(self) -> Self {
+        let [(foreground, _), muted] = self.slots;
+        Self {
+            slots: [
+                (foreground, cocoa_ui::appkit::colors::AppColor::Text),
+                muted,
+            ],
+        }
+    }
+
     /// The system label color `signal` stands for: `Some` only when it is
     /// one of this backend's own label slots.
     pub fn system_color(&self, signal: &impl Signal) -> Option<cocoa_ui::appkit::colors::AppColor> {
