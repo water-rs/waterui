@@ -9,13 +9,13 @@ use eyre::{Context, bail};
 use smol::fs;
 #[cfg(target_os = "macos")]
 use tracing::info;
+use waterui_assets_planner::ColorScheme;
 
 use crate::{
-    apple::backend::AppleBackend,
     platform::{DeviceSigning, PackageOptions, TargetPlatform},
     project::Project,
     project_model::assets::{AppleDeclarations, SigningEnvironment},
-    project_model::templates::TemplateContext,
+    project_model::templates::{LaunchTemplateEntry, TemplateContext},
     project_types::AppleBundleIdentifier,
     utils::copy_file,
 };
@@ -74,9 +74,59 @@ impl AppleAppLayout {
     }
 }
 
+/// What an application's `Info.plist` says about the application itself,
+/// independent of which backend hosts it.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct PlistApp<'a> {
+    /// The name the system displays for the application.
+    pub display_name: &'a str,
+    /// The launch screen assets the asset catalog holds.
+    pub launch: LaunchTemplateEntry,
+    /// Whether the macOS application is an accessory (no Dock icon).
+    pub accessory: bool,
+    /// The `UIScene` delegate class a mobile bundle declares, when its host
+    /// drives the application through scenes. `None` for a host that owns
+    /// the `UIApplication` lifecycle itself, such as winit: `UIKit` launches a
+    /// scene-configured bundle through scenes only, so declaring a manifest
+    /// the host never implements leaves the window unattached.
+    pub scene_delegate: Option<&'a str>,
+}
+
+impl<'a> PlistApp<'a> {
+    /// The application the Apple backend's generated project describes: it
+    /// hosts every mobile bundle through its `SceneDelegate`.
+    #[must_use]
+    pub fn apple_backend(ctx: &'a TemplateContext) -> Self {
+        Self {
+            display_name: &ctx.app_display_name,
+            launch: ctx.launch,
+            accessory: ctx.accessory,
+            scene_delegate: Some(APPLE_BACKEND_SCENE_DELEGATE),
+        }
+    }
+}
+
+/// The scene delegate class of the Apple backend (`cocoa_ui`'s
+/// `SceneDelegate`).
+const APPLE_BACKEND_SCENE_DELEGATE: &str = "SceneDelegate";
+
+/// The launch screen assets the project stages into its asset catalog, as
+/// the templates and the `Info.plist` name them.
+///
+/// # Errors
+/// Returns an error when the project's launch screen cannot be resolved.
+pub fn launch_template_entry(project: &Project) -> eyre::Result<LaunchTemplateEntry> {
+    let launch = crate::assets::project_launch_plan(project)?;
+    Ok(LaunchTemplateEntry {
+        has_background: launch.background(ColorScheme::Light).is_some(),
+        has_image: launch.image().is_some(),
+    })
+}
+
 /// The plist entries every Apple platform carries.
 fn common_info_plist_entries(
-    ctx: &TemplateContext,
+    app: &PlistApp<'_>,
     deployment_target: &str,
     product_name: &str,
     bundle_id: &AppleBundleIdentifier,
@@ -84,7 +134,7 @@ fn common_info_plist_entries(
     let mut dict = plist::Dictionary::new();
     dict.insert(
         "CFBundleDisplayName".to_string(),
-        plist::Value::String(ctx.app_display_name.clone()),
+        plist::Value::String(app.display_name.to_string()),
     );
     dict.insert(
         "CFBundleExecutable".to_string(),
@@ -126,22 +176,22 @@ fn common_info_plist_entries(
 /// project set), for one platform.
 #[must_use]
 pub fn apple_info_plist(
-    ctx: &TemplateContext,
+    app: &PlistApp<'_>,
     project: &Project,
     platform: TargetPlatform,
     deployment_target: &str,
     product_name: &str,
     bundle_id: &AppleBundleIdentifier,
 ) -> plist::Dictionary {
-    let mut dict = common_info_plist_entries(ctx, deployment_target, product_name, bundle_id);
+    let mut dict = common_info_plist_entries(app, deployment_target, product_name, bundle_id);
     dict.insert(
         "CFBundleDevelopmentRegion".to_string(),
         plist::Value::String("en".to_string()),
     );
     if platform == TargetPlatform::MacOS {
-        apply_macos_plist_entries(&mut dict, ctx, project);
+        apply_macos_plist_entries(&mut dict, app, project);
     } else {
-        apply_mobile_plist_entries(&mut dict, ctx, project, platform, deployment_target);
+        apply_mobile_plist_entries(&mut dict, app, project, platform, deployment_target);
     }
     dict
 }
@@ -175,28 +225,55 @@ fn permission_plist_entries(
 
 /// The macOS-only entries: principal class, menu-bar-agent flag, usage
 /// descriptions.
-fn apply_macos_plist_entries(
-    dict: &mut plist::Dictionary,
-    ctx: &TemplateContext,
-    project: &Project,
-) {
+fn apply_macos_plist_entries(dict: &mut plist::Dictionary, app: &PlistApp<'_>, project: &Project) {
     dict.insert(
         "NSPrincipalClass".to_string(),
         plist::Value::String("NSApplication".to_string()),
     );
     dict.insert(
         "LSUIElement".to_string(),
-        plist::Value::Boolean(ctx.accessory),
+        plist::Value::Boolean(app.accessory),
     );
     for (key, description) in permission_plist_entries(project, true) {
         dict.insert(key, plist::Value::String(description));
     }
 }
 
+/// The `UIApplicationSceneManifest` naming `scene_delegate` as the delegate
+/// of the default window scene. The delegate class lives in the backend
+/// itself (`cocoa_ui`'s `SceneDelegate`), exactly as the generated Xcode
+/// project declared it.
+fn scene_manifest(scene_delegate: &str) -> plist::Dictionary {
+    let mut scene_configuration = plist::Dictionary::new();
+    scene_configuration.insert(
+        "UISceneConfigurationName".to_string(),
+        plist::Value::String("Default".to_string()),
+    );
+    scene_configuration.insert(
+        "UISceneDelegateClassName".to_string(),
+        plist::Value::String(scene_delegate.to_string()),
+    );
+    let mut scene_configurations = plist::Dictionary::new();
+    scene_configurations.insert(
+        "UIWindowSceneSessionRoleApplication".to_string(),
+        plist::Value::Array(vec![plist::Value::Dictionary(scene_configuration)]),
+    );
+    let mut scene_manifest = plist::Dictionary::new();
+    scene_manifest.insert(
+        "UIApplicationSupportsMultipleScenes".to_string(),
+        plist::Value::Boolean(true),
+    );
+    scene_manifest.insert(
+        "UISceneConfigurations".to_string(),
+        plist::Value::Dictionary(scene_configurations),
+    );
+    scene_manifest
+}
+
 /// The entries every non-macOS Apple bundle declares.
 fn apply_mobile_plist_entries(
     dict: &mut plist::Dictionary,
-    ctx: &TemplateContext,
+    app: &PlistApp<'_>,
     project: &Project,
     platform: TargetPlatform,
     deployment_target: &str,
@@ -260,45 +337,22 @@ fn apply_mobile_plist_entries(
     );
 
     // UIKit refuses to launch a scene-configured application without the
-    // manifest; the scene delegate class lives in the backend itself
-    // (`cocoa_ui`'s `SceneDelegate`), exactly as the generated Xcode project
-    // declared it.
-    let mut scene_configuration = plist::Dictionary::new();
-    scene_configuration.insert(
-        "UISceneConfigurationName".to_string(),
-        plist::Value::String("Default".to_string()),
-    );
-    scene_configuration.insert(
-        "UISceneDelegateClassName".to_string(),
-        plist::Value::String("SceneDelegate".to_string()),
-    );
-    let mut scene_configurations = plist::Dictionary::new();
-    scene_configurations.insert(
-        "UIWindowSceneSessionRoleApplication".to_string(),
-        plist::Value::Array(vec![plist::Value::Dictionary(scene_configuration)]),
-    );
-    let mut scene_manifest = plist::Dictionary::new();
-    scene_manifest.insert(
-        "UIApplicationSupportsMultipleScenes".to_string(),
-        plist::Value::Boolean(true),
-    );
-    scene_manifest.insert(
-        "UISceneConfigurations".to_string(),
-        plist::Value::Dictionary(scene_configurations),
-    );
-    insert(
-        "UIApplicationSceneManifest",
-        plist::Value::Dictionary(scene_manifest),
-    );
+    // manifest; a host that owns the `UIApplication` lifecycle declares none.
+    if let Some(scene_delegate) = app.scene_delegate {
+        insert(
+            "UIApplicationSceneManifest",
+            plist::Value::Dictionary(scene_manifest(scene_delegate)),
+        );
+    }
 
     let mut launch_screen = plist::Dictionary::new();
-    if ctx.launch.has_background {
+    if app.launch.has_background {
         launch_screen.insert(
             "UIColorName".to_string(),
             plist::Value::String("LaunchBackground".to_string()),
         );
     }
-    if ctx.launch.has_image {
+    if app.launch.has_image {
         launch_screen.insert(
             "UIImageName".to_string(),
             plist::Value::String("LaunchImage".to_string()),
@@ -502,16 +556,11 @@ pub(crate) async fn copy_dir_contents(from: &Path, to: &Path) -> eyre::Result<()
 /// conflicts with the project's, or when a device build's identity or
 /// provisioning profile cannot be resolved — including a profile that does
 /// not grant a declared entitlement.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct input of the signing step; bundling them would only rename the list"
-)]
 pub async fn sign_apple_app(
     layout: &AppleAppLayout,
     platform: TargetPlatform,
     options: &PackageOptions,
-    backend: &AppleBackend,
-    backend_root: &Path,
+    files: &SigningFiles<'_>,
     project: &Project,
     deployment_target: &str,
     declarations: &AppleDeclarations,
@@ -535,7 +584,7 @@ pub async fn sign_apple_app(
                 },
                 PackageAudience::Distribution => {
                     let entitlements = signing_entitlements(
-                        &project_entitlements_path(backend, backend_root),
+                        files.project_entitlements,
                         declarations,
                         platform,
                         SigningEnvironment::Production,
@@ -544,9 +593,10 @@ pub async fn sign_apple_app(
                     let entitlements = if entitlements.is_empty() {
                         None
                     } else {
-                        let path = backend_root
+                        let path = files
+                            .scratch_root
                             .join("DerivedData/Signing")
-                            .join(format!("{}.entitlements", backend.scheme));
+                            .join(format!("{}.entitlements", files.name));
                         write_entitlements(&path, entitlements).await?;
                         Some(path)
                     };
@@ -595,7 +645,7 @@ pub async fn sign_apple_app(
     // Device signing selects development provisioning profiles only, so the
     // signature claims the development environments.
     let entitlements = signing_entitlements(
-        &project_entitlements_path(backend, backend_root),
+        files.project_entitlements,
         declarations,
         platform,
         SigningEnvironment::Development,
@@ -610,29 +660,58 @@ pub async fn sign_apple_app(
             platform,
             project_entitlements: entitlements,
         },
-        backend_root,
+        files.scratch_root,
         deployment_target,
     )
     .await
 }
 
-/// The project's generated `<scheme>.entitlements` file.
-fn project_entitlements_path(backend: &AppleBackend, backend_root: &Path) -> PathBuf {
+/// The files a signature reads and writes beside the bundle it signs.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct SigningFiles<'a> {
+    /// The project's own `.entitlements` file, when its backend generates
+    /// one. Without it the signature claims only the graph's declarations;
+    /// a file that does not exist claims nothing of its own either.
+    pub project_entitlements: Option<&'a Path>,
+    /// The directory the signature keeps its generated entitlements and
+    /// provisioning state under (`DerivedData/Signing`,
+    /// `DerivedData/Provisioning`).
+    pub scratch_root: &'a Path,
+    /// What the generated entitlements file is called.
+    pub name: &'a str,
+}
+
+/// The Apple backend's generated `<scheme>.entitlements` file under
+/// `backend_root`.
+#[must_use]
+pub fn apple_project_entitlements_path(scheme: &str, backend_root: &Path) -> PathBuf {
     backend_root
-        .join(&backend.scheme)
-        .join(format!("{}.entitlements", backend.scheme))
+        .join(scheme)
+        .join(format!("{scheme}.entitlements"))
 }
 
 /// The entitlements a signature of kind `environment` for `platform` claims:
 /// the project's entitlements file — empty when it does not exist — merged
 /// with the graph's `declarations`.
 async fn signing_entitlements(
-    project_entitlements: &Path,
+    project_entitlements: Option<&Path>,
     declarations: &AppleDeclarations,
     platform: TargetPlatform,
     environment: SigningEnvironment,
 ) -> eyre::Result<plist::Dictionary> {
-    let mut entitlements = match fs::read(project_entitlements).await {
+    let mut entitlements = match project_entitlements {
+        None => plist::Dictionary::new(),
+        Some(project_entitlements) => read_project_entitlements(project_entitlements).await?,
+    };
+    declarations.merge_into_entitlements(&mut entitlements, platform, environment)?;
+    Ok(entitlements)
+}
+
+/// The project's `.entitlements` file as a dictionary — empty when it does
+/// not exist.
+async fn read_project_entitlements(project_entitlements: &Path) -> eyre::Result<plist::Dictionary> {
+    let entitlements = match fs::read(project_entitlements).await {
         Ok(bytes) => {
             match plist::Value::from_reader(std::io::Cursor::new(bytes)).wrap_err_with(|| {
                 format!(
@@ -657,7 +736,6 @@ async fn signing_entitlements(
             });
         }
     };
-    declarations.merge_into_entitlements(&mut entitlements, platform, environment)?;
     Ok(entitlements)
 }
 

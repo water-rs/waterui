@@ -152,6 +152,39 @@ mod tests {
         );
     }
 
+    /// Hydrolysis is selectable on iOS devices and simulators, while the
+    /// platform's default stays the Apple backend.
+    #[test]
+    fn ios_accepts_hydrolysis_and_defaults_to_apple() {
+        let declared = manifest(
+            "[platforms.ios]\nbackend = 'hydrolysis'\n[platforms.ios-simulator]\nbackend = 'hydrolysis'",
+        );
+        let plain = manifest("");
+        for platform in [TargetPlatform::IOS, TargetPlatform::IOSSimulator] {
+            assert_eq!(
+                resolve_backend(&declared, platform, None).unwrap(),
+                TargetBackend::Hydrolysis
+            );
+            assert_eq!(
+                resolve_backend(&plain, platform, None).unwrap(),
+                TargetBackend::Apple
+            );
+            assert_eq!(
+                resolve_backend(&plain, platform, Some(TargetBackend::Hydrolysis)).unwrap(),
+                TargetBackend::Hydrolysis
+            );
+        }
+        assert!(
+            resolve_backend(
+                &plain,
+                TargetPlatform::TvOS,
+                Some(TargetBackend::Hydrolysis)
+            )
+            .is_err(),
+            "the other Apple platforms keep the Apple backend alone"
+        );
+    }
+
     #[test]
     fn unknown_platform_names_list_valid_names() {
         let error = Manifest::parse(&format!(

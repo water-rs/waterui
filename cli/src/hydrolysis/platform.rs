@@ -59,6 +59,8 @@ const fn hydrolysis_loader_search_paths(platform: TargetPlatform) -> &'static [&
     match platform {
         TargetPlatform::MacOS => &["@executable_path", "@executable_path/../Frameworks"],
         TargetPlatform::Linux => &["$ORIGIN"],
+        // The flat iOS bundle keeps its frameworks beside the executable.
+        TargetPlatform::IOS | TargetPlatform::IOSSimulator => &["@executable_path/Frameworks"],
         _ => &[],
     }
 }
@@ -122,8 +124,8 @@ pub async fn build_hydrolysis_with_envs_and_features(
     extra_envs: &[(String, OsString)],
     extra_features: &[&str],
 ) -> eyre::Result<BuiltTarget> {
-    if !is_hydrolysis_native_platform(platform) {
-        bail!("Hydrolysis backend is only supported on macOS, Linux, and Windows");
+    if !is_hydrolysis_binary_platform(platform) {
+        bail!("Hydrolysis backend is only supported on macOS, iOS, Linux, and Windows");
     }
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
@@ -229,14 +231,18 @@ pub async fn build_hydrolysis_with_envs_and_features(
         built_target.cef_helper = Some(Box::new(helper));
     }
 
-    copy_assets_and_fonts(
-        project,
-        platform,
-        &backend_path,
-        &built_target.app_symbols().await?,
-        options.uses_dev_server(),
-    )
-    .await?;
+    // An iOS bundle stages its assets through the Apple asset catalog while
+    // it is packaged, from the same app library artifact.
+    if !is_ios(platform) {
+        copy_assets_and_fonts(
+            project,
+            platform,
+            &backend_path,
+            &built_target.app_symbols().await?,
+            options.uses_dev_server(),
+        )
+        .await?;
+    }
 
     Ok(built_target)
 }
@@ -343,7 +349,7 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
 /// Package a hydrolysis app.
 ///
 /// Linux/Windows return a binary artifact path.
-/// macOS returns a `.app` bundle path.
+/// macOS and iOS return a `.app` bundle path.
 ///
 /// # Errors
 /// Returns an error if packaging prerequisites are missing, assets cannot be staged, or output artifacts cannot be produced.
@@ -368,10 +374,14 @@ pub async fn package_hydrolysis(
         )
     })?;
 
-    if !is_hydrolysis_native_platform(platform) {
+    if !is_hydrolysis_binary_platform(platform) {
         bail!(
-            "Hydrolysis backend is only supported on macOS, Linux, and Windows for binary packaging"
+            "Hydrolysis backend is only supported on macOS, iOS, Linux, and Windows for binary packaging"
         );
+    }
+
+    if is_ios(platform) {
+        return super::ios::package_hydrolysis_ios(project, platform, &options, built).await;
     }
 
     let profile = if options.is_debug() {
@@ -608,7 +618,7 @@ async fn package_hydrolysis_macos(
     Ok(Artifact::new(project.bundle_identifier(), app_path))
 }
 
-async fn synchronize_shared_runtime(
+pub(super) async fn synchronize_shared_runtime(
     host: &crate::toolchain::Host,
     destination: &Path,
     libraries: Option<&RustDynamicLibraries>,
@@ -637,6 +647,8 @@ pub const fn is_hydrolysis_platform(platform: TargetPlatform) -> bool {
         platform,
         TargetPlatform::Linux
             | TargetPlatform::MacOS
+            | TargetPlatform::IOS
+            | TargetPlatform::IOSSimulator
             | TargetPlatform::Windows
             | TargetPlatform::Web
     )
@@ -647,6 +659,17 @@ const fn is_hydrolysis_native_platform(platform: TargetPlatform) -> bool {
         platform,
         TargetPlatform::Linux | TargetPlatform::MacOS | TargetPlatform::Windows
     )
+}
+
+/// Whether the launcher binary builds for `platform`: the desktops and iOS.
+const fn is_hydrolysis_binary_platform(platform: TargetPlatform) -> bool {
+    is_hydrolysis_native_platform(platform) || is_ios(platform)
+}
+
+/// Whether `platform` is an iOS device or simulator, whose packaged form is a
+/// flat `.app` assembled by the Apple bundle path.
+const fn is_ios(platform: TargetPlatform) -> bool {
+    matches!(platform, TargetPlatform::IOS | TargetPlatform::IOSSimulator)
 }
 
 /// Stage the project's assets and fonts under the backend's `resources`

@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use eyre::WrapErr as _;
-use waterui_assets_planner::ColorScheme;
 
 use crate::{
     apple::platform::{build_rust_lib, clean_apple, is_apple_platform, package_apple},
@@ -127,11 +126,7 @@ impl AppleBackend {
             .collect();
         // The generated project names the launch assets the catalog will
         // hold, so the two are decided from the same resolution.
-        let launch = crate::assets::project_launch_plan(project)?;
-        let launch_entry = templates::LaunchTemplateEntry {
-            has_background: launch.background(ColorScheme::Light).is_some(),
-            has_image: launch.image().is_some(),
-        };
+        let launch_entry = crate::apple::app_bundle::launch_template_entry(project)?;
         let framework = project.resolved_framework().await?;
         // The generated crates name the in-tree `waterui-apple` member — a
         // framework whose manifest declares no `apple-backend-path` ships the
@@ -540,7 +535,7 @@ mod tests {
             crate::platform::TargetPlatform::IOSSimulator,
         ] {
             let dict = crate::apple::app_bundle::apple_info_plist(
-                &ctx,
+                &crate::apple::app_bundle::PlistApp::apple_backend(&ctx),
                 &project,
                 platform,
                 "17.0",
@@ -552,10 +547,32 @@ mod tests {
                 Some(&plist::Value::Boolean(true)),
                 "generated {platform:?} apps opt out of the ProMotion 60 Hz cap"
             );
+            assert!(
+                dict.contains_key("UIApplicationSceneManifest"),
+                "the Apple backend drives {platform:?} through its scene delegate"
+            );
         }
 
+        // A host that owns the `UIApplication` lifecycle (winit) declares no
+        // scene manifest, which UIKit would otherwise route the launch
+        // through, and keeps the rest of the mobile entries.
+        let winit = crate::apple::app_bundle::apple_info_plist(
+            &crate::apple::app_bundle::PlistApp {
+                scene_delegate: None,
+                ..crate::apple::app_bundle::PlistApp::apple_backend(&ctx)
+            },
+            &project,
+            crate::platform::TargetPlatform::IOS,
+            "17.0",
+            "Water Example",
+            &bundle_id,
+        );
+        assert!(!winit.contains_key("UIApplicationSceneManifest"));
+        assert!(winit.contains_key("UILaunchScreen"));
+        assert!(winit.contains_key("UISupportedInterfaceOrientations"));
+
         let macos = crate::apple::app_bundle::apple_info_plist(
-            &ctx,
+            &crate::apple::app_bundle::PlistApp::apple_backend(&ctx),
             &project,
             crate::platform::TargetPlatform::MacOS,
             "14.0",

@@ -57,6 +57,21 @@ impl ManagedBackends {
         }
     }
 
+    /// The managed backend a command acting on `platform` with `backend`
+    /// opens. Hydrolysis on Android and iOS builds from its own generated
+    /// launcher crate, so it opens no managed native backend; every other
+    /// pair opens what `platform` builds with.
+    #[must_use]
+    pub const fn for_target(platform: TargetPlatform, backend: TargetBackend) -> Self {
+        match (platform, backend) {
+            (
+                TargetPlatform::Android | TargetPlatform::IOS | TargetPlatform::IOSSimulator,
+                TargetBackend::Hydrolysis,
+            ) => Self::NONE,
+            _ => Self::for_platform(platform),
+        }
+    }
+
     /// The union of [`Self::for_platform`] over `platforms`.
     #[must_use]
     pub fn for_platforms(platforms: &[TargetPlatform]) -> Self {

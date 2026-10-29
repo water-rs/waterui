@@ -571,11 +571,16 @@ async fn check_toolchain_for_backend(
                 .await
                 .map(Some);
             }
-            if platform != TargetPlatform::Macos
-                && platform != TargetPlatform::Linux
-                && platform != TargetPlatform::Windows
-            {
-                bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
+            let sdk = match platform {
+                TargetPlatform::Ios => Some(AppleSdk::Ios),
+                TargetPlatform::IosSimulator => Some(AppleSdk::IosSimulator),
+                TargetPlatform::Macos | TargetPlatform::Linux | TargetPlatform::Windows => None,
+                TargetPlatform::Android => {
+                    bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
+                }
+            };
+            if let Some(sdk) = sdk {
+                toolchain_checks::check_apple(host, sdk).await?;
             }
         }
         TargetBackend::WinUi => {

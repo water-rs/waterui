@@ -314,13 +314,10 @@ impl From<CliLogLevel> for LogLevel {
 /// `--platform ios` covers both the physical device and the simulator; the
 /// device that decides between them is selected only after the project is
 /// open, and both build with the same Apple project. Hydrolysis on Android
-/// opens nothing: its runtime is the managed launcher crate
+/// and iOS opens nothing: its runtime is the managed launcher crate
 /// `ensure_generated_backend` produces.
 const fn managed_backends(platform: TargetPlatform, backend: TargetBackend) -> ManagedBackends {
-    if matches!(platform, TargetPlatform::Android) && matches!(backend, TargetBackend::Hydrolysis) {
-        return ManagedBackends::NONE;
-    }
-    ManagedBackends::for_platform(lib_platform(platform))
+    ManagedBackends::for_target(lib_platform(platform), backend.lib_backend())
 }
 
 const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
@@ -1469,6 +1466,7 @@ async fn check_toolchain_for_backend(
         }
         TargetBackend::Hydrolysis => {
             if platform != TargetPlatform::Macos
+                && platform != TargetPlatform::Ios
                 && platform != TargetPlatform::Linux
                 && platform != TargetPlatform::Windows
                 && platform != TargetPlatform::Web
@@ -1478,6 +1476,13 @@ async fn check_toolchain_for_backend(
             }
             if platform == TargetPlatform::Android {
                 return toolchain_checks::check_android_run(host).await.map(Some);
+            }
+            if platform == TargetPlatform::Ios {
+                // The device decides the SDK only after this check, so the
+                // simulator's toolchain stands for both, as it does for the
+                // Apple backend.
+                toolchain_checks::check_apple(host, AppleSdk::IosSimulator).await?;
+                return Ok(None);
             }
             if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
@@ -1503,12 +1508,9 @@ async fn find_device(
     device_id: Option<&str>,
 ) -> Result<SelectedDevice> {
     // For native desktop Rust backends, always use Local device regardless of platform.
-    // Hydrolysis on Android is the exception: it goes through the same
-    // device pipeline the Android backend uses.
-    if backend == TargetBackend::Gtk4
-        || (backend == TargetBackend::Hydrolysis && platform != TargetPlatform::Android)
-        || backend == TargetBackend::WinUi
-    {
+    // Hydrolysis on Android and iOS is the exception: it goes through the
+    // same device pipeline the platform's own backend uses.
+    if runs_on_local_machine(platform, backend) {
         return Ok(SelectedDevice::Local(Local));
     }
 
@@ -1594,6 +1596,19 @@ pub(super) const fn backend_name(backend: TargetBackend) -> &'static str {
     }
 }
 
+/// Whether a run for `platform` with `backend` always executes on this
+/// machine: the desktop backends, and Hydrolysis everywhere but on a phone
+/// or tablet, which the platform's device pipeline selects.
+const fn runs_on_local_machine(platform: TargetPlatform, backend: TargetBackend) -> bool {
+    match backend {
+        TargetBackend::Gtk4 | TargetBackend::WinUi => true,
+        TargetBackend::Hydrolysis => {
+            !matches!(platform, TargetPlatform::Android | TargetPlatform::Ios)
+        }
+        TargetBackend::Apple => false,
+    }
+}
+
 fn validate_device_arg(
     platform: TargetPlatform,
     backend: TargetBackend,
@@ -1611,7 +1626,7 @@ fn validate_device_arg(
     // `--device` there can only be a mistake, so reject it instead of
     // silently ignoring it.
     let local_only = (matches!(backend, TargetBackend::Gtk4 | TargetBackend::Hydrolysis)
-        && !(platform == TargetPlatform::Android && backend == TargetBackend::Hydrolysis))
+        && runs_on_local_machine(platform, backend))
         || (platform, backend) == (TargetPlatform::Macos, TargetBackend::Apple);
     if local_only {
         bail!("--device is not supported: this target always runs on the local machine");

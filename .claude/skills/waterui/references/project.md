@@ -275,7 +275,7 @@ the defaults below apply. `water create` leaves the tables absent.
 | Platform | Default backend | Also possible |
 |---|---|---|
 | macOS | `apple` (AppKit) | `hydrolysis` |
-| iOS (+ simulator) | `apple` (UIKit) | — |
+| iOS (+ simulator) | `apple` (UIKit) | `hydrolysis` (winit; no preview) |
 | Android | `hydrolysis` | — |
 | Linux | `gtk4` | `hydrolysis` |
 | Windows | `hydrolysis` | `winui` |

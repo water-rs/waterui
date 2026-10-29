@@ -880,6 +880,7 @@ pub async fn package_apple(
         project,
         platform,
         &staging_dir,
+        &project.apple_crate_path().join("Cargo.toml"),
         &built.app_symbols().await?,
         options.uses_dev_server(),
     )
@@ -923,7 +924,7 @@ pub async fn package_apple(
         })?
         .artifact;
     let mut info_plist = app_bundle::apple_info_plist(
-        &ctx,
+        &app_bundle::PlistApp::apple_backend(&ctx),
         project,
         platform,
         &deployment_target,
@@ -1026,12 +1027,17 @@ pub async fn package_apple(
     )
     .await?;
 
+    let project_entitlements =
+        app_bundle::apple_project_entitlements_path(&backend.scheme, &project_path);
     app_bundle::sign_apple_app(
         &layout,
         platform,
         &options,
-        backend,
-        project_path.as_path(),
+        &app_bundle::SigningFiles {
+            project_entitlements: Some(&project_entitlements),
+            scratch_root: &project_path,
+            name: &backend.scheme,
+        },
         project,
         &deployment_target,
         &apple_declarations,
@@ -1046,12 +1052,15 @@ pub async fn package_apple(
 // ============================================================================
 
 /// Copy project assets and dependency fonts to the app resources directory.
-/// `symbols` is the app library artifact the target build produced, whose
-/// `waterui_meta_bundle_*` statics declare the asset mounts.
-async fn copy_assets_and_fonts(
+/// `build_manifest` is the generated crate the bundle's executable builds
+/// from, whose graph declares the fonts. `symbols` is the app library
+/// artifact the target build produced, whose `waterui_meta_bundle_*`
+/// statics declare the asset mounts.
+pub(crate) async fn copy_assets_and_fonts(
     project: &Project,
     platform: TargetPlatform,
     dest_dir: &Path,
+    build_manifest: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
 ) -> eyre::Result<()> {
@@ -1060,12 +1069,8 @@ async fn copy_assets_and_fonts(
         assets::stage_project_assets_for_apple(project, dest_dir, symbols, dev_server).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations = assets::scan_fonts(
-        project,
-        &project.apple_crate_path().join("Cargo.toml"),
-        &[platform.font_platform()],
-    )
-    .await?;
+    let font_declarations =
+        assets::scan_fonts(project, build_manifest, &[platform.font_platform()]).await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

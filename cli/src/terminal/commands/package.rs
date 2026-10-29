@@ -278,14 +278,13 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         args.backend
             .map(|backend| backend.cli_backend().lib_backend()),
     )?);
-    // Hydrolysis on Android opens no managed backend crate: its runtime is
-    // the Hydrolysis launcher crate `ensure_generated_backend` produces.
-    let managed_backends =
-        if (args.platform, backend) == (TargetPlatform::Android, TargetBackend::Hydrolysis) {
-            ManagedBackends::NONE
-        } else {
-            ManagedBackends::for_platform(lib_platform(args.platform))
-        };
+    // Hydrolysis on Android and iOS opens no managed backend crate: its
+    // runtime is the Hydrolysis launcher crate `ensure_generated_backend`
+    // produces.
+    let managed_backends = ManagedBackends::for_target(
+        lib_platform(args.platform),
+        backend.cli_backend().lib_backend(),
+    );
     let project = Project::open_for_build(
         &waterui_cli::toolchain::Host::current().with_offline(args.offline),
         &project_path,
@@ -679,13 +678,13 @@ fn validate_unsigned_args(
     distribution: bool,
 ) -> Result<()> {
     let android = platform == TargetPlatform::Android;
-    let applies = (platform == TargetPlatform::Ios && backend == TargetBackend::Apple)
+    let applies = (platform == TargetPlatform::Ios
+        && matches!(backend, TargetBackend::Apple | TargetBackend::Hydrolysis))
         || (android && backend == TargetBackend::Hydrolysis);
     if unsigned && !applies {
         bail!(
-            "--unsigned only applies to an iOS device build with the Apple backend or an \
-             Android build with the Hydrolysis backend; simulator and desktop \
-             packages are not signed per device"
+            "--unsigned only applies to an iOS device build or an Android build with the \
+             Hydrolysis backend; simulator and desktop packages are not signed per device"
         );
     }
     // Debug+unsigned is only a problem on Android, where --unsigned would be
@@ -784,13 +783,20 @@ async fn check_toolchain_for_backend(
             toolchain_checks::check_gtk4(host).await?;
         }
         TargetBackend::Hydrolysis => {
-            if platform != TargetPlatform::Macos
-                && platform != TargetPlatform::Linux
-                && platform != TargetPlatform::Windows
-                && platform != TargetPlatform::Web
-                && platform != TargetPlatform::Android
-            {
-                bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
+            match platform {
+                TargetPlatform::Ios => {
+                    toolchain_checks::check_apple(host, AppleSdk::Ios).await?;
+                    return Ok(None);
+                }
+                TargetPlatform::IosSimulator => {
+                    toolchain_checks::check_apple(host, AppleSdk::IosSimulator).await?;
+                    return Ok(None);
+                }
+                TargetPlatform::Macos
+                | TargetPlatform::Linux
+                | TargetPlatform::Windows
+                | TargetPlatform::Web
+                | TargetPlatform::Android => {}
             }
             if platform == TargetPlatform::Android {
                 let required_abis = arch.iter().map(|arch| arch.to_abi()).collect::<Vec<_>>();
@@ -832,10 +838,12 @@ const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
 const fn hydrolysis_platform(platform: TargetPlatform) -> LibTargetPlatform {
     match platform {
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
+        TargetPlatform::Ios => LibTargetPlatform::IOS,
+        TargetPlatform::IosSimulator => LibTargetPlatform::IOSSimulator,
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
         TargetPlatform::Web => LibTargetPlatform::Web,
-        TargetPlatform::Ios | TargetPlatform::IosSimulator | TargetPlatform::Android => {
+        TargetPlatform::Android => {
             panic!("unsupported hydrolysis platform")
         }
     }
@@ -890,6 +898,11 @@ mod tests {
         assert!(v(ios, apple, release, true, false).is_ok());
         assert!(v(ios, apple, debug, true, false).is_ok());
         assert!(v(ios, apple, release, true, true).is_err());
+        // Hydrolysis on iOS signs through the same Apple path, so the same
+        // contract holds.
+        assert!(v(ios, hydrolysis, release, true, false).is_ok());
+        assert!(v(ios, hydrolysis, debug, true, false).is_ok());
+        assert!(v(ios, hydrolysis, release, true, true).is_err());
 
         // Android, both backends: unsigned is valid for release APK and AAB
         // (distribution), never for debug — the flag would be ignored since a
@@ -900,7 +913,7 @@ mod tests {
 
         // Everywhere else --unsigned means nothing.
         assert!(v(macos, apple, release, true, false).is_err());
-        assert!(v(ios, hydrolysis, release, true, false).is_err());
+        assert!(v(macos, hydrolysis, release, true, false).is_err());
         assert!(v(macos, gtk4, release, true, false).is_err());
         // No --unsigned: every combination validates.
         for (platform, backend) in [(ios, apple), (android, hydrolysis), (macos, gtk4)] {
