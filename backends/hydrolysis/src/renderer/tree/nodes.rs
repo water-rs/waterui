@@ -1355,6 +1355,7 @@ impl<E: crate::text::TextEngine> SceneViewNode<E> {
 /// install), while a per-frame re-flush re-binds the *same* runtime via an
 /// `Rc`-carrying compositor layer, so there is no cursor-ordered slot to
 /// desync.
+#[cfg(hydrolysis_gpu)]
 pub struct GpuContentNode<E: crate::text::TextEngine> {
     pub(super) accessibility_identity: Rc<()>,
     pub(crate) core: NodeCore<E>,
@@ -1366,6 +1367,7 @@ pub struct GpuContentNode<E: crate::text::TextEngine> {
     pub(super) measured: Cell<Option<(ProposalSize, Size)>>,
 }
 
+#[cfg(hydrolysis_gpu)]
 impl<E: crate::text::TextEngine> GpuContentNode<E> {
     /// The leaf's live measure under `proposal` — the `measure_body`
     /// arm's own call. [`GpuContentView::measure`] asks the content
@@ -1390,6 +1392,7 @@ impl<E: crate::text::TextEngine> GpuContentNode<E> {
 /// reached through the retained tree. The compositor mounts it as its own
 /// engine layer and starts the stream's source on first install; each frame
 /// the layer drains the receiver's mailbox and presents the newest frame.
+#[cfg(hydrolysis_gpu)]
 pub struct ExternalFrameNode<E: crate::text::TextEngine> {
     pub(super) accessibility_identity: Rc<()>,
     pub(crate) core: NodeCore<E>,
@@ -1402,6 +1405,7 @@ pub struct ExternalFrameNode<E: crate::text::TextEngine> {
     pub(super) measured: Cell<Option<(ProposalSize, Size)>>,
 }
 
+#[cfg(hydrolysis_gpu)]
 impl<E: crate::text::TextEngine> ExternalFrameNode<E> {
     /// The source's measure under `proposal` — the `measure_body` arm's
     /// own call, repeated to detect drift.

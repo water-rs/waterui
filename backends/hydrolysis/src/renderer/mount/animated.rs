@@ -36,7 +36,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         signal: &S,
         owner: &Rc<T>,
         slot: usize,
-        refresh: cherenkov::RefreshRange,
+        refresh: cherenkov_record::RefreshRange,
     ) -> f32
     where
         S: Signal<Output = f32> + Clone + 'static,

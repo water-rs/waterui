@@ -26,6 +26,7 @@ use waterui_graphics::draw::{
 use waterui_graphics::draw::{ResourceId, TextLayoutId};
 
 use super::buffer::{CommandBuffer, Field};
+use super::effects::Effects;
 use super::geometry::{
     Decomposed, Tilted, affine_matrix, decompose, floor_i32, homography_matrix, intersect,
     is_integral, multiply, project_rect, tilt, union,
@@ -35,6 +36,7 @@ use super::lower::{
     extent, set_position,
 };
 use super::protocol::{Op, clip as clip_kind, host};
+use super::resources::Kind;
 use super::resources::SharedRegistry;
 use super::text::TextLayoutIds;
 use super::{HwuiError, HwuiTarget};
@@ -150,6 +152,7 @@ struct Sent {
     alpha: Option<f32>,
     composite: Option<(u32, bool)>,
     clip: Option<(u32, [i32; 4], f32)>,
+    effect: Option<u32>,
 }
 
 /// The platform view bound inside a layer's own `RenderNode`: its retained
@@ -221,6 +224,7 @@ impl LayerState {
                 alpha: Some(1.0),
                 composite: Some((blend_code(BlendMode::Normal), false)),
                 clip: Some((clip_kind::NONE, [0; 4], 0.0)),
+                effect: Some(u32::MAX),
                 ..Sent::default()
             },
         }
@@ -302,6 +306,7 @@ pub struct Encoder {
     clear: Option<WorkingColor>,
     content_animating: bool,
     api_level: u32,
+    effects: Effects,
 }
 
 impl Encoder {
@@ -313,13 +318,15 @@ impl Encoder {
     pub fn new(api_level: u32) -> Result<Self, HwuiError> {
         let tree = SurfaceTree::new();
         let root = tree.root();
+        let registry = SharedRegistry::new();
+        let effects = Effects::new(registry.clone(), api_level);
         let mut encoder = Self {
             tree,
             buffer: CommandBuffer::new(),
             open: false,
             pools: Pools::new(),
             caches: Caches::default(),
-            registry: SharedRegistry::new(),
+            registry,
             text_layouts: TextLayoutIds::new(),
             scratch: Scratch::default(),
             layers: BTreeMap::new(),
@@ -332,6 +339,7 @@ impl Encoder {
             clear: None,
             content_animating: false,
             api_level,
+            effects,
         };
         encoder.create_layer(root)?;
         Ok(encoder)
@@ -348,6 +356,13 @@ impl Encoder {
     #[must_use]
     pub(crate) const fn registry(&self) -> &SharedRegistry {
         &self.registry
+    }
+
+    /// The effect registrations, shared with the resource owner
+    /// ([`HwuiResources`](super::HwuiResources)).
+    #[must_use]
+    pub(crate) const fn effects(&self) -> &Effects {
+        &self.effects
     }
 
     /// The platform text layout ids, shared with every layout the text
@@ -595,6 +610,7 @@ impl Encoder {
             }
         }
         let sampling = self.tree.sample(time, scale);
+        self.content_animating |= self.effects.encode(time, &mut self.buffer)?;
         let mut pending = std::mem::take(&mut self.pending);
         let layers = self.encode_layers(&mut pending);
         pending.reset();
@@ -954,6 +970,20 @@ impl Encoder {
             )?;
             state.sent.composite = Some(composite);
         }
+        let effect = match self.tree.layer(LayerId::new(raw)).filter {
+            Some(filter) => self
+                .registry
+                .lock()
+                .resolve(Kind::Effect, filter.raw(), raw)?,
+            None => u32::MAX,
+        };
+        if state.sent.effect != Some(effect) {
+            self.buffer.op(
+                Op::SetEffect,
+                &[Field::U("node", state.outer), Field::U("effect", effect)],
+            )?;
+            state.sent.effect = Some(effect);
+        }
         Ok(())
     }
 
@@ -961,14 +991,6 @@ impl Encoder {
     fn refuse(&self, id: LayerId) -> Result<(), HwuiError> {
         let raw = id.raw();
         let node = self.tree.layer(id);
-        if node.filter.is_some() {
-            return Err(HwuiError::Unsupported {
-                layer: raw,
-                what:
-                    "filters its subtree; filter lowering to RenderEffect is water-rs/waterui#1750"
-                        .to_owned(),
-            });
-        }
         if node.backdrop.is_some() {
             return Err(HwuiError::Unsupported {
                 layer: raw,
@@ -1107,7 +1129,11 @@ impl Encoder {
         let state = self.layers.get_mut(&raw).expect("listed");
         let (left, transform) = node_transform(state.placement, state.origin);
         let [l, t, r, b] = bounds(left, state.size);
-        let clips = !matches!(state.content, Content::None) && state.children.is_empty();
+        // A filtered leaf keeps its implicit clip off: the native blur must
+        // not be cut at node bounds. Explicit clip modes still apply.
+        let clips = !matches!(state.content, Content::None)
+            && state.children.is_empty()
+            && self.tree.layer(LayerId::new(raw)).filter.is_none();
         let position = [l, t, r, b, i32::from(clips)];
         let clip = match state.clip_mode {
             ClipMode::Node(kind, [cl, ct, cr, cb], radius) => {

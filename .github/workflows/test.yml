@@ -907,6 +907,16 @@ jobs:
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,webview-system -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
+      - name: Pure HWUI dependency boundary
+        shell: bash
+        run: |
+          tree="$(cargo tree --locked -p hydrolysis-android-test-app --target aarch64-linux-android --no-default-features --features hwui -e normal --prefix none)"
+          if grep -E '^(cherenkov|cherenkov-gpu|cherenkov-cpu|wgpu|wgpu-external-frame|parley|fontique|skrifa|vello) v' <<< "$tree"; then
+            echo 'Pure HWUI unexpectedly depends on a GPU or text engine' >&2
+            exit 1
+          fi
+      - name: Clippy (pure HWUI test app)
+        run: cargo clippy --locked --profile ci-check -p hydrolysis-android-test-app --target aarch64-linux-android --no-default-features --features hwui -- -D warnings
       # The android_planes harness is `cfg(target_os = "android")` past its
       # pattern code, so only this target compiles it.
       - run: cargo clippy --locked --profile ci-check -p android-planes --target aarch64-linux-android --all-targets -- -D warnings

@@ -226,6 +226,9 @@ enum GroupLowering {
 }
 
 fn classify(group: &Group, list: &DisplayList, inner: Range<usize>) -> GroupLowering {
+    if group.filter.is_some() {
+        return GroupLowering::Node;
+    }
     if group.blend == BlendMode::Normal {
         if group.opacity >= 1.0 && !blends_within(list, inner.clone()) {
             return GroupLowering::Inline;
@@ -480,11 +483,6 @@ impl Lower<'_> {
                 }
                 Command::BeginGroup { group, end } => {
                     let end = *end as usize;
-                    if group.filter.is_some() {
-                        return Err(self.unsupported(
-                            "filters a group; filter lowering to RenderEffect is water-rs/waterui#1750",
-                        ));
-                    }
                     let inner = index + 1..end;
                     self.prepare(list, inner.clone(), owned, groups)?;
                     if classify(group, list, inner.clone()) == GroupLowering::Node {
@@ -497,7 +495,23 @@ impl Lower<'_> {
                             &self.registry.lock(),
                         );
                         let (origin, size) = extent(ink);
-                        set_position(self.buffer, node, bounds(origin, size), true)?;
+                        set_position(
+                            self.buffer,
+                            node,
+                            bounds(origin, size),
+                            group.filter.is_none(),
+                        )?;
+                        if let Some(filter) = group.filter {
+                            let effect = self.registry.lock().resolve(
+                                Kind::Effect,
+                                filter.raw(),
+                                self.layer,
+                            )?;
+                            self.buffer.op(
+                                Op::SetEffect,
+                                &[Field::U("node", node), Field::U("effect", effect)],
+                            )?;
+                        }
                         self.buffer.op(
                             Op::SetAlpha,
                             &[Field::U("node", node), Field::F("alpha", group.opacity)],

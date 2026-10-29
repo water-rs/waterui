@@ -64,13 +64,6 @@ pub enum Op {
     /// `node, blend` ([`blend`]), `force_layer`.
     SetComposite = 0x0107,
     /// `node, effect` (or [`NONE`]).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no lowering emits it until RenderEffect filters land (water-rs/waterui#1750); the contract test exercises its wire form"
-        )
-    )]
     SetEffect = 0x0108,
     /// `node, width, height` (i32). Opens the node's display list.
     Record = 0x0109,
@@ -144,6 +137,8 @@ pub enum Op {
     /// `axis_count` user-space values: a variation instance of `base`,
     /// released with it.
     DeriveFont = 0x030A,
+    /// `effect, stage_count`, then `stage_count` `kind + 12 values` stages.
+    DefineEffect = 0x030B,
 
     /// `count`, then `count` entries of `kind` ([`host`]), `id_lo, id_hi`:
     /// the session's top-level draw order, bottom first.
@@ -153,7 +148,7 @@ pub enum Op {
 impl Op {
     /// Every opcode, in code order.
     #[cfg(test)]
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 36] = [
         Self::CreateNode,
         Self::ReleaseNode,
         Self::SetPosition,
@@ -188,6 +183,7 @@ impl Op {
         Self::ReleaseEffect,
         Self::ReleaseTextLayout,
         Self::DeriveFont,
+        Self::DefineEffect,
         Self::HostOrder,
     ];
 
@@ -231,6 +227,7 @@ impl Op {
             | Self::DefinePath
             | Self::DefineShader
             | Self::DeriveFont
+            | Self::DefineEffect
             | Self::HostOrder => return None,
         })
     }
@@ -273,6 +270,7 @@ impl Op {
             Self::ReleaseEffect => "ReleaseEffect",
             Self::ReleaseTextLayout => "ReleaseTextLayout",
             Self::DeriveFont => "DeriveFont",
+            Self::DefineEffect => "DefineEffect",
             Self::HostOrder => "HostOrder",
         }
     }
@@ -405,6 +403,18 @@ codes! {
         BITMAP = 3;
         /// `runtime_shader, uniform_count`, then the uniforms.
         RUNTIME = 4;
+    }
+}
+
+codes! {
+    /// `Op::DefineEffect` stage kinds: each stage is `kind` plus 12
+    /// float values.
+    effect_kind: u32 => "EffectKind" {
+        /// `createBlurEffect`; `values[0]` is the radius, the rest zero.
+        BLUR = 0;
+        /// One linear-light matrix: the conjugated product's top three
+        /// rows, row-major.
+        LINEAR_COLOR = 1;
     }
 }
 

@@ -279,6 +279,7 @@ impl Wire {
             Object::new(&protocol::join::CODES),
             Object::new(&protocol::glyph_style::CODES),
             Object::new(&protocol::host::CODES),
+            Object::new(&protocol::effect_kind::CODES),
             mesh,
             Object::new(&protocol::blend::CODES),
         ];

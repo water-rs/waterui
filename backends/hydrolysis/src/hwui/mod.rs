@@ -40,6 +40,7 @@ mod buffer;
 mod color;
 #[cfg(test)]
 mod contract;
+pub(crate) mod effects;
 mod encoder;
 mod fonts;
 mod geometry;

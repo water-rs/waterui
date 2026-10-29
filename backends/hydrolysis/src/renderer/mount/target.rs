@@ -8,7 +8,9 @@ use rustc_hash::FxHashMap;
 use waterui_graphics::Reactive;
 use waterui_graphics::filtrate::filters::OverscrollStretch;
 
+#[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
+#[cfg(hydrolysis_gpu)]
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::FilteredRuntime;
 use crate::renderer::mount::backdrop::{
@@ -43,7 +45,7 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
     /// Binds hosted content at `size` on `layer`; returns whether this call
     /// (re)bound it. Only a target with system-compositor planes hosts
     /// platform objects, so reaching this anywhere else is a build bug.
-    #[cfg(hydrolysis_hosted)]
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
     fn mount_hosted(
         _tx: &mut Transaction<'_, Self>,
         _layer: &Layer,
@@ -54,6 +56,7 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
     }
 
     /// Binds a GPU content producer at `pixels` on `layer`.
+    #[cfg(hydrolysis_gpu)]
     fn mount_gpu_content(
         host: &Self::Host,
         tx: &mut Transaction<'_, Self>,
@@ -65,6 +68,7 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
 
     /// Starts (once) and feeds an external frame stream on `layer`;
     /// returns the bound frame's pixel size once a frame arrived.
+    #[cfg(hydrolysis_gpu)]
     fn mount_external_frame(
         host: &Self::Host,
         tx: &mut Transaction<'_, Self>,
@@ -204,9 +208,11 @@ impl std::fmt::Debug for FilterHandle {
             .finish_non_exhaustive()
     }
 }
+#[cfg(hydrolysis_gpu_painter)]
 #[path = "gpu_target.rs"]
 mod gpu;
 
+#[cfg(hydrolysis_gpu_painter)]
 pub use gpu::CherenkovHost;
-#[cfg(test)]
+#[cfg(all(test, hydrolysis_gpu_painter))]
 pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec};

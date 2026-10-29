@@ -53,7 +53,11 @@ impl HwuiResources {
         encoder: &Encoder,
     ) -> Result<Self, String> {
         let platform = JniResources::new(env, sink)?;
-        Ok(Self::new(Box::new(platform), encoder.registry().clone()))
+        Ok(Self::new(
+            Box::new(platform),
+            encoder.registry().clone(),
+            encoder.effects().clone(),
+        ))
     }
 }
 

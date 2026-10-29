@@ -74,6 +74,12 @@ internal class Table<T : Any>(private val kind: String) {
     operator fun get(id: Int): T =
         (items.getOrNull(id) ?: throw CommandBufferException("HWUI replay: $kind ${Integer.toUnsignedString(id)} is not live")) as T
 
+    /** Replaces the live `id`'s item; a dead id is a replay error. */
+    fun replace(id: Int, item: T) {
+        get(id)
+        items[id] = item
+    }
+
     fun contains(id: Int): Boolean = items.getOrNull(id) != null
 
     fun remove(id: Int): T {
@@ -114,6 +120,10 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
     private val bitmaps = Table<Bitmap>("bitmap")
     private val programs = Table<RuntimeShaderProgram>("runtime shader")
     private val effects = Table<RenderEffect>("effect")
+    /** Builds the platform chains `DefineEffect` records describe. */
+    private val nativeEffects = NativeEffects()
+    /** The effect each node currently draws through: `defineEffect` rebinding needs it. */
+    private val effectBindings = HashMap<Int, Int>()
 
     private var canvas: RecordingCanvas? = null
     private var recording: RenderNode? = null
@@ -278,6 +288,7 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
         bitmaps.clear()
         programs.clear()
         effects.clear()
+        effectBindings.clear()
         hostCount = 0
     }
 
@@ -322,6 +333,7 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
 
     override fun releaseNode(node: Int) {
         bindings.remove(node)
+        effectBindings.remove(node)
         nodes.remove(node)
     }
 
@@ -383,7 +395,25 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
     }
 
     override fun setEffect(node: Int, effect: Int) {
-        nodes[node].setRenderEffect(if (effect == Protocol.NONE) null else effects[effect])
+        if (effect == Protocol.NONE) {
+            nodes[node].setRenderEffect(null)
+            effectBindings.remove(node)
+        } else {
+            nodes[node].setRenderEffect(effects[effect])
+            effectBindings[node] = effect
+        }
+    }
+
+    override fun defineEffect(effect: Int, count: Int, kinds: IntArray, values: FloatArray) {
+        val chain = nativeEffects.build(effect, count, kinds, values)
+        if (effects.contains(effect)) {
+            effects.replace(effect, chain)
+            for ((node, bound) in effectBindings) {
+                if (bound == effect) nodes[node].setRenderEffect(chain)
+            }
+        } else {
+            effects.put(effect, chain)
+        }
     }
 
     override fun record(node: Int, width: Int, height: Int) {
@@ -671,6 +701,9 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
     }
 
     override fun releaseEffect(effect: Int) {
+        if (effectBindings.containsValue(effect)) {
+            throw CommandBufferException("HWUI replay: effect $effect is released while nodes still draw through it")
+        }
         effects.remove(effect)
     }
 

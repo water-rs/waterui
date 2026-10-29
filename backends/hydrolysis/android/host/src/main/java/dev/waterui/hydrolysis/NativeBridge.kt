@@ -13,6 +13,8 @@ import android.view.Surface
 object NativeBridge {
     /**
      * Incremented in lock-step with `JNI_SCHEMA` in the Rust runner.
+     * 24 adds `DefineEffect` (`effect, stage_count, kind + 12 float` stages)
+     * for native `RenderEffect` chains (#1750).
      * History: 1 = surface/input/IME events; 2 = `nativeSetVisible`
      * (Activity `onStart`/`onStop` → pump visibility); 3 = the
      * InputConnection range protocol (`nativeEditOp`/`nativeEditingState`,
@@ -64,7 +66,7 @@ object NativeBridge {
      * [nativeSetColorScheme] reports every later change
      * (water-rs/waterui#3544).
      */
-    private const val SCHEMA: Int = 23
+    private const val SCHEMA: Int = 24
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
