@@ -1148,6 +1148,61 @@ mod imp {
         ));
     }
 
+    /// Logs every view whose window frame meets the status bar band, and
+    /// the view controller chain `UIKit` asks for the status bar style.
+    #[allow(deprecated)]
+    fn dump_3608(window: &cocoa_ui::objc2_ui_kit::UIWindow) {
+        use cocoa_ui::objc2_ui_kit::{UIView, UIViewController};
+        use objc2::Message;
+        let log = cocoa_ui::log::Log::new("dev.waterui", "StatusBar3608");
+        let band = cocoa_ui::objc2_core_foundation::CGRect::new(
+            cocoa_ui::objc2_core_foundation::CGPoint::new(0.0, 0.0),
+            cocoa_ui::objc2_core_foundation::CGSize::new(window.bounds().size.width, 62.0),
+        );
+        let mut stack: Vec<(Retained<UIView>, usize)> = vec![(Retained::into_super(window.retain()), 0)];
+        while let Some((view, depth)) = stack.pop() {
+            let frame = view.convertRect_toView(view.bounds(), None);
+            let meets = frame.origin.y < band.size.height && frame.origin.y + frame.size.height > 0.0;
+            if meets {
+                // SAFETY: plain getters on a live view and its colour.
+                let (bg, style) = unsafe {
+                    (
+                        view.backgroundColor().map(|c| {
+                            let cg = c.CGColor();
+                            let n = cocoa_ui::objc2_core_graphics::CGColor::number_of_components(Some(&cg));
+                            let p = cocoa_ui::objc2_core_graphics::CGColor::components(Some(&cg));
+                            format!("{:?}", (0..n).map(|i| *p.add(i)).collect::<Vec<f64>>())
+                        }),
+                        view.overrideUserInterfaceStyle().0,
+                    )
+                };
+                log.notice(&format!(
+                    "sb3608 dump depth={depth} class={} frame=({:.1},{:.1},{:.1},{:.1}) hidden={} alpha={:.2} bg={bg:?} override_style={style} layer={}",
+                    view.class().name().to_string_lossy(),
+                    frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
+                    view.isHidden(),
+                    view.alpha(),
+                    view.layer().class().name().to_string_lossy(),
+                ));
+            }
+            if depth < 14 {
+                for sub in view.subviews().iter() {
+                    stack.push((sub, depth + 1));
+                }
+            }
+        }
+        let mut vc: Option<Retained<UIViewController>> = window.rootViewController();
+        while let Some(current) = vc {
+            log.notice(&format!(
+                "sb3608 vc class={} preferred={} hidden_pref={}",
+                current.class().name().to_string_lossy(),
+                current.preferredStatusBarStyle().0,
+                current.prefersStatusBarHidden(),
+            ));
+            vc = current.childViewControllerForStatusBarStyle();
+        }
+    }
+
     /// Samples the probe 1 s, 5 s and 20 s after the reveal.
     fn schedule_probe_3608(
         window: &Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
@@ -1161,6 +1216,9 @@ mod imp {
                 let mtm =
                     MainThreadMarker::new().expect("the main queue's work runs on the main thread");
                 probe_3608(tag, bound.get(mtm));
+                if tag == "reveal+1s" {
+                    dump_3608(bound.get(mtm));
+                }
             });
         }
     }
