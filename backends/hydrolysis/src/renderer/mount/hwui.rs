@@ -11,8 +11,10 @@ use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
 use waterui_graphics::Reactive;
 use waterui_graphics::filtrate::filters::OverscrollStretch;
 
+#[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::hwui::HwuiTarget;
+#[cfg(hydrolysis_gpu)]
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::FilteredRuntime;
 use crate::renderer::mount::backdrop::{
@@ -62,6 +64,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         &host.resources
     }
 
+    #[cfg(hydrolysis_gpu)]
     fn mount_gpu_content(
         _host: &Self::Host,
         _tx: &mut Transaction<'_, Self>,
@@ -76,6 +79,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         );
     }
 
+    #[cfg(hydrolysis_gpu)]
     fn mount_external_frame(
         _host: &Self::Host,
         _tx: &mut Transaction<'_, Self>,
@@ -143,7 +147,7 @@ use crate::renderer::HydrolysisRenderer;
 use crate::renderer::mount::Mount;
 
 #[cfg_attr(
-    not(hydrolysis_hwui),
+    hydrolysis_gpu_painter,
     expect(
         dead_code,
         reason = "the Android HWUI runner is the only caller; test builds keep the methods alongside the mount's contract surface"

@@ -62,7 +62,9 @@ use mount::{HitClasses, HitGate, ScopeDelta};
 pub use native_measure::*;
 #[cfg(test)]
 pub use recording::assert_well_formed_image;
-pub use recording::{Glyph, GlyphRun, Recording, working_color};
+#[cfg(hydrolysis_gpu_painter)]
+pub use recording::{Glyph, GlyphRun};
+pub use recording::{Recording, working_color};
 pub use tree::safe_area::{
     ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
 };
@@ -85,7 +87,9 @@ pub use interaction_layers::*;
 pub use lifecycle::lazy;
 pub use lifecycle::*;
 pub use navigation::*;
+#[cfg(hydrolysis_gpu_painter)]
 pub use render::FrameRenderTarget;
+#[cfg(hydrolysis_gpu_painter)]
 pub use render::HydrolysisRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
@@ -101,6 +105,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
+#[cfg(hydrolysis_gpu_painter)]
 use std::sync::Arc;
 
 #[cfg(feature = "accessibility")]
@@ -176,8 +181,11 @@ use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::Color;
 use waterui_graphics::draw::{Paint, WorkingColor};
+#[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
-use waterui_graphics::{ExternalFrameView, FilteredView, GpuContentView, Gradient, SceneView};
+#[cfg(hydrolysis_gpu)]
+use waterui_graphics::{ExternalFrameView, GpuContentView};
+use waterui_graphics::{FilteredView, Gradient, SceneView};
 
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
@@ -292,9 +300,77 @@ pub struct AnimationOwner<E: crate::text::TextEngine> {
     pub(crate) dirty: Dirty,
 }
 
+/// A wake a host hands the renderer once so producers can request the next
+/// frame. `Arc<dyn Fn>` on purpose: the channel is painter-neutral — the
+/// HWUI host's `content_redraw_handle` and a GPU surface's `RedrawHandle`
+/// install the same shape — so the producer path never names an engine
+/// crate.
+#[derive(Clone)]
+pub struct HostRedraw(
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))] std::sync::Arc<dyn Fn() + Send + Sync>,
+);
+
+impl std::fmt::Debug for HostRedraw {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostRedraw")
+    }
+}
+
+impl HostRedraw {
+    /// A handle that runs `wake` on every request.
+    pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(wake))
+    }
+
+    /// Asks the host for another frame.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    pub fn request_redraw(&self) {
+        (self.0)();
+    }
+}
+
+/// A GPU surface's `RedrawHandle` installs the same channel.
+#[cfg(hydrolysis_gpu)]
+impl From<RedrawHandle> for HostRedraw {
+    fn from(handle: RedrawHandle) -> Self {
+        Self::new(move || handle.request_redraw())
+    }
+}
+
+/// The frame pump's scheduling answer from the last presented frame —
+/// the painter's `Next` carried without naming the engine crate, so the
+/// shared runtime and the Android host read it under every painter.
+#[derive(Clone, Debug)]
+pub enum Next {
+    /// No animation is running; the display link may sleep.
+    Idle,
+    /// The next frame is wanted at `time`, at a refresh rate inside `rate`.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    At {
+        /// When the frame is wanted.
+        #[cfg_attr(not(target_os = "android"), expect(dead_code))]
+        time: Instant,
+        /// The refresh-rate range the frame requests.
+        #[cfg_attr(not(target_os = "android"), expect(dead_code))]
+        rate: cherenkov_record::RefreshRange,
+    },
+}
+
+/// The GPU painter's scheduling answer is the same shape.
+#[cfg(hydrolysis_gpu_painter)]
+impl From<cherenkov::Next> for Next {
+    fn from(next: cherenkov::Next) -> Self {
+        match next {
+            cherenkov::Next::Idle => Self::Idle,
+            cherenkov::Next::At { time, rate } => Self::At { time, rate },
+        }
+    }
+}
+
 /// A cross-thread wake handle for a GPU or external-frame producer: posts
 /// its `ProducerKey` through the renderer's wake channel and wakes the
 /// host, so the next frame update marks exactly the owning cell `PRODUCER`.
+#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
 #[derive(Clone)]
 pub struct ProducerWake {
     /// Identity of the owning cell (from the renderer's key counter).
@@ -303,7 +379,7 @@ pub struct ProducerWake {
     tx: std::sync::mpsc::Sender<ProducerKey>,
     /// The host wake (an engine surface's redraw handle), when the host
     /// provides one.
-    redraw: Option<RedrawHandle>,
+    redraw: Option<HostRedraw>,
 }
 
 impl std::fmt::Debug for ProducerWake {
@@ -314,6 +390,7 @@ impl std::fmt::Debug for ProducerWake {
 
 impl ProducerWake {
     /// Posts the producer key and wakes the host for a frame.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn request_redraw(&self) {
         // A producer thread can outlive the renderer at window close: a
         // closed channel means the owner is gone, so the post is a no-op.
@@ -349,6 +426,7 @@ impl<E: crate::text::TextEngine> PresentationHosts<E> {
     /// `NodeLayers` with the outgoing engine window, each cell marked
     /// `PAINT|COMMIT` like [`RenderNode::unmount`] leaves the window's own
     /// tree.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn unmount(&self) {
         for host in [
             &self.text_overlay,
@@ -608,11 +686,12 @@ pub struct HydrolysisRenderer<E: crate::text::TextEngine> {
     /// Wake target supplied when this renderer itself is hosted inside
     /// another GPU host. Renderer-owned redraws use it to wake the parent host
     /// without polling frames.
-    host_redraw_handle: Option<RedrawHandle>,
+    host_redraw_handle: Option<HostRedraw>,
     /// Engine window surfaces by GPU-context id: the `TextureTarget` surface,
     /// the stable mounts under it and the resource registrations its content
     /// names. Entries whose device was reported lost are pruned at the next
     /// presented frame.
+    #[cfg(hydrolysis_gpu_painter)]
     cherenkov_window:
         Option<crate::renderer::render::CherenkovWindow<crate::engine::TextureCherenkovSurface, E>>,
     /// The engine work the last commit did, with the live mounted counts.
@@ -625,13 +704,17 @@ pub struct HydrolysisRenderer<E: crate::text::TextEngine> {
     /// The engine's frame scheduling answer from the last presented frame.
     /// The pump follows it: `Next::Idle` means no animation is running and
     /// the display link may sleep.
-    engine_next: Option<cherenkov::Next>,
+    #[cfg(hydrolysis_gpu_painter)]
+    engine_next: Option<Next>,
     live_caret: Option<Rc<chrome::LiveCaret>>,
     /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
     /// calls accumulate into; reset before each `Engine::render` and read back
     /// into the `frame_applied_filter_*` fields after it.
+    #[cfg(hydrolysis_gpu_painter)]
     applied_filter_metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
+    #[cfg(hydrolysis_gpu_painter)]
     frame_applied_filter_count: u32,
+    #[cfg(hydrolysis_gpu_painter)]
     frame_applied_filter_effect: Duration,
     /// CPU stage times accumulated by `flush_window_tree`, plus the GPU spans
     /// the render pass resolves; drained per pump by `take_frame_stage_times`.
@@ -705,6 +788,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// resolve a viewport-dependent decision (a navigation split's
     /// collapsed-column mode) read what a layout would have seen.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn set_window_frame(&mut self, frame: kurbo::Rect) {
         self.window_frame = frame;
     }
@@ -1699,7 +1783,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn producer_wake(
         &mut self,
         cell: &Rc<NodeCell<E>>,
-        redraw: Option<RedrawHandle>,
+        redraw: Option<HostRedraw>,
     ) -> ProducerWake {
         let addr = Rc::as_ptr(cell) as usize;
         let key = match self.producer_keys_by_owner.get(&addr) {
@@ -1796,6 +1880,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl HydrolysisRenderer<crate::text::ParleyEngine> {
     /// A renderer drawing with `theme`, shaping text against the system font
     /// collection under `family_resolution`.
@@ -1940,15 +2025,20 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             window_display_transform: kurbo::Affine::IDENTITY,
             host_redraw_handle: None,
 
+            #[cfg(hydrolysis_gpu_painter)]
             cherenkov_window: None,
             last_mount_stats: mount::MountStats::default(),
             #[cfg(test)]
             mirror: None,
             program: Vec::new(),
+            #[cfg(hydrolysis_gpu_painter)]
             engine_next: None,
             live_caret: None,
+            #[cfg(hydrolysis_gpu_painter)]
             applied_filter_metrics: Arc::default(),
+            #[cfg(hydrolysis_gpu_painter)]
             frame_applied_filter_count: 0,
+            #[cfg(hydrolysis_gpu_painter)]
             frame_applied_filter_effect: Duration::ZERO,
             #[cfg(feature = "frame-profile")]
             frame_stage_times: FrameStageTimes::default(),

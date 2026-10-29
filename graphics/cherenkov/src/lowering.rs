@@ -673,6 +673,21 @@ fn push_xing(
         }
         return;
     }
+    // A crossing of the infinite lines is irrelevant when these finite
+    // segments stay in left-to-right order throughout their shared span.
+    // Their separation is linear: its minimum is at the bottom when they
+    // converge and at the top when they diverge. Leave near-coincident
+    // pairs to the event machinery, including its rounded midpoint order.
+    let y = if ds > 0.0 {
+        sp.y1.min(sq.y1)
+    } else {
+        sp.y0.max(sq.y0)
+    };
+    let gap = sq.x_at(y) - sp.x_at(y);
+    let magnitude = (sp.slope.abs() + sq.slope.abs()).mul_add(y.abs(), m_glob);
+    if gap > magnitude * (256.0 * f64::EPSILON) {
+        return;
+    }
     let appr = xing_y(sp, sq);
     if !appr.is_finite() {
         return;
@@ -2214,9 +2229,21 @@ fn sweep(prepared: disjoint::Prepared, rule: FillRule) -> Option<Vec<(f32, f32, 
             },
         };
         let ym = ya.midpoint(yb);
-        // Bring the carried-over list into the order the old sort
-        // produced at this band's midpoint first, so the binary-search
-        // admission below inserts on a sorted list.
+        // Expired edges must leave before ordering at the new midpoint:
+        // their supporting lines may cross beyond their finite span,
+        // where no crossing event is needed for coverage.
+        active.retire_ending(
+            &segs,
+            ya,
+            &mut retire,
+            &mut dead,
+            &mut retired,
+            &mut xings,
+            &mut posts,
+            &mut eqs,
+            m_glob,
+        );
+        // Order the surviving edges before binary-search admission.
         drain_xings(
             &mut xings,
             &mut posts,
@@ -2239,6 +2266,8 @@ fn sweep(prepared: disjoint::Prepared, rule: FillRule) -> Option<Vec<(f32, f32, 
             &mut eqs,
             m_glob,
         );
+        // An edge shorter than the admission epsilon can also end at
+        // this band top; it must never contribute a winding transition.
         active.retire_ending(
             &segs,
             ya,

@@ -68,29 +68,64 @@ struct Columns {
 }
 
 impl Columns {
-    /// The middle column's content: built from the primary selection
-    /// (three columns) or the placeholder.
-    fn middle_view(&self) -> AnyView {
+    /// The middle column's selected content (three columns), or `None`
+    /// when nothing is selected or the split has two columns.
+    fn middle_destination(&self) -> Option<AnyView> {
         match (&self.content, self.primary.snapshot()) {
-            (Some(content), Some(id)) => AnyView::new(content.build(id)),
-            _ => self.placeholder.build(),
+            (Some(content), Some(id)) => Some(AnyView::new(content.build(id))),
+            _ => None,
         }
     }
 
-    /// The detail column's content: the primary selection drives
+    /// The detail column's selected content: the primary selection drives
     /// two-column splits; the secondary selection drives three-column
-    /// splits.
-    fn detail_view(&self) -> AnyView {
+    /// splits. `None` when nothing is selected.
+    fn detail_destination(&self) -> Option<AnyView> {
         self.secondary
             .as_ref()
             .map_or_else(
                 || self.primary.snapshot(),
                 waterui::reactive::Signal::snapshot,
             )
-            .map_or_else(
-                || self.placeholder.build(),
-                |id| AnyView::new(self.detail.build(id)),
-            )
+            .map(|id| AnyView::new(self.detail.build(id)))
+    }
+
+    /// The middle column's content, or the placeholder.
+    #[cfg(target_os = "macos")]
+    fn middle_view(&self) -> AnyView {
+        self.middle_destination()
+            .unwrap_or_else(|| self.placeholder.build())
+    }
+
+    /// The detail column's content, or the placeholder.
+    #[cfg(target_os = "macos")]
+    fn detail_view(&self) -> AnyView {
+        self.detail_destination()
+            .unwrap_or_else(|| self.placeholder.build())
+    }
+
+    /// The root of a stack-driven column: a selected destination is
+    /// resolved to its `NavigationView`; the empty-selection placeholder
+    /// becomes the content of a `NavigationView` with the default,
+    /// untitled bar, since it is a plain view with no navigation root to
+    /// resolve.
+    #[cfg(target_os = "ios")]
+    fn column_root(
+        &self,
+        destination: Option<AnyView>,
+    ) -> crate::components::navigation::stack::ColumnRoot {
+        use crate::components::navigation::stack::ColumnRoot;
+        destination.map_or_else(
+            || {
+                ColumnRoot::Resolved(Box::new(waterui::navigation::NavigationView {
+                    bar: waterui::navigation::Bar::default(),
+                    content: self.placeholder.build(),
+                    state: waterui::navigation::NavigationDestinationState::default(),
+                    transition: None,
+                }))
+            },
+            ColumnRoot::Destination,
+        )
     }
 }
 
@@ -315,8 +350,10 @@ mod platform {
         /// compact stack with the platform's own back affordance.
         fn mount_middle(&self, keep: &mut KeepAlive) {
             let ctx = self.columns.renderer.context();
-            let (leaf, column_nav) =
-                crate::components::navigation::stack::column_leaf(self.columns.middle_view(), &ctx);
+            let (leaf, column_nav) = crate::components::navigation::stack::column_leaf(
+                self.columns.column_root(self.columns.middle_destination()),
+                &ctx,
+            );
             self.nav
                 .set_column(UISplitViewControllerColumn::Supplementary, &column_nav);
             keep.keep(leaf);
@@ -325,8 +362,10 @@ mod platform {
 
         fn mount_detail(&self, keep: &mut KeepAlive) {
             let ctx = self.columns.renderer.context();
-            let (leaf, column_nav) =
-                crate::components::navigation::stack::column_leaf(self.columns.detail_view(), &ctx);
+            let (leaf, column_nav) = crate::components::navigation::stack::column_leaf(
+                self.columns.column_root(self.columns.detail_destination()),
+                &ctx,
+            );
             self.nav
                 .set_column(UISplitViewControllerColumn::Secondary, &column_nav);
             keep.keep(leaf);

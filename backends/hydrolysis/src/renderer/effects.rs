@@ -15,7 +15,9 @@
 //! reactive parameter subscriptions alive exactly as long as the filter can
 //! write them.
 
+#[cfg(hydrolysis_gpu_painter)]
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+#[cfg(hydrolysis_gpu_painter)]
 use std::time::Duration;
 
 use super::mount::target::FilterHandle;
@@ -33,6 +35,7 @@ use waterui_graphics::{AnyEffect, ParamGuards};
 /// is no separate capture number to measure: this cell counts the encodes it
 /// can see and their CPU time only.
 #[derive(Debug, Default)]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct AppliedFilterMetrics {
     /// `encode_render` calls observed this frame.
     encoded: AtomicU32,
@@ -40,6 +43,7 @@ pub struct AppliedFilterMetrics {
     effect_nanos: AtomicU64,
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl AppliedFilterMetrics {
     /// Zeroes the frame counters before the engine renders.
     pub(crate) fn reset(&self) {
@@ -65,8 +69,10 @@ impl AppliedFilterMetrics {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu;
 
+#[cfg(hydrolysis_gpu_painter)]
 pub use gpu::EngineEffect;
 
 /// UI-side state of one mounted `FilteredView`: owns the effect source until
@@ -76,6 +82,7 @@ pub use gpu::EngineEffect;
 /// the nami subscriptions feeding the filter's parameter slots alive for as
 /// long as the layer can draw, and tears them down when the node is dropped.
 pub struct FilteredRuntime {
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     source: Option<AnyEffect>,
     filter: Option<FilterHandle>,
     _guards: ParamGuards,
@@ -101,6 +108,7 @@ impl FilteredRuntime {
     ///
     /// Registers the effect on first call and returns its id — the runtime
     /// retains the registration until the mount drops it.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn filter(
         &mut self,
         register: impl FnOnce(AnyEffect) -> FilterHandle,
@@ -126,6 +134,7 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
     /// The capture leg is `0`: the engine captures a filtered subtree inside
     /// the same render pass as the effect encode and reports no per-phase
     /// split, so only the encode leg remains measurable.
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn applied_filter_stats(&self) -> (u32, u64, u64) {
         (
             self.frame_applied_filter_count,
