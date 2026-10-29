@@ -212,6 +212,8 @@ pub struct DistributionSigning {
     /// declares any.
     entitlements: Option<PathBuf>,
 }
+
+#[cfg(target_os = "macos")]
 impl DistributionSigning {
     /// A `DistributionSigning` carrying each of its fields.
     #[must_use]

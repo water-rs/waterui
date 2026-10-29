@@ -1441,8 +1441,11 @@ impl ResolvedFramework {
         features: &[String],
     ) -> Result<()> {
         self.validate_cli(project.host())?;
-        self.sync_cargo_config(project.root(), project.manifest().apple().deployment_targets())
-            .await?;
+        self.sync_cargo_config(
+            project.root(),
+            project.manifest().apple().deployment_targets(),
+        )
+        .await?;
         let project_lockfile = project.lockfile_path().await?;
         let project_lock: Lockfile = smol::fs::read_to_string(&project_lockfile).await?.parse()?;
         // Cargo resolves a member's lockfile at the workspace root, so the
