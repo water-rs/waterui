@@ -645,8 +645,13 @@ fn normalize_layout_view_with_budget(
         navigation.bar.subtitle =
             normalize_layout_view_with_budget(navigation.bar.subtitle, env, remaining);
         for item in &mut navigation.bar.toolbar.items {
+            // Normalization resolves a label against the environment, so the
+            // bar scope has to wrap the item before it runs.
             item.content = normalize_layout_view_with_budget(
-                core::mem::take(&mut item.content),
+                crate::widgets::nav::navigation::toolbar_item_view(
+                    core::mem::take(&mut item.content),
+                    env,
+                ),
                 env,
                 remaining,
             );

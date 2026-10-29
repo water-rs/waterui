@@ -25,6 +25,7 @@ use waterui::navigation::{
     resolve_navigation_root,
 };
 use waterui::theme::color::{Background, Surface};
+use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
@@ -145,6 +146,29 @@ fn navigation_slot_is_empty(view: &AnyView) -> bool {
     }
 }
 
+/// The environment a bar item builds, measures and renders under: `env`
+/// with labels defaulting to icon-only, as the platform bars present them.
+/// An explicit `LabelDisplayMode` keeps precedence; the title stays the
+/// button's accessible name.
+pub fn toolbar_item_env(env: &Environment) -> Environment {
+    if env
+        .get::<LabelDisplayMode>()
+        .is_none_or(|mode| matches!(mode, LabelDisplayMode::Automatic))
+    {
+        env.extending(LabelDisplayMode::IconOnly)
+    } else {
+        env.clone()
+    }
+}
+
+/// `content` scoped to [`toolbar_item_env`]. The scope is baked into the
+/// view because an environment snapshot in the content replaces the
+/// environment wholesale, so build, measure and render all see one scope.
+pub fn toolbar_item_view(content: AnyView, env: &Environment) -> AnyView {
+    let (content, scoped) = crate::renderer::flatten_environment_metadata_owned(content, env);
+    AnyView::new(Metadata::new(content, toolbar_item_env(&scoped)))
+}
+
 impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
     pub(crate) fn from_view(navigation: NavigationView, env: &Environment) -> Self {
         let NavigationView { bar, content, .. } = navigation;
@@ -167,7 +191,7 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let mut trailing = Vec::new();
         let mut bottom = Vec::new();
         for item in toolbar.items {
-            let retained = RetainedSubview::new(item.content);
+            let retained = RetainedSubview::new(toolbar_item_view(item.content, env));
             match item.placement {
                 NavigationToolbarPlacement::Principal => principal.push(retained),
                 NavigationToolbarPlacement::Cancellation

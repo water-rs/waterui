@@ -62,7 +62,7 @@ swiftui_ios() {
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>DTPlatformName</key><string>iphonesimulator</string>
-  <key>MinimumOSVersion</key><string>27.0</string>
+  <key>MinimumOSVersion</key><string>26.0</string>
   <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
   <key>UILaunchScreen</key><dict/>
   <key>UISupportedInterfaceOrientations</key>

@@ -43,15 +43,15 @@ jobs:
       # The benches run against the backend's real AppKit objects — no
       # seam, header or harness archive exists to link.
       - name: Benchmark (informational)
-        run: cargo bench -p waterui-apple --locked
-      # Criterion's report tree is the trend series: uploaded under a
-      # stable, branch-scoped name so runs diff cleanly against earlier
-      # baselines (each bench's `new/` vs `baseline/` output is preserved
-      # verbatim inside the archive).
-      - name: Upload Criterion output
+        shell: bash
+        run: cargo bench -p waterui-apple --locked 2>&1 | tee divan-output.txt
+      # divan prints its report to stdout; teeing it into a file keeps the
+      # trend series as an artifact under a stable, branch-scoped name so runs
+      # diff against earlier ones.
+      - name: Upload divan output
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: criterion-${{ github.sha }}-${{ github.run_id }}
-          path: target/criterion/
+          name: divan-${{ github.sha }}-${{ github.run_id }}
+          path: divan-output.txt
           if-no-files-found: error

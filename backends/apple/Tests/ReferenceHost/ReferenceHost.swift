@@ -44,7 +44,12 @@ private final class Results {
       rowLeading: margins.leading, rowBottom: margins.bottom,
       rowTrailing: margins.trailing, row24Height: row24, row4Height: row4)
     do {
-      let url = URL.documentsDirectory.appendingPathComponent("reference.json")
+      // The destination script names the file; a Catalyst app is unsandboxed,
+      // so its documents directory is the user's own ~/Documents.
+      guard let path = ProcessInfo.processInfo.environment["WATERUI_REFERENCE_OUTPUT"] else {
+        fatalError("WATERUI_REFERENCE_OUTPUT must name the file to write")
+      }
+      let url = URL(fileURLWithPath: path)
       let encoder = JSONEncoder()
       encoder.outputFormatting = [.sortedKeys]
       try encoder.encode(metrics).write(to: url, options: .atomic)

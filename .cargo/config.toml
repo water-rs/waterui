@@ -10,10 +10,10 @@ rustflags = ["-Clinker-flavor=lld-link"]
 [env]
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim = "-target arm64-apple-ios-simulator"
 # Cherenkov's native Apple contract (graphics/cherenkov/docs/api.md) requires
-# OS 27 APIs. The deployment agreement test checks these against the framework
+# OS 26 APIs. The deployment agreement test checks these against the framework
 # metadata in Cargo.toml.
-MACOSX_DEPLOYMENT_TARGET = "27.0"
-IPHONEOS_DEPLOYMENT_TARGET = "27.0"
+MACOSX_DEPLOYMENT_TARGET = "26.0"
+IPHONEOS_DEPLOYMENT_TARGET = "26.0"
 
 # Android 15+ kernels run with 16 KB pages; every aarch64 ELF the cherenkov
 # family ships or runs over adb (the planes libraries, cherenkov-bench, and

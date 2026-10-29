@@ -4,8 +4,8 @@ import PackageDescription
 let package = Package(
   name: "LayoutTwins",
   platforms: [
-    .iOS(.v27),
-    .macOS(.v27),
+    .iOS(.v26),
+    .macOS(.v26),
   ],
   targets: [
     .executableTarget(name: "LayoutTwins", path: "Sources")

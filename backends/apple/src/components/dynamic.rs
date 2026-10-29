@@ -33,7 +33,7 @@ use waterui_core::metadata::Retain;
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
 use crate::dispatch::Dispatcher;
-use crate::proposal;
+use crate::proposal::{self, Placement};
 use crate::transition::TransitionClaim;
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
@@ -61,11 +61,12 @@ struct DynamicState {
     /// `false` until the first child is mounted: the initial child plays
     /// no insertion, every later one does.
     built: bool,
-    /// The proposal the parent layout selected when it placed this leaf —
+    /// The placement the parent layout gave this leaf — its proposal is
     /// `selectedProposal` in the Swift port — forwarded to the current
     /// child and re-applied to every replacement so a swapped-in child is
-    /// never left with a stale or bounds-inferred offer.
-    selected: Cell<Option<ProposalSize>>,
+    /// never left with a stale or bounds-inferred offer, nor a stale pixel
+    /// alignment.
+    placement: Cell<Placement>,
 }
 
 impl core::fmt::Debug for DynamicState {
@@ -233,10 +234,11 @@ fn update_child(state: &Rc<RefCell<DynamicState>>, view: AnyView) {
             LiveChild::mount(leaf, &state.host, state.adopted.as_ref())
         };
         view::set_translates_autoresizing(child.view(), true);
-        // The replacement inherits the last negotiated proposal until the
-        // parent re-places us.
-        if let Some(selected) = state.selected.get() {
-            proposal::deliver(child.view(), selected);
+        // The replacement inherits the last placement until the parent
+        // re-places us.
+        let placement = state.placement.get();
+        if placement != Placement::UNPLACED {
+            proposal::deliver(child.view(), placement);
         }
         state.child = Some(child);
         view::invalidate_layout(&state.host);
@@ -263,7 +265,7 @@ fn render(
         adopted,
         ghosts: Vec::new(),
         built: false,
-        selected: Cell::new(None),
+        placement: Cell::new(Placement::UNPLACED),
     }));
 
     // `layoutSubviews` / `layout`: the child always fills the host.
@@ -307,11 +309,11 @@ fn render(
     // to the current child.
     let sink_guard = proposal::register_sink(&host, {
         let state = Rc::clone(&state);
-        move |selected| {
+        move |placement| {
             let state = state.borrow();
-            state.selected.set(Some(selected));
+            state.placement.set(placement);
             if let Some(child) = &state.child {
-                proposal::deliver(child.view(), selected);
+                proposal::deliver(child.view(), placement);
             }
         }
     });

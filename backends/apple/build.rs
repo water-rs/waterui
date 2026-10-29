@@ -90,7 +90,7 @@ fn compile_waterui_bridge() {
         )
     };
     let deployment = std::env::var(env_var).unwrap_or_else(|_| {
-        panic!("waterui-apple's swiftui feature requires {env_var}=27.0 or newer")
+        panic!("waterui-apple's swiftui feature requires {env_var}=26.0 or newer")
     });
     let artifacts = SwiftModule::new("WaterUIBridge")
         .swift_source("Sources/WaterUI/Embedding.swift")

@@ -1,12 +1,12 @@
 //! Apple deployment validation shared by the build script and its tests.
 
 /// Checked against the framework metadata by the deployment integration test.
-pub const APPLE_DEPLOYMENT_FLOOR: u32 = 27;
+pub const APPLE_DEPLOYMENT_FLOOR: u32 = 26;
 
 /// Require the native API floor for downstream builds as well as this workspace.
 ///
 /// # Panics
-/// Panics when `version` is empty, non-numeric, or older than macOS/iOS 27.
+/// Panics when `version` is empty, non-numeric, or older than macOS/iOS 26.
 pub fn require_floor(version: &str) {
     let major: u32 = version
         .split('.')
@@ -24,14 +24,14 @@ pub fn require_floor(version: &str) {
 #[cfg(test)]
 mod tests {
     #[test]
-    #[should_panic(expected = "requires macOS/iOS 27 or newer")]
-    fn rejects_pre_27_deployment() {
-        super::require_floor("26.9");
+    #[should_panic(expected = "requires macOS/iOS 26 or newer")]
+    fn rejects_pre_26_deployment() {
+        super::require_floor("25.9");
     }
 
     #[test]
     fn accepts_the_declared_floor_and_newer() {
-        for version in ["27", "27.0", "27.1.0", "28.0"] {
+        for version in ["26", "26.0", "26.1.0", "27.0"] {
             super::require_floor(version);
         }
     }

@@ -416,9 +416,9 @@ waterui-webview = { workspace = true, features = ["conformance"] }
 icu_provider = { version = "2.3", features = ["logging"] }
 tracing-log = "0.2"
 # Drives the text-measure bench (`benches/text_measure.rs`).
-criterion = "0.8"
+divan = "0.1"
 # The text-measure bench rides the real layout path; `harness = false` hands
-# the binary's `main` to criterion.
+# the binary's `main` to divan.
 [[bench]]
 name = "text_measure"
 harness = false

@@ -8,7 +8,7 @@ use crate::renderer::{
     Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
     tabs_button_rect, tabs_content_proposal,
 };
-use crate::theme::TabItemLayout;
+use crate::theme::{TabItemGeometry, TabItemLayout};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -37,6 +37,8 @@ struct TabRenderState<E: crate::text::TextEngine> {
     icon: Option<RetainedSubview<E>>,
     content: RetainedSubview<E>,
     enabled: nami::Computed<bool>,
+    /// The reactive badge count drawn on the item; zero draws nothing.
+    badge: Option<nami::Computed<i32>>,
 }
 
 impl<E: crate::text::TextEngine> TabRenderState<E> {
@@ -52,6 +54,7 @@ impl<E: crate::text::TextEngine> TabRenderState<E> {
             }),
             content: RetainedSubview::new(AnyView::new(tab.content.build())),
             enabled: tab.enabled,
+            badge: tab.badge,
         }
     }
 }
@@ -225,6 +228,19 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
         )
     }
 
+    /// Each tab's live badge count, read through `renderer` so a change
+    /// schedules a frame. A tab without a badge reads zero.
+    fn badge_counts(&self, renderer: &mut crate::renderer::SemanticCore<E>) -> Vec<i32> {
+        self.tabs
+            .iter()
+            .map(|tab| {
+                tab.badge
+                    .as_ref()
+                    .map_or(0, |badge| renderer.read_signal(badge))
+            })
+            .collect()
+    }
+
     /// Consume every tab's label/icon/content layout-dirty marks: their
     /// measured sizes feed the bar's, so an enclosing retained sub-view
     /// must see them (water-rs/waterui#1957).
@@ -277,8 +293,19 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TabsLayout> {
     }
 }
 
-/// Emits a tab list's accessibility tree from per-tab `(tag, interaction_key,
-/// default_label, is_selected)` tuples. Shared by the dispatch path and the
+/// One tab's accessibility inputs: `(tag, interaction_key, default_label,
+/// is_selected, badge_count)`; a zero badge count is not announced.
+#[cfg(feature = "accessibility")]
+type TabAccessibilityEntry = (
+    Id,
+    crate::renderer::InteractionKey,
+    Option<String>,
+    bool,
+    i32,
+);
+
+/// Emits a tab list's accessibility tree from per-tab [`TabAccessibilityEntry`]
+/// tuples. Shared by the dispatch path and the
 /// retained `Widget`-node path (which extracts each default label from its
 /// tab's [`RetainedSubview`]). `bar_rect` carries the bar's bounds-space
 /// rect — the docked band [`WidgetRenderContext::chrome_splits`] carves out;
@@ -289,7 +316,7 @@ pub fn tabs_accessibility<E: crate::text::TextEngine>(
     bar_rect: Option<kurbo::Rect>,
     selection: &Binding<Id>,
     style: NativeTabStyle,
-    labels: &[(Id, crate::renderer::InteractionKey, Option<String>, bool)],
+    labels: &[TabAccessibilityEntry],
     env: &Environment,
 ) {
     let disabled = renderer.read_signal(&widget_disabled(env));
@@ -306,7 +333,9 @@ pub fn tabs_accessibility<E: crate::text::TextEngine>(
     if let Some(value) = renderer.resolve_accessibility_value(env, None) {
         tab_list.set_value(value);
     }
-    for (index, (tag, interaction_key, default_label, is_selected)) in labels.iter().enumerate() {
+    for (index, (tag, interaction_key, default_label, is_selected, badge)) in
+        labels.iter().enumerate()
+    {
         let mut tab_node = AccessibilityNode::new(
             crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
@@ -318,6 +347,9 @@ pub fn tabs_accessibility<E: crate::text::TextEngine>(
             tab_node.set_label(label);
         }
         tab_node.set_selected(*is_selected);
+        if *badge != 0 {
+            tab_node.set_value(badge.to_string());
+        }
         tab_node.add_action(AccessibilityAction::Focus);
         if disabled {
             tab_node.set_disabled();
@@ -464,7 +496,8 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                 st.reconcile();
                 st.prebuild_labels(ctx.renderer_mut(), env);
                 let selected_index = st.selected_index(selected_id);
-                let labels: Vec<(Id, crate::renderer::InteractionKey, Option<String>, bool)> = st
+                let badges = st.badge_counts(ctx.renderer_mut());
+                let labels: Vec<TabAccessibilityEntry> = st
                     .tabs
                     .iter()
                     .enumerate()
@@ -477,6 +510,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                             ),
                             tab.label.default_a11y_label(),
                             Some(index) == selected_index,
+                            badges[index],
                         )
                     })
                     .collect();
@@ -640,28 +674,18 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
             };
             {
                 let theme = ctx.theme();
+                let item = TabItemGeometry {
+                    bounds: chrome_bounds,
+                    icon: icon_rect,
+                    title: label_rect,
+                    layout,
+                    placement: style,
+                };
                 ctx.draw_context(|draw| {
                     if is_selected {
-                        let highlight = tabs_highlight_rect(
-                            chrome_bounds,
-                            style,
-                            theme_metrics.active_indicator_height,
-                            if matches!(style, NativeTabStyle::Sidebar) {
-                                f64::from(label_size.height)
-                            } else {
-                                f64::from(label_size.width)
-                            },
-                            layout,
-                        );
-                        theme.draw_tabs_highlight(&mut *draw, highlight, layout);
+                        theme.draw_tabs_highlight(&mut *draw, item);
                     }
-                    theme.draw_tabs_button_state_layer(
-                        &mut *draw,
-                        chrome_bounds,
-                        is_selected,
-                        interaction,
-                        layout,
-                    );
+                    theme.draw_tabs_button_state_layer(&mut *draw, item, is_selected, interaction);
                 });
             }
             let selection_binding = selection.clone();
@@ -683,6 +707,10 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
             }
         }
         let has_label = label_rect.width() > 0.0 && label_rect.height() > 0.0;
+        let badge = {
+            let badge = state.borrow().tabs[index].badge.clone();
+            badge.map_or(0, |badge| ctx.renderer_mut().read_signal(&badge))
+        };
         if icon_rect.is_some() || has_label {
             // The tab item's a11y is emitted by `tabs_accessibility`, so suppress
             // the sub-views' own a11y (matching the dispatch path's
@@ -726,6 +754,13 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
                         );
                     }
                     drop(st);
+                    // The count anchors on the icon, on the title without one.
+                    if badge != 0 {
+                        let anchor = icon_rect.unwrap_or(label_rect);
+                        crate::widgets::layout::badge::draw_badge_indicator(
+                            ctx, anchor, badge, env,
+                        );
+                    }
                 },
             );
             #[cfg(feature = "accessibility")]
@@ -940,45 +975,6 @@ fn tabs_label_rect(
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
-fn tabs_highlight_rect(
-    button_rect: kurbo::Rect,
-    style: NativeTabStyle,
-    thickness: f64,
-    label_extent: f64,
-    layout: TabItemLayout,
-) -> kurbo::Rect {
-    // Horizontal items highlight the whole item; the theme's metric supplies
-    // the indicator's thickness centered on the item.
-    if matches!(layout, TabItemLayout::Horizontal) {
-        let height = thickness.min(button_rect.height());
-        let y0 = (button_rect.height() - height).mul_add(0.5, button_rect.y0);
-        return kurbo::Rect::new(button_rect.x0, y0, button_rect.x1, y0 + height);
-    }
-    match style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
-            let width = label_extent.clamp(0.0, button_rect.width());
-            let x0 = (button_rect.width() - width).mul_add(0.5, button_rect.x0);
-            let x1 = x0 + width;
-            kurbo::Rect::new(
-                x0,
-                button_rect.y0,
-                x1,
-                (button_rect.y0 + thickness).min(button_rect.y1),
-            )
-        }
-        NativeTabStyle::Sidebar => {
-            let height = label_extent.clamp(0.0, button_rect.height());
-            let y0 = (button_rect.height() - height).mul_add(0.5, button_rect.y0);
-            kurbo::Rect::new(
-                (button_rect.x1 - thickness).max(button_rect.x0),
-                y0,
-                button_rect.x1,
-                y0 + height,
-            )
-        }
-    }
-}
-
 /// Emits a retained tabs layout's accessibility tree for the semantic walk:
 /// the tab bar and tab nodes `tabs_accessibility` registers (labels are
 /// suppressed in the sub-view flush, so they emit nothing themselves), then
@@ -1007,7 +1003,8 @@ pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
     let selected_id = renderer.read_signal(&state.selection);
     let (selection, style, labels) = {
         let selected_index = state.selected_index(selected_id);
-        let labels: Vec<(Id, crate::renderer::InteractionKey, Option<String>, bool)> = state
+        let badges = state.badge_counts(renderer);
+        let labels: Vec<TabAccessibilityEntry> = state
             .tabs
             .iter()
             .enumerate()
@@ -1020,6 +1017,7 @@ pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
                     ),
                     tab.label.default_a11y_label(),
                     Some(index) == selected_index,
+                    badges[index],
                 )
             })
             .collect();
