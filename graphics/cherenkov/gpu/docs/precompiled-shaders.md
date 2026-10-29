@@ -83,7 +83,7 @@ DX12, which wgpu-hal advertises unconditionally there.
   Cargo target, so the metallib has the same OS floor as the Rust binary.
   Explicit `MACOSX_DEPLOYMENT_TARGET` and `IPHONEOS_DEPLOYMENT_TARGET`
   settings participate in that resolution and invalidate the build script.
-  The workspace defaults both to 27.0, matching the native Apple contract
+  The workspace defaults both to 26.0, matching the native Apple contract
   in `docs/api.md` and both iOS host manifests.
 - Windows targets run `dxc` from `PATH` — the DirectXShaderCompiler
   release CI and the CLI pin (v1.8.2505.1) — in debug and release builds

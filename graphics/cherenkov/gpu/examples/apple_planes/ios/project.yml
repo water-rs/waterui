@@ -5,7 +5,7 @@ targets:
   CherenkovPlanes:
     type: application
     platform: iOS
-    deploymentTarget: "27.0"
+    deploymentTarget: "26.0"
     sources:
       - Sources
     settings:

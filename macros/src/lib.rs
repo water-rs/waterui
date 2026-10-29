@@ -12,6 +12,7 @@ use quote::quote;
 use sha2::Digest as _;
 use std::collections::HashMap;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
+mod apple_available;
 mod identifiable;
 mod locale;
 mod state;
@@ -36,6 +37,26 @@ fn waterui_crate_path() -> syn::Result<TokenStream2> {
             ),
         )),
     }
+}
+
+/// Selects between two realizations of a component by Apple OS version.
+///
+/// `apple_available!(27.0)` is `objc2::available!` with that one version for
+/// iOS, macOS, tvOS, watchOS and visionOS: Apple OS versions are unified across
+/// them since 26, so one number covers every platform and none can be left
+/// out. The version must be one the framework gates (`waterui-apple-os` lists
+/// them); an unknown version does not compile.
+///
+/// When the build's Apple deployment target already meets the version the
+/// check is statically `true`, and the call site gets a `#[deprecated]`
+/// warning: the older realization is dead and is deleted when the framework
+/// floor reaches the version.
+///
+/// The crate using it depends on `waterui-apple-os`, and only builds for Apple
+/// targets.
+#[proc_macro]
+pub fn apple_available(input: TokenStream) -> TokenStream {
+    apple_available::expand(input.into()).into()
 }
 
 mod javascript;
