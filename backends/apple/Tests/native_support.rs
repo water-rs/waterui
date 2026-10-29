@@ -511,6 +511,314 @@ pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
     drop(host);
 }
 
+/// §7.1 on a real window root: a navigation page's scroll surface runs
+/// under the window toolbar, its other content stays below the titlebar.
+///
+/// A navigation page touches the edge the window-drawn bar sits on, so on
+/// a titled window — unified toolbar, full-size content view — a scroll
+/// surface on it reaches the window's top edge, while non-scrolling
+/// content in the same position stays clear of the titlebar.
+///
+/// Every case realizes its content through `windows::realize`, the
+/// production window root, so each link the safe-area answer passes —
+/// the root's `content_frame`, the tab host, the tab's `NavigationView`
+/// pane, the stack, the page — is the one an application gets. Each case
+/// orders a window in.
+#[cfg(target_os = "macos")]
+pub mod toolbar_reach {
+    use cocoa_ui::objc2_app_kit::{NSTextField, NSView, NSWindowStyleMask, NSWindowToolbarStyle};
+    use cocoa_ui::{MainThreadMarker, Retained};
+    use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::list::{List, ListItem};
+    use waterui::id::SelfId;
+    use waterui::navigation::{
+        NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, Tabs, tab_style,
+    };
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui::window::{WindowState, WindowStyle};
+    use waterui_core::layout::{Point, Rect, Size};
+
+    use super::{ListSurface, MAIN_QUEUE_DEADLINE, pump_main_until, row_item, window_environment};
+
+    /// The text the non-scrolling fixtures show — the label the case
+    /// finds in the window.
+    const MARKER: &str = "toolbar-reach-marker";
+
+    /// Half a point: the distance at which an edge counts as reaching a
+    /// boundary at any backing scale.
+    const TOLERANCE: f64 = 0.5;
+
+    /// The gap `SwiftUI` leaves between the safe-area top and a list's
+    /// first row.
+    const LIST_GAP: f64 = 10.0;
+
+    /// How far the first row may stray from [`LIST_GAP`] below the
+    /// titlebar.
+    const LIST_GAP_TOLERANCE: f64 = 2.0;
+
+    /// The window-coordinate tops a case measures against.
+    struct Edges {
+        /// The top of the window, which a full-size content view reaches.
+        window: f64,
+        /// The top of the content view's safe-area rect — the bottom of
+        /// the titlebar, its toolbar and any accessory row.
+        safe: f64,
+    }
+
+    /// The top edge of `rect`, a rect in `view`'s coordinates, in window
+    /// coordinates.
+    fn top_in_window(view: &NSView, rect: cocoa_ui::objc2_foundation::NSRect) -> f64 {
+        let frame = view.convertRect_toView(rect, None);
+        frame.origin.y + frame.size.height
+    }
+
+    /// The first view under `root`, depth-first, that `matches` accepts.
+    fn find<T: objc2::DowncastTarget>(
+        root: &NSView,
+        matches: &impl Fn(&T) -> bool,
+    ) -> Option<Retained<T>> {
+        for sub in root.subviews() {
+            if let Ok(found) = sub.clone().downcast::<T>()
+                && matches(&found)
+            {
+                return Some(found);
+            }
+            if let Some(found) = find(&sub, matches) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Realizes `content` as a titled window through the production root,
+    /// waits until the window carries its unified toolbar over a full-size
+    /// content view — and the search row when `searchable` — then lays the
+    /// tree out and hands `check` the content view and its edges.
+    fn realized<V: waterui::View>(
+        mtm: MainThreadMarker,
+        content: impl Fn() -> V + 'static,
+        searchable: bool,
+        check: impl FnOnce(&NSView, &Edges),
+    ) {
+        let (mut env, _theme) = window_environment(mtm);
+        env.insert(crate::first_paint::FirstPaint::default());
+        let declaration =
+            waterui::window::Window::new("Toolbar Reach", binding(WindowState::Normal), content)
+                .style(WindowStyle::Titled);
+        declaration
+            .frame
+            .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
+        let host = crate::windows::realize(declaration, &env, mtm);
+        let native = host.window().native();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                native.toolbar().is_some()
+                    && native.toolbarStyle() == NSWindowToolbarStyle::Unified
+                    && native.styleMask().contains(
+                        NSWindowStyleMask::Titled | NSWindowStyleMask::FullSizeContentView,
+                    )
+                    && (!searchable || native.titlebarAccessoryViewControllers().count() == 1)
+            }),
+            "the window must carry a unified toolbar over a full-size content view{}",
+            if searchable {
+                " and the search row"
+            } else {
+                ""
+            }
+        );
+        let root = native
+            .contentView()
+            .expect("the realized window has a content view");
+        root.layoutSubtreeIfNeeded();
+        let edges = Edges {
+            window: native.frame().size.height,
+            safe: top_in_window(&root, root.safeAreaRect()),
+        };
+        let root_top = top_in_window(&root, root.bounds());
+        assert!(
+            (root_top - edges.window).abs() <= TOLERANCE,
+            "a full-size content view reaches the window top {}, got {root_top}",
+            edges.window
+        );
+        assert!(
+            edges.safe < edges.window - 1.0,
+            "the titlebar must cover a band of the content view: safe-area top {}, window top {}",
+            edges.safe,
+            edges.window
+        );
+        check(&root, &edges);
+        native.close();
+        drop(host);
+    }
+
+    /// Asserts the list's scroll view runs under the toolbar to the
+    /// window's top edge, and its first row rests [`LIST_GAP`] below the
+    /// titlebar's bottom.
+    fn assert_list_reaches_the_top(root: &NSView, edges: &Edges) {
+        let list = find::<ListSurface>(root, &|_| true).expect("the window hosts the list");
+        let top = top_in_window(&list, list.bounds());
+        assert!(
+            top >= edges.window - TOLERANCE,
+            "the list's scroll view must reach the window top {} under the toolbar \
+             (safe-area top {}), but its top is {top}",
+            edges.window,
+            edges.safe
+        );
+        let first_row = top_in_window(&list.table_view(), list.rect_of_row(0));
+        assert!(
+            first_row <= edges.safe + TOLERANCE,
+            "the list's first row must sit below the titlebar's bottom {}, but its top is \
+             {first_row}",
+            edges.safe
+        );
+        let expected = edges.safe - LIST_GAP;
+        assert!(
+            (first_row - expected).abs() <= LIST_GAP_TOLERANCE,
+            "the list's first row must rest {LIST_GAP}pt below the titlebar's bottom {}, at \
+             {expected}, but its top is {first_row}",
+            edges.safe
+        );
+    }
+
+    /// Asserts the marker text stays below the titlebar.
+    fn assert_text_stays_clear(root: &NSView, edges: &Edges) {
+        let label = find::<NSTextField>(root, &|field| field.stringValue().to_string() == MARKER)
+            .expect("the window hosts the marker text");
+        let top = top_in_window(&label, label.bounds());
+        assert!(
+            top <= edges.safe + TOLERANCE,
+            "non-scrolling content must stay below the titlebar at {}, but its top is {top}",
+            edges.safe
+        );
+    }
+
+    /// The fixtures' list: three plain rows.
+    fn rows() -> impl waterui::View {
+        List::content(vec![row_item as fn() -> ListItem; 3])
+    }
+
+    /// Window → `NavigationStack` → page whose content is a `List`.
+    pub fn a_stack_page_list_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationStack::new(NavigationView::new("Inbox", rows())),
+            false,
+            assert_list_reaches_the_top,
+        );
+    }
+
+    /// Window → `NavigationStack` → page whose content is text.
+    pub fn a_stack_page_text_stays_clear_of_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationStack::new(NavigationView::new("Inbox", text(MARKER))),
+            false,
+            assert_text_stays_clear,
+        );
+    }
+
+    /// `Tabs` whose first tab is a `NavigationStack` over `inbox`, each tab
+    /// a `Tab::container` — the picker sits in the window toolbar.
+    fn tabbed(inbox: impl Fn() -> NavigationView + 'static) -> impl waterui::View {
+        let inbox = std::rc::Rc::new(inbox);
+        Tabs::new(
+            &binding(0usize),
+            vec![
+                Tab::container("Inbox", move || NavigationStack::new(inbox())),
+                Tab::container("Settings", || {
+                    NavigationStack::new(NavigationView::new("Settings", text("settings")))
+                }),
+            ],
+        )
+    }
+
+    /// Window → `Tabs` (its picker in the toolbar) → `NavigationStack` →
+    /// page whose content is a `List`.
+    pub fn a_tabbed_stack_page_list_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || tabbed(|| NavigationView::new("Inbox", rows())),
+            false,
+            assert_list_reaches_the_top,
+        );
+    }
+
+    /// Window → `Tabs` (its picker in the toolbar) → `NavigationStack` →
+    /// page whose content is text.
+    pub fn a_tabbed_stack_page_text_stays_clear_of_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || tabbed(|| NavigationView::new("Inbox", text(MARKER))),
+            false,
+            assert_text_stays_clear,
+        );
+    }
+
+    /// The navigation example's structure: automatic-style `Tabs` of
+    /// `Tab::container`s, the Inbox tab a path-backed `NavigationStack`
+    /// whose root page carries a large title, a subtitle and a search
+    /// field in the bar around `content`.
+    fn inbox_tabs<V: waterui::View>(content: impl Fn() -> V + 'static) -> impl waterui::View {
+        let content = std::rc::Rc::new(content);
+        Tabs::new(
+            &binding(0usize),
+            vec![
+                Tab::container("Inbox", move || {
+                    NavigationStack::with_path(
+                        NavigationPath::<u64>::new(),
+                        content()
+                            .title("Inbox")
+                            .large_title()
+                            .navigation_subtitle("3 unread")
+                            .searchable(&binding(Str::from("")), "Search mail"),
+                    )
+                    .destination(|id: u64| {
+                        NavigationView::new("Message", text(format!("message {id}")))
+                    })
+                }),
+                Tab::container("Settings", || {
+                    NavigationStack::new(NavigationView::new("Settings", text("settings")))
+                }),
+            ],
+        )
+        .style(tab_style::Automatic)
+    }
+
+    /// The navigation example's Inbox: its `List` of navigation-link rows
+    /// runs under the toolbar and the search row.
+    pub fn the_example_inbox_list_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || {
+                inbox_tabs(|| {
+                    List::for_each(
+                        vec![SelfId::new(1_u64), SelfId::new(2), SelfId::new(3)],
+                        |id: SelfId<u64>| {
+                            ListItem::new(NavigationLink::value(text("message"), id.into_inner()))
+                        },
+                    )
+                    .editing(binding::<bool>(false))
+                })
+            },
+            true,
+            assert_list_reaches_the_top,
+        );
+    }
+
+    /// The same structure with text for content: it stays below the
+    /// titlebar and the search row.
+    pub fn the_example_inbox_text_stays_clear_of_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || inbox_tabs(|| text(MARKER)),
+            true,
+            assert_text_stays_clear,
+        );
+    }
+}
+
 /// Re-exports the GPU-surface mounted-scene fixtures.
 ///
 /// The `native_test` module inside `components::gpu_surface` builds a real
