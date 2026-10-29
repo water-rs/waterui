@@ -41,6 +41,8 @@ pub mod catalyst;
 #[cfg(all(target_abi = "macabi", feature = "native-test"))]
 #[doc(hidden)]
 pub mod catalyst_menu;
+#[cfg(target_abi = "macabi")]
+mod catalyst_tracking;
 mod color_view;
 pub mod color_well;
 mod context_menu;

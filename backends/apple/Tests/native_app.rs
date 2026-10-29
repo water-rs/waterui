@@ -847,16 +847,29 @@ mod key_commands {
             let (menu, rebuilt) = build(&fired, "New");
             trigger.set_menu(&menu);
             drop(std::mem::replace(&mut key_commands, rebuilt));
-            assert_eq!(
-                open.titles(),
-                ["New"],
-                "the menu stays open and shows the rebuilt command as soon as `setMenu:` returns"
-            );
-            assert!(
-                open.press(mtm, 0),
-                "the visible command's action reaches a responder"
-            );
-            assert_eq!(fired.get(), "New", "picking runs the rebuilt callback");
+            #[cfg(not(target_abi = "macabi"))]
+            {
+                assert_eq!(
+                    open.titles(),
+                    ["New"],
+                    "the menu stays open and shows the rebuilt command as soon as `setMenu:` returns"
+                );
+                assert!(
+                    open.press(mtm, 0),
+                    "the visible command's action reaches a responder"
+                );
+                assert_eq!(fired.get(), "New", "picking runs the rebuilt callback");
+            }
+            // The `AppKit` popup keeps the rows it had, so the trigger ends
+            // its tracking before replacing the menu: the harness fails the
+            // case if the session is still running after the continuation,
+            // and no retired command fired (a fired one panics the
+            // registry).
+            #[cfg(target_abi = "macabi")]
+            {
+                open.expect_tracking_to_end();
+                assert_eq!(fired.get(), "", "no command fired during the rebuild");
+            }
             drop(scene);
         });
     }
@@ -886,6 +899,12 @@ mod key_commands {
             assert_eq!(open.titles(), ["Keys"]);
 
             drop(mounted);
+            // The `AppKit` popup ends only when control returns to its
+            // tracking loop; the harness fails the case if the trigger did
+            // not cancel it.
+            #[cfg(target_abi = "macabi")]
+            open.expect_tracking_to_end();
+            #[cfg(not(target_abi = "macabi"))]
             assert!(
                 open.is_closed(),
                 "the menu closes as its leaf unmounts, before the leaf's commands retire"
@@ -1011,7 +1030,6 @@ mod key_commands {
         use cocoa_ui::Retained;
         use cocoa_ui::objc2_ui_kit::{UIButton, UIContextMenuInteraction};
         use cocoa_ui::uikit::catalyst_menu::{PresentedMenu, within_presented_menu};
-        use objc2::MainThreadMarker;
 
         use super::MENU_DEADLINE;
 
@@ -1024,16 +1042,10 @@ mod key_commands {
                 self.0.titles()
             }
 
-            /// Whether `AppKit` has ended the menu's tracking.
-            pub fn is_closed(&self) -> bool {
-                self.0.has_ended()
-            }
-
-            /// Picks the item at `index` the way a click does, and
-            /// answers whether it was sent.
-            pub fn press(&self, _mtm: MainThreadMarker, index: usize) -> bool {
-                self.0.perform_action_for_item(index);
-                true
+            /// Declares that the code under test ends the tracking itself
+            /// once the continuation returns.
+            pub fn expect_tracking_to_end(&self) {
+                self.0.expect_tracking_to_end();
             }
         }
 

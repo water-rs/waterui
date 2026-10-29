@@ -34,6 +34,8 @@ use objc2_ui_kit::{
     UIWindowScene, UIWindowSceneDelegate,
 };
 
+#[cfg(target_abi = "macabi")]
+use super::catalyst_tracking::MenuTracking;
 use super::key_commands::{KeyCommandRegistry, KeyCommands};
 use super::window::Window;
 use crate::callback::guarded;
@@ -268,6 +270,10 @@ struct AppDelegateIvars {
     key_commands: Rc<KeyCommandRegistry>,
     /// The scope the current menu bar's key commands are armed in.
     menu_bar_commands: RefCell<Option<KeyCommands>>,
+    /// The `NSMenu` popup Catalyst is tracking, for the trigger that must
+    /// end it.
+    #[cfg(target_abi = "macabi")]
+    menu_tracking: Rc<MenuTracking>,
 }
 
 define_class!(
@@ -294,6 +300,8 @@ define_class!(
                     lifecycle: handlers.lifecycle,
                     key_commands: Rc::default(),
                     menu_bar_commands: RefCell::new(None),
+                    #[cfg(target_abi = "macabi")]
+                    menu_tracking: Rc::new(MenuTracking::observe()),
                 });
                 // SAFETY: `init` is `UIResponder`'s designated initializer.
                 unsafe { msg_send![super(this), init] }
@@ -414,6 +422,17 @@ impl AppDelegate {
 /// If the application was not started through [`run`].
 pub(super) fn key_command_registry(mtm: MainThreadMarker) -> Rc<KeyCommandRegistry> {
     Rc::clone(&AppDelegate::current(mtm).ivars().key_commands)
+}
+
+/// The running application's record of the `NSMenu` popup Catalyst is
+/// tracking.
+///
+/// # Panics
+///
+/// If the application was not started through [`run`].
+#[cfg(target_abi = "macabi")]
+pub(super) fn menu_tracking(mtm: MainThreadMarker) -> Rc<MenuTracking> {
+    Rc::clone(&AppDelegate::current(mtm).ivars().menu_tracking)
 }
 
 /// Reports `scene`'s session identifier to the handler `pick` selects from
