@@ -10,6 +10,7 @@
 use core::num::NonZeroUsize;
 
 use waterui::Color;
+use waterui::Identifiable;
 use waterui::accessibility::AccessibilityRole;
 use waterui::app::App;
 use waterui::color::signal_color;
@@ -19,6 +20,7 @@ use waterui::media::Photo;
 use waterui::metadata::Metadata;
 use waterui::navigation::{ColumnWidth, NavigationSplitView, NavigationView};
 use waterui::prelude::*;
+use waterui::reactive::collection::SignalCollection;
 use waterui::shape::{Capsule, FixedRoundedRectangle, ShapeExt};
 use waterui::text::font::{Body, Caption, Font, FontWeight, Subheadline};
 use waterui::widget::avatar;
@@ -359,12 +361,12 @@ fn thread_card(
     .a11y_role(AccessibilityRole::Button)
 }
 
-fn search_bar() -> impl View {
+fn search_bar(query: &Binding<Str>) -> impl View {
     hstack((
         magnify().foreground(OnSurfaceVariant),
-        text("Search replies")
-            .font(Body)
-            .foreground(OnSurfaceVariant),
+        TextField::new("Search replies", query)
+            .prompt("Search replies")
+            .hide_label(),
         spacer(),
         avatar("Me").image(avatar_of("Me")).size(SEARCH_AVATAR),
     ))
@@ -413,17 +415,48 @@ fn rail(selected_rail: Binding<usize>) -> impl View {
     .background(color::Surface)
 }
 
-fn list_pane(selected: Binding<Option<usize>>) -> impl View {
+/// A thread in the filtered list, identified by its index into [`THREADS`] so
+/// the list diffs rows by thread and a keystroke touches only the cards that
+/// enter or leave.
+#[derive(Clone, PartialEq, Identifiable)]
+struct ThreadRow {
+    #[id]
+    index: usize,
+}
+
+/// Whether `thread`'s subject, sender or preview contains `needle`, which is
+/// already lowercase.
+fn thread_matches(thread: &Thread, needle: &str) -> bool {
+    [thread.subject, thread.sender, thread.snippet]
+        .iter()
+        .any(|field| field.to_lowercase().contains(needle))
+}
+
+/// The threads matching `query`, case-insensitively; an empty query matches
+/// every thread.
+fn filter_threads(query: &str) -> Vec<ThreadRow> {
+    let needle = query.to_lowercase();
+    THREADS
+        .iter()
+        .enumerate()
+        .filter(|(_, thread)| thread_matches(thread, &needle))
+        .map(|(index, _)| ThreadRow { index })
+        .collect()
+}
+
+fn list_pane(selected: Binding<Option<usize>>, query: Binding<Str>) -> impl View {
+    let visible = SignalCollection::new(
+        query
+            .clone()
+            .map(|query: Str| filter_threads(&query))
+            .computed(),
+    );
     scroll(
         vstack((
-            search_bar(),
-            vstack(
-                THREADS
-                    .iter()
-                    .enumerate()
-                    .map(|(index, thread)| thread_card(thread, selected.clone(), index))
-                    .collect::<Vec<_>>(),
-            )
+            search_bar(&query),
+            VStack::for_each(visible, move |row: ThreadRow| {
+                thread_card(&THREADS[row.index], selected.clone(), row.index)
+            })
             .spacing(8.0),
         ))
         .spacing(16.0)
@@ -531,7 +564,11 @@ fn detail_pane(thread: &'static Thread) -> impl View {
 /// The three zones ride a two-column `NavigationSplitView` — rail-plus-list
 /// as the sidebar, the reading pane as the detail — so a compact width
 /// collapses them into a single navigation stack instead of clipping.
-fn reply(selected: Binding<Option<usize>>, selected_rail: Binding<usize>) -> impl View {
+fn reply(
+    selected: Binding<Option<usize>>,
+    selected_rail: Binding<usize>,
+    query: Binding<Str>,
+) -> impl View {
     themed(
         NavigationSplitView::new(
             &selected,
@@ -539,10 +576,13 @@ fn reply(selected: Binding<Option<usize>>, selected_rail: Binding<usize>) -> imp
                 let selected = selected.clone();
                 let selected_rail = selected_rail.clone();
                 move || {
-                    hstack((rail(selected_rail.clone()), list_pane(selected.clone())))
-                        .spacing(0.0)
-                        .max_height(f32::INFINITY)
-                        .background(color::Background)
+                    hstack((
+                        rail(selected_rail.clone()),
+                        list_pane(selected.clone(), query.clone()),
+                    ))
+                    .spacing(0.0)
+                    .max_height(f32::INFINITY)
+                    .background(color::Background)
                 }
             },
             move |index| NavigationView::new(THREADS[index].subject, detail_pane(&THREADS[index])),
@@ -559,11 +599,19 @@ fn reply(selected: Binding<Option<usize>>, selected_rail: Binding<usize>) -> imp
 /// Self-contained entry for previews and embedding.
 #[preview]
 pub fn demo() -> impl View {
-    reply(binding(Some(1usize)), binding(0usize))
+    reply(
+        binding(Some(1usize)),
+        binding(0usize),
+        binding(Str::default()),
+    )
 }
 
 pub fn app(env: Environment) -> App {
     let selected = binding(Some(1usize));
     let selected_rail = binding(0usize);
-    App::new(move || reply(selected.clone(), selected_rail.clone()), env)
+    let query = binding(Str::default());
+    App::new(
+        move || reply(selected.clone(), selected_rail.clone(), query.clone()),
+        env,
+    )
 }
