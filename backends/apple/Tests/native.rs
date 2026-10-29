@@ -1728,6 +1728,7 @@ mod tabs {
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{Label, NavContentController};
     use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::layout::scroll_both;
     use waterui::navigation::{NavigationStack, NavigationView, Tab, TabBarMinimizeBehavior, Tabs};
     use waterui::prelude::{label, scroll, text, vstack};
     use waterui::reactive::binding;
@@ -2289,9 +2290,11 @@ mod tabs {
             (tight_frame.origin.y - (tight.height - tight_frame.size.height) / 2.0).abs() < 0.01
         );
 
-        // A stretching child measures back to the bounds it was offered
-        // and fills the host.
-        let (_pane, leaf) = tabs(scroll(text("stretched")));
+        // A child that stretches on both axes measures back to the bounds
+        // it was offered and fills the host. A vertical scroll would not:
+        // it hugs non-filling content on its non-scrolling axis
+        // (`docs/layout-spec.md`, ScrollView).
+        let (_pane, leaf) = tabs(scroll_both(text("stretched")));
         let accessory = installed_accessory(&tab_bar_controller(&leaf));
         let content = accessory.contentView();
         let frame = child_frame(&content, wide);
