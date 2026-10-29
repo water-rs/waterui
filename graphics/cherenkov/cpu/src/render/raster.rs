@@ -758,16 +758,17 @@ fn shadow_run<S: Simd>(
         }
     }
     for (y, s) in run.rows() {
-        for x in x_in_lo..x_in_hi {
-            let cc = match clip_mask {
-                Some(m) => clip_cov(Some(m), w, x, y0 + y),
-                None => 1.0,
-            };
-            if cc <= 0.0 {
-                continue;
-            }
-            dst[y * w + x] = src_over(dst[y * w + x], shadow_src(stored, s, cc));
-        }
+        let clip = ClipRun::new(clip_mask.as_ref(), w, x_in_lo, y0 + y);
+        // The shadow colour is already in the destination's blend space.
+        // Reuse the packed solid span without another colour conversion.
+        composite_solid(
+            simd,
+            &mut dst[y * w + x_in_lo..y * w + x_in_hi],
+            super::coverage::Uniform(s.clamp(0.0, 1.0)),
+            clip,
+            *stored,
+            cherenkov::BlendSpace::Linear,
+        );
     }
 }
 
