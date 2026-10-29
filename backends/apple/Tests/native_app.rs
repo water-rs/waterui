@@ -86,7 +86,66 @@ fn trials() -> Vec<libtest_mimic::Trial> {
     trials.extend(list_spacing::trials());
     trials.extend(capture_regions::trials());
     trials.extend(text_selection_ios::trials());
+    #[cfg(feature = "gpu_surface")]
+    trials.extend(capture_scale::trials());
     trials
+}
+
+/// A windowless view captured as a template image rasterizes at the
+/// screen's scale, not the detached view's `1.0`.
+#[cfg(all(target_os = "ios", feature = "gpu_surface"))]
+mod capture_scale {
+    use cocoa_ui::{Rect, bitmap, view};
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::capture_template_image;
+
+    use cocoa_ui::PlatformView;
+
+    use super::mtm;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "capture_scale::a_windowless_template_capture_uses_the_screen_scale",
+            || {
+                a_windowless_template_capture_uses_the_screen_scale();
+                Ok(())
+            },
+        )]
+    }
+
+    /// A `40x30` point view with no window: the image is `40x30` points at
+    /// the capture scene's screen scale, so its pixel size is the point size times
+    /// that scale.
+    fn a_windowless_template_capture_uses_the_screen_scale() {
+        let screen_scale = bitmap::any_window_scene()
+            .expect("the simulator host has a window scene")
+            .screen()
+            .scale();
+        let detached = PlatformView::new(mtm());
+        view::set_frame(&detached, Rect::new(0.0, 0.0, 40.0, 30.0));
+        assert!(view::window(&detached).is_none(), "the view is windowless");
+
+        let image = capture_template_image(&detached, 100.0);
+
+        // SAFETY: `size` and `scale` are plain getters on a live `UIImage`.
+        let (size, image_scale) = unsafe { (image.size(), image.scale()) };
+        assert!(
+            (image_scale - screen_scale).abs() < f64::EPSILON,
+            "image scale {image_scale} must be the screen scale {screen_scale}"
+        );
+        assert!(
+            (size.width - 40.0).abs() < 0.01 && (size.height - 30.0).abs() < 0.01,
+            "image keeps its point size, got {}x{}",
+            size.width,
+            size.height
+        );
+        let pixels = (size.width * image_scale, size.height * image_scale);
+        assert!(
+            (pixels.0 - (40.0 * screen_scale).ceil()).abs() < 0.01
+                && (pixels.1 - (30.0 * screen_scale).ceil()).abs() < 0.01,
+            "pixel size {pixels:?} must be the point size times {screen_scale}"
+        );
+    }
 }
 
 #[cfg(target_os = "ios")]
