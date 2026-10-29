@@ -222,7 +222,10 @@ mod platform {
         NavigationTransaction, NavigationTransactionId, NavigationView,
     };
     use waterui::reactive::Signal;
+    use waterui::resolve::Resolvable;
+    use waterui::theme::color::Foreground;
 
+    use crate::components::text::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
     use crate::transition::live::LiveChild;
 
@@ -463,6 +466,10 @@ mod platform {
             }
             page.hidden = bar.hidden.snapshot();
             controller.set_page(&page);
+            keep.bind(&Foreground.resolve(ctx.env()), {
+                let controller = controller.clone();
+                move |color| controller.set_title_color(&platform_color(&color))
+            });
             if self.column {
                 // A collapsed split pushes the column's own stack onto the
                 // compact stack, so the page's `navigationController()` is
