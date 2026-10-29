@@ -7829,19 +7829,25 @@ impl GpuRenderer {
                 // tail (#119).
                 if emission.refs & lower::DEFERRED_REFS != 0 || !emission.pending_cells_empty() {
                     let first = content.storage.refs.len();
+                    let mut previous_pending = None;
                     for i in emission.pending_cells() {
                         let (inst, p, c) = lowered.emission_patches[i];
                         let local = inst - emission.cell_inst_base();
                         content.storage.instances[emission.instances.start + local as usize].uv
                             [..2]
                             .copy_from_slice(&cell_origin(p, c));
-                        if let PendingOrigin::Cells(_, bands) = &origins[p as usize] {
+                        // Path cell patches are consecutive. Register their
+                        // complete shelf set once instead of once per cell.
+                        if previous_pending != Some(p)
+                            && let PendingOrigin::Cells(_, bands) = &origins[p as usize]
+                        {
                             content.storage.refs.extend(
                                 bands
                                     .iter()
                                     .map(|&slot| (slot, self.atlas.shelf_epoch(slot))),
                             );
                         }
+                        previous_pending = Some(p);
                     }
                     // Glyph cells record no slot at emit time: the shelf
                     // each stored UV samples is recovered here instead
