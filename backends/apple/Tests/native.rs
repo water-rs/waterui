@@ -2161,6 +2161,22 @@ mod tabs {
         );
         assert_eq!(root_scrolls.len(), 1, "the root page mounts one scroll");
         let root_scroll = &root_scrolls[0];
+        // The page controller answers the top edge for the navigation bar
+        // with the same surface, and nothing for the other edges.
+        let root_page = nav.topViewController().expect("the root page");
+        let top_associated = root_page
+            .contentScrollViewForEdge(NSDirectionalRectEdge::Top)
+            .expect("the page's list associates for the top edge");
+        assert_eq!(
+            Retained::as_ptr(&top_associated),
+            Retained::as_ptr(root_scroll)
+        );
+        assert!(
+            root_page
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .is_none(),
+            "the page leaves the bottom edge to the tab pane"
+        );
         let associated = controller
             .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
             .expect("the root scroll associates for the bottom edge");

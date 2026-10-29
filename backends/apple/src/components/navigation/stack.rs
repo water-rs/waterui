@@ -456,6 +456,12 @@ mod platform {
             crate::primary_content::forward_current(&host, |host| {
                 view::subviews(host).into_iter().next()
             });
+            // The navigation bar's top-edge tracking surface: the page's
+            // declared scroll view, so large-title collapse and the search
+            // field's pull-down reveal follow the list.
+            controller.set_top_scroll_surface(|controller| {
+                crate::primary_content::declared_scroll_view(controller.view()?.as_ref())
+            });
             let root = matches!(mount, Mount::Root);
             let state = Rc::new(RefCell::new(core::mem::take(&mut view.state)));
             let transition = page_transition(view.transition.as_ref(), &self.transition);
@@ -798,7 +804,10 @@ mod platform {
             // platform's own `.searchable` presentation; `Stacked` would
             // pin it under the bar.
             placement: None,
-            hides_when_scrolling: Some(false),
+            // A `.searchable` page declares no display mode, so the field
+            // keeps the platform's own behaviour: tucked under the title and
+            // revealed by pulling the content down.
+            hides_when_scrolling: None,
         };
         let binding = search.text().clone();
         controller.set_search_change_handler(move |text| {
