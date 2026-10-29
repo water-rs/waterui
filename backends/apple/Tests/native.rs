@@ -253,6 +253,13 @@ fn trials() -> Vec<Trial> {
                 Ok(())
             }),
             Trial::test(
+                "material_vibrancy::a_window_material_hosts_its_content_and_releases_it",
+                || {
+                    material_vibrancy::a_window_material_hosts_its_content_and_releases_it();
+                    Ok(())
+                },
+            ),
+            Trial::test(
                 "material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens",
                 || {
                     material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens();
@@ -2712,13 +2719,16 @@ mod material_vibrancy {
     use waterui::graphics::color::Working;
     use waterui::layout::stack::vstack;
     use waterui::prelude::text;
-    use waterui::reactive::Signal as _;
+    use waterui::reactive::{Signal as _, SignalExt as _, binding};
     use waterui::resolve::Resolvable as _;
     use waterui::theme::color::Foreground;
-    use waterui_apple::native_test_support::{refresh_theme, window_environment};
+    use waterui::window::ResolvedWindowBackground;
+    use waterui_apple::native_test_support::{
+        bind_window_background, refresh_theme, window_environment,
+    };
     use waterui_backend_core::AnyView;
 
-    use super::{Label, mtm};
+    use super::{HostView, Label, mtm};
 
     /// Every kit label under `root`, each with its text and the ancestor
     /// chain's effect view, if any.
@@ -2750,6 +2760,101 @@ mod material_vibrancy {
         color
             .downcast::<NSColor>()
             .expect("the foreground attribute is an NSColor")
+    }
+
+    /// The window-level material (#3683): while one is installed, the
+    /// window's content — default-token and explicit text alike — is a
+    /// descendant of the `NSVisualEffectView`, the default token draws as
+    /// the system label color and the explicit color does not; a colour
+    /// background moves the content back into the window's content view
+    /// with no effect view left, and a behind-window level paints the
+    /// clear colour under the effect.
+    pub fn a_window_material_hosts_its_content_and_releases_it() {
+        let mtm = mtm();
+        let (env, theme) = window_environment(mtm);
+        refresh_theme(&theme, cocoa_ui::ColorScheme::Light);
+        let container = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 300.0, 200.0));
+        let content = vstack((
+            text("default"),
+            text("explicit").foreground(Color::srgb(200, 30, 30)),
+        ));
+        let leaf = waterui_apple::dispatch::render(AnyView::new(content), &env);
+        container.add_subview(leaf.view());
+        let leaf_view = view::retain_base(leaf.view());
+
+        let background = binding(ResolvedWindowBackground::Material(Material::Regular));
+        let (_keepalive, painted) =
+            bind_window_background(&container, &leaf_view, &background.computed(), &env, mtm);
+
+        let effects = |root: &PlatformView| {
+            view::subviews(root)
+                .into_iter()
+                .filter(|sub| sub.downcast_ref::<NSVisualEffectView>().is_some())
+                .collect::<Vec<_>>()
+        };
+        let installed = effects(&container);
+        assert_eq!(installed.len(), 1, "the material installs one effect view");
+        let effect = &installed[0];
+        assert!(
+            view::superview(&leaf_view).is_some_and(|parent| parent == *effect),
+            "the window's content is mounted inside the effect view"
+        );
+        let mut found = Vec::new();
+        labels(&container, &mut found, false);
+        assert_eq!(found.len(), 2, "the two texts realize two labels");
+        assert!(
+            found.iter().all(|(_, inside)| *inside),
+            "both texts are descendants of the NSVisualEffectView"
+        );
+        let color = |name: &str| {
+            let (label, _) = found
+                .iter()
+                .find(|(label, _)| {
+                    label
+                        .source_text()
+                        .expect("attributed text")
+                        .string()
+                        .to_string()
+                        == name
+                })
+                .expect("the text is realized");
+            color_of(label)
+        };
+        let label_color = NSColor::labelColor();
+        assert!(
+            color("default").isEqual(Some(label_color.as_ref())),
+            "a default-token text draws as NSColor.labelColor"
+        );
+        assert!(
+            !color("explicit").isEqual(Some(label_color.as_ref())),
+            "an explicit color is not a system label color"
+        );
+
+        background.set(ResolvedWindowBackground::Material(Material::UltraThin));
+        let replaced = effects(&container);
+        assert_eq!(replaced.len(), 1, "a new material replaces the effect view");
+        assert!(
+            view::superview(&leaf_view).is_some_and(|parent| parent == replaced[0]),
+            "the content moves into the replacing effect view"
+        );
+        assert!(
+            painted
+                .get()
+                .is_some_and(|color| color.components[3] == 0.0),
+            "a behind-window level paints the clear colour under the effect"
+        );
+
+        background.set(ResolvedWindowBackground::Color(
+            waterui::graphics::color::WorkingColor::BLACK,
+        ));
+        assert!(
+            effects(&container).is_empty(),
+            "removing the material removes the effect view"
+        );
+        assert!(
+            view::superview(&leaf_view).is_some_and(|parent| *parent == **container),
+            "the content is back in the window's content view"
+        );
     }
 
     /// The mounted material's text: default and muted tokens draw as the

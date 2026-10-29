@@ -6,6 +6,12 @@
 //! `NSVisualEffectView` on `AppKit`, `UIVisualEffectView` on `UIKit` — fills
 //! the window behind its content, with the level's own blending.
 //!
+//! On `AppKit` the window's content is mounted inside the effect view while
+//! a material is installed, so text drawn in a system label colour is
+//! vibrant (#3683); it moves back to the window's content view when the
+//! material is removed. `UIKit` keeps the effect view and the content as
+//! siblings.
+//!
 //! What is painted under a material:
 //!
 //! - **macOS**: a level blended behind the window makes the window non-opaque
@@ -64,6 +70,10 @@ const fn under_material(material: Material, theme: WorkingColor) -> WorkingColor
 struct EffectView {
     /// The view the effect fills, behind its content.
     container: Retained<PlatformView>,
+    /// The window's content: a subview of the installed effect view, else of
+    /// the container.
+    #[cfg(target_os = "macos")]
+    content: Retained<PlatformView>,
     /// The installed effect and the material it realizes.
     installed: RefCell<Option<(Material, Retained<PlatformView>)>>,
     mtm: MainThreadMarker,
@@ -71,30 +81,37 @@ struct EffectView {
 
 impl EffectView {
     /// Shows `material`'s effect behind the container's content, or none:
-    /// a change of material replaces the effect view, `None` removes it.
+    /// a change of material replaces the effect view, `None` removes it. On
+    /// `AppKit` the content moves into the effect view and back out.
     fn show(&self, material: Option<Material>) {
         let mut installed = self.installed.borrow_mut();
         if installed.as_ref().map(|(shown, _)| *shown) == material {
             return;
         }
-        if let Some((_, effect)) = installed.take() {
-            view::remove_from_superview(&effect);
-        }
+        let previous = installed.take();
         if let Some(material) = material {
             let effect = material::material_view(self.mtm, level(material));
             view::set_frame(&effect, view::bounds(&self.container));
             view::set_autoresizing_flexible_size(&effect);
             view::add_subview_at_bottom(&self.container, &effect);
+            #[cfg(target_os = "macos")]
+            view::add_subview(&effect, &self.content);
             *installed = Some((material, effect));
+        } else {
+            #[cfg(target_os = "macos")]
+            view::add_subview_at_bottom(&self.container, &self.content);
+        }
+        if let Some((_, effect)) = previous {
+            view::remove_from_superview(&effect);
         }
     }
 }
 
 impl Drop for EffectView {
+    /// Removes the installed effect; on `AppKit` the content moves back to
+    /// the container first, so it outlives the binding.
     fn drop(&mut self) {
-        if let Some((_, effect)) = self.installed.take() {
-            view::remove_from_superview(&effect);
-        }
+        self.show(None);
     }
 }
 
@@ -102,10 +119,12 @@ impl Drop for EffectView {
 /// colour to paint behind the content goes to `paint` now and on every
 /// change — of the background, or of the theme background a material is
 /// painted over — and a material installs its effect view at the bottom of
-/// `container`, filling it.
+/// `container`, filling it. On `AppKit`, `content` — a subview of
+/// `container` — is mounted inside the effect view while one is installed.
 pub fn bind(
     keepalive: &mut KeepAlive,
     container: &PlatformView,
+    #[cfg(target_os = "macos")] content: &PlatformView,
     resolved: &Computed<ResolvedWindowBackground>,
     env: &Environment,
     mtm: MainThreadMarker,
@@ -113,6 +132,8 @@ pub fn bind(
 ) {
     let effect = EffectView {
         container: view::retain_base(container),
+        #[cfg(target_os = "macos")]
+        content: view::retain_base(content),
         installed: RefCell::new(None),
         mtm,
     };

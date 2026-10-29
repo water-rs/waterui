@@ -444,6 +444,31 @@ pub fn refresh_theme(theme: &crate::theme::ThemeSignals, scheme: cocoa_ui::Color
     crate::theme::refresh(theme, scheme);
 }
 
+/// Binds a window background without a window.
+///
+/// `container` stands for the window's content view and `content` for its
+/// content, as `windows::realize` wires them. Returns the keepalive holding
+/// the binding and the colour most recently painted behind the content.
+#[cfg(target_os = "macos")]
+pub fn bind_window_background(
+    container: &cocoa_ui::PlatformView,
+    content: &cocoa_ui::PlatformView,
+    resolved: &waterui::reactive::Computed<waterui::window::ResolvedWindowBackground>,
+    env: &Environment,
+    mtm: MainThreadMarker,
+) -> (
+    crate::contract::KeepAlive,
+    std::rc::Rc<core::cell::Cell<Option<waterui::graphics::color::WorkingColor>>>,
+) {
+    let painted = std::rc::Rc::new(core::cell::Cell::new(None));
+    let mut keepalive = crate::contract::KeepAlive::default();
+    crate::window_background::bind(&mut keepalive, container, content, resolved, env, mtm, {
+        let painted = painted.clone();
+        move |color| painted.set(Some(color))
+    });
+    (keepalive, painted)
+}
+
 /// Checks two-way bindings on a real native root window.
 ///
 /// `windows::realize` turns a declaration into a live window: the
