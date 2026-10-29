@@ -1587,6 +1587,10 @@ fn convert_quad<S: Simd, const ENCODE: bool>(simd: S, group: &[[f32; 4]; 4]) -> 
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
+#[expect(
+    clippy::float_cmp,
+    reason = "reuse a converted colour only when every source channel is equal"
+)]
 fn convert_span_in<S: Simd, const ENCODE: bool>(simd: S, pixels: &mut [[f32; 4]]) {
     let (chunks, tail) = pixels.as_chunks_mut::<4>();
     for group in chunks {
