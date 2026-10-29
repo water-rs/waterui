@@ -81,10 +81,18 @@ runs:
       run: cargo clippy --locked --profile ci-check -p waterui-cli --all-targets -- -D warnings
     # The crates whose own sources carry Apple `cfg`s, listed in
     # .github/scripts/apple_gated.py with affected.py's matrix.
+    #
+    # `waterui-internal`'s dev-dependency turns the `webview` feature on, so its
+    # `include_web!` expansion test is linted here, and `include_web!` installs a
+    # navigation policy that compiles on Apple only at OS 27 or newer
+    # (`WebViewOpen::navigation_policy`): this step lints at that deployment
+    # target on the host and the simulator.
     - name: Clippy (affected Apple-gated crates)
       if: inputs['apple-gated'] == 'true'
       shell: bash
       env:
+        MACOSX_DEPLOYMENT_TARGET: "27.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "27.0"
         AFFECTED: ${{ inputs.affected }}
         TARGET: ${{ inputs.target }}
         GROUP: ${{ inputs.group }}

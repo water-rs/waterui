@@ -578,9 +578,20 @@ jobs:
       # only here — each shells out to a fixture build that does not depend on
       # the outer feature set, so the all-features passes and coverage skip
       # them (see below).
+      #
+      # `waterui-internal`'s dev-dependency turns the `webview` feature on, so
+      # its `include_web!` expansion test builds in this pass, and
+      # `include_web!` installs a navigation policy that compiles on Apple only
+      # at OS 27 or newer (`WebViewOpen::navigation_policy`). The macOS runner
+      # is OS 27, so these two steps build at that deployment target; apple.yml
+      # keeps building the Apple backends at the framework's 26 floor.
       - run: cargo nextest run --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --profile ci
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "27.0"
       # nextest cannot run doctests, and this workspace has plenty of them.
       - run: cargo test --locked --doc --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "27.0"
       # Hydrolysis's macOS WKWebView bridge (#1428). `webview-system` is the
       # one feature no Linux leg can carry — it compiles only where WKWebView
       # exists — and the suite is `harness = false` (WKWebView is
@@ -742,7 +753,13 @@ jobs:
       # excluded for `webgl`'s off-wasm `compile_error!` — the wasm job
       # lints it where it is legal; `cherenkov-bench/skia-metal` is legal
       # here and stays in the pass.
+      # `--all-features` compiles the `include_web!` expansion test, and
+      # `include_web!` installs a navigation policy that builds only at Apple
+      # OS 27 or newer (`WebViewOpen::navigation_policy`). The runner is OS 27,
+      # so this pass builds at that deployment target, like the `test` leg above.
       - name: Test (all features, workspace)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "27.0"
         run: |
           cargo nextest run --locked --workspace --all-features --profile ci \
             --exclude '*-example' \
