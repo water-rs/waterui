@@ -13,6 +13,8 @@
 //! which the `MainThreadOnly` thread kind and [`MainThreadMarker`]
 //! constructor guarantee.
 
+#[cfg(target_abi = "macabi")]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -24,6 +26,8 @@ use objc2::{
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSAttributedString, NSObjectProtocol, NSString};
+#[cfg(target_abi = "macabi")]
+use objc2_ui_kit::UIWindow;
 use objc2_ui_kit::{
     NSDirectionalEdgeInsets, UIButton, UIButtonConfiguration, UIButtonType, UIColor, UICommand,
     UIControl, UIControlState, UIKeyCommand,
@@ -56,6 +60,9 @@ pub struct CocoaUiButtonIvars {
     /// Called with the new value after each `setEnabled:`.
     enabled_handler: RefCell<Option<EnabledHandler>>,
     key_commands: Rc<KeyCommandRegistry>,
+    /// `UIKit` has presented this button's menu and not yet ended it.
+    #[cfg(target_abi = "macabi")]
+    menu_open: Cell<bool>,
 }
 
 impl fmt::Debug for CocoaUiButtonIvars {
@@ -92,6 +99,8 @@ define_class!(
             let this = this.set_ivars(CocoaUiButtonIvars {
                 enabled_handler: RefCell::new(None),
                 key_commands: Rc::new(KeyCommandRegistry::default()),
+                #[cfg(target_abi = "macabi")]
+                menu_open: Cell::new(false),
             });
             // SAFETY: the inherited designated initializer has this signature.
             unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -136,6 +145,69 @@ define_class!(
             })
         }
 
+        // `UIControl` extends `UIContextMenuInteractionDelegate` with these
+        // two methods, which it requires subclasses to forward to `super`.
+        // SAFETY: the declared signatures, forwarding every argument.
+        #[cfg(target_abi = "macabi")]
+        #[unsafe(method(contextMenuInteraction:willDisplayMenuForConfiguration:animator:))]
+        fn will_display_menu(
+            &self,
+            interaction: &AnyObject,
+            configuration: &AnyObject,
+            animator: Option<&AnyObject>,
+        ) {
+            guarded("CocoaUiButton willDisplayMenu", || {
+                // SAFETY: see above.
+                unsafe {
+                    let () = msg_send![
+                        super(self),
+                        contextMenuInteraction: interaction,
+                        willDisplayMenuForConfiguration: configuration,
+                        animator: animator
+                    ];
+                }
+                self.ivars().menu_open.set(true);
+            });
+        }
+
+        // SAFETY: see `will_display_menu`.
+        #[cfg(target_abi = "macabi")]
+        #[unsafe(method(contextMenuInteraction:willEndForConfiguration:animator:))]
+        fn will_end_menu(
+            &self,
+            interaction: &AnyObject,
+            configuration: &AnyObject,
+            animator: Option<&AnyObject>,
+        ) {
+            guarded("CocoaUiButton willEndMenu", || {
+                // SAFETY: see `will_display_menu`.
+                unsafe {
+                    let () = msg_send![
+                        super(self),
+                        contextMenuInteraction: interaction,
+                        willEndForConfiguration: configuration,
+                        animator: animator
+                    ];
+                }
+                self.ivars().menu_open.set(false);
+            });
+        }
+
+        // A menu open on a button that leaves its window is ended first:
+        // `removeFromSuperview` does not close an `NSMenu` popup.
+        // SAFETY: `UIView.willMoveToWindow:`'s declared signature.
+        #[cfg(target_abi = "macabi")]
+        #[unsafe(method(willMoveToWindow:))]
+        fn will_move_to_window(&self, window: Option<&UIWindow>) {
+            guarded("CocoaUiButton willMoveToWindow", || {
+                if window.is_none() {
+                    self.end_open_menu();
+                }
+                // SAFETY: the inherited method has this signature.
+                let () = unsafe { msg_send![super(self), willMoveToWindow: window] };
+            });
+        }
+
         // SAFETY: `setEnabled:` is `UIControl`'s setter; the override
         // forwards to `super` unchanged.
         #[unsafe(method(setEnabled:))]
@@ -167,6 +239,22 @@ impl CocoaUiButton {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         // SAFETY: the designated initializer initializes this subclass's ivars.
         unsafe { msg_send![Self::alloc(mtm), initWithFrame: CGRect::ZERO] }
+    }
+
+    /// Ends the tracking session of this button's menu if it is open, so
+    /// no command of the menu stays reachable. Under Catalyst the menu is
+    /// an `NSMenu` popup that neither `setMenu:` nor leaving the window
+    /// closes (see `catalyst_tracking`).
+    ///
+    /// # Panics
+    ///
+    /// When `UIKit` reported the menu open and no `NSMenu` is being
+    /// tracked.
+    #[cfg(target_abi = "macabi")]
+    pub fn end_open_menu(&self) {
+        if self.ivars().menu_open.replace(false) {
+            super::application::menu_tracking(self.mtm()).cancel();
+        }
     }
 
     /// A scope routing menu commands through this button's own registry.
@@ -202,6 +290,13 @@ pub struct Button {
 }
 
 impl Button {
+    /// Ends the tracking session of this button's menu if it is open; see
+    /// [`CocoaUiButton::end_open_menu`].
+    #[cfg(target_abi = "macabi")]
+    pub fn end_open_menu(&self) {
+        self.inner.end_open_menu();
+    }
+
     /// A scope routing menu commands through this button's own registry.
     #[must_use]
     pub fn menu_commands(&self) -> KeyCommands {

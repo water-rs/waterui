@@ -385,8 +385,27 @@ impl MenuButton {
     }
 
     /// Replaces the menu the button opens.
+    ///
+    /// Under Catalyst an open menu is an `NSMenu` popup that `setMenu:`
+    /// leaves showing the rows it had, so the button ends its tracking
+    /// first: the menu closes when it is replaced while open.
     pub fn set_menu(&self, menu: &Menu) {
+        #[cfg(target_abi = "macabi")]
+        self.button.end_open_menu();
         self.button.setMenu(Some(&menu.menu));
+    }
+
+    /// Ends the tracking session of the button's menu if it is open, before
+    /// the commands the menu armed retire. A no-op unless this button's own
+    /// menu is the open one.
+    ///
+    /// # Panics
+    ///
+    /// When `UIKit` reported the menu open and no `NSMenu` is being
+    /// tracked.
+    #[cfg(target_abi = "macabi")]
+    pub fn end_open_menu(&self) {
+        self.button.end_open_menu();
     }
 
     /// The color the button's chrome derives from.

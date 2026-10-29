@@ -186,6 +186,20 @@ fn rebuild_menu(state: &Rc<RefCell<MenuState>>) {
     state.borrow_mut().key_commands = Some(key_commands);
 }
 
+/// Ends the trigger's open menu when the leaf's state goes, ahead of the
+/// state's `KeyCommands`: under Catalyst the menu is an `NSMenu` popup that
+/// a leaf retiring behind a still-mounted ghost view would otherwise leave
+/// offering the retired commands.
+#[cfg(all(target_os = "ios", target_abi = "macabi"))]
+struct EndOpenMenu(MenuButton);
+
+#[cfg(all(target_os = "ios", target_abi = "macabi"))]
+impl Drop for EndOpenMenu {
+    fn drop(&mut self) {
+        self.0.end_open_menu();
+    }
+}
+
 /// The container's layout face: the label's measurement plus the label
 /// padding — `sizeThatFits`.
 struct MenuSubView {
@@ -331,6 +345,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         });
 
+        #[cfg(all(target_os = "ios", target_abi = "macabi"))]
+        let button_for_teardown = state.borrow().button.clone();
         let mut leaf = NativeLeaf::new(host_view, MenuSubView { label: mounted });
         leaf.keep(label_env);
 
@@ -385,6 +401,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         }
 
         leaf.keep(state);
+        // Kept after the state, so it drops first (reverse order).
+        #[cfg(all(target_os = "ios", target_abi = "macabi"))]
+        leaf.keep(EndOpenMenu(button_for_teardown));
         leaf
     });
 }
