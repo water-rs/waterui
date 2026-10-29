@@ -650,8 +650,7 @@ waterui-watcher-set = { path = "utils/watcher-set" }
 # split tabs-bar surface and divider calls (#1982). Drop the git pin once a
 # release has both changes.
 hydrolysis = { path = "backends/hydrolysis" }
-# Temporary: tracks feat/tab-indicator-rects; returns to `dev` once water-rs/hydrolysis-m3 merges it.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "feat/tab-indicator-rects" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "dev" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
 # requirements admit `dev`'s version (0.2). Every waterkit crate the
