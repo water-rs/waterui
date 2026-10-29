@@ -16,7 +16,9 @@ use core::num::NonZeroUsize;
 use crate::renderer::{FrameWorkCounters, Recording};
 
 use super::input::ResolvedTextLayoutInput;
-pub use super::types::{Affinity, CARET_WIDTH, LineMetrics, TextPosition, TextSelection};
+#[cfg(hydrolysis_gpu_painter)]
+pub use super::types::{Affinity, CARET_WIDTH};
+pub use super::types::{LineMetrics, TextPosition, TextSelection};
 
 /// Everything a laid-out text answers: metrics, hit testing and the visual
 /// moves editing makes.

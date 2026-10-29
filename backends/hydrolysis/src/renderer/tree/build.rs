@@ -5,6 +5,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+#[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::platform_view::PlatformView;
 use core::any::Any;
@@ -661,12 +662,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // new content and a per-frame re-flush re-binds the *same* runtime. Holding
         // the runtime in a frame-ordered slot instead lets the ordering drift out of
         // step with the tree and hand a leaf another leaf's runtime.
+        #[cfg(hydrolysis_gpu)]
         let view = match view.downcast::<Native<GpuContentView>>() {
             Ok(view) => {
                 return Self::build_gpu_content((*view).into_inner(), renderer);
             }
             Err(view) => view,
         };
+        #[cfg(hydrolysis_gpu)]
         let view = match view.downcast::<Native<ExternalFrameView>>() {
             Ok(view) => {
                 return Self::build_external_frame((*view).into_inner(), renderer);
@@ -802,7 +805,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(webview) => AnyView::new(*webview),
             Err(view) => view,
         };
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         let view = match view.downcast::<Native<crate::hosted::HostedView>>() {
             Ok(hosted) => return Self::build_hosted((*hosted).into_inner(), env, renderer),
             Err(view) => view,
@@ -1200,6 +1203,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// view keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
     /// producer inside is taken exactly once, when the node's install layer
     /// first commits it on the window's engine.
+    #[cfg(hydrolysis_gpu)]
     fn build_gpu_content(view: GpuContentView, renderer: &SemanticCore<E>) -> Self {
         Self::GpuContent(Box::new(GpuContentNode {
             accessibility_identity: Rc::new(()),
@@ -1212,6 +1216,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Build an `ExternalFrameView` node owning its [`ExternalFrameRuntime`] —
     /// the view keeps its UI-side hooks (measure, a11y); the compositor starts
     /// the stream's source the first time a persistent mount installs it.
+    #[cfg(hydrolysis_gpu)]
     fn build_external_frame(view: ExternalFrameView, renderer: &SemanticCore<E>) -> Self {
         Self::ExternalFrame(Box::new(ExternalFrameNode {
             accessibility_identity: Rc::new(()),

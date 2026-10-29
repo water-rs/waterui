@@ -443,6 +443,7 @@ async fn build_packaging_artifacts(
                 &args.arch,
                 context.build_options.clone(),
                 kotlin_toolchain,
+                hydrolysis_android::resolve_painter(&context.project, args.painter),
             ))
             .await
         }
@@ -516,6 +517,7 @@ async fn build_hydrolysis_packaging_artifacts(
     arch: &[AndroidArch],
     build_options: BuildOptions,
     kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
+    painter: HydrolysisAndroidPainter,
 ) -> Result<Option<BuiltTarget>> {
     if platform == TargetPlatform::Web {
         return Ok(None);
@@ -533,6 +535,7 @@ async fn build_hydrolysis_packaging_artifacts(
             let target = hydrolysis_android::build(
                 &project.with_std_output(shell.is_interactive()),
                 abi,
+                painter,
                 build_options.clone(),
                 kotlin,
             )

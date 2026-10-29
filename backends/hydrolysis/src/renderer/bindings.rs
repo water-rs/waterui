@@ -161,7 +161,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Whether hosted content (`AppKit` or DOM) holds platform focus: it then
     /// receives key and IME delivery itself, so Hydrolysis dispatches none.
     #[cfg_attr(
-        not(hydrolysis_hosted),
+        not(all(hydrolysis_hosted, hydrolysis_gpu)),
         expect(
             clippy::unused_self,
             clippy::missing_const_for_fn,
@@ -169,13 +169,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         )
     )]
     fn hosted_has_focus(&self) -> bool {
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         return self
             .hit_test
             .native_view_occlusions
             .iter()
             .any(|target| target.hosted.1.focused.snapshot());
-        #[cfg(not(hydrolysis_hosted))]
+        #[cfg(not(all(hydrolysis_hosted, hydrolysis_gpu)))]
         false
     }
 
@@ -195,7 +195,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Whether the pointer is over hosted content that no Hydrolysis content
     /// covers: the hosted view sets the cursor there itself.
     #[cfg_attr(
-        not(hydrolysis_hosted),
+        not(all(hydrolysis_hosted, hydrolysis_gpu)),
         expect(
             clippy::unused_self,
             clippy::missing_const_for_fn,
@@ -203,7 +203,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         )
     )]
     pub(crate) fn hosted_owns_cursor(&self, x: f32, y: f32) -> bool {
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         {
             let point = kurbo::Point::new(f64::from(x), f64::from(y));
             self.hit_test
@@ -211,7 +211,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 .iter()
                 .any(|target| target.bounds.contains(point) && !target.sink.covers(point))
         }
-        #[cfg(not(hydrolysis_hosted))]
+        #[cfg(not(all(hydrolysis_hosted, hydrolysis_gpu)))]
         {
             let _ = (x, y);
             false

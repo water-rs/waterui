@@ -1007,6 +1007,7 @@ pub fn working_color_to_rgba8(color: waterui_graphics::draw::WorkingColor) -> [u
     ]
 }
 
+#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
 pub fn rgba8_to_peniko(color: [u8; 4]) -> peniko::Color {
     peniko::Color::new([
         f32::from(color[0]) / 255.0,

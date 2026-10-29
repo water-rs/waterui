@@ -32,23 +32,26 @@ use waterui::cursor::CursorStyle;
 use waterui::theme::ColorScheme;
 use waterui::window::WindowState;
 use waterui_core::layout::LayoutDirection;
+#[cfg(hydrolysis_gpu_painter)]
 use waterui_graphics::gpu::RedrawHandle;
 
 use super::accessibility::AccessibilitySnapshot;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use super::gpu::{AndroidGpuContext, AndroidSurface};
 use super::ime::ImeBridge;
 use super::jni::JniError;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use crate::platform::GpuSurfaceWindow;
 use crate::platform::{InputEvent, PlatformWindow, TextInputState, validated_window_frame};
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
+use crate::renderer::FontFamilyResolution;
+#[cfg(hydrolysis_gpu_painter)]
 use crate::renderer::HydrolysisRenderer;
-use crate::renderer::{FontFamilyResolution, HydrolysisTextContextMenuMode, MenuShortcutRegistry};
+use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry};
 use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use crate::runner::window::render_window;
 use crate::runner::window::{
     FrameDemand, FrameTransaction, RuntimeWindow, advance_runtime, handle_input_events,
@@ -58,7 +61,7 @@ use crate::runner::{
     RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
     install_native_component_hooks, menu_bar,
 };
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use crate::text::ParleyEngine;
 use crate::theme::WidgetTheme;
 use crate::time::Instant;
@@ -346,7 +349,7 @@ pub struct AndroidHostWindow {
     /// Kotlin's bind/unbind own it; on the GPU path the surface attach is
     /// the draw gate below, here it is part of `presentation_attached`.
     host_attached: bool,
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) surface: AndroidSurface,
     /// Shared with the installed frame wake, which posts its own
     /// Choreographer request through it, and with the GPU-surface redraw
@@ -452,7 +455,7 @@ impl AndroidHostWindow {
     /// Whether a drawn frame can reach the user: the GPU band needs its
     /// surface attached; the HWUI path draws into the bound view once it
     /// carries real metrics.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn presentation_attached(&self) -> bool {
         self.surface.is_attached()
     }
@@ -656,7 +659,15 @@ impl AndroidHostWindow {
     /// transaction gate: inside a transaction the latch already joins that
     /// frame, and while occluded the request stays armed for the restore
     /// frame. Wakes raised before the queued post runs coalesce into it.
-    pub(crate) fn content_redraw_handle(&self) -> RedrawHandle {
+    #[cfg(hydrolysis_hwui)]
+    pub(crate) fn content_redraw_handle(&self) -> crate::renderer::HostRedraw {
+        crate::renderer::HostRedraw::new(self.content_redraw_wake())
+    }
+
+    /// The wake behind both `HostRedraw` and the GPU surface's
+    /// `RedrawHandle`: one armed flag per request, coalesced until the queued
+    /// post runs.
+    fn content_redraw_wake(&self) -> impl Fn() + Send + Sync + 'static {
         let poster = self.ui_poster.clone();
         let latch = Arc::clone(&self.redraw_pending);
         let bridge = Arc::clone(&self.bridge);
@@ -668,7 +679,7 @@ impl AndroidHostWindow {
             bridge.request_frame();
         }));
         let queued = Arc::new(AtomicBool::new(false));
-        RedrawHandle::new(move || {
+        move || {
             latch.store(true, Ordering::Release);
             if queued.swap(true, Ordering::AcqRel) {
                 return;
@@ -679,11 +690,11 @@ impl AndroidHostWindow {
                 queued.store(false, Ordering::Release);
                 wake();
             });
-        })
+        }
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl GpuSurfaceWindow for AndroidHostWindow {
     type Presentation = AndroidSurface;
     fn surface(&mut self) -> &mut AndroidSurface {
@@ -691,7 +702,7 @@ impl GpuSurfaceWindow for AndroidHostWindow {
     }
 
     fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-        Some(self.content_redraw_handle())
+        Some(RedrawHandle::new(self.content_redraw_wake()))
     }
 
     /// The compositor blur a behind-window material asks for — the host's
@@ -801,7 +812,7 @@ pub struct AndroidSession {
     executor: AndroidMainThreadExecutor,
     /// The GPU context outlives the surface and renderer inside `runtime`
     /// (they drop first — field order is teardown order).
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     #[expect(
         dead_code,
         reason = "held so the wgpu device outlives the runtime's GPU objects"
@@ -828,7 +839,7 @@ pub struct AndroidSession {
     pub(crate) platform_views: crate::platform_view::PlatformViewSink,
     pub(crate) ime: ImeBridge,
     /// The live surface generation, as last reported by the host.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     surface_generation: u64,
     /// The deadline the last frame transaction reported, read out by
     /// `nativeFrameDeadlineInNanos`.
@@ -930,6 +941,7 @@ impl UiThreadServices {
 /// `env` — the theme tokens, hooks and font collection a window's subtree
 /// resolves — so it must be installed once the session environment is
 /// otherwise complete (water-rs/waterui#2703).
+#[cfg(hydrolysis_gpu_painter)]
 fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn WidgetTheme>) {
     let renderer = crate::view_renderer::HydrolysisViewRenderer::new(
         Rc::clone(theme),
@@ -949,7 +961,7 @@ struct SessionMounts {
     /// The collection the env installs; only the GPU runtime's
     /// `ParleyEngine` reads it back — the HWUI engine draws text through
     /// the platform's own `StaticLayout`.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     fonts: waterui_text::FontCollection,
     window_id: crate::renderer::WindowId,
     pending_window_queue: Rc<RefCell<Vec<waterui::window::Window>>>,
@@ -1015,11 +1027,10 @@ fn session_mounts(
     });
     crate::theme::install_theme_tokens(&mut env, Some(&*style), color_scheme.clone());
     let theme: Rc<dyn WidgetTheme> = style;
+    #[cfg(hydrolysis_gpu_painter)]
     let fonts = crate::text::fonts::native_collection(&env);
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     fonts.clone().install(&mut env);
-    #[cfg(hydrolysis_hwui)]
-    fonts.install(&mut env);
     let shortcuts = env
         .get::<MenuShortcutRegistry<super::AndroidTextEngine>>()
         .expect("install_headless_window_managers seeds MenuShortcutRegistry")
@@ -1051,6 +1062,7 @@ fn session_mounts(
         Arc::clone(&bridge.host_view),
     )?;
 
+    #[cfg(hydrolysis_gpu_painter)]
     install_view_renderer(&mut env, &theme);
 
     let mut windows = VecDeque::from(windows);
@@ -1066,7 +1078,7 @@ fn session_mounts(
         env,
         window,
         theme,
-        #[cfg(not(hydrolysis_hwui))]
+        #[cfg(hydrolysis_gpu_painter)]
         fonts,
         window_id: shortcuts.mint_window_id(),
         pending_window_queue,
@@ -1081,7 +1093,7 @@ fn session_mounts(
 /// The GPU build's runtime window: the Parley-engine renderer under
 /// diagnostics. A painter reaching `nativeCreateSession` on this build is
 /// a feature mismatch, not a surface to adopt.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 fn gpu_runtime_window(
     window: waterui::window::Window,
     platform: AndroidHostWindow,
@@ -1186,7 +1198,7 @@ impl AndroidSession {
             env,
             window,
             theme,
-            #[cfg(not(hydrolysis_hwui))]
+            #[cfg(hydrolysis_gpu_painter)]
             fonts,
             window_id,
             pending_window_queue,
@@ -1204,13 +1216,13 @@ impl AndroidSession {
             &bridge,
         )?;
 
-        #[cfg(not(hydrolysis_hwui))]
+        #[cfg(hydrolysis_gpu_painter)]
         let gpu = AndroidGpuContext::request().map_err(JniError::from)?;
         let mut platform = AndroidHostWindow {
             metrics,
             events: Vec::new(),
             host_attached: false,
-            #[cfg(not(hydrolysis_hwui))]
+            #[cfg(hydrolysis_gpu_painter)]
             surface: AndroidSurface::new(gpu.clone()),
             bridge: Arc::new(bridge),
             ui_poster: executor.poster(),
@@ -1228,7 +1240,7 @@ impl AndroidSession {
             frame_transaction: FrameTransaction::default(),
         };
         platform.apply_properties(&window);
-        #[cfg(not(hydrolysis_hwui))]
+        #[cfg(hydrolysis_gpu_painter)]
         let mut runtime =
             gpu_runtime_window(window, platform, theme, &fonts, window_id, painter, &env)?;
         #[cfg(hydrolysis_hwui)]
@@ -1243,7 +1255,7 @@ impl AndroidSession {
             env,
             runtime,
             executor,
-            #[cfg(not(hydrolysis_hwui))]
+            #[cfg(hydrolysis_gpu_painter)]
             gpu,
             #[cfg(hydrolysis_hwui)]
             hwui,
@@ -1251,7 +1263,7 @@ impl AndroidSession {
             a11y: AccessibilitySnapshot::default(),
             platform_views,
             ime: ImeBridge::default(),
-            #[cfg(not(hydrolysis_hwui))]
+            #[cfg(hydrolysis_gpu_painter)]
             surface_generation: 0,
             frame_deadline_in_nanos: None,
             safe_area,
@@ -1423,7 +1435,7 @@ impl AndroidSession {
         self.platform_view_focus_sync();
         let should_close = handle_input_events(&mut self.runtime, &self.env) || self.should_close();
         let mut deadline = advance_runtime(&mut self.runtime, &self.env, now);
-        if matches!(self.runtime.engine_next, cherenkov::Next::At { time, .. } if time <= now)
+        if matches!(self.runtime.engine_next, crate::renderer::Next::At { time, .. } if time <= now)
             && !self.runtime.is_hidden()
         {
             self.runtime.platform.request_redraw();
@@ -1447,7 +1459,7 @@ impl AndroidSession {
             AndroidHostWindow::take_redraw_pending,
         ) {
             let executor = self.executor.clone();
-            #[cfg(not(hydrolysis_hwui))]
+            #[cfg(hydrolysis_gpu_painter)]
             let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
             #[cfg(hydrolysis_hwui)]
             let presented = self
@@ -1501,7 +1513,8 @@ impl AndroidSession {
         );
         if reports_ui_idle(
             self.presented_once.get(),
-            wants_next_frame || matches!(self.runtime.engine_next, cherenkov::Next::At { .. }),
+            wants_next_frame
+                || matches!(self.runtime.engine_next, crate::renderer::Next::At { .. }),
             self.runtime.is_hidden(),
         ) && !self.ready_logged.get()
         {
@@ -1515,7 +1528,7 @@ impl AndroidSession {
         // runs at or after the deadline, which is when the recognizer that
         // armed it clears itself.
         if !self.runtime.is_hidden()
-            && let cherenkov::Next::At { time, .. } = self.runtime.engine_next
+            && let crate::renderer::Next::At { time, .. } = self.runtime.engine_next
         {
             deadline = Some(deadline.map_or(time, |other| other.min(time)));
         }
@@ -1545,7 +1558,7 @@ impl AndroidSession {
     /// The Kotlin GPU band created or replaced its surface; `generation`
     /// comes from the host's own counter, so a stale `surfaceDestroyed` can
     /// never tear down a newer attachment.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn surface_attached_with_generation(
         &mut self,
         native_window: ndk::native_window::NativeWindow,
@@ -1580,7 +1593,7 @@ impl AndroidSession {
     }
 
     /// The band's size changed on the live surface generation.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn surface_resized(&mut self, width: u32, height: u32, generation: u64) {
         tracing::debug!(
             target: "waterui::hydrolysis::android",
@@ -1602,7 +1615,7 @@ impl AndroidSession {
 
     /// The band's surface is going away; `generation` names which one, so a
     /// stale destroy does not tear down a newer attachment.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn surface_detached(&mut self, generation: u64) {
         tracing::debug!(
             target: "waterui::hydrolysis::android",
@@ -1617,7 +1630,7 @@ impl AndroidSession {
     }
 
     /// Combines host work with the engine's content-rate range for this window.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn set_frame_demand(
         &mut self,
         continuous: bool,
@@ -1625,7 +1638,7 @@ impl AndroidSession {
     ) -> Result<(), String> {
         let visible = !self.runtime.is_hidden();
         let engine = match &self.runtime.engine_next {
-            cherenkov::Next::At { rate, .. } if visible => Some(rate.clone()),
+            crate::renderer::Next::At { rate, .. } if visible => Some(rate.clone()),
             _ => None,
         };
         let framework = visible

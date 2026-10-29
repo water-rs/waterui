@@ -229,6 +229,7 @@ impl DevicePayload {
         let build = hydrolysis_android::build_with_features(
             project,
             abi,
+            hydrolysis_android::resolve_painter(project, None),
             options,
             &["waterui-preview-mode"],
             kotlin,

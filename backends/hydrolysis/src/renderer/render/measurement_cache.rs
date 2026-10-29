@@ -464,6 +464,7 @@ impl<E: crate::text::TextEngine> MeasurementCaches<E> {
     }
 
     /// Per-frame (hits, misses) of the view-dimension cache.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) const fn stats(&self) -> (u32, u32) {
         (self.hits, self.misses)
     }

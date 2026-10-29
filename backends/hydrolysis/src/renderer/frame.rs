@@ -6,6 +6,7 @@
 use super::*;
 use kurbo::Shape as _;
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
@@ -205,6 +206,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             || self.has_active_touch_fling()
     }
 
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn measurement_cache_stats(&self) -> (u32, u32) {
         self.state.measurement.stats()
     }
@@ -618,18 +620,20 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.pop_placement_scope();
     }
 
-    pub(crate) fn set_host_redraw_handle(&mut self, handle: RedrawHandle) {
+    pub(crate) fn set_host_redraw_handle(&mut self, handle: HostRedraw) {
         self.host_redraw_handle = Some(handle);
     }
 
     /// The engine's scheduling answer from the last presented frame, drained
     /// once so one pump consumes it: `Next::At` asks the host for the frame
     /// an in-flight animation needs, `Next::Idle` parks the display link.
-    pub(crate) const fn take_engine_next(&mut self) -> Option<cherenkov::Next> {
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) const fn take_engine_next(&mut self) -> Option<Next> {
         self.engine_next.take()
     }
 
     /// The engine work the last commit did.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) const fn mount_stats(&self) -> mount::MountStats {
         self.last_mount_stats
     }

@@ -102,11 +102,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             // that resolves later is a size, not a new stretch declaration
             // (water-rs/waterui#1958). A filtered view is a
             // layout-transparent wrapper delegating to its child.
+            #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => {
                 waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
             }
             // An external frame stream's stretch is the same declared
             // contract — a size learned while decoding does not change it.
+            #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => {
                 waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
             }
@@ -244,6 +246,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             // GPU content answers like a scene: content that is naturally a
             // size is content-sized; content without one fills the proposal.
+            #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => {
                 let dimensions = node.intrinsic_dimensions(proposal);
                 node.measured.set(Some((proposal, dimensions.size)));
@@ -251,6 +254,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             // External frames measure through their source: a stream with an
             // intrinsic size is content-sized, one without fills the proposal.
+            #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => {
                 let dimensions = node.intrinsic_dimensions(proposal);
                 node.measured.set(Some((proposal, dimensions.size)));
@@ -456,11 +460,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::LazyStack(node) => {
                 node.item_cache.borrow_mut().prepare_for_measure(renderer);
             }
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::SceneView(_)
-            | Self::GpuContent(_)
-            | Self::ExternalFrame(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::SceneView(_) => {}
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => {}
         }
     }
 
@@ -757,11 +759,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 store_safe_area(&mut node.safe_area, safe_area);
             }
             // Text, color and GPU leaves render at flush from `ctx.bounds`.
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::SceneView(_)
-            | Self::GpuContent(_)
-            | Self::ExternalFrame(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::SceneView(_) => {}
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => {}
         }
     }
 }
@@ -884,12 +884,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         core::mem::discriminant(self).hash(hasher);
         hash_frame(hasher, frame);
         match self {
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::SceneView(_)
-            | Self::GpuContent(_)
-            | Self::ExternalFrame(_)
-            | Self::Widget(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::SceneView(_) | Self::Widget(_) => {}
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => {}
             Self::Opacity(node) => node.child.signature_into(frame, hasher),
             Self::Scale(node) => node.child.signature_into(frame, hasher),
             Self::Rotation(node) => node.child.signature_into(frame, hasher),
