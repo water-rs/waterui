@@ -159,6 +159,8 @@ class Sampling(unittest.TestCase):
             root = pathlib.Path(directory)
             write_dump(root, 1, ('after', MARKER), [
                 (RUN, ROOT, 1, 40), (WAITER, JOB, 1, 200),
+                (ROOT, chain(WAIT, ROOT, RUN), 1, 10),
+                (JOB, chain(LATCH, JOB, WAITER), 1, 6),
                 (JOB, chain(ALLOC, JOB, WAITER), 1, 5),
                 (JOB, chain('memcpy', JOB, WAITER), 1, 8),
             ])
@@ -167,11 +169,12 @@ class Sampling(unittest.TestCase):
                 (JOB, chain(ALLOC, JOB, WAITER), 1, 2),
                 (JOB, chain('memcpy', JOB, WAITER), 1, 4),
             ])
-            [sample] = ir_gate.call_samples(root, 'cpu', ROOT, [2], count=1, workers=(JOB,))
+            [sample] = ir_gate.call_samples(root, 'cpu', ROOT, [2], count=1, workers=(JOB,), sync=ir_gate.SYNC)
             self.assertEqual(sample['ncalls'], 1)
             self.assertEqual(sample['worker_calls'], 2)
             self.assertEqual(sample['ir'], 400)
-            self.assertEqual(sample['rust_ir'], 381)
+            self.assertEqual(sample['rust_ir'], 365)
+            self.assertEqual(sample['sync_ir'], 16)
             self.assertEqual(sample['allocs'], 2)
             self.assertEqual(sample['mem_calls'], 2)
 

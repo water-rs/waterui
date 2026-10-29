@@ -22,6 +22,8 @@ sample 2 is the gate's "second steady frame" and sample 3 its stability check.
 GPU geometry batches join before the lowering root returns. Their worker-root
 costs are added over the same dump span, with RAYON_NUM_THREADS=1 to include
 all batch work and allocation beneath that root in deterministic order.
+Lowering excludes the same synchronization share as the CPU leg, on both
+baseline and candidate, and retains it separately in the raw sample.
 Only the first span may hold no complete call — the call in flight when
 instrumentation switched on — so any later skip is an error, never a silent
 shift of which frame is sampled.
@@ -322,7 +324,7 @@ def share(names, edge, calls, symbol_of, sync=()):
     return shares
 
 
-def measure(path, symbol):
+def measure(path, symbol, sync=()):
     names, edge, calls = parse(path)
     ids = [k for k, v in names.items() if v == symbol]
     if len(ids) != 1:
@@ -332,9 +334,10 @@ def measure(path, symbol):
     ir = sum(c for (a, b), c in edge.items() if b == root)
     if ir == 0:
         return None
-    s = share(names, edge, calls, lambda caller: caller if caller == symbol else None)[symbol]
+    s = share(names, edge, calls, lambda caller: caller if caller == symbol else None, sync)[symbol]
     return {'path': str(path), 'ir': ir, 'ncalls': ncalls, 'alloc_ir': s['alloc_ir'], 'mem_ir': s['mem_ir'],
-            'mem_calls': s['mem_calls'], 'rust_ir': ir - s['alloc_ir'] - s['mem_ir'], **{k: s[k] for k in KINDS}}
+            'mem_calls': s['mem_calls'], 'sync_ir': s['sync_ir'], 'sync_calls': s['sync_calls'],
+            'rust_ir': ir - s['alloc_ir'] - s['mem_ir'] - s['sync_ir'], **{k: s[k] for k in KINDS}}
 
 
 def function_options(roots, sync=(), before=(), marker=None):
@@ -512,7 +515,7 @@ def check_separated(command, out, prefix, sync=()):
                            'its pattern trie never reaches them from the options; reshape the patterns')
 
 
-def call_samples(out, prefix, symbol, after, count=3, allow_inflight=True, workers=()):
+def call_samples(out, prefix, symbol, after, count=3, allow_inflight=True, workers=(), sync=()):
     """The root's first `count` calls, each merged over the dumps of its span.
 
     One call is the span after the root's previous --dump-after up to its
@@ -524,7 +527,7 @@ def call_samples(out, prefix, symbol, after, count=3, allow_inflight=True, worke
     for index, number in enumerate(sorted(after)):
         span = [out / f'{prefix}.{n}' for n in range(prev + 1, number + 1)]
         prev = number
-        found = [m for m in (measure(p, symbol) for p in span) if m]
+        found = [m for m in (measure(p, symbol, sync) for p in span) if m]
         ncalls = sum(m['ncalls'] for m in found)
         if allow_inflight and index == 0 and ncalls == 0:
             # The call in flight when instrumentation switched on was
@@ -534,10 +537,10 @@ def call_samples(out, prefix, symbol, after, count=3, allow_inflight=True, worke
             continue
         assert ncalls == 1, (prefix, symbol, number, [m['ncalls'] for m in found], 'a span must hold exactly one call')
         merged = {k: sum(m[k] for m in found)
-                  for k in ('ir', 'ncalls', 'alloc_ir', 'mem_ir', 'mem_calls', 'rust_ir', *KINDS)}
-        worker_samples = [m for worker in workers for p in span if (m := measure(p, worker))]
+                  for k in ('ir', 'ncalls', 'alloc_ir', 'mem_ir', 'mem_calls', 'sync_ir', 'sync_calls', 'rust_ir', *KINDS)}
+        worker_samples = [m for worker in workers for p in span if (m := measure(p, worker, sync))]
         for m in worker_samples:
-            for key in ('ir', 'alloc_ir', 'mem_ir', 'mem_calls', 'rust_ir', *KINDS):
+            for key in ('ir', 'alloc_ir', 'mem_ir', 'mem_calls', 'sync_ir', 'sync_calls', 'rust_ir', *KINDS):
                 merged[key] += m[key]
         if workers:
             merged['worker_calls'] = sum(m['ncalls'] for m in worker_samples)
@@ -851,7 +854,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
     env.update(layer_env(layer_dir, icd), XDG_RUNTIME_DIR=str(runtime_dir), RUST_LOG='error',
                RAYON_NUM_THREADS=CPU_THREADS)
     command = ['valgrind', '--tool=callgrind', '--demangle=no', '--instr-atstart=no', '--separate-threads=no',
-               *function_options(roots.values()),
+               *function_options(roots.values(), SYNC),
                f'--callgrind-out-file={prefix}', str(binary), 'measure', '--engine', 'cherenkov',
                '--scene', str(scene_dir), '--frames', '100000', '--warmup', str(warmup),
                '--pause-at', str(pause_at), '--out', str(prefix) + '.unused-timing.json']
@@ -863,7 +866,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
                              lambda triggers: sampled(after_of(triggers), phases, f'{tag} {scene}',
                                                       returns=1 if fresh else 4), deadline)
     after = after_of(triggers)
-    check_separated(command, out, prefix.name)
+    check_separated(command, out, prefix.name, SYNC)
     result = {'tag': tag, 'scene': scene, 'leg': leg.name, 'binary': str(binary),
               'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'icd': str(icd), 'icd_sha256': hashlib.sha256(icd.read_bytes()).hexdigest(),
@@ -873,7 +876,8 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
         symbol = roots[phase]
         samples = call_samples(out, prefix.name, symbol, after[phase],
                                count=1 if fresh else 3, allow_inflight=not fresh,
-                               workers=workers if phase == 'lower' else ())
+                               workers=workers if phase == 'lower' else (),
+                               sync=SYNC if phase == 'lower' else ())
         if fresh:
             assert len(samples) == 1, (tag, scene, phase, len(samples))
             result[phase] = {'root': symbol, 'first': samples[0]}
