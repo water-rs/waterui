@@ -12,6 +12,8 @@
 //! views.
 
 #[cfg(target_os = "macos")]
+use objc2::{MainThreadOnly, define_class, msg_send, runtime::NSObjectProtocol};
+#[cfg(target_os = "macos")]
 use objc2_app_kit::{
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
 };
@@ -19,6 +21,34 @@ use objc2_app_kit::{
 use objc2_ui_kit::{UIBlurEffect, UIBlurEffectStyle, UIVisualEffectView};
 
 use crate::{MainThreadMarker, PlatformView, Retained};
+
+#[cfg(target_os = "macos")]
+define_class!(
+    // SAFETY: `NSVisualEffectView` asks a subclass to initialize through its
+    // designated initializer, which `material_view` does, and the class does
+    // not implement `Drop`.
+    #[unsafe(super(NSVisualEffectView))]
+    #[name = "CocoaUiEffectView"]
+    #[thread_kind = MainThreadOnly]
+    #[derive(Debug)]
+    /// The `NSVisualEffectView` a material is realized as.
+    ///
+    /// Its coordinates are flipped, like a `HostView`'s, so content laid out
+    /// in a host's coordinates keeps its frame when it is mounted inside the
+    /// effect view.
+    struct EffectView;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSView` subclass.
+    unsafe impl NSObjectProtocol for EffectView {}
+
+    impl EffectView {
+        // SAFETY: `isFlipped` is `NSView`'s documented override point.
+        #[unsafe(method(isFlipped))]
+        fn is_flipped_override(&self) -> bool {
+            true
+        }
+    }
+);
 
 /// The thickness of a material background, ordered from most transparent to
 /// most opaque.
@@ -86,7 +116,7 @@ const fn blending_mode(level: MaterialLevel) -> NSVisualEffectBlendingMode {
 ///
 /// On iOS the returned `UIView` is a `UIVisualEffectView`; add embedded
 /// content to its `contentView()`. On macOS the returned `NSView` is an
-/// `NSVisualEffectView`; add embedded content as a subview.
+/// flipped `NSVisualEffectView`; add embedded content as a subview.
 #[must_use]
 pub fn material_view(mtm: MainThreadMarker, level: MaterialLevel) -> Retained<PlatformView> {
     #[cfg(target_os = "ios")]
@@ -98,10 +128,12 @@ pub fn material_view(mtm: MainThreadMarker, level: MaterialLevel) -> Retained<Pl
     }
     #[cfg(target_os = "macos")]
     {
-        let view = NSVisualEffectView::new(mtm);
+        let this = EffectView::alloc(mtm);
+        // SAFETY: `init` is `NSVisualEffectView`'s designated initializer.
+        let view: Retained<EffectView> = unsafe { msg_send![super(this.set_ivars(())), init] };
         view.setMaterial(material(level));
         view.setBlendingMode(blending_mode(level));
         view.setState(NSVisualEffectState::Active);
-        Retained::into_super(view)
+        Retained::into_super(Retained::into_super(view))
     }
 }
