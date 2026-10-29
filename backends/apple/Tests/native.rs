@@ -9296,6 +9296,13 @@ mod navigation {
                 },
             ),
             libtest_mimic::Trial::test(
+                "navigation::a_hosted_bar_item_keeps_its_size_centred_in_a_larger_control",
+                || {
+                    a_hosted_bar_item_keeps_its_size_centred_in_a_larger_control();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
                 "navigation::a_checkbox_toolbar_item_follows_its_disabled_state",
                 || {
                     a_checkbox_toolbar_item_follows_its_disabled_state();
@@ -9415,6 +9422,57 @@ mod navigation {
 
         title.set(Str::from("Done"));
         assert_eq!(bar_item_title(&leading), "Done");
+    }
+
+    /// A hosted bar item reports its content's measured size and keeps the
+    /// content at that size, centred, when the bar gives the control more
+    /// room — as the glass platter does.
+    fn a_hosted_bar_item_keeps_its_size_centred_in_a_larger_control() {
+        use cocoa_ui::uikit::{BarButton, bar_item};
+        use cocoa_ui::{Point, Rect};
+        use waterui_core::layout::ProposalSize;
+
+        let leaf = resolve::render(SystemIcon::new("plus"));
+        let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        let (width, height) = (f64::from(measured.width), f64::from(measured.height));
+        view::set_frame(leaf.view(), Rect::new(0.0, 0.0, width, height));
+        let item = bar_item(mtm(), None, Some(leaf.view()), None);
+        let control: Retained<BarButton> = item
+            .customView()
+            .expect("the item hosts its content")
+            .downcast()
+            .expect("the hosted content is wrapped in a BarButton");
+
+        let fits = control.sizeThatFits(cocoa_ui::Size::new(400.0, 400.0).into());
+        let intrinsic = control.intrinsicContentSize();
+        for size in [fits, intrinsic] {
+            assert!(
+                (size.width - width).abs() < 0.5 && (size.height - height).abs() < 0.5,
+                "the control reports {}x{}, not the content's {width}x{height}",
+                size.width,
+                size.height
+            );
+        }
+
+        let (bounds_width, bounds_height) = (width + 20.0, height + 12.0);
+        view::set_frame(&control, Rect::new(0.0, 0.0, bounds_width, bounds_height));
+        view::layout_immediately(&control);
+        let frame = view::frame(leaf.view());
+        assert!(
+            (frame.size.width - width).abs() < 0.5 && (frame.size.height - height).abs() < 0.5,
+            "the content keeps its measured size, not {}x{}",
+            frame.size.width,
+            frame.size.height
+        );
+        let centre = Point::new(
+            frame.origin.x + frame.size.width / 2.0,
+            frame.origin.y + frame.size.height / 2.0,
+        );
+        assert!(
+            (centre.x - bounds_width / 2.0).abs() < 0.5
+                && (centre.y - bounds_height / 2.0).abs() < 0.5,
+            "the content centre {centre:?} must be the control's centre"
+        );
     }
 
     /// A leading text button's bar item follows the button's `disabled`

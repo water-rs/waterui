@@ -27,6 +27,7 @@ use block2::RcBlock;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSDictionary, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     NSForegroundColorAttributeName, UIBarButtonItem, UIBarButtonItemStyle, UIBarPosition,
@@ -536,6 +537,11 @@ type ShowHandler = Rc<dyn Fn(usize)>;
 pub struct BarButtonIvars {
     /// Called when the button is tapped.
     action: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The hosted view.
+    hosted: Retained<objc2_ui_kit::UIView>,
+    /// The hosted view's measured size: the frame its owner gave it before
+    /// hosting, which the owner took from the content's own measure.
+    content: CGSize,
 }
 
 impl fmt::Debug for BarButtonIvars {
@@ -567,6 +573,39 @@ define_class!(
                 handler();
             }
         }
+
+        // SAFETY: `intrinsicContentSize` carries `UIView`'s signature. The
+        // bar sizes a custom view by this, so it reports the hosted
+        // content's measured size.
+        #[unsafe(method(intrinsicContentSize))]
+        fn intrinsic_content_size(&self) -> CGSize {
+            self.ivars().content
+        }
+
+        // SAFETY: `sizeThatFits:` carries `UIView`'s signature; the control
+        // is exactly as large as its content whatever size is proposed.
+        #[unsafe(method(sizeThatFits:))]
+        fn size_that_fits(&self, _size: CGSize) -> CGSize {
+            self.ivars().content
+        }
+
+        // SAFETY: `layoutSubviews` carries `UIView`'s signature. The bar may
+        // give the control more room than its content (the glass platter),
+        // so the content keeps its size, centred in the bounds.
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews(&self) {
+            // SAFETY: `super`'s `layoutSubviews` takes and returns nothing.
+            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            let ivars = self.ivars();
+            let bounds = self.bounds().size;
+            ivars.hosted.setFrame(CGRect::new(
+                CGPoint::new(
+                    (bounds.width - ivars.content.width) / 2.0,
+                    (bounds.height - ivars.content.height) / 2.0,
+                ),
+                ivars.content,
+            ));
+        }
     }
 );
 
@@ -576,6 +615,8 @@ impl BarButton {
     pub fn new(mtm: MainThreadMarker, view: &objc2_ui_kit::UIView) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(BarButtonIvars {
             action: RefCell::new(None),
+            hosted: view.retain(),
+            content: view.frame().size,
         });
         // SAFETY: `initWithFrame:` is `UIControl`'s designated initializer;
         // the button is measured by its hosted view.
