@@ -20,7 +20,8 @@ use waterui::component::{hstack, text, vstack};
 use waterui::id::SelfId;
 use waterui::navigation::{NavigationSplitView, NavigationStack, NavigationView, Tab, Tabs};
 use waterui::{Binding, View, ViewExt};
-use waterui_core::Environment;
+use waterui_controls::label::{LabelDisplayMode, label};
+use waterui_core::{AnyView, Environment};
 
 /// Widens a `u32` extent to `f32`, rounding to nearest when the value exceeds
 /// the 24-bit mantissa; the extents involved are small.
@@ -319,6 +320,49 @@ fn a_pushed_pages_cancellation_item_clears_the_back_button() {
         cancel.x0 >= back.x1 - 1.0,
         "the cancellation item must start at the back button's trailing edge: \
          back {back:?}, cancel {cancel:?}"
+    );
+}
+
+/// water-rs/waterui#3710: a bar action whose label has an icon shows the
+/// icon alone unless the caller chose a display mode, and keeps its title as
+/// the accessible name.
+#[test]
+fn a_trailing_bar_action_with_an_icon_label_is_icon_only() {
+    // Long enough to exceed the test style's minimum button width, so the
+    // title's presence shows in the button's width.
+    const TITLE: &str = "Delete every selected item permanently";
+    let delete_button_width = |mode: Option<LabelDisplayMode>| {
+        let mut app = mount_rendered(
+            Environment::new(),
+            move || {
+                let button = waterui::component::button(label(TITLE).icon(text("x")));
+                let button = match mode {
+                    Some(mode) => AnyView::new(button.label_style(mode).action(|| {})),
+                    None => AnyView::new(button.action(|| {})),
+                };
+                NavigationView::new("Root", text("root")).navigation_toolbar(
+                    waterui::navigation::NavigationToolbar::default().item(
+                        waterui::navigation::NavigationToolbarItem::new(
+                            waterui::navigation::NavigationToolbarPlacement::TopBarTrailing,
+                            button,
+                        ),
+                    ),
+                )
+            },
+            320,
+            240,
+        );
+        app.settle();
+        let bounds = node_bounds_with_role(app.tree(), accesskit::Role::Button, TITLE);
+        bounds.x1 - bounds.x0
+    };
+
+    let in_bar = delete_button_width(None);
+    let explicit = delete_button_width(Some(LabelDisplayMode::TitleAndIcon));
+    assert!(
+        in_bar < explicit,
+        "the bar action must draw the icon alone ({in_bar}) while an explicit \
+         title-and-icon mode keeps both ({explicit})"
     );
 }
 
