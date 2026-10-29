@@ -247,6 +247,87 @@ pub struct HeadlessPumpResult {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+impl HeadlessPumpResult {
+    /// Whether the pump rebuilt the view tree.
+    #[must_use]
+    pub const fn rebuilt(&self) -> bool {
+        self.rebuilt
+    }
+
+    /// The frame's CPU/GPU stage profile.
+    #[must_use]
+    pub const fn profile(&self) -> FrameProfile {
+        self.profile
+    }
+
+    /// The frame's CPU/GPU stage split under `frame-profile`: GPU stages stay
+    /// `None` on a device without `TIMESTAMP_QUERY`.
+    #[cfg(feature = "frame-profile")]
+    #[must_use]
+    pub const fn stages(&self) -> crate::renderer::FrameStageTimes {
+        self.stages
+    }
+
+    /// The accessibility tree update the frame produced.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub const fn tree_update(&self) -> Option<&AccessibilityTreeUpdate> {
+        self.tree_update.as_ref()
+    }
+
+    /// Takes the accessibility tree update the frame produced.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn into_tree_update(self) -> Option<AccessibilityTreeUpdate> {
+        self.tree_update
+    }
+
+    /// The content types the emitted tree's text fields declared — the map
+    /// the update publishes beside it.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub const fn content_types(&self) -> &AccessibilityContentTypes {
+        &self.content_types
+    }
+
+    /// The captured frame snapshot, when capture was requested.
+    #[must_use]
+    pub const fn snapshot(&self) -> Option<&HeadlessSnapshot> {
+        self.snapshot.as_ref()
+    }
+
+    /// Takes the captured frame snapshot, when capture was requested.
+    #[must_use]
+    pub fn into_snapshot(self) -> Option<HeadlessSnapshot> {
+        self.snapshot
+    }
+
+    /// Takes the captured frame snapshot out of the result, leaving none.
+    pub const fn take_snapshot(&mut self) -> Option<HeadlessSnapshot> {
+        self.snapshot.take()
+    }
+
+    /// The accessibility node holding UI focus.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub const fn ui_focus(&self) -> Option<accesskit::NodeId> {
+        self.ui_focus
+    }
+
+    /// Takes the accessibility tree update out of the result, leaving none.
+    #[cfg(feature = "accessibility")]
+    pub const fn take_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
+        self.tree_update.take()
+    }
+
+    /// Takes the content types out of the result, leaving the map empty.
+    #[cfg(feature = "accessibility")]
+    pub fn take_content_types(&mut self) -> AccessibilityContentTypes {
+        core::mem::take(&mut self.content_types)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// A headless hydrolysis runtime for tests and tooling.
 pub struct HeadlessRuntime {
     env: Environment,
@@ -709,11 +790,11 @@ impl HeadlessRuntime {
     #[must_use]
     pub fn gpu_identity(&self) -> crate::GpuIdentity {
         let surface = self.runtime.platform.inner.surface_ref();
-        crate::GpuIdentity {
-            adapter: surface.adapter().get_info(),
-            adapter_features: surface.adapter().features(),
-            device_features: surface.device().features(),
-        }
+        crate::GpuIdentity::new(
+            surface.adapter().get_info(),
+            surface.adapter().features(),
+            surface.device().features(),
+        )
     }
 
     /// Performs an accessibility action against the merged tree.
@@ -1184,14 +1265,14 @@ impl HeadlessRuntime {
             // the tail drained here is the work that ran after it (the
             // readback's own submissions), which joins the same frame's count.
             profile
-                .counters
-                .frame_work
+                .counters_mut()
+                .frame_work_mut()
                 .accumulate(self.runtime.renderer.take_frame_work_counters());
         }
-        profile.phases.executor_before = executor_before;
-        profile.phases.input = input;
-        profile.phases.animation = animation;
-        profile.phases.executor_after = executor_after;
+        profile.phases_mut().set_executor_before(executor_before);
+        profile.phases_mut().set_input(input);
+        profile.phases_mut().set_animation(animation);
+        profile.phases_mut().set_executor_after(executor_after);
 
         #[cfg(feature = "accessibility")]
         let merged = self.runtime.renderer.take_merged_accessibility_tree_update(
@@ -1235,27 +1316,28 @@ fn composite_popup_snapshot(
 ) {
     let offset_x = crate::num_cast::f32_as_i32(frame.x().round());
     let offset_y = crate::num_cast::f32_as_i32(frame.y().round());
-    for source_y in 0..source.height {
+    for source_y in 0..source.height() {
         let target_y = offset_y + i32::try_from(source_y).expect("source y should fit i32");
-        if target_y < 0 || target_y >= i32::try_from(target.height).expect("height should fit i32")
+        if target_y < 0
+            || target_y >= i32::try_from(target.height()).expect("height should fit i32")
         {
             continue;
         }
-        for source_x in 0..source.width {
+        for source_x in 0..source.width() {
             let target_x = offset_x + i32::try_from(source_x).expect("source x should fit i32");
             if target_x < 0
-                || target_x >= i32::try_from(target.width).expect("width should fit i32")
+                || target_x >= i32::try_from(target.width()).expect("width should fit i32")
             {
                 continue;
             }
-            let source_index = ((source_y * source.width + source_x) * 4) as usize;
+            let source_index = ((source_y * source.width() + source_x) * 4) as usize;
             let target_index = ((u32::try_from(target_y).expect("target y should be non-negative")
-                * target.width
+                * target.width()
                 + u32::try_from(target_x).expect("target x should be non-negative"))
                 * 4) as usize;
             composite_pixel(
-                &mut target.rgba8[target_index..target_index + 4],
-                &source.rgba8[source_index..source_index + 4],
+                &mut target.rgba8_mut()[target_index..target_index + 4],
+                &source.rgba8()[source_index..source_index + 4],
             );
         }
     }
@@ -1607,10 +1689,10 @@ mod generation_tests {
         );
         assert_eq!(installs.get(), 2, "invalidator re-installed after rebuild");
         let snapshot = second.snapshot.take().expect("capture after replacement");
-        assert_eq!((snapshot.width, snapshot.height), (96, 64));
+        assert_eq!((snapshot.width(), snapshot.height()), (96, 64));
         let pixel = |x: usize, y: usize| {
             let offset = (y * 96 + x) * 4;
-            &snapshot.rgba8[offset..offset + 4]
+            &snapshot.rgba8()[offset..offset + 4]
         };
         // The fill covers (8,8)..(40,24): real red pixels on the new device.
         assert!(pixel(24, 16)[0] > 200, "fill renders on the new device");

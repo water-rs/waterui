@@ -96,6 +96,14 @@ pub struct SystemIcon {
 }
 
 impl SystemIcon {
+    /// The name of the system icon.
+    #[must_use]
+    pub const fn name(&self) -> &Str {
+        &self.name
+    }
+}
+
+impl SystemIcon {
     /// Creates a new system icon with the given name.
     #[must_use]
     pub fn new(name: impl Into<Str>) -> Self {

@@ -59,10 +59,6 @@ fn zstack_vertical_metrics(
 /// reported sizes. If you instead need the base child to dictate the container
 /// size while layering secondary content, see [`crate::overlay::OverlayLayout`].
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "frozen layout contract (docs/layout-spec.md): the stack's parameter is its alignment"
-)]
 pub struct ZStackLayout {
     /// The alignment used to position children within the `ZStack`
     pub alignment: Alignment,

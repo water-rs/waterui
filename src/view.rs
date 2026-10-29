@@ -485,7 +485,7 @@ pub trait ViewExt: View + Sized {
     /// let query = binding::<Str>(Str::default());
     /// field("Search", &query).on_key_press(
     ///     |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
-    ///         if press.key == Key::Named(NamedKey::Escape) {
+    ///         if press.key() == &Key::Named(NamedKey::Escape) {
     ///             open.set(false);
     ///             KeyHandling::Handled
     ///         } else {
@@ -1152,10 +1152,7 @@ pub trait ViewExt: View + Sized {
         self,
         menu: impl crate::metadata::context_menu::IntoContextMenu,
     ) -> crate::metadata::context_menu::ContextMenuView<Self> {
-        crate::metadata::context_menu::ContextMenuView {
-            content: self,
-            menu: menu.into_context_menu(),
-        }
+        crate::metadata::context_menu::ContextMenuView::new(self, menu.into_context_menu())
     }
 
     /// Presents `overlay` next to this view, above all other content in the

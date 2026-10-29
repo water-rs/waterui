@@ -113,10 +113,6 @@ impl<T> From<T> for StateValue<T> {
 /// chip's outline, a split button's half, a floating surface's elevation. The
 /// binding stays at the resting state while no interactive control is there.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "metadata newtype; backends destructure the wrapped binding"
-)]
 pub struct InteractionReport(pub nami::Binding<InteractionState>);
 
 impl crate::plugin::Plugin for InteractionReport {}
@@ -128,10 +124,6 @@ impl crate::plugin::Plugin for InteractionReport {}
 /// technology. Unlike [`Disabled`] it is not inherited: it applies to the
 /// interactive control it modifies, not to controls nested inside it.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "metadata newtype; backends destructure the wrapped signal"
-)]
 pub struct Selected(pub Computed<bool>);
 
 impl MetadataKey for Selected {}

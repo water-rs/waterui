@@ -82,8 +82,8 @@ async fn run_build_cache(shell: &Shell, args: BuildCacheArgs) -> Result<()> {
             success!(
                 shell,
                 "Build-cache GC complete: scanned {} cache entries, removed {} stale entries",
-                summary.scanned_entries,
-                summary.removed_entries
+                summary.scanned_entries(),
+                summary.removed_entries()
             );
         }
         BuildCacheGcOutcome::SkippedAlreadyRunning => {
@@ -103,15 +103,15 @@ async fn report_build_cache_usage(shell: &Shell, project_path: &std::path::Path)
     let report =
         water_dir::survey_build_cache_usage(&waterui_cli::toolchain::Host::current(), project_path)
             .await?;
-    if report.entries.is_empty() {
+    if report.entries().is_empty() {
         note!(shell, "The managed build cache is empty");
         return Ok(());
     }
 
-    for entry in &report.entries {
-        let label = if entry.active {
+    for entry in report.entries() {
+        let label = if entry.active() {
             " (active)"
-        } else if entry.stale {
+        } else if entry.stale() {
             " (stale)"
         } else {
             ""
@@ -119,17 +119,17 @@ async fn report_build_cache_usage(shell: &Shell, project_path: &std::path::Path)
         note!(
             shell,
             "{:>10}  {}{label}",
-            human_bytes(entry.bytes),
-            entry.project_root.display()
+            human_bytes(entry.bytes()),
+            entry.project_root().display()
         );
     }
 
     success!(
         shell,
         "{} across {} entries, {} reclaimable by `water gc build-cache`",
-        human_bytes(report.total_bytes),
-        report.entries.len(),
-        human_bytes(report.reclaimable_bytes)
+        human_bytes(report.total_bytes()),
+        report.entries().len(),
+        human_bytes(report.reclaimable_bytes())
     );
     Ok(())
 }

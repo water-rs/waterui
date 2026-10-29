@@ -43,18 +43,19 @@ struct TabRenderState<E: crate::text::TextEngine> {
 
 impl<E: crate::text::TextEngine> TabRenderState<E> {
     fn from_tab(tag: Id, tab: Tab) -> Self {
+        let (label, icon, content, badge, enabled, _) = tab.into_parts();
         Self {
             tag,
-            label: RetainedSubview::new(tab.label.build()),
-            icon: tab.icon.map(|icon| {
+            label: RetainedSubview::new(label.build()),
+            icon: icon.map(|icon| {
                 RetainedSubview::new(match icon {
                     TabIcon::System(icon) => AnyView::new(icon),
                     TabIcon::View(builder) => builder.build(),
                 })
             }),
-            content: RetainedSubview::new(AnyView::new(tab.content.build())),
-            enabled: tab.enabled,
-            badge: tab.badge,
+            content: RetainedSubview::new(AnyView::new(content.build())),
+            enabled,
+            badge,
         }
     }
 }
@@ -86,10 +87,8 @@ pub struct TabsRenderState<E: crate::text::TextEngine> {
 
 impl<E: crate::text::TextEngine> TabsRenderState<E> {
     pub(crate) fn from_tabs(tabs: TabsLayout, renderer: &crate::renderer::SemanticCore<E>) -> Self {
-        // `TabsLayout` is `#[non_exhaustive]`, so access fields rather than destructuring.
-        let selection = tabs.selection;
-        let style = tabs.style;
-        let snapshot = Rc::new(RefCell::new(tabs.tabs.snapshot()));
+        let (selection, tabs, style, ..) = tabs.into_parts();
+        let snapshot = Rc::new(RefCell::new(tabs.snapshot()));
         // Membership changes mark the owning widget's cell — the node whose
         // read built this state, or the window root when built unowned.
         let tabs_dirty = Rc::new(Cell::new(true));
@@ -101,7 +100,7 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
         let watch = {
             let snapshot = Rc::clone(&snapshot);
             let tabs_dirty = Rc::clone(&tabs_dirty);
-            tabs.tabs.watch(.., move |ctx, _change| {
+            tabs.watch(.., move |ctx, _change| {
                 tabs_dirty.set(true);
                 *snapshot.borrow_mut() = ctx.into_value();
                 if let Some(cell) = cell.upgrade() {

@@ -65,6 +65,51 @@ pub struct ToggleConfig {
     pub style: ToggleStyle,
 }
 
+impl ToggleConfig {
+    /// The label displayed for the toggle.
+    ///
+    /// Always present: it is required at construction so assistive technology
+    /// has a name to announce, even when
+    /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
+    /// removes the visible chrome.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: Label) {
+        self.label = label;
+    }
+
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
+    /// The binding to the toggle state.
+    #[must_use]
+    pub const fn toggle(&self) -> &Binding<bool> {
+        &self.toggle
+    }
+
+    /// The visual style of the toggle.
+    ///
+    /// The native payload a backend receives is resolved: its style is never
+    /// [`ToggleStyle::Automatic`], and its label's display mode is the
+    /// effective one.
+    #[must_use]
+    pub const fn style(&self) -> ToggleStyle {
+        self.style
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Label, Binding<bool>, ToggleStyle) {
+        (self.label, self.toggle, self.style)
+    }
+}
+
 configurable!(
     /// A control that toggles between on and off states.
     ///

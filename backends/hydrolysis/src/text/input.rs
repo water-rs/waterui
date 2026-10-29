@@ -193,28 +193,26 @@ pub(in crate::text) fn span_cache_key(
 
 pub(in crate::text) fn font_spec(font: &waterui_text::font::ResolvedFont) -> ResolvedFontSpec {
     ResolvedFontSpec {
-        size: font.size,
-        weight: font.weight,
-        line_height: font.line_height,
-        letter_spacing: font.letter_spacing,
-        family: font.family.as_deref().map(String::from),
+        size: font.size(),
+        weight: font.weight(),
+        line_height: font.line_height(),
+        letter_spacing: font.letter_spacing(),
+        family: font.family().map(ToString::to_string),
     }
 }
 
 fn resolve_text_style(style: &TextStyle, env: &Environment) -> ResolvedTextStyleSpec {
     ResolvedTextStyleSpec {
-        font: font_spec(&style.font.resolve(env).snapshot()),
+        font: font_spec(&style.get_font().resolve(env).snapshot()),
         foreground: style
-            .foreground
-            .clone()
+            .get_foreground()
             .map(|color| working_color_to_rgba8(color.resolve(env).snapshot())),
         background: style
-            .background
-            .clone()
+            .get_background()
             .map(|color| working_color_to_rgba8(color.resolve(env).snapshot())),
-        italic: style.italic,
-        underline: style.underline,
-        strikethrough: style.strikethrough,
+        italic: style.get_italic(),
+        underline: style.get_underline(),
+        strikethrough: style.get_strikethrough(),
     }
 }
 

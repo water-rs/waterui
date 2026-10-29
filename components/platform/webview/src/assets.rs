@@ -66,6 +66,37 @@ pub struct AssetRequest {
     pub query: Option<Str>,
 }
 
+impl AssetRequest {
+    /// Creates a `AssetRequest` from its parts.
+    #[must_use]
+    pub const fn new(method: AssetMethod, path: Str, query: Option<Str>) -> Self {
+        Self {
+            method,
+            path,
+            query,
+        }
+    }
+
+    /// The request method.
+    #[must_use]
+    pub const fn method(&self) -> AssetMethod {
+        self.method
+    }
+
+    /// The URL path as received — leading `/`, still percent-encoded. The
+    /// server owns decoding and resolution against its fixed asset set.
+    #[must_use]
+    pub const fn path(&self) -> &Str {
+        &self.path
+    }
+
+    /// The query string without `?`, when one was sent.
+    #[must_use]
+    pub const fn query(&self) -> Option<&Str> {
+        self.query.as_ref()
+    }
+}
+
 /// What the asset origin answers.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -76,6 +107,32 @@ pub struct AssetResponse {
     pub headers: Vec<(Str, Str)>,
     /// The response body.
     pub body: Vec<u8>,
+}
+
+impl AssetResponse {
+    /// The HTTP status code.
+    #[must_use]
+    pub const fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// Response headers as name/value pairs.
+    #[must_use]
+    pub const fn headers(&self) -> &[(Str, Str)] {
+        self.headers.as_slice()
+    }
+
+    /// The response body.
+    #[must_use]
+    pub const fn body(&self) -> &[u8] {
+        self.body.as_slice()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (u16, Vec<(Str, Str)>, Vec<u8>) {
+        (self.status, self.headers, self.body)
+    }
 }
 
 impl AssetResponse {

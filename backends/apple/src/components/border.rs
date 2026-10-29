@@ -135,9 +135,9 @@ impl SubView for BorderSubView {
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<Metadata<Border>>(|metadata, ctx| {
         let border = metadata.value;
-        let edges = border.edges;
-        let width = border.width;
-        let corner_radius = border.corner_radius;
+        let edges = border.get_edges();
+        let width = border.width();
+        let corner_radius = border.get_corner_radius();
         let draws_all_edges = edges.top && edges.leading && edges.bottom && edges.trailing;
 
         let mtm = ctx.mtm();
@@ -220,7 +220,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         );
         leaf.keep(sink_guard);
 
-        let resolved = border.color.resolve(ctx.env());
+        let resolved = border.color().resolve(ctx.env());
         leaf.bind(&resolved, {
             let state = Rc::clone(&state);
             move |color| {

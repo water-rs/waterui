@@ -74,7 +74,7 @@ pub fn demo() -> impl View {
         .iter()
         .map(|sample| MediaItem::from(Url::parse(sample.url).expect("sample URL should be valid")))
         .collect::<Vec<_>>();
-    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let item_ids = items.iter().map(|item| item.get_id()).collect::<Vec<_>>();
     let session = PlaybackSession::new(Playlist::new(items[0].clone(), items.into_iter().skip(1)));
     let controller = session.controller();
     let selected = controller.current_item_index();

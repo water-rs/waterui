@@ -81,7 +81,7 @@ fn bounds(runtime: &mut HeadlessRuntime, label: &str) -> Option<Rect> {
 fn frame(runtime: &mut HeadlessRuntime, at: Instant) -> HeadlessSnapshot {
     runtime
         .pump_at(true, at)
-        .snapshot
+        .into_snapshot()
         .expect("a pumped frame must be capturable")
 }
 
@@ -89,8 +89,8 @@ fn frame(runtime: &mut HeadlessRuntime, at: Instant) -> HeadlessSnapshot {
 fn centre_pixel(snapshot: &HeadlessSnapshot, rect: Rect) -> [u8; 4] {
     let x = crate::num_cast::f64_as_u32(f64::midpoint(rect.x0, rect.x1));
     let y = crate::num_cast::f64_as_u32(f64::midpoint(rect.y0, rect.y1));
-    let index = usize::try_from((y * snapshot.width + x) * 4).expect("a pixel index fits usize");
-    snapshot.rgba8[index..index + 4]
+    let index = usize::try_from((y * snapshot.width() + x) * 4).expect("a pixel index fits usize");
+    snapshot.rgba8()[index..index + 4]
         .try_into()
         .expect("four channels per pixel")
 }
@@ -104,10 +104,14 @@ pub(super) fn save(snapshot: &HeadlessSnapshot, case: &str, name: &str) {
     let path = crate::testing::artifact_snapshot_path("hydrolysis", case, name);
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");
-    image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8.clone())
-        .expect("snapshot dimensions must match the rgba buffer")
-        .save(&path)
-        .expect("the frame must be writable");
+    image::RgbaImage::from_raw(
+        snapshot.width(),
+        snapshot.height(),
+        snapshot.rgba8().to_vec(),
+    )
+    .expect("snapshot dimensions must match the rgba buffer")
+    .save(&path)
+    .expect("the frame must be writable");
 }
 
 /// A `when` branch that turns false: its instance leaves the accessibility

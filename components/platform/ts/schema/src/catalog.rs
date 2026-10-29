@@ -37,6 +37,20 @@ pub struct CatalogSchema {
 }
 
 impl CatalogSchema {
+    /// The components, in the order the catalog declares them.
+    #[must_use]
+    pub const fn components(&self) -> &'static [ComponentSchema] {
+        self.components
+    }
+
+    /// The view modifiers, which apply to every component.
+    #[must_use]
+    pub const fn modifiers(&self) -> &'static [ModifierSchema] {
+        self.modifiers
+    }
+}
+
+impl CatalogSchema {
     /// A catalog of `components` and `modifiers`, in declaration order.
     #[must_use]
     pub const fn new(
@@ -69,6 +83,38 @@ pub struct ComponentSchema {
     pub attributes: StructSchema,
     /// What this component's JSX children are.
     pub children: ChildrenSlot,
+}
+
+impl ComponentSchema {
+    /// The JSX tag name — `"VStack"`, `"Toggle"`.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// One sentence describing the component, for the generated `.d.ts` and
+    /// for `water components`.
+    #[must_use]
+    pub const fn summary(&self) -> &'static str {
+        self.summary
+    }
+
+    /// The configuration attributes: the props struct the host reads a
+    /// configuration object with, whose fields are the attributes.
+    ///
+    /// The schema is that struct's own constant — [`attributes_of`] lifts it
+    /// out of its [`TypeSchema`] — so the attribute list and the conversion
+    /// that reads the object are the same declaration.
+    #[must_use]
+    pub const fn attributes(&self) -> StructSchema {
+        self.attributes
+    }
+
+    /// What this component's JSX children are.
+    #[must_use]
+    pub const fn children(&self) -> ChildrenSlot {
+        self.children
+    }
 }
 
 impl ComponentSchema {
@@ -105,6 +151,26 @@ pub struct ModifierSchema {
     pub summary: &'static str,
     /// The value it accepts.
     pub value: &'static TypeSchema,
+}
+
+impl ModifierSchema {
+    /// The attribute name — `"padding"`, `"background"`.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// One sentence describing the modifier.
+    #[must_use]
+    pub const fn summary(&self) -> &'static str {
+        self.summary
+    }
+
+    /// The value it accepts.
+    #[must_use]
+    pub const fn value(&self) -> &'static TypeSchema {
+        self.value
+    }
 }
 
 impl ModifierSchema {
@@ -272,6 +338,20 @@ pub struct Catalog {
     pub modifiers: Vec<Modifier>,
 }
 
+impl Catalog {
+    /// The components, in catalog order.
+    #[must_use]
+    pub const fn components(&self) -> &[Component] {
+        self.components.as_slice()
+    }
+
+    /// The view modifiers, which apply to every component.
+    #[must_use]
+    pub const fn modifiers(&self) -> &[Modifier] {
+        self.modifiers.as_slice()
+    }
+}
+
 /// An owned [`ComponentSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
@@ -286,6 +366,32 @@ pub struct Component {
     pub children: ChildrenSlot,
 }
 
+impl Component {
+    /// The JSX tag name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// One sentence describing the component.
+    #[must_use]
+    pub const fn summary(&self) -> &str {
+        self.summary.as_str()
+    }
+
+    /// The configuration attributes, in declaration order.
+    #[must_use]
+    pub const fn attributes(&self) -> &[owned::Field] {
+        self.attributes.as_slice()
+    }
+
+    /// What this component's children are.
+    #[must_use]
+    pub const fn children(&self) -> ChildrenSlot {
+        self.children
+    }
+}
+
 /// An owned [`ModifierSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
@@ -296,6 +402,26 @@ pub struct Modifier {
     pub summary: String,
     /// The value it accepts.
     pub value: owned::Schema,
+}
+
+impl Modifier {
+    /// The attribute name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// One sentence describing the modifier.
+    #[must_use]
+    pub const fn summary(&self) -> &str {
+        self.summary.as_str()
+    }
+
+    /// The value it accepts.
+    #[must_use]
+    pub const fn value(&self) -> &owned::Schema {
+        &self.value
+    }
 }
 
 impl From<&CatalogSchema> for Catalog {
@@ -314,7 +440,7 @@ impl From<&ComponentSchema> for Component {
             summary: component.summary.to_owned(),
             attributes: component
                 .attributes
-                .fields
+                .fields()
                 .iter()
                 .map(owned::Field::from)
                 .collect(),
@@ -425,7 +551,7 @@ fn read_component(reader: &mut Reader<'_>) -> Result<Component, DecodeError> {
     // entry's, not the whole catalog's.
     reader.depth = 0;
     let attributes = match reader.node()? {
-        owned::Schema::Struct(attributes) => attributes.fields,
+        owned::Schema::Struct(attributes) => attributes.into_fields(),
         other => {
             return Err(DecodeError::AttributesNotAStruct {
                 component: name,

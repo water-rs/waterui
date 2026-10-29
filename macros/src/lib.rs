@@ -718,12 +718,7 @@ fn derive_project_struct(
     {
         quote! { #[non_exhaustive] }
     } else {
-        quote! {
-            #[allow(
-                clippy::exhaustive_structs,
-                reason = "a projection has exactly its source struct's fields"
-            )]
-        }
+        quote! {}
     };
 
     let expanded = quote! {

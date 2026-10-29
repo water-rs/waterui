@@ -108,7 +108,7 @@ impl SubView for ScaleSubView {
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<Metadata<Scale>>(|metadata, ctx| {
         let scale = metadata.value;
-        let anchor = Point::new(f64::from(scale.anchor.x), f64::from(scale.anchor.y));
+        let anchor = Point::new(f64::from(scale.anchor().x), f64::from(scale.anchor().y));
 
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, Rect::ZERO);
@@ -177,8 +177,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         );
         leaf.keep(sink_guard);
 
-        let x = scale.x;
-        let y = scale.y;
+        let x = scale.x();
+        let y = scale.y();
         {
             let mut borrowed = state.borrow_mut();
             borrowed.x = x.snapshot();
@@ -186,7 +186,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             apply_transform(&borrowed, &host, anchor);
         }
 
-        leaf.watch(&x, {
+        leaf.watch(x, {
             let state = Rc::clone(&state);
             let host = host.clone();
             move |wctx| {
@@ -223,7 +223,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 }
             }
         });
-        leaf.watch(&y, {
+        leaf.watch(y, {
             let state = Rc::clone(&state);
             move |wctx| {
                 state.borrow_mut().y = *wctx.value();

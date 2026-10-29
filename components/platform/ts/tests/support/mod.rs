@@ -252,12 +252,12 @@ pub fn rust_pixels(view: impl waterui_core::View + 'static) -> Snapshot {
 /// Panics when the frames differ in size or in any pixel.
 pub fn assert_same_pixels(case: &str, jsx: &Snapshot, rust: &Snapshot) {
     assert_eq!(
-        (jsx.width, jsx.height),
-        (rust.width, rust.height),
+        (jsx.width(), jsx.height()),
+        (rust.width(), rust.height()),
         "{case}: the JSX form and the Rust form render at different sizes"
     );
-    let (jsx_pixels, _) = jsx.rgba8.as_chunks::<4>();
-    let (rust_pixels, _) = rust.rgba8.as_chunks::<4>();
+    let (jsx_pixels, _) = jsx.rgba8().as_chunks::<4>();
+    let (rust_pixels, _) = rust.rgba8().as_chunks::<4>();
     let differing = jsx_pixels
         .iter()
         .zip(rust_pixels)

@@ -53,7 +53,7 @@ where
 fn argument<T: FromJs>(args: &[JsValue], index: usize, bridge: &Bridge) -> Result<T, JsError> {
     let value = args.get(index).unwrap_or(&JsValue::Undefined);
     T::from_js(value, bridge).map_err(|mut error| {
-        error.message = format!("argument {index}: {}", error.message);
+        error.set_message(format!("argument {index}: {}", error.message()));
         error
     })
 }

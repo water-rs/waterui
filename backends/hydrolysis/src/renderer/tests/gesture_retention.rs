@@ -89,7 +89,7 @@ fn gesture_recognizer_survives_repaint_mid_drag() {
             Text::computed(repaint.clone()),
         ))
         .gesture(DragGesture::new(0.0), move |drag: Use<DragEvent>| {
-            phases.borrow_mut().push(drag.phase);
+            phases.borrow_mut().push(drag.phase());
         })
     };
     let mut runtime = runtime_with(AnyView::new(view));

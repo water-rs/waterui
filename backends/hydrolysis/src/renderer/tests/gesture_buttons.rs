@@ -136,10 +136,10 @@ fn secondary_click_prefers_the_context_menu_over_a_secondary_tap() {
     let pump = click_and_pump(&mut runtime, PointerButton::Secondary, 160.0, 120.0);
 
     let update = pump
-        .tree_update
+        .tree_update()
         .expect("opening the menu must publish an accessibility tree");
     assert!(
-        find_by_label(&update, Role::Button, "Copy").is_some(),
+        find_by_label(update, Role::Button, "Copy").is_some(),
         "the context menu's items must merge into the tree"
     );
     assert!(

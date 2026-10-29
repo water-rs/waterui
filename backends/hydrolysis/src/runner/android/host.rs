@@ -601,22 +601,18 @@ impl PlatformWindow for AndroidHostWindow {
         let density = metrics.density;
         let ppi = density * 160.0;
         let physical_coeff_px = 9.806_65 * 39.37 * ppi * 0.84;
-        Some(crate::platform::TouchScrollConfig {
-            touch_slop: crate::num_cast::f64_as_f32(f64::from(metrics.touch_slop_px) / density),
-            min_fling_velocity: crate::num_cast::f64_as_f32(
-                f64::from(metrics.min_fling_velocity_px) / density,
-            ),
-            max_fling_velocity: crate::num_cast::f64_as_f32(
-                f64::from(metrics.max_fling_velocity_px) / density,
-            ),
-            physics: crate::platform::ScrollPhysics::android(
-                crate::platform::SplineDeceleration {
-                    physical_coeff: physical_coeff_px / density,
-                    friction: metrics.scroll_friction,
-                },
+        Some(crate::platform::TouchScrollConfig::new(
+            crate::num_cast::f64_as_f32(f64::from(metrics.touch_slop_px) / density),
+            crate::num_cast::f64_as_f32(f64::from(metrics.min_fling_velocity_px) / density),
+            crate::num_cast::f64_as_f32(f64::from(metrics.max_fling_velocity_px) / density),
+            crate::platform::ScrollPhysics::android(
+                crate::platform::SplineDeceleration::new(
+                    physical_coeff_px / density,
+                    metrics.scroll_friction,
+                ),
                 crate::platform::EdgeStretch::android(density),
             ),
-        })
+        ))
     }
 
     fn refresh_rate_hz(&self) -> Option<f64> {
@@ -1148,12 +1144,15 @@ fn hwui_runtime_window(
             unreachable!("the Android window registry minted an orphan")
         }
     };
+    let redraw = platform.content_redraw_handle();
+    let effect_wake = std::sync::Arc::new(move || redraw.request_redraw());
     let (hwui, mut renderer) = super::hwui::HwuiWindow::new(
         jni_env,
         painter,
         SurfaceId::new(ordinal),
         theme,
         platform.frame_wake(),
+        effect_wake,
     )?;
     renderer.set_window_id(window_id);
     renderer.set_window_closable(window.closable);

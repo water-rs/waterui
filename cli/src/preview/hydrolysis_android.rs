@@ -106,7 +106,7 @@ const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 ///
 /// The device's GPU renders the frame and its system fonts shape the text;
 /// the PNG lands in the preview host's private files and is read back into
-/// `output_path` — or `scenario.output_dir`/`frame-*ms.png` for a scenario.
+/// `output_path` — or `scenario.output_dir()`/`frame-*ms.png` for a scenario.
 /// `kotlin` is the toolchain the caller's toolchain check resolved — the
 /// launcher build reuses it rather than probing `kotlinc` again. `target`
 /// is the device the caller's selection resolved: every adb call below
@@ -161,8 +161,8 @@ pub async fn render_preview_with_hydrolysis_android(
         },
         |scenario| PreviewRunMode::Scenario {
             output_dir: PathBuf::from("out/scenario"),
-            captures_ms: scenario.captures_ms.clone(),
-            events: scenario.events.clone(),
+            captures_ms: scenario.captures_ms().to_vec(),
+            events: scenario.events().to_vec(),
         },
     );
     let run_config = run_config_json(&PreviewRunConfig::new(
@@ -704,13 +704,13 @@ async fn pull_outputs(
     }
 
     if let Some(scenario) = scenario {
-        if let Some(parent) = scenario.output_dir.parent() {
+        if let Some(parent) = scenario.output_dir().parent() {
             fs::create_dir_all(parent).await?;
         }
-        fs::create_dir_all(&scenario.output_dir).await?;
-        futures_util::stream::iter(scenario.captures_ms.iter().copied().map(|capture_ms| {
+        fs::create_dir_all(scenario.output_dir()).await?;
+        futures_util::stream::iter(scenario.captures_ms().iter().copied().map(|capture_ms| {
             let remote = format!("out/scenario/frame-{capture_ms:04}ms.png");
-            let local = scenario_frame_path(&scenario.output_dir, capture_ms);
+            let local = scenario_frame_path(scenario.output_dir(), capture_ms);
             async move { pull_png(host, adb, serial, &remote, &local).await }
         }))
         .buffer_unordered(SCENARIO_PULL_CONCURRENCY)

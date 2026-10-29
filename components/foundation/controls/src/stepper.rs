@@ -28,6 +28,74 @@ pub struct StepperConfig {
     pub range: RangeInclusive<i32>,
 }
 
+impl StepperConfig {
+    /// The binding to the current value of the stepper.
+    #[must_use]
+    pub const fn value(&self) -> &Binding<i32> {
+        &self.value
+    }
+
+    /// The step size for each increment or decrement.
+    #[must_use]
+    pub const fn step(&self) -> &Computed<i32> {
+        &self.step
+    }
+
+    /// The label displayed alongside the stepper.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: Label) {
+        self.label = label;
+    }
+
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
+    /// Optional formatter for the inline value display, layered on top of the
+    /// label. When `None`, the stepper renders only the label; when `Some`, the
+    /// formatted value is shown next to the buttons.
+    #[must_use]
+    pub const fn value_formatter(&self) -> Option<&Computed<StyledStr>> {
+        self.value_formatter.as_ref()
+    }
+
+    /// The valid range of values for the stepper.
+    #[must_use]
+    pub const fn range(&self) -> &RangeInclusive<i32> {
+        &self.range
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the tuple is the value's complete field list"
+    )]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Binding<i32>,
+        Computed<i32>,
+        Label,
+        Option<Computed<StyledStr>>,
+        RangeInclusive<i32>,
+    ) {
+        (
+            self.value,
+            self.step,
+            self.label,
+            self.value_formatter,
+            self.range,
+        )
+    }
+}
+
 configurable!(
     /// A control for incrementing or decrementing a value.
     ///

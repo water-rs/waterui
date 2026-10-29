@@ -309,9 +309,9 @@ fn platform_font(
     mtm: cocoa_ui::MainThreadMarker,
     resolved: &ResolvedFont,
 ) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    match resolved.family.as_deref() {
+    let size = f64::from(resolved.size());
+    let weight = platform_weight(resolved.weight());
+    match resolved.family() {
         Some(family) if !family.is_empty() => {
             let mut resolved_font = None;
             for candidate in family_candidates(family) {
@@ -329,7 +329,7 @@ fn platform_font(
                 )
             })
         }
-        _ => match resolved.design {
+        _ => match resolved.design() {
             FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
             FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
         },
@@ -344,24 +344,24 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, Rect::ZERO);
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let picker = Picker::new(mtm, platform_style(config.style));
+        let picker = Picker::new(mtm, platform_style(config.style()));
         let host_view: &PlatformView = &host;
         cocoa_ui::view::add_subview(host_view, picker.view());
 
         let state = Rc::new(RefCell::new(PickerState {
             picker,
-            selection: config.selection.clone(),
+            selection: config.selection().clone(),
             tags: Vec::new(),
             titles: Vec::new(),
             item_watchers: Vec::new(),
             label: None,
-            style: platform_style(config.style),
+            style: platform_style(config.style()),
         }));
 
         // Control → binding: a picked index writes its tag back.
         state.borrow().picker.install_action({
             let state = Rc::clone(&state);
-            let selection = config.selection.clone();
+            let selection = config.selection().clone();
             move |index| {
                 if let Some(tag) = state.borrow().tags.get(index).copied() {
                     selection.set(tag);
@@ -374,11 +374,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         #[cfg(target_os = "macos")]
         {
             if !matches!(
-                config.label.display_mode_preference(),
+                config.label().display_mode_preference(),
                 LabelDisplayMode::Hidden
             ) {
                 let label = ctx
-                    .render(waterui_backend_core::AnyView::new(config.label.clone()))
+                    .render(waterui_backend_core::AnyView::new(config.label().clone()))
                     .mount(host_view);
                 cocoa_ui::view::hide_from_accessibility(label.view());
                 state.borrow_mut().label = Some(label);
@@ -400,13 +400,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // Items → control: rebuild rows and per-item label watchers on each
         // change (`bind` applies the current list immediately).
-        leaf.bind(&config.items, {
+        leaf.bind(config.items(), {
             let state = Rc::clone(&state);
             move |items| rebuild_items(&state, &items)
         });
 
         // Binding → control: a changed tag selects its index.
-        leaf.watch(&config.selection, {
+        leaf.watch(config.selection(), {
             let state = Rc::clone(&state);
             move |ctx| {
                 let index = state
@@ -430,7 +430,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The label's semantic text is announced on the container — as the
         // accessibility label (and tooltip on `AppKit`), exactly the
         // `WuiControlAccessibility` treatment.
-        let accessibility_label = config.label.accessibility_label();
+        let accessibility_label = config.label().accessibility_label();
         leaf.bind(&accessibility_label, {
             let host_view = cocoa_ui::view::retain_base(host_view);
             move |styled| {

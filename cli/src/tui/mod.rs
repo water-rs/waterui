@@ -40,8 +40,8 @@ async fn launcher_dir(project: &Project) -> eyre::Result<PathBuf> {
 async fn template_context(project: &Project, dir: &Path) -> eyre::Result<TemplateContext> {
     let manifest = project.manifest();
     let app_name = manifest
-        .package
-        .name
+        .package()
+        .name()
         .chars()
         .filter(|c| c.is_alphanumeric())
         .collect::<String>();

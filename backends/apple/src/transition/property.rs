@@ -39,15 +39,15 @@ fn layer_transform(
     let cx = size.width * 0.5;
     let cy = size.height * 0.5;
     let translation = CATransform3D::new_translation(
-        f64::from(properties.translation[0]),
-        f64::from(properties.translation[1]),
+        f64::from(properties.translation()[0]),
+        f64::from(properties.translation()[1]),
         0.0,
     );
     let to_centre = CATransform3D::new_translation(cx, cy, 0.0);
-    let rotate = CATransform3D::new_rotation(f64::from(properties.rotation), 0.0, 0.0, 1.0);
+    let rotate = CATransform3D::new_rotation(f64::from(properties.rotation()), 0.0, 0.0, 1.0);
     let scale = CATransform3D::new_scale(
-        f64::from(properties.scale[0]),
-        f64::from(properties.scale[1]),
+        f64::from(properties.scale()[0]),
+        f64::from(properties.scale()[1]),
         1.0,
     );
     let back = CATransform3D::new_translation(-cx, -cy, 0.0);
@@ -61,16 +61,16 @@ fn layer_transform(
 /// `UIView.transform` already applies about the view's centre.
 #[cfg(target_os = "ios")]
 fn affine_transform(properties: &TransitionProperties) -> objc2_core_foundation::CGAffineTransform {
-    let (sin, cos) = f64::from(properties.rotation).sin_cos();
-    let sx = f64::from(properties.scale[0]);
-    let sy = f64::from(properties.scale[1]);
+    let (sin, cos) = f64::from(properties.rotation()).sin_cos();
+    let sx = f64::from(properties.scale()[0]);
+    let sy = f64::from(properties.scale()[1]);
     objc2_core_foundation::CGAffineTransform {
         a: sx * cos,
         b: sx * sin,
         c: -sy * sin,
         d: sy * cos,
-        tx: f64::from(properties.translation[0]),
-        ty: f64::from(properties.translation[1]),
+        tx: f64::from(properties.translation()[0]),
+        ty: f64::from(properties.translation()[1]),
     }
 }
 
@@ -126,17 +126,17 @@ impl PropertyTarget {
     /// contract `record_blurred` declares in Hydrolysis.
     pub fn apply(&self, sample: &TransitionProperties) {
         assert!(
-            sample.opacity.is_finite()
-                && sample.scale.iter().all(|value| value.is_finite())
-                && sample.translation.iter().all(|value| value.is_finite())
-                && sample.rotation.is_finite()
-                && sample.blur.is_finite()
-                && sample.blur >= 0.0,
+            sample.opacity().is_finite()
+                && sample.scale().iter().all(|value| value.is_finite())
+                && sample.translation().iter().all(|value| value.is_finite())
+                && sample.rotation().is_finite()
+                && sample.blur().is_finite()
+                && sample.blur() >= 0.0,
             "waterui-apple: a transition sampled {sample:?} — every property must be finite \
              and the blur radius non-negative"
         );
         cocoa_ui::core_animation::without_animation(|| {
-            view::set_alpha(&self.host, f64::from(sample.opacity));
+            view::set_alpha(&self.host, f64::from(sample.opacity()));
             #[cfg(target_os = "macos")]
             {
                 let layer = view::layer(&self.host).expect("a layer-backed transition host");
@@ -352,8 +352,8 @@ impl InsertionRun {
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     fn update_blur(&mut self, sample: &TransitionProperties) {
         use waterui::reactive::Signal as _;
-        if self.blur.is_none() && sample.blur > 0.0 {
-            let radius = waterui::reactive::Binding::container(sample.blur);
+        if self.blur.is_none() && sample.blur() > 0.0 {
+            let radius = waterui::reactive::Binding::container(sample.blur());
             let mut guards = waterui_graphics::filter_view::ParamGuards::default();
             let effect = waterui_graphics::filter_view::AnyEffect::filter(
                 waterui_graphics::filtrate::filters::Blur(guards.bind(radius.clone())),
@@ -369,9 +369,9 @@ impl InsertionRun {
             ));
         }
         if let Some((radius, _effect)) = &self.blur
-            && radius.snapshot().to_bits() != sample.blur.to_bits()
+            && radius.snapshot().to_bits() != sample.blur().to_bits()
         {
-            radius.set(sample.blur);
+            radius.set(sample.blur());
         }
     }
 
@@ -379,7 +379,7 @@ impl InsertionRun {
     /// realization — a user-triggerable failure, reported once per run.
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
     fn update_blur(&self, sample: &TransitionProperties) {
-        if sample.blur > 0.0 && !self.blur_warned.replace(true) {
+        if sample.blur() > 0.0 && !self.blur_warned.replace(true) {
             crate::transition::transition_violation!(
                 "waterui-apple: a blur transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"

@@ -289,6 +289,20 @@ pub struct HighlightChunk<'a> {
     pub color: Srgb,
 }
 
+impl<'a> HighlightChunk<'a> {
+    /// The text content.
+    #[must_use]
+    pub const fn text(&self) -> &'a str {
+        self.text
+    }
+
+    /// The color for this chunk.
+    #[must_use]
+    pub const fn color(&self) -> Srgb {
+        self.color
+    }
+}
+
 impl HighlightChunk<'_> {
     /// Converts this chunk into a styled string.
     #[must_use]

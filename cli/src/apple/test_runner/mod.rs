@@ -102,10 +102,6 @@ impl ForwardedEnv {
 /// Everything one `run` works on: the binary, its arguments, and the
 /// caller environment forwarded into the harness.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the terminal constructs it from the parsed invocation; fields are complete by definition"
-)]
 pub struct Invocation {
     /// The test binary to run.
     pub binary: TestBinary,
@@ -203,7 +199,7 @@ pub(crate) fn pass_through_exit(status: std::process::ExitStatus) -> TestStatus 
     {
         nix::sys::signal::raise(signal).ok();
     }
-    TestStatus(exit_code(status))
+    TestStatus::new(exit_code(status))
 }
 
 /// The exit code of a finished process, as a byte.

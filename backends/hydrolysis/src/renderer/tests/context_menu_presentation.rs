@@ -141,7 +141,7 @@ fn capture_until_settled(runtime: &mut HeadlessRuntime) -> HeadlessSnapshot {
     let mut snapshot = None;
     for _ in 0..64 {
         let result = runtime.pump_at(true, Instant::now());
-        if let Some(frame) = result.snapshot {
+        if let Some(frame) = result.into_snapshot() {
             snapshot = Some(frame);
         }
         if runtime.is_settled() {
@@ -201,8 +201,8 @@ fn primary_click_label(runtime: &mut HeadlessRuntime, label: &str, update: &Tree
 }
 
 fn pixel(snapshot: &HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {
-    let index = ((y * snapshot.width + x) * 4) as usize;
-    snapshot.rgba8[index..index + 4]
+    let index = ((y * snapshot.width() + x) * 4) as usize;
+    snapshot.rgba8()[index..index + 4]
         .try_into()
         .expect("a pixel is four channels")
 }
@@ -290,7 +290,7 @@ fn the_source_view_lifts_through_a_hole_in_the_dim_backdrop() {
     let bounds = bounds_of(&mut runtime, "host");
     let baseline = runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame");
 
     let (cx, cy) = (
@@ -451,7 +451,7 @@ fn a_menu_with_no_preview_or_accessory_stays_a_pure_platform_menu() {
     let bounds = bounds_of(&mut runtime, "host");
     let baseline = runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame");
     let (cx, cy) = (
         crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
@@ -480,7 +480,7 @@ fn a_preview_without_an_accessory_lifts_too() {
     let bounds = bounds_of(&mut runtime, "host");
     let baseline = runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame");
 
     let (cx, cy) = (
@@ -523,7 +523,7 @@ fn a_touch_hold_lifts_and_mounts_the_menu_beside_the_source() {
     let bounds = bounds_of(&mut runtime, "host");
     let baseline = runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame");
     let start = Instant::now();
     let (cx, cy) = (
@@ -541,7 +541,7 @@ fn a_touch_hold_lifts_and_mounts_the_menu_beside_the_source() {
     let _ = runtime.pump_at(false, start);
     let open = runtime.pump_at(true, start + HOLD);
     assert!(
-        open.tree_update
+        open.tree_update()
             .as_ref()
             .and_then(|update| find_by_label(update, Role::Button, "Copy"))
             .is_some(),
@@ -562,9 +562,9 @@ fn a_touch_hold_lifts_and_mounts_the_menu_beside_the_source() {
         menu.y0 >= bounds.y1,
         "the menu sits beside the lifted source, menu {menu:?} source {bounds:?}"
     );
-    let opened = open.snapshot.expect("the hold frame captures");
+    let opened = open.snapshot().expect("the hold frame captures");
     assert!(
-        !near(pixel(&opened, 6, 6), pixel(&baseline, 6, 6), 16),
+        !near(pixel(opened, 6, 6), pixel(&baseline, 6, 6), 16),
         "the backdrop dims for a touch-hold presentation"
     );
 }
@@ -899,8 +899,8 @@ fn the_plain_popup_draws_the_theme_panel() {
     );
     // Under the panel's bottom edge, inside the margin ring, its shadow
     // darkens: a visible level-2 shadow.
-    let panel_bottom = pop.height - m;
-    let below = pixel(&pop, pop.width / 2, panel_bottom + 2);
+    let panel_bottom = pop.height() - m;
+    let below = pixel(&pop, pop.width() / 2, panel_bottom + 2);
     assert!(
         below[3] > 16 && below[0] < 90,
         "the panel's shadow draws in the window's margin ring, got {below:?}"
@@ -930,7 +930,7 @@ fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
     let margin = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
     let row_top = margin + crate::num_cast::f64_as_u32(metrics.vertical_padding);
     let row_bottom = row_top + crate::num_cast::f64_as_u32(metrics.row_height);
-    let (x0, x1) = (margin + 2, pop.width - margin - 2);
+    let (x0, x1) = (margin + 2, pop.width() - margin - 2);
     let darkest_ink = |y0: u32, y1: u32| -> u32 {
         let mut darkest = u32::MAX;
         for y in y0..y1 {
@@ -983,8 +983,8 @@ fn destructive_rows_draw_in_error_colour_on_the_plain_popup_path() {
     let pop = runtime.popup_frame(0).expect("the popup mounts");
 
     let mut error_colored = 0_u32;
-    for y in 0..pop.height {
-        for x in 0..pop.width {
+    for y in 0..pop.height() {
+        for x in 0..pop.width() {
             let px = pixel(&pop, x, y);
             if px[0] > 160 && px[1] < 110 && px[2] < 110 && px[3] > 100 {
                 error_colored += 1;

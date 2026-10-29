@@ -36,10 +36,6 @@ use super::{
 
 /// The caller-supplied device signing identity — never hardcoded.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the terminal constructs it from the two required environment values"
-)]
 pub struct DeviceIdentity {
     /// The bundle identifier every device launch is signed under.
     pub bundle_id: String,
@@ -73,7 +69,9 @@ impl IosDevice {
         let mut matches: Vec<ApplePhysicalDevice> = devices
             .iter()
             .filter(|device| {
-                device.identifier == selector || device.udid == selector || device.name == selector
+                device.identifier() == selector
+                    || device.udid() == selector
+                    || device.name() == selector
             })
             .cloned()
             .collect();
@@ -83,7 +81,9 @@ impl IosDevice {
                 write!(
                     out,
                     "\n  {} (CoreDevice {}, udid {})",
-                    device.name, device.identifier, device.udid
+                    device.name(),
+                    device.identifier(),
+                    device.udid()
                 )
                 .expect("writing to a String cannot fail");
                 out
@@ -141,7 +141,7 @@ impl TestDestination for IosDevice {
                 "{} requires iOS {} but {} reports no OS new enough",
                 binary.path().display(),
                 binary.min_os(),
-                self.device.name
+                self.device.name()
             );
         }
 
@@ -154,13 +154,13 @@ impl TestDestination for IosDevice {
         let _lock = DestinationLock::acquire(
             &home
                 .join("Library/Caches/dev.waterui.test-runner")
-                .join(format!("device-{}.lock", self.device.udid)),
+                .join(format!("device-{}.lock", self.device.udid())),
         )
         .await?;
 
         let device_dir = binary
             .state_dir()?
-            .join(format!("device-{}", self.device.udid));
+            .join(format!("device-{}", self.device.udid()));
         std::fs::create_dir_all(&device_dir)?;
         let (bundle, selection) = self
             .stage_and_select_profile(host, binary, manifest)
@@ -179,7 +179,7 @@ impl TestDestination for IosDevice {
         }
         let artifact = Artifact::new(
             self.identity.bundle_id.clone(),
-            bundle.layout().app_path.clone(),
+            bundle.layout().app_path().to_path_buf(),
         );
         let running =
             self.device
@@ -225,13 +225,13 @@ impl IosDevice {
         bundle.rewrite_identifier(&self.identity.bundle_id)?;
 
         let entitlements = plist::Dictionary::new();
-        let request = SigningRequest {
-            team: &self.identity.team_id,
-            bundle_id: &self.identity.bundle_id,
-            device_udid: Some(&self.device.udid),
-            entitlements: &entitlements,
-            platform: TargetPlatform::IOS,
-        };
+        let request = SigningRequest::new(
+            &self.identity.team_id,
+            &self.identity.bundle_id,
+            Some(self.device.udid()),
+            &entitlements,
+            TargetPlatform::IOS,
+        );
         match provisioning::select_development_profile(host, &request).await {
             Ok(selection) => Ok((bundle, selection)),
             Err(SelectError::NoMatch(report)) => bail!(
@@ -241,7 +241,7 @@ impl IosDevice {
                  Team profiles expire after 7 days.",
                 self.identity.bundle_id,
                 self.identity.team_id,
-                self.device.name
+                self.device.name()
             ),
             Err(error) => Err(error.into()),
         }
@@ -290,13 +290,13 @@ impl IosDevice {
         }
 
         let entitlements = plist::Dictionary::new();
-        let request = SigningRequest {
-            team: &self.identity.team_id,
-            bundle_id: &self.identity.bundle_id,
-            device_udid: Some(&self.device.udid),
-            entitlements: &entitlements,
-            platform: TargetPlatform::IOS,
-        };
+        let request = SigningRequest::new(
+            &self.identity.team_id,
+            &self.identity.bundle_id,
+            Some(self.device.udid()),
+            &entitlements,
+            TargetPlatform::IOS,
+        );
         crate::apple::app_bundle::apply_development_signature(
             host,
             bundle.layout(),
@@ -307,7 +307,7 @@ impl IosDevice {
         crate::apple::physical::install_device_app(
             host,
             self.device.selector(),
-            &bundle.layout().app_path,
+            bundle.layout().app_path(),
         )
         .await?;
         let url = self
@@ -322,7 +322,7 @@ impl IosDevice {
                 eyre!(
                     "devicectl reports {} absent right after installing it on {}",
                     self.identity.bundle_id,
-                    self.device.name
+                    self.device.name()
                 )
             })?;
         Self::write_stamp(&stamp_path, &input_hash, &url)
@@ -340,19 +340,19 @@ impl IosDevice {
         selection: &provisioning::ProfileSelection,
     ) -> eyre::Result<String> {
         let profile_uuid = selection
-            .data
+            .data()
             .get("UUID")
             .and_then(plist::Value::as_string)
             .ok_or_else(|| {
                 eyre!(
                     "the selected provisioning profile {} carries no UUID",
-                    selection.path.display()
+                    selection.path().display()
                 )
             })?;
         let mut hasher = Sha256::new();
         let binary_bytes = std::fs::read(binary.path())
             .wrap_err_with(|| format!("reading {}", binary.path().display()))?;
-        let plist_bytes = std::fs::read(&bundle.layout().info_plist_path)
+        let plist_bytes = std::fs::read(bundle.layout().info_plist_path())
             .wrap_err("reading the staged Info.plist")?;
         for input in [
             binary_bytes.as_slice(),
@@ -419,17 +419,7 @@ mod tests {
 
     /// A device the fake `devicectl` reports.
     fn device_fixture() -> ApplePhysicalDevice {
-        ApplePhysicalDevice {
-            identifier: "CORE-DEVICE-ID".to_string(),
-            udid: "00008140-0000ABCD00112233".to_string(),
-            name: "test-ipad".to_string(),
-            marketing_name: None,
-            os_version: Some(semver::Version::new(18, 0, 0)),
-            transport: crate::apple::physical::Transport::Wired,
-            tunnel_state: crate::apple::physical::TunnelState::Connected,
-            developer_mode_enabled: true,
-            boot_state: "booted".to_string(),
-        }
+        ApplePhysicalDevice::fixture()
     }
 
     #[test]

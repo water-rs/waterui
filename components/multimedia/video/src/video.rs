@@ -740,6 +740,50 @@ pub struct PlaybackPolicy {
     pub power: PlaybackPowerPolicy,
 }
 
+impl PlaybackPolicy {
+    /// `true` for realtime streams (low-latency/live), `false` for VOD/static files.
+    #[must_use]
+    pub const fn realtime(&self) -> bool {
+        self.realtime
+    }
+
+    /// Minimum buffered duration before starting playback for VOD.
+    #[must_use]
+    pub const fn vod_start_buffer_ms(&self) -> u32 {
+        self.vod_start_buffer_ms
+    }
+
+    /// Minimum buffered duration to resume after a VOD stall.
+    #[must_use]
+    pub const fn vod_resume_buffer_ms(&self) -> u32 {
+        self.vod_resume_buffer_ms
+    }
+
+    /// Buffer level below which VOD enters buffering state.
+    #[must_use]
+    pub const fn vod_stall_buffer_ms(&self) -> u32 {
+        self.vod_stall_buffer_ms
+    }
+
+    /// For realtime mode, drop video frames that are later than this threshold.
+    #[must_use]
+    pub const fn live_max_video_late_ms(&self) -> u32 {
+        self.live_max_video_late_ms
+    }
+
+    /// Bounded segmented-network and adaptive-selection policy.
+    #[must_use]
+    pub const fn network(&self) -> NetworkPlaybackPolicy {
+        self.network
+    }
+
+    /// Required platform power path for this session.
+    #[must_use]
+    pub const fn get_power(&self) -> PlaybackPowerPolicy {
+        self.power
+    }
+}
+
 /// Power-path requirement for media playback.
 ///
 /// Required modes fail during player preparation when the platform, codec,
@@ -1345,10 +1389,6 @@ impl BoundVideoEventHandler {
 /// Backends must source playback state from this object rather than creating a
 /// second view-specific player state.
 #[doc(hidden)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the video realizations destructure the whole playback contract, so a new field must fail their build instead of being ignored"
-)]
 pub struct PlaybackConfiguration<H = Option<VideoEventHandler>> {
     /// Command handle for playlist navigation and transport controls.
     pub controller: PlayerController,
@@ -1506,10 +1546,6 @@ impl<H> PlaybackConfiguration<H> {
 ///
 /// This is a raw video view that displays video content without any native controls.
 /// Use this when you want to build your own custom video UI.
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the video realizations destructure the whole configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct VideoConfig<H = Option<VideoEventHandler>> {
     /// Shared session state and controls.
     pub playback: PlaybackConfiguration<H>,
@@ -1676,10 +1712,6 @@ pub fn video(item: impl Into<MediaItem>) -> Video {
 /// Configuration for the [`VideoPlayer`] component.
 ///
 /// This configuration defines an interactive player with platform-appropriate controls.
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the video realizations destructure the whole configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct VideoPlayerConfig<H = Option<VideoEventHandler>> {
     /// Shared session state and controls.
     pub playback: PlaybackConfiguration<H>,

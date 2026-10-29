@@ -311,14 +311,14 @@ fn a_behind_window_material_window_clears_transparent_to_its_tint_under_the_cont
 
     let snapshot = runtime
         .pump_snapshot()
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame must carry pixels");
     // Offscreen targets store straight alpha: every pixel the box leaves
     // uncovered reads as the tint's grey at the tint's coverage, and the box
     // draws opaquely over it.
     let level = |value: f32| (value * 255.0).round();
     let (mut tinted, mut content) = (0_u32, 0_u32);
-    for pixel in snapshot.rgba8.as_chunks::<4>().0 {
+    for pixel in snapshot.rgba8().as_chunks::<4>().0 {
         let [r, g, b, a] = *pixel;
         if a == 255 {
             assert!(

@@ -34,10 +34,6 @@ use crate::project::{Manifest, read_project_crate_name};
 /// `views::home`, or — with `expr` — an inline expression such as
 /// `text("hello")`.
 #[derive(Debug, Deserialize, JsonSchema)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the terminal fills every field of the preview arguments; a new field must fail its build instead of taking a default"
-)]
 pub struct PreviewArgs {
     /// Preview target: a `#[preview]` function path (e.g. `views::home`) or,
     /// with `expr`, a `WaterUI` expression returning `impl View`.
@@ -97,7 +93,7 @@ impl PreviewArgs {
         let backend = request::resolve_preview_backend(project, platform, self.backend)?;
         let hydrolysis_theme = request::resolve_hydrolysis_preview_theme(backend, self.theme)?;
         let target = request::resolve_preview_target(crate_name, &self.target, self.expr);
-        Ok(PreviewRequest {
+        Ok(PreviewRequest::new(
             platform,
             backend,
             hydrolysis_theme,
@@ -105,7 +101,7 @@ impl PreviewArgs {
             width,
             height,
             content_deadline,
-        })
+        ))
     }
 }
 
@@ -170,9 +166,9 @@ impl PreviewTool {
             .wrap_err_with(|| format!("failed to create {}", dir.display()))?;
         Ok(dir.join(format!(
             "{}-{}x{}.png",
-            sanitize_target_name(request.target.display_name()),
-            request.width,
-            request.height
+            sanitize_target_name(request.target().display_name()),
+            request.width(),
+            request.height()
         )))
     }
 
@@ -181,10 +177,10 @@ impl PreviewTool {
         let crate_name = read_project_crate_name(&self.project_path).await?;
         let request = args.resolve(&manifest, &crate_name)?;
         let kotlin_toolchain =
-            request::check_toolchain_for_backend(&self.host, request.backend).await?;
+            request::check_toolchain_for_backend(&self.host, request.backend()).await?;
         let output_path = self.output_path(&request).await?;
 
-        let android = if request.backend
+        let android = if request.backend()
             == ResolvedPreviewBackend::Hydrolysis(crate::platform::TargetPlatform::Android)
         {
             Some(
@@ -205,20 +201,20 @@ impl PreviewTool {
             None
         };
 
-        match request.backend {
+        match request.backend() {
             ResolvedPreviewBackend::Hydrolysis(platform) => {
                 Box::pin(render_preview_with_hydrolysis(
                     HydrolysisPreviewRequest {
                         host: &self.host,
                         project_path: &self.project_path,
-                        source: request.target.source(),
+                        source: request.target().source(),
                         theme: request
-                            .hydrolysis_theme
+                            .hydrolysis_theme()
                             .expect("resolve guarantees a theme for hydrolysis"),
                         platform,
-                        width: request.width,
-                        height: request.height,
-                        content_deadline: request.content_deadline,
+                        width: request.width(),
+                        height: request.height(),
+                        content_deadline: request.content_deadline(),
                         sccache_path: self.sccache_path.clone(),
                         // MCP serves JSON-RPC over stdio — there is no
                         // terminal sink to render compile progress into.
@@ -237,10 +233,10 @@ impl PreviewTool {
                         host: &self.host,
                         project_path: &self.project_path,
                         platform,
-                        source: request.target.source(),
-                        width: request.width,
-                        height: request.height,
-                        content_deadline: request.content_deadline,
+                        source: request.target().source(),
+                        width: request.width(),
+                        height: request.height(),
+                        content_deadline: request.content_deadline(),
                         sccache_path: self.sccache_path.clone(),
                         // MCP serves JSON-RPC over stdio — there is no
                         // terminal sink to render compile progress into.
@@ -338,10 +334,10 @@ mod tests {
             .resolve(&project_manifest(), "demo_app")
             .expect("resolve");
         assert_eq!(
-            request.backend,
+            request.backend(),
             ResolvedPreviewBackend::Apple(crate::platform::TargetPlatform::MacCatalyst)
         );
-        assert_eq!(request.hydrolysis_theme, None);
+        assert_eq!(request.hydrolysis_theme(), None);
     }
 
     #[test]
@@ -382,17 +378,17 @@ mod tests {
             .expect("resolve");
         assert_eq!(
             request,
-            PreviewRequest {
+            PreviewRequest::new(
                 platform,
-                backend: ResolvedPreviewBackend::Hydrolysis(target),
-                hydrolysis_theme: Some(crate::preview::HydrolysisPreviewTheme::Material3),
-                target: PreviewTarget::Expression {
+                ResolvedPreviewBackend::Hydrolysis(target),
+                Some(crate::preview::HydrolysisPreviewTheme::Material3),
+                PreviewTarget::Expression {
                     expression: "text(\"hi\")".to_string(),
                 },
-                width: 800.0,
-                height: 600.0,
-                content_deadline: std::time::Duration::from_millis(2500),
-            }
+                800.0,
+                600.0,
+                std::time::Duration::from_millis(2500),
+            )
         );
     }
 }

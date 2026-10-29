@@ -38,10 +38,6 @@ use crate::runtime::TsRuntime;
 /// every module rather than for most of them. `tsx!("./promo.tsx")` mounts
 /// against this.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, TsProps)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the empty props contract: it has no fields by definition"
-)]
 pub struct NoProps {}
 
 /// The loaded TypeScript runtime, as a mounted view reaches it.

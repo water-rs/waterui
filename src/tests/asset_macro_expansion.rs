@@ -71,11 +71,11 @@ fn present_or_absent(record: Option<waterui_meta::DirRecord<'_>>) {
 
     let record = record.expect("no `waterui_meta_bundle_web` record in the section");
     let meta = BundleMountMeta::from_record(record).expect("decode the record");
-    assert_eq!(meta.mount, "web");
+    assert_eq!(meta.mount(), "web");
     assert!(
-        meta.path.ends_with("tests/fixtures/web"),
+        meta.path().ends_with("tests/fixtures/web"),
         "{}",
-        meta.path.display()
+        meta.path().display()
     );
 }
 

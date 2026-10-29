@@ -1626,11 +1626,15 @@ fn main() {
 
         fn find_code_chunk(elements: &[RichTextElement]) -> bool {
             elements.iter().any(|el| match el {
-                RichTextElement::Text(styled) => styled
-                    .clone()
-                    .into_chunks()
-                    .into_iter()
-                    .any(|(txt, style)| txt.as_str() == "cargo run" && style.background.is_some()),
+                RichTextElement::Text(styled) => {
+                    styled
+                        .clone()
+                        .into_chunks()
+                        .into_iter()
+                        .any(|(txt, style)| {
+                            txt.as_str() == "cargo run" && style.get_background().is_some()
+                        })
+                }
                 RichTextElement::Group { elements, .. } => find_code_chunk(elements),
                 _ => false,
             })

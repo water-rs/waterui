@@ -6,6 +6,8 @@ val painter = providers.gradleProperty("hydrolysis.painter").getOrElse("gpu")
 require(painter in setOf("gpu", "hwui")) {
     "hydrolysis.painter must be \"gpu\" or \"hwui\", got \"$painter\""
 }
+val scene = providers.gradleProperty("hydrolysis.scene").getOrElse("host")
+require(scene in setOf("host", "filters")) { "hydrolysis.scene must be host or filters" }
 
 val targetAbis =
     providers.gradleProperty("hydrolysis.abis")
@@ -67,7 +69,7 @@ android {
 // The Rust cdylib is built per painter and build type: the release APK
 // ships the release .so, debug ships debug.
 for (buildType in listOf("debug", "release")) {
-    val output = rootProject.file("test-app/build/jniLibs/$painter/$buildType")
+    val output = rootProject.file("test-app/build/jniLibs/$painter/$scene/$buildType")
     android.sourceSets.named(buildType) {
         jniLibs.srcDir(output)
     }
@@ -86,7 +88,9 @@ for (buildType in listOf("debug", "release")) {
         args.addAll(
             listOf(
                 "--output-dir", output.absolutePath,
-                "build", "--no-default-features", "--features", painter,
+                "build", "--no-default-features",
+                "--features",
+                if (scene == "filters") "$painter,filter-probe" else painter,
             ),
         )
         if (buildType == "release") args.add("--release")

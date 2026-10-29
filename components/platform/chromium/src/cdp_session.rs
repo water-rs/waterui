@@ -21,6 +21,20 @@ pub struct CdpEvent {
 }
 
 impl CdpEvent {
+    /// Fully qualified protocol method, such as `Page.loadEventFired`.
+    #[must_use]
+    pub const fn method(&self) -> &Cow<'static, str> {
+        &self.method
+    }
+
+    /// Event parameter object.
+    #[must_use]
+    pub const fn params(&self) -> &Value {
+        &self.params
+    }
+}
+
+impl CdpEvent {
     /// The event `method` carrying `params`.
     #[must_use]
     pub fn new(method: impl Into<Cow<'static, str>>, params: Value) -> Self {

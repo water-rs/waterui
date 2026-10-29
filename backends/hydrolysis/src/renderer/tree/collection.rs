@@ -427,7 +427,7 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
             let (bounds, extent) = (
-                ctx.bounds,
+                ctx.bounds(),
                 renderer.resolve_window_rect(kurbo_rect(self.resolved)),
             );
             let scope = renderer.begin_accessibility_container(bounds, Some(extent), env);
@@ -1391,17 +1391,17 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             // A lazy stack places its items at flush (offset-dependent), so no
             // resolved extent is cached for it — `None` keeps the surviving
             // child's own bounds on collapse.
-            let bounds = ctx.bounds;
+            let bounds = ctx.bounds();
             let scope = renderer.begin_accessibility_container(bounds, None, env);
             renderer.pop_accessibility_owner();
             scope
         });
         let cross = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => {
-                Some(crate::num_cast::f64_as_f32(ctx.bounds.width()))
+                Some(crate::num_cast::f64_as_f32(ctx.bounds().width()))
             }
             LazyStackAxisConfig::Horizontal { .. } => {
-                Some(crate::num_cast::f64_as_f32(ctx.bounds.height()))
+                Some(crate::num_cast::f64_as_f32(ctx.bounds().height()))
             }
         };
         let theme = renderer.theme();
@@ -1411,28 +1411,27 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         self.prepare_extent_index(&mut renderer.state, count);
         let total_extent_before = self.extent_index.borrow().total_extent();
         self.item_cache.borrow_mut().begin_frame();
-        let visible = renderer
-            .lazy
-            .lazy_viewport_stack
-            .last()
-            .map_or(ctx.bounds, |viewport| {
-                (renderer.record_world(ctx.local).inverse() * viewport.transform)
+        let visible = renderer.lazy.lazy_viewport_stack.last().map_or_else(
+            || ctx.bounds(),
+            |viewport| {
+                (renderer.record_world(ctx.local()).inverse() * viewport.transform)
                     .transform_rect_bbox(viewport.bounds)
-            });
+            },
+        );
         let (visible_start, visible_end) = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => {
-                (visible.y0 - ctx.bounds.y0, visible.y1 - ctx.bounds.y0)
+                (visible.y0 - ctx.bounds().y0, visible.y1 - ctx.bounds().y0)
             }
             LazyStackAxisConfig::Horizontal { .. }
                 if self.axis.direction().snapshot().is_right_to_left() =>
             {
                 (
-                    ctx.bounds.x0 + ctx.bounds.x1 - visible.x1,
-                    ctx.bounds.x0 + ctx.bounds.x1 - visible.x0,
+                    ctx.bounds().x0 + ctx.bounds().x1 - visible.x1,
+                    ctx.bounds().x0 + ctx.bounds().x1 - visible.x0,
                 )
             }
             LazyStackAxisConfig::Horizontal { .. } => {
-                (visible.x0 - ctx.bounds.x0, visible.x1 - ctx.bounds.x0)
+                (visible.x0 - ctx.bounds().x0, visible.x1 - ctx.bounds().x0)
             }
         };
         self.visible_span.set(Some((visible_start, visible_end)));
@@ -1522,13 +1521,13 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             self.transitions.track(id, subview, renderer);
             measured
         };
-        let child_rect = place_lazy_stack_item(&self.axis, stretch, size, ctx.bounds, cursor);
+        let child_rect = place_lazy_stack_item(&self.axis, stretch, size, ctx.bounds(), cursor);
         // The item's frame in the context the stack recorded at layout:
         // `child_rect` resolves in `ctx.bounds` space — the same layout-fact
         // mapping `WidgetRenderContext` and the collection layout loop share
         // through `SafeAreaLayout::hosted_frame`.
         let item_area =
-            stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
+            stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds(), child_rect)));
         let slot = kurbo_size(child_rect);
         self.transitions.place(
             id,
@@ -1593,8 +1592,8 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             ..
         } = &mut *ghost;
         let proposal = &placement.proposal;
-        let rect = place_lazy_stack_item(&self.axis, placement.stretch, size, ctx.bounds, cursor);
-        let area = stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds, rect)));
+        let rect = place_lazy_stack_item(&self.axis, placement.stretch, size, ctx.bounds(), cursor);
+        let area = stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds(), rect)));
         let delta = kurbo::Affine::translate((rect.x0, rect.y0));
         let child_ctx = ctx.child(
             delta,

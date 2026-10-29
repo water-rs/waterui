@@ -607,10 +607,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
         presentation.menu.place_detached(
             self,
-            RenderContext {
-                local: transform,
-                bounds: window,
-            },
+            RenderContext::new(transform, window),
             &presentation_env,
             bounded_proposal(presentation.menu_frame),
             presentation.menu_frame,
@@ -625,10 +622,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 renderer.with_preview_targets_suppressed(|renderer| {
                     preview.place_detached(
                         renderer,
-                        RenderContext {
-                            local: transform,
-                            bounds: window,
-                        },
+                        RenderContext::new(transform, window),
                         &presentation_env,
                         bounded_proposal(layout.lift),
                         layout.lift,
@@ -643,10 +637,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let content = inset_rect(frame, metrics.horizontal_padding, metrics.vertical_padding);
             accessory.place_detached(
                 self,
-                RenderContext {
-                    local: transform,
-                    bounds: window,
-                },
+                RenderContext::new(transform, window),
                 &presentation_env,
                 bounded_proposal(content),
                 content,

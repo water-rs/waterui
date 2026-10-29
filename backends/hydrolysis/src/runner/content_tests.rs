@@ -212,7 +212,7 @@ fn a_capture_renders_text_under_the_installed_environment() {
 
     let rendered = Capture::render(AnyView::new(text("capture me")))
         .expect("a text leaf captures under the installed environment");
-    assert_eq!((rendered.width, rendered.height), (64, 32));
+    assert_eq!((rendered.width(), rendered.height()), (64, 32));
 }
 
 /// A face registered into the installed collection answers a named family
@@ -285,7 +285,7 @@ fn a_capture_awaits_content_a_view_owes() {
     let rendered = capture
         .finish()
         .expect("the capture renders once the content lands");
-    assert_eq!((rendered.width, rendered.height), (64, 32));
+    assert_eq!((rendered.width(), rendered.height()), (64, 32));
 }
 
 #[test]

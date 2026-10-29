@@ -24,6 +24,26 @@ pub struct McpRunConfig {
 }
 
 impl McpRunConfig {
+    /// Viewport width in logical units.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Viewport height in logical units.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Display scale factor applied to the runtime.
+    #[must_use]
+    pub const fn scale_factor(&self) -> f64 {
+        self.scale_factor
+    }
+}
+
+impl McpRunConfig {
     /// A session of a `width` by `height` logical-unit viewport at
     /// `scale_factor`.
     #[must_use]

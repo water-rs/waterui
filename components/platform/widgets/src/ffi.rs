@@ -27,6 +27,32 @@ pub struct Buffer {
 }
 
 impl Buffer {
+    /// The buffer's first byte.
+    #[must_use]
+    pub const fn ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    /// Bytes initialized at `ptr`.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether no bytes are initialized at `ptr`.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The allocation's capacity.
+    #[must_use]
+    pub const fn cap(&self) -> usize {
+        self.cap
+    }
+}
+
+impl Buffer {
     /// Serializes `timeline` and leaks the bytes for the extension to read.
     #[must_use]
     pub fn from_timeline(timeline: &Timeline) -> Self {

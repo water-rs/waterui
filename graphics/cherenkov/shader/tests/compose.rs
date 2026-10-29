@@ -52,15 +52,15 @@ fn space() -> Value {
 /// 16×16.
 fn block(segment: &Segment, values: &HashMap<(usize, &str), Value>) -> Value {
     let mut members = Vec::new();
-    if segment.uniform.input_size.is_some() {
+    if segment.uniform().input_size().is_some() {
         members.push(Value::vec(&[16.0, 16.0]));
     }
     members.extend(
         segment
-            .uniform
-            .members
+            .uniform()
+            .members()
             .iter()
-            .map(|member| values[&(member.stage, member.param.as_str())].clone()),
+            .map(|member| values[&(member.stage(), member.param())].clone()),
     );
     Value::Struct(members)
 }
@@ -74,7 +74,7 @@ fn only_colour(composition: &Composition) -> &Segment {
 
 fn run(composition: &Composition, segment: &Segment, args: Vec<Value>) -> Value {
     let eval = Eval::new(composition.module());
-    eval.call(eval.function(&segment.function), args)
+    eval.call(eval.function(segment.function()), args)
 }
 
 fn apply(source: &str, args: Vec<Value>) -> Value {
@@ -100,7 +100,7 @@ fn colour_chain_matches_sequential_application() {
     let composition = compose(&stages, ComposeOptions::default()).expect("the chain composes");
     let segment = only_colour(&composition);
     assert_eq!(
-        segment.args,
+        segment.args(),
         [
             SegmentArg::Color,
             SegmentArg::Params,
@@ -158,16 +158,16 @@ fn constant_parameters_leave_the_uniform_block() {
     .expect("the chain composes");
     let dynamic_segment = only_colour(&dynamic);
     let names: Vec<_> = dynamic_segment
-        .uniform
-        .members
+        .uniform()
+        .members()
         .iter()
-        .map(|member| (member.stage, member.param.as_str(), member.offset))
+        .map(|member| (member.stage(), member.param(), member.offset()))
         .collect();
     assert_eq!(
         names,
         [(0, "amount", 0), (1, "amount", 4), (1, "pivot", 16)]
     );
-    assert_eq!(dynamic_segment.uniform.size, 32);
+    assert_eq!(dynamic_segment.uniform().size(), 32);
 
     let specialized = compose(
         &[
@@ -179,13 +179,13 @@ fn constant_parameters_leave_the_uniform_block() {
     .expect("the chain composes");
     let specialized_segment = only_colour(&specialized);
     let names: Vec<_> = specialized_segment
-        .uniform
-        .members
+        .uniform()
+        .members()
         .iter()
-        .map(|member| (member.stage, member.param.as_str()))
+        .map(|member| (member.stage(), member.param()))
         .collect();
     assert_eq!(names, [(1, "amount")]);
-    assert_eq!(specialized_segment.uniform.size, 16);
+    assert_eq!(specialized_segment.uniform().size(), 16);
 
     // Specializing changes where a value comes from, not the result.
     let colour = Value::vec(&[0.3, 0.2, 0.1, 1.0]);
@@ -244,12 +244,12 @@ fn colour_prefix_folds_into_every_sample() {
     assert_eq!(*sampler, SamplerFilter::Point);
     assert_eq!(*not_foldable, None);
     let folded = folded.as_ref().expect("the kernel reads only texels");
-    assert_eq!(folded.sampler, SamplerFilter::Point);
-    assert_eq!(folded.cost.samples, SampleCount::Static(3));
-    assert!(folded.cost.prefix_ops > 0);
-    assert_eq!(folded.segment.stages, 0..2);
+    assert_eq!(folded.sampler(), SamplerFilter::Point);
+    assert_eq!(folded.cost().samples(), SampleCount::Static(3));
+    assert!(folded.cost().prefix_ops() > 0);
+    assert_eq!(folded.segment().stages(), 0..2);
     assert_eq!(
-        folded.segment.args,
+        folded.segment().args(),
         [
             SegmentArg::Input,
             SegmentArg::InputSampler,
@@ -279,19 +279,19 @@ fn colour_prefix_folds_into_every_sample() {
         let mut folded_eval = Eval::new(composition.module());
         let texture = folded_eval.texture(Texture::continuous(16, 16, source));
         let from_folded = folded_eval.call(
-            folded_eval.function(&folded.segment.function),
+            folded_eval.function(folded.segment().function()),
             vec![
                 texture,
                 Value::Sampler(SamplerFilter::Point),
                 Value::vec(&uv),
-                block(&folded.segment, &values),
+                block(folded.segment(), &values),
             ],
         );
 
         let mut plain_eval = Eval::new(composition.module());
         let texture = plain_eval.texture(Texture::continuous(16, 16, brightened));
         let from_plain = plain_eval.call(
-            plain_eval.function(&plain.function),
+            plain_eval.function(plain.function()),
             vec![
                 texture,
                 Value::Sampler(SamplerFilter::Point),
@@ -405,19 +405,19 @@ fn a_colour_prefix_folds_into_a_size_dependent_stage() {
         let mut folded_eval = Eval::new(composition.module());
         let texture = folded_eval.texture(Texture::continuous(16, 16, source));
         let from_folded = folded_eval.call(
-            folded_eval.function(&folded.segment.function),
+            folded_eval.function(folded.segment().function()),
             vec![
                 texture,
                 Value::Sampler(SamplerFilter::Point),
                 Value::vec(&uv),
-                block(&folded.segment, &values),
+                block(folded.segment(), &values),
             ],
         );
 
         let mut plain_eval = Eval::new(composition.module());
         let texture = plain_eval.texture(Texture::continuous(16, 16, brightened));
         let from_plain = plain_eval.call(
-            plain_eval.function(&plain.function),
+            plain_eval.function(plain.function()),
             vec![
                 texture,
                 Value::Sampler(SamplerFilter::Point),
@@ -630,18 +630,18 @@ fn the_fold_is_not_equivalent_under_a_filtering_sampler() {
     let mut folded_eval = Eval::new(composition.module());
     let texture = folded_eval.texture(Texture::texels(16, 16, texel));
     let from_folded = folded_eval.call(
-        folded_eval.function(&folded.segment.function),
+        folded_eval.function(folded.segment().function()),
         vec![
             texture,
             Value::Sampler(SamplerFilter::Filtered),
             Value::vec(&uv),
-            block(&folded.segment, &values),
+            block(folded.segment(), &values),
         ],
     );
     let mut plain_eval = Eval::new(composition.module());
     let texture = plain_eval.texture(Texture::texels(16, 16, squared));
     let from_plain = plain_eval.call(
-        plain_eval.function(&plain.function),
+        plain_eval.function(plain.function()),
         vec![
             texture,
             Value::Sampler(SamplerFilter::Filtered),
@@ -746,7 +746,7 @@ fn fold_cost_counts_helper_expressions() {
             })
             .expect("the function exists")
     };
-    assert_eq!(folded.cost.prefix_ops, ops("apply") + ops("scale"));
+    assert_eq!(folded.cost().prefix_ops(), ops("apply") + ops("scale"));
 }
 
 #[test]
@@ -781,9 +781,9 @@ fn every_composed_module_emits_for_every_back_end() {
     else {
         panic!("unexpected pieces {:?}", composition.pieces());
     };
-    assert_eq!(first.variants[0].precision, Precision::F16);
-    assert_eq!(first.variants[1].precision, Precision::F32);
-    assert_eq!(folded.segment.stages, 0..3);
+    assert_eq!(first.variants()[0].precision(), Precision::F16);
+    assert_eq!(first.variants()[1].precision(), Precision::F32);
+    assert_eq!(folded.segment().stages(), 0..3);
     assert!(
         composition
             .capabilities()
@@ -796,7 +796,7 @@ fn every_composed_module_emits_for_every_back_end() {
     validate(&reparsed, composition.capabilities()).expect("emitted WGSL validates");
 
     let metal = msl(composition.module(), &info, (2, 4)).expect("MSL emits");
-    assert!(metal.contains(&folded.segment.function));
+    assert!(metal.contains(folded.segment().function()));
 
     let words = spirv(composition.module(), &info, (1, 3)).expect("SPIR-V emits");
     assert_eq!(words.first(), Some(&0x0723_0203), "SPIR-V magic number");
@@ -815,14 +815,14 @@ fn subgroup_variants_are_used_where_declared() {
     let with =
         compose(&stages, ComposeOptions::new(Precision::F32, true)).expect("the chain composes");
     assert_eq!(
-        only_colour(&with).variants,
+        only_colour(&with).variants(),
         [Variant::new(Precision::F32, true), Variant::BASE]
     );
     assert!(with.capabilities().contains(Capabilities::SUBGROUP));
 
     let without = compose(&stages, ComposeOptions::default()).expect("the chain composes");
     assert_eq!(
-        only_colour(&without).variants,
+        only_colour(&without).variants(),
         [Variant::BASE, Variant::BASE]
     );
     assert!(!without.capabilities().contains(Capabilities::SUBGROUP));
@@ -901,7 +901,7 @@ fn a_colour_prefix_folds_through_a_library_sampler() {
     };
     assert_eq!(*not_foldable, None, "a sample through `load` folds");
     let folded = folded.as_ref().expect("a sample through `load` folds");
-    assert_eq!(folded.cost.samples, SampleCount::Static(1));
+    assert_eq!(folded.cost().samples(), SampleCount::Static(1));
 
     let amount = 0.2;
     let source = |uv: [f32; 2]| [uv[0], uv[1], 0.5, 0.75];
@@ -920,19 +920,19 @@ fn a_colour_prefix_folds_through_a_library_sampler() {
         let mut folded_eval = Eval::new(composition.module());
         let texture = folded_eval.texture(Texture::continuous(16, 16, source));
         let from_folded = folded_eval.call(
-            folded_eval.function(&folded.segment.function),
+            folded_eval.function(folded.segment().function()),
             vec![
                 texture,
                 Value::Sampler(SamplerFilter::Point),
                 Value::vec(&uv),
-                block(&folded.segment, &values),
+                block(folded.segment(), &values),
             ],
         );
 
         let mut plain_eval = Eval::new(composition.module());
         let texture = plain_eval.texture(Texture::continuous(16, 16, brightened));
         let from_plain = plain_eval.call(
-            plain_eval.function(&plain.function),
+            plain_eval.function(plain.function()),
             vec![
                 texture,
                 Value::Sampler(SamplerFilter::Point),
@@ -1072,7 +1072,7 @@ fn eval_spatial(
     values: &HashMap<(usize, &str), Value>,
 ) -> Value {
     let args = segment
-        .args
+        .args()
         .iter()
         .map(|arg| match *arg {
             SegmentArg::Input => input.clone(),
@@ -1083,7 +1083,7 @@ fn eval_spatial(
             ref other => panic!("unexpected segment arg {other:?}"),
         })
         .collect();
-    eval.call(eval.function(&segment.function), args)
+    eval.call(eval.function(segment.function()), args)
 }
 
 /// The spatial piece of a two-stage colour-then-spatial composition.
@@ -1163,8 +1163,8 @@ fn a_helper_folds_only_at_the_sites_bound_to_input() {
     assert_eq!(*not_foldable, None);
     let folded = folded.as_ref().expect("the input-bound site folds");
     // Only the `input` site's sample counts.
-    assert_eq!(folded.cost.samples, SampleCount::Static(1));
-    folded_matches_plain(&composition, plain, &folded.segment, |_| [0.25; 4]);
+    assert_eq!(folded.cost().samples(), SampleCount::Static(1));
+    folded_matches_plain(&composition, plain, folded.segment(), |_| [0.25; 4]);
 }
 
 #[test]
@@ -1186,8 +1186,8 @@ fn a_helper_folds_every_sample_it_takes() {
     let (plain, folded, not_foldable) = spatial_piece(&composition);
     assert_eq!(*not_foldable, None);
     let folded = folded.as_ref().expect("the samples fold");
-    assert_eq!(folded.cost.samples, SampleCount::Static(2));
-    folded_matches_plain(&composition, plain, &folded.segment, |_| [0.25; 4]);
+    assert_eq!(folded.cost().samples(), SampleCount::Static(2));
+    folded_matches_plain(&composition, plain, folded.segment(), |_| [0.25; 4]);
 }
 
 #[test]
@@ -1209,8 +1209,8 @@ fn a_fold_reaches_two_calls_deep() {
     let (plain, folded, not_foldable) = spatial_piece(&composition);
     assert_eq!(*not_foldable, None);
     let folded = folded.as_ref().expect("the transitive sample folds");
-    assert_eq!(folded.cost.samples, SampleCount::Static(1));
-    folded_matches_plain(&composition, plain, &folded.segment, |_| [0.25; 4]);
+    assert_eq!(folded.cost().samples(), SampleCount::Static(1));
+    folded_matches_plain(&composition, plain, folded.segment(), |_| [0.25; 4]);
 }
 
 #[test]
@@ -1232,8 +1232,8 @@ fn a_helper_folds_input_leaving_aux_alone() {
     let (plain, folded, not_foldable) = spatial_piece(&composition);
     assert_eq!(*not_foldable, None);
     let folded = folded.as_ref().expect("the input sample folds");
-    assert_eq!(folded.cost.samples, SampleCount::Static(1));
-    folded_matches_plain(&composition, plain, &folded.segment, |_| [0.25; 4]);
+    assert_eq!(folded.cost().samples(), SampleCount::Static(1));
+    folded_matches_plain(&composition, plain, folded.segment(), |_| [0.25; 4]);
 }
 
 #[test]
@@ -1279,7 +1279,7 @@ fn a_helper_sampling_in_a_loop_reports_a_dynamic_count() {
     assert_eq!(*not_foldable, None);
     // The evaluator cannot run loops, so the count is the check here.
     let folded = folded.as_ref().expect("loop samples still fold");
-    assert_eq!(folded.cost.samples, SampleCount::Dynamic);
+    assert_eq!(folded.cost().samples(), SampleCount::Dynamic);
 }
 
 #[test]

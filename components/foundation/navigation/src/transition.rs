@@ -80,6 +80,32 @@ pub struct NavigationTransitionLayer {
 }
 
 impl NavigationTransitionLayer {
+    /// Horizontal offset as a fraction of the navigation viewport width.
+    #[must_use]
+    pub const fn offset_x(&self) -> f32 {
+        self.offset_x
+    }
+
+    /// Vertical offset as a fraction of the navigation viewport height.
+    #[must_use]
+    pub const fn offset_y(&self) -> f32 {
+        self.offset_y
+    }
+
+    /// Uniform scale.
+    #[must_use]
+    pub const fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// Layer opacity.
+    #[must_use]
+    pub const fn opacity(&self) -> f32 {
+        self.opacity
+    }
+}
+
+impl NavigationTransitionLayer {
     /// An unchanged, fully visible layer.
     pub const IDENTITY: Self = Self::new(0.0, 0.0, 1.0, 1.0);
 
@@ -104,6 +130,20 @@ pub struct NavigationTransitionFrame {
     pub outgoing: NavigationTransitionLayer,
     /// Transform and opacity applied to the page becoming active.
     pub incoming: NavigationTransitionLayer,
+}
+
+impl NavigationTransitionFrame {
+    /// Transform and opacity applied to the page that was active.
+    #[must_use]
+    pub const fn outgoing(&self) -> NavigationTransitionLayer {
+        self.outgoing
+    }
+
+    /// Transform and opacity applied to the page becoming active.
+    #[must_use]
+    pub const fn incoming(&self) -> NavigationTransitionLayer {
+        self.incoming
+    }
 }
 
 impl NavigationTransitionFrame {
@@ -281,18 +321,10 @@ pub mod navigation_transition {
 
     /// Platform-default navigation motion.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less transition marker used by name"
-    )]
     pub struct Automatic;
 
     /// Cross-fade navigation motion.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less transition marker used by name"
-    )]
     pub struct Fade;
 
     /// Platform-native zoom/shared-element navigation motion.
@@ -303,10 +335,6 @@ pub mod navigation_transition {
 
     /// Navigation with animation disabled.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less transition marker used by name"
-    )]
     pub struct None;
 
     /// Uses the platform-default navigation motion.

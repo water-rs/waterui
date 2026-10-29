@@ -388,7 +388,7 @@ fn reposition(state: &Rc<OverlayState>) {
     let anchor = to_core(view::bounds_in_window(&state.host));
     let direction = state.direction.snapshot();
     let placed = place_anchored_overlay(anchor, container, size, state.placement, direction);
-    let frame = to_kit(placed.frame);
+    let frame = to_kit(placed.frame());
     state.overlay_frame.set(frame);
     // Retain the overlay's view inside a short borrow — `set_frame` may
     // re-enter layout through the platform, and `report_edge` invokes
@@ -403,7 +403,7 @@ fn reposition(state: &Rc<OverlayState>) {
         )
     };
     view::set_frame(&overlay_view, frame);
-    report_edge(state, placed.edge, direction);
+    report_edge(state, placed.edge(), direction);
 }
 
 // MARK: - macOS presentation
@@ -468,7 +468,7 @@ fn reposition(state: &Rc<OverlayState>) {
     let direction = state.direction.snapshot();
     let placed =
         place_anchored_overlay(anchor, to_core(container), size, state.placement, direction);
-    let frame_window = mirror(to_kit(placed.frame), container);
+    let frame_window = mirror(to_kit(placed.frame()), container);
     {
         let presentation = state.presentation.borrow();
         if let Some(shown) = presentation.as_ref() {
@@ -480,7 +480,7 @@ fn reposition(state: &Rc<OverlayState>) {
     }
     // The borrow ends before the watcher callbacks — `report_edge` may
     // re-enter the overlay state.
-    report_edge(state, placed.edge, direction);
+    report_edge(state, placed.edge(), direction);
 }
 
 /// `observeWindowAndFrame`: the overlay re-places when the parent window

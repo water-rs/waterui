@@ -79,8 +79,8 @@ fn fail_reports_the_view_and_its_cause() {
     else {
         panic!("a failed load settles the ledger with the failure");
     };
-    assert_eq!(failure.view, "FakeLoader");
-    assert_eq!(failure.detail, "file:///missing.png");
+    assert_eq!(failure.view(), "FakeLoader");
+    assert_eq!(failure.detail(), "file:///missing.png");
     assert_eq!(
         failure.to_string(),
         "FakeLoader (file:///missing.png) failed to load its content"
@@ -156,14 +156,8 @@ fn outstanding_names_each_view_in_registration_order() {
     assert_eq!(
         ledger.outstanding(),
         vec![
-            PendingContent {
-                view: "FakeLoader",
-                detail: "file:///a.png".into(),
-            },
-            PendingContent {
-                view: "Wrapper",
-                detail: "resource".into(),
-            },
+            PendingContent::new("FakeLoader", "file:///a.png".into()),
+            PendingContent::new("Wrapper", "resource".into()),
         ]
     );
 }
@@ -260,6 +254,6 @@ fn wait_fails_with_a_failed_load() {
     token.fail(std::io::Error::other("no such file"));
     assert!(matches!(
         wait.as_mut().poll(&mut cx),
-        Poll::Ready(Err(ContentError::Failed(failure))) if failure.view == "FakeLoader"
+        Poll::Ready(Err(ContentError::Failed(failure))) if failure.view() == "FakeLoader"
     ));
 }

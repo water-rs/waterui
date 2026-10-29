@@ -137,9 +137,9 @@ fn the_context_menu_popup_presents_its_items_through_a_presentable_window() {
     let frame = runtime
         .popup_frame(0)
         .expect("the mounted popup must render its own frame");
-    let fill = dominant_rgb(&frame.rgba8);
+    let fill = dominant_rgb(frame.rgba8());
     let item_pixels = frame
-        .rgba8
+        .rgba8()
         .as_chunks::<4>()
         .0
         .iter()
@@ -149,7 +149,7 @@ fn the_context_menu_popup_presents_its_items_through_a_presentable_window() {
         item_pixels > 100,
         "the popup's own rendered frame holds only the panel fill: \
          {item_pixels} item pixels in {}x{}",
-        frame.width,
-        frame.height,
+        frame.width(),
+        frame.height(),
     );
 }

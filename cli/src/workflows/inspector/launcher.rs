@@ -89,12 +89,11 @@ pub enum InspectorTarget {
 
 /// Launch options for Inspector app.
 #[derive(Clone)]
-#[non_exhaustive]
 pub struct InspectorLaunchOptions {
     /// The endpoint of the application to inspect.
-    pub target: InspectorTarget,
+    target: InspectorTarget,
     /// One-time token used by runtime endpoint and inspector app.
-    pub token: String,
+    token: String,
 }
 
 impl InspectorLaunchOptions {
@@ -103,6 +102,18 @@ impl InspectorLaunchOptions {
     #[must_use]
     pub const fn new(target: InspectorTarget, token: String) -> Self {
         Self { target, token }
+    }
+
+    /// The endpoint of the application to inspect.
+    #[must_use]
+    pub const fn target(&self) -> &InspectorTarget {
+        &self.target
+    }
+
+    /// One-time token used by runtime endpoint and inspector app.
+    #[must_use]
+    pub fn token(&self) -> &str {
+        &self.token
     }
 }
 
@@ -435,20 +446,13 @@ async fn scaffold_inspector_app(
 
 /// The `water create` options the inspector support app is scaffolded from.
 fn inspector_create_options(waterui_path: Option<PathBuf>) -> crate::project::CreateOptions {
-    crate::project::CreateOptions {
-        name: "WaterUI Inspector".to_string(),
-        bundle_identifier: crate::project_types::BundleIdentifier::try_from(
-            "dev.waterui.inspector",
-        )
-        .expect("inspector support bundle identifier must be valid"),
-        waterui_path,
-        channel: None,
-        framework_manifest: None,
-        framework: None,
-        framework_lock: None,
-        author: String::new(),
-        web: None,
-    }
+    crate::project::CreateOptions::new(
+        "WaterUI Inspector".to_string(),
+        crate::project_types::BundleIdentifier::try_from("dev.waterui.inspector")
+            .expect("inspector support bundle identifier must be valid"),
+        String::new(),
+    )
+    .with_waterui_path(waterui_path)
 }
 
 /// The inspector support app's own packages: its graph is its app crate plus

@@ -991,8 +991,8 @@ pub fn released_ctx(ctx: RenderContext, released: EdgeOffsets) -> RenderContext 
         kurbo::Rect::new(
             0.0,
             0.0,
-            ctx.bounds.width() + released.horizontal(),
-            ctx.bounds.height() + released.vertical(),
+            ctx.bounds().width() + released.horizontal(),
+            ctx.bounds().height() + released.vertical(),
         ),
     )
 }
@@ -1002,10 +1002,7 @@ pub fn released_ctx(ctx: RenderContext, released: EdgeOffsets) -> RenderContext 
 /// laid-out frame touched — the transforms unchanged, so nothing else
 /// moves (§7.1: extension is a paint fact, not a layout fact).
 pub fn fill_paint_ctx(ctx: RenderContext, extension: EdgeOffsets) -> RenderContext {
-    RenderContext {
-        local: ctx.local,
-        bounds: grow_rect(ctx.bounds, extension),
-    }
+    RenderContext::new(ctx.local(), grow_rect(ctx.bounds(), extension))
 }
 
 /// The §7.1 bookkeeping one scroll surface carries: the facts layout

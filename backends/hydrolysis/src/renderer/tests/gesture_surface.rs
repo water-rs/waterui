@@ -111,7 +111,7 @@ fn drag_handle(phases: Rc<RefCell<Vec<GesturePhase>>>) -> AnyView {
     AnyView::new(Color::srgb_hex("#3F3F46").width(HANDLE_WIDTH).gesture(
         DragGesture::new(0.0),
         move |drag: Use<DragEvent>| {
-            phases.borrow_mut().push(drag.phase);
+            phases.borrow_mut().push(drag.phase());
         },
     ))
 }

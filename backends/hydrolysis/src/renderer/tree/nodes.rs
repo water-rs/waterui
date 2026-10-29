@@ -623,12 +623,12 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         built.layout_if_needed(renderer, env, safe_area, proposal, size);
         let anchor = renderer.current_placement();
-        let local_ctx = RenderContext {
-            local: renderer.program().origin(),
-            bounds: kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
-        };
+        let local_ctx = RenderContext::new(
+            renderer.program().origin(),
+            kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
         renderer.push_lazy_viewport(LazyViewport {
-            bounds: local_ctx.bounds,
+            bounds: local_ctx.bounds(),
             transform: anchor.resolved_transform(true),
         });
         let index = anchor.take_item();
@@ -1517,10 +1517,10 @@ impl<E: crate::text::TextEngine> DynamicTransitions<E> {
             claimed: RefCell::new(None),
             insertion: RefCell::new(None),
             ghosts: RefCell::new(Vec::new()),
-            last_context: Cell::new(RenderContext {
-                local: kurbo::Affine::IDENTITY,
-                bounds: kurbo::Rect::ZERO,
-            }),
+            last_context: Cell::new(RenderContext::new(
+                kurbo::Affine::IDENTITY,
+                kurbo::Rect::ZERO,
+            )),
             reduce_motion: env
                 .get::<waterui_core::transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0),
@@ -1729,9 +1729,9 @@ impl<E: crate::text::TextEngine> DynamicHostNode<E> {
         ghost: &DynamicGhost<E>,
     ) {
         // The left frame relative to the host's current placement.
-        let relative = ctx.local.inverse() * ghost.context.local;
+        let relative = ctx.local().inverse() * ghost.context.local();
         let (slot_ctx, slot_delta) =
-            super::transition::slot_context(ctx.child(relative, ghost.context.bounds));
+            super::transition::slot_context(ctx.child(relative, ghost.context.bounds()));
         let delta = relative * slot_delta;
         let paint = super::transition::TransitionPaint::sample(
             &ghost.removal.state,
@@ -1761,8 +1761,8 @@ impl<E: crate::text::TextEngine> DynamicHostNode<E> {
 /// The logical size of a slot context's bounds.
 const fn slot_size(ctx: RenderContext) -> Size {
     Size::new(
-        crate::num_cast::f64_as_f32(ctx.bounds.width()),
-        crate::num_cast::f64_as_f32(ctx.bounds.height()),
+        crate::num_cast::f64_as_f32(ctx.bounds().width()),
+        crate::num_cast::f64_as_f32(ctx.bounds().height()),
     )
 }
 
@@ -1911,7 +1911,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         // The recording's origin is the bounds' top-left: a layout-space
         // rectangle lands there offset into this node's local space.
-        let origin = ctx.bounds.origin().to_vec2();
+        let origin = ctx.bounds().origin().to_vec2();
         let group_id = renderer
             .gesture_group_id_for_identity(Rc::as_ptr(&self.accessibility_identity) as usize);
         let plain = styled.to_plain();

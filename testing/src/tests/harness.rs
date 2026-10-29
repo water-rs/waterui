@@ -49,9 +49,9 @@ const fn white_foreground() -> ForegroundSlot {
 fn smoke_snapshot_size_matches_target() {
     let host = TestHost::new(Environment::new(), 64, 48, Material3::defaults());
     let snapshot = host.render(());
-    assert_eq!(snapshot.width, 64);
-    assert_eq!(snapshot.height, 48);
-    assert_eq!(snapshot.rgba8.len(), 64 * 48 * 4);
+    assert_eq!(snapshot.width(), 64);
+    assert_eq!(snapshot.height(), 48);
+    assert_eq!(snapshot.rgba8().len(), 64 * 48 * 4);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -75,9 +75,9 @@ fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
         "theme slot text should stay queryable under custom theme environment"
     );
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 240);
-    assert_eq!(snapshot.height, 120);
-    assert_eq!(snapshot.rgba8.len(), 240 * 120 * 4);
+    assert_eq!(snapshot.width(), 240);
+    assert_eq!(snapshot.height(), 120);
+    assert_eq!(snapshot.rgba8().len(), 240 * 120 * 4);
 }
 
 /// A view that draws widget chrome mounts under the default theme: the scroll
@@ -98,7 +98,7 @@ fn default_theme_renders_hydrolysis_widgets() {
         });
     assert_eq!(app.query().role(Role::BUTTON).all().len(), 1);
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.rgba8.len(), 240 * 160 * 4);
+    assert_eq!(snapshot.rgba8().len(), 240 * 160 * 4);
 }
 
 /// `mount_app` runs the application path: the app's own environment is
@@ -118,8 +118,8 @@ fn mount_app_hosts_main_window_with_app_environment() {
         .mount_app(app);
     app.query().label("Mounted app").assert_exists();
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 400);
-    assert_eq!(snapshot.height, 200);
+    assert_eq!(snapshot.width(), 400);
+    assert_eq!(snapshot.height(), 200);
 }
 
 /// A `max_width` derived from the mounted window's `frame` must measure the
@@ -212,9 +212,9 @@ fn ui_test_environment_builder_preserves_custom_theme() {
         "UiBuilder environment builder should keep mounted text semantics intact"
     );
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 240);
-    assert_eq!(snapshot.height, 120);
-    assert_eq!(snapshot.rgba8.len(), 240 * 120 * 4);
+    assert_eq!(snapshot.width(), 240);
+    assert_eq!(snapshot.height(), 120);
+    assert_eq!(snapshot.rgba8().len(), 240 * 120 * 4);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -298,8 +298,8 @@ fn ui_test_snapshot_renders_text_after_canvas() {
         .label("Letter W")
         .assert_exists();
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 320);
-    assert_eq!(snapshot.height, 320);
+    assert_eq!(snapshot.width(), 320);
+    assert_eq!(snapshot.height(), 320);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -321,8 +321,8 @@ fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
         .label("Canvas smoke")
         .assert_exists();
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 96);
-    assert_eq!(snapshot.height, 72);
+    assert_eq!(snapshot.width(), 96);
+    assert_eq!(snapshot.height(), 72);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -331,11 +331,7 @@ fn themed_builder_exposes_offscreen_perf_closure_api() {
     let report = ui()
         .viewport(96, 72)
         .theme(Material3::defaults())
-        .perf_config(PerfConfig {
-            warmups: 1,
-            samples: 3,
-            repetitions: 1,
-        })
+        .perf_config(PerfConfig::new(1, 3, 1))
         .perf_with(
             || text("Measured").body(),
             |perf| {
@@ -352,9 +348,9 @@ fn themed_builder_exposes_offscreen_perf_closure_api() {
 
     let measurements = report.measurements();
     assert_eq!(measurements.len(), 1);
-    assert_eq!(measurements[0].name, "steady");
+    assert_eq!(measurements[0].name(), "steady");
     let stats = measurements[0].stats();
-    assert_eq!(stats.samples, 3);
+    assert_eq!(stats.samples(), 3);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -363,21 +359,17 @@ fn themed_builder_default_perf_requests_redraw() {
     let report = ui()
         .viewport(96, 72)
         .theme(Material3::defaults())
-        .perf_config(PerfConfig {
-            warmups: 1,
-            samples: 3,
-            repetitions: 1,
-        })
+        .perf_config(PerfConfig::new(1, 3, 1))
         .perf(|| text("Redraw measured").body());
 
     let measurements = report.measurements();
     assert_eq!(measurements.len(), 1);
-    assert_eq!(measurements[0].name, "steady-redraw");
+    assert_eq!(measurements[0].name(), "steady-redraw");
     let stats = measurements[0].stats();
-    assert_eq!(stats.samples, 3);
-    assert_eq!(stats.rebuilt_frames, 0);
+    assert_eq!(stats.samples(), 3);
+    assert_eq!(stats.rebuilt_frames(), 0);
     assert!(
-        stats.phases.render.p95 > Duration::ZERO,
+        stats.phases().render.p95 > Duration::ZERO,
         "default perf should measure real redraw frames"
     );
 }
@@ -432,14 +424,14 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
                     .gesture_observer(GestureObserver::new(
                         DragGesture::new(0.0),
                         |DragOffset(offset): DragOffset, drag: Use<DragEvent>| {
-                            offset.set(drag.translation.x);
+                            offset.set(drag.translation().x);
                         },
                     ))
                     .state(&drag_offset_state)
                     .gesture_observer(GestureObserver::new(
                         MagnificationGesture::new(1.0),
                         |ZoomScale(scale): ZoomScale, magnification: Use<MagnificationEvent>| {
-                            scale.set(magnification.scale);
+                            scale.set(magnification.scale());
                         },
                     ))
                     .state(&zoom_scale_state)
@@ -610,7 +602,7 @@ fn headless_capture_waits_for_gpu_setup() {
     // Pump until the frame settles, exactly as the preview runtime does.
     let mut settled = false;
     for _ in 0..64 {
-        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt {
+        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt() {
             settled = true;
             break;
         }
@@ -623,13 +615,13 @@ fn headless_capture_waits_for_gpu_setup() {
 
     let snapshot = runtime
         .pump_at(true, std::time::Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("capture must produce a snapshot");
-    let center = ((snapshot.width as usize / 2)
-        + (snapshot.height as usize / 2) * snapshot.width as usize)
+    let center = ((snapshot.width() as usize / 2)
+        + (snapshot.height() as usize / 2) * snapshot.width() as usize)
         * 4;
     assert_eq!(
-        &snapshot.rgba8[center..center + 3],
+        &snapshot.rgba8()[center..center + 3],
         &[0, 0, 0],
         "the GpuContentView content must be present in the captured frame"
     );
@@ -661,38 +653,40 @@ fn capture_reads_the_current_frame() {
     );
     // Settle the mount the way a session's initial advance does.
     for _ in 0..64 {
-        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt {
+        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt() {
             break;
         }
     }
     let before = runtime
         .pump_at(true, std::time::Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("capture must produce a snapshot");
 
     probe.set(waterui::Str::from("after"));
 
     let captured_outcome = runtime.pump_at(true, std::time::Instant::now());
     assert!(
-        captured_outcome.tree_update.is_some_and(|update| update
+        captured_outcome.tree_update().is_some_and(|update| update
             .nodes
             .iter()
             .any(|(_, node)| node.label() == Some("after"))),
         "the flushed tree must carry the new label"
     );
     let captured = captured_outcome
-        .snapshot
+        .snapshot()
         .expect("capture must produce a snapshot");
     assert_ne!(
-        captured.rgba8, before.rgba8,
+        captured.rgba8(),
+        before.rgba8(),
         "the capture must show the new label, not the previous composite"
     );
     let settled = runtime
         .pump_at(true, std::time::Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("capture must produce a snapshot");
     assert_eq!(
-        captured.rgba8, settled.rgba8,
+        captured.rgba8(),
+        settled.rgba8(),
         "a settled capture is deterministic: the first capture must equal it"
     );
 }
@@ -732,7 +726,7 @@ fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
     for _ in 0..64 {
         if runtime
             .pump_at(false, std::time::Instant::now())
-            .tree_update
+            .tree_update()
             .is_some()
         {
             mounted = true;
@@ -761,7 +755,7 @@ fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
     let mut saw_after = false;
     for _ in 0..64 {
         let outcome = runtime.pump_at(false, std::time::Instant::now());
-        if let Some(update) = outcome.tree_update
+        if let Some(update) = outcome.tree_update()
             && update
                 .nodes
                 .iter()

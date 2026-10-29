@@ -561,6 +561,48 @@ pub struct HeadlessSnapshot {
     pub output_alpha: cherenkov_gpu::interop::OutputAlpha,
 }
 
+// The accessors are the public surface `runner` re-exports off wasm32; the
+// browser runner only builds and drops a snapshot.
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+impl HeadlessSnapshot {
+    /// Snapshot width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Snapshot height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Raw RGBA8 pixel data, `width * height * 4` bytes, top-left origin,
+    /// in the alpha convention [`Self::output_alpha`] reports.
+    #[must_use]
+    pub const fn rgba8(&self) -> &[u8] {
+        self.rgba8.as_slice()
+    }
+
+    /// The frame's pixels, for compositing into.
+    pub const fn rgba8_mut(&mut self) -> &mut [u8] {
+        self.rgba8.as_mut_slice()
+    }
+
+    /// The alpha convention the producing surface presented with — the
+    /// convention `rgba8` reads, not a comment's claim about it.
+    #[must_use]
+    pub const fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+        self.output_alpha
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (u32, u32, Vec<u8>, cherenkov_gpu::interop::OutputAlpha) {
+        (self.width, self.height, self.rgba8, self.output_alpha)
+    }
+}
+
 #[derive(Debug)]
 #[cfg(hydrolysis_gpu_painter)]
 pub(super) struct RenderWindowResult {
@@ -598,6 +640,94 @@ pub struct FramePhases {
     pub present: Duration,
     /// Time spent draining local executor work after rendering.
     pub executor_after: Duration,
+}
+
+impl FramePhases {
+    /// Time spent draining local executor work before input dispatch.
+    #[must_use]
+    pub const fn executor_before(&self) -> Duration {
+        self.executor_before
+    }
+
+    /// Sets the `executor_before`.
+    pub const fn set_executor_before(&mut self, executor_before: Duration) {
+        self.executor_before = executor_before;
+    }
+
+    /// Time spent dispatching pending input.
+    #[must_use]
+    pub const fn input(&self) -> Duration {
+        self.input
+    }
+
+    /// Sets the `input`.
+    pub const fn set_input(&mut self, input: Duration) {
+        self.input = input;
+    }
+
+    /// Time spent advancing animations and invalidation clocks.
+    #[must_use]
+    pub const fn animation(&self) -> Duration {
+        self.animation
+    }
+
+    /// Sets the `animation`.
+    pub const fn set_animation(&mut self, animation: Duration) {
+        self.animation = animation;
+    }
+
+    /// Time spent updating the retained scene, including refresh and re-encode work.
+    #[must_use]
+    pub const fn rebuild(&self) -> Duration {
+        self.rebuild
+    }
+
+    /// Time spent building the root `WaterUI` view value during scene rebuild.
+    #[must_use]
+    pub const fn build_content(&self) -> Duration {
+        self.build_content
+    }
+
+    /// Time spent dispatching `WaterUI` views into Hydrolysis scene/layout state.
+    #[must_use]
+    pub const fn scene_dispatch(&self) -> Duration {
+        self.scene_dispatch
+    }
+
+    /// Time spent finalizing layout, interaction, and accessibility state after dispatch.
+    #[must_use]
+    pub const fn scene_finish(&self) -> Duration {
+        self.scene_finish
+    }
+
+    /// Time spent acquiring the target frame.
+    #[must_use]
+    pub const fn acquire(&self) -> Duration {
+        self.acquire
+    }
+
+    /// Time spent submitting rendering work.
+    #[must_use]
+    pub const fn render(&self) -> Duration {
+        self.render
+    }
+
+    /// Time spent presenting the frame.
+    #[must_use]
+    pub const fn present(&self) -> Duration {
+        self.present
+    }
+
+    /// Time spent draining local executor work after rendering.
+    #[must_use]
+    pub const fn executor_after(&self) -> Duration {
+        self.executor_after
+    }
+
+    /// Sets the `executor_after`.
+    pub const fn set_executor_after(&mut self, executor_after: Duration) {
+        self.executor_after = executor_after;
+    }
 }
 
 /// Counter snapshot for one Hydrolysis frame.
@@ -641,6 +771,108 @@ pub struct FrameCounters {
     pub frame_work: crate::renderer::FrameWorkCounters,
 }
 
+impl FrameCounters {
+    /// Number of rebuild loop iterations in this frame.
+    #[must_use]
+    pub const fn rebuild_iterations(&self) -> u32 {
+        self.rebuild_iterations
+    }
+
+    /// Measurement cache hits in this frame.
+    #[must_use]
+    pub const fn measurement_cache_hits(&self) -> u32 {
+        self.measurement_cache_hits
+    }
+
+    /// Measurement cache misses in this frame.
+    #[must_use]
+    pub const fn measurement_cache_misses(&self) -> u32 {
+        self.measurement_cache_misses
+    }
+
+    /// Number of compositor layers submitted for this frame.
+    #[must_use]
+    pub const fn scene_layers(&self) -> u32 {
+        self.scene_layers
+    }
+
+    /// Number of recorded scene segment layers submitted for this frame.
+    #[must_use]
+    pub const fn scene_segment_layers(&self) -> u32 {
+        self.scene_segment_layers
+    }
+
+    /// Number of mounted `GpuContentView` layers submitted for this frame.
+    #[must_use]
+    pub const fn gpu_content_layers(&self) -> u32 {
+        self.gpu_content_layers
+    }
+
+    /// Number of clip scopes pushed while building this frame.
+    #[must_use]
+    pub const fn clip_layers(&self) -> u32 {
+        self.clip_layers
+    }
+
+    /// Maximum nested clip depth while building this frame.
+    #[must_use]
+    pub const fn max_clip_depth(&self) -> u32 {
+        self.max_clip_depth
+    }
+
+    /// Number of `FilteredView` mounts submitted in this frame.
+    #[must_use]
+    pub const fn filtered_layers(&self) -> u32 {
+        self.filtered_layers
+    }
+
+    /// Filter effects that encoded in this frame.
+    #[must_use]
+    pub const fn applied_filter_count(&self) -> u32 {
+        self.applied_filter_count
+    }
+
+    /// Filtered-subtree capture time in this frame, in microseconds: `0` —
+    /// the engine captures inside the same render pass as the effect encode
+    /// and reports no per-phase split.
+    #[must_use]
+    pub const fn applied_filter_capture_us(&self) -> u64 {
+        self.applied_filter_capture_us
+    }
+
+    /// Filter effect encode time in this frame, in microseconds.
+    #[must_use]
+    pub const fn applied_filter_effect_us(&self) -> u64 {
+        self.applied_filter_effect_us
+    }
+
+    /// Whether this frame rendered to the target.
+    #[must_use]
+    pub const fn rendered(&self) -> bool {
+        self.rendered
+    }
+
+    /// Whether this frame captured a CPU snapshot.
+    #[must_use]
+    pub const fn captured_snapshot(&self) -> bool {
+        self.captured_snapshot
+    }
+
+    /// Per-frame work counters for this frame (water-rs/hydrolysis#205):
+    /// semantic builds, patches, layout/measure traffic, recorded content and
+    /// GPU submissions — the numbers the fine-grained frame model is measured
+    /// by.
+    #[must_use]
+    pub const fn frame_work(&self) -> crate::renderer::FrameWorkCounters {
+        self.frame_work
+    }
+
+    /// The frame-work counters, for accumulating into.
+    pub const fn frame_work_mut(&mut self) -> &mut crate::renderer::FrameWorkCounters {
+        &mut self.frame_work
+    }
+}
+
 /// Detailed profile for one Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -651,6 +883,51 @@ pub struct FrameProfile {
     pub phases: FramePhases,
     /// Counter snapshot.
     pub counters: FrameCounters,
+}
+
+impl FrameProfile {
+    /// Creates a `FrameProfile` from its parts.
+    #[must_use]
+    pub const fn new(total: Duration, phases: FramePhases, counters: FrameCounters) -> Self {
+        Self {
+            total,
+            phases,
+            counters,
+        }
+    }
+
+    /// Total wall-clock duration for the frame pump.
+    #[must_use]
+    pub const fn total(&self) -> Duration {
+        self.total
+    }
+
+    /// Phase timing breakdown.
+    #[must_use]
+    pub const fn phases(&self) -> FramePhases {
+        self.phases
+    }
+
+    /// Sets the `phases`.
+    pub const fn set_phases(&mut self, phases: FramePhases) {
+        self.phases = phases;
+    }
+
+    /// Phase timing breakdown, for recording into.
+    pub const fn phases_mut(&mut self) -> &mut FramePhases {
+        &mut self.phases
+    }
+
+    /// Counter snapshot.
+    #[must_use]
+    pub const fn counters(&self) -> FrameCounters {
+        self.counters
+    }
+
+    /// Counter snapshot, for accumulating into.
+    pub const fn counters_mut(&mut self) -> &mut FrameCounters {
+        &mut self.counters
+    }
 }
 
 impl FrameProfile {
@@ -1277,7 +1554,7 @@ crate::engine::cfg_async_fn! {
         });
         #[cfg(feature = "frame-profile")]
         {
-            renderer.frame_stage_times.readback += readback_started_at.elapsed();
+            renderer.frame_stage_times.set_readback(renderer.frame_stage_times.readback() + readback_started_at.elapsed());
         }
         snapshot
     };

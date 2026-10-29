@@ -69,10 +69,6 @@ crate::impl_constant!(Edge);
 /// form. Platform hosts set this from the system accessibility preference;
 /// test harnesses set it directly in the environment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment flag newtype over `bool`"
-)]
 pub struct ReduceMotion(pub bool);
 
 /// Geometry available when resolving native property transitions.
@@ -83,6 +79,20 @@ pub struct TransitionGeometry {
     pub size: Size,
     /// Resolves leading and trailing edges.
     pub direction: LayoutDirection,
+}
+
+impl TransitionGeometry {
+    /// The untransformed layout slot, in logical pixels.
+    #[must_use]
+    pub const fn size(&self) -> Size {
+        self.size
+    }
+
+    /// Resolves leading and trailing edges.
+    #[must_use]
+    pub const fn direction(&self) -> LayoutDirection {
+        self.direction
+    }
 }
 
 impl TransitionGeometry {
@@ -109,6 +119,32 @@ pub struct TransitionFrame {
     pub scale_factor: f32,
     /// Resolves leading and trailing edges.
     pub direction: LayoutDirection,
+}
+
+impl TransitionFrame {
+    /// The retained slot in window logical coordinates.
+    #[must_use]
+    pub const fn source(&self) -> Rect {
+        self.source
+    }
+
+    /// The window's full overlay size in logical pixels.
+    #[must_use]
+    pub const fn window(&self) -> Size {
+        self.window
+    }
+
+    /// Device pixels per logical pixel.
+    #[must_use]
+    pub const fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    /// Resolves leading and trailing edges.
+    #[must_use]
+    pub const fn direction(&self) -> LayoutDirection {
+        self.direction
+    }
 }
 
 crate::impl_constant!(TransitionFrame);
@@ -150,6 +186,43 @@ pub struct TransitionProperties {
     pub rotation: f32,
     /// Gaussian blur radius.
     pub blur: f32,
+}
+
+impl TransitionProperties {
+    /// Multiplicative alpha.
+    #[must_use]
+    pub const fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
+    /// Multiplicative horizontal and vertical scale.
+    #[must_use]
+    pub const fn scale(&self) -> [f32; 2] {
+        self.scale
+    }
+
+    /// Physical horizontal and vertical displacement.
+    #[must_use]
+    pub const fn translation(&self) -> [f32; 2] {
+        self.translation
+    }
+
+    /// Clockwise rotation in top-left coordinates.
+    #[must_use]
+    pub const fn rotation(&self) -> f32 {
+        self.rotation
+    }
+
+    /// Gaussian blur radius.
+    #[must_use]
+    pub const fn blur(&self) -> f32 {
+        self.blur
+    }
+
+    /// Sets the `blur`.
+    pub const fn set_blur(&mut self, blur: f32) {
+        self.blur = blur;
+    }
 }
 
 impl TransitionProperties {
@@ -195,6 +268,26 @@ pub struct TransitionContext {
     pub progress: Computed<f32>,
     /// Window-relative geometry, host-updated per placement including scroll/resize.
     pub frame: Computed<TransitionFrame>,
+}
+
+impl TransitionContext {
+    /// Event selecting the insertion or removal effect.
+    #[must_use]
+    pub const fn phase(&self) -> TransitionPhase {
+        self.phase
+    }
+
+    /// Absence in `[0, 1]`; subscribe instead of rebuilding the effect each frame.
+    #[must_use]
+    pub const fn progress(&self) -> &Computed<f32> {
+        &self.progress
+    }
+
+    /// Window-relative geometry, host-updated per placement including scroll/resize.
+    #[must_use]
+    pub const fn frame(&self) -> &Computed<TransitionFrame> {
+        &self.frame
+    }
 }
 
 /// A structural view effect.
@@ -501,6 +594,20 @@ pub struct TransitionSpec {
     pub animation: Animation,
 }
 
+impl TransitionSpec {
+    /// Reusable effect declaration.
+    #[must_use]
+    pub const fn transition(&self) -> &AnyTransition {
+        &self.transition
+    }
+
+    /// Timing shared by all combined effects.
+    #[must_use]
+    pub const fn animation(&self) -> &Animation {
+        &self.animation
+    }
+}
+
 impl MetadataKey for TransitionSpec {}
 
 impl TransitionSpec {
@@ -683,10 +790,6 @@ impl SubView for GhostSlot {
 /// with the container's animation. Re-insertion always constructs a new node;
 /// it never revives a ghost, even when the collection identity is reused.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole ghost, so a new field must fail their build instead of being ignored"
-)]
 pub struct Ghost<T> {
     /// Backend-owned non-interactive visual or frozen GPU capture.
     pub realization: T,

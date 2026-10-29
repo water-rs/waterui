@@ -306,7 +306,7 @@ fn fetch_framed(
     source: &str,
     framing: http::Framing,
 ) -> (Result<Outcome, FetchError>, http::Server) {
-    let version = signed.manifest.version;
+    let version = signed.manifest().version();
     let server = http::Server::serve(
         BTreeMap::from([
             (
@@ -360,7 +360,7 @@ fn ts_ota_a_manifest_altered_after_signing_is_rejected_before_the_bundle_is_fetc
     let mut signed = sign(manifest(11, &source), &key);
     // A version bump after signing: the document no longer matches its
     // signature.
-    signed.manifest.version = 12;
+    signed.manifest_mut().set_version(12);
 
     let (outcome, server) = fetch(&store, &key, &signed, &source);
     let error = outcome.expect_err("the altered manifest is refused");
@@ -430,8 +430,8 @@ fn ts_ota_a_bundle_missing_a_mounted_module_is_rejected_before_the_bundle_is_fet
     let key = keypair();
     let source = bundle("v11", "eleven", NoProps::CONTRACT_HASH);
     let mut manifest = manifest(11, &source);
-    manifest.modules.clear();
-    manifest.modules.insert(
+    manifest.modules_mut().clear();
+    manifest.modules_mut().insert(
         String::from("src/other.tsx"),
         ContractHash(NoProps::CONTRACT_HASH),
     );
@@ -516,7 +516,7 @@ fn ts_ota_a_bundle_response_declaring_more_than_the_manifests_size_is_refused_un
             received,
             ..
         } => {
-            assert_eq!(size, signed.manifest.bundle.size);
+            assert_eq!(size, signed.manifest().bundle().size());
             assert_eq!(
                 declared,
                 Some(u64::try_from(padded.len()).expect("fits")),
@@ -594,7 +594,7 @@ fn ts_ota_a_bundle_response_delivering_more_than_the_manifests_size_is_refused_a
             received,
             ..
         } => {
-            assert_eq!(size, signed.manifest.bundle.size);
+            assert_eq!(size, signed.manifest().bundle().size());
             assert_eq!(declared, None, "the response declared no length");
             assert!(
                 received > size,
@@ -1017,7 +1017,7 @@ fn ts_ota_a_bundle_carrying_translations_installs_them_for_its_modules() {
     let key = keypair();
     let source = bundle("v11", "greeting", NoProps::CONTRACT_HASH);
     let mut manifest = manifest(11, &source);
-    manifest.translations.insert(
+    manifest.translations_mut().insert(
         String::from("en"),
         String::from("greeting = \"Hello from the update\"\n"),
     );
@@ -1044,7 +1044,7 @@ fn ts_ota_translations_that_do_not_parse_reject_the_bundle() {
     let source = bundle("v11", "greeting", NoProps::CONTRACT_HASH);
 
     let mut bad_locale = manifest(11, &source);
-    bad_locale.translations.insert(
+    bad_locale.translations_mut().insert(
         String::from("not a locale"),
         String::from("greeting = \"x\"\n"),
     );
@@ -1059,7 +1059,7 @@ fn ts_ota_translations_that_do_not_parse_reject_the_bundle() {
 
     let mut bad_toml = manifest(11, &source);
     bad_toml
-        .translations
+        .translations_mut()
         .insert(String::from("en"), String::from("greeting = \n"));
     let (outcome, _server) = fetch(&store, &key, &sign(bad_toml, &key), &source);
     assert!(

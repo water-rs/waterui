@@ -24,6 +24,26 @@ pub struct InspectorTcpConfig {
     pub port_range: u16,
 }
 
+impl InspectorTcpConfig {
+    /// Address to bind or connect to.
+    #[must_use]
+    pub const fn host(&self) -> IpAddr {
+        self.host
+    }
+
+    /// First port to try.
+    #[must_use]
+    pub const fn port_start(&self) -> u16 {
+        self.port_start
+    }
+
+    /// Number of consecutive ports to try.
+    #[must_use]
+    pub const fn port_range(&self) -> u16 {
+        self.port_range
+    }
+}
+
 impl Default for InspectorTcpConfig {
     fn default() -> Self {
         Self::default_localhost()

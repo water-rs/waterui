@@ -446,34 +446,34 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host_view: &PlatformView = &host;
 
         #[cfg(target_os = "macos")]
-        let picker = DatePicker::new(mtm, platform::elements(config.ty));
+        let picker = DatePicker::new(mtm, platform::elements(config.ty()));
         #[cfg(target_os = "ios")]
-        let picker = DatePicker::new(mtm, platform::mode(config.ty));
+        let picker = DatePicker::new(mtm, platform::mode(config.ty()));
         picker.set_range(
-            range_bound(*config.range.start()).as_deref(),
-            range_bound(*config.range.end()).as_deref(),
+            range_bound(*config.range().start()).as_deref(),
+            range_bound(*config.range().end()).as_deref(),
         );
         cocoa_ui::view::add_subview(host_view, as_view(&picker));
 
         let label = ctx
-            .render(waterui_backend_core::AnyView::new(config.label.clone()))
+            .render(waterui_backend_core::AnyView::new(config.label().clone()))
             .mount(host_view);
         cocoa_ui::view::hide_from_accessibility(label.view());
 
         let state = Rc::new(RefCell::new(DatePickerState {
             picker,
             syncing: Cell::new(false),
-            ty: config.ty,
+            ty: config.ty(),
             label,
             #[cfg(target_os = "ios")]
             seconds: None,
         }));
 
         // `syncControls` runs before the action is wired, like the Swift init.
-        sync_controls(&state.borrow(), config.value.snapshot());
+        sync_controls(&state.borrow(), config.value().snapshot());
 
         #[cfg(target_os = "ios")]
-        if shows_seconds(config.ty) {
+        if shows_seconds(config.ty()) {
             let seconds_label = platform::Label::new(mtm);
             seconds_label.set_text_alignment(platform::NSTextAlignment::Right);
             let stepper = platform::Stepper::new(mtm);
@@ -489,13 +489,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 foreground: RefCell::new(platform::UIColor::labelColor()),
                 value: Cell::new(0),
             });
-            sync_controls(&state.borrow(), config.value.snapshot());
+            sync_controls(&state.borrow(), config.value().snapshot());
         }
 
         // Control → binding: the action merges the edited fields back.
         let action_target = state.borrow().picker.install_action({
             let state = Rc::clone(&state);
-            let binding = config.value.clone();
+            let binding = config.value().clone();
             move || update_binding(&state, &binding)
         });
 
@@ -504,7 +504,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let seconds_target = state.borrow().seconds.as_ref().map(|seconds| {
             seconds.stepper.install_action({
                 let state = Rc::clone(&state);
-                let binding = config.value.clone();
+                let binding = config.value().clone();
                 move |value| {
                     {
                         let borrowed = state.borrow();
@@ -558,7 +558,7 @@ fn wire(
 ) {
     // Binding → control; the syncing flag drops the echo our own write
     // raises back through the action.
-    leaf.watch(&config.value, {
+    leaf.watch(config.value(), {
         let state = Rc::clone(state);
         move |ctx| {
             let borrowed = state.borrow();
@@ -584,8 +584,8 @@ fn wire(
                 let _ = mtm;
                 let borrowed = state.borrow();
                 if let Some(seconds) = &borrowed.seconds {
-                    seconds.font_size.set(f64::from(font.size));
-                    seconds.font_weight.set(platform_weight(font.weight));
+                    seconds.font_size.set(f64::from(font.size()));
+                    seconds.font_weight.set(platform_weight(font.weight()));
                     set_seconds_text(seconds);
                 }
             }
@@ -610,7 +610,7 @@ fn wire(
 
     // The label's semantic text is spoken on the control (and the
     // stepper on `UIKit`), the `WuiControlAccessibility` treatment.
-    let accessibility_label = config.label.accessibility_label();
+    let accessibility_label = config.label().accessibility_label();
     leaf.bind(&accessibility_label, {
         let state = Rc::clone(state);
         move |styled| {
@@ -684,9 +684,9 @@ fn platform_font(
     resolved: &waterui::text::font::ResolvedFont,
 ) -> Retained<cocoa_ui::Font> {
     use waterui::text::font::FontDesign;
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    match resolved.family.as_deref() {
+    let size = f64::from(resolved.size());
+    let weight = platform_weight(resolved.weight());
+    match resolved.family() {
         Some(family) if !family.is_empty() => {
             let mut resolved_font = None;
             for candidate in family
@@ -704,7 +704,7 @@ fn platform_font(
             }
             resolved_font.unwrap_or_else(|| panic!("WaterUI: font family '{family}' not found"))
         }
-        _ => match resolved.design {
+        _ => match resolved.design() {
             FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
             FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
         },

@@ -146,12 +146,12 @@ fn the_nested_tree_is_resolved_through_four_levels() {
         panic!("the root is a struct")
     };
     let history = root
-        .fields
+        .fields()
         .iter()
-        .find(|field| field.name == "history")
+        .find(|field| field.name() == "history")
         .expect("the props carry `history`");
-    let TypeSchema::Signal(list) = history.ty else {
-        panic!("`Binding<_>` is a signal, got {}", history.ty)
+    let TypeSchema::Signal(list) = history.ty() else {
+        panic!("`Binding<_>` is a signal, got {}", history.ty())
     };
     let TypeSchema::List(item) = *list else {
         panic!("`Vec<_>` is a list, got {list}")
@@ -159,25 +159,25 @@ fn the_nested_tree_is_resolved_through_four_levels() {
     let TypeSchema::Enum(slot) = *item else {
         panic!("`Slot` is an enum, got {item}")
     };
-    assert_eq!(slot.name, "Slot");
-    assert_eq!(slot.variants.len(), 3);
+    assert_eq!(slot.name(), "Slot");
+    assert_eq!(slot.variants().len(), 3);
 
     let panel = root
-        .fields
+        .fields()
         .iter()
-        .find(|field| field.name == "panel")
+        .find(|field| field.name() == "panel")
         .expect("the props carry `panel`");
-    let TypeSchema::Struct(panel) = panel.ty else {
+    let TypeSchema::Struct(panel) = panel.ty() else {
         panic!("`Panel` is a struct")
     };
-    let TypeSchema::Struct(profile) = panel.fields[0].ty else {
+    let TypeSchema::Struct(profile) = panel.fields()[0].ty() else {
         panic!("`Profile` is a struct")
     };
-    let TypeSchema::Enum(tier) = profile.fields[1].ty else {
+    let TypeSchema::Enum(tier) = profile.fields()[1].ty() else {
         panic!("`Tier` is an enum")
     };
     assert_eq!(
-        tier.representation,
+        tier.representation(),
         waterui_ts_schema::EnumRepresentation::StringUnion,
         "an enum whose variants are all unit variants is a string union"
     );

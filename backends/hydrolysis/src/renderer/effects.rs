@@ -82,7 +82,6 @@ pub use gpu::EngineEffect;
 /// the nami subscriptions feeding the filter's parameter slots alive for as
 /// long as the layer can draw, and tears them down when the node is dropped.
 pub struct FilteredRuntime {
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     source: Option<AnyEffect>,
     filter: Option<FilterHandle>,
     _guards: ParamGuards,
@@ -108,7 +107,6 @@ impl FilteredRuntime {
     ///
     /// Registers the effect on first call and returns its id — the runtime
     /// retains the registration until the mount drops it.
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn filter(
         &mut self,
         register: impl FnOnce(AnyEffect) -> FilterHandle,

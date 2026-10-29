@@ -68,10 +68,6 @@ pub struct HStack<C> {
 
 /// Layout engine shared by the public [`HStack`] view.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "frozen layout contract (docs/layout-spec.md): the stack's parameters are its alignment and spacing"
-)]
 pub struct HStackLayout {
     /// The vertical alignment of children within the stack.
     pub alignment: VerticalAlignment,

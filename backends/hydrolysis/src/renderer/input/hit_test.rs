@@ -957,21 +957,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     reason = "window coordinates fit f32 — same cast dev's placement math used"
                 )]
                 {
-                    placement.x = staged.frame.x0 as f32;
-                    placement.y = staged.frame.y0 as f32;
-                    placement.width = staged.frame.width() as f32;
-                    placement.height = staged.frame.height() as f32;
-                    placement.clip = (clipped != staged.frame).then(|| {
+                    placement.set_x(staged.frame.x0 as f32);
+                    placement.set_y(staged.frame.y0 as f32);
+                    placement.set_width(staged.frame.width() as f32);
+                    placement.set_height(staged.frame.height() as f32);
+                    placement.set_clip((clipped != staged.frame).then(|| {
                         [
                             clipped.x0 as f32,
                             clipped.y0 as f32,
                             clipped.width() as f32,
                             clipped.height() as f32,
                         ]
-                    });
-                    placement.order = rank(&staged.order) as u32;
+                    }));
+                    placement.set_order(rank(&staged.order) as u32);
                 }
-                placement.visible = !clipped.is_zero_area();
+                placement.set_visible(!clipped.is_zero_area());
                 crate::renderer::MaterializedPlatformView {
                     table: staged.table,
                     placement,
@@ -1070,13 +1070,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let placed = self
             .materialized_platform_views
             .iter()
-            .find(|placed| placed.placement.id == view)
+            .find(|placed| placed.placement.id() == view)
             .unwrap_or_else(|| {
                 panic!("hydrolysis: platform view {view} is not placed in the current frame")
             });
         self.hit_test
             .interactive_regions_above(
-                placed.placement.order as usize,
+                placed.placement.order() as usize,
                 &self.text_editing.text_input_targets,
             )
             .any(|bounds| bounds.contains(point))
@@ -4059,7 +4059,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     .hit_test
                     .touch_scroll_config
                     .expect(NO_TOUCH_SCROLL_CONFIG);
-                let slop = f64::from(config.touch_slop);
+                let slop = f64::from(config.touch_slop());
                 if dominant.abs() <= slop {
                     self.hit_test.touch_scroll = TouchScrollGesture::Pending(pending);
                     return false;
@@ -4073,7 +4073,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         pending.origin,
                         displacement_x,
                         displacement_y,
-                        config.physics.overscroll,
+                        config.physics().overscroll(),
                     )
                 };
                 // A caught motion is taken over only by a drag of its own
@@ -4104,7 +4104,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     kurbo::Point::new(pending.origin.x, pending.origin.y + slop.copysign(dominant))
                 };
                 let claim = handle.begin_gesture();
-                let stretch = match config.physics.overscroll {
+                let stretch = match config.physics().overscroll() {
                     Overscroll::Stretch(stretch) => Some(
                         taken_over
                             .and_then(ScrollMotion::into_stretch)
@@ -4118,7 +4118,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     owner: owner.clone(),
                     last: point,
                     tracker: pending.tracker,
-                    overscroll: config.physics.overscroll,
+                    overscroll: config.physics().overscroll(),
                     stretch,
                 });
                 let changed = drag.scroll_by(anchor.x - point.x, anchor.y - point.y, at);

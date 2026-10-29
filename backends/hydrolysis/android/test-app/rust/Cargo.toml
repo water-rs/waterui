@@ -21,6 +21,7 @@ waterui-core.workspace = true
 default = ["gpu"]
 gpu = ["hydrolysis/gpu", "waterui/gpu"]
 hwui = ["hydrolysis/hwui"]
+filter-probe = []
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

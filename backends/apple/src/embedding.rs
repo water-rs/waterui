@@ -64,10 +64,6 @@ impl Runtime {
 /// host's, including its content-size category — never a synthesized
 /// scale table on top of the ambient platform font.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "closed: the declared host snapshot is scheme, direction, locale and the six fonts"
-)]
 pub struct HostEnvironment {
     /// The host's `SwiftUI` color scheme.
     pub scheme: cocoa_ui::ColorScheme,

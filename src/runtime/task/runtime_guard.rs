@@ -116,6 +116,32 @@ pub struct MainThreadStallProbeConfig {
     pub warn_cooldown: Duration,
 }
 
+impl MainThreadStallProbeConfig {
+    /// Emit `info` once this ratio of frame budget is reached.
+    #[must_use]
+    pub const fn info_ratio(&self) -> f64 {
+        self.info_ratio
+    }
+
+    /// Emit `warn` once this ratio of frame budget is reached.
+    #[must_use]
+    pub const fn warn_ratio(&self) -> f64 {
+        self.warn_ratio
+    }
+
+    /// Per-task cool-down for `info` logs.
+    #[must_use]
+    pub const fn info_cooldown(&self) -> Duration {
+        self.info_cooldown
+    }
+
+    /// Per-task cool-down for `warn` logs.
+    #[must_use]
+    pub const fn warn_cooldown(&self) -> Duration {
+        self.warn_cooldown
+    }
+}
+
 impl Default for MainThreadStallProbeConfig {
     fn default() -> Self {
         Self {
@@ -143,6 +169,64 @@ pub struct TaskPollSample {
     pub frame_budget: Duration,
     /// Refresh rate used to derive frame budget.
     pub refresh_hz: f64,
+}
+
+impl TaskPollSample {
+    /// Creates a `TaskPollSample` from its parts.
+    #[must_use]
+    pub const fn new(
+        task_type: &'static str,
+        poll_ready: bool,
+        wall: Duration,
+        cpu: Duration,
+        frame_budget: Duration,
+        refresh_hz: f64,
+    ) -> Self {
+        Self {
+            task_type,
+            poll_ready,
+            wall,
+            cpu,
+            frame_budget,
+            refresh_hz,
+        }
+    }
+
+    /// Type name of the spawned future.
+    #[must_use]
+    pub const fn task_type(&self) -> &'static str {
+        self.task_type
+    }
+
+    /// Whether this poll finished the future.
+    #[must_use]
+    pub const fn poll_ready(&self) -> bool {
+        self.poll_ready
+    }
+
+    /// Wall-clock duration spent in this poll.
+    #[must_use]
+    pub const fn wall(&self) -> Duration {
+        self.wall
+    }
+
+    /// CPU time consumed by this thread during this poll.
+    #[must_use]
+    pub const fn cpu(&self) -> Duration {
+        self.cpu
+    }
+
+    /// Frame budget used for thresholding.
+    #[must_use]
+    pub const fn frame_budget(&self) -> Duration {
+        self.frame_budget
+    }
+
+    /// Refresh rate used to derive frame budget.
+    #[must_use]
+    pub const fn refresh_hz(&self) -> f64 {
+        self.refresh_hz
+    }
 }
 
 /// Extension point for runtime diagnostics based on per-poll samples.

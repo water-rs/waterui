@@ -101,7 +101,7 @@ fn secondary_click_merges_the_context_menu_popup_into_the_tree() {
 
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the first frame must publish an accessibility tree");
     assert!(
         find_by_label(&update, Role::Button, "Copy").is_none(),
@@ -125,7 +125,7 @@ fn secondary_click_merges_the_context_menu_popup_into_the_tree() {
     }
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the click frame must publish an accessibility tree");
     let (copy, copy_node) = find_by_label(&update, Role::Button, "Copy")
         .expect("the context menu's items must merge into the returned tree");
@@ -150,7 +150,7 @@ fn secondary_click_merges_the_context_menu_popup_into_the_tree() {
 
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the activation frame must publish an accessibility tree");
     assert!(
         find_by_label(&update, Role::Button, "Copy").is_none(),
@@ -196,7 +196,7 @@ fn context_menu_item_action_reads_state_inherited_from_the_opening_view() {
 
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the first frame must publish an accessibility tree");
     let (_, host) = find_by_label(&update, Role::Button, "host")
         .expect("the host button must emit an accessibility node");
@@ -213,7 +213,7 @@ fn context_menu_item_action_reads_state_inherited_from_the_opening_view() {
     }
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the click frame must publish an accessibility tree");
     let (bump, _) = find_by_label(&update, Role::Button, "Bump")
         .expect("the context menu's items must merge into the returned tree");
@@ -249,7 +249,7 @@ fn a_window_with_a_pending_frame_is_not_settled() {
 
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the first frame must publish an accessibility tree");
     assert!(
         runtime.is_settled(),
@@ -271,7 +271,7 @@ fn a_window_with_a_pending_frame_is_not_settled() {
     );
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the pending frame must publish an accessibility tree");
     assert!(runtime.is_settled(), "the main window's pending frame ran");
 
@@ -291,7 +291,7 @@ fn a_window_with_a_pending_frame_is_not_settled() {
     let click_frame_at = Instant::now();
     let update = runtime
         .pump_at(false, click_frame_at)
-        .tree_update
+        .into_tree_update()
         .expect("the click frame must publish the merged tree");
     let (copy, _) = find_by_label(&update, Role::Button, "Copy")
         .expect("the context menu's items must merge into the returned tree");
@@ -342,7 +342,7 @@ fn a_popup_only_change_publishes_the_merged_tree() {
 
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the first frame must publish an accessibility tree");
     let (trigger, _) =
         find_by_label(&update, Role::Button, "Tint").expect("the color picker is missing");
@@ -354,7 +354,7 @@ fn a_popup_only_change_publishes_the_merged_tree() {
 
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the picker's first frame must publish an accessibility tree");
     let (swatch, _) = find_by_label(&update, Role::Button, "Red")
         .expect("the swatch panel must merge into the returned tree");
@@ -364,7 +364,7 @@ fn a_popup_only_change_publishes_the_merged_tree() {
     assert!(act(&mut runtime, Action::Focus, swatch));
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("a popup-only change must still publish the merged tree");
     assert!(
         find_by_label(&update, Role::Button, "Red").is_some(),
@@ -387,7 +387,7 @@ fn a_popup_only_change_publishes_the_merged_tree() {
     assert!(act(&mut runtime, Action::Click, swatch));
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the close frame must publish an accessibility tree");
     assert_eq!(
         update.focus, trigger,
@@ -456,7 +456,7 @@ fn a_clean_pump_publishes_no_tree_update() {
     let update = update.expect("the first frame must publish an accessibility tree");
     now += Duration::from_millis(16);
     assert!(
-        runtime.pump_at(false, now).tree_update.is_none(),
+        runtime.pump_at(false, now).tree_update().is_none(),
         "a settled pump with no popup must publish nothing"
     );
 
@@ -488,7 +488,7 @@ fn a_clean_pump_publishes_no_tree_update() {
     assert!(
         runtime
             .pump_at(false, last + Duration::from_millis(16))
-            .tree_update
+            .tree_update()
             .is_none(),
         "a settled pump with an open popup must publish nothing"
     );
@@ -572,7 +572,7 @@ fn a_touch_hold_past_the_threshold_mounts_the_menu_at_the_press_point() {
 
     let update = runtime
         .pump_at(false, start)
-        .tree_update
+        .into_tree_update()
         .expect("the first frame must publish an accessibility tree");
     assert!(
         find_by_label(&update, Role::Button, "Copy").is_none(),
@@ -590,7 +590,7 @@ fn a_touch_hold_past_the_threshold_mounts_the_menu_at_the_press_point() {
                 .checked_sub(Duration::from_millis(1))
                 .unwrap(),
         )
-        .tree_update;
+        .into_tree_update();
     if let Some(update) = update {
         assert!(
             find_by_label(&update, Role::Button, "Copy").is_none(),
@@ -604,7 +604,7 @@ fn a_touch_hold_past_the_threshold_mounts_the_menu_at_the_press_point() {
     // the tree.
     let update = runtime
         .pump_at(false, start + HOLD)
-        .tree_update
+        .into_tree_update()
         .expect("the hold frame must publish the merged tree");
     assert!(
         find_by_label(&update, Role::Button, "Copy").is_some(),
@@ -649,7 +649,7 @@ fn a_touch_released_early_fires_the_tap_and_no_menu() {
     );
 
     // Past the threshold nothing mounts — the hold was disarmed by the up.
-    let update = runtime.pump_at(false, start + HOLD).tree_update;
+    let update = runtime.pump_at(false, start + HOLD).into_tree_update();
     if let Some(update) = update {
         assert!(
             find_by_label(&update, Role::Button, "Copy").is_none(),
@@ -700,7 +700,7 @@ fn a_held_primary_mouse_button_opens_nothing() {
 
     runtime.push_input_event(primary_press(PointerKind::Mouse));
     let _ = runtime.pump_at(false, start);
-    let update = runtime.pump_at(false, start + HOLD).tree_update;
+    let update = runtime.pump_at(false, start + HOLD).into_tree_update();
     if let Some(update) = update {
         assert!(
             find_by_label(&update, Role::Button, "Copy").is_none(),
@@ -735,7 +735,7 @@ fn a_pen_hold_behaves_like_a_touch_hold() {
     let _ = runtime.pump_at(false, start);
     let update = runtime
         .pump_at(false, start + HOLD)
-        .tree_update
+        .into_tree_update()
         .expect("the hold frame must publish the merged tree");
     assert!(
         find_by_label(&update, Role::Button, "Copy").is_some(),
@@ -791,7 +791,7 @@ fn an_accessibility_activated_popup_anchors_under_the_control() {
 
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the first frame must publish an accessibility tree");
 
     // The menu trigger's popup window inflates by the panel margin on every
@@ -864,7 +864,7 @@ fn a_pointer_activated_picker_menu_anchors_under_the_field() {
 
     let update = runtime
         .pump_at(false, Instant::now())
-        .tree_update
+        .into_tree_update()
         .expect("the first frame must publish an accessibility tree");
     let (_, picker_node) = find_by_label(&update, Role::ComboBox, "Mode")
         .expect("the menu picker must emit a combo box node");

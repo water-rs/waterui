@@ -537,7 +537,7 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         managed_backends,
     ))
     .await?;
-    if project.manifest().package.embedded {
+    if project.manifest().package().embedded() {
         bail!(
             "`water run` does not apply to embedded projects: the crate is a library the host app embeds — build the artifact with `water build` and run the host app"
         );
@@ -772,13 +772,13 @@ async fn augment_event_with_crash_report(
                 DeviceEvent::Crashed(Crash::new(CrashCause::Report(Box::new(report))))
             }),
         DeviceEvent::Crashed(crash)
-            if crash.report.is_none() && !matches!(crash.cause, CrashCause::Report(_)) =>
+            if crash.report().is_none() && !matches!(crash.cause(), CrashCause::Report(_)) =>
         {
             let Some(report) = find_latest_ips_report(ctx).await else {
                 return DeviceEvent::Crashed(crash);
             };
             let mut crash = crash;
-            crash.report = Some(Box::new(report));
+            crash.set_report(Some(Box::new(report)));
             DeviceEvent::Crashed(crash)
         }
         other => other,
@@ -801,7 +801,7 @@ async fn build_and_run(
     // destination's hardware UDID — capture it before the selection is
     // consumed by the launch task.
     let device_udid = match &selection.device {
-        SelectedDevice::ApplePhysical(device) => Some(device.udid.clone()),
+        SelectedDevice::ApplePhysical(device) => Some(device.udid().to_owned()),
         _ => None,
     };
     let launch_task = spawn_device_launch_task(
@@ -885,14 +885,12 @@ async fn start_web_dev_server(
         return Ok(None);
     };
     let root = meta
-        .project
-        .as_ref()
+        .project()
         .expect("web_mount only returns a mount that declares a project");
-    let package_manager = project
-        .manifest()
-        .web
-        .as_ref()
-        .map_or_else(web::PackageManager::default, |web| web.package_manager);
+    let package_manager = project.manifest().web().map_or_else(
+        web::PackageManager::default,
+        waterui_cli::web::WebConfig::package_manager,
+    );
     if !package_manager.is_installed(project.host()).await {
         bail!(
             "`{}` is not installed; run `water doctor`",
@@ -1156,7 +1154,7 @@ impl SelectedDevice {
     /// Check if the device needs to be launched before running.
     fn needs_launch(&self) -> bool {
         match self {
-            Self::AppleSimulator(sim) => sim.state != "Booted",
+            Self::AppleSimulator(sim) => sim.state() != "Booted",
             Self::ApplePhysical(_) | Self::Local(_) | Self::AndroidDevice(_) => false,
             Self::AndroidEmulator(_) => true,
         }
@@ -1287,7 +1285,7 @@ async fn select_ios_device(
             waterui_cli::water_dir::record_last_used_device(
                 project.host(),
                 ios_device_memory_key(),
-                &device.identifier,
+                device.identifier(),
             )
             .await;
             return Ok(SelectedDevice::ApplePhysical(device));
@@ -1296,7 +1294,7 @@ async fn select_ios_device(
         waterui_cli::water_dir::record_last_used_device(
             project.host(),
             ios_device_memory_key(),
-            &sim.udid,
+            sim.udid(),
         )
         .await;
         return Ok(SelectedDevice::AppleSimulator(sim));
@@ -1342,17 +1340,17 @@ async fn ios_device_candidates(
 
     let mut simulators = AppleSimulator::scan_ios(project.host()).await?;
     simulators.retain(|sim| sim.supports_deployment_target(&sim_target));
-    simulators.sort_by_key(|sim| usize::from(sim.state != "Booted"));
+    simulators.sort_by_key(|sim| usize::from(sim.state() != "Booted"));
     let mut candidates: Vec<DeviceCandidate> = simulators
         .into_iter()
         .map(|sim| DeviceCandidate {
             label: format!(
                 "{} — {} ({})",
-                sim.name,
-                ios_version(sim.runtime_version.as_ref()),
-                sim.state
+                sim.name(),
+                ios_version(sim.runtime_version()),
+                sim.state()
             ),
-            id: sim.udid.clone(),
+            id: sim.udid().to_owned(),
             device: SelectedDevice::AppleSimulator(sim),
         })
         .collect();
@@ -1366,15 +1364,15 @@ async fn ios_device_candidates(
             .map(|device| DeviceCandidate {
                 label: format!(
                     "{} — {} ({})",
-                    device.name,
-                    ios_version(device.os_version.as_ref()),
-                    match device.transport {
+                    device.name(),
+                    ios_version(device.os_version()),
+                    match device.transport() {
                         waterui_cli::apple::physical::Transport::Wired => "USB",
                         waterui_cli::apple::physical::Transport::LocalNetwork => "Wi-Fi",
                         waterui_cli::apple::physical::Transport::Other => "paired",
                     }
                 ),
-                id: device.identifier.clone(),
+                id: device.identifier().to_owned(),
                 device: SelectedDevice::ApplePhysical(device.clone()),
             }),
     );
@@ -1394,7 +1392,9 @@ async fn select_physical_ios(
 ) -> Result<Option<ApplePhysicalDevice>> {
     let matches: Vec<&ApplePhysicalDevice> = devices
         .iter()
-        .filter(|device| device.identifier == query || device.udid == query || device.name == query)
+        .filter(|device| {
+            device.identifier() == query || device.udid() == query || device.name() == query
+        })
         .collect();
     let device = match matches.as_slice() {
         [] => return Ok(None),
@@ -1402,7 +1402,7 @@ async fn select_physical_ios(
         candidates => {
             use std::fmt::Write as _;
             let list = candidates.iter().fold(String::new(), |mut out, device| {
-                write!(out, "\n  {} ({})", device.name, device.identifier)
+                write!(out, "\n  {} ({})", device.name(), device.identifier())
                     .expect("writing to a String cannot fail");
                 out
             });
@@ -1427,8 +1427,8 @@ async fn select_physical_ios(
     if !device.supports_deployment_target(&deployment_target) {
         bail!(
             "{} runs {}, but this app requires iOS {deployment_target} (IPHONEOS_DEPLOYMENT_TARGET)",
-            device.name,
-            device.os_version.as_ref().map_or_else(
+            device.name(),
+            device.os_version().map_or_else(
                 || String::from("an unknown iOS version"),
                 |v| format!("iOS {v}")
             ),
@@ -1566,8 +1566,8 @@ async fn select_android_device(
 
 fn device_name(device: &SelectedDevice) -> String {
     match device {
-        SelectedDevice::AppleSimulator(sim) => sim.name.clone(),
-        SelectedDevice::ApplePhysical(dev) => dev.name.clone(),
+        SelectedDevice::AppleSimulator(sim) => sim.name().to_owned(),
+        SelectedDevice::ApplePhysical(dev) => dev.name().to_owned(),
         SelectedDevice::Local(local) => local.name().to_string(),
         SelectedDevice::AndroidDevice(dev) => dev.identifier().to_string(),
         SelectedDevice::AndroidEmulator(emu) => format!("{} (emulator)", emu.avd_name()),
@@ -1678,15 +1678,14 @@ pub(super) fn handle_device_event(
             Ok(())
         }
         DeviceEvent::Crashed(crash) => {
-            if let CrashCause::Panic(panic) = &crash.cause {
+            if let CrashCause::Panic(panic) = crash.cause() {
                 let extra = crash.panic_note();
                 shell.panic(
                     host,
                     panic,
                     extra.as_deref(),
                     crash
-                        .report
-                        .as_deref()
+                        .report()
                         .map(waterui_cli::debug::CrashReport::log_path),
                 );
             } else {

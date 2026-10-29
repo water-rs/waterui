@@ -609,17 +609,17 @@ define_class!(
                 .shared
                 .handlers
                 .borrow()
-                .get(&request.name)
+                .get(request.name())
                 .map(Rc::clone);
             let Some(handler) = handler else {
                 tracing::warn!(
-                    handler = %request.name,
+                    handler = %request.name(),
                     "page script called a WaterUI handler that is not registered"
                 );
                 reply.resolve(
                     &bridge::Reply::failure(&format!(
                         "no WaterUI handler named `{}`",
-                        request.name
+                        request.name()
                     ))
                     .to_json(),
                 );
@@ -630,7 +630,7 @@ define_class!(
             // completes rather than when this callback returns. The reply needs
             // no web view: the channel answers the document that asked, and
             // `ScriptReply`'s `Drop` covers a view that died mid-await.
-            let future = handler(&request.payload);
+            let future = handler(request.payload());
             executor_core::spawn_local(async move {
                 let answer = match future.await {
                     Ok(answer) => bridge::Reply::from(answer),
@@ -730,7 +730,7 @@ fn install_user_scripts(controller: &WKUserContentController, shared: &SharedSta
         ScriptInjectionTime::DocumentStart,
     );
     for script in shared.scripts.borrow().iter() {
-        add_user_script(controller, &script.source, script.time);
+        add_user_script(controller, script.source(), script.time());
     }
 }
 
@@ -854,13 +854,12 @@ fn answer_scheme_task(
     let url = request_url
         .and_then(|url| NSURL::URLWithString(&NSString::from_str(url)))
         .expect("WebKit only starts scheme tasks for URLs it could parse");
-    let names: Vec<Retained<NSString>> = response
-        .headers
+    let (status, response_headers, body) = response.into_parts();
+    let names: Vec<Retained<NSString>> = response_headers
         .iter()
         .map(|(name, _)| NSString::from_str(name))
         .collect();
-    let values: Vec<Retained<NSString>> = response
-        .headers
+    let values: Vec<Retained<NSString>> = response_headers
         .iter()
         .map(|(_, value)| NSString::from_str(value))
         .collect();
@@ -871,7 +870,7 @@ fn answer_scheme_task(
     let ns_response = NSHTTPURLResponse::initWithURL_statusCode_HTTPVersion_headerFields(
         NSHTTPURLResponse::alloc(),
         &url,
-        NSInteger::try_from(response.status).expect("HTTP status fits NSInteger"),
+        NSInteger::try_from(status).expect("HTTP status fits NSInteger"),
         Some(&NSString::from_str("HTTP/1.1")),
         Some(&headers),
     )
@@ -880,8 +879,8 @@ fn answer_scheme_task(
     // completes, and `stopURLSchemeTask` makes no further callbacks.
     unsafe {
         task.didReceiveResponse(&ns_response);
-        if !response.body.is_empty() {
-            task.didReceiveData(&NSData::from_vec(response.body));
+        if !body.is_empty() {
+            task.didReceiveData(&NSData::from_vec(body));
         }
         task.didFinish();
     }
@@ -963,11 +962,9 @@ impl MacSystemWebViewHandle {
     fn new(config: WebViewConfig) -> Self {
         let mtm = MainThreadMarker::new()
             .expect("Hydrolysis WKWebView must be created on the macOS main thread");
-        let shared = Rc::new(SharedState::new(
-            config.bridge_origins.clone(),
-            DocumentScripts::new(&config),
-            config.navigation_policy.clone(),
-        ));
+        let scripts = DocumentScripts::new(&config);
+        let (asset_server, bridge_origins, navigation_policy, ..) = config.into_parts();
+        let shared = Rc::new(SharedState::new(bridge_origins, scripts, navigation_policy));
         let delegate = WebViewDelegate::new(mtm, Rc::clone(&shared));
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
@@ -975,7 +972,7 @@ impl MacSystemWebViewHandle {
         // The bundled-asset origin exists only when the view was opened with a
         // server to answer it; the configuration retains the handler it is
         // registered under.
-        if let Some(server) = config.asset_server {
+        if let Some(server) = asset_server {
             let handler = AssetSchemeHandler::new(mtm, server);
             // SAFETY: main-thread message send to an object this wrapper
             // retains; see the module safety note.
@@ -1349,10 +1346,6 @@ impl MacSystemWebViewHandle {
 /// through the shared `WebViewHandle` contract. Applications never need it:
 /// the backend installs it as the default controller on macOS.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less controller used by name"
-)]
 pub struct MacSystemWebViewController;
 
 impl CustomWebViewController for MacSystemWebViewController {

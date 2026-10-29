@@ -16,10 +16,6 @@ use crate::{CdpError, CdpSession, ChromiumController, CustomCdpSession};
 
 /// Chromium profile and persistent data-store selection.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "every Chromium host destructures the whole profile, so a new field must fail their build instead of being ignored"
-)]
 pub struct ChromiumProfile {
     /// Optional profile name within the configured data directory.
     pub name: Option<String>,
@@ -31,10 +27,6 @@ pub struct ChromiumProfile {
 
 /// Configuration shared by visible and headless Chromium pages.
 #[derive(Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "every Chromium host destructures the whole configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct ChromiumConfiguration {
     /// Initial page URL. A missing URL opens `about:blank`.
     pub url: Option<Url>,

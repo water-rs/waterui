@@ -256,18 +256,18 @@ impl SharedState {
                 return;
             }
         };
-        let request_id = request.id;
-        let Some(handler) = self.handlers.borrow().get(&request.name).cloned() else {
+        let request_id = request.id();
+        let Some(handler) = self.handlers.borrow().get(request.name()).cloned() else {
             // Page script reached a name nothing registered for; it still
             // awaits an answer, and rejecting is the same shape the Kotlin
             // runtime gives it.
             tracing::warn!(
-                handler = %request.name,
+                handler = %request.name(),
                 "android webview: a bridge message named an unregistered handler"
             );
             self.post_bridge_reply(
                 &reply_proxy,
-                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name()))
                     .message(request_id),
             );
             return;
@@ -276,7 +276,7 @@ impl SharedState {
         // future completes rather than when this callback returns.
         let weak = Rc::downgrade(&self);
         spawn_local(async move {
-            let reply = match handler(&request.payload).await {
+            let reply = match handler(request.payload()).await {
                 Ok(reply) => bridge::Reply::from(reply),
                 Err(message) => bridge::Reply::Failure(message),
             };
@@ -373,14 +373,15 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         let instance = self.next_instance.get() + 1;
         self.next_instance.set(instance);
 
-        let origin_rules = androidx_origin_rules(&config.bridge_origins);
+        let origin_rules = androidx_origin_rules(config.bridge_origins());
         let scripts = DocumentScripts::new(&config);
+        let (asset_server, _, navigation_policy, _, _) = config.into_parts();
 
-        // `config.asset_server` crosses as a leaked `Box` Kotlin hands
+        // The config's asset server crosses as a leaked `Box` Kotlin hands
         // back to `nativeAssetServerAcquire`/`nativeFreeAssetServer`. The
         // `AssetServer` inside is already an `Arc` — the box is a handle,
         // not a second refcount.
-        let asset_server = config.asset_server.map_or(0, |server| {
+        let asset_server = asset_server.map_or(0, |server| {
             Box::into_raw(Box::new(AssetServerHandle {
                 server,
                 response: Arc::clone(&self.asset_response),
@@ -397,7 +398,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
             pending: RefCell::new(PendingCalls::default()),
             origin_rules,
             navigation: RefCell::new(NavigationTracker::default()),
-            navigation_policy: config.navigation_policy,
+            navigation_policy,
         });
         let native_handle = Box::into_raw(Box::new(Rc::downgrade(&shared))) as jlong;
 
@@ -681,10 +682,10 @@ impl HandleInner {
         ]
         .into_iter()
         .chain(self.shared.scripts.borrow().iter().map(|script| {
-            if script.time == ScriptInjectionTime::DocumentEnd {
-                compose_document_end(&script.source)
+            if script.time() == ScriptInjectionTime::DocumentEnd {
+                compose_document_end(script.source())
             } else {
-                script.source.to_string()
+                script.source().to_string()
             }
         }))
         .collect();
@@ -1509,14 +1510,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         // newline-joined `Name: value` header block Kotlin splits again on
         // the other side, and the body bytes.
         let headers = response
-            .headers
+            .headers()
             .iter()
             .map(|(name, value)| format!("{name}: {value}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let status = jint::from(response.status);
+        let status = jint::from(response.status());
         let headers = env.new_string(headers)?;
-        let body = env.byte_array_from_slice(&response.body)?;
+        let body = env.byte_array_from_slice(response.body())?;
         // SAFETY: `init` is `<init>` resolved on `handle.response.class` at
         // session create, and the arguments match its
         // `(ILjava/lang/String;[B)V` signature.

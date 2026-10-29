@@ -51,7 +51,7 @@ struct ChordModifiers {
 
 impl ChordModifiers {
     const fn of(shortcut: &Shortcut) -> Self {
-        let modifiers = shortcut.modifiers;
+        let modifiers = shortcut.modifiers();
         #[cfg(target_os = "macos")]
         {
             Self {
@@ -95,7 +95,7 @@ impl MenuShortcut {
     ) -> Self {
         Self {
             modifiers: ChordModifiers::of(shortcut),
-            key: shortcut.key.clone(),
+            key: shortcut.key().clone(),
             action,
             disabled,
             label,
@@ -280,7 +280,7 @@ fn collect_command_shortcut(command: &ResolvedCommand, out: &mut Vec<MenuShortcu
             shortcut,
             command.action.clone(),
             command.disabled.clone(),
-            command.label.content.snapshot().to_plain(),
+            command.label.content().snapshot().to_plain(),
         ));
     }
 }

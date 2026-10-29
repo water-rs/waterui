@@ -179,9 +179,9 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
     for _ in 0..4 {
         runtime.pump_at(false, at);
     }
-    let snapshot = runtime.pump_at(true, at).snapshot.expect("capture");
+    let snapshot = runtime.pump_at(true, at).into_snapshot().expect("capture");
 
-    let (cx0, cx1, cy0, cy1) = capsule_bounds(&snapshot.rgba8).expect("capsule pill painted");
+    let (cx0, cx1, cy0, cy1) = capsule_bounds(snapshot.rgba8()).expect("capsule pill painted");
     let capsule_w = cx1 - cx0 + 1;
     let capsule_h = cy1 - cy0 + 1;
     // Four ~19 pt rows + 8 pt vertical padding: proves the fonts loaded and the
@@ -192,7 +192,7 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
     );
 
     // Unclipped twin ink: painted pixels strictly below the capsule.
-    let (ix0, ix1, ink_px) = row_span(&snapshot.rgba8, cy1 + 4..H as usize, is_paint)
+    let (ix0, ix1, ink_px) = row_span(snapshot.rgba8(), cy1 + 4..H as usize, is_paint)
         .expect("twin ink painted — native fonts must render the rows");
     assert!(
         ink_px > 200,
@@ -212,7 +212,7 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
     // neighborhood either — ink clipped by the stadium caps may not paint, but
     // none may overpaint the frame.
     let mut escaped = 0usize;
-    for (y, row) in rows(&snapshot.rgba8) {
+    for (y, row) in rows(snapshot.rgba8()) {
         if y + 4 < cy0 || y > cy1 + 4 {
             continue;
         }
@@ -257,11 +257,11 @@ fn painted_ink_stays_within_measured_frame_single_text() {
     for _ in 0..4 {
         runtime.pump_at(false, at);
     }
-    let snapshot = runtime.pump_at(true, at).snapshot.expect("capture");
+    let snapshot = runtime.pump_at(true, at).into_snapshot().expect("capture");
 
-    let (cx0, cx1, _cy0, cy1) = capsule_bounds(&snapshot.rgba8).expect("capsule painted");
+    let (cx0, cx1, _cy0, cy1) = capsule_bounds(snapshot.rgba8()).expect("capsule painted");
     let (ix0, ix1, _) =
-        row_span(&snapshot.rgba8, cy1 + 2..H as usize, is_paint).expect("twin ink painted");
+        row_span(snapshot.rgba8(), cy1 + 2..H as usize, is_paint).expect("twin ink painted");
     assert!(
         ix0 >= cx0 && ix1 <= cx1,
         "twin ink x {ix0}..={ix1} escapes measured frame x {cx0}..={cx1}"
@@ -304,11 +304,11 @@ fn painted_ink_stays_within_measured_frame_overhang_font() {
     for _ in 0..4 {
         runtime.pump_at(false, at);
     }
-    let snapshot = runtime.pump_at(true, at).snapshot.expect("capture");
+    let snapshot = runtime.pump_at(true, at).into_snapshot().expect("capture");
 
-    let (cx0, cx1, _cy0, cy1) = capsule_bounds(&snapshot.rgba8).expect("capsule painted");
+    let (cx0, cx1, _cy0, cy1) = capsule_bounds(snapshot.rgba8()).expect("capsule painted");
     let (ix0, ix1, _) =
-        row_span(&snapshot.rgba8, cy1 + 2..H as usize, is_paint).expect("twin ink painted");
+        row_span(snapshot.rgba8(), cy1 + 2..H as usize, is_paint).expect("twin ink painted");
     assert!(
         ix0 >= cx0 && ix1 <= cx1,
         "twin ink x {ix0}..={ix1} escapes measured frame x {cx0}..={cx1}"
