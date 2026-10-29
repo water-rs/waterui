@@ -350,6 +350,7 @@ pub unsafe fn mount(
         crate::windows::bind_background(
             &mut keepalive,
             &root,
+            content.view(),
             &declaration.resolved_background(&env),
             &env,
             mtm,

@@ -720,7 +720,9 @@ const fn apple_deployment_platform(platform: TargetPlatform) -> Option<&'static 
     }
 }
 
-/// Resolve the deployment-target environment variable an Apple build must carry.
+/// Resolve the deployment-target environment variable an Apple build must
+/// carry, and the effective target it is set to: the project's
+/// `[apple.deployment-targets]` declaration, else the framework's floor.
 ///
 /// # Errors
 ///
@@ -736,10 +738,11 @@ pub async fn apple_deployment_target(
         eyre::eyre!("Platform {platform:?} does not have an Apple deployment target")
     })?;
     let target = project
-        .resolved_framework()
-        .await?
-        .apple_deployment_target(key)?;
-    Ok((environment, target.to_string()))
+        .manifest()
+        .apple
+        .deployment_targets
+        .effective(project.resolved_framework().await?, key)?;
+    Ok((environment, target))
 }
 
 /// The `*_DEPLOYMENT_TARGET` environment variable a Cargo compilation for
@@ -752,10 +755,14 @@ pub async fn apple_deployment_target(
 /// Mac Catalyst keys on the iOS variable: the build scripts a macabi
 /// compilation runs read `IPHONEOS_DEPLOYMENT_TARGET`, and no consumer in
 /// the graph reads `MACOSX_DEPLOYMENT_TARGET` for it.
-pub(crate) fn apple_deployment_target_env<'a>(
-    framework: &'a crate::framework::ResolvedFramework,
+///
+/// The value is the effective target: what `declared` raises above the
+/// framework's floor.
+pub(crate) fn apple_deployment_target_env(
+    framework: &crate::framework::ResolvedFramework,
+    declared: &crate::apple_targets::AppleDeploymentTargets,
     triple: &target_lexicon::Triple,
-) -> eyre::Result<Option<(&'static str, &'a str)>> {
+) -> eyre::Result<Option<(&'static str, String)>> {
     use target_lexicon::{Environment, OperatingSystem};
     let platform = match triple.operating_system {
         OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => TargetPlatform::MacOS,
@@ -772,7 +779,8 @@ pub(crate) fn apple_deployment_target_env<'a>(
         platform
             .deployment_target_setting()
             .expect("Apple platform"),
-        framework.apple_deployment_target(
+        declared.effective(
+            framework,
             apple_deployment_platform(platform).expect("Apple platform"),
         )?,
     )))

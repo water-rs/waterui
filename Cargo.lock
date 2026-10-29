@@ -12683,6 +12683,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-apple-os"
+version = "0.5.1"
+dependencies = [
+ "objc2 0.6.5",
+ "waterui-macros",
+]
+
+[[package]]
 name = "waterui-assets"
 version = "0.5.1"
 dependencies = [
@@ -13733,8 +13741,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tiny_http",
+ "toml 1.1.8+spec-1.1.0",
  "tracing",
  "waterui",
+ "waterui-apple-os",
  "waterui-core",
  "waterui-layout",
  "waterui-testing",

@@ -444,6 +444,31 @@ pub fn refresh_theme(theme: &crate::theme::ThemeSignals, scheme: cocoa_ui::Color
     crate::theme::refresh(theme, scheme);
 }
 
+/// Binds a window background without a window.
+///
+/// `container` stands for the window's content view and `content` for its
+/// content, as `windows::realize` wires them. Returns the keepalive holding
+/// the binding and the colour most recently painted behind the content.
+#[cfg(target_os = "macos")]
+pub fn bind_window_background(
+    container: &cocoa_ui::PlatformView,
+    content: &cocoa_ui::PlatformView,
+    resolved: &waterui::reactive::Computed<waterui::window::ResolvedWindowBackground>,
+    env: &Environment,
+    mtm: MainThreadMarker,
+) -> (
+    crate::contract::KeepAlive,
+    std::rc::Rc<core::cell::Cell<Option<waterui::graphics::color::WorkingColor>>>,
+) {
+    let painted = std::rc::Rc::new(core::cell::Cell::new(None));
+    let mut keepalive = crate::contract::KeepAlive::default();
+    crate::window_background::bind(&mut keepalive, container, content, resolved, env, mtm, {
+        let painted = painted.clone();
+        move |color| painted.set(Some(color))
+    });
+    (keepalive, painted)
+}
+
 /// Checks two-way bindings on a real native root window.
 ///
 /// `windows::realize` turns a declaration into a live window: the
@@ -532,7 +557,9 @@ pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
 /// orders a window in.
 #[cfg(target_os = "macos")]
 pub mod toolbar_reach {
-    use cocoa_ui::objc2_app_kit::{NSTextField, NSView, NSWindowStyleMask, NSWindowToolbarStyle};
+    use cocoa_ui::objc2_app_kit::{
+        NSScrollView, NSTextField, NSView, NSWindowStyleMask, NSWindowToolbarStyle,
+    };
     use cocoa_ui::{MainThreadMarker, Retained};
     use waterui::Str;
     use waterui::ViewExt as _;
@@ -541,12 +568,15 @@ pub mod toolbar_reach {
     use waterui::navigation::{
         NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, Tabs, tab_style,
     };
-    use waterui::prelude::text;
+    use waterui::prelude::{scroll, text, vstack, zstack};
     use waterui::reactive::binding;
     use waterui::window::{WindowState, WindowStyle};
     use waterui_core::layout::{Point, Rect, Size};
 
-    use super::{ListSurface, MAIN_QUEUE_DEADLINE, pump_main_until, row_item, window_environment};
+    use super::{
+        ListSurface, MAIN_QUEUE_DEADLINE, ScrollSurface, pump_main_until, row_item,
+        window_environment,
+    };
 
     /// The text the non-scrolling fixtures show — the label the case
     /// finds in the window.
@@ -700,6 +730,58 @@ pub mod toolbar_reach {
         );
     }
 
+    /// Asserts `scroll`'s vertical scroller starts at the titlebar's
+    /// bottom: it follows the toolbar band, as `SwiftUI`'s does, rather
+    /// than running under the toolbar or moving down with a list's gap.
+    fn assert_scroller_starts_below_the_titlebar(scroll: &NSScrollView, edges: &Edges) {
+        let scroller = scroll
+            .verticalScroller()
+            .expect("the scroll surface has a vertical scroller");
+        let top = top_in_window(&scroller, scroller.bounds());
+        assert!(
+            (top - edges.safe).abs() <= TOLERANCE,
+            "the vertical scroller must start at the titlebar's bottom {}, but its top is {top}",
+            edges.safe
+        );
+    }
+
+    /// Asserts the scroll view runs under the toolbar to the window's top
+    /// edge, its first content row rests at the titlebar's bottom, and its
+    /// scroller starts there.
+    fn assert_scroll_reaches_the_top(root: &NSView, edges: &Edges) {
+        let surface = find::<ScrollSurface>(root, &|_| true).expect("the window hosts the scroll");
+        let top = top_in_window(&surface, surface.bounds());
+        assert!(
+            top >= edges.window - TOLERANCE,
+            "the scroll view must reach the window top {} under the toolbar (safe-area top {}), \
+             but its top is {top}",
+            edges.window,
+            edges.safe
+        );
+        let first_row =
+            find::<NSTextField>(&surface, &|field| field.stringValue().to_string() == MARKER)
+                .expect("the scroll hosts the marker text");
+        let first_row = top_in_window(&first_row, first_row.bounds());
+        assert!(
+            (first_row - edges.safe).abs() <= TOLERANCE,
+            "the scroll's first row must rest at the titlebar's bottom {}, but its top is \
+             {first_row}",
+            edges.safe
+        );
+        assert_scroller_starts_below_the_titlebar(&surface, edges);
+    }
+
+    /// The fixtures' scrolling content: the marker over a column tall
+    /// enough to overflow the window, so the scroller is tiled.
+    fn tall_scroll() -> impl waterui::View {
+        scroll(vstack((text(MARKER), text("rest").height(2000.0))))
+    }
+
+    /// `liquid_glass`'s page shape: a backdrop behind the scroll.
+    fn backdrop_scroll() -> impl waterui::View {
+        zstack((text("backdrop"), tall_scroll()))
+    }
+
     /// The fixtures' list: three plain rows.
     fn rows() -> impl waterui::View {
         List::content(vec![row_item as fn() -> ListItem; 3])
@@ -746,6 +828,7 @@ pub mod toolbar_reach {
                     "a row scrolled to the top must rest at the inset content edge {expected}, \
                      but its top is {row}"
                 );
+                assert_scroller_starts_below_the_titlebar(&list, edges);
             },
         );
     }
@@ -757,6 +840,16 @@ pub mod toolbar_reach {
             || NavigationStack::new(NavigationView::new("Inbox", text(MARKER))),
             false,
             assert_text_stays_clear,
+        );
+    }
+
+    /// Window → `NavigationStack` → page whose content is a `ScrollView`.
+    pub fn a_stack_page_scroll_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationStack::new(NavigationView::new("Surfaces", tall_scroll())),
+            false,
+            assert_scroll_reaches_the_top,
         );
     }
 
@@ -783,6 +876,18 @@ pub mod toolbar_reach {
             || tabbed(|| NavigationView::new("Inbox", rows())),
             false,
             assert_list_reaches_the_top,
+        );
+    }
+
+    /// `liquid_glass`'s Surfaces structure: Window → `Tabs` (its picker in
+    /// the toolbar) → `NavigationStack` → page whose content is a
+    /// `ScrollView` over a backdrop.
+    pub fn a_tabbed_stack_page_scroll_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || tabbed(|| NavigationView::new("Surfaces", backdrop_scroll())),
+            false,
+            assert_scroll_reaches_the_top,
         );
     }
 
@@ -1031,6 +1136,10 @@ pub fn render_environment() -> Environment {
         &mut env,
         binding(Subheadline::DEFAULT).computed(),
     );
+    // Text resolves its colour against the label slots the Apple theme
+    // installs beside the colour slots.
+    #[cfg(target_os = "macos")]
+    env.insert(crate::theme::SystemLabelSlots::installed(&env));
     env
 }
 /// The view's current pixels through the production
@@ -1101,15 +1210,18 @@ pub type ListSurface = cocoa_ui::uikit::TableView;
 
 /// The offset that puts `row`'s top edge at the viewport's top.
 ///
-/// Read before any clamp: `rectOfRow`'s origin on `AppKit`;
-/// `rectForRowAtIndexPath`'s origin in section 0 minus the adjusted top
-/// inset on `UIKit`, read as the table stands now, since `UIKit` sizes
-/// unseen rows by estimate.
+/// Read before any clamp: `rectOfRow`'s origin minus the top content inset
+/// on `AppKit`; `rectForRowAtIndexPath`'s origin in section 0 minus the
+/// adjusted top inset on `UIKit`, read as the table stands now, since
+/// `UIKit` sizes unseen rows by estimate.
 #[must_use]
 pub fn list_row_top(table: &ListSurface, row: usize) -> cocoa_ui::Point {
     #[cfg(target_os = "macos")]
     {
-        cocoa_ui::Point::new(0.0, table.rect_of_row(row).origin.y)
+        cocoa_ui::Point::new(
+            0.0,
+            table.rect_of_row(row).origin.y - table.contentInsets().top,
+        )
     }
     #[cfg(target_os = "ios")]
     {

@@ -149,6 +149,18 @@ The optional `[platforms.<platform>]` tables declare the project's backend for e
 platform; see [Platforms and backends](#platforms-and-backends). `water create` writes
 no declarations.
 
+Apple builds target the framework's deployment floor unless the project raises it. An API
+that needs a newer OS (`WebView::navigation_policy`, and so `include_web!`, need OS 27) does
+not compile below it, and the error names this table:
+
+```toml
+[apple.deployment-targets]
+ios = "27.0"      # any of macos, ios, tvos, watchos, visionos; below the framework floor is an error
+macos = "27.0"
+```
+
+`water create` writes it for a project that bundles a web frontend.
+
 When developing against a local WaterUI checkout, add `waterui_path = "../.."` at the top
 level so backends resolve locally instead of from the registry.
 

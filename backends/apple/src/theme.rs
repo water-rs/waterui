@@ -69,8 +69,8 @@ pub struct SystemLabelSlots {
 #[cfg(target_os = "macos")]
 impl SystemLabelSlots {
     /// Reads the identities of the `Foreground` and `MutedForeground`
-    /// signals [`install`] put in `env`.
-    fn installed(env: &Environment) -> Self {
+    /// signals installed in `env`: [`install`]'s, or a test harness's.
+    pub(crate) fn installed(env: &Environment) -> Self {
         use cocoa_ui::appkit::colors::AppColor;
         fn identity<S: 'static>(env: &Environment) -> SignalIdentity {
             theme::installed_color_signal::<S>(env)
@@ -85,6 +85,28 @@ impl SystemLabelSlots {
                     identity::<color::MutedForeground>(env),
                     AppColor::SecondaryLabel,
                 ),
+            ],
+        }
+    }
+
+    /// The slots as text inside Liquid Glass draws them: the default
+    /// foreground stands for the opaque `NSColor.textColor` rather than
+    /// `labelColor`.
+    ///
+    /// In the light appearance `NSGlassEffectView` gives its content view the
+    /// vibrant-light appearance, where `labelColor` is black at 0.698 alpha
+    /// and draws plus-darker, so glass text loses almost a third of its ink.
+    /// `SwiftUI` draws `.primary` text inside `glassEffect` at full strength: its
+    /// `liquid_glass` reference capture reaches pure black at every glyph
+    /// stem. `textColor` is the system's opaque primary text color in every
+    /// appearance. The muted slot keeps `secondaryLabelColor`.
+    #[must_use]
+    pub const fn in_glass(self) -> Self {
+        let [(foreground, _), muted] = self.slots;
+        Self {
+            slots: [
+                (foreground, cocoa_ui::appkit::colors::AppColor::Text),
+                muted,
             ],
         }
     }

@@ -167,7 +167,8 @@ def checkout(revision):
 
 
 def self_check():
-    """Verify the release serializer carries the framework's deployment floor."""
+    """Verify the release serializer carries the framework's deployment floor and the
+    web frontend's deployment targets."""
     framework = tomllib.loads(Path("Cargo.toml").read_text())
     expected = framework["package"]["metadata"]["waterui"]["apple-deployment-targets"]
     for channel in ("stable", "nightly"):
@@ -176,6 +177,8 @@ def self_check():
         assert actual == expected
         for platform in ("macos", "ios"):
             assert re.fullmatch(r"\d+(?:\.\d+)*", actual[platform])
+        web = framework["package"]["metadata"]["waterui"]["web-frontend-apple-deployment-targets"]
+        assert json.loads(json.dumps(manifest))["metadata"]["web-frontend-apple-deployment-targets"] == web
 
 
 def prepare_stable(tag, revision):

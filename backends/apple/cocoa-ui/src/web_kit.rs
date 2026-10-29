@@ -200,7 +200,7 @@ pub struct ActionInfo {
     /// `mainFrameNavigation`: the main-frame navigation the action belongs
     /// to — the same `WKNavigation` the load call that issued it returned,
     /// and the one every server redirect of it keeps. `None` for a subframe
-    /// action.
+    /// action, and always `None` unless [`Handlers::reads_main_frame_navigation`].
     pub navigation: Option<Retained<WKNavigation>>,
 }
 
@@ -324,6 +324,12 @@ pub struct Handlers {
     pub authentication: Option<DecideAuthentication>,
     /// Every notification the navigation delegate emits.
     pub event: Option<OnEvent>,
+    /// Whether [`ActionInfo::navigation`] is read. `mainFrameNavigation` is
+    /// public API only from macOS/iOS 27, so only a consumer that needs it
+    /// — one with a navigation policy installed, which the type gate on
+    /// `WebViewOpen::navigation_policy` restricts to deployment targets of
+    /// Apple OS 27 or newer — turns this on. Otherwise `navigation` is `None`.
+    pub reads_main_frame_navigation: bool,
 }
 
 impl std::fmt::Debug for Handlers {
@@ -333,6 +339,10 @@ impl std::fmt::Debug for Handlers {
             .field("decide_response", &self.decide_response.is_some())
             .field("authentication", &self.authentication.is_some())
             .field("event", &self.event.is_some())
+            .field(
+                "reads_main_frame_navigation",
+                &self.reads_main_frame_navigation,
+            )
             .finish()
     }
 }
@@ -902,6 +912,7 @@ define_class!(
         ) {
             // SAFETY: see the module safety note.
             let target_frame = unsafe { action.targetFrame() };
+            let handlers = self.ivars().handlers.clone();
             let info = ActionInfo {
                 // SAFETY: see the module safety note.
                 request: unsafe { action.request() },
@@ -911,13 +922,19 @@ define_class!(
                 target_is_main: target_frame
                     // SAFETY: see the module safety note.
                     .is_some_and(|frame| unsafe { frame.isMainFrame() }),
-                // SAFETY: `action` is a live `WKNavigationAction`;
-                // `mainFrameNavigation` is a read-only property the
-                // generated bindings do not carry — public API since
-                // macOS/iOS 27, this workspace's deployment floor.
-                navigation: unsafe { msg_send![action, mainFrameNavigation] },
+                navigation: if handlers.reads_main_frame_navigation {
+                    // SAFETY: `action` is a live `WKNavigationAction`;
+                    // `mainFrameNavigation` is a read-only property the
+                    // generated bindings do not carry, public API since
+                    // macOS/iOS 27. The flag is set only for a view with a
+                    // navigation policy, which the type gate on
+                    // `WebViewOpen::navigation_policy` restricts to
+                    // deployment targets that reach it.
+                    unsafe { msg_send![action, mainFrameNavigation] }
+                } else {
+                    None
+                },
             };
-            let handlers = self.ivars().handlers.clone();
             let policy = crate::callback::guarded("web view navigation action", || {
                 handlers
                     .decide_action

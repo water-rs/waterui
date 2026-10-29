@@ -130,7 +130,7 @@ impl Drop for ColorSchemeObservation {
     }
 }
 
-fn color_scheme_of(appearance: &NSAppearance) -> ColorScheme {
+pub fn color_scheme_of(appearance: &NSAppearance) -> ColorScheme {
     // SAFETY: reads string constants `AppKit` owns for the process's
     // lifetime.
     let (dark, light) = unsafe { (NSAppearanceNameDarkAqua, NSAppearanceNameAqua) };
