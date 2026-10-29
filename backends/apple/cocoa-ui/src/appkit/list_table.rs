@@ -1091,15 +1091,19 @@ impl TableView {
         self.ivars().flight.jump_to(self, point);
     }
 
-    /// The clip position that puts `row`'s top edge at the clip's top —
-    /// `rectOfRow` is exact (the table answers `heightOfRow` for every
-    /// row), and the clip's constraint clamps it, so a last-screenful row
-    /// lands at the document's end rather than past it.
+    /// The clip position that puts `row`'s top edge at the inset content
+    /// edge — below the window toolbar the table's `contentInsets` carry
+    /// ([`layout_with_safe_area_insets`](super::scroll::layout_with_safe_area_insets)),
+    /// not at the clip's own top. `rectOfRow` is exact (the table answers
+    /// `heightOfRow` for every row), and the clip's constraint clamps it,
+    /// so a last-screenful row lands at the document's end rather than
+    /// past it.
     fn row_top(&self, row: usize) -> Point {
         self.layoutSubtreeIfNeeded();
+        let inset = EdgeInsets::from(self.contentInsets());
         ScrollFlight::constrained(
             &self.contentView(),
-            Point::new(0.0, self.rect_of_row(row).origin.y),
+            Point::new(-inset.left, self.rect_of_row(row).origin.y - inset.top),
         )
     }
 

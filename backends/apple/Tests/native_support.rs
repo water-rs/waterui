@@ -709,6 +709,41 @@ pub mod toolbar_reach {
         );
     }
 
+    /// A row scrolled to the top sits below the titlebar.
+    ///
+    /// Window → `NavigationStack` → page whose content is a `List` taller
+    /// than the window: the row lands at the inset content edge — where
+    /// the first row rests — instead of under the toolbar.
+    pub fn a_row_scrolled_to_the_top_sits_below_the_titlebar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || {
+                NavigationStack::new(NavigationView::new(
+                    "Inbox",
+                    List::content(vec![row_item as fn() -> ListItem; 60]),
+                ))
+            },
+            false,
+            |root, edges| {
+                let list = find::<ListSurface>(root, &|_| true).expect("the window hosts the list");
+                list.scroll_row_to_top(20);
+                let row = top_in_window(&list.table_view(), list.rect_of_row(20));
+                assert!(
+                    row <= edges.safe + TOLERANCE,
+                    "a row scrolled to the top must sit below the titlebar's bottom {}, but its \
+                     top is {row}",
+                    edges.safe
+                );
+                let expected = edges.safe - LIST_GAP;
+                assert!(
+                    (row - expected).abs() <= LIST_GAP_TOLERANCE,
+                    "a row scrolled to the top must rest at the inset content edge {expected}, \
+                     but its top is {row}"
+                );
+            },
+        );
+    }
+
     /// Window → `NavigationStack` → page whose content is text.
     pub fn a_stack_page_text_stays_clear_of_the_toolbar(mtm: MainThreadMarker) {
         realized(

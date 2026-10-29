@@ -161,6 +161,13 @@ fn navigation_trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "navigation::toolbar_reach::a_row_scrolled_to_the_top_sits_below_the_titlebar",
+            || {
+                toolbar_reach::a_row_scrolled_to_the_top_sits_below_the_titlebar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
             "navigation::toolbar_reach::a_stack_page_text_stays_clear_of_the_toolbar",
             || {
                 toolbar_reach::a_stack_page_text_stays_clear_of_the_toolbar(mtm());
