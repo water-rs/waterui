@@ -245,7 +245,7 @@ jobs:
           retention-days: 90
 
       - name: Upload iOS logs
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-logs-ios-${{ matrix.example }}
