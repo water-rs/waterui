@@ -21,14 +21,14 @@ use std::time::Duration;
 use cocoa_ui::display_link::FrameClock;
 use cocoa_ui::main_queue::{MainQueueWake, MainThreadBound, enqueue_after_local};
 use cocoa_ui::notification::NotificationObserver;
-use cocoa_ui::uikit::KeyboardBand;
 use cocoa_ui::uikit::input_view::InputView;
+use cocoa_ui::uikit::{KeyboardBand, WindowScene};
 use cocoa_ui::{MainThreadMarker, Retained};
 use nami::Signal as _;
 use waterui::cursor::CursorStyle;
 use waterui::window::{Window, WindowState};
 use waterui_core::Environment;
-use waterui_core::layout::layout_direction;
+use waterui_core::layout::{Size, layout_direction};
 use waterui_graphics::gpu::RedrawHandle;
 use waterui_layout::padding::EdgeInsets;
 
@@ -53,6 +53,7 @@ const KEYBOARD_SETTLE: Duration = Duration::from_millis(100);
 pub(super) struct SceneShared {
     mtm: MainThreadMarker,
     this: Weak<Self>,
+    scene: WindowScene,
     pub(super) view: Retained<InputView>,
     keyboard_band: KeyboardBand,
     clock: FrameClock,
@@ -73,21 +74,26 @@ pub(super) struct SceneShared {
     /// Identifies the one outstanding deadline wake, so a replaced one
     /// finds itself stale.
     deadline_generation: Cell<u64>,
-    max_frames_per_second: u32,
+    /// The screen the scene was last seen on, by identity.
+    screen: Cell<Option<usize>>,
+    /// The fastest rate that screen displays, in frames per second.
+    max_frames_per_second: Cell<u32>,
 }
 
 impl SceneShared {
     /// The shared state of a scene showing `view`.
     pub(super) fn new(
         mtm: MainThreadMarker,
+        scene: WindowScene,
         view: Retained<InputView>,
         keyboard_band: KeyboardBand,
         foreground: bool,
-        max_frames_per_second: u32,
     ) -> Rc<Self> {
         Rc::new_cyclic(|this: &Weak<Self>| Self {
             mtm,
             this: this.clone(),
+            max_frames_per_second: Cell::new(scene.max_frames_per_second()),
+            scene,
             view,
             keyboard_band,
             clock: FrameClock::new(mtm, {
@@ -109,13 +115,32 @@ impl SceneShared {
             foreground: Cell::new(foreground),
             keyboard_animation_until: Cell::new(None),
             deadline_generation: Cell::new(0),
-            max_frames_per_second,
+            screen: Cell::new(None),
         })
     }
 
     /// The fastest rate the scene's screen displays, in frames per second.
     pub(super) const fn max_frames_per_second(&self) -> u32 {
-        self.max_frames_per_second
+        self.max_frames_per_second.get()
+    }
+
+    /// Follows the scene onto another screen — an external display, a
+    /// Stage Manager move — by re-picking the frame clock's rate for it.
+    /// Returns whether the scene moved off a screen it was already seen on,
+    /// which is when the output must be re-negotiated.
+    fn follow_screen(&self) -> bool {
+        let Some(screen) = self.view.screen_id() else {
+            return false;
+        };
+        let previous = self.screen.replace(Some(screen));
+        if previous == Some(screen) {
+            return false;
+        }
+        if let Some(rate) = self.view.max_frames_per_second() {
+            self.max_frames_per_second.set(rate);
+        }
+        self.clock.reselect(&self.view);
+        previous.is_some()
     }
 
     /// Follows the keyboard's show, hide and resize animations: frames keep
@@ -264,6 +289,10 @@ pub(super) struct UiKitHostWindow {
     /// The [`TextInputState::activation`] the soft keyboard was last shown
     /// for; `None` while no field holds focus.
     soft_input: Option<u64>,
+    /// The title last handed to the scene.
+    applied_title: Option<String>,
+    /// The size limits last handed to the scene.
+    applied_size_limits: Option<(Option<Size>, Option<Size>)>,
 }
 
 impl UiKitHostWindow {
@@ -286,6 +315,8 @@ impl UiKitHostWindow {
             poster,
             cursor_style: CursorStyle::default(),
             soft_input: None,
+            applied_title: None,
+            applied_size_limits: None,
         };
         window.read_metrics();
         window
@@ -362,6 +393,11 @@ impl PlatformWindow for UiKitHostWindow {
         if window.state.snapshot() == WindowState::Closed {
             return;
         }
+        let title = window.display_title().snapshot();
+        if self.applied_title.as_deref() != Some(title.as_str()) {
+            self.shared.scene.set_title(title.as_str());
+            self.applied_title = Some(title.as_str().to_owned());
+        }
         // The scene sizes the window; the app's `Window::frame` binding is a
         // mount-time request — validated, then driven by the view's size,
         // which is what the frame must fill. The write is value-gated:
@@ -382,6 +418,22 @@ impl PlatformWindow for UiKitHostWindow {
         if current != target {
             window.frame.set(target);
         }
+    }
+
+    /// Only a scene the system lets the user resize has limits to apply;
+    /// deriving them from the content costs measure passes a fixed-size
+    /// iPhone scene never needs.
+    fn applies_size_limits(&self) -> bool {
+        self.shared.scene.supports_size_restrictions()
+    }
+
+    fn set_size_limits(&mut self, min: Option<Size>, max: Option<Size>) {
+        if self.applied_size_limits == Some((min, max)) {
+            return;
+        }
+        let (minimum, maximum) = size_restrictions(min, max);
+        self.shared.scene.set_size_restrictions(minimum, maximum);
+        self.applied_size_limits = Some((min, max));
     }
 
     fn drain_events(&mut self) -> Vec<InputEvent> {
@@ -419,7 +471,7 @@ impl PlatformWindow for UiKitHostWindow {
     }
 
     fn refresh_rate_hz(&self) -> Option<f64> {
-        Some(f64::from(self.shared.max_frames_per_second))
+        Some(f64::from(self.shared.max_frames_per_second()))
     }
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
@@ -475,6 +527,9 @@ impl AppleHostWindow for UiKitHostWindow {
     }
 
     fn begin_frame(&mut self, env: &Environment) {
+        if self.shared.follow_screen() {
+            self.display_moved.set(true);
+        }
         if self.read_metrics() {
             let (width, height) = self.size_px;
             self.shared
@@ -489,4 +544,24 @@ impl AppleHostWindow for UiKitHostWindow {
              closed by the app"
         );
     }
+}
+
+/// The scene size restrictions, in points, for the window's content-size
+/// limits: no minimum is a zero size, and a missing or infinite maximum on
+/// an axis is the largest finite extent, since `UIKit` takes no unbounded
+/// value.
+fn size_restrictions(min: Option<Size>, max: Option<Size>) -> (cocoa_ui::Size, cocoa_ui::Size) {
+    let extent = |value: f32| {
+        if value.is_finite() {
+            f64::from(value)
+        } else {
+            f64::from(f32::MAX)
+        }
+    };
+    let minimum = min.map_or(cocoa_ui::Size::ZERO, |size| {
+        cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height))
+    });
+    let maximum = max.unwrap_or(Size::new(f32::INFINITY, f32::INFINITY));
+    let maximum = cocoa_ui::Size::new(extent(maximum.width), extent(maximum.height));
+    (minimum, maximum)
 }

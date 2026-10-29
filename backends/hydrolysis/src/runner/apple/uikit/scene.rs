@@ -82,10 +82,10 @@ impl UiKitScene {
         // foreground; nothing draws before that.
         let shared = SceneShared::new(
             mtm,
+            scene.clone(),
             Retained::clone(&view),
             keyboard_band,
             false,
-            scene.max_frames_per_second(),
         );
         let request_frame = frame_requester(&shared);
 

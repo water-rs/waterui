@@ -26,6 +26,7 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
 };
+use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSDictionary, NSObjectProtocol, NSSet, NSString};
 use objc2_ui_kit::{
     UIApplication, UIApplicationDelegate, UIApplicationLaunchOptionsKey, UICommand,
@@ -37,6 +38,7 @@ use objc2_ui_kit::{
 use super::key_commands::{KeyCommandRegistry, KeyCommands};
 use super::window::Window;
 use crate::callback::guarded;
+use crate::geometry::Size;
 
 type LaunchHandler = Box<dyn FnOnce(MainThreadMarker)>;
 type SceneHandler = Rc<dyn Fn(&WindowScene) -> Window>;
@@ -262,6 +264,36 @@ impl WindowScene {
     pub fn max_frames_per_second(&self) -> u32 {
         u32::try_from(self.scene.screen().maximumFramesPerSecond())
             .expect("a screen's maximum refresh rate is not negative")
+    }
+
+    /// Sets the title the system shows for the scene in the App Switcher and
+    /// Stage Manager.
+    pub fn set_title(&self, title: &str) {
+        self.scene.setTitle(Some(&NSString::from_str(title)));
+    }
+
+    /// Whether the system lets the user resize the scene's window, which is
+    /// when [`Self::set_size_restrictions`] has an effect. `UIKit` reports
+    /// no restrictions object for a scene that always fills the screen.
+    #[must_use]
+    pub fn supports_size_restrictions(&self) -> bool {
+        self.scene.sizeRestrictions().is_some()
+    }
+
+    /// Bounds the size, in points, the user can resize the scene's window
+    /// to.
+    ///
+    /// # Panics
+    ///
+    /// If the scene has no size restrictions; check
+    /// [`Self::supports_size_restrictions`] first.
+    pub fn set_size_restrictions(&self, minimum: Size, maximum: Size) {
+        let restrictions = self
+            .scene
+            .sizeRestrictions()
+            .expect("the scene's window is not resizable");
+        restrictions.setMinimumSize(CGSize::new(minimum.width, minimum.height));
+        restrictions.setMaximumSize(CGSize::new(maximum.width, maximum.height));
     }
 
     pub(super) fn native(&self) -> &UIWindowScene {

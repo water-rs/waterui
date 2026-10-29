@@ -450,6 +450,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UIInterface",
     "UIResponder",
     "UIScene",
+    "UISceneSizeRestrictions",
     "UISceneDefinitions",
     "UIScrollView",
     "UISceneOptions",

@@ -108,10 +108,10 @@ pub struct Window {
     /// performs on its children, applied at the window boundary.
     ///
     /// Platform support: enforced by desktop backends (hydrolysis/winit,
-    /// macOS `NSWindow.contentMinSize`/`contentMaxSize`). iOS/iPadOS has no
-    /// per-window size control today (the Apple backend's multi-window support
-    /// is macOS-only); Android's single-Activity model has no per-window
-    /// runtime size limits; embedded (dew) displays are fixed-size — those
+    /// macOS `NSWindow.contentMinSize`/`contentMaxSize`) and by hydrolysis on
+    /// iPadOS, where the limits reach `UIWindowScene.sizeRestrictions` (an
+    /// iPhone scene always fills the screen and has none). Android's single-Activity model has no
+    /// per-window runtime size limits; embedded (dew) displays are fixed-size — those
     /// targets ignore this.
     ///
     /// [`Layout`]: waterui_core::layout::Layout

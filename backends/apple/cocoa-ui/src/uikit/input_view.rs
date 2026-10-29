@@ -1162,6 +1162,15 @@ impl InputView {
         u32::try_from(scene.screen().maximumFramesPerSecond()).ok()
     }
 
+    /// The identity of the screen the view is drawn on; `None` while the view
+    /// is outside any window scene. Two values are equal exactly when the
+    /// screen is the same one, which is all it is good for.
+    #[must_use]
+    pub fn screen_id(&self) -> Option<usize> {
+        let scene = self.window()?.windowScene()?;
+        Some(Retained::as_ptr(&scene.screen()) as usize)
+    }
+
     /// Installs `handler`, called after every layout pass of the view.
     pub fn set_layout_handler(&self, handler: impl Fn() + 'static) {
         self.ivars().layout_handler.replace(Some(Rc::new(handler)));
