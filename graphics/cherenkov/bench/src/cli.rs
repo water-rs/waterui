@@ -2712,11 +2712,14 @@ mod completion_tests {
     #[test]
     fn arms_completion_after_submit_returns() {
         let (engine, window) = run_probe(false);
-        // The step follows submit as a separate call, so the submit
-        // interval the loop times excludes it.
+        // The measured window opens on an idle GPU even without warmup
+        // frames, since `prepare` may have submitted uploads. The step
+        // follows submit as a separate call, so the submit interval the
+        // loop times excludes it.
         assert_eq!(
             engine.events,
             [
+                "complete",
                 "encode",
                 "submit",
                 "arm completion",
@@ -2738,10 +2741,12 @@ mod completion_tests {
     #[test]
     fn completes_each_frame_before_draining_its_timestamps() {
         let (engine, window) = run_probe(true);
-        // The step follows the latency wait, so latency_seconds excludes it.
+        // The first wait opens the measured window on an idle GPU. The step
+        // follows the latency wait, so latency_seconds excludes it.
         assert_eq!(
             engine.events,
             [
+                "complete",
                 "encode",
                 "submit",
                 "complete",
