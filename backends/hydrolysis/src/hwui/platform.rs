@@ -163,9 +163,7 @@ impl HwuiResources {
         premultiplied: bool,
         pixels: &[u8],
     ) -> Result<Handle<ImageId>, ResourceError> {
-        self.platform
-            .image_limits()
-            .check::<cherenkov::Rgba8>(width, height)?;
+        self.platform.image_limits().check::<Rgba8>(width, height)?;
         let upload = BitmapUpload {
             width,
             height,

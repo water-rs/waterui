@@ -63,6 +63,10 @@ use crate::scroll_flight::{FlightPlan, ScrollFlight};
 /// The table's content-bearing column identifier.
 const COLUMN_IDENTIFIER: &str = "content";
 
+/// The top space the list gains below the scroll view's edge — `SwiftUI`'s
+/// breathing room above the first row, which scrolls away with the rows.
+const TOP_CONTENT_INSET: f64 = 10.0;
+
 /// The data the wrapped `NSTableView` reads rows from — the list's model.
 ///
 /// All methods are called on the main thread. `rows`, `view_for_row`,
@@ -531,7 +535,7 @@ define_class!(
 impl TableView {
     /// A list-shaped table: one `content` column, no header, `fullWidth`
     /// rows, zero intercell spacing, text-background fill, autohiding
-    /// vertical scroller, and a 10pt top content inset that scrolls away.
+    /// vertical scroller, and a top content inset that scrolls away.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(TableViewIvars::new(mtm));
@@ -566,7 +570,18 @@ impl TableView {
         this.setDrawsBackground(false);
         this.setAutomaticallyAdjustsContentInsets(false);
         this.setContentInsets(NSEdgeInsets {
-            top: 10.0,
+            top: TOP_CONTENT_INSET,
+            left: 0.0,
+            bottom: 0.0,
+            right: 0.0,
+        });
+        // `scrollerInsets` offsets the scroller from the scroll view's
+        // edge independently of `contentInsets`: negating the content
+        // inset keeps the scroller spanning the full height the way
+        // `SwiftUI`'s list scroller does, while the rows still gain the
+        // inset (water-rs/waterui#3588).
+        this.setScrollerInsets(NSEdgeInsets {
+            top: -TOP_CONTENT_INSET,
             left: 0.0,
             bottom: 0.0,
             right: 0.0,
@@ -674,6 +689,8 @@ type SeparatorHandler = Rc<dyn Fn(&TableRowView) -> (f64, f64)>;
 pub struct TableRowViewIvars {
     /// `(leading, trailing)` insets for the hairline; `None` draws none.
     separator: RefCell<Option<SeparatorHandler>>,
+    /// Whether the hairline paints — a section's last member draws none.
+    shows_separator: Cell<bool>,
 }
 
 impl fmt::Debug for TableRowViewIvars {
@@ -730,6 +747,9 @@ define_class!(
         fn draw_rect(&self, dirty_rect: NSRect) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), drawRect: dirty_rect] };
+            if !self.ivars().shows_separator.get() {
+                return;
+            }
             let Some(handler) = self.ivars().separator.borrow().as_ref().cloned() else {
                 return;
             };
@@ -765,6 +785,14 @@ impl TableRowView {
     pub fn set_separator_handler(&self, handler: Option<SeparatorHandler>) {
         self.ivars().separator.replace(handler);
         self.setNeedsDisplay(true);
+    }
+
+    /// Whether the row paints its separator. A changed answer marks the
+    /// row dirty so a gained or lost hairline redraws.
+    pub fn set_shows_separator(&self, shows: bool) {
+        if self.ivars().shows_separator.replace(shows) != shows {
+            self.setNeedsDisplay(true);
+        }
     }
 }
 
@@ -1169,15 +1197,15 @@ impl TableView {
         self.window().is_some()
     }
 
-    /// Runs `handler` once per row view currently materialized.
-    pub fn enumerate_row_views(&self, handler: impl Fn(&NSTableRowView) + 'static) {
-        let block = block2::RcBlock::new(
-            move |row_view: NonNull<NSTableRowView>, _index: NSInteger| {
+    /// Runs `handler` once per row view currently materialized, with the
+    /// row's index.
+    pub fn enumerate_row_views(&self, handler: impl Fn(usize, &NSTableRowView) + 'static) {
+        let block =
+            block2::RcBlock::new(move |row_view: NonNull<NSTableRowView>, index: NSInteger| {
                 // SAFETY: `AppKit` lends a live row view for the block's
                 // duration.
-                unsafe { handler(row_view.as_ref()) };
-            },
-        );
+                unsafe { handler(index.cast_unsigned(), row_view.as_ref()) };
+            });
         self.table_view()
             .enumerateAvailableRowViewsUsingBlock(&block);
     }

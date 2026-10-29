@@ -99,6 +99,7 @@ impl BackdropGroupKey {
 
     /// The group's treatment terms: the level's blur and colour stage
     /// under the key's scheme, resolved once per join.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn runtime(&self) -> MaterialRuntime {
         MaterialRuntime::new(self.level, self.scheme)
     }
@@ -158,12 +159,14 @@ impl ChromeGroupKey {
     }
 
     /// The members' capture class.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) const fn class(&self) -> CaptureClass {
         self.class
     }
 
     /// The layer the group's capture anchors at — `None` under the
     /// first-member rule.
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn anchor(&self) -> Option<LayerId> {
         self.anchor
     }
@@ -176,6 +179,7 @@ impl ChromeGroupKey {
 /// follows to re-point the member's frame layer at the replacement group
 /// without waiting for the member's own commit.
 pub struct MaterialMembership<E: crate::text::TextEngine> {
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     marker: Rc<MemberMarker>,
     owner: Weak<NodeCell<E>>,
 }
@@ -209,6 +213,7 @@ struct MemberEntry<K, M, E: crate::text::TextEngine> {
     /// The member's own binding payload — its shader handle and live
     /// effect — kept so a group rebuild rebinds each member's own
     /// sample, never the joining member's.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     payload: M,
     /// Set when a group rebuild could not reach the member's live layer
     /// to re-bind it (its cell was mid-commit): the member's next join
@@ -226,6 +231,7 @@ struct MemberEntry<K, M, E: crate::text::TextEngine> {
 /// rebuild re-runs the same treatment.
 struct MountedBackdrop<P, G> {
     /// Held for its lifetime: dropping it unregisters the group.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     group: G,
     /// The terms the group's chain runs: kept so a display-scale
     /// rebuild re-runs the same treatment and the test accessors answer
@@ -382,12 +388,13 @@ impl<E: crate::text::TextEngine> ScopeAnchors<E> {
 #[cfg(test)]
 pub trait SpecCarrier {
     /// The spec the group was created with.
-    fn spec(&self) -> cherenkov::BackdropSpec;
+    fn spec(&self) -> cherenkov_record::BackdropSpec;
 }
 
 #[cfg(test)]
+#[cfg(hydrolysis_gpu_painter)]
 impl SpecCarrier for cherenkov::BackdropGroup {
-    fn spec(&self) -> cherenkov::BackdropSpec {
+    fn spec(&self) -> cherenkov_record::BackdropSpec {
         self.spec()
     }
 }
@@ -395,6 +402,7 @@ impl SpecCarrier for cherenkov::BackdropGroup {
 /// The member side of a [`BackdropGroups::join`]: the joining layer, its
 /// node's membership hold, and the resolver a group rebuild re-points
 /// the other members' live layers with.
+#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
 pub struct MemberJoin<'a, R, F, E: crate::text::TextEngine> {
     /// The member's frame layer.
     pub layer: &'a Layer,
@@ -438,9 +446,11 @@ pub type MaterialBackdropGroups<G, E> = BackdropGroups<BackdropGroupKey, Materia
 #[derive(Debug)]
 pub struct ChromeMemberPayload<S> {
     /// The shader's engine handle, resolved at attach.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub shader: S,
     /// The member's live effect: the sample's uniforms re-read as it
     /// changes.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub effect: SharedLive<MaterialEffect>,
 }
 
@@ -485,7 +495,8 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
         clippy::too_many_arguments,
         reason = "one join hands the member, the group terms and the target's hooks at once"
     )]
-    pub(crate) fn join<T: cherenkov::Target>(
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    pub(crate) fn join<T: cherenkov_record::Target>(
         &mut self,
         tx: &mut Transaction<'_, T>,
         key: K,
@@ -693,6 +704,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl<E: crate::text::TextEngine>
     BackdropGroups<BackdropGroupKey, MaterialRuntime, cherenkov::BackdropGroup, (), E>
 {
@@ -700,13 +712,17 @@ impl<E: crate::text::TextEngine>
     /// member holds no membership. Two members answering the same id
     /// share one capture. A test-facing answer.
     #[cfg(test)]
-    pub(crate) fn backdrop_group_id(&self, member: LayerId) -> Option<cherenkov::BackdropId> {
+    pub(crate) fn backdrop_group_id(
+        &self,
+        member: LayerId,
+    ) -> Option<cherenkov_record::BackdropId> {
         let key = self.members.get(&member)?.key;
         self.groups.get(&key).map(|group| group.group.id())
     }
 }
 
 /// Chrome-group test accessors over the members the key maps.
+#[cfg(hydrolysis_gpu_painter)]
 impl<G, E: crate::text::TextEngine>
     BackdropGroups<
         ChromeGroupKey,

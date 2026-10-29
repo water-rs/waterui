@@ -26,6 +26,7 @@ pub struct GpuContentRuntime {
     /// The engine producer the content was registered as: `Some` once
     /// `take_engine_content` has run, retained so it can be bound again and
     /// retired on drop.
+    #[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
     pub(crate) producer: Option<cherenkov::GpuProducer<cherenkov_gpu::Gpu>>,
     /// The engine layer and pixel size the producer is currently bound at.
     pub(crate) binding: Option<(cherenkov::LayerId, (u32, u32))>,
@@ -62,10 +63,13 @@ pub struct ExternalFrameRuntime {
     /// The submitted-frame producer/sink pair the compositor created with
     /// the receiver: `sink` submits each new frame, `producer` re-issues the
     /// binding when the plane size changes.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) producer: Option<cherenkov::GpuProducer<cherenkov_gpu::Gpu>>,
     /// The submission end of `producer`'s pair.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) sink: Option<cherenkov::FrameSink<cherenkov_gpu::Gpu>>,
     /// The plane size of the last presented frame, for the stretch transform.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) frame_pixels: Option<(u32, u32)>,
     /// The engine layer and plane size the producer is currently bound at.
     pub(crate) binding: Option<(cherenkov::LayerId, (u32, u32))>,

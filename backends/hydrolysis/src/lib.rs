@@ -1,38 +1,61 @@
 //! Hydrolysis backend.
 
+// An Android build needs one painter: `hwui` selects the platform `RenderNode`
+// target, `gpu` the Cherenkov GPU attachment (the two may combine). A build
+// with neither compiles no painter: the theme contract (`Style`,
+// `WidgetTheme`, tokens) stays, the renderer, runner and platform
+// implementations compile out — the bare check leg exercises exactly that
+// shape — and the build script warns on it; the generated launcher always
+// enables the resolved painter's feature.
+
+#[cfg(hydrolysis_runtime)]
 mod animation;
+#[cfg(hydrolysis_gpu_painter)]
 mod engine;
 // Bare wasm reaches none of the env-driven window/console paths that call
 // these helpers.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
+#[cfg(hydrolysis_runtime)]
 mod env;
+#[cfg(hydrolysis_gpu)]
 mod gpu_view;
-#[cfg(hydrolysis_hosted)]
+#[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 mod hosted;
 // The HWUI render target compiles for tests everywhere and for the Android
 // runtime under its feature.
 #[cfg(any(test, hydrolysis_hwui))]
 pub mod hwui;
+#[cfg(hydrolysis_runtime)]
 mod localization;
+#[cfg(hydrolysis_runtime)]
 mod num_cast;
-#[cfg(hydrolysis_pipeline_cache)]
+#[cfg(all(hydrolysis_pipeline_cache, hydrolysis_gpu_painter))]
 mod pipeline_cache;
+#[cfg(hydrolysis_runtime)]
 mod platform;
+#[cfg(hydrolysis_runtime)]
 mod platform_view;
+#[cfg(hydrolysis_gpu_painter)]
 mod readback;
+#[cfg(hydrolysis_runtime)]
 mod renderer;
+#[cfg(hydrolysis_runtime)]
 mod runner;
-#[cfg(any(test, feature = "testing"))]
+#[cfg(all(hydrolysis_runtime, any(test, feature = "testing")))]
 pub mod testing;
+#[cfg(hydrolysis_runtime)]
 mod text;
 pub mod theme;
+#[cfg(hydrolysis_gpu_painter)]
 mod view_renderer;
+#[cfg(hydrolysis_runtime)]
 mod widgets;
 
 // Interaction/runtime layer shared with other self-drawn backends.
+#[cfg(hydrolysis_runtime)]
 pub(crate) use waterui_backend_core::{gesture, scroll, time};
 
-#[cfg(hydrolysis_hosted)]
+#[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 pub use hosted::{HostedContent, HostedObject, HostedOcclusion, HostedView};
 use std::time::Duration;
 use waterui_core::Environment;
@@ -69,7 +92,7 @@ pub trait Style: theme::WidgetTheme + 'static {
 }
 /// The alpha convention a [`HeadlessSnapshot`]'s pixels read — what the
 /// producing surface presented with.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 pub use cherenkov_gpu::interop::OutputAlpha;
 /// The W3C UI Events key vocabulary this backend speaks, re-exported so hosts
 /// that synthesize key events use the same version of it.
@@ -78,37 +101,54 @@ pub use keyboard_types;
 pub use platform::BrowserWindow;
 #[cfg(hydrolysis_winit)]
 pub use platform::WinitWindow;
+#[cfg(hydrolysis_runtime)]
 pub use platform::{
-    BackEdge, BackNavigation, DeviceLoss, EdgeBounce, EdgeStretch, ExponentialDecay,
-    FlingDeceleration, InputEvent, KeyCode, KeyState, Modifiers, OffscreenGpuContext,
-    OffscreenSceneSurface, OffscreenSurface, OffscreenWindow, Overscroll, PlatformWindow,
-    PointerButton, PointerKind, ReleaseReturn, RubberBand, ScrollPhysics, ScrollPlatform,
-    SplineDeceleration, SpringBack, SurfaceError, SurfaceFrame, TextInputPurpose, TextInputState,
-    TouchPhase, TouchScrollConfig, WindowKeyboardArea, WindowSafeArea,
+    BackEdge, BackNavigation, EdgeBounce, EdgeStretch, ExponentialDecay, FlingDeceleration,
+    InputEvent, KeyCode, KeyState, Modifiers, Overscroll, PlatformWindow, PointerButton,
+    PointerKind, ReleaseReturn, RubberBand, ScrollPhysics, ScrollPlatform, SplineDeceleration,
+    SpringBack, SurfaceError, TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig,
+    WindowKeyboardArea, WindowSafeArea,
 };
+#[cfg(hydrolysis_gpu_painter)]
+pub use platform::{
+    DeviceLoss, OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, OffscreenWindow,
+    SurfaceFrame,
+};
+#[cfg(hydrolysis_runtime)]
 pub use platform_view::{
     PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
 };
+#[cfg(hydrolysis_gpu_painter)]
 pub use readback::{ReadbackError, readback_texture_rgba8};
-#[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_gpu_painter)]
+pub use renderer::HydrolysisRenderTarget;
+#[cfg(all(feature = "accessibility", hydrolysis_runtime))]
 pub use renderer::accessibility::{AccessibilityActivationPointError, AccessibilityContentTypes};
-#[cfg(feature = "frame-profile")]
+#[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
 pub use renderer::{FrameStageTimes, GpuIdentity};
-pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
-#[cfg(target_os = "android")]
+#[cfg(hydrolysis_runtime)]
+pub use renderer::{HydroState, HydrolysisRenderer, RenderContext};
+#[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
 pub use runner::android;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub use runner::init_tracing;
 #[cfg(hydrolysis_run)]
 pub use runner::run;
-pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_runtime)]
+pub use runner::{FrameCounters, FramePhases, FrameProfile};
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
+#[cfg(hydrolysis_gpu_painter)]
+pub use runner::{SemanticPumpResult, SemanticRuntime};
 #[cfg(any(test, hydrolysis_hwui))]
 pub use text::HwuiTextEngine;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
+pub use text::ParleyEngine;
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 pub use text::fonts::native_collection;
-pub use text::{DeclaredFonts, FontFamilyResolution, ParleyEngine};
+#[cfg(hydrolysis_runtime)]
+pub use text::{DeclaredFonts, FontFamilyResolution};
+#[cfg(hydrolysis_gpu_painter)]
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;

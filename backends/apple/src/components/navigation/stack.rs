@@ -992,6 +992,12 @@ mod platform {
         /// handlers wired.
         pub(super) fn build(self: &Rc<Self>, root: NavigationView) -> NativeLeaf {
             let _ = self.self_weak.set(Rc::downgrade(self));
+            // The stack owns its pages' safe-area answer —
+            // `WuiSafeAreaManaging` in the baseline — so the window root
+            // hands it the whole window, not the safe-area rect: a page
+            // touches the edge the window-drawn bar sits on and receives
+            // that region as its container safe area (§7.1).
+            self.host.set_manages_safe_area(true);
             let driver = Rc::clone(self);
             self.host.set_layout_handler(move |host| {
                 driver.layout(host);
@@ -1027,10 +1033,16 @@ mod platform {
             crate::primary_content::forward_current(&host, |host| {
                 cocoa_ui::view::subviews(host).into_iter().next()
             });
+            // The page resolves the region its top edge reached the way
+            // the window root does: `content_frame` hands a safe-area
+            // manager the bounds — a scroll surface reaches under the
+            // window-drawn bar and insets its own content — and anything
+            // else the safe-area rect (§7.1).
             host.set_layout_handler(|host| {
-                let rect = bounds(host);
+                let host_view: &NSView = host;
+                let context = crate::native_layout::LayoutContext::of(host_view);
                 for subview in cocoa_ui::view::subviews(host) {
-                    set_frame(&subview, rect);
+                    set_frame(&subview, context.content_frame(&subview));
                 }
             });
             let state = Rc::new(RefCell::new(core::mem::take(&mut view.state)));
@@ -1056,13 +1068,11 @@ mod platform {
             }
         }
 
-        /// Frames every entry inside `host`: each fills bounds minus the
-        /// titlebar's safe-area inset — `layoutEntries`.
+        /// Frames every entry inside `host`: each fills the bounds, so a
+        /// page touches the edge the window-drawn bar sits on —
+        /// `layoutEntries`.
         fn layout(&self, host: &HostView) {
-            let mut rect = bounds(host);
-            let inset = self.host.safe_area_insets().top;
-            rect.origin.y += inset;
-            rect.size.height -= inset;
+            let rect = bounds(host);
             for entry in self.entries.borrow().iter() {
                 cocoa_ui::view::set_frame(&entry.view, rect);
             }
@@ -1248,8 +1258,8 @@ mod platform {
         /// control — `firstButton`'s `performClick` — and a `View` icon or
         /// no icon hosts the content itself.
         fn child(&self, entry: &Entry, item: &BarItem) -> ToolbarChild {
-            // The item's action and its chrome both come from the button
-            // inside it, the way `firstButton` informed `actionItem`.
+            // The item's action comes from the button inside it, the way
+            // `firstButton` informed `actionItem`.
             let button = first_button(item.leaf.view());
             let action = button.as_ref().map(|button| {
                 let button = button.clone();
@@ -1258,7 +1268,6 @@ mod platform {
                     unsafe { activate(button.control()) };
                 }) as Rc<dyn Fn()>
             });
-            let bordered = button.as_ref().is_none_or(|button| !button.is_borderless());
             let label = item
                 .title
                 .as_ref()
@@ -1275,7 +1284,6 @@ mod platform {
                         None,
                     ),
                     label,
-                    bordered,
                     action,
                 },
                 Some(BarItemIcon::View(icon)) => {
@@ -1291,7 +1299,6 @@ mod platform {
                         },
                         icon: Self::view_icon(self, entry, item, icon),
                         label,
-                        bordered,
                         action,
                     }
                 }
@@ -1302,7 +1309,6 @@ mod platform {
                     },
                     icon: None,
                     label,
-                    bordered,
                     action,
                 },
             }

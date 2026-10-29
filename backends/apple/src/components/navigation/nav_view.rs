@@ -708,7 +708,6 @@ mod platform {
                 unsafe { cocoa_ui::appkit::activate(button.control()) }
             }) as alloc::rc::Rc<dyn Fn()>
         });
-        let bordered = button.as_ref().is_none_or(|button| !button.is_borderless());
         ToolbarChild {
             view: HostedItem {
                 view: cocoa_ui::view::retain_base(item.leaf.view()),
@@ -736,7 +735,6 @@ mod platform {
                 .title
                 .as_ref()
                 .map_or_else(String::new, |title| title.snapshot().to_plain().to_string()),
-            bordered,
             action,
         }
     }

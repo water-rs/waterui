@@ -22,6 +22,12 @@
 //! [`OffscreenFormat`] the host asked for — `LinearF16` stores f16
 //! directly, rounding once where readback used to round.
 //!
+//! Firmware builds can enable `bounded-bins` to scan items per band and
+//! rescan vertical boundaries instead of retaining per-frame item bins or
+//! geometry-sized coverage scratch. Bin queries allocate no item lists;
+//! coverage scratch depends on width and band/filter-window height. This
+//! does not bound retained scene geometry, filter nesting, or image storage.
+//!
 //! Measured on the render corpus, f16 output storage costs +0.0013 mean
 //! FLIP versus keeping f32 (0.00406 vs 0.00278).
 //!
@@ -71,7 +77,7 @@ pub struct RasterConfig {
     /// Positive worker count for the banded rasterizer. An explicit count
     /// takes precedence over `RAYON_NUM_THREADS`, which must also be positive.
     /// Otherwise Apple uses the highest-performance physical core class;
-    /// Android uses the highest-capacity class in the current CPU affinity;
+    /// Android counts allowed cores with at least half the maximum capacity;
     /// other native platforms use their available parallelism. Automatic
     /// discovery is unsupported on WebAssembly.
     pub threads: Option<usize>,

@@ -35,7 +35,7 @@ struct EdgeTextTwin: View {
         VStack(alignment: .leading, spacing: 10) {
           wuiDivider()
           section("Empty and whitespace") {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(spacing: 4) {
               HStack(spacing: 10) {
                 Text("[before]")
                 Text("")

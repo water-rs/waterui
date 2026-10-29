@@ -78,13 +78,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             | Self::Rotation(_)
             | Self::Offset(_)
             | Self::SceneView(_)
-            | Self::GpuContent(_)
-            | Self::ExternalFrame(_)
             | Self::Filtered(_)
             | Self::Scroll(_)
             | Self::LazyStack(_)
             | Self::Collection(_)
             | Self::Widget(_) => true,
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => true,
             Self::Wrapper(node) => matches!(
                 node.effect,
                 WrapperEffect::Clip(_)
@@ -617,6 +617,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     );
                 }
             }
+            #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 // The view's own name and content, read every flush — it is
@@ -658,6 +659,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     );
                 }
             }
+            #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 let (content_label, content_value) = {
@@ -1087,6 +1089,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     );
                 }
             }
+            #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => {
                 let (content_label, content_value, wants_input) = {
                     let view = &node.runtime.borrow().view;
@@ -1114,6 +1117,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     );
                 }
             }
+            #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => {
                 let (content_label, content_value) = {
                     let view = &node.runtime.borrow().view;

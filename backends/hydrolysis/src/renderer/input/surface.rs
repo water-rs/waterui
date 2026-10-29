@@ -20,6 +20,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+#[cfg(hydrolysis_gpu)]
 use crate::gpu_view::GpuContentRuntime;
 use waterui_graphics::SceneContent;
 use waterui_graphics::input::{
@@ -148,6 +149,7 @@ pub trait SurfaceInputReceiver {
     fn ime_caret(&self) -> Option<kurbo::Rect>;
 }
 
+#[cfg(hydrolysis_gpu)]
 impl SurfaceInputReceiver for GpuContentRuntime {
     fn input(&mut self, event: &SurfaceInputEvent) {
         self.view.input(event);

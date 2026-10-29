@@ -58,6 +58,7 @@ impl ResolvedTextLayoutInput {
     /// The spans that paint a background, as `(range, colour)` pairs — the
     /// background contract a layout carries out of the input it was shaped
     /// from.
+    #[cfg(hydrolysis_gpu_painter)]
     pub(in crate::text) fn background_spans(&self) -> Box<[(Range<usize>, [u8; 4])]> {
         self.spans
             .iter()
@@ -67,6 +68,7 @@ impl ResolvedTextLayoutInput {
 
     /// The same shaping defaults respelled over different text — how the
     /// ellipsis probe and each truncated re-shape mint their inputs.
+    #[cfg(hydrolysis_gpu_painter)]
     pub(in crate::text) fn respell(
         &self,
         plain: String,

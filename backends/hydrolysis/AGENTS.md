@@ -24,7 +24,7 @@ Hydrolysis is WaterUI's only self-drawn backend (water-rs/hydrolysis#187). It re
 
 - `src/` — the `hydrolysis` crate: renderer, runner, platform, widgets
 - `tests/` — the cross-backend integration suites (semantic + offscreen)
-- `benches/` — the frame-pump and measurement benchmarks
+- `benches/` — the text re-measure micro-benchmark; frame-level measurement is `#[waterui::bench]`, run by `water bench`
 - `android/` — the Android host (Gradle project plus the `test-app` Rust crate)
 - `bench/` — the bench harnesses, including the Android golden pipeline
 - `scripts/` — pinned-source asset generators (fonts, Gradle wrappers, media fixtures)
