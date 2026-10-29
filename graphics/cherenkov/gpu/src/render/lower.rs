@@ -4711,14 +4711,14 @@ impl<'a> Lowering<'a> {
             };
             cached.insert(index, prepared);
         }
-        let prepared = cached
-            .get(&index)
-            .expect("prepared GPU geometry")
-            .path
-            .placed(
-                Vec2::new(tx, ty),
-                (f64::from(self.width), f64::from(self.height)),
-            );
+        let geometry = &cached.get(&index).expect("prepared GPU geometry").path;
+        if geometry.bound.segments < path::GPU_ROUTE_MIN_ELEMENTS {
+            return Ok(false);
+        }
+        let prepared = geometry.placed(
+            Vec2::new(tx, ty),
+            (f64::from(self.width), f64::from(self.height)),
+        );
         if prepared.bound.empty {
             return Ok(true);
         }
