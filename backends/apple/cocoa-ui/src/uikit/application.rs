@@ -26,7 +26,7 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
 };
-use objc2_foundation::{NSDictionary, NSObjectProtocol, NSString};
+use objc2_foundation::{NSDictionary, NSObjectProtocol, NSSet, NSString};
 use objc2_ui_kit::{
     UIApplication, UIApplicationDelegate, UIApplicationLaunchOptionsKey, UICommand,
     UIMainMenuSystem, UIMainMenuSystemConfiguration, UIMenu, UIMenuBuilder, UIMenuRoot,
@@ -41,6 +41,7 @@ use crate::callback::guarded;
 type LaunchHandler = Box<dyn FnOnce(MainThreadMarker)>;
 type SceneHandler = Rc<dyn Fn(&WindowScene) -> Window>;
 type MenuHandler = Box<dyn Fn(&MenuBuilder<'_>)>;
+type SessionHandler = Box<dyn Fn(&str)>;
 
 thread_local! {
     /// The handlers [`run`] hands to the application delegate `UIKit`
@@ -54,6 +55,19 @@ pub struct ApplicationHandlers {
     did_finish_launching: Option<LaunchHandler>,
     connect_scene: SceneHandler,
     build_menus: Option<MenuHandler>,
+    lifecycle: LifecycleHandlers,
+}
+
+/// The handlers for the scene lifecycle, each given the persistent
+/// identifier of the scene session the event concerns.
+#[derive(Default)]
+struct LifecycleHandlers {
+    did_disconnect: Option<SessionHandler>,
+    did_become_active: Option<SessionHandler>,
+    will_resign_active: Option<SessionHandler>,
+    will_enter_foreground: Option<SessionHandler>,
+    did_enter_background: Option<SessionHandler>,
+    did_discard_sessions: Option<SessionHandler>,
 }
 
 impl ApplicationHandlers {
@@ -66,6 +80,7 @@ impl ApplicationHandlers {
             did_finish_launching: None,
             connect_scene: Rc::new(connect_scene),
             build_menus: None,
+            lifecycle: LifecycleHandlers::default(),
         }
     }
 
@@ -88,6 +103,50 @@ impl ApplicationHandlers {
     /// [`request_main_menu_rebuild`] then asks for another pass.
     pub fn build_menus(mut self, handler: impl Fn(&MenuBuilder<'_>) + 'static) -> Self {
         self.build_menus = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when the system disconnects a scene, with the
+    /// scene's [`WindowScene::session_id`]. The system may reconnect the
+    /// session later, through the scene handler given to [`new`](Self::new).
+    pub fn scene_did_disconnect(mut self, handler: impl Fn(&str) + 'static) -> Self {
+        self.lifecycle.did_disconnect = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when a scene becomes active, with its
+    /// [`WindowScene::session_id`].
+    pub fn scene_did_become_active(mut self, handler: impl Fn(&str) + 'static) -> Self {
+        self.lifecycle.did_become_active = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when a scene is about to become inactive, with its
+    /// [`WindowScene::session_id`].
+    pub fn scene_will_resign_active(mut self, handler: impl Fn(&str) + 'static) -> Self {
+        self.lifecycle.will_resign_active = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when a scene is about to enter the foreground, with
+    /// its [`WindowScene::session_id`].
+    pub fn scene_will_enter_foreground(mut self, handler: impl Fn(&str) + 'static) -> Self {
+        self.lifecycle.will_enter_foreground = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` when a scene enters the background, with its
+    /// [`WindowScene::session_id`].
+    pub fn scene_did_enter_background(mut self, handler: impl Fn(&str) + 'static) -> Self {
+        self.lifecycle.did_enter_background = Some(Box::new(handler));
+        self
+    }
+
+    /// Runs `handler` once for each scene session the user discarded, such
+    /// as by closing its window, with the session's persistent identifier.
+    /// A discarded session never reconnects.
+    pub fn scene_sessions_did_discard(mut self, handler: impl Fn(&str) + 'static) -> Self {
+        self.lifecycle.did_discard_sessions = Some(Box::new(handler));
         self
     }
 }
@@ -186,6 +245,13 @@ impl WindowScene {
         self.scene.mtm()
     }
 
+    /// The persistent identifier of the scene's session, stable across the
+    /// scene's disconnections and reconnections.
+    #[must_use]
+    pub fn session_id(&self) -> String {
+        self.scene.session().persistentIdentifier().to_string()
+    }
+
     pub(super) fn native(&self) -> &UIWindowScene {
         &self.scene
     }
@@ -196,6 +262,7 @@ struct AppDelegateIvars {
     connect_scene: SceneHandler,
     /// Taken when it becomes the main menu system's build handler.
     build_menus: Cell<Option<MenuHandler>>,
+    lifecycle: LifecycleHandlers,
     /// Every armed key command's callback; `cocoaUiMenuCommandFired:`
     /// resolves its sender here.
     key_commands: Rc<KeyCommandRegistry>,
@@ -224,6 +291,7 @@ define_class!(
                     did_finish_launching: Cell::new(handlers.did_finish_launching),
                     connect_scene: handlers.connect_scene,
                     build_menus: Cell::new(handlers.build_menus),
+                    lifecycle: handlers.lifecycle,
                     key_commands: Rc::default(),
                     menu_bar_commands: RefCell::new(None),
                 });
@@ -253,6 +321,21 @@ define_class!(
                 }
                 true
             })
+        }
+
+        #[unsafe(method(application:didDiscardSceneSessions:))]
+        fn application_did_discard_scene_sessions(
+            &self,
+            _application: &UIApplication,
+            sessions: &NSSet<UISceneSession>,
+        ) {
+            guarded("application:didDiscardSceneSessions:", || {
+                if let Some(handler) = &self.ivars().lifecycle.did_discard_sessions {
+                    for session in sessions {
+                        handler(&session.persistentIdentifier().to_string());
+                    }
+                }
+            });
         }
     }
 
@@ -333,6 +416,19 @@ pub(super) fn key_command_registry(mtm: MainThreadMarker) -> Rc<KeyCommandRegist
     Rc::clone(&AppDelegate::current(mtm).ivars().key_commands)
 }
 
+/// Reports `scene`'s session identifier to the handler `pick` selects from
+/// the application's lifecycle handlers, when the application set one.
+fn report_scene(
+    mtm: MainThreadMarker,
+    scene: &UIScene,
+    pick: fn(&LifecycleHandlers) -> Option<&SessionHandler>,
+) {
+    let delegate = AppDelegate::current(mtm);
+    if let Some(handler) = pick(&delegate.ivars().lifecycle) {
+        handler(&scene.session().persistentIdentifier().to_string());
+    }
+}
+
 #[derive(Default)]
 struct SceneDelegateIvars {
     window: RefCell<Option<Retained<UIWindow>>>,
@@ -380,6 +476,41 @@ define_class!(
                     scene: scene.retain(),
                 });
                 self.ivars().window.replace(Some(window.into_native()));
+            });
+        }
+
+        #[unsafe(method(sceneDidDisconnect:))]
+        fn scene_did_disconnect(&self, scene: &UIScene) {
+            guarded("sceneDidDisconnect:", || {
+                report_scene(self.mtm(), scene, |l| l.did_disconnect.as_ref());
+            });
+        }
+
+        #[unsafe(method(sceneDidBecomeActive:))]
+        fn scene_did_become_active(&self, scene: &UIScene) {
+            guarded("sceneDidBecomeActive:", || {
+                report_scene(self.mtm(), scene, |l| l.did_become_active.as_ref());
+            });
+        }
+
+        #[unsafe(method(sceneWillResignActive:))]
+        fn scene_will_resign_active(&self, scene: &UIScene) {
+            guarded("sceneWillResignActive:", || {
+                report_scene(self.mtm(), scene, |l| l.will_resign_active.as_ref());
+            });
+        }
+
+        #[unsafe(method(sceneWillEnterForeground:))]
+        fn scene_will_enter_foreground(&self, scene: &UIScene) {
+            guarded("sceneWillEnterForeground:", || {
+                report_scene(self.mtm(), scene, |l| l.will_enter_foreground.as_ref());
+            });
+        }
+
+        #[unsafe(method(sceneDidEnterBackground:))]
+        fn scene_did_enter_background(&self, scene: &UIScene) {
+            guarded("sceneDidEnterBackground:", || {
+                report_scene(self.mtm(), scene, |l| l.did_enter_background.as_ref());
             });
         }
     }
