@@ -7,7 +7,8 @@
 //! the suite working space — so HDR and wide-gamut values are carried
 //! unclamped end to end and the `HdrColor`/`WideGamut` claims are real.
 //! A scene whose root level composites in encoded sRGB (every root item
-//! an encoded-sRGB group) renders into an encoded-sRGB surface instead,
+//! an encoded-sRGB group, through ordinary transform layers) renders into
+//! an encoded-sRGB surface instead,
 //! and each group into a layer of its own space, so every composite
 //! happens in the space the scene declares. Readback is `f16`
 //! premultiplied linear P3 decoded to `f32`.
@@ -141,21 +142,24 @@ fn p3_cs(engine: &'static str) -> Result<ColorSpace, BenchError> {
     })
 }
 
-/// The space the scene's root level composites in, which the surface
-/// stores: encoded sRGB when every root item is a group compositing in
-/// encoded sRGB onto an opaque `Normal` root, so the groups composite onto
-/// the clear in their own space as the scene declares; the linear Display
-/// P3 working space otherwise.
+/// Whether this level contains only encoded-sRGB groups, possibly nested
+/// in non-isolating transform layers such as native-resolution scaling.
+fn encoded_root(layer: &Layer) -> bool {
+    layer.opacity >= 1.0
+        && layer.blend == SBlend::Normal
+        && !layer.items.is_empty()
+        && layer.items.iter().all(|item| match item {
+            Item::Group(group) => group.blend_space == BlendSpace::SrgbEncoded,
+            Item::Layer(child) => child.clip.is_none() && encoded_root(child),
+            Item::Draw(_) => false,
+        })
+}
+
+/// The surface stores encoded sRGB when the root's composites all use
+/// that space. Ordinary transform nesting does not change compositing;
+/// mixed content keeps the linear Display P3 working space.
 fn root_space(scene: &Scene) -> BlendSpace {
-    let root = &scene.root;
-    let encoded = root.opacity >= 1.0
-        && root.blend == SBlend::Normal
-        && !root.items.is_empty()
-        && root
-            .items
-            .iter()
-            .all(|item| matches!(item, Item::Group(g) if g.blend_space == BlendSpace::SrgbEncoded));
-    if encoded {
+    if encoded_root(&scene.root) {
         BlendSpace::SrgbEncoded
     } else {
         BlendSpace::Linear
@@ -1735,3 +1739,37 @@ mod graphite_metal {
 
 #[cfg(all(feature = "skia-metal", target_vendor = "apple"))]
 pub use graphite_metal::SkiaMtl;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_effects_prepare_without_changing_group_space() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenes/perf/effects");
+        let scene = Scene::load(&dir).expect("generated effects scene");
+        let (mut scene, _) = crate::transform::at_native(&scene, 480, 960);
+        let blobs = crate::convert::load_blobs(&scene, &dir).expect("scene resources");
+        let mut engine = SkiaCpu::new();
+        let input = EncodeInput {
+            scene: &scene,
+            blobs: &blobs,
+            scroll_offset: None,
+        };
+        engine.prepare(&input).expect("native effects prepare");
+        engine.encode(&input).expect("native effects encode");
+        assert!(engine.submit(0, true).expect("rasterize").image.is_some());
+
+        // An opacity layer really composites into its parent's space;
+        // it cannot be treated as the neutral native-scale wrapper.
+        scene.root.opacity = 0.5;
+        assert!(matches!(
+            engine.prepare(&EncodeInput {
+                scene: &scene,
+                blobs: &blobs,
+                scroll_offset: None,
+            }),
+            Err(BenchError::Unsupported { .. })
+        ));
+    }
+}

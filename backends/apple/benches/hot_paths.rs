@@ -7,9 +7,11 @@
 //! `reloadData` + `scrollRowToVisible`.
 //!
 //! `#[cfg(target_os = "macos")]` only — the leaves are `AppKit` objects.
-//! Criterion drives benches from the real main thread, so
-//! `MainThreadMarker::new()` yields a genuine marker and every view here is
-//! main-thread sound. Run with `cargo bench`; nothing gates CI on these.
+//! divan runs a benchmark on the calling thread unless `threads` is set (its
+//! default of one thread never spawns), and `divan::main` runs on the real
+//! main thread, so `MainThreadMarker::new()` yields a genuine marker and
+//! every view here is main-thread sound. Run with `cargo bench`; nothing
+//! gates CI on these.
 
 #[cfg(target_os = "macos")]
 mod hot_paths {
@@ -18,7 +20,7 @@ mod hot_paths {
     use cocoa_ui::appkit::{HostView, Label};
     use cocoa_ui::geometry::Rect;
     use cocoa_ui::{MainThreadMarker, PlatformView};
-    use criterion::{Criterion, criterion_group};
+    use divan::Bencher;
     use waterui::layout::stack::VStackLayout;
     use waterui::reactive::{Binding, binding};
     use waterui_apple::contract::{Mounted, NativeLeaf};
@@ -46,27 +48,27 @@ mod hot_paths {
     }
 
     /// Mount → unmount a representative leaf (`Label`) against a host view.
-    fn leaf_mount_unmount(c: &mut Criterion) {
+    #[divan::bench]
+    fn leaf_mount_unmount(bencher: Bencher) {
         let mtm = MainThreadMarker::new().expect("benches run on the main thread");
         let parent = HostView::new(mtm, Rect::new(0.0, 0.0, 800.0, 600.0));
-        c.bench_function("leaf_mount_unmount", |b| {
-            b.iter(|| {
-                let label = Label::new(mtm);
-                let view: &PlatformView = &label;
-                let leaf = NativeLeaf::new(
-                    view,
-                    BenchLeaf {
-                        size: Size::new(40.0, 20.0),
-                    },
-                );
-                let mounted = leaf.mount(&parent);
-                black_box(mounted.unmount());
-            });
+        bencher.bench_local(|| {
+            let label = Label::new(mtm);
+            let view: &PlatformView = &label;
+            let leaf = NativeLeaf::new(
+                view,
+                BenchLeaf {
+                    size: Size::new(40.0, 20.0),
+                },
+            );
+            let mounted = leaf.mount(&parent);
+            black_box(mounted.unmount());
         });
     }
 
     /// Binding write → watcher → applied platform property (`set_text`).
-    fn binding_update_path(c: &mut Criterion) {
+    #[divan::bench]
+    fn binding_update_to_label(bencher: Bencher) {
         let mtm = MainThreadMarker::new().expect("benches run on the main thread");
         let parent = HostView::new(mtm, Rect::new(0.0, 0.0, 800.0, 600.0));
         let label = Label::new(mtm);
@@ -83,20 +85,18 @@ mod hot_paths {
             move |value| label.set_text(&value)
         });
         let _mounted = leaf.mount(&parent);
-        c.bench_function("binding_update_to_label", |b| {
-            b.iter(|| {
-                text.set(String::from("bench"));
-                text.set(String::from("update"));
-            });
+        bencher.bench_local(|| {
+            text.set(String::from("bench"));
+            text.set(String::from("update"));
         });
     }
 
     /// `set_layout_handler` running a `waterui-layout` `VStack` placement over a
     /// container with N leaf children, applying each returned frame.
-    fn frame_application(c: &mut Criterion) {
+    #[divan::bench(args = [8, 64])]
+    fn frame_application(bencher: Bencher, count: usize) {
         let mtm = MainThreadMarker::new().expect("benches run on the main thread");
-        let mut group = c.benchmark_group("frame_application");
-        for count in [8_usize, 64] {
+        {
             let host = HostView::new(mtm, Rect::new(0.0, 0.0, 640.0, 480.0));
             let host_view: &PlatformView = &host;
             let mut children = Vec::with_capacity(count);
@@ -151,25 +151,22 @@ mod hot_paths {
                     );
                 }
             });
-            group.bench_function(format!("children_{count}"), |b| {
-                b.iter(|| {
-                    host.set_needs_layout();
-                    host.layout_if_needed();
-                });
+            bencher.bench_local(|| {
+                host.set_needs_layout();
+                host.layout_if_needed();
             });
         }
-        group.finish();
     }
 
     /// One signal, N mounted leaves: the watcher fan-out a tree of bound
     /// properties pays when shared state changes — the reactive update the
     /// binding → watcher → kit-call path scales on.
-    fn reactive_fanout(c: &mut Criterion) {
+    #[divan::bench(args = [8, 64])]
+    fn reactive_fanout(bencher: Bencher, count: usize) {
         let mtm = MainThreadMarker::new().expect("benches run on the main thread");
         let parent = HostView::new(mtm, Rect::new(0.0, 0.0, 800.0, 600.0));
         let parent_view: &PlatformView = &parent;
-        let mut group = c.benchmark_group("reactive_fanout");
-        for count in [8_usize, 64] {
+        {
             let shared: Binding<bool> = binding(false);
             let mut mounted = Vec::with_capacity(count);
             for _ in 0..count {
@@ -186,26 +183,23 @@ mod hot_paths {
                 mounted.push(leaf.mount(parent_view));
             }
             let mut on = false;
-            group.bench_function(format!("leaves_{count}"), |b| {
-                b.iter(|| {
-                    on = !on;
-                    shared.set(on);
-                });
+            bencher.bench_local(|| {
+                on = !on;
+                shared.set(on);
             });
             // The mounts are pure keep-alive: they must outlive the
             // measured section, then unmount all at once.
             drop(mounted);
         }
-        group.finish();
     }
 
     /// `reconcile_subviews` over a mounted row set: the membership/order
     /// resync a container or list pays when its ids churn — with each row's
     /// leaf surviving unchanged, which is the reuse the path exists for.
-    fn subview_reconcile(c: &mut Criterion) {
+    #[divan::bench(args = [8, 64])]
+    fn subview_reconcile(bencher: Bencher, count: usize) {
         let mtm = MainThreadMarker::new().expect("benches run on the main thread");
-        let mut group = c.benchmark_group("subview_reconcile");
-        for count in [8_usize, 64] {
+        {
             let host = HostView::new(mtm, Rect::new(0.0, 0.0, 800.0, 600.0));
             let host_view: &PlatformView = &host;
             let mut children = Vec::with_capacity(count);
@@ -216,14 +210,11 @@ mod hot_paths {
                 cocoa_ui::view::add_subview(host_view, &child);
                 children.push(child);
             }
-            group.bench_function(format!("rows_{count}"), |b| {
-                b.iter(|| {
-                    children.rotate_left(1);
-                    cocoa_ui::view::reconcile_subviews(host_view, &children);
-                });
+            bencher.bench_local(|| {
+                children.rotate_left(1);
+                cocoa_ui::view::reconcile_subviews(host_view, &children);
             });
         }
-        group.finish();
     }
 
     /// Real `NSTableView` cell reuse: the row provider asks the table's
@@ -232,7 +223,8 @@ mod hot_paths {
     /// set inside a real, never-shown window drives the recycle → dequeue
     /// churn every scroll of a long list pays. Not a compile-only check —
     /// the window is required for `AppKit`'s layout pass to run.
-    fn table_cell_reuse(c: &mut Criterion) {
+    #[divan::bench]
+    fn table_cell_reuse(bencher: Bencher) {
         const ROWS: usize = 512;
         use cocoa_ui::Retained;
         use cocoa_ui::appkit::{Window, WindowStyle};
@@ -341,31 +333,16 @@ mod hot_paths {
             created.get()
         );
 
-        let mut group = c.benchmark_group("table_cell_reuse");
-        group.bench_function("scroll_step_512_rows", |b| {
-            let mut row = 0_isize;
-            b.iter(|| {
-                row = (row + 1) % max_row;
-                table.scrollRowToVisible(row);
-                table.layoutSubtreeIfNeeded();
-            });
+        let mut row = 0_isize;
+        bencher.bench_local(|| {
+            row = (row + 1) % max_row;
+            table.scrollRowToVisible(row);
+            table.layoutSubtreeIfNeeded();
         });
-        group.finish();
     }
-
-    criterion_group!(
-        benches,
-        leaf_mount_unmount,
-        binding_update_path,
-        frame_application,
-        reactive_fanout,
-        subview_reconcile,
-        table_cell_reuse
-    );
 }
 
-#[cfg(target_os = "macos")]
-criterion::criterion_main!(hot_paths::benches);
-
-#[cfg(not(target_os = "macos"))]
-fn main() {}
+fn main() {
+    #[cfg(target_os = "macos")]
+    divan::main();
+}

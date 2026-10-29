@@ -504,7 +504,12 @@ transforms, ends on that boundary.
   view. A bar stays docked to its edge: it is laid out clear of that edge's
   container region only, so the keyboard region covers it instead of
   lifting it, while the content the chrome container hosts is laid out
-  clear of both regions.
+  clear of both regions. A navigation page is not the chrome container
+  when its bar is drawn by the window or by the platform's navigation
+  controller: the page touches the edge the bar sits on, with the bar's
+  area as container region, so a scroll surface in it extends under the
+  bar and insets its content by it, while non-scrolling content is laid
+  out clear of the bar.
 - **Keyboard motion.** A change of the keyboard inset follows the platform's
   keyboard animation frame by frame. A backend never avoids the keyboard by
   resizing the window or its rendering surface.

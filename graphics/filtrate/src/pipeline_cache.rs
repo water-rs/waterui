@@ -10,8 +10,14 @@
 extern crate alloc;
 
 use alloc::{borrow::Cow, string::String, vec::Vec};
-use core::cell::RefCell;
+use core::{cell::RefCell, fmt, future::Future};
 use std::collections::HashMap;
+
+#[cfg(not(target_family = "wasm"))]
+use futures_util::future::BoxFuture;
+#[cfg(target_family = "wasm")]
+use futures_util::future::LocalBoxFuture;
+use futures_util::future::{FutureExt, Shared};
 
 /// The full-screen triangle every pass draws.
 const VERTEX_SHADER: &str = include_str!("shaders/fullscreen.wgsl");
@@ -38,10 +44,55 @@ pub struct PassPipeline {
     pub layout: wgpu::BindGroupLayout,
 }
 
-#[derive(Debug, Default)]
+/// A pass pipeline's compilation, resolving to the pipeline or the
+/// validation diagnostic. Natively it is `Send`, as the cache that holds it
+/// has always been; a page's wgpu handles are not.
+#[cfg(not(target_family = "wasm"))]
+pub type PassCompile = BoxFuture<'static, Result<PassPipeline, String>>;
+/// A pass pipeline's compilation, resolving to the pipeline or the
+/// validation diagnostic.
+#[cfg(target_family = "wasm")]
+pub type PassCompile = LocalBoxFuture<'static, Result<PassPipeline, String>>;
+
+/// Erases a pass compilation, mapping its validation error to the diagnostic.
+#[cfg(not(target_family = "wasm"))]
+pub fn pass_compile(
+    compile: impl Future<Output = Result<PassPipeline, wgpu::Error>> + Send + 'static,
+) -> PassCompile {
+    compile
+        .map(|built| built.map_err(|error| error.to_string()))
+        .boxed()
+}
+
+/// Erases a pass compilation, mapping its validation error to the diagnostic.
+#[cfg(target_family = "wasm")]
+pub fn pass_compile(
+    compile: impl Future<Output = Result<PassPipeline, wgpu::Error>> + 'static,
+) -> PassCompile {
+    compile
+        .map(|built| built.map_err(|error| error.to_string()))
+        .boxed_local()
+}
+
+/// One pass pipeline's compilation, shared by every setup that asked for
+/// its key while it ran and by every later one. A failure carries the
+/// validation diagnostic; each waiter reports it under its own pass index.
+pub type PassBuild = Shared<PassCompile>;
+
+#[derive(Default)]
 struct Entries {
     vertex: Option<wgpu::ShaderModule>,
-    passes: HashMap<PassKey, PassPipeline>,
+    passes: HashMap<PassKey, PassBuild>,
+}
+
+impl fmt::Debug for Entries {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Entries")
+            .field("vertex", &self.vertex)
+            .field("passes", &self.passes.len())
+            .finish()
+    }
 }
 
 /// The pipelines and shader modules effects share on one wgpu device.
@@ -90,20 +141,35 @@ impl PipelineCache {
             .clone()
     }
 
-    /// The pipeline already built for `key`.
-    pub(crate) fn get(&self, key: &PassKey) -> Option<PassPipeline> {
-        self.entries.borrow().passes.get(key).cloned()
-    }
-
-    /// Records a validated pipeline. When a concurrent setup of the same
-    /// key finished first, its pipeline stays and is returned.
-    pub(crate) fn insert(&self, key: PassKey, built: PassPipeline) -> PassPipeline {
+    /// The compilation of `key`'s pipeline: the one already built or in
+    /// flight, or a new one `build` starts. Concurrent setups of identical
+    /// passes therefore compile once.
+    pub(crate) fn pass(
+        &self,
+        key: PassKey,
+        build: impl FnOnce(&PassKey) -> PassCompile,
+    ) -> PassBuild {
+        let existing = self.entries.borrow().passes.get(&key).cloned();
+        if let Some(existing) = existing {
+            return existing;
+        }
+        // `build` reads the cache (the vertex module, the driver cache), so
+        // no borrow is held across it.
+        let started = FutureExt::shared(build(&key));
         self.entries
             .borrow_mut()
             .passes
-            .entry(key)
-            .or_insert(built)
-            .clone()
+            .insert(key, started.clone());
+        started
+    }
+
+    /// Drops every compilation that failed, so a later setup of the same
+    /// key compiles again instead of inheriting the error.
+    pub(crate) fn forget_failed(&self) {
+        self.entries
+            .borrow_mut()
+            .passes
+            .retain(|_, build| !matches!(build.peek(), Some(Err(_))));
     }
 
     /// How many distinct pass pipelines the cache holds.

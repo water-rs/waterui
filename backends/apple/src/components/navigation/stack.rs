@@ -57,6 +57,19 @@ fn stack_leaf(stack: NavigationStack<(), ()>, ctx: &RenderContext<'_>) -> Native
     leaf
 }
 
+/// What roots a split column's `UINavigationController`: always a
+/// `NavigationView`, either already built or still to be resolved from a
+/// selected destination. A plain view (the empty-selection placeholder)
+/// cannot be expressed, so it can never reach [`resolve_navigation_root`].
+#[cfg(target_os = "ios")]
+pub(super) enum ColumnRoot {
+    /// A navigation page the caller built.
+    Resolved(Box<waterui::navigation::NavigationView>),
+    /// A selected destination, resolved once the column's controller is
+    /// installed in its environment.
+    Destination(waterui_backend_core::AnyView),
+}
+
 /// The split-column leaf: `content` renders as the root page of a fresh
 /// [`platform::Stack`], and the returned `UINavigationController` is the
 /// column's `viewController`. A collapsed split then pushes the page onto
@@ -65,7 +78,7 @@ fn stack_leaf(stack: NavigationStack<(), ()>, ctx: &RenderContext<'_>) -> Native
 /// toolbar items — applies instead of drawing in-content.
 #[cfg(target_os = "ios")]
 pub(super) fn column_leaf(
-    content: waterui_backend_core::AnyView,
+    content: ColumnRoot,
     ctx: &RenderContext<'_>,
 ) -> (
     NativeLeaf,
@@ -79,7 +92,10 @@ pub(super) fn column_leaf(
     });
     env.insert(controller);
     driver.prepare(ctx, env.clone());
-    let root = resolve_navigation_root(content, &env);
+    let root = match content {
+        ColumnRoot::Resolved(root) => *root,
+        ColumnRoot::Destination(destination) => resolve_navigation_root(destination, &env),
+    };
     let mut leaf = driver.build(root);
     let nav = driver.nav();
     leaf.keep(driver);
@@ -992,6 +1008,12 @@ mod platform {
         /// handlers wired.
         pub(super) fn build(self: &Rc<Self>, root: NavigationView) -> NativeLeaf {
             let _ = self.self_weak.set(Rc::downgrade(self));
+            // The stack owns its pages' safe-area answer —
+            // `WuiSafeAreaManaging` in the baseline — so the window root
+            // hands it the whole window, not the safe-area rect: a page
+            // touches the edge the window-drawn bar sits on and receives
+            // that region as its container safe area (§7.1).
+            self.host.set_manages_safe_area(true);
             let driver = Rc::clone(self);
             self.host.set_layout_handler(move |host| {
                 driver.layout(host);
@@ -1027,10 +1049,16 @@ mod platform {
             crate::primary_content::forward_current(&host, |host| {
                 cocoa_ui::view::subviews(host).into_iter().next()
             });
+            // The page resolves the region its top edge reached the way
+            // the window root does: `content_frame` hands a safe-area
+            // manager the bounds — a scroll surface reaches under the
+            // window-drawn bar and insets its own content — and anything
+            // else the safe-area rect (§7.1).
             host.set_layout_handler(|host| {
-                let rect = bounds(host);
+                let host_view: &NSView = host;
+                let context = crate::native_layout::LayoutContext::of(host_view);
                 for subview in cocoa_ui::view::subviews(host) {
-                    set_frame(&subview, rect);
+                    set_frame(&subview, context.content_frame(&subview));
                 }
             });
             let state = Rc::new(RefCell::new(core::mem::take(&mut view.state)));
@@ -1056,13 +1084,11 @@ mod platform {
             }
         }
 
-        /// Frames every entry inside `host`: each fills bounds minus the
-        /// titlebar's safe-area inset — `layoutEntries`.
+        /// Frames every entry inside `host`: each fills the bounds, so a
+        /// page touches the edge the window-drawn bar sits on —
+        /// `layoutEntries`.
         fn layout(&self, host: &HostView) {
-            let mut rect = bounds(host);
-            let inset = self.host.safe_area_insets().top;
-            rect.origin.y += inset;
-            rect.size.height -= inset;
+            let rect = bounds(host);
             for entry in self.entries.borrow().iter() {
                 cocoa_ui::view::set_frame(&entry.view, rect);
             }

@@ -10,6 +10,30 @@ committed. Produce them once per checkout with
 `python3 scenes/tools/generate.py` (its Python steps need
 `python3 -m pip install -r scenes/fonts/tools/requirements.txt`).
 
+## Reading a measure report
+
+`measure` renders offscreen: no frame reaches a compositor, so there is no
+present-to-present time. Each entry of `samples[]` is one frame's raw
+timing, and `percentiles` gives p50/p90/p99 of each field:
+
+- `encode_seconds`, `submit_seconds`, `gpu_wait_seconds` — host wall time
+  of encoding, of submission (rasterization included for CPU engines), and
+  of explicit GPU waits inside submission, which `submit_seconds` excludes.
+- `gpu_seconds`, `passes`, `phases` — GPU time from real timestamps, per
+  pass, and per render-thread phase; `null` or omitted where the backend
+  provides none, with `gpu_timing_unavailable` naming why. Never estimated.
+- `latency_seconds` — encode-to-completion wall time, present only under
+  `--wait-for-completion`, which finishes each frame before the next
+  encode.
+
+By default frames are submitted asynchronously, so one frame's encode can
+overlap an earlier frame's GPU work, and no single field is that frame's
+time; the report does not derive one from the stages. A frame's own cost
+is `latency_seconds` under `--wait-for-completion`. Whether an engine keeps
+a frame rate is `--rate`'s `pacing` block (`achieved_hz`,
+`missed_deadlines`), and energy per frame is `--energy`, both described
+below.
+
 ## Native resolution
 
 `measure --native WxH` renders into a `W`×`H` surface — the device's own
@@ -40,8 +64,9 @@ frame counts:
         --corpus scenes/perf --frames 60 --warmup 5 --cpu 7 \
         --out-dir capacity-out
 
-A frame's seconds are `encode + submit`, raised to the frame's GPU time
-where the backend reports it. The per-scene report records each engine's
+Every probe runs with `--wait-for-completion`, so a frame's seconds are
+its `latency_seconds`: synchronous encode-to-completion time, not a
+pipelined-throughput estimate from stage times. The per-scene report records each engine's
 max sustained `k`, the p99 at `k` and at `k + 1`, and every probe.
 `--max-k` (default 1024) caps the doubling; `--native` retargets every
 probe exactly as for `measure`.

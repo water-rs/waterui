@@ -483,29 +483,27 @@ async fn build(
         });
     }
 
-    let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let layout = ctx
-        .device
-        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    // Creating the pipeline compiles it, which runs off the GPU host thread
+    // (see `crate::compile`).
+    let entries = layout_entries(input_filterable);
+    let module = module.clone();
+    let output_format = ctx.output_format;
+    let cache = ctx.pipelines.driver().cloned();
+    let (pipeline, layout) = crate::compile::validated(ctx.device, move |device| {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shader effect layout"),
-            entries: &layout_entries(input_filterable),
+            entries: &entries,
         });
-    let shader = ctx
-        .device
-        .create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader effect"),
-            source: wgpu::ShaderSource::Naga(Cow::Owned(module.clone())),
+            source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
         });
-    let pipeline_layout = ctx
-        .device
-        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("shader effect pipeline layout"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-    let pipeline = ctx
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("shader effect pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -518,7 +516,7 @@ async fn build(
                 module: &shader,
                 entry_point: Some(FRAGMENT_ENTRY_POINT),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: ctx.output_format,
+                    format: output_format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -531,14 +529,15 @@ async fn build(
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: ctx.pipelines.driver(),
+            cache: cache.as_ref(),
         });
-    if let Some(error) = error_scope.pop().await {
-        return Err(EffectSetupError::PipelineValidation {
-            pass: 0,
-            message: error.to_string(),
-        });
-    }
+        (pipeline, layout)
+    })
+    .await
+    .map_err(|error| EffectSetupError::PipelineValidation {
+        pass: 0,
+        message: error.to_string(),
+    })?;
 
     Ok(Resources {
         input_format: ctx.input_format,

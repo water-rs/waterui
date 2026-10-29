@@ -47,6 +47,7 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = [
 conformance = ["dep:tiny_http"]
 
 [dev-dependencies]
+divan = "0.1"
 tempfile = "3.27"
 # `#[js_api]` expands to `::waterui::webview::…` paths, so testing it means
 # reaching this crate back through the facade the way an application does.

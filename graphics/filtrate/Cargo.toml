@@ -48,7 +48,10 @@ default = ["gpu"]
 # definitions, their WGSL stage sources and the CPU kernels stay available,
 # so a consumer can name and describe filters without a GPU.
 gpu = [
+    "dep:blocking",
     "dep:cherenkov-shader",
+    "dep:futures-util",
+    "dep:pollster",
     "dep:thiserror",
     "dep:tracing",
     "dep:web-time",
@@ -69,6 +72,8 @@ filtrate-core = { version = "0.2.0", path = "core" }
 # f16 aux images and CPU-kernel texels; no_std-capable.
 half = { version = "2.7.1", default-features = false }
 filtrate-derive = { version = "0.1.0", path = "derive" }
+# `Shared`: concurrent setups of one pass await a single compilation.
+futures-util = { version = "0.3.34", default-features = false, features = ["std"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 thiserror = { version = "2.0.21", optional = true }
 tracing = { version = "0.1.44", optional = true }
@@ -77,6 +82,12 @@ fearless_simd = { version = "1.1", default-features = false, features = ["std"] 
 cherenkov-simd = { version = "0.0.0", path = "../cherenkov/simd", default-features = false, features = ["std"] }
 # `naga-ir`: pass modules reach wgpu as composed naga IR, never as text.
 wgpu = { version = "30.0.1", features = ["naga-ir"], optional = true }
+
+# Pipeline compilation waits on the platform shader compiler, so native setup
+# runs it on a blocking-pool thread rather than the GPU host thread.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+blocking = { version = "1.7.0", default-features = false, optional = true }
+pollster = { version = "1.0.1", default-features = false, optional = true }
 
 # `std::time::Instant::now` panics on wasm32-unknown-unknown; web-time backs it
 # with `performance.now()` there and delegates to std everywhere else.
