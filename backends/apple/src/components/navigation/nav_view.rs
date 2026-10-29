@@ -339,6 +339,7 @@ mod platform {
     use waterui::Str;
     use waterui::navigation::{NavigationController, NavigationToolbarPlacement, NavigationView};
     use waterui::reactive::Signal;
+    use waterui_core::layout::ProposalSize;
 
     use crate::components::navigation::bar::{
         BarItem, BarItemIcon, BarState, bar_color, bar_item_frame, search_prompt,

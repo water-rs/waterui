@@ -839,6 +839,7 @@ mod platform {
         NavigationDestinationState, NavigationTransaction, NavigationView,
     };
     use waterui::reactive::Signal;
+    use waterui_core::layout::ProposalSize;
 
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
     use crate::transition::live::LiveChild;
