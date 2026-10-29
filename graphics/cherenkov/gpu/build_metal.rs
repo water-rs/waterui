@@ -21,7 +21,7 @@ pub struct AppleTarget {
     /// The SDK `xcrun -sdk` selects for the Metal tools.
     pub sdk: &'static str,
     /// The `metal -target` the air compiles for, spelled like
-    /// `air64-apple-ios27.0-macabi`. Every Apple platform passes it
+    /// `air64-apple-ios26.0-macabi`. Every Apple platform passes it
     /// explicitly: the flag alone picks the Metal platform, which ambient
     /// deployment variables cannot express at all for Catalyst and would
     /// otherwise steer (a `MACOSX_DEPLOYMENT_TARGET` in the environment

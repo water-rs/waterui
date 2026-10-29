@@ -27,8 +27,8 @@ pub use platforming::{backend, macos_bundle, package_output, platform};
 pub use project_model::assets::{
     FetchOutcome, SeedFontCacheError, seed_font_cache, seed_font_cache_for_backend,
 };
+pub use project_model::{apple_targets, framework, project, project_types, water_dir, web};
 pub(crate) use project_model::{assets, patch_tables, support_app, templates};
-pub use project_model::{framework, project, project_types, water_dir, web};
 pub use runtime::{build_info, utils};
 pub(crate) use runtime::{runtime_compat, runtime_fingerprint};
 pub use workflows::{build, capture, debug, device, diff, elf, environment, gesture, inspector};

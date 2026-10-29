@@ -211,7 +211,13 @@ impl SharedState {
     /// `mainFrameNavigation`, so the policy never sees it or the redirects
     /// it follows. `None` starts nothing: a `goBack` with no previous
     /// entry leaves none.
+    ///
+    /// Recorded only while a policy is installed: without one nothing asks
+    /// whether an action was answered.
     fn note_app_load(&self, navigation: Option<&WKNavigation>) {
+        if self.navigation_policy.is_none() {
+            return;
+        }
         if let Some(navigation) = navigation {
             self.answered.answer(navigation);
         }
@@ -362,15 +368,19 @@ define_class!(
                 frame.isMainFrame()
             });
             let shared = &self.ivars().shared;
-            // SAFETY: `navigation_action` is a live `WKNavigationAction`;
-            // `mainFrameNavigation` is a read-only property `objc2-web-kit`
-            // does not bind — public API since macOS/iOS 27, this
-            // workspace's deployment floor.
-            let navigation: Option<Retained<WKNavigation>> =
-                unsafe { msg_send![navigation_action, mainFrameNavigation] };
-            let answered = shared.answered.is_answered(navigation.as_deref());
-            if !answered {
-                if let Some(policy) = shared.navigation_policy.as_ref() {
+            // The policy is the only reader of `mainFrameNavigation`, so the
+            // property is read only while one is installed. The type gate on
+            // `WebViewOpen::navigation_policy` restricts that to deployment
+            // targets of Apple OS 27 or newer, where the property is public.
+            if let Some(policy) = shared.navigation_policy.as_ref() {
+                // SAFETY: `navigation_action` is a live `WKNavigationAction`;
+                // `mainFrameNavigation` is a read-only property
+                // `objc2-web-kit` does not bind, public API since
+                // macOS/iOS 27 and reachable here only through an installed
+                // policy.
+                let navigation: Option<Retained<WKNavigation>> =
+                    unsafe { msg_send![navigation_action, mainFrameNavigation] };
+                if !shared.answered.is_answered(navigation.as_deref()) {
                     // SAFETY: main-thread message sends to objects WebKit retains
                     // for this call; see the module safety note.
                     let url = unsafe {
@@ -399,13 +409,13 @@ define_class!(
                             return;
                         }
                     }
-                }
-                // An answer given is an answer kept: `WebKit` asks again
-                // for every server redirect the navigation follows, and
-                // each of those actions carries the same
-                // `mainFrameNavigation`.
-                if let Some(navigation) = navigation.as_deref() {
-                    shared.answered.answer(navigation);
+                    // An answer given is an answer kept: `WebKit` asks again
+                    // for every server redirect the navigation follows, and
+                    // each of those actions carries the same
+                    // `mainFrameNavigation`.
+                    if let Some(navigation) = navigation.as_deref() {
+                        shared.answered.answer(navigation);
+                    }
                 }
             }
             if targets_main_frame {

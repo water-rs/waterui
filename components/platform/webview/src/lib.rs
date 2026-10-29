@@ -80,6 +80,15 @@ pub use script::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 mod navigation;
+/// The Apple OS version `WebViewOpen::navigation_policy` needs, as `(major,
+/// minor)`: `WKNavigationAction.mainFrameNavigation` is public from there. The
+/// `web-frontend-apple-deployment-targets` framework metadata names the same
+/// version for every Apple platform, which the tests check.
+#[cfg(not(target_arch = "wasm32"))]
+const NAVIGATION_POLICY_OS: (u16, u16) = (27, 0);
+#[cfg(not(target_arch = "wasm32"))]
+type NavigationPolicyOs =
+    waterui_apple_os::AppleOs<{ NAVIGATION_POLICY_OS.0 }, { NAVIGATION_POLICY_OS.1 }>;
 #[cfg(not(target_arch = "wasm32"))]
 pub use navigation::{NavigationDecision, NavigationPolicy, NavigationRequest, stay_on_origin};
 #[cfg(not(target_arch = "wasm32"))]
@@ -1033,11 +1042,32 @@ impl WebViewOpen {
     /// for every redirect, and exposes no public signal marking a
     /// subframe's action as one, so the policy sees it as an ordinary
     /// subframe navigation.
-    pub fn navigation_policy(
-        mut self,
-        policy: impl Fn(&NavigationRequest) -> NavigationDecision + Send + Sync + 'static,
-    ) -> Self {
-        self.navigation_policy = Some(NavigationPolicy::new(policy));
+    ///
+    /// # Apple OS 27
+    ///
+    /// `WKWebView` tells the load the application issued from the page's own
+    /// through `WKNavigationAction.mainFrameNavigation`, public API from
+    /// macOS and iOS 27. A build targeting an earlier Apple OS does not
+    /// compile a call to this method: the policy's type must satisfy
+    /// [`waterui_apple_os::Available`], which holds only when the deployment
+    /// target reaches OS 27. Raise the platform under
+    /// `[apple.deployment-targets]` in `Water.toml` to `27.0`; other targets
+    /// are unaffected. `include_web!` installs [`stay_on_origin`] through this
+    /// method and needs the same.
+    pub fn navigation_policy<F>(self, policy: F) -> Self
+    where
+        F: Fn(&NavigationRequest) -> NavigationDecision + Send + Sync + 'static,
+        F: waterui_apple_os::Available<NavigationPolicyOs, NavigationPolicy>,
+    {
+        self.with_navigation_policy(NavigationPolicy::new(policy))
+    }
+
+    /// Installs `policy`, replacing the earlier one. The gate on
+    /// [`navigation_policy`](Self::navigation_policy) is the only thing it
+    /// leaves out.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn with_navigation_policy(mut self, policy: NavigationPolicy) -> Self {
+        self.navigation_policy = Some(policy);
         self
     }
 
@@ -1321,9 +1351,13 @@ mod tests {
     fn a_later_navigation_policy_replaces_the_earlier_one() {
         use super::{NavigationDecision, NavigationRequest, stay_on_origin};
 
+        use super::NavigationPolicy;
+
+        // Through the crate-internal setter: the public method is gated on the
+        // Apple deployment target, which has nothing to do with replacement.
         let open = WebView::open("https://waterui.dev")
-            .navigation_policy(stay_on_origin)
-            .navigation_policy(|_| NavigationDecision::Cancel);
+            .with_navigation_policy(NavigationPolicy::new(stay_on_origin))
+            .with_navigation_policy(NavigationPolicy::new(|_| NavigationDecision::Cancel));
         let request = NavigationRequest::new(
             "https://waterui.dev/docs".parse().expect("a valid URL"),
             Some("https://waterui.dev".parse().expect("a valid URL")),
@@ -1358,5 +1392,29 @@ mod tests {
         source.set(next.clone());
 
         assert_eq!(*navigations.borrow(), vec![replacement, next]);
+    }
+
+    /// The framework metadata `water create` reads to scaffold a web frontend
+    /// project names the Apple OS version `navigation_policy` is gated on, for
+    /// every Apple platform.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn web_frontend_deployment_targets_match_the_navigation_policy_gate() {
+        let manifest: toml::Value =
+            toml::from_str(include_str!("../../../../Cargo.toml")).expect("a valid root manifest");
+        let targets =
+            manifest["package"]["metadata"]["waterui"]["web-frontend-apple-deployment-targets"]
+                .as_table()
+                .expect("the framework declares web-frontend-apple-deployment-targets");
+        let (major, minor) = super::NAVIGATION_POLICY_OS;
+        let gate = format!("{major}.{minor}");
+        assert_eq!(
+            targets.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["ios", "macos", "tvos", "visionos", "watchos"],
+            "every Apple platform is declared"
+        );
+        for (platform, version) in targets {
+            assert_eq!(version.as_str(), Some(gate.as_str()), "{platform}");
+        }
     }
 }
