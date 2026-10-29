@@ -150,19 +150,30 @@ class HwuiTextProvider : TextLayouts {
             node.setPosition(0, 0, layout.width, layout.height)
             // Glyph ink may overhang the line boxes; the reply's bounds cover it.
             node.setClipToBounds(false)
-            val canvas = node.beginRecording(layout.width, layout.height)
-            try {
-                layout.draw(canvas)
-            } finally {
-                node.endRecording()
-            }
+            record(layout, node)
             val reply = reply(layout, styled)
             layouts.put(id, layout)
             nodes.put(id, node)
             reply
         }
 
-    override fun node(id: Int): RenderNode = synchronized(lock) { nodes[id] }
+    private fun record(layout: Layout, node: RenderNode) {
+        val canvas = node.beginRecording(layout.width, layout.height)
+        try {
+            layout.draw(canvas)
+        } finally {
+            node.endRecording()
+        }
+    }
+
+    // A retained `Layout` can outlive its node's display list. Restore a
+    // missing recording from that layout without reshaping or allocating
+    // a new node or resource id.
+    override fun node(id: Int): RenderNode = synchronized(lock) {
+        val node = nodes[id]
+        if (!node.hasDisplayList()) record(layouts[id], node)
+        node
+    }
 
     /** Final teardown for a destroyed painter: every retained layout, node
      * and typeface cache. Regular `release` commands are unaffected. */
