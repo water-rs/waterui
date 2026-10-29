@@ -928,8 +928,8 @@ fn place_live_member(
     let (mut measured, size, stretches) =
         measure_lazy_child_dimensions(mounted.layout(), pass.cross, pass.lazy);
     let (main, cross_axis) = main_cross(size, pass.lazy);
-    // The lazy path sets cursor-based frames directly — unpixel-snapped,
-    // as the baseline's `child.frame =` assignment does.
+    // The lazy path places cursor-based frames directly; the platform
+    // write snaps their edges to the pixel grid.
     let frame = member_frame(
         &pass.lazy.axis,
         pass.bounds,
@@ -938,7 +938,7 @@ fn place_live_member(
         stretches,
         pass.rtl,
     );
-    view::set_frame(mounted.view(), frame);
+    view::set_frame_pixel_aligned(mounted.view(), frame);
     // What the member's ghost slot reports if it departs: this pass's
     // negotiated measurement, size replaced by the frame it landed in.
     #[expect(
@@ -1166,7 +1166,7 @@ fn perform_fixed_layout(state: &mut ContainerState) {
                 let child = &state.rendered[id];
                 // The negotiated proposal lands before the frame.
                 proposal::deliver(child.view(), placement.proposal);
-                view::set_frame(child.view(), frame);
+                view::set_frame_pixel_aligned(child.view(), frame);
                 // What the member's ghost slot reports if it departs: this
                 // pass's negotiated measurement, size replaced by the
                 // frame it landed in.

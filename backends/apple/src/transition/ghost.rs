@@ -217,7 +217,7 @@ impl Ghost {
                 && frame.size.height.to_bits() == expected.height.to_bits(),
             "container placed a ghost at {frame:?}, not its frozen slot size {expected:?}"
         );
-        view::set_frame(&self.0.visual.host, frame);
+        view::set_frame_pixel_aligned(&self.0.visual.host, frame);
     }
 }
 

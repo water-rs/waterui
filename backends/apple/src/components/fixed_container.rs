@@ -143,7 +143,7 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
         // that lays out on the frame change already holds its selected
         // proposal, and a proposal change alone still marks it for relayout.
         proposal::deliver(child.view(), placement.proposal);
-        view::set_frame(child.view(), frame);
+        view::set_frame_pixel_aligned(child.view(), frame);
     }
 }
 

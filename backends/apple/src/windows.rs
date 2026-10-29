@@ -286,7 +286,7 @@ mod imp {
             // `leaf_view` holds the retain for the host's lifetime.
             let frame =
                 crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
-            cocoa_ui::view::set_frame(&leaf_view, frame);
+            cocoa_ui::view::set_frame_pixel_aligned(&leaf_view, frame);
         });
         window.set_content_view(&host);
         keepalive.keep(leaf);
@@ -1065,7 +1065,7 @@ mod imp {
             // `leaf_view` holds the retain for the host's lifetime.
             let frame =
                 crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
-            cocoa_ui::view::set_frame(&leaf_view, frame);
+            cocoa_ui::view::set_frame_pixel_aligned(&leaf_view, frame);
         });
         keepalive.keep(leaf);
         keepalive.keep(pending.observation);

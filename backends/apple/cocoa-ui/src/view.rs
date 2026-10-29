@@ -578,6 +578,56 @@ pub fn backing_scale_factor(view: &PlatformView) -> f64 {
     })
 }
 
+/// Sets `view`'s frame with its edges snapped to the superview's
+/// device-pixel grid, returning the frame written.
+///
+/// Layout answers in logical points; the platform renders on whole
+/// device pixels. Snapping each frame's min and max edges — never
+/// origin and size separately — keeps adjacent siblings flush instead
+/// of leaving fractional-pixel gaps and overlaps.
+///
+/// On `AppKit` the snap is `backingAlignedRect(_:options:)` with
+/// `NSAlignAllEdgesNearest`, asked of the superview whose coordinate
+/// space the frame lives in — the same mechanism `NSView`'s own layout
+/// and `SwiftUI` use. `UIKit` has no equivalent, so the edges round to
+/// the window screen's scale ([`backing_scale_factor`], `1.0` detached);
+/// the same rounding covers an `AppKit` view with no superview, whose
+/// frame has no coordinate space to align against.
+///
+/// Callers that need the written value — a change check — take it from
+/// the return rather than reading `frame` back.
+pub fn set_frame_pixel_aligned(view: &PlatformView, frame: Rect) -> Rect {
+    let frame = pixel_aligned_frame(view, frame);
+    set_frame(view, frame);
+    frame
+}
+
+/// `frame` — a rect in `view`'s superview coordinate space — with its
+/// edges snapped to the device-pixel grid.
+fn pixel_aligned_frame(view: &PlatformView, frame: Rect) -> Rect {
+    #[cfg(target_os = "macos")]
+    if let Some(parent) = superview(view) {
+        return parent
+            .backingAlignedRect_options(
+                frame.into(),
+                objc2_foundation::NSAlignmentOptions::AlignAllEdgesNearest,
+            )
+            .into();
+    }
+    snap_frame_edges(frame, backing_scale_factor(view))
+}
+
+/// Snaps `frame`'s min and max edges to multiples of `1.0 / scale` —
+/// `UIKit`'s substitute for `backingAlignedRect`, and `AppKit`'s when no
+/// superview exists to ask.
+fn snap_frame_edges(frame: Rect, scale: f64) -> Rect {
+    let min_x = (frame.origin.x * scale).round() / scale;
+    let min_y = (frame.origin.y * scale).round() / scale;
+    let max_x = ((frame.origin.x + frame.size.width) * scale).round() / scale;
+    let max_y = ((frame.origin.y + frame.size.height) * scale).round() / scale;
+    Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+}
+
 /// Removes `view` and everything inside it from the accessibility tree.
 #[cfg(target_os = "macos")]
 pub fn hide_from_accessibility(view: &PlatformView) {

@@ -498,7 +498,7 @@ pub(crate) fn mount_content(
             Some(frame.size.height as f32),
         );
         crate::proposal::deliver(placed.view(), proposal);
-        cocoa_ui::view::set_frame(placed.view(), frame);
+        cocoa_ui::view::set_frame_pixel_aligned(placed.view(), frame);
         // Placement changes the child's bounds after the host's own layout.
         // Complete that child's pending layout before this placement finishes.
         cocoa_ui::view::layout_immediately(placed.view());

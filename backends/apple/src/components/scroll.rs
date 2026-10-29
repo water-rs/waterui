@@ -289,8 +289,9 @@ fn layout_child(
         f64::from(size.width),
         f64::from(size.height),
     );
-    if cocoa_ui::Rect::from(child_view.frame()) != frame {
-        cocoa_ui::view::set_frame(child_view, frame);
+    let previous = cocoa_ui::Rect::from(child_view.frame());
+    let written = cocoa_ui::view::set_frame_pixel_aligned(child_view, frame);
+    if previous != written {
         scroll.set_content_extent(cocoa_ui::Size::new(
             f64::from(placement.scroll_extent.width),
             f64::from(placement.scroll_extent.height),
@@ -315,7 +316,7 @@ fn layout_child(
     let origin = placement.content_frame.origin();
     let size = placement.content_frame.size();
     let child_view = content.child.view();
-    cocoa_ui::view::set_frame(
+    cocoa_ui::view::set_frame_pixel_aligned(
         child_view,
         cocoa_ui::Rect::new(
             f64::from(origin.x),
