@@ -7280,7 +7280,7 @@ mod owner_lifetimes {
     /// The host is a bare `HostView` that no leaf owns, so nothing clears
     /// its handlers; the handler borrows the child weakly so dropping the
     /// `Mounted` alone decides whether the child's views survive.
-    fn mount_hosted(
+    pub fn mount_hosted(
         mtm: MainThreadMarker,
         leaf_inst: waterui_apple::contract::NativeLeaf,
     ) -> (Retained<HostView>, waterui_apple::contract::Mounted) {
@@ -8104,6 +8104,127 @@ mod scroll {
         );
     }
 
+    /// A padded column whose caption is the widest thing in it, over a
+    /// 2000 pt spacer that makes the scroll overflow so its vertical
+    /// scroller shows — the `liquid_glass` surfaces page in miniature.
+    #[cfg(target_os = "macos")]
+    fn hugged_column() -> impl waterui::View {
+        use waterui::prelude::*;
+
+        vstack((
+            text("Interactive glass answers touch and hover with the platform's own effects.")
+                .size(15.0),
+            spacer().size(100.0, 2000.0),
+        ))
+        .padding()
+    }
+
+    /// water-rs/waterui#3597: a vertical scroll hugging its content in a
+    /// 640x480 window sits a legacy scroller beside the content instead of
+    /// over it. The expected frame width is `AppKit`'s own
+    /// `frameSizeForContentSize:` of the content's ideal width under a
+    /// regular legacy scroller (the ideal plus 17 pt on macOS 26) — the
+    /// width the `SwiftUI` twin's `ScrollView` takes, its scroller track
+    /// outside the content. The viewport is then the content's ideal
+    /// width, so the caption stays on one line and the content frame is
+    /// the content's ideal size; before the fix the frame was the ideal
+    /// width, the scroller took 17 pt of it and the caption wrapped.
+    #[cfg(target_os = "macos")]
+    fn a_legacy_scroller_sits_beside_the_hugged_content() {
+        use cocoa_ui::objc2_app_kit::{
+            NSBorderType, NSControlSize, NSScrollView, NSScroller, NSScrollerStyle,
+        };
+        use cocoa_ui::objc2_foundation::NSSize;
+        use objc2::ClassType as _;
+        use waterui::prelude::*;
+        use waterui_core::layout::ProposalSize;
+
+        /// The kit scroll surface somewhere under `view`.
+        fn surface_in(view: &cocoa_ui::PlatformView) -> Option<Retained<ScrollSurface>> {
+            if view.downcast_ref::<ScrollSurface>().is_some() {
+                return cocoa_ui::view::retain_base(view)
+                    .downcast::<ScrollSurface>()
+                    .ok();
+            }
+            cocoa_ui::view::subviews(view)
+                .iter()
+                .find_map(|sub| surface_in(sub))
+        }
+
+        fn assert_close(actual: f64, expected: f64, what: &str) {
+            assert!(
+                (actual - expected).abs() < 1.0,
+                "{what}: {actual} pt, expected {expected} pt"
+            );
+        }
+
+        let mtm = super::mtm();
+        let ideal = super::resolve::render(hugged_column())
+            .layout()
+            .measure(ProposalSize::UNSPECIFIED)
+            .size;
+        let (parent, mounted) = super::owner_lifetimes::mount_hosted(
+            mtm,
+            super::resolve::render(zstack((scroll(hugged_column()),))),
+        );
+        let surface = surface_in(mounted.view()).expect("the zstack hosts the kit scroll surface");
+        // The style a mouse-only Mac (and the CI runners) shows; the
+        // overlay style reserves nothing and needs no correction.
+        surface.setScrollerStyle(NSScrollerStyle::Legacy);
+        let _window = super::leaf::attach(mtm, &parent);
+        parent.set_needs_layout();
+        parent.layout_if_needed();
+        surface.layout_if_needed();
+
+        assert!(
+            surface
+                .verticalScroller()
+                .is_some_and(|scroller| !scroller.isHidden()),
+            "the overflowing column must show its vertical scroller"
+        );
+        // SAFETY: `NSScroller`'s own class is a valid scroller class.
+        let expected = unsafe {
+            NSScrollView::frameSizeForContentSize_horizontalScrollerClass_verticalScrollerClass_borderType_controlSize_scrollerStyle(
+                NSSize::new(f64::from(ideal.width), 0.0),
+                None,
+                Some(NSScroller::class()),
+                NSBorderType::NoBorder,
+                NSControlSize::Regular,
+                NSScrollerStyle::Legacy,
+                mtm,
+            )
+        };
+        let frame = cocoa_ui::view::frame(&surface);
+        assert_close(
+            frame.size.width,
+            expected.width,
+            "the scroll frame is the content's ideal width plus the legacy scroller",
+        );
+        assert_close(
+            surface.viewport_size().width,
+            f64::from(ideal.width),
+            "the viewport beside the scroller is the content's ideal width",
+        );
+        let document = surface
+            .document_view()
+            .expect("a laid-out scroll surface has a document");
+        let content = cocoa_ui::view::subviews(&document)
+            .into_iter()
+            .next()
+            .expect("the scroll mounts its content on the document");
+        let content = cocoa_ui::view::frame(&content).size;
+        assert_close(
+            content.width,
+            f64::from(ideal.width),
+            "the content keeps its ideal width",
+        );
+        assert_close(
+            content.height,
+            f64::from(ideal.height),
+            "the caption stays on one line",
+        );
+    }
+
     /// The `scroll::` trials — one per animation case plus the takeover
     /// and clamp cases.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
@@ -8161,6 +8282,10 @@ mod scroll {
             (
                 "scroll::appkit_corrections_keep_an_in_flight_animation".to_owned(),
                 Box::new(appkit_corrections_keep_an_in_flight_animation),
+            ),
+            (
+                "scroll::a_legacy_scroller_sits_beside_the_hugged_content".to_owned(),
+                Box::new(a_legacy_scroller_sits_beside_the_hugged_content),
             ),
         ]);
         trial_each(named)
