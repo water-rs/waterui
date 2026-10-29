@@ -216,8 +216,9 @@ const fn covered_release_mask(mask: u16) -> u16 {
 }
 
 /// The band `candidate` covers inside its subtree on each edge — a view
-/// whose `safeAreaInsets` on an edge run deeper than the window's
-/// container inset hosts a chrome band there (the tab bar's band inside
+/// whose `safeAreaInsets` on an edge run deeper than the context's
+/// baseline (the window's container inset, or in a capture window the
+/// capture root's own insets) hosts a chrome band there (the tab bar's band inside
 /// `UITabBarController`'s pane, the navigation bar's band inside a
 /// pushed page); everything inside is covered by it.
 #[cfg(target_os = "ios")]
@@ -226,7 +227,7 @@ fn cover_contribution(covered: &mut Covered, candidate: &PlatformView, context: 
     let frame = window_frame(candidate);
     for edge in 0..4u16 {
         let depth = depth_at(&insets, edge);
-        if depth <= depth_at(&context.container, edge) + 0.5 {
+        if depth <= depth_at(&context.baseline, edge) + 0.5 {
             continue;
         }
         // The band's inner edge: the candidate's own safe boundary on
@@ -264,6 +265,17 @@ fn covered_bands(view: &PlatformView, context: &WindowContext) -> Covered {
             break;
         }
         cover_contribution(&mut covered, &candidate, context);
+        if context.capture_root {
+            // The capture root stands in for the window: nothing above it
+            // is a band of the captured subtree.
+            if view::window(&candidate)
+                .and_then(|window| window.rootViewController())
+                .and_then(|controller| controller.view())
+                .is_some_and(|root| core::ptr::eq(&raw const *root, &raw const *candidate))
+            {
+                break;
+            }
+        }
         current = view::superview(&candidate);
     }
     covered
@@ -278,6 +290,14 @@ struct WindowContext {
     container: EdgeInsets,
     /// The keyboard region's depth on the window's edges.
     keyboard: EdgeInsets,
+    /// The depth a view's `safeAreaInsets` must exceed to count as a
+    /// chrome band: `container` in an ordinary window, the capture root's
+    /// own insets in a capture window (the device bands `UIKit` propagates
+    /// into the capture are not chrome).
+    baseline: EdgeInsets,
+    /// Whether the context is a capture window's, whose root stands in for
+    /// the window.
+    capture_root: bool,
 }
 
 #[cfg(target_os = "ios")]
@@ -292,6 +312,8 @@ impl WindowContext {
                 window: window_frame(&bar),
                 container: EdgeInsets::ZERO,
                 keyboard: EdgeInsets::ZERO,
+                baseline: EdgeInsets::ZERO,
+                capture_root: false,
             };
         }
         let Some(window) = view::window(view) else {
@@ -299,20 +321,42 @@ impl WindowContext {
                 window: window_frame(view),
                 container: EdgeInsets::ZERO,
                 keyboard: EdgeInsets::ZERO,
+                baseline: EdgeInsets::ZERO,
+                capture_root: false,
             };
         };
+        if cocoa_ui::bitmap::is_capture_window(&window) {
+            // The capture contract: the capture root stands in for the
+            // window, no container or keyboard region applies, and the
+            // device bands UIKit propagates into the capture are the
+            // root's own insets, not chrome.
+            let root = window
+                .rootViewController()
+                .and_then(|controller| controller.view())
+                .expect("a capture window is mounted through its root controller");
+            return Self {
+                window: window_frame(&root),
+                container: EdgeInsets::ZERO,
+                keyboard: EdgeInsets::ZERO,
+                baseline: EdgeInsets::from(root.safeAreaInsets()),
+                capture_root: true,
+            };
+        }
         let window: &PlatformView = &window;
+        let container = EdgeInsets::from(window.safeAreaInsets());
         Self {
             window: window.bounds(),
             // The container region is the window's own `safeAreaInsets` —
             // the bands system bars, cutouts and the home indicator
             // reserve; a root controller's `additionalSafeAreaInsets` are
             // the app's layout choice, not region geometry.
-            container: EdgeInsets::from(window.safeAreaInsets()),
+            container,
             // `keyboard_rect` resolves the window from the view it is
             // given: a `UIWindow` is inside no window, so the lookup must
             // run on `view` itself.
             keyboard: band_depths(window.bounds(), keyboard_rect(view)),
+            baseline: container,
+            capture_root: false,
         }
     }
 

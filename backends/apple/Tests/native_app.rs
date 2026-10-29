@@ -84,6 +84,7 @@ fn trials() -> Vec<libtest_mimic::Trial> {
     trials.extend(gesture_events::trials());
     trials.extend(navigation::trials());
     trials.extend(list_spacing::trials());
+    trials.extend(capture_regions::trials());
     trials.extend(text_selection_ios::trials());
     trials
 }
@@ -2124,5 +2125,87 @@ mod list_spacing {
                 "list {index} with searchable={searchable}: first row begins at {actual}, expected {expected}"
             );
         }
+    }
+}
+
+/// A view rehosted for capture lays out under the capture contract: the
+/// capture window has no device regions, so a fixed container's child is
+/// placed exactly as it is when the container is detached (#3704).
+#[cfg(target_os = "ios")]
+mod capture_regions {
+    use cocoa_ui::objc2_ui_kit::UIEdgeInsets;
+    use cocoa_ui::uikit::ImageView;
+    use cocoa_ui::{Rect, view};
+    use kurbo::Shape;
+    use waterui::graphics::color::WorkingColor;
+    use waterui::graphics::draw::Draw;
+    use waterui::graphics::picture::Picture;
+    use waterui::layout::frame::Frame;
+    use waterui::reactive::constant;
+    use waterui_apple::native_test_support::{render, with_capture_rehost};
+    use waterui_core::layout::Size;
+
+    use super::{find, mtm};
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![libtest_mimic::Trial::test(
+            "capture_regions::a_rehosted_fixed_container_places_its_child_at_full_size",
+            || {
+                a_rehosted_fixed_container_places_its_child_at_full_size();
+                Ok(())
+            },
+        )]
+    }
+
+    fn a_rehosted_fixed_container_places_its_child_at_full_size() {
+        let mtm = mtm();
+        let picture = Picture::new(
+            Size::new(24.0, 24.0),
+            constant(Picture::record(|scene| {
+                scene.fill(
+                    kurbo::Rect::new(0.0, 0.0, 24.0, 24.0).to_path(0.1),
+                    WorkingColor::BLACK,
+                );
+            })),
+        );
+        let leaf = render(
+            Frame::new(picture)
+                .ideal_width(24.0)
+                .ideal_height(24.0)
+                .max_width(24.0)
+                .max_height(24.0),
+        );
+        let host = view::retain_base(leaf.view());
+        // The detached state `tabs.rs` leaves a bar icon in: sized by its
+        // parent-less owner, never laid out.
+        view::set_frame(&host, Rect::new(0.0, 0.0, 24.0, 24.0));
+
+        // The status-bar and home-indicator bands of a Dynamic Island
+        // iPhone, as the iOS 27 runtimes that propagate them report them.
+        let device_band = UIEdgeInsets {
+            top: 62.0,
+            left: 0.0,
+            bottom: 34.0,
+            right: 0.0,
+        };
+        with_capture_rehost(mtm, &host, device_band, |safe| {
+            assert!(
+                (host.safeAreaInsets().top - device_band.top).abs() < 0.01,
+                "precondition: the device band reaches the rehosted host"
+            );
+            let image =
+                find::<ImageView>(&host).expect("the picture leaf mounts the kit image view");
+            let frame = view::frame(&image);
+            assert!(
+                (frame.size.width - 24.0).abs() < 0.01 && (frame.size.height - 24.0).abs() < 0.01,
+                "the rehosted picture's image view is {:?}, not the 24x24 its container proposed",
+                frame.size
+            );
+            assert_eq!(
+                safe,
+                view::bounds(&host),
+                "a capture window has no regions: the host's safe rect is its bounds"
+            );
+        });
     }
 }

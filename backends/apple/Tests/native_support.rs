@@ -1199,6 +1199,40 @@ pub fn install_gpu(
     crate::dispatch::install(env);
 }
 
+/// Rehosts the detached `view` the way `capture_rgba` does.
+///
+/// The view goes into the offscreen capture window and is laid out
+/// immediately; `inspect` then runs with the rect
+/// `LayoutContext::of(view).safe_rect()` answers, while the view is still
+/// rehosted. The view is restored afterwards.
+///
+/// `device_band` is added to the capture root's safe area before the
+/// layout pass. Whether `UIKit` propagates the scene's device bands into a
+/// capture window depends on the runtime, so the band is supplied
+/// explicitly and every runtime lays the view out under it.
+///
+/// # Panics
+///
+/// When no window scene can host the capture window, or `view` already
+/// has a window.
+#[cfg(target_os = "ios")]
+pub fn with_capture_rehost<R>(
+    mtm: MainThreadMarker,
+    view: &cocoa_ui::Retained<cocoa_ui::PlatformView>,
+    device_band: cocoa_ui::objc2_ui_kit::UIEdgeInsets,
+    inspect: impl FnOnce(cocoa_ui::Rect) -> R,
+) -> R {
+    let _host = crate::capture_image::WindowHost::attach_if_windowless(view, mtm)
+        .expect("the harness application owns a window scene")
+        .expect("a detached view has no window to begin with");
+    cocoa_ui::view::window(view)
+        .and_then(|window| window.rootViewController())
+        .expect("a capture window is mounted through its root controller")
+        .setAdditionalSafeAreaInsets(device_band);
+    cocoa_ui::view::layout_immediately(view);
+    inspect(crate::native_layout::LayoutContext::of(view).safe_rect())
+}
+
 /// Renders `view` against [`render_environment`] through the typed
 /// dispatch entry point.
 #[must_use]
