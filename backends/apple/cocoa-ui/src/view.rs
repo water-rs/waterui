@@ -578,54 +578,95 @@ pub fn backing_scale_factor(view: &PlatformView) -> f64 {
     })
 }
 
-/// Sets `view`'s frame with its edges snapped to the superview's
-/// device-pixel grid, returning the frame written.
+/// What pixel alignment discarded from a view's layout origin: the layout
+/// origin minus the written origin, in points, each component within half
+/// a device pixel.
 ///
-/// Layout answers in logical points; the platform renders on whole
-/// device pixels. Snapping each frame's min and max edges — never
-/// origin and size separately — keeps adjacent siblings flush instead
-/// of leaving fractional-pixel gaps and overlaps.
-///
-/// On `AppKit` the snap is `backingAlignedRect(_:options:)` with
-/// `NSAlignAllEdgesNearest`, asked of the superview whose coordinate
-/// space the frame lives in — the same mechanism `NSView`'s own layout
-/// and `SwiftUI` use. `UIKit` has no equivalent, so the edges round to
-/// the window screen's scale ([`backing_scale_factor`], `1.0` detached);
-/// the same rounding covers an `AppKit` view with no superview, whose
-/// frame has no coordinate space to align against.
-///
-/// Callers that need the written value — a change check — take it from
-/// the return rather than reading `frame` back.
-pub fn set_frame_pixel_aligned(view: &PlatformView, frame: Rect) -> Rect {
-    let frame = pixel_aligned_frame(view, frame);
-    set_frame(view, frame);
-    frame
+/// A view's children are laid out against its layout origin, but they
+/// land in the coordinate space of its written, aligned origin. Aligning a
+/// child under its parent's offset puts the child where the parent's
+/// layout placed it, so each view's written edges are its absolute layout
+/// edges rounded once — the discarded fraction never accumulates down the
+/// tree. A view the platform places, such as a window's content root,
+/// starts at [`SubpixelOffset::ZERO`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SubpixelOffset {
+    x: f64,
+    y: f64,
 }
 
-/// `frame` — a rect in `view`'s superview coordinate space — with its
-/// edges snapped to the device-pixel grid.
-fn pixel_aligned_frame(view: &PlatformView, frame: Rect) -> Rect {
-    #[cfg(target_os = "macos")]
-    if let Some(parent) = superview(view) {
-        return parent
-            .backingAlignedRect_options(
-                frame.into(),
-                objc2_foundation::NSAlignmentOptions::AlignAllEdgesNearest,
-            )
-            .into();
+impl SubpixelOffset {
+    /// No discarded fraction: a view written exactly at its layout origin.
+    pub const ZERO: Self = Self { x: 0.0, y: 0.0 };
+}
+
+/// A frame aligned to the device-pixel grid and the offset its alignment
+/// left, which the view's own children align under.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PixelAlignedFrame {
+    /// The frame to write, in the superview's coordinate space.
+    pub frame: Rect,
+    /// What the alignment discarded from the layout origin.
+    pub offset: SubpixelOffset,
+}
+
+/// `frame` — a rect in the layout space of `view`'s superview, whose own
+/// alignment discarded `parent` — aligned to the device-pixel grid of
+/// `view`'s window ([`backing_scale_factor`], `1.0` detached).
+///
+/// The superview's written origin sits on the grid — this alignment or the
+/// platform placed it there — so `frame` lies at `frame + parent` in the
+/// superview's coordinate space, and rounding there rounds the absolute
+/// layout edges. Each min and max edge rounds to the nearest device pixel
+/// on its own — never origin and size separately — which keeps adjacent
+/// siblings flush. A tie rounds toward the larger coordinate: rightward in
+/// x and, in the top-down space every placed frame lives in, toward the
+/// screen bottom, as `SwiftUI` rounds. `AppKit`'s
+/// `backingAlignedRect` is not used: it rounds in bottom-up backing space,
+/// so its ties go toward the screen top, and it rounds each frame in its
+/// superview's already-aligned space.
+#[must_use]
+pub fn pixel_aligned_frame(
+    view: &PlatformView,
+    frame: Rect,
+    parent: SubpixelOffset,
+) -> PixelAlignedFrame {
+    align_to_pixel_grid(frame, parent, backing_scale_factor(view))
+}
+
+/// Writes [`pixel_aligned_frame`] as `view`'s frame, for a placement that
+/// delivers nothing to the view and so discards the offset the alignment
+/// left.
+pub fn set_frame_pixel_aligned(view: &PlatformView, frame: Rect, parent: SubpixelOffset) {
+    set_frame(view, pixel_aligned_frame(view, frame, parent).frame);
+}
+
+/// [`pixel_aligned_frame`]'s arithmetic, at device scale `scale`.
+fn align_to_pixel_grid(frame: Rect, parent: SubpixelOffset, scale: f64) -> PixelAlignedFrame {
+    let min_x = frame.origin.x + parent.x;
+    let min_y = frame.origin.y + parent.y;
+    let aligned_min_x = round_to_pixel(min_x, scale);
+    let aligned_min_y = round_to_pixel(min_y, scale);
+    let aligned_max_x = round_to_pixel(min_x + frame.size.width, scale);
+    let aligned_max_y = round_to_pixel(min_y + frame.size.height, scale);
+    PixelAlignedFrame {
+        frame: Rect::new(
+            aligned_min_x,
+            aligned_min_y,
+            aligned_max_x - aligned_min_x,
+            aligned_max_y - aligned_min_y,
+        ),
+        offset: SubpixelOffset {
+            x: min_x - aligned_min_x,
+            y: min_y - aligned_min_y,
+        },
     }
-    snap_frame_edges(frame, backing_scale_factor(view))
 }
 
-/// Snaps `frame`'s min and max edges to multiples of `1.0 / scale` —
-/// `UIKit`'s substitute for `backingAlignedRect`, and `AppKit`'s when no
-/// superview exists to ask.
-fn snap_frame_edges(frame: Rect, scale: f64) -> Rect {
-    let min_x = (frame.origin.x * scale).round() / scale;
-    let min_y = (frame.origin.y * scale).round() / scale;
-    let max_x = ((frame.origin.x + frame.size.width) * scale).round() / scale;
-    let max_y = ((frame.origin.y + frame.size.height) * scale).round() / scale;
-    Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+/// `value` rounded to the nearest multiple of `1.0 / scale`, a tie toward
+/// the larger value.
+fn round_to_pixel(value: f64, scale: f64) -> f64 {
+    (value.mul_add(scale, 0.5)).floor() / scale
 }
 
 /// Removes `view` and everything inside it from the accessibility tree.
@@ -950,4 +991,35 @@ pub fn association_key(name: &core::ffi::CStr) -> *const core::ffi::c_void {
     // SAFETY: `Sel` is `repr(transparent)` over the selector pointer the
     // associated-object API expects as the key.
     unsafe { core::mem::transmute::<objc2::runtime::Sel, *const core::ffi::c_void>(selector) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Rect, SubpixelOffset, align_to_pixel_grid};
+
+    #[test]
+    fn pixel_ties_round_rightward_and_toward_the_screen_bottom() {
+        let at_1x = align_to_pixel_grid(Rect::new(2.5, 7.5, 10.0, 10.0), SubpixelOffset::ZERO, 1.0);
+        assert_eq!(at_1x.frame, Rect::new(3.0, 8.0, 10.0, 10.0));
+        let at_2x = align_to_pixel_grid(Rect::new(0.25, 0.75, 1.0, 1.0), SubpixelOffset::ZERO, 2.0);
+        assert_eq!(at_2x.frame, Rect::new(0.5, 1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn nested_alignment_rounds_absolute_layout_edges_once() {
+        // Layout puts the parent at y 10.5 and the child 0.5 below it: the
+        // child's absolute layout edge is 11.0, which needs no rounding.
+        let parent =
+            align_to_pixel_grid(Rect::new(0.0, 10.5, 40.0, 20.0), SubpixelOffset::ZERO, 1.0);
+        assert_eq!(parent.frame, Rect::new(0.0, 11.0, 40.0, 20.0));
+        let child = align_to_pixel_grid(Rect::new(0.0, 0.5, 16.0, 16.0), parent.offset, 1.0);
+        assert_eq!(parent.frame.origin.y + child.frame.origin.y, 11.0);
+        assert_eq!(child.frame.size.height, 16.0);
+        // A grandchild a further 0.5 below rounds its absolute 11.5 once.
+        let grandchild = align_to_pixel_grid(Rect::new(0.0, 0.5, 8.0, 8.0), child.offset, 1.0);
+        assert_eq!(
+            parent.frame.origin.y + child.frame.origin.y + grandchild.frame.origin.y,
+            12.0
+        );
+    }
 }

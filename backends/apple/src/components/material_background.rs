@@ -22,7 +22,7 @@ use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
-use crate::proposal;
+use crate::proposal::{self, Placement};
 use crate::window_background::level;
 
 #[cfg(target_os = "macos")]
@@ -31,7 +31,7 @@ use cocoa_ui::appkit::HostView;
 use cocoa_ui::uikit::HostView;
 
 /// The leaf's live state: the mounted child and the effect view, plus the
-/// last placement proposal the wrapper was selected with — the offer the
+/// last placement the wrapper was given — its proposal is the offer the
 /// layout pass echoes back when the host stamps the frame without
 /// delivering a proposal.
 struct MaterialBackgroundState {
@@ -39,8 +39,8 @@ struct MaterialBackgroundState {
     child: Mounted,
     /// The effect view, stamped over the content's frame each layout.
     blur: Retained<PlatformView>,
-    /// The proposal selected for this wrapper, forwarded to the child.
-    last_proposal: Cell<ProposalSize>,
+    /// The placement given to this wrapper, forwarded to the child.
+    placement: Cell<Placement>,
 }
 
 impl core::fmt::Debug for MaterialBackgroundState {
@@ -116,7 +116,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let state = Rc::new(MaterialBackgroundState {
             child: mounted,
             blur,
-            last_proposal: Cell::new(ProposalSize::UNSPECIFIED),
+            placement: Cell::new(Placement::UNPLACED),
         });
 
         // Scroll discovery traverses the content without changing the
@@ -138,7 +138,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
             )]
             move |host| {
                 let bounds = view::bounds(host);
-                let last = state.last_proposal.get();
+                let last = state
+                    .placement
+                    .get()
+                    .proposal
+                    .unwrap_or(ProposalSize::UNSPECIFIED);
                 let size = state
                     .child
                     .layout()
@@ -160,13 +164,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         });
 
-        // `setPlacementProposal`: remember the selected offer and forward
-        // it to the content, as `WuiMaterialBackground.lastProposal`.
+        // `setPlacementProposal`: remember the placement and forward it to
+        // the content, as `WuiMaterialBackground.lastProposal`.
         let sink_guard = proposal::register_sink(host_view, {
             let state = Rc::clone(&state);
-            move |selected| {
-                state.last_proposal.set(selected);
-                proposal::deliver(state.child.view(), selected);
+            move |placement| {
+                state.placement.set(placement);
+                proposal::deliver(state.child.view(), placement);
             }
         });
 

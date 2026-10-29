@@ -29,6 +29,7 @@ use waterui_core::layout::{Point, ProposalSize, Rect, Size, StretchAxis, SubView
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -216,12 +217,14 @@ fn scroll_content_placement(axis: Axis, viewport: Size, measured: Size) -> Scrol
 }
 
 /// The shared state a scroll leaf hands to its layout face and to the kit's
-/// layout handler: the mounted child, the axis, and the last-laid-out
-/// viewport (`AppKit`'s `tile()` retry).
+/// layout handler: the mounted child, the axis, the last-laid-out
+/// viewport (`AppKit`'s `tile()` retry), and the offset the parent's pixel
+/// alignment of the scroll view left, which the content aligns under.
 struct ScrollContent {
     axis: Axis,
     child: Mounted,
     laid_out_viewport: Cell<Size>,
+    offset: Cell<cocoa_ui::view::SubpixelOffset>,
 }
 
 /// The leaf's layout face: the scroll's own proposal answers.
@@ -290,7 +293,8 @@ fn layout_child(
         f64::from(size.height),
     );
     let previous = cocoa_ui::Rect::from(child_view.frame());
-    let written = cocoa_ui::view::set_frame_pixel_aligned(child_view, frame);
+    // The scroll measures its content itself and negotiates no proposal.
+    let written = proposal::place(child_view, frame, None, content.offset.get());
     if previous != written {
         scroll.set_content_extent(cocoa_ui::Size::new(
             f64::from(placement.scroll_extent.width),
@@ -316,7 +320,8 @@ fn layout_child(
     let origin = placement.content_frame.origin();
     let size = placement.content_frame.size();
     let child_view = content.child.view();
-    cocoa_ui::view::set_frame_pixel_aligned(
+    // The scroll measures its content itself and negotiates no proposal.
+    proposal::place(
         child_view,
         cocoa_ui::Rect::new(
             f64::from(origin.x),
@@ -324,6 +329,8 @@ fn layout_child(
             f64::from(size.width),
             f64::from(size.height),
         ),
+        None,
+        content.offset.get(),
     );
     child_view.setNeedsLayout(true);
     child_view.layoutSubtreeIfNeeded();
@@ -420,6 +427,7 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
         axis: parts.axis,
         child,
         laid_out_viewport: Cell::new(Size::zero()),
+        offset: Cell::new(cocoa_ui::view::SubpixelOffset::ZERO),
     });
 
     // `measured` flips when the first layout completes `place_child` —
@@ -481,12 +489,26 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
         }
     });
 
+    // A parent's placement moves the content's pixel alignment even when
+    // the scroll's frame does not change.
+    let sink_guard = proposal::register_sink(as_view(&scroll), {
+        let content = Rc::clone(&content);
+        let scroll = Retained::clone(&scroll);
+        move |placement| {
+            if content.offset.get() != placement.offset {
+                content.offset.set(placement.offset);
+                scroll.set_needs_layout();
+            }
+        }
+    });
+
     let mut leaf = NativeLeaf::new(
         as_view(&scroll),
         ScrollSubView {
             content: Rc::clone(&content),
         },
     );
+    leaf.keep(sink_guard);
     // The scroll view's handler slots hold `content` (and the mounted
     // child inside it) while the leaf lives; the guard clears those
     // slots when the leaf's keepalive drops — the leaf's release

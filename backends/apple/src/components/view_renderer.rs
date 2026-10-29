@@ -187,10 +187,10 @@ fn lay_out(view: &cocoa_ui::PlatformView, size: Size) {
     // proposal from the stamped frame.
     crate::proposal::deliver(
         view,
-        ProposalSize {
+        crate::proposal::Placement::platform_hosted(ProposalSize {
             width: Some(size.width),
             height: Some(size.height),
-        },
+        }),
     );
     cocoa_ui::view::set_frame(
         view,

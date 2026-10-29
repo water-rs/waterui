@@ -380,7 +380,10 @@ mod platform {
                         width,
                         height,
                     );
-                    crate::proposal::deliver(sub, proposal);
+                    crate::proposal::deliver(
+                        sub,
+                        crate::proposal::Placement::platform_hosted(proposal),
+                    );
                     view::set_frame(sub, frame);
                 }
             });
