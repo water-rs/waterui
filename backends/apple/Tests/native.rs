@@ -9161,13 +9161,16 @@ mod navigation {
     use waterui::ViewExt as _;
     use waterui::component::toggle::toggle;
     use waterui::component::{ButtonStyle, button};
+    use waterui::graphics::color::WorkingColor;
     use waterui::icon::SystemIcon;
     use waterui::navigation::{
         NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
         NavigationView, ToolbarItemIcon,
     };
     use waterui::prelude::text;
-    use waterui::reactive::binding;
+    use waterui::reactive::{Signal as _, binding};
+    use waterui::resolve::Resolvable as _;
+    use waterui::theme::color::{Accent, Foreground};
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
     use super::{mtm, resolve};
@@ -9233,6 +9236,13 @@ mod navigation {
                 "navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles",
                 || {
                     toolbar_labels_default_to_icons_and_preserve_explicit_titles();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_borderless_toolbar_button_label_draws_the_foreground_colour",
+                || {
+                    a_borderless_toolbar_button_label_draws_the_foreground_colour();
                     Ok(())
                 },
             ),
@@ -9332,6 +9342,46 @@ mod navigation {
         assert!(
             view::bounds(&explicit).size.width > icon_width + 8.0,
             "an explicit title-and-icon preference keeps its title"
+        );
+    }
+
+    /// A view recording the `Foreground` its label environment resolves to.
+    struct ForegroundProbe(std::rc::Rc<std::cell::Cell<Option<WorkingColor>>>);
+
+    impl waterui_backend_core::View for ForegroundProbe {
+        fn body(self, env: &waterui_backend_core::Environment) -> impl waterui_backend_core::View {
+            self.0.set(Some(Foreground.resolve(env).snapshot()));
+        }
+    }
+
+    /// A borderless button in a navigation bar draws its label in the
+    /// theme's `Foreground`, as `SwiftUI` does, not the accent it has in
+    /// content (#3771).
+    fn a_borderless_toolbar_button_label_draws_the_foreground_colour() {
+        let drawn = std::rc::Rc::new(std::cell::Cell::new(None));
+        let _leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::PrimaryAction,
+                    button(waterui::component::Label::new("", {
+                        let drawn = drawn.clone();
+                        move || ForegroundProbe(drawn.clone())
+                    }))
+                    .style(ButtonStyle::Borderless),
+                )],
+            )),
+        ));
+        let env = resolve::env();
+        let foreground = Foreground.resolve(&env).snapshot();
+        assert_ne!(
+            foreground,
+            Accent.resolve(&env).snapshot(),
+            "the theme must tell the label color from the accent"
+        );
+        assert_eq!(
+            drawn.get().expect("the toolbar button label rendered"),
+            foreground,
+            "a borderless toolbar label resolves the theme Foreground, not the Accent"
         );
     }
 

@@ -102,7 +102,9 @@ fn platform_color(color: &WorkingColor) -> Retained<platform::NSColor> {
 
 /// The color the label's `Foreground` slot resolves to under `style` — the
 /// `UIKit` table: chrome carries the emphasis for glass, accent for
-/// prominent fills.
+/// prominent fills. Inside a navigation or bottom bar an automatic or
+/// borderless label takes the primary label color instead, as `SwiftUI` and
+/// `UIBarButtonItem` draw it there.
 #[cfg(target_os = "ios")]
 fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingColor> {
     match style {
@@ -110,6 +112,11 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
             AccentForeground.resolve(env).computed()
         }
         ButtonStyle::Plain | ButtonStyle::Glass => Foreground.resolve(env).computed(),
+        ButtonStyle::Automatic | ButtonStyle::Borderless
+            if env.get::<crate::toolbar_chrome::ToolbarChrome>().is_some() =>
+        {
+            Foreground.resolve(env).computed()
+        }
         ButtonStyle::Automatic
         | ButtonStyle::Link
         | ButtonStyle::Borderless
@@ -132,7 +139,7 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
         | ButtonStyle::Bordered
         | ButtonStyle::Plain
         | ButtonStyle::Glass => Foreground.resolve(env).computed(),
-        ButtonStyle::Borderless if env.get::<crate::toolbar::ToolbarChrome>().is_some() => {
+        ButtonStyle::Borderless if env.get::<crate::toolbar_chrome::ToolbarChrome>().is_some() => {
             MutedForeground.resolve(env).computed()
         }
         ButtonStyle::Link | ButtonStyle::Borderless => Accent.resolve(env).computed(),

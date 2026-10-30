@@ -73,6 +73,7 @@ mod termination;
 pub(crate) mod theme;
 #[cfg(target_os = "macos")]
 mod toolbar;
+mod toolbar_chrome;
 pub(crate) mod transition;
 pub(crate) mod window_background;
 pub(crate) mod windows;
