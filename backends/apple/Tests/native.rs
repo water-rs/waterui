@@ -9168,7 +9168,7 @@ mod navigation {
         NavigationView, ToolbarItemIcon,
     };
     use waterui::prelude::text;
-    use waterui::reactive::{Signal as _, binding};
+    use waterui::reactive::{Signal as _, SignalExt as _, binding};
     use waterui::resolve::Resolvable as _;
     use waterui::theme::color::{Accent, Foreground};
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
@@ -9358,25 +9358,36 @@ mod navigation {
     /// theme's `Foreground`, as `SwiftUI` does, not the accent it has in
     /// content (#3771).
     fn a_borderless_toolbar_button_label_draws_the_foreground_colour() {
+        let _mtm = mtm();
+        // The shared harness theme installs every colour slot as black, so
+        // an unmodified env cannot tell a Foreground read from an Accent
+        // read. Give the accent a distinct value for this render.
+        let mut env = resolve::env();
+        waterui::theme::install_color_signal::<Accent>(
+            &mut env,
+            binding(WorkingColor::WHITE).computed(),
+        );
         let drawn = std::rc::Rc::new(std::cell::Cell::new(None));
-        let _leaf = resolve::render(NavigationStack::new(
-            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
-                vec![NavigationToolbarItem::new(
-                    NavigationToolbarPlacement::PrimaryAction,
-                    button(waterui::component::Label::new("", {
-                        let drawn = drawn.clone();
-                        move || ForegroundProbe(drawn.clone())
-                    }))
-                    .style(ButtonStyle::Borderless),
-                )],
+        let _leaf = waterui_apple::dispatch::render(
+            waterui_backend_core::AnyView::new(NavigationStack::new(
+                NavigationView::new("Inbox", text("root")).navigation_toolbar(
+                    NavigationToolbar::new(vec![NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::PrimaryAction,
+                        button(waterui::component::Label::new("", {
+                            let drawn = drawn.clone();
+                            move || ForegroundProbe(drawn.clone())
+                        }))
+                        .style(ButtonStyle::Borderless),
+                    )]),
+                ),
             )),
-        ));
-        let env = resolve::env();
+            &env,
+        );
         let foreground = Foreground.resolve(&env).snapshot();
         assert_ne!(
             foreground,
             Accent.resolve(&env).snapshot(),
-            "the theme must tell the label color from the accent"
+            "the fixture theme must tell the label color from the accent"
         );
         assert_eq!(
             drawn.get().expect("the toolbar button label rendered"),
