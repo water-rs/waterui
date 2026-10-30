@@ -78,7 +78,8 @@ pub(crate) enum PresentPattern {
 /// `external-cost --path` choices (#168): `e` is external-frame import,
 /// `c` is copy-and-convert.
 ///
-/// See [`crate::external_cost`].
+/// The measurement lives in the `external_cost` module, built with the
+/// `cherenkov` feature.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum ExternalPath {
     /// Cherenkov external-frame import + composite.
