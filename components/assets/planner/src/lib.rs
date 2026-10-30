@@ -45,28 +45,28 @@ macro_rules! theme_slot_setters {
 pub struct ThemeConfig {
     /// Window or page background color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background: Option<HexColor>,
+    background: Option<HexColor>,
     /// Main surface color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub surface: Option<HexColor>,
+    surface: Option<HexColor>,
     /// Secondary surface color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub surface_variant: Option<HexColor>,
+    surface_variant: Option<HexColor>,
     /// Border color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub border: Option<HexColor>,
+    border: Option<HexColor>,
     /// Primary foreground color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub foreground: Option<HexColor>,
+    foreground: Option<HexColor>,
     /// Muted foreground color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub muted_foreground: Option<HexColor>,
+    muted_foreground: Option<HexColor>,
     /// Accent color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent: Option<HexColor>,
+    accent: Option<HexColor>,
     /// Foreground color used on accent surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent_foreground: Option<HexColor>,
+    accent_foreground: Option<HexColor>,
 }
 
 impl ThemeConfig {
@@ -163,9 +163,9 @@ impl ThemeConfig {
 #[non_exhaustive]
 pub struct BundleMount {
     /// Logical mount name.
-    pub name: String,
+    name: String,
     /// Filesystem root for this mount.
-    pub root: PathBuf,
+    root: PathBuf,
 }
 
 impl BundleMount {
@@ -206,14 +206,14 @@ pub const BUNDLE_META_PREFIX: &str = "waterui_meta_bundle_";
 #[non_exhaustive]
 pub struct BundleMountMeta {
     /// Logical mount name; `"assets"` is the main application asset root.
-    pub mount: String,
+    mount: String,
     /// Absolute path of the mounted directory at expansion time.
-    pub path: PathBuf,
+    path: PathBuf,
     /// Absolute path of the toolchain project that produces `path` — the
     /// frontend root for a web mount (`include_web!`), `None` for a plain
     /// `include_bundle!`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<PathBuf>,
+    project: Option<PathBuf>,
 }
 
 impl BundleMountMeta {
@@ -396,17 +396,17 @@ impl RootArtwork {
 #[non_exhaustive]
 pub struct PlannedAsset {
     /// Mount name, empty for the main application asset root.
-    pub mount: String,
+    mount: String,
     /// Absolute source path on disk.
-    pub source_path: PathBuf,
+    source_path: PathBuf,
     /// Path relative to the asset mount.
-    pub relative_path: PathBuf,
+    relative_path: PathBuf,
     /// Logical path exposed to generated code.
-    pub logical_path: PathBuf,
+    logical_path: PathBuf,
     /// Inferred asset kind.
-    pub kind: AssetKind,
+    kind: AssetKind,
     /// Inferred semantic role.
-    pub role: AssetRole,
+    role: AssetRole,
 }
 
 impl PlannedAsset {
@@ -512,13 +512,13 @@ impl PlannedAsset {
 #[non_exhaustive]
 pub struct BundleManifest {
     /// Root directory of the application crate.
-    pub crate_root: PathBuf,
+    crate_root: PathBuf,
     /// Main application assets directory.
-    pub assets_root: PathBuf,
+    assets_root: PathBuf,
     /// Additional bundle mounts discovered from `include_bundle!`.
-    pub mounts: Vec<BundleMount>,
+    mounts: Vec<BundleMount>,
     /// Planned assets across the main root and all mounts.
-    pub assets: Vec<PlannedAsset>,
+    assets: Vec<PlannedAsset>,
 }
 
 impl BundleManifest {

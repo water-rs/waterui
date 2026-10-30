@@ -51,15 +51,15 @@ fn progress_value_label(value: &Computed<f64>) -> Computed<String> {
 #[derive(Debug)]
 pub struct ProgressConfig {
     /// The label displayed alongside the progress indicator.
-    pub label: AnyView,
+    label: AnyView,
     /// The label displaying the numerical value of the progress.
-    pub value_label: AnyView,
+    value_label: AnyView,
     /// The computed progress value between 0.0 and 1.0.
-    pub value: Computed<f64>,
+    value: Computed<f64>,
     /// The visual style of the progress indicator (linear or circular).
-    pub style: ProgressStyle,
+    style: ProgressStyle,
     /// Whether indeterminate progress uses the Material four-color cycle.
-    pub four_color: bool,
+    four_color: bool,
 }
 
 impl ProgressConfig {

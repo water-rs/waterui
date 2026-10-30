@@ -303,7 +303,7 @@ impl Shape for Capsule {
 #[non_exhaustive]
 pub struct RoundedRectangle {
     /// Corner radius (normalized, 0.0-0.5 range).
-    pub corner_radius: f32,
+    corner_radius: f32,
 }
 
 impl RoundedRectangle {
@@ -403,13 +403,13 @@ impl Shape for RoundedRectangle {
 #[non_exhaustive]
 pub struct UnevenRoundedRectangle {
     /// Top-leading corner radius (normalized).
-    pub top_leading: f32,
+    top_leading: f32,
     /// Top-trailing corner radius (normalized).
-    pub top_trailing: f32,
+    top_trailing: f32,
     /// Bottom-leading corner radius (normalized).
-    pub bottom_leading: f32,
+    bottom_leading: f32,
     /// Bottom-trailing corner radius (normalized).
-    pub bottom_trailing: f32,
+    bottom_trailing: f32,
 }
 
 impl UnevenRoundedRectangle {
@@ -547,7 +547,7 @@ impl Shape for UnevenRoundedRectangle {
 #[non_exhaustive]
 pub struct FixedRoundedRectangle {
     /// Corner radius in logical points.
-    pub corner_radius: f32,
+    corner_radius: f32,
 }
 
 impl FixedRoundedRectangle {
@@ -604,13 +604,13 @@ impl Shape for FixedRoundedRectangle {
 #[non_exhaustive]
 pub struct FixedUnevenRoundedRectangle {
     /// Top-leading corner radius in logical points.
-    pub top_leading: f32,
+    top_leading: f32,
     /// Top-trailing corner radius in logical points.
-    pub top_trailing: f32,
+    top_trailing: f32,
     /// Bottom-leading corner radius in logical points.
-    pub bottom_leading: f32,
+    bottom_leading: f32,
     /// Bottom-trailing corner radius in logical points.
-    pub bottom_trailing: f32,
+    bottom_trailing: f32,
 }
 
 impl FixedUnevenRoundedRectangle {
@@ -915,11 +915,11 @@ pub enum ShapeKind {
 #[non_exhaustive]
 pub struct ResolvedShape {
     /// Shape kind for backend-side optimization.
-    pub kind: ShapeKind,
+    kind: ShapeKind,
     /// Path commands in unit coordinate space.
-    pub commands: Vec<PathCommand>,
+    commands: Vec<PathCommand>,
     /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::WorkingColor>,
+    fill: Computed<waterui_graphics::WorkingColor>,
 }
 
 impl ResolvedShape {
@@ -949,15 +949,15 @@ waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
 #[non_exhaustive]
 pub struct ResolvedMorphShape {
     /// Source shape kind.
-    pub from: ShapeKind,
+    from: ShapeKind,
     /// Target shape kind.
-    pub to: ShapeKind,
+    to: ShapeKind,
     /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::WorkingColor>,
+    fill: Computed<waterui_graphics::WorkingColor>,
     /// Time-based morph animation configuration.
-    pub animation: MorphAnimation,
+    animation: MorphAnimation,
     /// Optional explicit progress signal.
-    pub progress: Option<Computed<f32>>,
+    progress: Option<Computed<f32>>,
 }
 
 impl ResolvedMorphShape {
@@ -1064,13 +1064,13 @@ impl FilledShape {
 #[non_exhaustive]
 pub struct MorphAnimation {
     /// Duration of one forward morph cycle.
-    pub duration: Duration,
+    duration: Duration,
     /// Easing curve applied to normalized cycle progress.
-    pub easing: EasingCurve,
+    easing: EasingCurve,
     /// Whether the animation repeats after reaching the end.
-    pub repeat: bool,
+    repeat: bool,
     /// Whether repeating animation should play in reverse every other cycle.
-    pub autoreverse: bool,
+    autoreverse: bool,
 }
 
 impl MorphAnimation {

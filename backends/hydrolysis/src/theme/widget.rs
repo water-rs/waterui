@@ -55,13 +55,13 @@ impl ButtonMetrics {
 #[non_exhaustive]
 pub struct ButtonSpec {
     /// The button's style.
-    pub style: ButtonStyle,
+    style: ButtonStyle,
     /// The button's control size.
-    pub size: ControlSize,
+    size: ControlSize,
     /// Whether the label resolved to `IconOnly`: the bounds are the theme's
     /// touch target, and the chrome is the icon-button container centred
     /// inside them.
-    pub icon_only: bool,
+    icon_only: bool,
 }
 
 impl ButtonSpec {

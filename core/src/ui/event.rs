@@ -81,7 +81,7 @@ impl fmt::Debug for LifeCycleHook {
 #[non_exhaustive]
 pub struct HoverEvent {
     /// Current local pointer location in logical points.
-    pub location: Point,
+    location: Point,
 }
 
 impl HoverEvent {

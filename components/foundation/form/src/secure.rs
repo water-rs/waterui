@@ -91,9 +91,9 @@ impl Drop for Secure {
 #[non_exhaustive]
 pub struct SecureFieldConfig {
     /// The label displayed for the secure field.
-    pub label: Label,
+    label: Label,
     /// The binding to the secure value being edited.
-    pub value: Binding<Secure>,
+    value: Binding<Secure>,
 }
 
 impl SecureFieldConfig {

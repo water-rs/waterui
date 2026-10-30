@@ -63,10 +63,10 @@ impl PhysicalEdge {
 #[non_exhaustive]
 pub struct AnchoredOverlayPlacement {
     /// The overlay's frame in window space.
-    pub frame: Rect,
+    frame: Rect,
     /// The physical edge of the anchor the overlay was placed against, after
     /// flipping.
-    pub edge: PhysicalEdge,
+    edge: PhysicalEdge,
 }
 
 impl AnchoredOverlayPlacement {

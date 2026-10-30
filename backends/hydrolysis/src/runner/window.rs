@@ -550,15 +550,15 @@ pub(super) const fn schedule_animation_update<P: PlatformWindow, E: crate::text:
 #[non_exhaustive]
 pub struct HeadlessSnapshot {
     /// Snapshot width in pixels.
-    pub width: u32,
+    width: u32,
     /// Snapshot height in pixels.
-    pub height: u32,
+    height: u32,
     /// Raw RGBA8 pixel data, `width * height * 4` bytes, top-left origin,
     /// in the alpha convention [`Self::output_alpha`] reports.
-    pub rgba8: Vec<u8>,
+    rgba8: Vec<u8>,
     /// The alpha convention the producing surface presented with — the
     /// convention `rgba8` reads, not a comment's claim about it.
-    pub output_alpha: cherenkov_gpu::interop::OutputAlpha,
+    output_alpha: cherenkov_gpu::interop::OutputAlpha,
 }
 
 // The accessors are the public surface `runner` re-exports off wasm32; the
@@ -619,27 +619,27 @@ pub(super) struct RenderWindowResult {
 #[non_exhaustive]
 pub struct FramePhases {
     /// Time spent draining local executor work before input dispatch.
-    pub executor_before: Duration,
+    executor_before: Duration,
     /// Time spent dispatching pending input.
-    pub input: Duration,
+    input: Duration,
     /// Time spent advancing animations and invalidation clocks.
-    pub animation: Duration,
+    animation: Duration,
     /// Time spent updating the retained scene, including refresh and re-encode work.
-    pub rebuild: Duration,
+    rebuild: Duration,
     /// Time spent building the root `WaterUI` view value during scene rebuild.
-    pub build_content: Duration,
+    build_content: Duration,
     /// Time spent dispatching `WaterUI` views into Hydrolysis scene/layout state.
-    pub scene_dispatch: Duration,
+    scene_dispatch: Duration,
     /// Time spent finalizing layout, interaction, and accessibility state after dispatch.
-    pub scene_finish: Duration,
+    scene_finish: Duration,
     /// Time spent acquiring the target frame.
-    pub acquire: Duration,
+    acquire: Duration,
     /// Time spent submitting rendering work.
-    pub render: Duration,
+    render: Duration,
     /// Time spent presenting the frame.
-    pub present: Duration,
+    present: Duration,
     /// Time spent draining local executor work after rendering.
-    pub executor_after: Duration,
+    executor_after: Duration,
 }
 
 impl FramePhases {
@@ -735,40 +735,40 @@ impl FramePhases {
 #[non_exhaustive]
 pub struct FrameCounters {
     /// Number of rebuild loop iterations in this frame.
-    pub rebuild_iterations: u32,
+    rebuild_iterations: u32,
     /// Measurement cache hits in this frame.
-    pub measurement_cache_hits: u32,
+    measurement_cache_hits: u32,
     /// Measurement cache misses in this frame.
-    pub measurement_cache_misses: u32,
+    measurement_cache_misses: u32,
     /// Number of compositor layers submitted for this frame.
-    pub scene_layers: u32,
+    scene_layers: u32,
     /// Number of recorded scene segment layers submitted for this frame.
-    pub scene_segment_layers: u32,
+    scene_segment_layers: u32,
     /// Number of mounted `GpuContentView` layers submitted for this frame.
-    pub gpu_content_layers: u32,
+    gpu_content_layers: u32,
     /// Number of clip scopes pushed while building this frame.
-    pub clip_layers: u32,
+    clip_layers: u32,
     /// Maximum nested clip depth while building this frame.
-    pub max_clip_depth: u32,
+    max_clip_depth: u32,
     /// Number of `FilteredView` mounts submitted in this frame.
-    pub filtered_layers: u32,
+    filtered_layers: u32,
     /// Filter effects that encoded in this frame.
-    pub applied_filter_count: u32,
+    applied_filter_count: u32,
     /// Filtered-subtree capture time in this frame, in microseconds: `0` —
     /// the engine captures inside the same render pass as the effect encode
     /// and reports no per-phase split.
-    pub applied_filter_capture_us: u64,
+    applied_filter_capture_us: u64,
     /// Filter effect encode time in this frame, in microseconds.
-    pub applied_filter_effect_us: u64,
+    applied_filter_effect_us: u64,
     /// Whether this frame rendered to the target.
-    pub rendered: bool,
+    rendered: bool,
     /// Whether this frame captured a CPU snapshot.
-    pub captured_snapshot: bool,
+    captured_snapshot: bool,
     /// Per-frame work counters for this frame (water-rs/hydrolysis#205):
     /// semantic builds, patches, layout/measure traffic, recorded content and
     /// GPU submissions — the numbers the fine-grained frame model is measured
     /// by.
-    pub frame_work: crate::renderer::FrameWorkCounters,
+    frame_work: crate::renderer::FrameWorkCounters,
 }
 
 impl FrameCounters {
@@ -878,11 +878,11 @@ impl FrameCounters {
 #[non_exhaustive]
 pub struct FrameProfile {
     /// Total wall-clock duration for the frame pump.
-    pub total: Duration,
+    total: Duration,
     /// Phase timing breakdown.
-    pub phases: FramePhases,
+    phases: FramePhases,
     /// Counter snapshot.
-    pub counters: FrameCounters,
+    counters: FrameCounters,
 }
 
 impl FrameProfile {

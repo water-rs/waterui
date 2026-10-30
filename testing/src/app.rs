@@ -605,18 +605,18 @@ impl<S: Style> UiBuilder<Styled<S>> {
 #[non_exhaustive]
 pub struct DragOptions {
     /// Number of intermediate pointer-move samples (at least 1).
-    pub steps: u16,
+    steps: u16,
     /// Pump one virtual frame between samples so each move lands on its own
     /// frame: gesture recognizers then observe a real motion timeline
     /// (velocity, glide) instead of every sample arriving at once.
-    pub frame_per_step: bool,
+    frame_per_step: bool,
     /// The pointer kind the drag dispatches. `PointerKind::Touch` is what a
     /// real device's finger produces: the scroll claim, the touch slop and
     /// the fling all key on the pointer kind, which `PointerKind::Mouse`
     /// never reaches. The runtime reports no touch-scroll configuration
     /// until [`OffscreenApp::set_touch_scroll_config`] supplies it — on a
     /// host without one a touch drag still dispatches but claims nothing.
-    pub pointer: PointerKind,
+    pointer: PointerKind,
 }
 
 impl DragOptions {

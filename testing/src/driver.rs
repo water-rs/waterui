@@ -182,13 +182,13 @@ impl RuntimeDriver for HeadlessRuntime {
 #[non_exhaustive]
 pub struct FrameTiming {
     /// Wall-clock duration spent advancing one offscreen Hydrolysis frame.
-    pub total: std::time::Duration,
+    total: std::time::Duration,
     /// Whether the frame rebuilt scene/layout state.
-    pub rebuilt: bool,
+    rebuilt: bool,
     /// Detailed Hydrolysis phase timings and counters.
-    pub profile: FrameProfile,
+    profile: FrameProfile,
     /// Process CPU / memory sample collected immediately after the frame.
-    pub resources: ResourceSample,
+    resources: ResourceSample,
 }
 
 impl FrameTiming {

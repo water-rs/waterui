@@ -105,28 +105,28 @@ pub const LINE_WORDS: usize = 5;
 #[non_exhaustive]
 pub struct TextRun {
     /// The byte range the run covers, on character boundaries.
-    pub range: Range<usize>,
+    range: Range<usize>,
     /// The CSS `font-family` list, each family registered with the provider
     /// or known to the system; `None` is the platform default.
-    pub family: Option<String>,
+    family: Option<String>,
     /// The font size in pixels.
-    pub size: f32,
+    size: f32,
     /// The weight, 1 to 1000.
-    pub weight: u16,
+    weight: u16,
     /// Italic.
-    pub italic: bool,
+    italic: bool,
     /// Underlined.
-    pub underline: bool,
+    underline: bool,
     /// Struck through.
-    pub strikethrough: bool,
+    strikethrough: bool,
     /// The foreground `ColorLong`; `None` draws with the paint's colour.
-    pub foreground: Option<u64>,
+    foreground: Option<u64>,
     /// The background `ColorLong`.
-    pub background: Option<u64>,
+    background: Option<u64>,
     /// An explicit line height in pixels.
-    pub line_height: Option<f32>,
+    line_height: Option<f32>,
     /// Extra letter spacing in pixels.
-    pub letter_spacing: f32,
+    letter_spacing: f32,
 }
 
 impl TextRun {
@@ -303,30 +303,30 @@ impl TextAlignment {
 #[non_exhaustive]
 pub struct ShapeRequest<'a> {
     /// The text.
-    pub text: &'a str,
+    text: &'a str,
     /// The style runs, each over a byte range of `text`.
-    pub runs: &'a [TextRun],
+    runs: &'a [TextRun],
     /// The paragraph's base paint, sent as row zero of every packed request:
     /// a zero-length run whose size, weight, family and line height set the
     /// styled text's defaults — required even when `text` is empty.
-    pub default_style: TextRun,
+    default_style: TextRun,
     /// The BCP 47 locale shaping and line breaking follow; empty is the
     /// root locale.
-    pub locale: &'a str,
+    locale: &'a str,
     /// The wrap width; `None` lays every paragraph out on one line.
-    pub max_width: Option<f32>,
+    max_width: Option<f32>,
     /// The most lines laid out; `None` lays out every line.
-    pub max_lines: Option<usize>,
+    max_lines: Option<usize>,
     /// Whether the last allowed line ends in an ellipsis when text remains;
     /// needs [`ShapeRequest::max_lines`].
-    pub ellipsis: bool,
+    ellipsis: bool,
     /// The line alignment.
-    pub alignment: TextAlignment,
+    alignment: TextAlignment,
     /// Whether the paragraph runs right to left.
-    pub right_to_left: bool,
+    right_to_left: bool,
     /// Whether a family neither registered nor known to the system is an
     /// error (the seam's strict resolution) rather than skipped.
-    pub strict_families: bool,
+    strict_families: bool,
 }
 
 impl<'a> ShapeRequest<'a> {
@@ -458,20 +458,20 @@ impl<'a> ShapeRequest<'a> {
 pub struct PackedRequest {
     /// The number of runs: row zero is always the default style's base
     /// paint, the rest the text's style runs.
-    pub span_count: i32,
+    span_count: i32,
     /// The runs, `SPAN_WORDS` per run, offsets in UTF-16 units.
-    pub spans: Vec<i32>,
+    spans: Vec<i32>,
     /// The distinct family lists the runs index, names joined by
     /// [`FAMILY_SEPARATOR`].
-    pub families: Vec<String>,
+    families: Vec<String>,
     /// The BCP 47 locale.
-    pub locale: String,
+    locale: String,
     /// The wrap width, [`UNBOUNDED`] when unbounded.
-    pub max_width: f32,
+    max_width: f32,
     /// The line limit, [`NO_LINE_LIMIT`] without one.
-    pub max_lines: i32,
+    max_lines: i32,
     /// The [`paragraph`] flags.
-    pub paragraph: i32,
+    paragraph: i32,
 }
 
 impl PackedRequest {

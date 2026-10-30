@@ -9479,7 +9479,7 @@ mod navigation {
                 .style(ButtonStyle::Plain)
                 .disabled(disabled.clone()),
         );
-        item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("checkmark")));
+        item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("checkmark"))));
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),
@@ -9515,7 +9515,7 @@ mod navigation {
                 .checkbox()
                 .disabled(disabled.clone()),
         );
-        item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("checkmark")));
+        item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("checkmark"))));
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),

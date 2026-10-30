@@ -17,11 +17,11 @@ pub const DEFAULT_PORT_RANGE: u16 = 20;
 #[non_exhaustive]
 pub struct InspectorTcpConfig {
     /// Address to bind or connect to.
-    pub host: IpAddr,
+    host: IpAddr,
     /// First port to try.
-    pub port_start: u16,
+    port_start: u16,
     /// Number of consecutive ports to try.
-    pub port_range: u16,
+    port_range: u16,
 }
 
 impl InspectorTcpConfig {

@@ -1561,7 +1561,7 @@ mod navigation {
                     NavigationToolbarPlacement::PrimaryAction,
                     button("").style(ButtonStyle::Plain),
                 );
-                item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("plus")));
+                item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("plus"))));
                 NavigationView::new("Today", text("detail").background(Material::Regular))
                     .searchable(&query, "Search reminders")
                     .navigation_toolbar(NavigationToolbar::new(vec![

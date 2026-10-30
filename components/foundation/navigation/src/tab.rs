@@ -171,17 +171,17 @@ pub enum TabBarMinimizeBehavior {
 pub struct Tab {
     /// Semantic tab label, kept as a builder so a tab in a `Vec` stays
     /// cloneable — the collection materializes one label per mount.
-    pub label: AnyViewBuilder<AnyView>,
+    label: AnyViewBuilder<AnyView>,
     /// The label's icon, lifted out so native chrome can place it itself.
-    pub icon: Option<TabIcon>,
+    icon: Option<TabIcon>,
     /// Stable lazily built tab root.
-    pub content: AnyViewBuilder<NavigationView>,
+    content: AnyViewBuilder<NavigationView>,
     /// Optional reactive badge count.
-    pub badge: Option<Computed<i32>>,
+    badge: Option<Computed<i32>>,
     /// Whether the native tab item is enabled.
-    pub enabled: Computed<bool>,
+    enabled: Computed<bool>,
     /// The part the tab plays in the container's chrome.
-    pub role: TabRole,
+    role: TabRole,
 }
 
 impl Tab {
@@ -340,15 +340,15 @@ impl View for Tab {
 #[non_exhaustive]
 pub struct TabsLayout {
     /// Currently selected tab identifier.
-    pub selection: Binding<Id>,
+    selection: Binding<Id>,
     /// The tab collection, keyed by erased tab identity.
-    pub tabs: SharedAnyViews<Tab>,
+    tabs: SharedAnyViews<Tab>,
     /// Native adaptive style.
-    pub style: NativeTabStyle,
+    style: NativeTabStyle,
     /// How the bar behaves while content scrolls.
-    pub minimize_behavior: TabBarMinimizeBehavior,
+    minimize_behavior: TabBarMinimizeBehavior,
     /// A view the platform floats above the tab bar, when it has such a slot.
-    pub bottom_accessory: Option<AnyView>,
+    bottom_accessory: Option<AnyView>,
 }
 
 impl TabsLayout {

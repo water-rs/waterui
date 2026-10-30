@@ -94,7 +94,7 @@ pub trait ToolDispatch: Send + Sync + 'static {
 pub struct SnapshotArgs {
     /// `text` (default) renders indented node lines; `json` renders the full
     /// node tree as JSON.
-    pub format: SnapshotFormat,
+    format: SnapshotFormat,
 }
 
 impl SnapshotArgs {
@@ -128,37 +128,37 @@ pub enum SnapshotFormat {
 pub struct SelectorArgs {
     /// Role name as `snapshot` prints it: `button`, `text_input`,
     /// `scroll_view`, …
-    pub role: Option<String>,
+    role: Option<String>,
     /// Exact accessibility label.
-    pub label: Option<String>,
+    label: Option<String>,
     /// Substring the label must contain.
-    pub label_contains: Option<String>,
+    label_contains: Option<String>,
     /// Accessibility identifier (`a11y_id`).
-    pub identifier: Option<String>,
+    identifier: Option<String>,
     /// Exact current value.
-    pub value: Option<String>,
+    value: Option<String>,
     /// Substring the value must contain.
-    pub value_contains: Option<String>,
+    value_contains: Option<String>,
     /// Required enabled state.
-    pub enabled: Option<bool>,
+    enabled: Option<bool>,
     /// Required selected state.
-    pub selected: Option<bool>,
+    selected: Option<bool>,
     /// Required checked state — `true`/`false`; use `mixed` for
     /// indeterminate.
-    pub checked: Option<bool>,
+    checked: Option<bool>,
     /// `true` matches only indeterminate checkable nodes.
-    pub mixed: Option<bool>,
+    mixed: Option<bool>,
     /// Required expanded state.
-    pub expanded: Option<bool>,
+    expanded: Option<bool>,
     /// Required busy state.
-    pub busy: Option<bool>,
+    busy: Option<bool>,
     /// `true` also matches hidden nodes; they are excluded by default.
-    pub hidden: Option<bool>,
+    hidden: Option<bool>,
     /// Restrict matches to descendants of this node id.
-    pub within: Option<u64>,
+    within: Option<u64>,
     /// Restrict matches to direct children of this node id. Mutually
     /// exclusive with `within`.
-    pub children_of: Option<u64>,
+    children_of: Option<u64>,
 }
 
 impl SelectorArgs {
@@ -264,7 +264,7 @@ impl SelectorArgs {
 pub struct FindArgs {
     /// The match criteria, inlined into the tool arguments.
     #[serde(flatten)]
-    pub criteria: SelectorArgs,
+    criteria: SelectorArgs,
 }
 
 impl FindArgs {
@@ -283,18 +283,18 @@ pub struct ActArgs {
     /// Target node id from a `snapshot` or `find` line (`#42` → `42`).
     /// Required for every action except `clear_focus`, which is app-level and
     /// ignores it.
-    pub node: Option<u64>,
+    node: Option<u64>,
     /// The action to perform.
-    pub action: ActAction,
+    action: ActAction,
     /// The value for `set_value` and `replace_text`; required for them,
     /// ignored by other actions.
     #[serde(default)]
-    pub value: Option<String>,
+    value: Option<String>,
     /// Settle the runtime before returning (default `true`). Pass `false` to
     /// queue the action without settling, so `advance` and `screenshot` can
     /// observe the transient it triggers.
     #[serde(default)]
-    pub settle: Option<bool>,
+    settle: Option<bool>,
 }
 
 impl ActArgs {
@@ -398,49 +398,49 @@ impl ActAction {
 #[non_exhaustive]
 pub struct PointerArgs {
     /// Which pointer event to dispatch.
-    pub kind: PointerKind,
+    kind: PointerKind,
     /// X coordinate in logical pixels — or a `0`–`1` fraction of the `node`
     /// bounds when `node` is set.
-    pub x: f32,
+    x: f32,
     /// Y coordinate in logical pixels — or a `0`–`1` fraction of the `node`
     /// bounds when `node` is set.
-    pub y: f32,
+    y: f32,
     /// Drag end X — required when `kind` is `drag`. A `0`–`1` fraction of the
     /// `to_node` (or `node`) bounds when an anchor is set.
     #[serde(default)]
-    pub to_x: Option<f32>,
+    to_x: Option<f32>,
     /// Drag end Y — required when `kind` is `drag`.
     #[serde(default)]
-    pub to_y: Option<f32>,
+    to_y: Option<f32>,
     /// Horizontal scroll delta — used when `kind` is `scroll`.
     #[serde(default)]
-    pub dx: Option<f32>,
+    dx: Option<f32>,
     /// Vertical scroll delta — used when `kind` is `scroll`.
     #[serde(default)]
-    pub dy: Option<f32>,
+    dy: Option<f32>,
     /// Number of intermediate positions for `drag`.
     #[serde(default)]
-    pub steps: Option<u16>,
+    steps: Option<u16>,
     /// Anchor node id: `x`/`y` become fractions of its bounds (`0.5, 0.5` is
     /// the center). Fractions outside `0`–`1` extrapolate past the edge.
     #[serde(default)]
-    pub node: Option<u64>,
+    node: Option<u64>,
     /// Anchor node id for the drag end point — `to_x`/`to_y` become fractions
     /// of its bounds. Falls back to `node` when unset.
     #[serde(default)]
-    pub to_node: Option<u64>,
+    to_node: Option<u64>,
     /// Magnification factor — required when `kind` is `magnify`.
     #[serde(default)]
-    pub factor: Option<f32>,
+    factor: Option<f32>,
     /// Scroll delta unit — `pixel` (default) or `line`; used when `kind` is
     /// `scroll`.
     #[serde(default)]
-    pub unit: Option<ScrollUnit>,
+    unit: Option<ScrollUnit>,
     /// Settle the runtime before returning (default `true`). Pass `false` to
     /// queue the event without settling, so `advance` and `screenshot` can
     /// observe the transient it triggers.
     #[serde(default)]
-    pub settle: Option<bool>,
+    settle: Option<bool>,
 }
 
 impl PointerArgs {
@@ -578,16 +578,16 @@ pub struct KeyArgs {
     /// A single character (`"a"`, `" "`), or a W3C named key: `Enter`, `Tab`,
     /// `Escape`, `Backspace`, `Delete`, `ArrowLeft`, `ArrowRight`, `ArrowUp`,
     /// `ArrowDown`, `Home`, `End`, `PageUp`, `PageDown`, `F1`–`F12`.
-    pub key: String,
+    key: String,
     /// Modifiers held during the press: `shift`, `ctrl`, `alt`, `meta`.
     #[serde(default)]
-    pub modifiers: Vec<String>,
+    modifiers: Vec<String>,
     /// Settle the runtime before returning (default `true`). Pass `false` to
     /// queue the press without settling, so `advance` and `screenshot` can
     /// observe the transient it triggers — a focus ring appearing on `Tab`, a
     /// sheet dismissing on `Escape`.
     #[serde(default)]
-    pub settle: Option<bool>,
+    settle: Option<bool>,
 }
 
 impl KeyArgs {
@@ -631,22 +631,22 @@ pub struct DropFilesArgs {
     /// Absolute file paths to drop — one hovered-then-dropped pair per path,
     /// in order; the destination receives all of them as one `Files`
     /// payload.
-    pub paths: Vec<PathBuf>,
+    paths: Vec<PathBuf>,
     /// X coordinate in logical pixels — or a `0`–`1` fraction of the `node`
     /// bounds when `node` is set.
-    pub x: f32,
+    x: f32,
     /// Y coordinate in logical pixels — or a `0`–`1` fraction of the `node`
     /// bounds when `node` is set.
-    pub y: f32,
+    y: f32,
     /// Anchor node id: `x`/`y` become fractions of its bounds (`0.5, 0.5` is
     /// the center). Fractions outside `0`–`1` extrapolate past the edge.
     #[serde(default)]
-    pub node: Option<u64>,
+    node: Option<u64>,
     /// Settle the runtime before returning (default `true`). Pass `false` to
     /// queue the drop without settling, so `advance` and `screenshot` can
     /// observe the transient it triggers.
     #[serde(default)]
-    pub settle: Option<bool>,
+    settle: Option<bool>,
 }
 
 impl DropFilesArgs {
@@ -722,12 +722,12 @@ impl DropFilesArgs {
 #[non_exhaustive]
 pub struct TypeTextArgs {
     /// The text to insert.
-    pub text: String,
+    text: String,
     /// Settle the runtime before returning (default `true`). Pass `false` to
     /// queue the input without settling, so `advance` and `screenshot` can
     /// observe the transient it triggers.
     #[serde(default)]
-    pub settle: Option<bool>,
+    settle: Option<bool>,
 }
 
 impl TypeTextArgs {
@@ -760,18 +760,18 @@ impl TypeTextArgs {
 #[non_exhaustive]
 pub struct WaitArgs {
     /// Fulfilled once a matching node exists.
-    pub exists: Option<ExpectArgs>,
+    exists: Option<ExpectArgs>,
     /// Fulfilled once no matching node exists.
-    pub not_exists: Option<ExpectArgs>,
+    not_exists: Option<ExpectArgs>,
     /// Fulfilled once a matching node's value equals `value`.
-    pub value_eq: Option<ValueEqArgs>,
+    value_eq: Option<ValueEqArgs>,
     /// Fulfilled once a matching node holds keyboard/UI focus.
-    pub focus: Option<ExpectArgs>,
+    focus: Option<ExpectArgs>,
     /// `true` requires the non-inverted expectations to fulfill in the order
     /// given; a later one fulfilling first reports `incorrect_order`.
-    pub enforce_order: Option<bool>,
+    enforce_order: Option<bool>,
     /// Timeout in milliseconds; defaults to 5000.
-    pub timeout_ms: Option<u64>,
+    timeout_ms: Option<u64>,
 }
 
 impl WaitArgs {
@@ -820,12 +820,12 @@ impl WaitArgs {
 pub struct ExpectArgs {
     /// The match criteria, inlined into the tool arguments.
     #[serde(flatten)]
-    pub selector: SelectorArgs,
+    selector: SelectorArgs,
     /// `true` makes the expectation forbidden: it never fulfills, and the
     /// wait fails with `inverted_fulfillment` the moment it becomes true. A
     /// wait holding only inverted expectations runs the full timeout and
     /// reports `fulfilled` if none of them ever held.
-    pub inverted: Option<bool>,
+    inverted: Option<bool>,
 }
 
 impl ExpectArgs {
@@ -851,12 +851,12 @@ impl ExpectArgs {
 pub struct ValueEqArgs {
     /// The match criteria, inlined into the tool arguments.
     #[serde(flatten)]
-    pub selector: SelectorArgs,
+    selector: SelectorArgs,
     /// The expected value.
-    pub value: String,
+    value: String,
     /// `true` makes the expectation forbidden; see [`ExpectArgs::inverted`].
     #[serde(default)]
-    pub inverted: Option<bool>,
+    inverted: Option<bool>,
 }
 
 impl ValueEqArgs {
@@ -909,12 +909,12 @@ pub struct RestartArgs {}
 pub struct AdvanceArgs {
     /// Virtual milliseconds to advance; defaults to one frame (16ms). `0`
     /// polls the current animation status without pumping.
-    pub duration_ms: Option<u64>,
+    duration_ms: Option<u64>,
     /// Return the PNG frame rendered at exactly the landed instant instead of
     /// the tree — repeat with `duration_ms: 16` for a per-frame flipbook. At
     /// least one frame always elapses: the capture is the last pump of the
     /// advance.
-    pub screenshot: Option<bool>,
+    screenshot: Option<bool>,
 }
 
 impl AdvanceArgs {

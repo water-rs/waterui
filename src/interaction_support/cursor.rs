@@ -85,7 +85,7 @@ impl_constant!(CursorStyle);
 #[non_exhaustive]
 pub struct Cursor {
     /// The cursor style to display, can be reactive.
-    pub style: Computed<CursorStyle>,
+    style: Computed<CursorStyle>,
 }
 
 impl Cursor {

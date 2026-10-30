@@ -29,25 +29,25 @@ const QUERY_SLOTS: u32 = 3;
 pub struct FrameStageTimes {
     /// Runtime and reactive update plus the retained-tree patch: viewport
     /// setup, frame-boundary bookkeeping and `RenderNode::patch`.
-    pub update: Duration,
+    update: Duration,
     /// Measure and layout of the retained tree.
-    pub layout: Duration,
+    layout: Duration,
     /// The retained tree's record into its nodes' programs.
-    pub encode: Duration,
+    encode: Duration,
     /// Timestamped span covering the frame's layer-content submits — the
     /// engine's render and the effect passes around it. `None` when the
     /// device lacks `TIMESTAMP_QUERY`.
-    pub content_gpu: Option<Duration>,
+    content_gpu: Option<Duration>,
     /// Timestamped span covering the final surface pass — the presenter's
     /// conversion submit, or the whole-window render on the direct
     /// GPU-surface path. `None` like `content_gpu`.
-    pub compositor_gpu: Option<Duration>,
+    compositor_gpu: Option<Duration>,
     /// CPU time spent waiting for GPU work: the queue drain each marker does
     /// plus the blocking timestamp resolve — the wait for this frame's GPU
     /// submits to complete.
-    pub gpu_wait: Duration,
+    gpu_wait: Duration,
     /// CPU time spent reading the presented texture back for a snapshot.
-    pub readback: Duration,
+    readback: Duration,
 }
 
 impl FrameStageTimes {
@@ -126,13 +126,13 @@ impl FrameStageTimes {
 #[non_exhaustive]
 pub struct GpuIdentity {
     /// `Adapter::get_info` for the adapter the device was requested from.
-    pub adapter: wgpu::AdapterInfo,
+    adapter: wgpu::AdapterInfo,
     /// Features the adapter advertises.
-    pub adapter_features: wgpu::Features,
+    adapter_features: wgpu::Features,
     /// Features the device was opened with — `TIMESTAMP_QUERY` may be absent
     /// here even when the adapter has it, when the device request ran before
     /// the feature was wired in.
-    pub device_features: wgpu::Features,
+    device_features: wgpu::Features,
 }
 
 impl GpuIdentity {

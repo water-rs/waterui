@@ -11,13 +11,13 @@ use waterui_graphics::color::Color;
 /// Configuration for the `ColorPicker` component.
 pub struct ColorPickerConfig {
     /// The label of the color picker.
-    pub label: Label,
+    label: Label,
     /// The binding to the color value.
-    pub value: Binding<Color>,
+    value: Binding<Color>,
     /// Whether to support alpha channel selection.
-    pub support_alpha: bool,
+    support_alpha: bool,
     /// Whether to support HDR color selection.
-    pub support_hdr: bool,
+    support_hdr: bool,
 }
 
 impl ColorPickerConfig {

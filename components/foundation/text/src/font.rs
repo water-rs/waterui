@@ -62,23 +62,23 @@ impl Default for Font {
 #[non_exhaustive]
 pub struct ResolvedFont {
     /// Font size in points.
-    pub size: f32,
+    size: f32,
     /// Font weight.
-    pub weight: FontWeight,
+    weight: FontWeight,
     /// Absolute line height in logical points.
     ///
     /// `None` uses the selected font's preferred metrics.
-    pub line_height: Option<f32>,
+    line_height: Option<f32>,
     /// Additional spacing between adjacent glyphs in logical points.
-    pub letter_spacing: f32,
+    letter_spacing: f32,
     /// Optional font family name (e.g., "MaterialIcons-Regular").
     /// None means use the system default font.
-    pub family: Option<Str>,
+    family: Option<Str>,
     /// The design the face is chosen from when no family is named.
     ///
     /// A named family is exact and wins; the design says which of the
     /// platform's own faces to use in its absence.
-    pub design: FontDesign,
+    design: FontDesign,
 }
 
 impl ResolvedFont {

@@ -920,11 +920,11 @@ pub mod dmabuf {
     #[non_exhaustive]
     pub struct DmabufPlane {
         /// The dma-buf descriptor for this plane.
-        pub fd: OwnedFd,
+        fd: OwnedFd,
         /// Byte offset of the plane inside the buffer.
-        pub offset: u32,
+        offset: u32,
         /// Byte stride between rows of the plane.
-        pub stride: u32,
+        stride: u32,
     }
 
     impl DmabufPlane {
@@ -1024,14 +1024,14 @@ pub mod dmabuf {
     #[non_exhaustive]
     pub struct DmabufFormat {
         /// The DRM fourcc (`DRM_FORMAT_*`) the host imports.
-        pub fourcc: u32,
+        fourcc: u32,
         /// The `DRM_FORMAT_MOD_*` modifiers the host imports, in
         /// preference order.
-        pub modifiers: Vec<u64>,
+        modifiers: Vec<u64>,
         /// The presentation colour encoding the host expects.
-        pub color: OutputColor,
+        color: OutputColor,
         /// The alpha convention the host expects.
-        pub alpha: OutputAlpha,
+        alpha: OutputAlpha,
     }
 
     impl DmabufFormat {

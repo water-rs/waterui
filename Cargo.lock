@@ -2159,7 +2159,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4717,7 +4717,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#e4f35d8232f66f9a8595eeedef69f5c4c49835f1"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#c2e94a16937e8884d5943ed2cde2407b24509e38"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -8742,7 +8742,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -12759,7 +12759,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#3f23bebf233b99efbbf58dd3a897da1916aeca64"
+source = "git+https://github.com/water-rs/browsers?branch=dev#240a45b8fc47550e823c200b443df6680ac57308"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12797,7 +12797,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#3f23bebf233b99efbbf58dd3a897da1916aeca64"
+source = "git+https://github.com/water-rs/browsers?branch=dev#240a45b8fc47550e823c200b443df6680ac57308"
 dependencies = [
  "bytemuck",
  "cookie",
@@ -12840,7 +12840,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=dev#38de01d41704e040dd01420b50de3884ca75677b"
+source = "git+https://github.com/water-rs/chart?branch=dev#9ea1b82aab2adc466e03771c550c0966643d3928"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13332,7 +13332,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=dev#8f2b86fb65e4164a09cd5032d1502b533f99b8bc"
+source = "git+https://github.com/water-rs/map-gpu?branch=dev#fd5acea509585af344636b885108202d4740d647"
 dependencies = [
  "blocking",
  "executor-core",
@@ -13470,7 +13470,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=bf663af85211d1f0bcce511b94ac435efad046a6#bf663af85211d1f0bcce511b94ac435efad046a6"
+source = "git+https://github.com/water-rs/particle?branch=dev#7fd718f5caf158bb8050df045cf0fbd3c6091c6a"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13676,7 +13676,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=dev#42e592b9afe10d42e9ba8bf5f99a8bba73309e05"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#cf8aaf52cb9c939104bd35da91fb72fe7e0d72e3"
 dependencies = [
  "async-channel",
  "executor-core",

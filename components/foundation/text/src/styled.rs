@@ -22,17 +22,17 @@ use waterui_graphics::color::{Color, SurfaceVariantColor};
 #[non_exhaustive]
 pub struct Style {
     /// The font to use.
-    pub font: Font,
+    font: Font,
     /// The foreground (text) color.
-    pub foreground: Option<Color>,
+    foreground: Option<Color>,
     /// The background color.
-    pub background: Option<Color>,
+    background: Option<Color>,
     /// Whether the text is italic.
-    pub italic: bool,
+    italic: bool,
     /// Whether the text has an underline.
-    pub underline: bool,
+    underline: bool,
     /// Whether the text has a strikethrough.
-    pub strikethrough: bool,
+    strikethrough: bool,
 }
 
 impl Style {

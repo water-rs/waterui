@@ -61,11 +61,11 @@ pub struct BenchReport {
 #[non_exhaustive]
 pub struct BenchRunConfig {
     /// Unrecorded frames run before sampling.
-    pub warmups: u32,
+    warmups: u32,
     /// Recorded frames per measurement.
-    pub samples: u32,
+    samples: u32,
     /// Independent measurement repetitions.
-    pub repetitions: u32,
+    repetitions: u32,
 }
 
 impl BenchRunConfig {
@@ -104,19 +104,23 @@ impl BenchRunConfig {
 /// Optional per-metric ceilings applied to every measurement a bench records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field names are the serialized budget keys"
+)]
 pub struct BenchBudgets {
     /// Maximum allowed 95th-percentile frame time, in microseconds.
-    pub max_p95_us: Option<u64>,
+    max_p95_us: Option<u64>,
     /// Maximum allowed mean frame time, in microseconds.
-    pub max_mean_us: Option<u64>,
+    max_mean_us: Option<u64>,
     /// Maximum allowed share of sampled frames that rebuilt (0.0..=1.0).
-    pub max_rebuild_ratio: Option<f64>,
+    max_rebuild_ratio: Option<f64>,
     /// Maximum allowed compositor scene layers submitted by one frame.
-    pub max_scene_layers: Option<u64>,
+    max_scene_layers: Option<u64>,
     /// Maximum allowed embedded GPU surface layers submitted by one frame.
-    pub max_gpu_surface_layers: Option<u64>,
+    max_gpu_surface_layers: Option<u64>,
     /// Maximum allowed clip layers pushed by one frame.
-    pub max_clip_layers: Option<u64>,
+    max_clip_layers: Option<u64>,
 }
 
 impl BenchBudgets {

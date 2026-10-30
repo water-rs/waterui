@@ -71,9 +71,9 @@ const DEFAULT_STALL_RATIO: f64 = 0.90;
 #[non_exhaustive]
 pub struct InspectorEndpointInfo {
     /// Bound socket address.
-    pub addr: SocketAddr,
+    addr: SocketAddr,
     /// One-time token clients must present.
-    pub token: String,
+    token: String,
 }
 
 impl InspectorEndpointInfo {
@@ -107,17 +107,17 @@ impl std::fmt::Debug for InspectorEndpointInfo {
 #[non_exhaustive]
 pub struct InspectorServerConfig {
     /// Address to bind.
-    pub host: IpAddr,
+    host: IpAddr,
     /// Port to bind; `0` picks an ephemeral one.
-    pub port: u16,
+    port: u16,
     /// One-time connection token.
-    pub token: String,
+    token: String,
     /// How often task occupancy is aggregated and published.
-    pub task_window: Duration,
+    task_window: Duration,
     /// Fraction of the frame budget above which a poll is reported as a stall.
-    pub stall_ratio: f64,
+    stall_ratio: f64,
     /// Name reported to the inspector.
-    pub app_name: String,
+    app_name: String,
 }
 
 impl InspectorServerConfig {

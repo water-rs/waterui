@@ -31,9 +31,9 @@ use crate::tree::{StructSchema, TypeSchema};
 #[non_exhaustive]
 pub struct CatalogSchema {
     /// The components, in the order the catalog declares them.
-    pub components: &'static [ComponentSchema],
+    components: &'static [ComponentSchema],
     /// The view modifiers, which apply to every component.
-    pub modifiers: &'static [ModifierSchema],
+    modifiers: &'static [ModifierSchema],
 }
 
 impl CatalogSchema {
@@ -70,19 +70,19 @@ impl CatalogSchema {
 #[non_exhaustive]
 pub struct ComponentSchema {
     /// The JSX tag name — `"VStack"`, `"Toggle"`.
-    pub name: &'static str,
+    name: &'static str,
     /// One sentence describing the component, for the generated `.d.ts` and
     /// for `water components`.
-    pub summary: &'static str,
+    summary: &'static str,
     /// The configuration attributes: the props struct the host reads a
     /// configuration object with, whose fields are the attributes.
     ///
     /// The schema is that struct's own constant — [`attributes_of`] lifts it
     /// out of its [`TypeSchema`] — so the attribute list and the conversion
     /// that reads the object are the same declaration.
-    pub attributes: StructSchema,
+    attributes: StructSchema,
     /// What this component's JSX children are.
-    pub children: ChildrenSlot,
+    children: ChildrenSlot,
 }
 
 impl ComponentSchema {
@@ -146,11 +146,11 @@ impl ComponentSchema {
 #[non_exhaustive]
 pub struct ModifierSchema {
     /// The attribute name — `"padding"`, `"background"`.
-    pub name: &'static str,
+    name: &'static str,
     /// One sentence describing the modifier.
-    pub summary: &'static str,
+    summary: &'static str,
     /// The value it accepts.
-    pub value: &'static TypeSchema,
+    value: &'static TypeSchema,
 }
 
 impl ModifierSchema {
@@ -333,9 +333,9 @@ pub const fn encode_catalog<const N: usize>(catalog: &CatalogSchema) -> [u8; N] 
 #[non_exhaustive]
 pub struct Catalog {
     /// The components, in catalog order.
-    pub components: Vec<Component>,
+    components: Vec<Component>,
     /// The view modifiers, which apply to every component.
-    pub modifiers: Vec<Modifier>,
+    modifiers: Vec<Modifier>,
 }
 
 impl Catalog {
@@ -357,13 +357,13 @@ impl Catalog {
 #[non_exhaustive]
 pub struct Component {
     /// The JSX tag name.
-    pub name: String,
+    name: String,
     /// One sentence describing the component.
-    pub summary: String,
+    summary: String,
     /// The configuration attributes, in declaration order.
-    pub attributes: Vec<owned::Field>,
+    attributes: Vec<owned::Field>,
     /// What this component's children are.
-    pub children: ChildrenSlot,
+    children: ChildrenSlot,
 }
 
 impl Component {
@@ -397,11 +397,11 @@ impl Component {
 #[non_exhaustive]
 pub struct Modifier {
     /// The attribute name.
-    pub name: String,
+    name: String,
     /// One sentence describing the modifier.
-    pub summary: String,
+    summary: String,
     /// The value it accepts.
-    pub value: owned::Schema,
+    value: owned::Schema,
 }
 
 impl Modifier {

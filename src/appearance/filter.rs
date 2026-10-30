@@ -14,7 +14,7 @@ use waterui_core::{IntoSignalF32, metadata::MetadataKey};
 #[non_exhaustive]
 pub struct Opacity {
     /// Opacity value where 0.0 is fully transparent and 1.0 is fully opaque.
-    pub value: Computed<f32>,
+    value: Computed<f32>,
 }
 
 impl Opacity {

@@ -284,9 +284,9 @@ impl Highlighter for DefaultHighlighter {
 #[non_exhaustive]
 pub struct HighlightChunk<'a> {
     /// The text content.
-    pub text: &'a str,
+    text: &'a str,
     /// The color for this chunk.
-    pub color: Srgb,
+    color: Srgb,
 }
 
 impl<'a> HighlightChunk<'a> {

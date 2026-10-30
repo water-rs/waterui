@@ -116,15 +116,15 @@ fn translate(env: &waterui_core::Environment, locale: &Locale, key: &Str) -> Tex
 #[non_exhaustive]
 pub struct ColorValue {
     /// Red, in linear light. Outside 0–1 for a wide-gamut colour.
-    pub red: f32,
+    red: f32,
     /// Green, in linear light.
-    pub green: f32,
+    green: f32,
     /// Blue, in linear light.
-    pub blue: f32,
+    blue: f32,
     /// The extended-range headroom; `1` for an ordinary colour.
-    pub headroom: Option<f32>,
+    headroom: Option<f32>,
     /// Alpha; `1` when the colour is opaque.
-    pub opacity: Option<f32>,
+    opacity: Option<f32>,
 }
 
 impl ColorValue {
@@ -367,17 +367,17 @@ impl IntoJs for BackgroundValue {
 #[non_exhaustive]
 pub struct ShadowValue {
     /// The shadow's colour; black when it is left out, as `Shadow::splat` uses.
-    pub color: Option<ColorValue>,
+    color: Option<ColorValue>,
     /// The horizontal offset, in points.
-    pub x: Option<f32>,
+    x: Option<f32>,
     /// The vertical offset, in points.
-    pub y: Option<f32>,
+    y: Option<f32>,
     /// The blur radius, in points.
-    pub radius: f32,
+    radius: f32,
     /// The corner radius of the view casting the shadow, so the silhouette
     /// follows its shape.
     #[ts(rename = "cornerRadius")]
-    pub corner_radius: Option<f32>,
+    corner_radius: Option<f32>,
 }
 
 impl ShadowValue {
@@ -421,12 +421,12 @@ impl ShadowValue {
 #[non_exhaustive]
 pub struct BorderValue {
     /// The border's colour.
-    pub color: ColorValue,
+    color: ColorValue,
     /// The stroke width, in points.
-    pub width: f32,
+    width: f32,
     /// The corner radius, in points; square corners when left out.
     #[ts(rename = "cornerRadius")]
-    pub corner_radius: Option<f32>,
+    corner_radius: Option<f32>,
 }
 
 impl BorderValue {
@@ -470,7 +470,7 @@ pub struct RoundedShape {
     /// The corner radius, as a fraction of the shorter side: `0.5` is fully
     /// rounded, which is what [`ShapeName::Capsule`] says directly.
     #[ts(rename = "cornerRadius")]
-    pub corner_radius: f32,
+    corner_radius: f32,
 }
 
 impl RoundedShape {
@@ -848,9 +848,9 @@ impl<Args> IntoJs for JsAction<Args> {
 pub struct PickerOption {
     /// The value written into the picker's `value` signal when this option is
     /// chosen.
-    pub value: Str,
+    value: Str,
     /// The option's label, localized like any other text.
-    pub label: TextContent,
+    label: TextContent,
 }
 
 impl PickerOption {

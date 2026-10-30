@@ -225,25 +225,25 @@ impl HeadlessPlatformWindow {
 #[non_exhaustive]
 pub struct HeadlessPumpResult {
     /// Whether the pump rebuilt the view tree.
-    pub rebuilt: bool,
+    rebuilt: bool,
     /// The frame's CPU/GPU stage profile.
-    pub profile: FrameProfile,
+    profile: FrameProfile,
     /// The frame's CPU/GPU stage split under `frame-profile`: GPU stages stay
     /// `None` on a device without `TIMESTAMP_QUERY`.
     #[cfg(feature = "frame-profile")]
-    pub stages: crate::renderer::FrameStageTimes,
+    stages: crate::renderer::FrameStageTimes,
     #[cfg(feature = "accessibility")]
     /// The accessibility tree update the frame produced.
-    pub tree_update: Option<AccessibilityTreeUpdate>,
+    tree_update: Option<AccessibilityTreeUpdate>,
     #[cfg(feature = "accessibility")]
     /// The content types the emitted tree's text fields declared — the map
     /// the update publishes beside it.
-    pub content_types: AccessibilityContentTypes,
+    content_types: AccessibilityContentTypes,
     /// The captured frame snapshot, when capture was requested.
-    pub snapshot: Option<HeadlessSnapshot>,
+    snapshot: Option<HeadlessSnapshot>,
     #[cfg(feature = "accessibility")]
     /// The accessibility node holding UI focus.
-    pub ui_focus: Option<accesskit::NodeId>,
+    ui_focus: Option<accesskit::NodeId>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

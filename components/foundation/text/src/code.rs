@@ -151,15 +151,15 @@ impl Code {
 #[non_exhaustive]
 pub struct CodeConfig {
     /// The fence's info token as written (`mermaid`, `rust`, …), if it had one.
-    pub info: Option<Str>,
+    info: Option<Str>,
     /// The language that token resolved to; [`Language::Plaintext`] when it
     /// resolved to nothing.
-    pub language: Language,
+    language: Language,
     /// The block's text, verbatim.
-    pub content: Str,
+    content: Str,
     /// The caller's feedback for a copy, if it asked for any. Carried so a hook
     /// that declines the fence and renders the default keeps it.
-    pub on_copied: Option<OnCopied>,
+    on_copied: Option<OnCopied>,
 }
 
 impl CodeConfig {

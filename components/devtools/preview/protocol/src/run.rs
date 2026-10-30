@@ -27,14 +27,14 @@ pub const DEFAULT_CONTENT_DEADLINE: Duration = Duration::from_secs(10);
 #[non_exhaustive]
 pub struct PreviewRunConfig {
     /// Viewport width in logical units.
-    pub width: f32,
+    width: f32,
     /// Viewport height in logical units.
-    pub height: f32,
+    height: f32,
     /// What the run produces.
-    pub mode: PreviewRunMode,
+    mode: PreviewRunMode,
     /// How long, in milliseconds, an image or scenario capture waits for
     /// content its views owe after mount before the run fails naming them.
-    pub content_deadline_ms: u64,
+    content_deadline_ms: u64,
 }
 
 impl PreviewRunConfig {
@@ -101,21 +101,21 @@ pub enum PreviewRunMode {
 #[non_exhaustive]
 pub struct ScenarioEvent {
     /// Event timestamp in milliseconds from scenario start.
-    pub at_ms: u64,
+    at_ms: u64,
     /// Event kind.
-    pub kind: ScenarioEventKind,
+    kind: ScenarioEventKind,
     /// Pointer x coordinate in logical units.
-    pub x: f32,
+    x: f32,
     /// Pointer y coordinate in logical units.
-    pub y: f32,
+    y: f32,
     /// Pointer button for down/up events.
-    pub button: ScenarioPointerButton,
+    button: ScenarioPointerButton,
     /// Scroll delta along the x axis for scroll events.
-    pub dx: f32,
+    dx: f32,
     /// Scroll delta along the y axis for scroll events.
-    pub dy: f32,
+    dy: f32,
     /// Whether scroll delta values are line units instead of logical units.
-    pub is_line_delta: bool,
+    is_line_delta: bool,
 }
 
 impl ScenarioEvent {

@@ -725,7 +725,7 @@ waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "dev" }
 waterui-chart = { git = "https://github.com/water-rs/chart", branch = "dev" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "dev" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "dev" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "bf663af85211d1f0bcce511b94ac435efad046a6" }
+waterui-particle = { git = "https://github.com/water-rs/particle", branch = "dev" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }

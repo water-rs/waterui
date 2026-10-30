@@ -253,13 +253,13 @@ impl Border {
 #[non_exhaustive]
 pub struct Surface {
     /// The silhouette every chrome layer follows.
-    pub shape: CornerShape,
+    shape: CornerShape,
     /// The container fill per interaction state.
-    pub fill: StateValue<Paint>,
+    fill: StateValue<Paint>,
     /// The border per interaction state; `None` draws none.
-    pub border: Option<StateValue<Border>>,
+    border: Option<StateValue<Border>>,
     /// The elevation per interaction state.
-    pub elevation: StateValue<Elevation>,
+    elevation: StateValue<Elevation>,
 }
 
 impl Surface {
@@ -484,19 +484,19 @@ pub enum FocusIndicator {
 #[non_exhaustive]
 pub struct Chrome {
     /// The container.
-    pub surface: Surface,
+    surface: Surface,
     /// The interaction tint.
-    pub state_layer: StateLayer,
+    state_layer: StateLayer,
     /// What a press shows.
-    pub press: PressFeedback,
+    press: PressFeedback,
     /// What keyboard focus shows.
-    pub focus: FocusIndicator,
+    focus: FocusIndicator,
     /// A fixed frame size centred in the widget's bounds; `None` fills
     /// them.
-    pub size: Option<Size>,
+    size: Option<Size>,
     /// The motion this widget's interaction feedback runs with; `None`
     /// uses the theme's [`WidgetTheme::interaction_motion`](super::WidgetTheme::interaction_motion).
-    pub motion: Option<InteractionMotion>,
+    motion: Option<InteractionMotion>,
 }
 
 impl Chrome {

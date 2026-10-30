@@ -14,11 +14,11 @@ const PERF_FRAME_RATE: u32 = 120;
 #[non_exhaustive]
 pub struct PerfConfig {
     /// Number of unrecorded frames run before sampling.
-    pub warmups: u32,
+    warmups: u32,
     /// Number of recorded frames per measurement.
-    pub samples: u32,
+    samples: u32,
     /// Number of independent measurement repetitions.
-    pub repetitions: u32,
+    repetitions: u32,
 }
 
 impl PerfConfig {
@@ -66,9 +66,9 @@ impl Default for PerfConfig {
 #[non_exhaustive]
 pub struct PerfMeasurement {
     /// Scenario name supplied to [`PerfApp::measure`].
-    pub name: String,
+    name: String,
     /// Recorded frame timings after warmup.
-    pub frames: Vec<FrameTiming>,
+    frames: Vec<FrameTiming>,
 }
 
 impl PerfMeasurement {
@@ -98,51 +98,51 @@ impl PerfMeasurement {
 #[non_exhaustive]
 pub struct PerfStats {
     /// Number of sampled frames.
-    pub samples: usize,
+    samples: usize,
     /// Arithmetic mean frame duration.
-    pub mean: Duration,
+    mean: Duration,
     /// Median frame duration.
-    pub median: Duration,
+    median: Duration,
     /// Fastest sampled frame.
-    pub min: Duration,
+    min: Duration,
     /// Slowest sampled frame.
-    pub max: Duration,
+    max: Duration,
     /// 95th percentile frame duration.
-    pub p95: Duration,
+    p95: Duration,
     /// Number of sampled frames that rebuilt scene/layout state.
-    pub rebuilt_frames: usize,
+    rebuilt_frames: usize,
     /// Number of sampled frames that rendered into the target surface.
-    pub rendered_frames: usize,
+    rendered_frames: usize,
     /// Number of sampled frames that had no render work.
-    pub idle_frames: usize,
+    idle_frames: usize,
     /// Duration summary over rendered frames only.
-    pub rendered_total: PerfDurationStats,
+    rendered_total: PerfDurationStats,
     /// Number of sampled frames that missed the 120fps frame budget.
-    pub missed_120fps_frames: usize,
+    missed_120fps_frames: usize,
     /// Number of sampled frames that missed the 60fps frame budget.
-    pub missed_60fps_frames: usize,
+    missed_60fps_frames: usize,
     /// Phase duration summaries for sampled frames.
-    pub phases: PerfPhaseStats,
+    phases: PerfPhaseStats,
     /// Measurement cache hits across sampled frames.
-    pub measurement_cache_hits: u64,
+    measurement_cache_hits: u64,
     /// Measurement cache misses across sampled frames.
-    pub measurement_cache_misses: u64,
+    measurement_cache_misses: u64,
     /// Maximum compositor layers submitted by one sampled frame.
-    pub scene_layers: u64,
+    scene_layers: u64,
     /// Maximum recorded scene-segment layers submitted by one sampled frame.
-    pub scene_segment_layers: u64,
+    scene_segment_layers: u64,
     /// Maximum embedded GPU content mounts submitted by one sampled frame.
-    pub gpu_content_layers: u64,
+    gpu_content_layers: u64,
     /// Maximum clip layers pushed by one sampled frame.
-    pub clip_layers: u64,
+    clip_layers: u64,
     /// Maximum nested clip depth observed across sampled frames.
-    pub max_clip_depth: u64,
+    max_clip_depth: u64,
     /// `AppliedFilter` nodes dispatched across sampled frames.
-    pub applied_filter_count: u64,
+    applied_filter_count: u64,
     /// `AppliedFilter` subtree capture time across sampled frames, in microseconds.
-    pub applied_filter_capture_us: u64,
+    applied_filter_capture_us: u64,
     /// `AppliedFilter` GPU effect time across sampled frames, in microseconds.
-    pub applied_filter_effect_us: u64,
+    applied_filter_effect_us: u64,
 }
 
 impl PerfStats {

@@ -20,20 +20,20 @@ use waterui_core::{AnyView, Environment, configurable, layout::StretchAxis};
 #[non_exhaustive]
 pub struct SliderConfig {
     /// The label displayed for the slider.
-    pub label: Label,
+    label: Label,
     /// The label for the minimum value of the slider.
-    pub min_value_label: AnyView,
+    min_value_label: AnyView,
     /// The label for the maximum value of the slider.
-    pub max_value_label: AnyView,
+    max_value_label: AnyView,
     /// The range of values the slider can take.
-    pub range: RangeInclusive<f64>,
+    range: RangeInclusive<f64>,
     /// The binding to the current value of the slider.
-    pub value: Binding<f64>,
+    value: Binding<f64>,
     /// How large the slider is drawn.
-    pub size: ControlSize,
+    size: ControlSize,
     /// How the value indicator shown above the thumb while it is dragged
     /// formats the value; `None` shows no indicator.
-    pub value_indicator: Option<ValueFormatter>,
+    value_indicator: Option<ValueFormatter>,
 }
 
 impl SliderConfig {

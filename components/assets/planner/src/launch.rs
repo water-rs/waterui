@@ -22,11 +22,11 @@ use crate::{AssetRole, BundleManifest, HexColor, ThemeConfig};
 pub struct LaunchConfig {
     /// Background behind the launch artwork. Defaults to the theme background.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background: Option<HexColor>,
+    background: Option<HexColor>,
     /// Background used when the system is in dark appearance. Defaults to
     /// `background`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background_dark: Option<HexColor>,
+    background_dark: Option<HexColor>,
 }
 
 impl LaunchConfig {

@@ -126,12 +126,12 @@ impl std::fmt::Display for ShaderLanguage {
 #[non_exhaustive]
 pub struct ShaderSource {
     /// The fragment's source text in `language`.
-    pub source: Cow<'static, str>,
+    source: Cow<'static, str>,
     /// The language `source` is written in.
-    pub language: ShaderLanguage,
+    language: ShaderLanguage,
     /// Whether the fragment samples `uniforms.time`, so the engine
     /// re-renders it every frame.
-    pub animated: bool,
+    animated: bool,
 }
 
 impl ShaderSource {

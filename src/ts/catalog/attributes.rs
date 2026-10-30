@@ -39,9 +39,9 @@ use super::values::{
 #[non_exhaustive]
 pub struct VStackAttributes {
     /// The gap between children, in points.
-    pub spacing: Option<Computed<f32>>,
+    spacing: Option<Computed<f32>>,
     /// Where children sit on the horizontal axis.
-    pub alignment: Option<HorizontalAlign>,
+    alignment: Option<HorizontalAlign>,
 }
 
 impl VStackAttributes {
@@ -69,9 +69,9 @@ impl VStackAttributes {
 #[non_exhaustive]
 pub struct HStackAttributes {
     /// The gap between children, in points.
-    pub spacing: Option<Computed<f32>>,
+    spacing: Option<Computed<f32>>,
     /// Where children sit on the vertical axis.
-    pub alignment: Option<VerticalAlign>,
+    alignment: Option<VerticalAlign>,
 }
 
 impl HStackAttributes {
@@ -99,7 +99,7 @@ impl HStackAttributes {
 #[non_exhaustive]
 pub struct ZStackAttributes {
     /// Where children sit in both axes.
-    pub alignment: Option<StackAlign>,
+    alignment: Option<StackAlign>,
 }
 
 impl ZStackAttributes {
@@ -115,7 +115,7 @@ impl ZStackAttributes {
 #[non_exhaustive]
 pub struct ScrollViewAttributes {
     /// Which way the surface scrolls.
-    pub axis: Option<ScrollAxis>,
+    axis: Option<ScrollAxis>,
 }
 
 impl ScrollViewAttributes {
@@ -132,7 +132,7 @@ impl ScrollViewAttributes {
 pub struct SpacerAttributes {
     /// The gap's minimum length, in points.
     #[ts(rename = "minLength")]
-    pub min_length: Option<f32>,
+    min_length: Option<f32>,
 }
 
 impl SpacerAttributes {
@@ -167,9 +167,9 @@ pub struct ButtonAttributes {
     /// or by an assistive technology, which is why this is the button's own
     /// attribute and not the `onTapGesture` modifier.
     #[ts(rename = "onTap")]
-    pub on_tap: Option<JsAction>,
+    on_tap: Option<JsAction>,
     /// The label, when it is not the children.
-    pub label: Option<AnyView>,
+    label: Option<AnyView>,
 }
 
 impl ButtonAttributes {
@@ -204,9 +204,9 @@ impl ButtonAttributes {
 #[non_exhaustive]
 pub struct ToggleAttributes {
     /// The state the switch reads and writes.
-    pub value: Binding<bool>,
+    value: Binding<bool>,
     /// The label, when it is not the children.
-    pub label: Option<AnyView>,
+    label: Option<AnyView>,
 }
 
 impl ToggleAttributes {
@@ -233,9 +233,9 @@ impl ToggleAttributes {
 #[non_exhaustive]
 pub struct SliderAttributes {
     /// The value the slider reads and writes.
-    pub value: Binding<f64>,
+    value: Binding<f64>,
     /// The label, when it is not the children.
-    pub label: Option<AnyView>,
+    label: Option<AnyView>,
 }
 
 impl SliderAttributes {
@@ -262,11 +262,11 @@ impl SliderAttributes {
 #[non_exhaustive]
 pub struct StepperAttributes {
     /// The value the stepper reads and writes.
-    pub value: Binding<i32>,
+    value: Binding<i32>,
     /// How much one step changes the value.
-    pub step: Option<Computed<i32>>,
+    step: Option<Computed<i32>>,
     /// The label, when it is not the children.
-    pub label: Option<AnyView>,
+    label: Option<AnyView>,
 }
 
 impl StepperAttributes {
@@ -305,11 +305,11 @@ impl StepperAttributes {
 #[non_exhaustive]
 pub struct TextFieldAttributes {
     /// The text the field reads and writes.
-    pub value: Binding<Str>,
+    value: Binding<Str>,
     /// The placeholder shown while the field is empty.
-    pub prompt: Option<Computed<TextContent>>,
+    prompt: Option<Computed<TextContent>>,
     /// The label, when it is not the children.
-    pub label: Option<AnyView>,
+    label: Option<AnyView>,
 }
 
 impl TextFieldAttributes {
@@ -348,11 +348,11 @@ impl TextFieldAttributes {
 #[non_exhaustive]
 pub struct PickerAttributes {
     /// The selected option's value.
-    pub value: Binding<Str>,
+    value: Binding<Str>,
     /// The options to choose from.
-    pub options: Computed<Vec<PickerOption>>,
+    options: Computed<Vec<PickerOption>>,
     /// The label, when it is not the children.
-    pub label: Option<AnyView>,
+    label: Option<AnyView>,
 }
 
 impl PickerAttributes {
@@ -387,16 +387,16 @@ pub struct ListAttributes {
     /// Whether the list is in edit mode, which shows the controls for the
     /// handlers below: a row has a delete control when the list can delete,
     /// and a reorder handle when it can move.
-    pub editing: Option<Computed<bool>>,
+    editing: Option<Computed<bool>>,
     /// Runs when a row's delete control is used, with the index of the row
     /// that was deleted. A list with no handler shows no delete control,
     /// because the control would do nothing.
     #[ts(rename = "onDelete")]
-    pub on_delete: Option<JsAction<(u32,)>>,
+    on_delete: Option<JsAction<(u32,)>>,
     /// Runs when a row is moved, with the index it left and the index it
     /// arrived at. A list with no handler shows no reorder handle.
     #[ts(rename = "onMove")]
-    pub on_move: Option<JsAction<(u32, u32)>>,
+    on_move: Option<JsAction<(u32, u32)>>,
 }
 
 /// The fields of [`ListAttributes`] in declaration order: `editing`,
@@ -458,11 +458,11 @@ impl ListAttributes {
 pub struct ProgressAttributes {
     /// How far along, `0` through `total`. Left out, the progress is
     /// indeterminate — what Rust spells `Progress::infinity()`.
-    pub value: Option<Computed<f64>>,
+    value: Option<Computed<f64>>,
     /// The value that counts as complete; `1` when left out.
-    pub total: Option<Computed<f64>>,
+    total: Option<Computed<f64>>,
     /// Which shape the progress takes.
-    pub style: Option<ProgressStyleValue>,
+    style: Option<ProgressStyleValue>,
 }
 
 impl ProgressAttributes {
@@ -503,7 +503,7 @@ impl ProgressAttributes {
 #[non_exhaustive]
 pub struct LinkAttributes {
     /// The URL the link opens.
-    pub url: Computed<Str>,
+    url: Computed<Str>,
 }
 
 impl LinkAttributes {
@@ -525,9 +525,9 @@ impl LinkAttributes {
 #[non_exhaustive]
 pub struct CardAttributes {
     /// The card's title.
-    pub title: Option<TextContent>,
+    title: Option<TextContent>,
     /// The card's subtitle, under the title.
-    pub subtitle: Option<TextContent>,
+    subtitle: Option<TextContent>,
 }
 
 impl CardAttributes {
@@ -555,10 +555,10 @@ impl CardAttributes {
 #[non_exhaustive]
 pub struct BadgeAttributes {
     /// The count the badge shows.
-    pub value: Computed<i32>,
+    value: Computed<i32>,
     /// What the badge is attached to. A builder rather than a view, because
     /// `Badge` may build its content again.
-    pub content: JsViewBuilder,
+    content: JsViewBuilder,
 }
 
 impl BadgeAttributes {
@@ -592,7 +592,7 @@ pub struct TableAttributes {}
 #[non_exhaustive]
 pub struct ColumnAttributes {
     /// The column's heading.
-    pub label: TextContent,
+    label: TextContent,
 }
 
 impl ColumnAttributes {
@@ -615,9 +615,9 @@ impl ColumnAttributes {
 pub struct AccordionAttributes {
     /// The content revealed when the accordion is expanded. A builder, because
     /// the content is built when it is revealed and again after it is hidden.
-    pub content: JsViewBuilder,
+    content: JsViewBuilder,
     /// Whether the accordion is expanded, when the application owns that state.
-    pub expanded: Option<Binding<bool>>,
+    expanded: Option<Binding<bool>>,
 }
 
 impl AccordionAttributes {
@@ -651,10 +651,10 @@ impl AccordionAttributes {
 #[non_exhaustive]
 pub struct AvatarAttributes {
     /// Who the avatar is of, which is also its accessibility label.
-    pub name: TextContent,
+    name: TextContent,
     /// The picture's URL. Without one the avatar shows the monogram.
     #[cfg(feature = "media")]
-    pub image: Option<Computed<UrlValue>>,
+    image: Option<Computed<UrlValue>>,
 }
 
 impl AvatarAttributes {
@@ -690,7 +690,7 @@ impl AvatarAttributes {
 #[non_exhaustive]
 pub struct NavigationStackAttributes {
     /// The root's navigation title.
-    pub title: Option<TextContent>,
+    title: Option<TextContent>,
 }
 
 impl NavigationStackAttributes {
@@ -712,9 +712,9 @@ impl NavigationStackAttributes {
 #[non_exhaustive]
 pub struct NavigationLinkAttributes {
     /// The destination, built afresh every time the link is followed.
-    pub destination: JsViewBuilder,
+    destination: JsViewBuilder,
     /// The destination's navigation title.
-    pub title: Option<TextContent>,
+    title: Option<TextContent>,
 }
 
 impl NavigationLinkAttributes {
@@ -742,7 +742,7 @@ impl NavigationLinkAttributes {
 #[non_exhaustive]
 pub struct TabsAttributes {
     /// Which tab is showing.
-    pub value: Binding<Str>,
+    value: Binding<Str>,
 }
 
 impl TabsAttributes {
@@ -758,11 +758,11 @@ impl TabsAttributes {
 #[non_exhaustive]
 pub struct TabAttributes {
     /// The value written into the container's `value` when this tab is chosen.
-    pub value: Str,
+    value: Str,
     /// The tab's root, built afresh every time the tab is shown.
-    pub content: JsViewBuilder,
+    content: JsViewBuilder,
     /// The root's navigation title.
-    pub title: Option<TextContent>,
+    title: Option<TextContent>,
 }
 
 impl TabAttributes {
@@ -797,9 +797,9 @@ impl TabAttributes {
 #[non_exhaustive]
 pub struct ImageAttributes {
     /// Where the picture comes from.
-    pub src: Computed<UrlValue>,
+    src: Computed<UrlValue>,
     /// Whether the decoded picture may stretch to the bounds it is offered.
-    pub resizable: Option<bool>,
+    resizable: Option<bool>,
 }
 
 #[cfg(feature = "media")]
@@ -832,55 +832,55 @@ impl ImageAttributes {
 pub struct Modifiers {
     /// Insets the view: `true` for the default inset, a number for every edge,
     /// or an object per edge.
-    pub padding: PaddingValue,
+    padding: PaddingValue,
     /// Paints a colour, or a view, behind the view.
-    pub background: BackgroundValue,
+    background: BackgroundValue,
     /// Tints the view's text and symbols.
-    pub foreground: Computed<ColorValue>,
+    foreground: Computed<ColorValue>,
     /// Makes the view translucent, `0` through `1`.
-    pub opacity: Computed<f32>,
+    opacity: Computed<f32>,
     /// Casts a shadow behind the view.
-    pub shadow: ShadowValue,
+    shadow: ShadowValue,
     /// Strokes a border around the view.
-    pub border: BorderValue,
+    border: BorderValue,
     /// Clips the view to a shape.
-    pub clip: ShapeValue,
+    clip: ShapeValue,
     /// Fixes the view's width, in points.
-    pub width: Computed<f32>,
+    width: Computed<f32>,
     /// Fixes the view's height, in points.
-    pub height: Computed<f32>,
+    height: Computed<f32>,
     /// The width the view will not go below.
     #[ts(rename = "minWidth")]
-    pub min_width: Computed<f32>,
+    min_width: Computed<f32>,
     /// The width the view will not exceed.
     #[ts(rename = "maxWidth")]
-    pub max_width: Computed<f32>,
+    max_width: Computed<f32>,
     /// The height the view will not go below.
     #[ts(rename = "minHeight")]
-    pub min_height: Computed<f32>,
+    min_height: Computed<f32>,
     /// The height the view will not exceed.
     #[ts(rename = "maxHeight")]
-    pub max_height: Computed<f32>,
+    max_height: Computed<f32>,
     /// Disables the view and everything below it.
-    pub disabled: Computed<bool>,
+    disabled: Computed<bool>,
     /// Runs a handler when the view is tapped. A control's own activation is
     /// its own attribute — `<Button onTap>` — because a native control is
     /// activated by more than a tap.
     #[ts(rename = "onTapGesture")]
-    pub on_tap_gesture: JsAction,
+    on_tap_gesture: JsAction,
     /// The view's accessibility label, for a view whose own content does not
     /// name it.
     #[ts(rename = "a11yLabel")]
-    pub a11y_label: Computed<TextContent>,
+    a11y_label: Computed<TextContent>,
     /// The view's accessibility value.
     #[ts(rename = "a11yValue")]
-    pub a11y_value: Computed<TextContent>,
+    a11y_value: Computed<TextContent>,
     /// A stable identifier for tests and tooling, never shown to anyone.
     #[ts(rename = "a11yId")]
-    pub a11y_id: Str,
+    a11y_id: Str,
     /// Hides the view from assistive technology without hiding it visually.
     #[ts(rename = "a11yHidden")]
-    pub a11y_hidden: bool,
+    a11y_hidden: bool,
 }
 
 impl Modifiers {

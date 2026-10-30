@@ -35,13 +35,13 @@ use crate::tether::Tethered;
 #[non_exhaustive]
 pub struct Theme {
     /// The light or dark appearance the application is drawn in.
-    pub color_scheme: ColorScheme,
+    color_scheme: ColorScheme,
     /// The colour tokens the environment installs, in the fixed token order.
     ///
     /// A token the environment does not install is absent rather than
     /// defaulted: a theme that never declared a colour has none, and inventing
     /// one would put a value on screen that no theme chose.
-    pub colors: Vec<(&'static str, WorkingColor)>,
+    colors: Vec<(&'static str, WorkingColor)>,
 }
 
 impl Theme {
@@ -67,11 +67,11 @@ impl Theme {
 #[non_exhaustive]
 pub struct HostLocale {
     /// The canonical BCP-47 tag, for example `"en-US"`.
-    pub identifier: String,
+    identifier: String,
     /// The language subtag alone, for example `"en"`.
-    pub language_code: String,
+    language_code: String,
     /// `"ltr"` or `"rtl"`, resolved from the locale's script.
-    pub text_direction: &'static str,
+    text_direction: &'static str,
 }
 
 impl HostLocale {

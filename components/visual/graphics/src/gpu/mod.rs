@@ -87,15 +87,15 @@ impl RedrawHandle {
 #[non_exhaustive]
 pub struct Context<'a> {
     /// The adapter the device was created from.
-    pub adapter: &'a Adapter,
+    adapter: &'a Adapter,
     /// The device the engine renders with.
-    pub device: &'a Device,
+    device: &'a Device,
     /// Its queue.
-    pub queue: &'a Queue,
+    queue: &'a Queue,
     /// The format of the texture the content renders into.
-    pub format: TextureFormat,
+    format: TextureFormat,
     /// Wakes the host for another frame from any thread.
-    pub redraw: RedrawHandle,
+    redraw: RedrawHandle,
 }
 
 impl<'a> Context<'a> {
