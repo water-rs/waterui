@@ -63,6 +63,8 @@ gpu = [
 # target is a compile error — native and WebGPU devices run the same code
 # without it.
 webgl = ["gpu", "wgpu/webgl"]
+# Native GLES is an explicit opt-in on Android and Linux.
+gles = ["gpu", "wgpu/gles"]
 
 [dependencies]
 bytemuck = "1"
@@ -81,7 +83,7 @@ tracing = { version = "0.1.44", optional = true }
 fearless_simd = { version = "1.1", default-features = false, features = ["std"] }
 cherenkov-simd = { version = "0.0.0", path = "../cherenkov/simd", default-features = false, features = ["std"] }
 # `naga-ir`: pass modules reach wgpu as composed naga IR, never as text.
-wgpu = { version = "30.0.1", features = ["naga-ir"], optional = true }
+wgpu = { workspace = true, features = ["naga-ir"], optional = true }
 
 # Pipeline compilation waits on the platform shader compiler, so native setup
 # runs it on a blocking-pool thread rather than the GPU host thread.
@@ -112,3 +114,6 @@ harness = false
 name = "gpu_runtime"
 harness = false
 required-features = ["gpu"]
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["gles"] }

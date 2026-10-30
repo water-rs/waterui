@@ -433,6 +433,7 @@ required-features = ["webview-system", "winit"]
 
 [features]
 default = ["gpu"]
+gles = ["gpu", "wgpu/gles", "cherenkov-gpu/gles", "waterui/gles", "waterui-graphics/gles"]
 accessibility = ["dep:accesskit"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
