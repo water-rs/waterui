@@ -537,8 +537,6 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UISplitViewController",
         "UISearchBar",
     "UISearchController",
-    "UISearchTextField",
-    "UIContentSizeCategoryAdjusting",
     "UIMenu",
     "UIMenuElement",
     "UIMenuBuilder",
