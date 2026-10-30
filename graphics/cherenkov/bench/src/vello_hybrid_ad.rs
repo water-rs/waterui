@@ -41,7 +41,7 @@ pub struct VelloHybrid {
     depth_view: Option<wgpu::TextureView>,
     prepared: Option<Prepared>,
     lowered: Option<Lowered<PaintType>>,
-    /// Fonts whose runs draw bitmap glyphs, from [`bitmap_glyph_fonts`].
+    /// Fonts whose runs draw bitmap glyphs, from `bitmap_glyph_fonts`.
     bitmap_fonts: BitmapFonts,
     counters: Counters,
     /// Whether a submitted frame awaits [`Engine::completion`].
@@ -113,7 +113,7 @@ impl VelloHybrid {
 /// run enables the atlas cache; otherwise it paints the decoded strike as
 /// an inline pixmap. Runs in a font that draws bitmap glyphs therefore
 /// enable the atlas, and `prepare` reports the bitmap glyphs the atlas
-/// cannot take as unsupported ([`bitmap_glyph_fonts`]). Other runs keep
+/// cannot take as unsupported (`bitmap_glyph_fonts`). Other runs keep
 /// the uncached path.
 pub struct HybridCtx<'a> {
     scene: &'a mut HybridScene,
@@ -208,7 +208,7 @@ impl VelloLikeCtx for HybridCtx<'_> {
 /// bitmap glyphs through `vello_gpu`'s glyph atlas.
 type BitmapFonts = BTreeSet<(u64, u32)>;
 
-/// The `vello_gpu` limit a [`bitmap_glyph_fonts`] rejection names.
+/// The `vello_gpu` limit a `bitmap_glyph_fonts` rejection names.
 const BITMAP_GLYPH_API: &str = "vello_gpu draws bitmap glyphs only from its glyph atlas, which \
                                 takes no rotation, skew or mirroring and no size above \
                                 GlyphCacheConfig::max_cached_font_size";

@@ -78,7 +78,8 @@ pub(crate) enum PresentPattern {
 /// `external-cost --path` choices (#168): `e` is external-frame import,
 /// `c` is copy-and-convert.
 ///
-/// See [`crate::external_cost`].
+/// The measurement lives in the `external_cost` module, built with the
+/// `cherenkov` feature.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum ExternalPath {
     /// Cherenkov external-frame import + composite.
@@ -2712,11 +2713,14 @@ mod completion_tests {
     #[test]
     fn arms_completion_after_submit_returns() {
         let (engine, window) = run_probe(false);
-        // The step follows submit as a separate call, so the submit
-        // interval the loop times excludes it.
+        // The measured window opens on an idle GPU even without warmup
+        // frames, since `prepare` may have submitted uploads. The step
+        // follows submit as a separate call, so the submit interval the
+        // loop times excludes it.
         assert_eq!(
             engine.events,
             [
+                "complete",
                 "encode",
                 "submit",
                 "arm completion",
@@ -2738,10 +2742,12 @@ mod completion_tests {
     #[test]
     fn completes_each_frame_before_draining_its_timestamps() {
         let (engine, window) = run_probe(true);
-        // The step follows the latency wait, so latency_seconds excludes it.
+        // The first wait opens the measured window on an idle GPU. The step
+        // follows the latency wait, so latency_seconds excludes it.
         assert_eq!(
             engine.events,
             [
+                "complete",
                 "encode",
                 "submit",
                 "complete",
