@@ -351,7 +351,14 @@ fn frame_resolved_axis(
     max: Option<f32>,
 ) -> f32 {
     let content = if max.is_some() && parent_proposal != Some(0.0) {
-        let extent = parent_proposal.or(ideal).unwrap_or(child_size);
+        // `min(max, max(child, proposal))`: a maximum lets the frame grow
+        // into the offer, never shrink below the child's own answer — an
+        // offer narrower than the child is not a reason to claim less
+        // than the child needs.
+        let extent = parent_proposal
+            .or(ideal)
+            .unwrap_or(child_size)
+            .max(child_size);
         // An unbounded answer is legal only on an axis the child left
         // unbounded: a maximum is something to grow into, not a source of
         // infinity of its own.
@@ -554,6 +561,38 @@ mod tests {
         };
         let size = layout.size_that_fits(ProposalSize::new(Some(100.0), Some(10.0)), &[&child]);
         assert_eq!(size, Size::new(30.0, 30.0));
+    }
+
+    /// `min(max, max(child, proposal))`: a maximum lets the frame grow into
+    /// the offer but never shrink it below the child's own answer — the
+    /// offer the child declined is not a reason to claim less than the
+    /// child needs (#3595).
+    #[test]
+    fn a_max_frame_never_shrinks_below_its_child() {
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(60.0)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(58.3, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(30.0), Some(10.0)), &[&child]);
+        assert_eq!(size, Size::new(58.3, 20.0));
+    }
+
+    /// A larger offer is still the extent the frame grows into, capped by
+    /// `max`.
+    #[test]
+    fn a_max_frame_grows_into_a_larger_offer() {
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(60.0)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(58.3, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(80.0), Some(10.0)), &[&child]);
+        assert_eq!(size, Size::new(60.0, 20.0));
     }
 
     /// Chained setters mutate one `FrameLayout`, so `.size(40, 20)` followed by
