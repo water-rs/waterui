@@ -71,12 +71,7 @@ pub enum Source {
 
 impl Source {
     /// The budget order: mandatory content, then frames, then captures.
-    const BUDGET_ORDER: [Self; 4] = [
-        Self::Hosted,
-        Self::HostWindow,
-        Self::Frame,
-        Self::Recorded,
-    ];
+    const BUDGET_ORDER: [Self; 4] = [Self::Hosted, Self::HostWindow, Self::Frame, Self::Recorded];
 
     /// Whether the content can only be shown on a plane: it is judged by
     /// the mandatory-plane rule, is never pending a realization, and a

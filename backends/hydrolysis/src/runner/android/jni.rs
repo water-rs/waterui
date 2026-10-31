@@ -724,7 +724,9 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurface
 
 #[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurfaceDestroyed<'local>(
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurfaceDestroyed<
+    'local,
+>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
