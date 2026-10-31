@@ -3688,6 +3688,13 @@ pub mod native_test {
             self.runtime.context().mark_device_lost_for_testing(reason);
         }
 
+        /// Holds the runtime's rebuild publication until the returned
+        /// guard drops, so a test can order a delivered frame against the
+        /// lost generation deterministically.
+        pub fn hold_rebuild(&self) -> waterui_graphics::gpu::RebuildHold {
+            self.runtime.hold_rebuild_for_testing()
+        }
+
         /// Issues one real drawable frame through `render_frame` itself
         /// at the given media timestamp — the delivery the link's sink
         /// runs on a vsync. The drawable checks out of a standalone

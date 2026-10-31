@@ -4306,7 +4306,10 @@ mod filtered {
         let lost = filtered.current_generation();
 
         // The link has demand again when the loss lands, so the next
-        // delivered frame hits `render_frame`'s lost-context arm.
+        // delivered frame hits `render_frame`'s lost-context arm. The
+        // rebuild publication is held so the loss cannot already be
+        // replaced when the frame arrives.
+        let hold = filtered.hold_rebuild();
         filtered.request_render();
         filtered.lose_device("test device loss");
         assert!(
@@ -4333,6 +4336,7 @@ mod filtered {
         // The rebuild's publication wakes the parked wait: the hold
         // clears, the link re-arms, and the owed frame renders on the
         // new generation — the encode count is the render's own record.
+        drop(hold);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.current_generation() > lost
                 && !filtered.parked()
