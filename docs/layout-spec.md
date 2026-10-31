@@ -321,8 +321,10 @@ place of the stack's own transition for that page.
   effective maximum is the minimum, and the axis resolves to `min`. On each
   axis the child hears the
   parent's proposal clamped into `[min, max]`, with `ideal` answering only an
-  axis the parent left unspecified; the frame answers the child's answer
-  clamped into `[min, max]`, growing into a finite offer only up to `max`.
+  axis the parent left unspecified; the frame answers
+  `min(max, max(child, proposal))` on each axis — the child's answer, raised
+  to the offer when the offer is larger and `max` allows, and never below the
+  child's answer even when the offer is narrower.
   With no `max` it is exactly as big as its child, clamped up by `min`;
   `max = INFINITY` is how a view opts into filling. The frame measures its
   child a second time under the exact proposal it will place with (the
