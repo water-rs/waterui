@@ -368,12 +368,13 @@ fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView
     .background(Material::Regular)
     .title(dest.title())
     .searchable(&search, "Search reminders")
-    .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::new(
-        NavigationToolbarPlacement::PrimaryAction,
-        button(label("").icon(plus()))
-            .style(ButtonStyle::Borderless)
-            .action(|| {}),
-    )]))
+    .navigation_toolbar(NavigationToolbar::new(vec![
+        NavigationToolbarItem::action(
+            NavigationToolbarPlacement::PrimaryAction,
+            label("").icon(plus()),
+            || {},
+        ),
+    ]))
 }
 
 fn placeholder_view() -> impl View {
