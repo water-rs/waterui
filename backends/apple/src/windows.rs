@@ -321,7 +321,7 @@ mod imp {
         // each child becomes an `NSToolbarItem`, which is what gives it the
         // system's capsule, spacing and overflow.
         if let Some(toolbar) = declaration.toolbar {
-            let toolbar_env = crate::toolbar::toolbar_environment(env);
+            let toolbar_env = crate::toolbar_chrome::toolbar_environment(env);
             let toolbar_leaf = crate::dispatch::dispatcher(env)
                 .render(toolbar, &toolbar_env, mtm)
                 .expect("window toolbar must render: no handler or fallback claims it");

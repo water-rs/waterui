@@ -108,6 +108,16 @@ struct RemindersTwin: View {
   @State private var selection: Destination? = .today
   @State private var search = ""
 
+  /// The size the backend rasterises a toolbar icon at: 24 pt for a
+  /// `UIBarButtonItem` image, 18 pt for an `NSToolbarItem` image.
+  private var primaryActionIconSize: CGFloat {
+    #if os(iOS)
+      24
+    #else
+      18
+    #endif
+  }
+
   var body: some View {
     NavigationSplitView(preferredCompactColumn: compactColumn) {
       sidebar
@@ -214,7 +224,7 @@ struct RemindersTwin: View {
       .toolbar {
         ToolbarItem(placement: .primaryAction) {
           Button {} label: {
-            MaterialIcon.plus.view()
+            MaterialIcon.plus.templateImage(size: primaryActionIconSize)
           }
           .buttonStyle(.borderless)
         }
