@@ -564,6 +564,21 @@ define_class!(
     }
 );
 
+/// The row height the idiom's own convention holds — under the pad idiom
+/// the platform's row convention is 52 pt while the detached cell
+/// measure reports 44, so the stock height floors at 52 (#3723). Every
+/// other idiom already agrees with `UIKit`'s measure, so the floor
+/// releases there.
+fn canonical_row_height(table: &TableView) -> CGFloat {
+    if objc2_ui_kit::UIDevice::currentDevice(table.mtm()).userInterfaceIdiom()
+        == objc2_ui_kit::UIUserInterfaceIdiom::Pad
+    {
+        52.0
+    } else {
+        0.0
+    }
+}
+
 impl TableView {
     /// The window's keyboard region marked this surface for a region
     /// change — the next layout pass recomputes the keyboard
@@ -640,7 +655,9 @@ impl TableView {
     /// measurement `UITableView` actually applies.
     #[must_use]
     pub fn stock_row_height(&self) -> f64 {
-        crate::view::fitting_size(&TableCell::new(self.mtm())).height
+        crate::view::fitting_size(&TableCell::new(self.mtm()))
+            .height
+            .max(canonical_row_height(self))
     }
 
     /// The table's directional layout margins.
