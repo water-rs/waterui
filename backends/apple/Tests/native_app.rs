@@ -1630,26 +1630,6 @@ mod navigation {
             "the collapsed detail content remains visible with a nonempty frame: {:?}",
             view::bounds(&detail)
         );
-        let field = super::find::<cocoa_ui::objc2_ui_kit::UITextField>(window)
-            .expect("the visible search text field")
-            .downcast::<cocoa_ui::objc2_ui_kit::UITextField>()
-            .expect("search text field type");
-        // SAFETY: UIKit font accessors run on the test's main thread.
-        let body = cocoa_ui::objc2_ui_kit::UIFont::preferredFontForTextStyle(unsafe {
-            cocoa_ui::objc2_ui_kit::UIFontTextStyleBody
-        });
-        let configured = pump_main_until(MAIN_QUEUE_DEADLINE, || {
-            let actual = field.font().expect("the search field has a font");
-            // SAFETY: UIKit font accessors run on the test's main thread.
-            unsafe {
-                actual.fontName() == body.fontName()
-                    && (actual.pointSize() - body.pointSize()).abs() < 0.01
-            }
-        });
-        assert!(
-            configured,
-            "the presented search field uses preferred body typography"
-        );
     }
 
     /// A `NavigationSplitView` detail column is a stack-driven

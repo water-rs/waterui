@@ -31,9 +31,8 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSDictionary, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     NSDirectionalRectEdge, NSForegroundColorAttributeName, UIBarButtonItem, UIBarButtonItemStyle,
-    UIBarPosition, UIBarPositioning, UIBarPositioningDelegate, UIButton, UIColor,
-    UIContentSizeCategoryAdjusting, UIControl, UIFont, UIFontTextStyleBody, UIGestureRecognizer,
-    UIGestureRecognizerDelegate, UINavigationBar, UINavigationBarAppearance,
+    UIBarPosition, UIBarPositioning, UIBarPositioningDelegate, UIButton, UIColor, UIControl,
+    UIGestureRecognizer, UIGestureRecognizerDelegate, UINavigationBar, UINavigationBarAppearance,
     UINavigationBarDelegate, UINavigationController, UINavigationControllerDelegate,
     UINavigationItem, UINavigationItemLargeTitleDisplayMode, UIScrollView, UISearchController,
     UISearchResultsUpdating, UITransitionContextFromViewControllerKey, UIViewController,
@@ -112,16 +111,6 @@ define_class!(
         fn view_did_appear(&self, animated: bool) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidAppear: animated] };
-            if let Some(search) = self.ivars().search_controller.borrow().as_ref() {
-                // UIKit configures the attached search field during presentation.
-                // Apply its semantic font after that configuration completes.
-                let field = search.searchBar().searchTextField();
-                // SAFETY: this immutable text-style constant is provided by UIKit.
-                field.setFont(Some(&UIFont::preferredFontForTextStyle(unsafe {
-                    UIFontTextStyleBody
-                })));
-                field.setAdjustsFontForContentSizeCategory(true);
-            }
             let handler = self.ivars().appear.borrow().clone();
             if let Some(handler) = handler {
                 handler();
