@@ -64,9 +64,12 @@ object NativeBridge {
      * [nativeCreateSession] carries the configuration's night-mode flag so
      * the session's colour-scheme signal starts on the real `uiMode`, and
      * [nativeSetColorScheme] reports every later change
-     * (water-rs/waterui#3544).
+     * (water-rs/waterui#3544). 25 = the GPU top-band edge —
+     * [nativeTopSurfaceAttached] and its change/destroy pair — carrying the
+     * self-drawn entries a frame paints above its embedded platform views
+     * (water-rs/waterui#2225).
      */
-    private const val SCHEMA: Int = 24
+    private const val SCHEMA: Int = 25
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -235,6 +238,32 @@ object NativeBridge {
     )
 
     @JvmStatic external fun nativeSurfaceDestroyed(sessionPtr: Long, generation: Long)
+
+    /**
+     * The top band's surface was created — the band that carries the
+     * self-drawn entries above every embedded platform view. Geometry and
+     * generation follow the base band's contract; refresh is irrelevant —
+     * the base band's attachment already drives the frame cadence, and the
+     * top band presents only when a frame has above-band content.
+     */
+    @JvmStatic
+    external fun nativeTopSurfaceAttached(
+        sessionPtr: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+        generation: Long,
+    ): Boolean
+
+    @JvmStatic
+    external fun nativeTopSurfaceChanged(
+        sessionPtr: Long,
+        width: Int,
+        height: Int,
+        generation: Long,
+    )
+
+    @JvmStatic external fun nativeTopSurfaceDestroyed(sessionPtr: Long, generation: Long)
 
     /**
      * The Activity's started state (`onStart`/`onStop`) — drives the frame

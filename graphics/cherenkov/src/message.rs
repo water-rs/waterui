@@ -217,6 +217,16 @@ pub enum Message<B: Backend> {
         /// The surface id.
         id: SurfaceId,
     },
+    /// Set or clear the surface's second presentation root: entries above
+    /// an external host window's mark present under it
+    /// (water-rs/waterui#2225). `None` returns those entries to the
+    /// surface's own root.
+    SetTopRoot {
+        /// The surface id.
+        id: SurfaceId,
+        /// The new second root's target, or `None` to clear.
+        target: Option<B::Target>,
+    },
     /// An opaque render-thread operation that cannot fail: font, filter
     /// and effect registration and removal, capability hooks.
     Resource(ResOp<B>),

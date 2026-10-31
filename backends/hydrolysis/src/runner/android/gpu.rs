@@ -400,6 +400,42 @@ impl AndroidSurface {
         )
     }
 
+    /// Sets or clears the second presentation root for entries above an
+    /// external host window's mark: `target` is the top band's
+    /// `SurfaceControlTarget` — a surface the host places above the
+    /// embedded platform views (water-rs/waterui#2225). `None` returns
+    /// those entries to this window's own root, beneath the views.
+    /// No-ops until the engine window exists.
+    pub(crate) fn set_top_root(
+        &mut self,
+        target: Option<cherenkov_gpu::interop::android::SurfaceControlTarget>,
+    ) {
+        if let Some(window) = self.engine_window.as_mut() {
+            window
+                .surface
+                .set_top_root(target)
+                .expect("hydrolysis android: engine render thread is gone");
+        }
+    }
+
+    /// The `SurfaceControlTarget` the base window presents above-mark
+    /// entries under while this attachment is live — `None` while no
+    /// surface is attached. Its parent reparents under the top band's
+    /// `SurfaceView`, which the host stacks above the embedded platform
+    /// views (water-rs/waterui#2225).
+    pub(crate) fn top_root_target(
+        &self,
+    ) -> Option<cherenkov_gpu::interop::android::SurfaceControlTarget> {
+        use cherenkov_gpu::interop::android::{SurfaceControl, SurfaceControlTarget};
+        let window = &self.native_window.as_ref()?.window;
+        // SAFETY: the host holds the live SurfaceView's ANativeWindow lease.
+        let parent = unsafe { SurfaceControl::from_window(window.ptr(), c"HydrolysisTop") }
+            .expect("hydrolysis android: failed to create the top-band compositor parent");
+        let looper = ndk::looper::ForeignLooper::for_thread()
+            .expect("hydrolysis android: top-root creation requires the host Looper");
+        Some(SurfaceControlTarget::new(parent, (self.width, self.height), looper).transparent(true))
+    }
+
     /// If `generation` names the live attachment, releases it. A stale
     /// generation (a `surfaceDestroyed` belonging to an already-replaced
     /// surface) is ignored.

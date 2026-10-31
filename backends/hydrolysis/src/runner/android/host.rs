@@ -351,6 +351,17 @@ pub struct AndroidHostWindow {
     host_attached: bool,
     #[cfg(hydrolysis_gpu_painter)]
     pub(crate) surface: AndroidSurface,
+    /// The top band's attachment: the `SurfaceView` above the platform-view
+    /// overlay, carrying the self-drawn entries a frame paints above its
+    /// embedded platform views (water-rs/waterui#2225). Its attach reuses
+    /// the base band's display rates — they share the display.
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) top_surface: AndroidSurface,
+    /// The refresh values the last base-band attach carried — the top
+    /// band's attach borrows them since rate discovery lives on the base
+    /// band's edge.
+    #[cfg(hydrolysis_gpu_painter)]
+    surface_refresh: Option<super::gpu::DisplayRefresh>,
     /// Shared with the installed frame wake, which posts its own
     /// Choreographer request through it, and with the GPU-surface redraw
     /// handle, whose queued post calls it from the executor's drain.
@@ -1223,6 +1234,10 @@ impl AndroidSession {
             host_attached: false,
             #[cfg(hydrolysis_gpu_painter)]
             surface: AndroidSurface::new(gpu.clone()),
+            #[cfg(hydrolysis_gpu_painter)]
+            top_surface: AndroidSurface::new(gpu.clone()),
+            #[cfg(hydrolysis_gpu_painter)]
+            surface_refresh: None,
             bridge: Arc::new(bridge),
             ui_poster: executor.poster(),
             redraw_pending: Arc::new(AtomicBool::new(false)),
@@ -1574,6 +1589,7 @@ impl AndroidSession {
             height,
             "wake posted: surface attached"
         );
+        self.runtime.platform.surface_refresh = Some(refresh);
         let attached =
             self.runtime
                 .platform
@@ -1626,6 +1642,81 @@ impl AndroidSession {
         // the band re-attaches or the activity's start report unhides it.
         self.runtime.platform.sync_frame_wake_gate();
         self.runtime.sync_occlusion();
+    }
+
+    /// The top band's surface was created or replaced. Its refresh values
+    /// come from the base band's last attach — the pair shares a display
+    /// and rate discovery lives on the base edge.
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) fn top_surface_attached_with_generation(
+        &mut self,
+        native_window: ndk::native_window::NativeWindow,
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) -> Result<(), String> {
+        tracing::debug!(
+            target: "waterui::hydrolysis::android",
+            generation,
+            width,
+            height,
+            "wake posted: top surface attached"
+        );
+        let refresh = self.runtime.platform.surface_refresh.unwrap_or(
+            super::gpu::DisplayRefresh {
+                peak: 60.0,
+                normal: 60.0,
+                high: 60.0,
+            },
+        );
+        let attached =
+            self.runtime
+                .platform
+                .top_surface
+                .attach(native_window, refresh, width, height, generation);
+        attached.map_err(|error| error.to_string())?;
+        // The base window's above-mark entries present under this root —
+        // the top band's container sits above the embedded platform views
+        // (water-rs/waterui#2225).
+        let target = self.runtime.platform.top_surface.top_root_target();
+        self.runtime.platform.surface.set_top_root(target);
+        // Above-band content lives on the same frames as the base band —
+        // the attach can un-hide only an already-visible window, so the
+        // refresh request keeps the next frame honest either way.
+        self.runtime.request_refresh();
+        Ok(())
+    }
+
+    /// The top band's size changed on the live surface generation.
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) fn top_surface_resized(&mut self, width: u32, height: u32, generation: u64) {
+        tracing::debug!(
+            target: "waterui::hydrolysis::android",
+            generation,
+            width,
+            height,
+            "wake posted: top surface resized"
+        );
+        self.runtime
+            .platform
+            .top_surface
+            .resize_for(width, height, generation);
+    }
+
+    /// The top band's surface is going away; `generation` names which one.
+    /// Content above embedded views simply has nowhere above-band to draw
+    /// until a new surface attaches.
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) fn top_surface_detached(&mut self, generation: u64) {
+        tracing::debug!(
+            target: "waterui::hydrolysis::android",
+            generation,
+            "wake posted: top surface detached"
+        );
+        // Above-mark entries return to the base root — beneath the views —
+        // until a new top surface attaches (water-rs/waterui#2225).
+        self.runtime.platform.surface.set_top_root(None);
+        self.runtime.platform.top_surface.detach_for(generation);
     }
 
     /// Combines host work with the engine's content-rate range for this window.

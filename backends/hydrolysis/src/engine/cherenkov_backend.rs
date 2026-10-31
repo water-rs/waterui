@@ -331,6 +331,20 @@ impl AndroidCherenkovSurface {
         }
     }
 
+    /// Sets or clears the second presentation root for entries above an
+    /// external host window's mark: `target`'s parent is a
+    /// `SurfaceControl` the host places above the embedded platform
+    /// views (water-rs/waterui#2225).
+    ///
+    /// # Errors
+    /// [`SurfaceError::Lost`] when the render thread is gone.
+    pub(crate) fn set_top_root(
+        &mut self,
+        target: Option<cherenkov_gpu::interop::android::SurfaceControlTarget>,
+    ) -> Result<(), cherenkov::SurfaceError> {
+        self.core.engine.set_top_root(&self.core.surface, target)
+    }
+
     pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
         self.core
             .own(self.core.engine.render(cherenkov::FrameTime::now()))

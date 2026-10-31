@@ -236,6 +236,10 @@ pub struct NodeLayers<E: crate::text::TextEngine> {
     scopes: Vec<ScopeLayer<E>>,
     committed: Committed<E>,
     inner_committed: Committed<E>,
+    /// The frame's external-host-window mark, set while the cell hosts a
+    /// platform-view sink — the compositor splits presentation bands at
+    /// the topmost marked layer (water-rs/waterui#2225).
+    host_window: bool,
     content_held: Option<HeldResources>,
     /// The frame's material request as last lowered — the terms a
     /// no-program commit re-keys its membership by (the mount's display
@@ -930,6 +934,7 @@ pub fn commit_cell<T: LayerTarget<E>, E: crate::text::TextEngine>(
                 scopes: Vec::new(),
                 committed: Vec::new(),
                 inner_committed: Vec::new(),
+                host_window: false,
                 content_held: None,
                 install_gpu: false,
                 material_request: None,
@@ -1046,6 +1051,18 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
             scroll: kurbo::Vec2::ZERO,
         },
     );
+    // A platform-view sink's frame marks where an external host window
+    // sits in the committed tree — the compositor routes the paint tail
+    // above it to the second presentation root (water-rs/waterui#2225).
+    let host_window = cell
+        .registrations
+        .borrow()
+        .as_ref()
+        .is_some_and(|regs| !regs.platform_view_placements.is_empty());
+    if layers.host_window != host_window {
+        cx.tx[&layers.frame].host_window(host_window);
+        layers.host_window = host_window;
+    }
     commit_material(cx, layers, material.as_ref(), canvas);
     // The children's install canvas: this frame when it carries a
     // filter — a backdrop group never shares a capture across filtered

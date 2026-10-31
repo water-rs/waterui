@@ -77,7 +77,7 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// 23 = `nativeCreateSession` carries the configuration's night-mode flag so
 /// the colour-scheme signal starts on the real `uiMode`, and
 /// `nativeSetColorScheme` reports every later change (water-rs/waterui#3544).
-pub const JNI_SCHEMA: jint = 24;
+pub const JNI_SCHEMA: jint = 25;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -657,6 +657,81 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDes
 ) {
     guard(&mut env, |_env| {
         session(session_ptr).surface_detached(crate::num_cast::i64_as_u64(generation));
+        Ok(())
+    });
+}
+
+/// The top band's surface — the `SurfaceView` above the platform-view
+/// overlay that carries the self-drawn entries a frame paints above its
+/// embedded platform views (water-rs/waterui#2225). Display rates do not
+/// cross this edge: the base band's attachment owns the frame cadence and
+/// the top band shares its display.
+#[cfg(hydrolysis_gpu_painter)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurfaceAttached<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    surface: JObject<'local>,
+    width: jint,
+    height: jint,
+    generation: jlong,
+) -> jboolean {
+    guard_val(&mut env, false, |env| {
+        let window = unsafe {
+            // SAFETY: env is a live JNI environment and `surface` is the
+            // android.view.Surface the top band just produced; the call
+            // acquires the reference the attachment owns. See the matching
+            // cast in `nativeSurfaceAttached`.
+            ndk::native_window::NativeWindow::from_surface(env.get_raw().cast(), surface.as_raw())
+        };
+        let Some(window) = window else {
+            return Err(JniError(
+                "hydrolysis android: top band ANativeWindow_fromSurface returned null".to_owned(),
+            ));
+        };
+        session(session_ptr)
+            .top_surface_attached_with_generation(
+                window,
+                crate::num_cast::i32_as_u32(width.max(0)),
+                crate::num_cast::i32_as_u32(height.max(0)),
+                crate::num_cast::i64_as_u64(generation),
+            )
+            .map_err(JniError)?;
+        Ok(true)
+    })
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurfaceChanged<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    width: jint,
+    height: jint,
+    generation: jlong,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).top_surface_resized(
+            crate::num_cast::i32_as_u32(width.max(0)),
+            crate::num_cast::i32_as_u32(height.max(0)),
+            crate::num_cast::i64_as_u64(generation),
+        );
+        Ok(())
+    });
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurfaceDestroyed<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    generation: jlong,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).top_surface_detached(crate::num_cast::i64_as_u64(generation));
         Ok(())
     });
 }

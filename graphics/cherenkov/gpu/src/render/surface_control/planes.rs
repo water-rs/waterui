@@ -84,19 +84,16 @@ impl HostedSurface {
         self.0.parent.store(root.as_ptr(), Ordering::Relaxed);
     }
 
-    /// Records taking the surface off the display in `transaction` — only
-    /// while it is still under `root`.
-    fn detach(&self, transaction: &mut Transaction, root: &SurfaceControl) {
-        if self
+    /// Records taking the surface off the display in `transaction` — from
+    /// whichever root it is currently under, at most once: an object an
+    /// above-mark frame moved to the second root must detach from it too
+    /// (water-rs/waterui#2225).
+    fn detach(&self, transaction: &mut Transaction) {
+        if !self
             .0
             .parent
-            .compare_exchange(
-                root.as_ptr(),
-                std::ptr::null_mut(),
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            )
-            .is_ok()
+            .swap(std::ptr::null_mut(), Ordering::Relaxed)
+            .is_null()
         {
             transaction.reparent(&self.0.surface, None);
         }
@@ -149,6 +146,10 @@ enum Entry<'a> {
         object: &'a HostedSurface,
         properties: HostedProperties,
     },
+    /// An external host window's frame: nothing is shown — the stack
+    /// position only marks where entries above it reparent to the second
+    /// presentation root (water-rs/waterui#2225).
+    HostWindow,
 }
 
 /// Why a frame's buffer cannot be shown on an Android plane.
@@ -368,6 +369,10 @@ fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderErro
                 )?);
                 continue;
             }
+            PlaneContent::HostWindow => {
+                entries.push(Entry::HostWindow);
+                continue;
+            }
         };
         let FramePlanes::Native(native) = &frame.planes else {
             return Err(cannot_show(layer, &Ineligible::NotABuffer));
@@ -540,6 +545,11 @@ pub struct Planes {
     /// The engine's container under the host's parent: every part and plane
     /// is its child, so their z-orders never interleave with the host's.
     root: SurfaceControl,
+    /// The second presentation root for entries above an external host
+    /// window's mark — a container under a surface the host places above
+    /// the embedded windows (`water-rs/waterui#2225). `None` sends
+    /// those entries to `root`, which draws them under the windows again.
+    top_root: Option<SurfaceControl>,
     root_shown: bool,
     extended_range: Option<ExtendedRangeBrightness>,
     size: (u32, u32),
@@ -614,6 +624,7 @@ impl Planes {
             waker,
             presenting: None,
             root,
+            top_root: None,
             root_shown: false,
             extended_range: ExtendedRangeBrightness::load(),
             size: target.size(),
@@ -801,7 +812,7 @@ impl Planes {
             .iter()
             .filter_map(|entry| match entry {
                 Entry::Engine { raster, .. } => Some(raster),
-                Entry::Frame(_) | Entry::Hosted { .. } => None,
+                Entry::Frame(_) | Entry::Hosted { .. } | Entry::HostWindow => None,
             })
             .enumerate()
         {
@@ -969,7 +980,7 @@ impl Planes {
         let mut headrooms = Vec::new();
         let mut sources = stack.iter().filter_map(|entry| match entry {
             Entry::Engine { view, color, .. } => Some((*view, *color)),
-            Entry::Frame(_) | Entry::Hosted { .. } => None,
+            Entry::Frame(_) | Entry::Hosted { .. } | Entry::HostWindow => None,
         });
         for (part, &at) in chosen.iter().enumerate() {
             let (source, color) = sources.next().expect("one source per part");
@@ -1112,19 +1123,36 @@ impl Planes {
                     if at == layer && object.is(&plane.object))
             });
             if !kept && !hosted_in(&plane.object) {
-                plane.object.detach(&mut transaction, &self.root);
+                plane.object.detach(&mut transaction);
             }
             kept
         });
         let mut part = 0;
         let mut seen = Vec::new();
+        let mut above_mark = false;
         for (index, entry) in stack.iter().enumerate() {
             let z = plan::z_order(index);
+            // Entries after an external host window's mark present under
+            // the second root — above the embedded windows — when the
+            // host set one; otherwise they stay under `root` and draw
+            // under the windows as before (water-rs/waterui#2225).
+            let root = if above_mark {
+                self.top_root.as_ref().unwrap_or(&self.root)
+            } else {
+                &self.root
+            };
             match entry {
+                // An external host window's mark shows nothing: it splits
+                // the stack so later entries reparent to the second
+                // presentation root (water-rs/waterui#2225).
+                Entry::HostWindow => {
+                    above_mark = true;
+                }
                 Entry::Engine {
                     raster, properties, ..
                 } => {
                     let this = &mut self.parts[part];
+                    transaction.reparent(&this.surface, Some(root));
                     if let Some(at) = chosen[part] {
                         let buffer = &mut this.buffers[at];
                         buffer.state = State::Shown;
@@ -1183,8 +1211,7 @@ impl Planes {
                     let plane = match self.promoted.entry(promotion.layer) {
                         std::collections::hash_map::Entry::Occupied(slot) => slot.into_mut(),
                         std::collections::hash_map::Entry::Vacant(slot) => {
-                            let surface = self
-                                .root
+                            let surface = root
                                 .child(c"cherenkov frame")
                                 .map_err(|e| RenderError::Render(e.to_string()))?;
                             // The fallible work precedes the bookkeeping:
@@ -1200,6 +1227,7 @@ impl Planes {
                             })
                         }
                     };
+                    transaction.reparent(&plane.surface, Some(root));
                     if plane.generation != promotion.generation {
                         set_frame(&mut transaction, &plane.surface, promotion.frame, dup_fence)?;
                         promotion.frame.lease();
@@ -1224,13 +1252,11 @@ impl Planes {
                     properties,
                 } => {
                     let properties = HostedProperties { z, ..*properties };
-                    let plane = self.hosted.entry(*layer).or_insert_with(|| {
-                        object.attach(&mut transaction, &self.root);
-                        HostedPlane {
-                            object: (*object).clone(),
-                            shown: None,
-                        }
+                    let plane = self.hosted.entry(*layer).or_insert_with(|| HostedPlane {
+                        object: (*object).clone(),
+                        shown: None,
                     });
+                    object.attach(&mut transaction, root);
                     self.ops.clear();
                     plan::diff_hosted(plane.shown.as_ref(), &properties, &mut self.ops);
                     for &op in &self.ops {
@@ -1309,6 +1335,28 @@ impl Planes {
         });
     }
 
+    /// Sets or clears the second presentation root for entries above an
+    /// external host window's mark (`water-rs/waterui#2225`): `target`
+    /// is a surface the host places above the embedded windows, and its
+    /// own container is created beneath it. `None` returns every
+    /// above-mark entry to `root` — under the windows again.
+    ///
+    /// # Errors
+    /// [`SurfaceError::UnsupportedTarget`] when the system refuses the
+    /// surface control.
+    pub fn set_top_root(
+        &mut self,
+        target: Option<&SurfaceControlTarget>,
+    ) -> Result<(), SurfaceError> {
+        self.top_root = match target {
+            Some(target) => Some(target.parent.child(c"cherenkov top").map_err(|e| {
+                SurfaceError::UnsupportedTarget(format!("surface control: {}", e))
+            })?),
+            None => None,
+        };
+        Ok(())
+    }
+
     /// Presents only `frames`: one transaction that sets each promoted
     /// layer's new buffer with a duplicate of its acquire fence and any
     /// property the new frame's contract changes, leaving every part's
@@ -1362,6 +1410,8 @@ impl Planes {
                     self.raster_updates.push((index, properties));
                     continue;
                 }
+                // A host-window mark carries no buffer to refresh.
+                PlaneContent::HostWindow => continue,
             };
             let FramePlanes::Native(native) = &frame.planes else {
                 return Err(cannot_show(layer, &Ineligible::NotABuffer));
@@ -1495,7 +1545,7 @@ impl Planes {
             });
         }
         for (_, plane) in self.hosted.drain() {
-            plane.object.detach(&mut transaction, &self.root);
+            plane.object.detach(&mut transaction);
         }
         transaction.reparent(&self.root, None);
         Self::apply(transaction, &self.release, pending);

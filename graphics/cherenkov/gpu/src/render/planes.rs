@@ -59,6 +59,10 @@ pub enum Source {
     /// A system layer the host supplies (`cherenkov::HostedLayers`): the
     /// engine has no pixels of it, so it is shown on a plane or not at all.
     Hosted,
+    /// An external host window's frame (`LayerOp::HostWindow`): no buffer
+    /// exists, the mark only splits the surface's presentation bands at
+    /// the window's paint-order position (water-rs/waterui#2225).
+    HostWindow,
     /// An external frame the system layer shows itself.
     Frame,
     /// An immutable capture of a recorded layer.
@@ -67,15 +71,22 @@ pub enum Source {
 
 impl Source {
     /// The budget order: mandatory content, then frames, then captures.
-    const BUDGET_ORDER: [Self; 3] = [Self::Hosted, Self::Frame, Self::Recorded];
+    const BUDGET_ORDER: [Self; 4] = [
+        Self::Hosted,
+        Self::HostWindow,
+        Self::Frame,
+        Self::Recorded,
+    ];
 
     /// Whether the content can only be shown on a plane: it is judged by
     /// the mandatory-plane rule, is never pending a realization, and a
     /// failed verdict is an error ([`Plan::unplaced`]) rather than
-    /// composition in the engine.
+    /// composition in the engine. A host-window mark must promote: an
+    /// unplaced one would leave the band split unmade and paint the
+    /// above-window content under the window (water-rs/waterui#2225).
     #[must_use]
     pub const fn mandatory(self) -> bool {
-        matches!(self, Self::Hosted)
+        matches!(self, Self::Hosted | Self::HostWindow)
     }
 }
 
@@ -961,6 +972,11 @@ pub enum PlaneContent<'a> {
         /// Its extent in the layer's content coordinates.
         extent: kurbo::Size,
     },
+    /// An external host window's frame: nothing is shown — the mark only
+    /// splits the presentation stack at the window's paint-order position
+    /// so the realization can route what follows elsewhere
+    /// (water-rs/waterui#2225).
+    HostWindow,
 }
 
 /// The platform object a hosted plane shows

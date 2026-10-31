@@ -3506,6 +3506,12 @@ fn plane_stack<'a, 'p: 'a>(
                     },
                 };
             }
+            if placement.source == planes::Source::HostWindow {
+                return planes::Plane {
+                    placement,
+                    content: planes::PlaneContent::HostWindow,
+                };
+            }
             let content = surface
                 .bindings
                 .get(&placement.layer)
@@ -3537,6 +3543,7 @@ fn plane_stack<'a, 'p: 'a>(
 /// which keeps its allocation between fills (#90).
 fn plane_candidates<'a>(
     surf: &SurfaceState,
+    tree: &cherenkov::SurfaceTree,
     producers: &FxHashMap<ProducerId, &external::Slot>,
     candidates: &'a mut FxHashMap<LayerId, planes::Candidate>,
 ) -> &'a FxHashMap<LayerId, planes::Candidate> {
@@ -3546,6 +3553,16 @@ fn plane_candidates<'a>(
             .iter()
             .map(|(&layer, hosted)| (layer, hosted.candidate())),
     );
+    candidates.extend(tree.layers().filter_map(|(layer, node)| {
+        node.host_window().then_some((
+            layer,
+            planes::Candidate {
+                size: (0, 0),
+                raster: kurbo::Affine::IDENTITY,
+                source: planes::Source::HostWindow,
+            },
+        ))
+    }));
     candidates.extend(surf.bindings.iter().filter_map(|(layer, binding)| {
         let slot = producers.get(&binding.producer()).copied()?;
         slot.on_plane.then_some((
@@ -3894,6 +3911,22 @@ impl Renderer for GpuRenderer {
             true,
         );
         diag::set_surface(None);
+    }
+
+    /// The second presentation root for surface `id`: entries above an
+    /// external host window's mark present under it — above the embedded
+    /// windows (water-rs/waterui#2225). Any non-surface-control target is
+    /// ignored: nothing outside a `SurfaceControl` hierarchy can hold the
+    /// root.
+    #[cfg(target_os = "android")]
+    fn set_top_root(&mut self, id: SurfaceId, target: Option<Self::Target>) {
+        let target = target.and_then(|target| match target {
+            crate::GpuTarget::SurfaceControl(target) => Some(target),
+            _ => None,
+        });
+        if let Some(system) = self.planes.get_mut(&id) {
+            let _ = system.set_top_root(target.as_ref());
+        }
     }
 
     fn destroy_surface(&mut self, id: SurfaceId) {
@@ -7023,7 +7056,7 @@ impl GpuRenderer {
             .iter()
             .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
             .collect();
-        let candidates = plane_candidates(surface, &currents, &mut self.candidates);
+        let candidates = plane_candidates(surface, sf.tree, &currents, &mut self.candidates);
         let installed = plane_frames(surface, &currents, &mut self.candidate_frames);
         planes::SystemPlanes::prepare(system, candidates, installed, &mut self.ready);
         if let Some(frames) = sf.plane_frames {
@@ -7106,7 +7139,7 @@ impl GpuRenderer {
                 .iter()
                 .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
                 .collect();
-            let candidates = plane_candidates(surface, &currents, &mut self.candidates);
+            let candidates = plane_candidates(surface, sf.tree, &currents, &mut self.candidates);
             let frames = plane_frames(surface, &currents, &mut self.candidate_frames);
             planes::SystemPlanes::groom_with_frames(system, candidates, frames);
             if surface.plan_dirty || planes::SystemPlanes::wants_plan(system) {
@@ -7138,7 +7171,7 @@ impl GpuRenderer {
             if ready_sets.len() == i {
                 ready_sets.push(FxHashSet::default());
             }
-            let candidates = plane_candidates(surf, producers, candidates);
+            let candidates = plane_candidates(surf, sf.tree, producers, candidates);
             let frames = plane_frames(surf, producers, candidate_frames);
             if let Some(system) = planes.get_mut(&sf.id) {
                 planes::SystemPlanes::prepare(system, candidates, frames, &mut ready_sets[i]);
@@ -7195,7 +7228,7 @@ impl GpuRenderer {
         surf.plan_dirty = false;
         let mut candidates = FxHashMap::default();
         surf.plan = if surf.promotes {
-            plane_candidates(surf, resources.producers, &mut candidates);
+            plane_candidates(surf, frame.tree, resources.producers, &mut candidates);
             planes::plan::<planes::Platform>(frame.tree, &candidates, ready)
         } else {
             planes::Plan::default()
