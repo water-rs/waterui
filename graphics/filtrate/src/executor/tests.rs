@@ -599,7 +599,9 @@ fn evaluate(stage: &ColorStage, params: &[f32], colour: [f32; 4]) -> [f32; 4] {
                     .params
                     .iter()
                     .map(|source| match *source {
-                        ParamSource::Param(index) => Value::Float(params[index]),
+                        ParamSource::Param(index) | ParamSource::Length(index) => {
+                            Value::Float(params[index])
+                        }
                         ParamSource::Constant(&[value]) => Value::Float(value),
                         ParamSource::Constant(values) => Value::vec(values),
                     })
@@ -1235,6 +1237,7 @@ fn frame_input_format<'a>(
     format: wgpu::TextureFormat,
 ) -> EffectInput<'a> {
     EffectInput {
+        length_scale: 1.0,
         device: &gpu.device,
         queue: &gpu.queue,
         texture,
@@ -2486,6 +2489,7 @@ fn gpu_params_rewrite_buffers_across_frames() {
         executor
             .encode_render(
                 &EffectInput {
+                    length_scale: 1.0,
                     timing: EffectFrameTiming::new(
                         Duration::ZERO,
                         Duration::ZERO,
@@ -2877,6 +2881,7 @@ fn gpu_intermediates_evicted_when_size_unused() {
         executor
             .encode_render(
                 &EffectInput {
+                    length_scale: 1.0,
                     timing: EffectFrameTiming::new(Duration::ZERO, Duration::ZERO, sequence),
                     ..frame_input(gpu, &input, size, Duration::ZERO, ShapeTextures::default())
                 },
@@ -2985,6 +2990,7 @@ fn render_shader_effect(
     effect
         .render(
             &EffectInput {
+                length_scale: 1.0,
                 timing,
                 ..frame_input(gpu, input, size, Duration::ZERO, ShapeTextures::default())
             },
@@ -3033,6 +3039,7 @@ fn gpu_shader_effect_reads_input_time_and_params() {
     let needs_redraw = effect
         .render(
             &EffectInput {
+                length_scale: 1.0,
                 timing: EffectFrameTiming::new(
                     Duration::from_millis(1500),
                     Duration::from_millis(16),
@@ -3092,6 +3099,7 @@ fn gpu_shader_effect_two_sizes_one_encoder() {
             effect
                 .encode_render(
                     &EffectInput {
+                        length_scale: 1.0,
                         view: view.clone(),
                         timing: EffectFrameTiming::new(time, Duration::ZERO, sequence),
                         ..frame_input(

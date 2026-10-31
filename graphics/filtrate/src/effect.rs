@@ -297,6 +297,12 @@ pub struct EffectInput<'a> {
     pub height: u32,
     /// Deterministic host-selected timing for this frame.
     pub timing: EffectFrameTiming,
+    /// The display scale the input texture renders at — device pixels per
+    /// point. Parameters a stage declares as lengths
+    /// ([`ParamSource::Length`](filtrate_core::ParamSource::Length)) arrive
+    /// at the shader multiplied by it: a blur radius or offset declared in
+    /// points lands in device pixels.
+    pub length_scale: f32,
     /// The clip shape, for filters that read it.
     pub shape: ShapeTextures,
 }

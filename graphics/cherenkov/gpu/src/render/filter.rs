@@ -336,6 +336,9 @@ pub(super) struct Scope<'a> {
     pub cache: &'a super::PipelineCache,
     pub target: &'a super::ScratchTarget,
     pub size: (u32, u32),
+    /// The display scale the frame encodes at — device pixels per point,
+    /// handed to the effect as its `EffectInput::length_scale`.
+    pub length_scale: f32,
     pub encoded: Option<&'a mut super::space_convert::Pipelines>,
 }
 
@@ -632,6 +635,7 @@ impl Registry {
             width: size.0,
             height: size.1,
             timing,
+            length_scale: scope.length_scale,
             shape: ShapeTextures::default(),
         };
         let output = EffectOutput {

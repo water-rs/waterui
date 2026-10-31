@@ -1086,6 +1086,10 @@ fn render_transparent(
 /// `input_size` — a frozen transition input is smaller than the output —
 /// intermediates chain the rest at `output` size, the last pass lands in
 /// `output`. All textures are `PRESENTATION_FORMAT`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the window's backing scale factor fits f32"
+)]
 fn encode_effects(
     state: &FilteredState,
     context: &SharedGpuContext,
@@ -1156,6 +1160,7 @@ fn encode_effects(
             width: input_width,
             height: input_height,
             timing,
+            length_scale: state.current_scale.get() as f32,
             shape: ShapeTextures::default(),
         };
         let output = EffectOutput {

@@ -112,6 +112,7 @@ impl GpuBench {
 
     fn render_filter<F: Effect>(&self, filter: &mut F) {
         let input = EffectInput {
+            length_scale: 1.0,
             device: &self.device,
             queue: &self.queue,
             texture: &self.input_texture,
