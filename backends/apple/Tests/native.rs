@@ -348,7 +348,13 @@ fn trials() -> Vec<Trial> {
         tests.extend(tabs::trials());
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
+        // A Catalyst window carries no container bands, so the suite's
+        // mount precondition cannot hold there (#3556). Its own Catalyst
+        // title-bar case runs instead.
+        #[cfg(not(catalyst))]
         tests.extend(safe_area::trials());
+        #[cfg(catalyst)]
+        tests.extend(safe_area::catalyst_trials());
         tests.extend(offset::trials());
     }
     tests.extend(migration::trials());
@@ -5340,6 +5346,77 @@ mod safe_area {
         .into_iter()
         .flatten()
         .collect()
+    }
+
+    /// The Catalyst `safe_area::` trials — a Catalyst window's own
+    /// safe-area shape rather than the iPhone container bands.
+    #[cfg(catalyst)]
+    pub fn catalyst_trials() -> Vec<libtest_mimic::Trial> {
+        vec![t(
+            "a_catalyst_window_reports_its_titlebar_band",
+            a_catalyst_window_reports_its_titlebar_band,
+        )]
+    }
+
+    /// A Catalyst window carries no device container bands — the notch
+    /// and home indicator do not exist there — so the suite's `mount`
+    /// precondition can never hold (#3556). The band a Catalyst window
+    /// does carry is its title bar, docked by frame rather than
+    /// `safeAreaInsets`: the navigation bar covers the window top and
+    /// the content starts at the bar's bottom edge, reaching the
+    /// window's own bottom edge with no band reserved.
+    #[cfg(catalyst)]
+    fn a_catalyst_window_reports_its_titlebar_band() {
+        let env = render_environment();
+        let mount = mount_uikit(
+            mtm(),
+            AnyView::new(NavigationView::new(
+                "Home",
+                vstack((card("content"), spacer()))
+                    .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
+            )),
+            &env,
+        );
+        let bar_mounted = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            find_view::<UINavigationBar>(&mount.host).is_some()
+        });
+        assert!(bar_mounted, "the page must mount its navigation bar");
+        let bar = find_view::<UINavigationBar>(&mount.host).unwrap();
+        let bar_frame = window_frame(&bar);
+        let bar_bottom = bar_frame.origin.y + bar_frame.size.height;
+        let insets = mount.host.safeAreaInsets();
+        assert!(
+            insets.top == 0.0 && insets.bottom == 0.0 && insets.left == 0.0 && insets.right == 0.0,
+            "a Catalyst window reports no device container bands: {insets:?}"
+        );
+        assert!(
+            bar_frame.origin.y <= TOLERANCE,
+            "the title bar docks at the window top: {bar_frame:?}"
+        );
+        // The content's host is the sibling of the bar inside the
+        // root container; it must start at the bar's bottom edge and
+        // reach the window bottom — the band is paid by frame alone.
+        let container = view::subviews(&mount.host)
+            .into_iter()
+            .next()
+            .expect("the window hosts the page");
+        let content = view::subviews(&container)
+            .into_iter()
+            .find(|sub| sub.downcast_ref::<UINavigationBar>().is_none())
+            .expect("the bar has a content sibling");
+        let content_frame = window_frame(&content);
+        assert!(
+            (content_frame.origin.y - bar_bottom).abs() <= TOLERANCE,
+            "the content starts at the title bar's bottom edge: {content_frame:?} vs {bar_bottom}"
+        );
+        assert!(
+            (content_frame.origin.y + content_frame.size.height
+                - mount.window.bounds().size.height)
+                .abs()
+                <= TOLERANCE,
+            "the content reaches the window bottom: {content_frame:?}"
+        );
     }
 
     /// The keyboard band's height — the layout-spec's worked examples
