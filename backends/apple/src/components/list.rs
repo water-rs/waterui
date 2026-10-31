@@ -2423,7 +2423,7 @@ fn wire_controller(
         #[cfg(target_os = "ios")]
         let target = state
             .borrow()
-            .display_index_of(DisplayRow::Live(request.target().clone()))
+            .display_index_of(DisplayRow::Live(*request.target()))
             .map(|(section, row)| IndexPath { section, row });
         #[cfg(target_os = "macos")]
         let target = state

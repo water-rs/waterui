@@ -399,7 +399,7 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
         request.target().x.is_finite() && request.target().y.is_finite(),
         "WaterUI ScrollView target must contain finite coordinates"
     );
-    let offset = clamped_offset(scroll, request.target().clone());
+    let offset = clamped_offset(scroll, *request.target());
     match request.animation() {
         None => scroll.set_content_offset(offset, false),
         Some(Animation::Default) => scroll.set_content_offset(offset, true),
