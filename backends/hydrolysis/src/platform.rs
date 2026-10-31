@@ -2313,6 +2313,9 @@ mod macos_display_link;
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
 mod macos_display_moves;
 
+#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+mod macos_blur_behind;
+
 #[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
 pub mod native_menu_bar;
 
@@ -3290,26 +3293,14 @@ mod winit_impl {
                 }));
         }
 
-        /// The `AppKit` half of `set_blur_behind`: while the window asks, an
-        /// `NSVisualEffectView` blending behind the window sits in the
-        /// content view's superview directly beneath the content view; when
-        /// it stops, the view is removed and dropped.
-        /// `underWindowBackground` is the material for both behind-window
-        /// levels — Hydrolysis's own tint, cleared to under the content,
-        /// supplies the level's colour, so the effect view only needs to
-        /// blur.
-        ///
-        /// Beneath means beneath: a subview of the content view draws above
-        /// the engine's presentation layers, so the effect view goes in as
-        /// a sibling ordered below the content view instead.
+        /// The `AppKit` half of `set_blur_behind`: while the window asks, the
+        /// effect view [`macos_blur_behind`](super::macos_blur_behind)
+        /// installs blends behind the window from the bottom of the content
+        /// view; when it stops, the view is removed and dropped.
         #[cfg(target_os = "macos")]
         fn macos_apply_blur_behind(&mut self, blur: bool) {
             use objc2::MainThreadMarker;
-            use objc2_app_kit::{
-                NSAutoresizingMaskOptions, NSView, NSVisualEffectBlendingMode,
-                NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-                NSWindowOrderingMode,
-            };
+            use objc2_app_kit::NSView;
 
             if !blur {
                 if let Some(effect_view) = self.blur_effect_view.take() {
@@ -3320,44 +3311,21 @@ mod winit_impl {
             if self.blur_effect_view.is_some() {
                 return;
             }
-            let content_view = {
-                let handle = self
-                    .window
-                    .window_handle()
-                    .expect("Hydrolysis macOS window must expose an AppKit handle");
-                let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-                    panic!("Hydrolysis macOS window returned a non-AppKit handle");
-                };
-                // SAFETY: winit hands out the window's live `NSView` pointer —
-                // the content view — and the borrow does not outlive the
-                // window handle it came from. AppKit calls run on the main
-                // thread, as every window method on this host does.
-                unsafe { appkit.ns_view.cast::<NSView>().as_ref() }
+            let handle = self
+                .window
+                .window_handle()
+                .expect("Hydrolysis macOS window must expose an AppKit handle");
+            let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+                panic!("Hydrolysis macOS window returned a non-AppKit handle");
             };
-            // SAFETY: the view is alive in its window on the AppKit main
-            // thread.
-            let parent = unsafe { content_view.superview() }
-                .expect("a mapped window's content view has the frame view as its superview");
+            // SAFETY: winit hands out the window's live `NSView` pointer —
+            // the content view — and the borrow does not outlive the window
+            // handle it came from. AppKit calls run on the main thread, as
+            // every window method on this host does.
+            let content_view = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
             let mtm = MainThreadMarker::new()
                 .expect("Hydrolysis macOS blur-behind must run on the AppKit main thread");
-            let effect_view = NSVisualEffectView::new(mtm);
-            effect_view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-            effect_view.setState(NSVisualEffectState::Active);
-            effect_view.setMaterial(NSVisualEffectMaterial::UnderWindowBackground);
-            effect_view.setFrame(content_view.frame());
-            effect_view.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewWidthSizable
-                    | NSAutoresizingMaskOptions::ViewHeightSizable,
-            );
-            // Ordered below the content view itself, so the presentation
-            // layers it hosts draw the level's tint and the content above
-            // the blur.
-            parent.addSubview_positioned_relativeTo(
-                &effect_view,
-                NSWindowOrderingMode::Below,
-                Some(content_view),
-            );
-            self.blur_effect_view = Some(effect_view);
+            self.blur_effect_view = Some(super::macos_blur_behind::install(content_view, mtm));
         }
 
         /// Pushes the requested `WindowState` to the window server. Shared

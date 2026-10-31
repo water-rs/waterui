@@ -5,6 +5,8 @@
 //!
 //! ```text
 //! host view
+//! ├─ host subviews                 present when the engine attached, or
+//! │                                added at the bottom later (a backdrop)
 //! ├─ probes view                   layer-hosting, pending displays inside
 //! ├─ part 0 view                   layer-hosting, flipped, surface in points
 //! │  └─ part 0: CAMetalLayer     engine content below the first plane
@@ -697,8 +699,8 @@ impl Parent {
                 other => panic!("expected an AppKit view, found {other:?}"),
             };
         // The engine-owned stand-in for the host's layer: inside the
-        // bottommost subview — a layer-hosting view — pending display
-        // layers park in the committed hierarchy `readyForDisplay`
+        // engine's bottommost subview — a layer-hosting view — pending
+        // display layers park in the committed hierarchy `readyForDisplay`
         // requires, while the host view's own layer stays AppKit's.
         #[cfg(target_os = "macos")]
         let (flipped, probes_layer, probes_view) = {
@@ -711,12 +713,13 @@ impl Parent {
             )));
             let view = part_view(mtm, &layer);
             view.setFrame(CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0)));
-            // Bottommost: parked probes draw nothing and take no hits.
-            host_view.addSubview_positioned_relativeTo(
-                &view,
-                objc2_app_kit::NSWindowOrderingMode::Below,
-                None,
-            );
+            // The bottom of the engine's stack, which every engine view is
+            // ordered above: parked probes draw nothing and take no hits.
+            // The stack starts above whatever the host view already holds,
+            // so a host subview meant to sit beneath the engine — a window
+            // backdrop — stays beneath it whether the host adds it at the
+            // bottom of the host view before or after the engine attaches.
+            host_view.addSubview(&view);
             (flipped, layer, view)
         };
         #[cfg(not(target_os = "macos"))]
@@ -882,14 +885,14 @@ type Part = Retained<CAMetalLayer>;
 /// destruction, is confined to this main-thread scene.
 struct LayerScene {
     _window: Box<dyn wgpu::WindowHandle>,
-    /// The probes layer: the bottommost layer-hosting view's layer,
+    /// The probes layer: the engine's bottommost layer-hosting view's layer,
     /// where a candidate's pending display parks inside the committed
     /// hierarchy `readyForDisplay` requires. The host view's own layer
     /// is `AppKit`'s — the engine never adds sublayers to it.
     #[cfg(target_os = "macos")]
     host: Retained<CALayer>,
-    /// The layer-hosting view owning `host`, bottommost subview of
-    /// `host_view`.
+    /// The layer-hosting view owning `host`, the engine's bottommost
+    /// subview of `host_view`.
     #[cfg(target_os = "macos")]
     probes: Retained<NSView>,
     /// Whether the host view's layer tree is y-up — engine layers under
@@ -2031,10 +2034,10 @@ impl LayerScene {
     /// Paint order is subview order: each top-level element — a part's
     /// or a plane's outermost view — sits in `host_view`'s `subviews` at
     /// its paint index, above the element before it. The probes view,
-    /// added first, stays bottommost. A steady frame writes nothing to
-    /// the hierarchy, and a reorder moves the part and frame-plane views,
-    /// which hold no responder state, around the hosted planes' views, so
-    /// a hosted view keeps its first-responder state
+    /// added first, stays the engine's bottommost. A steady frame writes
+    /// nothing to the hierarchy, and a reorder moves the part and
+    /// frame-plane views, which hold no responder state, around the hosted
+    /// planes' views, so a hosted view keeps its first-responder state
     /// ([`reconcile_view_order`]).
     #[cfg(target_os = "macos")]
     fn order(&mut self, points: CGRect, scale: f64, parts: usize) {
