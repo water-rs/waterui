@@ -30,4 +30,4 @@ objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
 objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "UIScreen", "UIView", "UIWindow"] }
 
 [dev-dependencies]
-wgpu = "30.0.1"
+wgpu.workspace = true

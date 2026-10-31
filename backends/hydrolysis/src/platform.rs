@@ -2564,21 +2564,16 @@ const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
 
 /// The wgpu backend masks Hydrolysis probes for an adapter, in order.
 ///
-/// `WGPU_BACKEND` is an absolute override — its mask is the only tier probed.
-/// Without it, `PRIMARY` (Vulkan, Metal, DX12, browser WebGPU) probes first and
-/// `GL` follows only when no primary adapter is acceptable, so wgpu
-/// instantiates the GL backend's EGL driver stack only on hosts that need it —
-/// a headless CI box where Mesa llvmpipe supplies a GL adapter —
-/// never alongside a Vulkan adapter it would sit idle next to.
+/// Android and Linux default to Vulkan. GLES is available only with `gles`.
+/// Other native hosts probe primary backends before GL. `WGPU_BACKEND` selects
+/// from the backends enabled by the build.
 #[cfg(not(target_arch = "wasm32"))]
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
 #[cfg(hydrolysis_gpu_painter)]
 fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
+    let enabled = cherenkov_gpu::GpuConfig::default().backends;
     match wgpu::Backends::from_env() {
-        Some(backends) => vec![backends],
+        Some(backends) => vec![backends & enabled],
+        None if enabled == wgpu::Backends::VULKAN => vec![enabled],
         None => vec![wgpu::Backends::PRIMARY, wgpu::Backends::GL],
     }
 }

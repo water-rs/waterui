@@ -354,7 +354,7 @@ erased-serde = { version = "0.4.10", default-features = false, features = ["allo
 # 30, the exact minor `cherenkov-gpu` builds against: an application can link
 # only one wgpu, and every `wgpu` type that crosses between the engine and a
 # `GpuContent` producer must be one type.
-wgpu = "30.0.1"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl", "webgpu"] }
 parley = { version = "0.12", default-features = false }
 kurbo = "0.13"
 skrifa = "0.48.0"
@@ -380,7 +380,7 @@ quick-xml = "0.42"
 mathcat = { version = "0.7.5", features = ["include-zip"] }
 toml = "1.1.8"
 lyon = "1.0"
-wgpu-hal = { version = "30.0.1", features = ["gles", "metal"] }
+wgpu-hal = { version = "30.0.1", default-features = false, features = ["metal"] }
 # Must match the `glow` version wgpu-hal links against, or GLES handles from
 # `wgpu::hal::gles` fail to unify with locally created ones.
 # Tracks whatever `wgpu-hal` links, not the newest release: the GTK backend
@@ -450,6 +450,8 @@ locale-list = ["waterui-internal/locale-list", "waterui-dylib?/locale-list"]
 # it to cross-compile a lean WaterUI app for embedded targets without the GPU
 # stack.
 gpu = ["effects", "waterui-internal/gpu", "waterui-dylib?/gpu"]
+# Native GLES is opt-in; Android and Linux default to Vulkan.
+gles = ["gpu", "waterui-internal/gles", "waterui-dylib?/gles"]
 # Filters on views and their portable description, without the GPU stack.
 # Implied by `gpu`.
 effects = ["waterui-internal/effects", "waterui-dylib?/effects"]

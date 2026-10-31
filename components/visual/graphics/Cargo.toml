@@ -48,6 +48,8 @@ gpu = [
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps.
 cpu = ["cherenkov", "dep:cherenkov-cpu", "dep:image"]
+# Include GLES and the compact WGSL artifacts it consumes only on request.
+gles = ["gpu", "wgpu/gles", "cherenkov-gpu/gles", "filtrate/gles", "shaderloom/gles", "wgpu-external-frame/gles"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }

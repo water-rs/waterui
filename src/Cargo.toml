@@ -129,6 +129,7 @@ effects = ["waterui-graphics/effects"]
 # waterui-svg). Default-on so every existing consumer is unaffected.
 # Disabling it lets a WaterUI app cross-compile lean for embedded targets
 # without the GPU stack.
+gles = ["gpu", "waterui-graphics/gles"]
 gpu = [
     "effects",
     "waterui-graphics/gpu",
