@@ -295,7 +295,10 @@ fn bind_params<'s>(
                 })?;
                 composed = composed.constant(param.name(), value);
             }
-            ParamSource::Param(offset) => {
+            // A length binds the same flattened parameter as `Param`; the
+            // point-to-pixel scaling happens on the values the encode sees,
+            // upstream of this slot.
+            ParamSource::Param(offset) | ParamSource::Length(offset) => {
                 let first = stage.param_base + offset;
                 if first + components > param_count {
                     return Err(mismatch(

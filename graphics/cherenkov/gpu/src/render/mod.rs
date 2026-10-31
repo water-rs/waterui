@@ -8951,7 +8951,8 @@ impl GpuRenderer {
     #[expect(
         clippy::too_many_lines,
         clippy::cast_precision_loss,
-        reason = "pixel sizes are well within f32"
+        clippy::cast_possible_truncation,
+        reason = "pixel sizes and the validated display scale fit f32"
     )]
     fn encode_surface(
         &mut self,
@@ -10531,6 +10532,7 @@ impl GpuRenderer {
                         cache: &self.pipeline_cache,
                         target: capture,
                         size: (pass.region[2], pass.region[3]),
+                        length_scale: surf.display.scale as f32,
                         encoded: convert,
                     },
                     timing,
