@@ -419,6 +419,47 @@ struct RuntimeInner {
     /// state it was waiting on.
     #[cfg(not(target_arch = "wasm32"))]
     published: event_listener::Event,
+    /// Outstanding [`GpuRuntime::hold_rebuild_for_testing`] holds with the
+    /// condition the rebuild thread waits on: while the count is nonzero a
+    /// finished rebuild parks before publishing its fresh context, so a
+    /// test can order a frame against the publication.
+    #[cfg(not(target_arch = "wasm32"))]
+    rebuild_holds: (Mutex<usize>, std::sync::Condvar),
+}
+
+/// A testing hold on a [`GpuRuntime`] context rebuild.
+///
+/// While the guard lives, a device-loss rebuild that finishes waits before
+/// publishing its fresh context: `context_after` waiters stay parked and
+/// frames keep observing the lost context. Dropping the guard releases the
+/// hold; the rebuild publishes and the parked waits wake.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct RebuildHold {
+    inner: Shared<RuntimeInner>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl fmt::Debug for RebuildHold {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RebuildHold")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for RebuildHold {
+    fn drop(&mut self) {
+        let (holds, released) = &self.inner.rebuild_holds;
+        let mut holds = holds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *holds -= 1;
+        if *holds == 0 {
+            drop(holds);
+            released.notify_all();
+        }
+    }
 }
 
 impl fmt::Debug for GpuRuntime {
@@ -457,6 +498,8 @@ impl GpuRuntime {
             rebuild_exhausted: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             published: event_listener::Event::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            rebuild_holds: (Mutex::new(0), std::sync::Condvar::new()),
         });
         #[cfg(not(target_arch = "wasm32"))]
         Self::arm_rebuild_wakeup(&inner);
@@ -593,6 +636,27 @@ impl GpuRuntime {
         }
     }
 
+    /// Holds the next context publication until the returned guard drops.
+    ///
+    /// A device-loss rebuild still runs its driver work and finishes
+    /// installing its wakeup, but it waits on this hold before swapping the
+    /// fresh context in: `context()` keeps answering the lost context and
+    /// `context_after` waiters stay parked. Use it to order a frame against
+    /// the publication deterministically.
+    #[doc(hidden)]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn hold_rebuild_for_testing(&self) -> RebuildHold {
+        *self
+            .inner
+            .rebuild_holds
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        RebuildHold {
+            inner: Shared::clone(&self.inner),
+        }
+    }
+
     /// Spawns the context rebuild, once per device loss.
     ///
     /// `request_adapter`/`request_device` are driver calls that take tens of
@@ -674,6 +738,18 @@ impl GpuRuntime {
                             "GPU device was lost; recreated the runtime context"
                         );
                         Self::install_rebuild_wakeup(&fresh.device_loss(), &worker);
+                        // A testing hold gates the publication: the fresh
+                        // context stays uninstalled while a test orders a
+                        // frame against the rebuild.
+                        let (holds, released) = &worker.rebuild_holds;
+                        let holds = holds
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        drop(
+                            released
+                                .wait_while(holds, |holds| *holds != 0)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        );
                         // Only this thread replaces the slot: `rebuild_in_flight`
                         // stays set until the store below, so no second writer
                         // can interleave.
