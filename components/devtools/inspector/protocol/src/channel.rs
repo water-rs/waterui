@@ -44,6 +44,10 @@ impl ChannelSet {
 /// Used where a single channel must be named — reporting a drop, for instance —
 /// rather than a set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum Channel {
     /// Per-frame render timings.
     Frames,

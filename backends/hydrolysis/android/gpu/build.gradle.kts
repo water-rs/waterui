@@ -1,10 +1,10 @@
 plugins {
     id("com.android.library")
+    `maven-publish`
 }
 
 android {
     namespace = "dev.waterui.hydrolysis.gpu"
-    compileSdk = 36
 
     defaultConfig {
         minSdk = 31

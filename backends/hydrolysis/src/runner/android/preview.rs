@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use jni::JNIEnv;
+use jni::EnvUnowned;
 use jni::objects::{JClass, JObject};
 use jni::sys::jint;
 
@@ -34,9 +34,9 @@ pub fn register_preview(entry: fn()) {
 /// points that changed underneath it — the host sends the schema it speaks
 /// and is rejected here when it differs.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_preview_PreviewBridge_nativeInit(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_preview_PreviewBridge_nativeInit<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     schema: jint,
 ) -> jint {
     guard_val(&mut env, 0, |env| {
@@ -55,10 +55,12 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_preview_PreviewBridge_nativeI
 /// context. A panic inside the entry becomes an `IllegalStateException`
 /// through [`guard`].
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_preview_PreviewBridge_nativeRunPreview(
-    mut env: JNIEnv,
-    _class: JClass,
-    context: JObject,
+pub extern "system" fn Java_dev_waterui_hydrolysis_preview_PreviewBridge_nativeRunPreview<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    context: JObject<'local>,
 ) {
     guard(&mut env, |env| {
         let vm = env.get_java_vm()?;

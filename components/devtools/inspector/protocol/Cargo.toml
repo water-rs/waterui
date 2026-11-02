@@ -19,6 +19,8 @@ bitflags = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 futures-lite = "2.6"
 serde_json.workspace = true
+dirs.workspace = true
+tempfile = "3.27"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

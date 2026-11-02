@@ -79,7 +79,7 @@ pub fn publish_if_pending(session: &mut super::host::AndroidSession) {
         .runtime
         .renderer
         .take_merged_accessibility_tree_update(std::iter::empty::<
-            &mut crate::renderer::SemanticCore,
+            &mut crate::renderer::SemanticCore<super::AndroidTextEngine>,
         >())
     else {
         return;
@@ -241,6 +241,11 @@ pub fn perform_action(
         .renderer
         .handle_accessibility_action(request, &session.env);
     if handled {
+        // A handled action changed session state and is owed the frame that
+        // presents it, whatever cell marks the change happened to leave —
+        // the request every runner's accessibility dispatch makes.
+        session.runtime.request_refresh();
+        session.runtime.request_redraw();
         // A focus the action moved lands in the mirror now — the connection
         // rebinds while the screen reader's announcement is still live,
         // not at the next vsync.

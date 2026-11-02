@@ -67,6 +67,10 @@ impl Default for ColumnWidth {
 /// Visible columns requested from the native adaptive split container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each column visibility variant by variant; a new column visibility must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NavigationSplitColumnVisibility {
     /// The platform chooses visibility from the current window configuration.
     #[default]
@@ -87,6 +91,10 @@ nami::impl_constant!(NavigationSplitColumnVisibility);
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each split style variant by variant; a new split style must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NativeNavigationSplitStyle {
     /// Platform default adaptive presentation.
     Automatic = 0,

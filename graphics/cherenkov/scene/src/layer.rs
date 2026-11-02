@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{BackdropEffectSpec, BlendMode, BlendSpace, Draw, Paint, ResourceHash, Shape};
-use kurbo::{Affine, Rect, Vec2};
+use kurbo::{Affine, Rect, Size, Vec2};
 
 /// One item in a layer's ordered item list: a child layer, a group of draws
 /// or a draw command.
@@ -53,6 +53,11 @@ pub struct Group {
     /// composites sRGB-encoded values.
     #[serde(default)]
     pub blend_space: BlendSpace,
+    /// A filter applied to the group's isolated content before `opacity`
+    /// and `blend`. It works in the working space whatever `blend_space`
+    /// the members composite in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Box<LayerFilter>>,
 }
 
 impl Group {
@@ -236,6 +241,23 @@ pub enum LayerFilter {
     BoxBlur {
         /// Radius in pixels, rounded.
         radius: f64,
+    },
+    /// Android's edge-weighted overscroll stretch (filtrate's
+    /// `OverscrollStretch`): HWUI's stretch shader
+    /// (`libs/hwui/effects/StretchEffect.cpp`, `stretchShader`), run in a
+    /// frame. Inside the frame each pixel takes the bilinear sample at its
+    /// position remapped per axis by `computeOverscroll`, kept half a pixel
+    /// inside the frame along each of its axes (HWUI's clamped snapshot
+    /// sampler); outside it the pixel is unchanged.
+    OverscrollStretch {
+        /// The frame's own space, `[0, size.width] × [0, size.height]`, to
+        /// surface pixels. Invertible.
+        frame: Affine,
+        /// The frame's extent in its own space.
+        size: Size,
+        /// HWUI's stretch direction per axis: positive pulls the left or
+        /// top edge, negative the right or bottom one.
+        stretch: Vec2,
     },
     /// Blends each pixel's unpremultiplied colour with the sampled straight
     /// texel, mixes by `amount`, and re-premultiplies with the unchanged alpha.

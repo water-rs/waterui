@@ -17,6 +17,37 @@ fn slide(source: &Binding<i32>, index: i32) -> impl Signal<Output = f32> {
         .with(Animation::linear(Duration::from_millis(100)))
 }
 
+#[test]
+fn opacity_requests_normal_refresh_until_the_fade_finishes() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
+    let source = Binding::container(false);
+    let view = || {
+        text("Fade").opacity(
+            source
+                .clone()
+                .map(|visible| if visible { 1.0_f32 } else { 0.0 })
+                .with(Animation::linear(Duration::from_secs(1))),
+        )
+    };
+    capture_root_window(&mut renderer, view(), &env, bounds);
+    assert_eq!(renderer.animation_refresh_range(), None);
+
+    let started = renderer.frame_instant();
+    source.set(true);
+    renderer.set_frame_instant(started + Duration::from_millis(50));
+    capture_root_window(&mut renderer, view(), &env, bounds);
+    assert_eq!(
+        renderer.animation_refresh_range(),
+        Some(cherenkov_record::tree::RATE_SLOW)
+    );
+
+    renderer.set_frame_instant(started + Duration::from_secs(2));
+    capture_root_window(&mut renderer, view(), &env, bounds);
+    assert_eq!(renderer.animation_refresh_range(), None);
+}
+
 /// Picker `index`'s selection out of the pair in `source`. Every call mints
 /// its mapping at the same call site.
 fn selection(source: &Binding<[i32; 2]>, index: usize) -> Binding<i32> {
@@ -28,7 +59,7 @@ fn selection(source: &Binding<[i32; 2]>, index: usize) -> Binding<i32> {
 }
 
 /// The leading edge of every interactive target, top to bottom.
-fn target_leading_edges(renderer: &HydrolysisRenderer) -> Vec<f64> {
+fn target_leading_edges<E: crate::text::TextEngine>(renderer: &HydrolysisRenderer<E>) -> Vec<f64> {
     let mut targets = renderer
         .hit_test
         .pointer_targets
@@ -70,6 +101,10 @@ fn offsets_sharing_a_signal_identity_slide_independently() {
     renderer.set_frame_instant(started + Duration::from_millis(50));
     capture_root_window(&mut renderer, view(), &env, bounds);
     let mid = target_leading_edges(&renderer);
+    assert_eq!(
+        renderer.animation_refresh_range(),
+        Some(cherenkov_record::tree::RATE_FAST)
+    );
     approx::assert_relative_eq!(mid[0], rest[0]);
     assert!(
         mid[1] > rest[1] && mid[1] < rest[1] + 48.0,

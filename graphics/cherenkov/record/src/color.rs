@@ -1,6 +1,7 @@
 //! Colour: typed colour spaces, and the linear Display P3 working space.
 
 use color::{AlphaColor, ColorSpaceTag, DynamicColor};
+use filtrate_core::space::{P3_TO_SRGB, SRGB_TO_P3, transform};
 use nami_core::Signal;
 use nami_core::watcher::Context;
 
@@ -13,38 +14,20 @@ pub use color::{ColorSpace, DisplayP3, LinearSrgb, Rec2020, Srgb};
 #[derive(Clone, Copy, Debug)]
 pub struct LinearDisplayP3;
 
-// The Display P3 primaries relative to linear sRGB, as the `color` crate uses
-// them for `DisplayP3`, so both crates agree on the gamut.
-const LINEAR_DISPLAY_P3_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
-    [1.224_940_2, -0.224_940_18, 0.0],
-    [-0.042_056_955, 1.042_056_9, 0.0],
-    [-0.019_637_555, -0.078_636_04, 1.098_273_6],
-];
-const LINEAR_SRGB_TO_LINEAR_DISPLAY_P3: [[f32; 3]; 3] = [
-    [0.822_461_96, 0.177_538_04, 0.0],
-    [0.033_194_2, 0.966_805_8, 0.0],
-    [0.017_082_632, 0.072_397_44, 0.910_519_96],
-];
-
-const fn mat_vec(m: &[[f32; 3]; 3], [x, y, z]: [f32; 3]) -> [f32; 3] {
-    [
-        m[0][0] * x + m[0][1] * y + m[0][2] * z,
-        m[1][0] * x + m[1][1] * y + m[1][2] * z,
-        m[2][0] * x + m[2][1] * y + m[2][2] * z,
-    ]
-}
-
+// The matrices between linear Display P3 and linear sRGB are the engine's
+// one definition, filtrate-core's `space`; they round the same derivation
+// the `color` crate's `DisplayP3` uses, so both crates agree on the gamut.
 impl ColorSpace for LinearDisplayP3 {
     const IS_LINEAR: bool = true;
 
     const WHITE_COMPONENTS: [f32; 3] = [1., 1., 1.];
 
     fn to_linear_srgb(src: [f32; 3]) -> [f32; 3] {
-        mat_vec(&LINEAR_DISPLAY_P3_TO_LINEAR_SRGB, src)
+        transform(&P3_TO_SRGB, src)
     }
 
     fn from_linear_srgb(src: [f32; 3]) -> [f32; 3] {
-        mat_vec(&LINEAR_SRGB_TO_LINEAR_DISPLAY_P3, src)
+        transform(&SRGB_TO_P3, src)
     }
 
     fn clip([r, g, b]: [f32; 3]) -> [f32; 3] {

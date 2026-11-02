@@ -19,6 +19,10 @@ use waterui_core::layout::{LayoutDirection, Point, Rect, Size};
 /// layout direction — so it is the type a backend consumes when it positions
 /// or animates the overlay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed set of the four physical sides"
+)]
 pub enum PhysicalEdge {
     /// Above the anchor.
     Top,
@@ -56,12 +60,28 @@ impl PhysicalEdge {
 /// backends that draw an arrow or animate from the anchor need it to know
 /// which side the overlay actually landed on.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct AnchoredOverlayPlacement {
     /// The overlay's frame in window space.
-    pub frame: Rect,
+    frame: Rect,
     /// The physical edge of the anchor the overlay was placed against, after
     /// flipping.
-    pub edge: PhysicalEdge,
+    edge: PhysicalEdge,
+}
+
+impl AnchoredOverlayPlacement {
+    /// The overlay's frame in window space.
+    #[must_use]
+    pub const fn frame(&self) -> Rect {
+        self.frame
+    }
+
+    /// The physical edge of the anchor the overlay was placed against, after
+    /// flipping.
+    #[must_use]
+    pub const fn edge(&self) -> PhysicalEdge {
+        self.edge
+    }
 }
 
 /// Places an overlay measured at `overlay` against `anchor` inside `window`,
@@ -103,7 +123,7 @@ pub fn place_anchored_overlay(
     let edge = resolve_edge(anchor, window, overlay, &placement, direction);
     let mut origin = origin_at(anchor, edge, overlay, &placement, direction);
 
-    if let Clamp::Window { margin } = placement.clamp {
+    if let Clamp::Window { margin } = placement.get_clamp() {
         origin = clamp_origin(origin, window, overlay, margin, direction);
     }
 
@@ -176,19 +196,26 @@ fn resolve_edge(
     placement: &AnchorPlacement,
     direction: LayoutDirection,
 ) -> PhysicalEdge {
-    let preferred = physical_edge(placement.edge, direction);
-    let margin = match placement.clamp {
+    let preferred = physical_edge(placement.get_edge(), direction);
+    let margin = match placement.get_clamp() {
         Clamp::Window { margin } => margin,
         Clamp::Off => 0.0,
     };
-    if !placement.flip
-        || fits_on(anchor, window, overlay, preferred, placement.gap, margin)
+    if !placement.get_flip()
+        || fits_on(
+            anchor,
+            window,
+            overlay,
+            preferred,
+            placement.get_gap(),
+            margin,
+        )
         || !fits_on(
             anchor,
             window,
             overlay,
             preferred.opposite(),
-            placement.gap,
+            placement.get_gap(),
             margin,
         )
     {
@@ -206,7 +233,7 @@ fn origin_at(
     placement: &AnchorPlacement,
     direction: LayoutDirection,
 ) -> Point {
-    let gap = placement.gap;
+    let gap = placement.get_gap();
     if edge.is_horizontal() {
         let y = if edge == PhysicalEdge::Top {
             anchor.min_y() - gap - overlay.height
@@ -214,7 +241,7 @@ fn origin_at(
             anchor.max_y() + gap
         };
         // Start/End along a horizontal edge are the leading/trailing ends.
-        let x = match placement.alignment {
+        let x = match placement.get_alignment() {
             EdgeAlignment::Start if direction.is_right_to_left() => anchor.max_x() - overlay.width,
             EdgeAlignment::Start => anchor.min_x(),
             EdgeAlignment::Center => anchor.mid_x() - overlay.width / 2.0,
@@ -229,7 +256,7 @@ fn origin_at(
             anchor.max_x() + gap
         };
         // Start/End along a vertical edge are the top/bottom ends.
-        let y = match placement.alignment {
+        let y = match placement.get_alignment() {
             EdgeAlignment::Start => anchor.min_y(),
             EdgeAlignment::Center => anchor.mid_y() - overlay.height / 2.0,
             EdgeAlignment::End => anchor.max_y() - overlay.height,
@@ -306,11 +333,7 @@ mod tests {
     }
 
     fn placement(edge: AnchorEdge, alignment: EdgeAlignment) -> AnchorPlacement {
-        AnchorPlacement {
-            edge,
-            alignment,
-            ..AnchorPlacement::default()
-        }
+        AnchorPlacement::default().edge(edge).alignment(alignment)
     }
 
     #[test]
@@ -370,10 +393,7 @@ mod tests {
         let placed = place(
             MIDDLE,
             OVERLAY,
-            AnchorPlacement {
-                gap: 8.0,
-                ..placement(AnchorEdge::Bottom, EdgeAlignment::Center)
-            },
+            placement(AnchorEdge::Bottom, EdgeAlignment::Center).gap(8.0),
         );
         assert_eq!(placed.frame.y(), MIDDLE.max_y() + 8.0);
     }
@@ -515,10 +535,7 @@ mod tests {
         let placed = place(
             top_anchor,
             OVERLAY,
-            AnchorPlacement {
-                flip: false,
-                ..placement(AnchorEdge::Top, EdgeAlignment::Center)
-            },
+            placement(AnchorEdge::Top, EdgeAlignment::Center).flip(false),
         );
         assert_eq!(placed.edge, PhysicalEdge::Top);
     }
@@ -532,10 +549,8 @@ mod tests {
         let placed = place(
             anchor,
             OVERLAY,
-            AnchorPlacement {
-                clamp: Clamp::Window { margin: 2.0 },
-                ..placement(AnchorEdge::Bottom, EdgeAlignment::Center)
-            },
+            placement(AnchorEdge::Bottom, EdgeAlignment::Center)
+                .clamp(Clamp::Window { margin: 2.0 }),
         );
         assert_eq!(placed.edge, PhysicalEdge::Top);
         assert_eq!(placed.frame.max_y(), anchor.min_y());
@@ -548,11 +563,9 @@ mod tests {
             place(
                 anchor,
                 OVERLAY,
-                AnchorPlacement {
-                    flip: false,
-                    clamp: Clamp::Window { margin },
-                    ..placement(AnchorEdge::Trailing, EdgeAlignment::Center)
-                },
+                placement(AnchorEdge::Trailing, EdgeAlignment::Center)
+                    .flip(false)
+                    .clamp(Clamp::Window { margin }),
             )
         };
         // Trailing overflow pushes the overlay back inside the window.
@@ -564,11 +577,9 @@ mod tests {
             place(
                 anchor,
                 OVERLAY,
-                AnchorPlacement {
-                    flip: false,
-                    clamp: Clamp::Window { margin },
-                    ..placement(AnchorEdge::Bottom, EdgeAlignment::End)
-                },
+                placement(AnchorEdge::Bottom, EdgeAlignment::End)
+                    .flip(false)
+                    .clamp(Clamp::Window { margin }),
             )
         };
         // End-aligned at the trailing edge clamps onto the window's x margin.
@@ -583,11 +594,9 @@ mod tests {
         let placed = place(
             at_leading,
             OVERLAY,
-            AnchorPlacement {
-                clamp: Clamp::Window { margin },
-                flip: false,
-                ..placement(AnchorEdge::Bottom, EdgeAlignment::Start)
-            },
+            placement(AnchorEdge::Bottom, EdgeAlignment::Start)
+                .clamp(Clamp::Window { margin })
+                .flip(false),
         );
         assert_eq!(placed.frame.x(), WINDOW.min_x() + margin);
         // Above the top edge clamps to the y margin.
@@ -595,11 +604,9 @@ mod tests {
         let placed = place(
             at_top,
             OVERLAY,
-            AnchorPlacement {
-                clamp: Clamp::Window { margin },
-                flip: false,
-                ..placement(AnchorEdge::Top, EdgeAlignment::Center)
-            },
+            placement(AnchorEdge::Top, EdgeAlignment::Center)
+                .clamp(Clamp::Window { margin })
+                .flip(false),
         );
         assert_eq!(placed.frame.y(), WINDOW.min_y() + margin);
     }
@@ -610,10 +617,8 @@ mod tests {
         let placed = place(
             MIDDLE,
             huge,
-            AnchorPlacement {
-                clamp: Clamp::Window { margin: 4.0 },
-                ..placement(AnchorEdge::Bottom, EdgeAlignment::Center)
-            },
+            placement(AnchorEdge::Bottom, EdgeAlignment::Center)
+                .clamp(Clamp::Window { margin: 4.0 }),
         );
         // Larger than the window minus margins: pinned to leading/top margin.
         assert_eq!(placed.frame.x(), 4.0);
@@ -628,11 +633,9 @@ mod tests {
         let placed = place(
             at_bottom,
             OVERLAY,
-            AnchorPlacement {
-                flip: false,
-                clamp: Clamp::Off,
-                ..placement(AnchorEdge::Bottom, EdgeAlignment::Center)
-            },
+            placement(AnchorEdge::Bottom, EdgeAlignment::Center)
+                .flip(false)
+                .clamp(Clamp::Off),
         );
         // No clamp: the frame is where the edge/alignment math put it.
         assert_eq!(placed.frame.y(), at_bottom.max_y());

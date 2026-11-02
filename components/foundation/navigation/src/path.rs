@@ -9,7 +9,7 @@ use alloc::{rc::Rc, vec::Vec};
 use core::cell::RefCell;
 use core::{any::Any, any::TypeId, fmt, marker::PhantomData};
 
-use nami::collection::{Collection as _, List};
+use nami::{Binding, Signal as _};
 
 /// Internal bound used by heterogeneous destination registration.
 #[doc(hidden)]
@@ -165,7 +165,7 @@ struct RestorationRegistry {
 /// to create an independent copy.
 #[must_use]
 pub struct NavigationPath<R: 'static> {
-    inner: List<R>,
+    inner: Binding<Vec<R>>,
     marker: PhantomData<fn() -> R>,
     #[cfg(feature = "serde")]
     restoration: Rc<RefCell<RestorationRegistry>>,
@@ -201,21 +201,17 @@ impl<R: Clone + PartialEq + 'static> NavigationPath<R> {
 
     /// Appends a route.
     pub fn push(&self, route: R) {
-        self.inner.push(route);
+        self.inner.with_mut(|routes| routes.push(route));
     }
 
     /// Removes and returns the top route.
-    #[expect(
-        clippy::must_use_candidate,
-        reason = "pop is called for its effect; the popped route is a convenience, and requiring `let _ =` at every back action is the wart this signature exists to avoid"
-    )]
     pub fn pop(&self) -> Option<R> {
-        self.inner.pop()
+        self.inner.with_mut(Vec::pop)
     }
 
     /// Atomically replaces the complete path.
     pub fn replace(&self, routes: impl IntoIterator<Item = R>) {
-        let _ = self.inner.replace(routes.into_iter().collect());
+        self.inner.set(routes.into_iter().collect());
     }
 }
 
@@ -223,7 +219,7 @@ impl NavigationPath<ErasedNavigationRoute> {
     /// Creates an empty heterogeneous navigation path.
     pub fn heterogeneous() -> Self {
         Self {
-            inner: List::new(),
+            inner: Binding::container(Vec::new()),
             marker: PhantomData,
             #[cfg(feature = "serde")]
             restoration: Rc::new(RefCell::new(RestorationRegistry::default())),
@@ -236,7 +232,8 @@ impl NavigationPath<ErasedNavigationRoute> {
     where
         R: Clone + PartialEq + 'static,
     {
-        self.inner.push(ErasedNavigationRoute::new(route));
+        self.inner
+            .with_mut(|routes| routes.push(ErasedNavigationRoute::new(route)));
     }
 
     /// Appends a route of any concrete type.
@@ -245,19 +242,14 @@ impl NavigationPath<ErasedNavigationRoute> {
     where
         R: Clone + PartialEq + 'static,
     {
-        self.inner.push(ErasedNavigationRoute::new_with_restoration(
-            route,
-            Rc::clone(&self.restoration),
-        ));
+        let route =
+            ErasedNavigationRoute::new_with_restoration(route, Rc::clone(&self.restoration));
+        self.inner.with_mut(|routes| routes.push(route));
     }
 
     /// Removes the top route, reporting whether one was present.
-    #[expect(
-        clippy::must_use_candidate,
-        reason = "pop is called for its effect; the popped route is a convenience, and requiring `let _ =` at every back action is the wart this signature exists to avoid"
-    )]
     pub fn pop(&self) -> bool {
-        self.inner.pop().is_some()
+        self.inner.with_mut(Vec::pop).is_some()
     }
 
     /// Atomically replaces the path with routes collected by `replacement`.
@@ -268,7 +260,7 @@ impl NavigationPath<ErasedNavigationRoute> {
             restoration: Rc::clone(&self.restoration),
         };
         build(&mut replacement);
-        let _ = self.inner.replace(replacement.routes);
+        self.inner.set(replacement.routes);
     }
 
     #[cfg(feature = "serde")]
@@ -372,7 +364,7 @@ impl<R: Clone + 'static> NavigationPath<R> {
     /// Returns the number of routes in the path.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.inner.with_ref(Vec::len)
     }
 
     /// Removes exactly `count` routes from the top.
@@ -381,8 +373,7 @@ impl<R: Clone + 'static> NavigationPath<R> {
     ///
     /// Panics when `count` exceeds the current path length.
     pub fn pop_n(&self, count: usize) {
-        let routes = self.inner.snapshot();
-        let length = routes.len();
+        let length = self.len();
         assert!(
             count <= length,
             "cannot pop {count} routes from a navigation path of length {length}"
@@ -392,14 +383,12 @@ impl<R: Clone + 'static> NavigationPath<R> {
 
     /// Truncates the path to at most `length` routes.
     pub fn truncate(&self, length: usize) {
-        let mut routes = self.inner.snapshot();
-        routes.truncate(length);
-        let _ = self.inner.replace(routes);
+        self.inner.with_mut(|routes| routes.truncate(length));
     }
 
     /// Removes every route.
     pub fn clear(&self) {
-        let _ = self.inner.replace(Vec::new());
+        self.inner.set(Vec::new());
     }
 
     /// Returns whether the path contains no routes.
@@ -419,13 +408,14 @@ impl<R: Clone + 'static> NavigationPath<R> {
         self.snapshot().into_iter()
     }
 
+    /// Calls `watcher` with the routes after every change; registering
+    /// delivers nothing, so a subscriber reads [`Self::snapshot`] first.
     pub(crate) fn watch(
         &self,
         watcher: impl Fn(Vec<R>) + 'static,
     ) -> impl nami::watcher::WatcherGuard {
-        self.inner.watch(.., move |context, _change| {
-            watcher(context.into_value().to_vec());
-        })
+        self.inner
+            .watch(move |context| watcher(context.into_value()))
     }
 }
 
@@ -438,7 +428,7 @@ impl<R: Clone + PartialEq + 'static> Default for NavigationPath<R> {
 impl<R: Clone + PartialEq + 'static> From<Vec<R>> for NavigationPath<R> {
     fn from(routes: Vec<R>) -> Self {
         Self {
-            inner: List::from(routes),
+            inner: Binding::container(routes),
             marker: PhantomData,
             #[cfg(feature = "serde")]
             restoration: Rc::new(RefCell::new(RestorationRegistry::default())),
@@ -489,7 +479,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for NavigationPathRestoration<'_> {
                 })? {
                     routes.push(route);
                 }
-                let _ = self.path.inner.replace(routes);
+                self.path.inner.set(routes);
                 Ok(())
             }
         }
@@ -644,7 +634,7 @@ mod tests {
 
         path.replace([2, 3, 4]);
 
-        assert_eq!(notifications.get(), 2, "watch includes its initial value");
+        assert_eq!(notifications.get(), 1, "registering delivers nothing");
         assert_eq!(path.snapshot(), vec![2, 3, 4]);
     }
 
@@ -675,7 +665,7 @@ mod tests {
             routes.push(String::from("settings"));
         });
 
-        assert_eq!(notifications.get(), 2, "watch includes its initial value");
+        assert_eq!(notifications.get(), 1, "registering delivers nothing");
         let routes = path.snapshot();
         assert_eq!(routes[0].downcast_ref::<u32>(), Some(&7));
         assert_eq!(

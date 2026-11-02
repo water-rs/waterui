@@ -38,6 +38,13 @@ impl SceneBuilder {
         self
     }
 
+    /// Set the endpoint of the performance harness's root-content scroll sweep.
+    #[must_use]
+    pub const fn scroll_extent(mut self, extent: Vec2) -> Self {
+        self.scene.scroll_extent = Some(extent);
+        self
+    }
+
     /// Set the display headroom the scene asks to be presented at
     /// (`render --present`); `1.0` is the default SDR display.
     #[must_use]

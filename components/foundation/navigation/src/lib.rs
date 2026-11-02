@@ -92,17 +92,50 @@ impl Debug for NavigationView {
 
 /// Reactive policy and lifecycle handlers attached to one destination.
 #[doc(hidden)]
+#[non_exhaustive]
 pub struct NavigationDestinationState {
     /// Whether a user or system initiated pop may begin.
-    pub pop_enabled: Computed<bool>,
+    pop_enabled: Computed<bool>,
     /// Called for a real user/system pop request, including a denied request.
-    pub pop_attempted: Option<BoxedAction>,
+    pop_attempted: Option<BoxedAction>,
     /// Called after the destination becomes active.
-    pub appear: Option<BoxedAction>,
+    appear: Option<BoxedAction>,
     /// Called after the destination ceases to be active.
-    pub disappear: Option<BoxedAction>,
+    disappear: Option<BoxedAction>,
     /// Called only after a completed pop removes the destination.
-    pub pop: Option<BoxedAction>,
+    pop: Option<BoxedAction>,
+}
+
+impl NavigationDestinationState {
+    /// Whether a user or system initiated pop may begin.
+    #[must_use]
+    pub const fn pop_enabled(&self) -> &Computed<bool> {
+        &self.pop_enabled
+    }
+
+    /// Called for a real user/system pop request, including a denied request.
+    #[must_use]
+    pub const fn pop_attempted(&self) -> Option<&BoxedAction> {
+        self.pop_attempted.as_ref()
+    }
+
+    /// Called after the destination becomes active.
+    #[must_use]
+    pub const fn appear(&self) -> Option<&BoxedAction> {
+        self.appear.as_ref()
+    }
+
+    /// Called after the destination ceases to be active.
+    #[must_use]
+    pub const fn disappear(&self) -> Option<&BoxedAction> {
+        self.disappear.as_ref()
+    }
+
+    /// Called only after a completed pop removes the destination.
+    #[must_use]
+    pub const fn pop(&self) -> Option<&BoxedAction> {
+        self.pop.as_ref()
+    }
 }
 
 impl Debug for NavigationDestinationState {
@@ -683,6 +716,10 @@ impl View for NavigationView {
 /// `navigationBarTitleDisplayMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each title display mode variant by variant; a new title display mode must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NavigationTitleDisplayMode {
     /// System decides based on context (large on root, inline when pushed).
     #[default]
@@ -701,6 +738,10 @@ pub enum NavigationTitleDisplayMode {
 /// Semantic placement for one native navigation toolbar item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each toolbar placement variant by variant; a new toolbar placement must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NavigationToolbarPlacement {
     /// Principal title-area content.
     Principal = 0,
@@ -724,11 +765,12 @@ pub enum NavigationToolbarPlacement {
 
 /// One semantic native toolbar item.
 #[must_use]
+#[non_exhaustive]
 pub struct NavigationToolbarItem {
     /// Semantic placement resolved by each platform backend.
-    pub placement: NavigationToolbarPlacement,
+    placement: NavigationToolbarPlacement,
     /// Item content.
-    pub content: AnyView,
+    content: AnyView,
     /// The item's name, when it was declared as a semantic label.
     ///
     /// Kept beside the content rather than only inside it, because the
@@ -738,9 +780,70 @@ pub struct NavigationToolbarItem {
     /// commonly shows the text. Once the label is erased into a view, no
     /// backend can tell the name from the icon, so both travel separately and
     /// each platform draws what its own chrome calls for.
-    pub title: Option<Text>,
+    title: Option<Text>,
     /// The item's icon, when it was declared as a semantic label.
-    pub icon: Option<ToolbarItemIcon>,
+    icon: Option<ToolbarItemIcon>,
+}
+
+impl NavigationToolbarItem {
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(
+        self,
+    ) -> (
+        NavigationToolbarPlacement,
+        AnyView,
+        Option<Text>,
+        Option<ToolbarItemIcon>,
+    ) {
+        (self.placement, self.content, self.title, self.icon)
+    }
+
+    /// Semantic placement resolved by each platform backend.
+    #[must_use]
+    pub const fn placement(&self) -> NavigationToolbarPlacement {
+        self.placement
+    }
+
+    /// Item content.
+    #[must_use]
+    pub const fn content(&self) -> &AnyView {
+        &self.content
+    }
+
+    /// Takes the item content out, leaving an empty view behind.
+    pub fn take_content(&mut self) -> AnyView {
+        core::mem::take(&mut self.content)
+    }
+
+    /// Sets the item content.
+    pub fn set_content(&mut self, content: AnyView) {
+        self.content = content;
+    }
+
+    /// Sets the item's icon.
+    pub fn set_icon(&mut self, icon: Option<ToolbarItemIcon>) {
+        self.icon = icon;
+    }
+
+    /// The item's name, when it was declared as a semantic label.
+    ///
+    /// Kept beside the content rather than only inside it, because the
+    /// platforms disagree about how much of a toolbar action to draw: a Mac
+    /// shows the icon alone and keeps the name for the overflow menu, its
+    /// tooltip and assistive technology, while a phone's navigation bar
+    /// commonly shows the text. Once the label is erased into a view, no
+    /// backend can tell the name from the icon, so both travel separately and
+    /// each platform draws what its own chrome calls for.
+    #[must_use]
+    pub const fn title(&self) -> Option<&Text> {
+        self.title.as_ref()
+    }
+
+    /// The item's icon, when it was declared as a semantic label.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&ToolbarItemIcon> {
+        self.icon.as_ref()
+    }
 }
 
 /// A toolbar item's icon, kept apart from its name.
@@ -748,6 +851,10 @@ pub struct NavigationToolbarItem {
 /// The two forms are not interchangeable: a platform that recognizes the symbol
 /// draws it at whatever size and weight its chrome calls for, while a view has
 /// to be rendered into an image at a chosen size.
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each toolbar icon source variant by variant; a new toolbar icon source must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ToolbarItemIcon {
     /// A symbol the platform knows by name.
     System(SystemIcon),
@@ -818,9 +925,28 @@ impl NavigationToolbarItem {
 
 /// Native toolbar contents attached to one navigation destination.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct NavigationToolbar {
     /// Semantic toolbar items in declaration order.
-    pub items: Vec<NavigationToolbarItem>,
+    items: Vec<NavigationToolbarItem>,
+}
+
+impl NavigationToolbar {
+    /// Semantic toolbar items in declaration order.
+    #[must_use]
+    pub const fn items(&self) -> &[NavigationToolbarItem] {
+        self.items.as_slice()
+    }
+
+    /// The items, for in-place edits.
+    pub const fn items_mut(&mut self) -> &mut [NavigationToolbarItem] {
+        self.items.as_mut_slice()
+    }
+
+    /// Takes the items out of the toolbar, leaving it empty.
+    pub fn take_items(&mut self) -> Vec<NavigationToolbarItem> {
+        core::mem::take(&mut self.items)
+    }
 }
 
 impl NavigationToolbar {
@@ -895,6 +1021,7 @@ impl MetadataKey for NavigationLinkHint {}
 /// both states in one value is what keeps "colored but unresolved" from being
 /// representable, which is the state backends used to have to panic on.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum BarColor {
     /// An author-specified color that has not been resolved yet.
     Unresolved(Computed<Color>),
@@ -933,21 +1060,51 @@ impl BarColor {
 /// the destination view when the link is activated.
 #[must_use]
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NavigationLink<Label, Content> {
     /// The label view displayed for this link
-    pub label: Label,
+    label: Label,
     /// A function that creates the destination view when the link is activated
-    pub content: Content,
+    content: Content,
+}
+
+impl<Label, Content> NavigationLink<Label, Content> {
+    /// The label view displayed for this link
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// A function that creates the destination view when the link is activated
+    #[must_use]
+    pub const fn content(&self) -> &Content {
+        &self.content
+    }
 }
 
 /// A typed navigation link that pushes a route value onto a path-backed stack.
 #[must_use]
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NavigationValueLink<Label, T> {
     /// The label view displayed for this link.
-    pub label: Label,
+    label: Label,
     /// The route value pushed when the link is activated.
-    pub value: T,
+    value: T,
+}
+
+impl<Label, T> NavigationValueLink<Label, T> {
+    /// The label view displayed for this link.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The route value pushed when the link is activated.
+    #[must_use]
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
 }
 
 impl<Label, Content> NavigationLink<Label, Content>
@@ -1092,6 +1249,18 @@ impl<T, F> NavigationStack<T, F> {
     }
 
     /// Sets the transition style for push/pop operations.
+    ///
+    /// This is the default for every page of the stack. A page that declares
+    /// its own arrival replaces it for that page's push and pop, in this
+    /// order of precedence:
+    ///
+    /// 1. A `.transition(...)` on the page's content root: its insertion
+    ///    runs when the page is pushed and its removal when it is popped,
+    ///    while the page beneath stays in place.
+    /// 2. [`NavigationView::transition`] on the destination.
+    /// 3. This stack transition.
+    ///
+    /// A destination may declare 1 or 2, not both.
     pub fn transition(mut self, transition: impl NavigationTransition) -> Self {
         self.transition = AnyNavigationTransition::new(transition);
         self
@@ -1191,13 +1360,13 @@ fn subscribe_navigation_path<R: Clone + 'static>(
     same: impl Fn(&R, &R) -> bool + 'static,
     build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
 ) -> impl nami::watcher::WatcherGuard {
-    let current_path = Rc::new(RefCell::new(Vec::new()));
+    let current_path = RefCell::new(Vec::new());
     // A path write issued while a reconcile still runs lands here
     // re-entrantly; queue it and let the dispatch in flight drain it once the
     // current reconcile returns, keeping snapshots in order.
     let pending = SerialDispatch::new();
     let receiver = receiver.clone();
-    path.watch(move |next_path| {
+    let reconcile = Rc::new(move |next_path: Vec<R>| {
         pending.deliver(next_path, |next_path| {
             reconcile_navigation_path(
                 &receiver,
@@ -1207,7 +1376,11 @@ fn subscribe_navigation_path<R: Clone + 'static>(
                 &build,
             );
         });
-    })
+    });
+    // Subscribing delivers nothing: the path's current routes are the
+    // controller's starting stack.
+    reconcile(path.snapshot());
+    path.watch(move |next_path| reconcile(next_path))
 }
 
 /// Shared body of every path-backed stack: publish the `Navigator`, install the
@@ -1351,7 +1524,9 @@ impl NavigationView {
     #[doc(hidden)]
     pub fn resolve_native_fields(&mut self, env: &Environment) {
         if let Some(search) = &mut self.bar.search {
-            search.prompt = waterui_text::Text::computed(search.prompt.resolve(env).content);
+            search.set_prompt(waterui_text::Text::computed(
+                search.prompt().resolve(env).into_content(),
+            ));
         }
 
         // A toolbar item's name crosses the boundary as resolved content, so it
@@ -1360,7 +1535,7 @@ impl NavigationView {
         // to resolve one against.
         for item in &mut self.bar.toolbar.items {
             if let Some(title) = item.title.take() {
-                item.title = Some(Text::computed(title.resolve(env).content));
+                item.title = Some(Text::computed(title.resolve(env).into_content()));
             }
         }
 
@@ -1393,6 +1568,11 @@ impl NavigationView {
     }
 
     /// Sets how this destination arrives, overriding its stack's transition.
+    ///
+    /// A `.transition(...)` on the content root is the other way a destination
+    /// declares its arrival — its insertion on push, its removal on pop. A
+    /// destination declares one or the other, not both; see
+    /// [`NavigationStack::transition`] for the precedence.
     ///
     /// A stack-wide transition cannot name a matched pair, because the pair
     /// differs per destination — a gallery's tile and the page it opens share an

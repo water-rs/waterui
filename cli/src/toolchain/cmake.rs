@@ -89,6 +89,7 @@ impl Toolchain for Cmake {
 
 /// Installation for `CMake` — the strategy `check` selected for this host.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum CmakeInstallation {
     /// `brew install cmake`.
     Brew,
@@ -103,6 +104,7 @@ pub enum CmakeInstallation {
 
 /// Errors that can occur during `CMake` installation
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallCmake {
     /// Homebrew not found error
     #[error("Homebrew not found. Please install Homebrew to proceed.")]
@@ -335,7 +337,7 @@ mod host_tests {
         let install_dir = tool.install_dir(&host).unwrap();
         machine.file(
             install_dir
-                .join(&tool.binary)
+                .join(tool.binary())
                 .strip_prefix(machine.root())
                 .unwrap(),
             "",

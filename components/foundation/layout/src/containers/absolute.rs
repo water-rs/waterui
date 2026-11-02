@@ -81,6 +81,10 @@ impl Layout for AbsoluteLayout {
 
 /// Target position for absolute positioning.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "frozen layout contract (docs/layout-spec.md): every position target is resolved variant by variant"
+)]
 pub enum PositionTarget {
     /// Absolute position in points (relative to parent origin)
     Absolute {

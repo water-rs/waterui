@@ -3,7 +3,7 @@
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { installHost, uninstallHost } from "../../src/js/host.js";
-import { mount, useLocale, useSafeArea, useTheme } from "../../src/js/contexts.js";
+import { mount, useLocale, useTheme } from "../../src/js/contexts.js";
 import { jsx } from "../../src/js/jsx-runtime.js";
 import { createSignal } from "../../src/js/signals.js";
 import { createFakeHost } from "./fake-host.js";
@@ -11,7 +11,6 @@ import { createFakeHost } from "./fake-host.js";
 const env = (overrides = {}) => ({
   theme: { colorScheme: "light" },
   locale: { identifier: "en-US", languageCode: "en", textDirection: "ltr" },
-  safeArea: { top: 0, bottom: 0, leading: 0, trailing: 0 },
   ...overrides,
 });
 
@@ -71,9 +70,9 @@ describe("environment contexts", () => {
     installHost(createFakeHost(env({ locale })));
     const { dispose } = mount(() => {
       const l = useLocale();
-      const s = useSafeArea();
+      const theme = useTheme();
       expect(l().identifier).toBe("fr");
-      expect(s().top).toBe(0);
+      expect(theme().colorScheme).toBe("light");
       return jsx("Text", {});
     });
     dispose();

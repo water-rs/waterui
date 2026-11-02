@@ -329,7 +329,9 @@ mod tests {
     fn hermetic_host(root: &Path) -> crate::toolchain::Host {
         let home = root.join("cargo-home");
         std::fs::create_dir_all(&home).expect("create hermetic CARGO_HOME");
-        crate::toolchain::Host::current().with_env("CARGO_HOME", home)
+        crate::toolchain::Host::current()
+            .without_cargo_target_dir()
+            .with_env("CARGO_HOME", home)
     }
 
     /// The probe crate whose build fails unless the `--cfg
@@ -450,7 +452,7 @@ mod tests {
     /// the project's `[build] rustflags` exactly as a run inside the project
     /// would.
     #[test]
-    fn managed_build_receives_the_project_rustflags() {
+    fn managed_build_receives_the_project_rustflags() -> std::io::Result<()> {
         let (_temp, root) = temp_root();
         let host = hermetic_host(&root);
         let project = root.join("proj");
@@ -463,7 +465,7 @@ mod tests {
 
         let args = cargo_config_args(&project, &build).unwrap();
         let status = host
-            .std_command("cargo")
+            .std_command("cargo")?
             .current_dir(&build)
             .arg("build")
             .args(&args)
@@ -476,17 +478,18 @@ mod tests {
 
         // Sanity: the same build without the args fails — the probe crate
         // cannot compile without the `--cfg water_config_probe` marker.
-        host.std_command("cargo")
+        host.std_command("cargo")?
             .current_dir(&build)
             .arg("clean")
             .status()
             .unwrap();
         let status = host
-            .std_command("cargo")
+            .std_command("cargo")?
             .current_dir(&build)
             .arg("build")
             .status()
             .expect("cargo runs");
         assert!(!status.success(), "probe crate compiled without the marker");
+        Ok(())
     }
 }

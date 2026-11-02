@@ -26,20 +26,65 @@ use crate::{
 /// Backends place it into the handler's environment, so a handler reads it
 /// with [`Use<KeyPress>`](crate::extract::Use).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct KeyPress {
     /// What the key means under the current layout and modifiers.
-    pub key: Key,
+    key: Key,
     /// Where the key sits on the keyboard, independent of layout.
-    pub code: Code,
+    code: Code,
     /// The modifiers held with the key.
-    pub modifiers: Modifiers,
+    modifiers: Modifiers,
     /// Whether this press is an auto-repeat of a held key.
-    pub repeat: bool,
+    repeat: bool,
+}
+
+impl KeyPress {
+    /// What the key means under the current layout and modifiers.
+    #[must_use]
+    pub const fn key(&self) -> &Key {
+        &self.key
+    }
+
+    /// Where the key sits on the keyboard, independent of layout.
+    #[must_use]
+    pub const fn code(&self) -> Code {
+        self.code
+    }
+
+    /// The modifiers held with the key.
+    #[must_use]
+    pub const fn modifiers(&self) -> Modifiers {
+        self.modifiers
+    }
+
+    /// Whether this press is an auto-repeat of a held key.
+    #[must_use]
+    pub const fn repeat(&self) -> bool {
+        self.repeat
+    }
+}
+
+impl KeyPress {
+    /// A press of `key` at `code` with `modifiers` held, an auto-repeat when
+    /// `repeat`.
+    #[must_use]
+    pub const fn new(key: Key, code: Code, modifiers: Modifiers, repeat: bool) -> Self {
+        Self {
+            key,
+            code,
+            modifiers,
+            repeat,
+        }
+    }
 }
 
 /// Whether a key handler consumed a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a key handler must say whether it consumed the key"]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed answer: a handler either consumed the key or did not"
+)]
 pub enum KeyHandling {
     /// The key was consumed; it stops bubbling.
     Handled,

@@ -38,6 +38,8 @@ andriod = "andriod"
 secur = "secur"
 # Level of detail — the graphics term, not a dropped 'a'.
 lod = "lod"
+# DXC's strict-mode flag, `-Ges`.
+Ges = "Ges"
 # The Paeth predictor, the PNG filtering algorithm's own name.
 paeth = "paeth"
 # Apple Neural Engine — a powermetrics energy rail name.

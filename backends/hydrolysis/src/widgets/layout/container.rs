@@ -26,22 +26,22 @@ fn materialize_all(snapshot: &AnyViewsSnapshot<AnyView>, env: &Environment) -> V
     views
 }
 
-impl HydroNativeView for Native<FixedContainer> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<FixedContainer> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         let (layout, children) = view.as_inner().as_parts();
         estimate_layout_intrinsic(layout, children.iter(), state, env, theme)
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> waterui_core::layout::ViewDimensions {
         let (layout, children) = view.as_inner().as_parts();
@@ -62,11 +62,11 @@ impl HydroNativeView for Native<FixedContainer> {
     clippy::option_if_let_else,
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
-fn lazy_stack_sample_size(
-    state: &mut HydroState,
+fn lazy_stack_sample_size<E: crate::text::TextEngine>(
+    state: &mut HydroState<E>,
     view: &Native<LazyContainer>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     main: Option<f32>,
     cross: Option<f32>,
 ) -> LayoutSize {
@@ -143,21 +143,21 @@ fn lazy_stack_sample_size(
     }
 }
 
-impl HydroNativeView for Native<LazyContainer> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<LazyContainer> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         lazy_stack_sample_size(state, view, env, theme, None, None)
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> waterui_core::layout::ViewDimensions {
         let (layout, children) = view.as_inner().as_parts();

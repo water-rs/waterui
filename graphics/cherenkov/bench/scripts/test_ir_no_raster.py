@@ -26,7 +26,7 @@ class NoRasterLayer(unittest.TestCase):
             symbols = subprocess.check_output(['nm', '-D', '--defined-only', str(library)], text=True)
             self.assertNotIn(' vkGetInstanceProcAddr\n', symbols)
             self.assertNotIn(' vkGetDeviceProcAddr\n', symbols)
-            env = dict(os.environ, **ir_gate.layer_env(directory), XDG_RUNTIME_DIR=str(directory),
+            env = dict(os.environ, **ir_gate.layer_env(directory, ir_gate.lavapipe_icd()), XDG_RUNTIME_DIR=str(directory),
                        CHERENKOV_TEST_LAYER=str(library))
             subprocess.run([str(probe)], env=env, check=True)
             result = subprocess.run([str(probe), 'unregistered'], env=env, capture_output=True,

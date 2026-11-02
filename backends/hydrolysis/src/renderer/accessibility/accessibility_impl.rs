@@ -4,13 +4,13 @@ use super::*;
 use crate::renderer::mount::RetainedScopes;
 
 #[cfg(feature = "accessibility")]
+use crate::theme::InteractionFocusBinding;
+#[cfg(feature = "accessibility")]
 use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
 use std::collections::{BTreeSet, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
-#[cfg(feature = "accessibility")]
-use waterui_backend_core::widget::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
 
@@ -53,8 +53,7 @@ impl ScopedAccessibilityIdentifier {
 /// know whether it is the view's representative by asking whether anything above it
 /// already was.
 #[cfg(feature = "accessibility")]
-#[derive(Clone)]
-pub struct ScopedAccessibilitySemantics {
+pub struct ScopedAccessibilitySemantics<E: crate::text::TextEngine> {
     identity: Rc<()>,
     /// The `Activate` a representative silenced by this scope's claim delegates
     /// to the claiming node, with the interaction owner's hit region it was
@@ -62,7 +61,7 @@ pub struct ScopedAccessibilitySemantics {
     /// their `Rc` values and [`crate::renderer::restore_a11y_naming_scope`]
     /// clones the scope itself — so a donation always lands in the slot the
     /// claimer drains.
-    delegated_activation: Rc<RefCell<Option<DelegatedActivation>>>,
+    delegated_activation: Rc<RefCell<Option<DelegatedActivation<E>>>>,
     /// Text a descendant donated to the claim's accessible name (see
     /// [`AccessibilityNameFromContents`]). `Some` once any leaf donated — even
     /// if the joined string is empty — so the claimer can tell "text was
@@ -71,10 +70,10 @@ pub struct ScopedAccessibilitySemantics {
 }
 
 #[cfg(feature = "accessibility")]
-impl MetadataKey for ScopedAccessibilitySemantics {}
+impl<E: crate::text::TextEngine> MetadataKey for ScopedAccessibilitySemantics<E> {}
 
 #[cfg(feature = "accessibility")]
-impl ScopedAccessibilitySemantics {
+impl<E: crate::text::TextEngine> ScopedAccessibilitySemantics<E> {
     pub(crate) fn new() -> Self {
         Self {
             identity: Rc::new(()),
@@ -96,7 +95,7 @@ impl ScopedAccessibilitySemantics {
     /// nearest actionable representative.
     pub(crate) fn delegate_activation(
         &self,
-        activation: AccessibilityActivation,
+        activation: AccessibilityActivation<E>,
         interaction: Option<NodePlacement>,
     ) {
         let mut slot = self.delegated_activation.borrow_mut();
@@ -110,7 +109,7 @@ impl ScopedAccessibilitySemantics {
 
     /// Take the activation silenced representatives delegated, if any — the
     /// claiming node drains it after its subtree has been walked.
-    pub(crate) fn take_delegated_activation(&self) -> Option<DelegatedActivation> {
+    pub(crate) fn take_delegated_activation(&self) -> Option<DelegatedActivation<E>> {
         self.delegated_activation.borrow_mut().take()
     }
 
@@ -216,7 +215,7 @@ pub const WINDOW_ID_STRIDE: u64 = 1 << 32;
 /// `accesskit` has no property for what a text field's content *means*, so
 /// the declaration travels beside the tree instead of on the node: every
 /// publish carries this map next to the merged `TreeUpdate`, with popup ids
-/// offset by [`WINDOW_ID_STRIDE`] exactly as the tree's are.
+/// offset by `WINDOW_ID_STRIDE` exactly as the tree's are.
 #[cfg(feature = "accessibility")]
 pub type AccessibilityContentTypes = BTreeMap<AccessibilityNodeId, ContentType>;
 
@@ -249,7 +248,8 @@ enum AccessibilityLocalNodeKey {
 /// A semantic activation handler: the closure a widget's accessibility node
 /// runs for `Click`, independent of geometry or pointer input.
 #[cfg(feature = "accessibility")]
-pub type AccessibilityActivation = Rc<RefCell<dyn FnMut(&mut SemanticCore, &Environment) -> bool>>;
+pub type AccessibilityActivation<E> =
+    Rc<RefCell<dyn FnMut(&mut SemanticCore<E>, &Environment) -> bool>>;
 
 /// Where an emitted accessibility node sits in window hit-test space: its
 /// logical bounds — the rectangle the tree reports — and the effective clip
@@ -281,8 +281,8 @@ pub struct NodePlacement {
 /// clipped, and only the region projection tells those apart
 /// (water-rs/hydrolysis#27).
 #[cfg(feature = "accessibility")]
-pub struct DelegatedActivation {
-    pub(crate) activation: AccessibilityActivation,
+pub struct DelegatedActivation<E: crate::text::TextEngine> {
+    pub(crate) activation: AccessibilityActivation<E>,
     /// The donating gesture's hit region and effective clip, in window
     /// hit-test space. `None` on the semantic walk — it carries no geometry,
     /// so its nodes carry no point at all.
@@ -290,12 +290,11 @@ pub struct DelegatedActivation {
 }
 
 #[cfg(feature = "accessibility")]
-#[derive(Clone)]
-pub enum AccessibilityActionTarget {
+pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     /// Direct semantic activation: `Click` invokes the widget's own activation
     /// handler, no pointer and no coordinates.
     Activate {
-        action: AccessibilityActivation,
+        action: AccessibilityActivation<E>,
     },
     Toggle {
         binding: nami::Binding<bool>,
@@ -346,7 +345,12 @@ pub enum AccessibilityActionTarget {
     /// navigation between rows is built on these actions
     /// (water-rs/waterui#1223).
     ListRow {
+        /// The row's index in the list's row set.
         index: usize,
+        /// The row's position in the list's extent index: removal ghosts
+        /// still holding their slots (layout-spec.md §4.5) shift it past
+        /// `index`.
+        position: usize,
         handle: ScrollHandle,
         extents: Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
         /// §7.1's touched-edge extension the list's handle was rebound with:
@@ -366,13 +370,13 @@ pub enum AccessibilityActionTarget {
 }
 
 #[cfg(feature = "accessibility")]
-pub struct AccessibilityBuilder {
+pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     pub nodes: Vec<(AccessibilityNodeId, AccessibilityNode)>,
     /// `id -> position in nodes`: lookups are index hits, never list
     /// scans. Maintained on push and rebuilt by `retire_nodes`.
     node_index: std::collections::BTreeMap<AccessibilityNodeId, usize>,
     pub(crate) root_children: Vec<AccessibilityNodeId>,
-    pub(crate) actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
+    pub(crate) actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget<E>>,
     /// The [`InteractionFocusBinding`] a node was emitted under, keyed by node
     /// — the same modifier state the pointer path reads for press slots, so a
     /// keyboard-focused node writes its author binding regardless of whether a
@@ -397,7 +401,7 @@ pub struct AccessibilityBuilder {
     /// rectangle (water-rs/waterui#1323 §5). A donation never replaces the
     /// node's own action target: it rides alongside for the targets that
     /// dispatch retained actions directly.
-    pub(crate) delegated_activations: BTreeMap<AccessibilityNodeId, DelegatedActivation>,
+    pub(crate) delegated_activations: BTreeMap<AccessibilityNodeId, DelegatedActivation<E>>,
     /// The effective clip — the top of the hit clip stack — in effect when
     /// each bounded node registered, in window hit-test space. Reported node
     /// bounds stay the logical rectangle; this is how
@@ -425,8 +429,10 @@ pub struct AccessibilityBuilder {
     /// The registering cell of each emitted node — the owner the unit rule
     /// diffs emissions by (§B.3 "owner-tagged"). Cleared at `reset_scene`
     /// like `interaction_nodes`.
-    pub(crate) node_owners:
-        std::collections::BTreeMap<AccessibilityNodeId, std::rc::Weak<crate::renderer::NodeCell>>,
+    pub(crate) node_owners: std::collections::BTreeMap<
+        AccessibilityNodeId,
+        std::rc::Weak<crate::renderer::NodeCell<E>>,
+    >,
     /// Each emitted node's `Region`, resolved to window space at
     /// `finalize_tree_update` so a placement move re-publishes bounds
     /// without a re-record.
@@ -442,7 +448,7 @@ pub struct AccessibilityBuilder {
     /// semantic walk leaves it dead. Each pushed node id also lands in the
     /// owner's `a11y_emitted`, the set §B.4 diffs at record end — stored on
     /// the cell so it dies with the node, never keyed by a reusable address.
-    pub(crate) emit_owner: std::rc::Weak<crate::renderer::NodeCell>,
+    pub(crate) emit_owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
     pub(crate) suppression_depth: usize,
     pub(crate) consumed_identifier_scopes: BTreeSet<usize>,
     /// Naming scopes ([`ScopedAccessibilitySemantics`]) already claimed by a node
@@ -464,7 +470,7 @@ pub struct AccessibilityBuilder {
 }
 
 #[cfg(feature = "accessibility")]
-impl Default for AccessibilityBuilder {
+impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
     fn default() -> Self {
         Self {
             nodes: Vec::new(),
@@ -502,7 +508,7 @@ impl Default for AccessibilityBuilder {
 }
 
 #[cfg(feature = "accessibility")]
-impl AccessibilityBuilder {
+impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
     /// Reset the per-flush accessibility emission state. Called before EVERY flush
     /// (rebuild and refresh both go through `HydrolysisRenderer::reset_scene`), so
     /// the full a11y tree it re-emits starts clean — crucially resetting
@@ -746,7 +752,7 @@ impl AccessibilityBuilder {
         mut node: AccessibilityNode,
         placement: Option<NodePlacement>,
         env: &Environment,
-        action_target: Option<AccessibilityActionTarget>,
+        action_target: Option<AccessibilityActionTarget<E>>,
         attach_to_root: bool,
         semantic_key: Option<i64>,
     ) -> Option<AccessibilityNodeId> {
@@ -761,7 +767,7 @@ impl AccessibilityBuilder {
         // This node represents the view the enclosing naming scope wraps, so it
         // owns that role and label; a container below must not emit a second node
         // repeating them.
-        if let Some(scope) = env.get::<ScopedAccessibilitySemantics>() {
+        if let Some(scope) = env.get::<ScopedAccessibilitySemantics<E>>() {
             self.consumed_semantics_scopes.insert(scope.key());
         }
         Self::apply_state(env, &mut node);
@@ -820,7 +826,7 @@ impl AccessibilityBuilder {
     /// Whether the naming scope `env` sits in was already claimed this flush by a
     /// node representing the wrapped view.
     fn semantics_scope_is_claimed(&self, env: &Environment) -> bool {
-        env.get::<ScopedAccessibilitySemantics>()
+        env.get::<ScopedAccessibilitySemantics<E>>()
             .is_some_and(|scope| self.consumed_semantics_scopes.contains(&scope.key()))
     }
 
@@ -841,7 +847,7 @@ impl AccessibilityBuilder {
     fn attach_delegated_activation(
         &mut self,
         node_id: AccessibilityNodeId,
-        donation: DelegatedActivation,
+        donation: DelegatedActivation<E>,
     ) {
         if self.actions.contains_key(&node_id) {
             self.delegated_activations
@@ -1035,21 +1041,60 @@ impl AccessibilityBuilder {
     /// root over the registered nodes, with the current focus. Factored so
     /// the merged multi-window path can re-emit a quiet window's last state
     /// from the live registry instead of cloning a stored update.
+    ///
+    /// A modal node — a presented dialog's alert — makes the rest of the
+    /// window inert: the root holds that node alone, and only its subtree is
+    /// published, with focus kept inside it.
     fn assembled_tree_update(&self) -> AccessibilityTreeUpdate {
         let mut root = AccessibilityNode::new(AccessibilityNodeRole::Window);
         root.set_label(self.root_label.clone());
         if self.root_bounds.width() > 0.0 && self.root_bounds.height() > 0.0 {
             root.set_bounds(kurbo_rect_to_accesskit_rect(self.root_bounds));
         }
-        root.set_children(self.root_children.clone());
-        let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
+        let modal = self
+            .nodes
+            .iter()
+            .find_map(|(id, node)| node.is_modal().then_some(*id));
+        let Some(modal) = modal else {
+            root.set_children(self.root_children.clone());
+            let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
+            nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
+            nodes.extend(self.nodes.iter().cloned());
+            return AccessibilityTreeUpdate {
+                nodes,
+                tree: Some(AccessibilityTree::new(ACCESSIBILITY_ROOT_NODE_ID)),
+                tree_id: AccessibilityTreeId::ROOT,
+                focus: self.focus,
+            };
+        };
+        root.set_children(vec![modal]);
+        let mut reachable = BTreeSet::new();
+        let mut pending = vec![modal];
+        while let Some(id) = pending.pop() {
+            if reachable.insert(id)
+                && let Some(node) = self.node(id)
+            {
+                pending.extend_from_slice(node.children());
+            }
+        }
+        let mut nodes = Vec::with_capacity(reachable.len() + 1);
         nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
-        nodes.extend(self.nodes.iter().cloned());
+        nodes.extend(
+            self.nodes
+                .iter()
+                .filter(|(id, _)| reachable.contains(id))
+                .cloned(),
+        );
+        let focus = if reachable.contains(&self.focus) {
+            self.focus
+        } else {
+            modal
+        };
         AccessibilityTreeUpdate {
             nodes,
             tree: Some(AccessibilityTree::new(ACCESSIBILITY_ROOT_NODE_ID)),
             tree_id: AccessibilityTreeId::ROOT,
-            focus: self.focus,
+            focus,
         }
     }
 
@@ -1100,7 +1145,7 @@ impl AccessibilityBuilder {
 }
 
 #[cfg(feature = "accessibility")]
-pub struct AccessibilityContainerScope {
+pub struct AccessibilityContainerScope<E: crate::text::TextEngine> {
     parent_pushed: bool,
     suppression_pushed: bool,
     /// The node this scope synthesized for the container, when it did.
@@ -1113,11 +1158,11 @@ pub struct AccessibilityContainerScope {
     /// The naming scope that node's registration claimed — the channel
     /// silenced representatives (a tap gesture whose own node was suppressed)
     /// delegate their activation through, drained when the scope ends.
-    naming_scope: Option<ScopedAccessibilitySemantics>,
+    naming_scope: Option<ScopedAccessibilitySemantics<E>>,
 }
 
 #[cfg(feature = "accessibility")]
-impl AccessibilityContainerScope {
+impl<E: crate::text::TextEngine> AccessibilityContainerScope<E> {
     /// A scope that emitted no node and suppressed nothing: the container is not
     /// this view's representative, so it only shields its children.
     const INERT: Self = Self {
@@ -1175,7 +1220,7 @@ pub fn accessibility_container_child_environment(env: &Environment) -> Option<En
     Some(child_env)
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     #[cfg(feature = "accessibility")]
     pub fn set_accessibility_root_label(&mut self, label: &str) {
         self.accessibility.root_label.clear();
@@ -1186,6 +1231,37 @@ impl SemanticCore {
     #[must_use]
     pub const fn take_accessibility_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
         self.accessibility.pending_tree_update.take()
+    }
+
+    /// Publishes an accessibility focus move as a focus-only tree update:
+    /// only the focus field changed, so the update carries no nodes and no
+    /// tree structure — the host applies it incrementally. A full update
+    /// still pending is corrected in place instead. Returns `false` when a
+    /// quiet publish cannot describe the move and the caller must arm the
+    /// normal flush: focus landing on a node the last emit never produced
+    /// (`accessibility.focus` still updated — the next emit carries it), or
+    /// an open modal scope, whose reachable-subtree focus clamp only
+    /// `assembled_tree_update` resolves (water-rs/waterui#2940).
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn publish_accessibility_focus(&mut self, focus: AccessibilityNodeId) -> bool {
+        if let Some(update) = self.accessibility.pending_tree_update.as_mut() {
+            update.focus = focus;
+            return true;
+        }
+        let emitted = &self.accessibility.nodes;
+        let focus_is_emitted =
+            focus == ACCESSIBILITY_ROOT_NODE_ID || emitted.iter().any(|(id, _)| *id == focus);
+        let modal_open = emitted.iter().any(|(_, node)| node.is_modal());
+        if emitted.is_empty() || !focus_is_emitted || modal_open {
+            return false;
+        }
+        self.accessibility.pending_tree_update = Some(AccessibilityTreeUpdate {
+            nodes: Vec::new(),
+            tree: None,
+            tree_id: AccessibilityTreeId::ROOT,
+            focus,
+        });
+        true
     }
 
     /// The tree this window would publish if it emitted now: the last
@@ -1254,7 +1330,7 @@ impl SemanticCore {
     ///
     /// The content types ride the same merge: each window's builder map is
     /// keyed by that core's node ids, so a popup's entries shift by the same
-    /// [`WINDOW_ID_STRIDE`] its tree nodes do.
+    /// `WINDOW_ID_STRIDE` its tree nodes do.
     #[cfg(feature = "accessibility")]
     fn merged_accessibility_tree_update<'a>(
         &mut self,
@@ -1288,6 +1364,14 @@ impl SemanticCore {
                 tree_update: merged,
                 content_types,
             });
+        }
+        // A focus-only main update carries no root for the popup graft —
+        // rebuild the main window's full emission and keep the moved focus.
+        if merged.nodes.is_empty()
+            && let Some(mut full) = self.current_accessibility_tree_update()
+        {
+            full.focus = merged.focus;
+            merged = full;
         }
 
         let mut root_children = merged
@@ -1481,6 +1565,7 @@ impl SemanticCore {
             }
             AccessibilityActionTarget::ListRow {
                 index,
+                position,
                 handle,
                 extents,
                 extension,
@@ -1489,7 +1574,7 @@ impl SemanticCore {
             } => match action {
                 AccessibilityAction::Focus => {
                     self.scroll_list_row_into_view(
-                        index,
+                        position,
                         &handle,
                         &extents,
                         extension,
@@ -1511,9 +1596,13 @@ impl SemanticCore {
                         clicked
                     }
                 }
-                AccessibilityAction::ScrollIntoView => {
-                    self.scroll_list_row_into_view(index, &handle, &extents, extension, target_node)
-                }
+                AccessibilityAction::ScrollIntoView => self.scroll_list_row_into_view(
+                    position,
+                    &handle,
+                    &extents,
+                    extension,
+                    target_node,
+                ),
                 _ => panic!("hydrolysis accessibility list row does not support action {action:?}"),
             },
         };
@@ -1733,7 +1822,7 @@ impl SemanticCore {
     #[cfg(feature = "accessibility")]
     pub(crate) fn scroll_list_row_into_view(
         &self,
-        index: usize,
+        position: usize,
         handle: &ScrollHandle,
         extents: &Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
         extension: crate::renderer::EdgeOffsets,
@@ -1741,8 +1830,8 @@ impl SemanticCore {
     ) -> bool {
         let metrics = handle.metrics();
         let extents = extents.borrow();
-        let row_start = extents.offset_of(index);
-        let row_end = extents.offset_of(index + 1);
+        let row_start = extents.offset_of(position);
+        let row_end = extents.offset_of(position + 1);
         // The rebound viewport covers the §7.1 extension into the avoided
         // bands; the reveal resolves against the laid-out frame's window —
         // a screen-reader focus move must not land a row under the band.
@@ -1836,7 +1925,7 @@ impl SemanticCore {
         bounds: kurbo::Rect,
         resolved_bounds: Option<kurbo::Rect>,
         env: &Environment,
-    ) -> AccessibilityContainerScope {
+    ) -> AccessibilityContainerScope<E> {
         self.begin_accessibility_container_inner(Some(bounds), resolved_bounds, env)
     }
 
@@ -1847,7 +1936,7 @@ impl SemanticCore {
     pub(crate) fn begin_accessibility_container_semantic(
         &mut self,
         env: &Environment,
-    ) -> AccessibilityContainerScope {
+    ) -> AccessibilityContainerScope<E> {
         self.begin_accessibility_container_inner(None, None, env)
     }
 
@@ -1857,7 +1946,7 @@ impl SemanticCore {
         bounds: Option<kurbo::Rect>,
         resolved_bounds: Option<kurbo::Rect>,
         env: &Environment,
-    ) -> AccessibilityContainerScope {
+    ) -> AccessibilityContainerScope<E> {
         let scope = self.begin_accessibility_container_impl(bounds, resolved_bounds, env);
         // §B.3/§B.4: the container's parent/suppression pushes go into the
         // recording node's RetainedScopes for a partial descent to replay,
@@ -1879,7 +1968,7 @@ impl SemanticCore {
         bounds: Option<kurbo::Rect>,
         resolved_bounds: Option<kurbo::Rect>,
         env: &Environment,
-    ) -> AccessibilityContainerScope {
+    ) -> AccessibilityContainerScope<E> {
         debug_assert!(
             accessibility_container_child_environment(env).is_some(),
             "hydrolysis accessibility container scope requires a role, a label, or a value"
@@ -1911,6 +2000,17 @@ impl SemanticCore {
             env,
             AccessibilityNodeRole::Group,
         ));
+        // A presented dialog's card: the window's modal alert. Publication
+        // keeps a modal node alone under the window, so the content beneath
+        // the modal layer is inert for assistive technology.
+        if node.role() == AccessibilityNodeRole::Dialog
+            && env
+                .get::<crate::renderer::input::DialogLayerScope>()
+                .is_some()
+        {
+            node.set_role(AccessibilityNodeRole::AlertDialog);
+            node.set_modal();
+        }
         if let Some(label) = self.resolve_accessibility_label(env, None) {
             node.set_label(label);
         }
@@ -1964,7 +2064,7 @@ impl SemanticCore {
             suppression_pushed,
             container_node: Some(node_id),
             resolved_bounds,
-            naming_scope: env.get::<ScopedAccessibilitySemantics>().cloned(),
+            naming_scope: env.get::<ScopedAccessibilitySemantics<E>>().cloned(),
         }
     }
 
@@ -1999,7 +2099,7 @@ impl SemanticCore {
         {
             return false;
         }
-        let Some(scope) = env.get::<ScopedAccessibilitySemantics>() else {
+        let Some(scope) = env.get::<ScopedAccessibilitySemantics<E>>() else {
             return false;
         };
         scope.donate_text(text);
@@ -2020,7 +2120,7 @@ impl SemanticCore {
     #[cfg(feature = "accessibility")]
     fn drain_scope_donations(
         &mut self,
-        scope: &ScopedAccessibilitySemantics,
+        scope: &ScopedAccessibilitySemantics<E>,
         node_id: AccessibilityNodeId,
     ) -> bool {
         if let Some(activation) = scope.take_delegated_activation() {
@@ -2047,11 +2147,27 @@ impl SemanticCore {
     ) -> bool {
         // The unit claim lands only when a claim actually finds a scope —
         // marking before the lookup would flag a cell that claimed nothing.
-        let Some(scope) = env.get::<ScopedAccessibilitySemantics>() else {
+        let Some(scope) = env.get::<ScopedAccessibilitySemantics<E>>() else {
             return false;
         };
         self.mark_a11y_unit();
         self.drain_scope_donations(scope, node_id)
+    }
+
+    /// Collapse a tap gesture's synthesized claim around exactly one wrapped
+    /// node into that node — the wrapped element keeps its own identity and
+    /// any real action it registered, and takes the claim's `Click`, `Focus`
+    /// and activation (water-rs/waterui#1070). No bounds travel with it: a
+    /// claim the gesture synthesized carries the frame it was assigned, and
+    /// the wrapped node's own bounds are already the honest answer.
+    ///
+    /// A no-op unless the claim has exactly one semantic child — zero or
+    /// several leave the claim's node standing as the composite's
+    /// representative.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn collapse_synthesized_claim(&mut self, node_id: AccessibilityNodeId) {
+        self.accessibility
+            .collapse_single_child_container(node_id, None);
     }
 
     #[cfg(feature = "accessibility")]
@@ -2059,7 +2175,7 @@ impl SemanticCore {
         clippy::option_if_let_else,
         reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
     )]
-    pub(crate) fn end_accessibility_container(&mut self, scope: AccessibilityContainerScope) {
+    pub(crate) fn end_accessibility_container(&mut self, scope: AccessibilityContainerScope<E>) {
         if scope.suppression_pushed {
             self.record_scope(RetainedScopes::pop_a11y_suppression);
             self.pop_accessibility_suppression();
@@ -2135,7 +2251,7 @@ impl SemanticCore {
         node: AccessibilityNode,
         bounds: kurbo::Rect,
         env: &Environment,
-        action_target: Option<AccessibilityActionTarget>,
+        action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         let placement = NodePlacement {
@@ -2163,10 +2279,10 @@ impl SemanticCore {
         ctx: Option<crate::renderer::RenderContext>,
         node: AccessibilityNode,
         env: &Environment,
-        action_target: Option<AccessibilityActionTarget>,
+        action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
         match ctx {
-            Some(ctx) => self.register_accessibility_node(node, ctx.bounds, env, action_target),
+            Some(ctx) => self.register_accessibility_node(node, ctx.bounds(), env, action_target),
             None => self.register_accessibility_node_semantic(node, env, action_target),
         }
     }
@@ -2195,7 +2311,7 @@ impl SemanticCore {
         let Some(&parent) = self.accessibility.parent_stack.last() else {
             return;
         };
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             return;
         }
@@ -2229,7 +2345,7 @@ impl SemanticCore {
         &mut self,
         node: AccessibilityNode,
         env: &Environment,
-        action_target: Option<AccessibilityActionTarget>,
+        action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         self.accessibility
@@ -2242,7 +2358,7 @@ impl SemanticCore {
         node: AccessibilityNode,
         bounds: kurbo::Rect,
         env: &Environment,
-        action_target: Option<AccessibilityActionTarget>,
+        action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         let placement = NodePlacement {
@@ -2266,7 +2382,7 @@ impl SemanticCore {
         &mut self,
         node: AccessibilityNode,
         env: &Environment,
-        action_target: Option<AccessibilityActionTarget>,
+        action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         self.accessibility
@@ -2280,7 +2396,7 @@ impl SemanticCore {
         node: AccessibilityNode,
         bounds: kurbo::Rect,
         env: &Environment,
-        action_target: Option<AccessibilityActionTarget>,
+        action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         let placement = NodePlacement {
@@ -2305,7 +2421,7 @@ impl SemanticCore {
         semantic_key: i64,
         node: AccessibilityNode,
         env: &Environment,
-        action_target: Option<AccessibilityActionTarget>,
+        action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         self.accessibility.register_node_internal(
@@ -2387,11 +2503,11 @@ impl SemanticCore {
             );
         }
         if let Some(label) = view.downcast_ref::<SemanticLabel>() {
-            let styled = self.read_signal(&label.semantic_text().resolve(&scoped_env).content);
+            let styled = self.read_signal(label.semantic_text().resolve(&scoped_env).content());
             return Some(styled.to_semantic().to_string());
         }
         if let Some(text) = view.downcast_ref::<waterui_text::Text>() {
-            let styled = self.read_signal(&text.resolve(&scoped_env).content);
+            let styled = self.read_signal(text.resolve(&scoped_env).content());
             return Some(styled.to_semantic().to_string());
         }
         if let Some(label) = view.downcast_ref::<Str>() {
@@ -2422,11 +2538,11 @@ impl SemanticCore {
             );
         }
         if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
-            let styled = self.read_signal(&text.as_inner().content);
+            let styled = self.read_signal(text.as_inner().content());
             return Some(styled.to_semantic().to_string());
         }
         if let Some(icon) = view.downcast_ref::<Native<SystemIcon>>() {
-            return Some(icon.as_inner().name.as_str().to_owned());
+            return Some(icon.as_inner().name().as_str().to_owned());
         }
         // A control's `label` is the same `Label` a composite button's name
         // derives from, so a container holding a bare control derives the
@@ -2436,7 +2552,7 @@ impl SemanticCore {
             ($($config:ty),+ $(,)?) => {$(
                 if let Some(native) = view.downcast_ref::<Native<$config>>() {
                     return Self::accessibility_label_from_label(
-                        &native.as_inner().label,
+                        native.as_inner().label(),
                         &scoped_env,
                     );
                 }
@@ -2462,13 +2578,13 @@ impl SemanticCore {
         {
             return self
                 .accessibility_label_from_view_with_budget(
-                    &progress.as_inner().label,
+                    progress.as_inner().label(),
                     &scoped_env,
                     remaining - 1,
                 )
                 .or_else(|| {
                     self.accessibility_label_from_view_with_budget(
-                        &progress.as_inner().value_label,
+                        progress.as_inner().value_label(),
                         &scoped_env,
                         remaining - 1,
                     )
@@ -2603,8 +2719,8 @@ fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> Accessibilit
 const ACCESSIBILITY_SCROLL_STEP: f32 = crate::num_cast::f64_as_f32(crate::scroll::SCROLL_LINE_STEP);
 
 #[cfg(feature = "accessibility")]
-fn handle_accessibility_scroll_action(
-    renderer: &SemanticCore,
+fn handle_accessibility_scroll_action<E: crate::text::TextEngine>(
+    renderer: &SemanticCore<E>,
     handle: &ScrollHandle,
     axis: ScrollAxis,
     action: AccessibilityAction,
@@ -2750,8 +2866,8 @@ fn handle_accessibility_stepper_action(
     clippy::too_many_arguments,
     reason = "threads the full accessibility-action context; grouping into a struct would not improve clarity"
 )]
-fn handle_accessibility_date_picker_action(
-    renderer: &mut SemanticCore,
+fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
+    renderer: &mut SemanticCore<E>,
     value: &nami::Binding<DateTime>,
     range: &RangeInclusive<DateTime>,
     ty: DatePickerType,
@@ -2802,8 +2918,8 @@ fn handle_accessibility_date_picker_action(
 }
 
 #[cfg(feature = "accessibility")]
-fn handle_accessibility_text_field_action(
-    renderer: &mut SemanticCore,
+fn handle_accessibility_text_field_action<E: crate::text::TextEngine>(
+    renderer: &mut SemanticCore<E>,
     node_id: AccessibilityNodeId,
     value: &nami::Binding<StyledStr>,
     line_limit: Option<usize>,
@@ -2847,8 +2963,8 @@ fn handle_accessibility_text_field_action(
 }
 
 #[cfg(feature = "accessibility")]
-fn handle_accessibility_secure_field_action(
-    renderer: &mut SemanticCore,
+fn handle_accessibility_secure_field_action<E: crate::text::TextEngine>(
+    renderer: &mut SemanticCore<E>,
     node_id: AccessibilityNodeId,
     value: &nami::Binding<FormSecure>,
     action: AccessibilityAction,
@@ -2914,7 +3030,10 @@ mod inspect_tests {
     use kurbo::{Point, Rect};
 
     /// Registers a node covering `bounds` and returns its id.
-    fn push(builder: &mut AccessibilityBuilder, bounds: Rect) -> AccessibilityNodeId {
+    fn push(
+        builder: &mut AccessibilityBuilder<crate::text::ParleyEngine>,
+        bounds: Rect,
+    ) -> AccessibilityNodeId {
         let id = builder.next_node_id();
         let mut node = AccessibilityNode::new(accesskit::Role::Label);
         node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
@@ -2961,5 +3080,83 @@ mod inspect_tests {
             Some(right),
             "the shared edge belongs to the node that starts there"
         );
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Activate { action } => Self::Activate {
+                action: action.clone(),
+            },
+            Self::Toggle { binding } => Self::Toggle {
+                binding: binding.clone(),
+            },
+            Self::Slider { value, range, step } => Self::Slider {
+                value: value.clone(),
+                range: range.clone(),
+                step: *step,
+            },
+            Self::Stepper { value, step, range } => Self::Stepper {
+                value: value.clone(),
+                step: step.clone(),
+                range: range.clone(),
+            },
+            Self::DatePicker {
+                value,
+                range,
+                ty,
+                origin,
+                env,
+            } => Self::DatePicker {
+                value: value.clone(),
+                range: range.clone(),
+                ty: *ty,
+                origin: *origin,
+                env: env.clone(),
+            },
+            Self::TextField { value, line_limit } => Self::TextField {
+                value: value.clone(),
+                line_limit: *line_limit,
+            },
+            Self::SecureField { value } => Self::SecureField {
+                value: value.clone(),
+            },
+            Self::PickerSelect { selection, target } => Self::PickerSelect {
+                selection: selection.clone(),
+                target: *target,
+            },
+            Self::Scroll { handle, axis } => Self::Scroll {
+                handle: handle.clone(),
+                axis: *axis,
+            },
+            Self::ListRow {
+                index,
+                position,
+                handle,
+                extents,
+                extension,
+                id,
+                selection,
+            } => Self::ListRow {
+                index: *index,
+                position: *position,
+                handle: handle.clone(),
+                extents: extents.clone(),
+                extension: *extension,
+                id: *id,
+                selection: selection.clone(),
+            },
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for ScopedAccessibilitySemantics<E> {
+    fn clone(&self) -> Self {
+        Self {
+            identity: self.identity.clone(),
+            delegated_activation: self.delegated_activation.clone(),
+            donated_text: self.donated_text.clone(),
+        }
     }
 }

@@ -318,37 +318,38 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // relative to it, so a bare slider draws at the platform's regular
         // track like a bare `NSSlider`/`UISlider` does.
         slider.set_control_size(platform_control_size(
-            config.size,
+            config.size(),
             waterui::component::ControlSize::ExtraSmall,
         ));
-        slider.set_range(*config.range.start(), *config.range.end());
+        slider.set_range(*config.range().start(), *config.range().end());
         slider.set_value(
             clamped(
-                config.value.snapshot(),
-                *config.range.start(),
-                *config.range.end(),
+                config.value().snapshot(),
+                *config.range().start(),
+                *config.range().end(),
             ),
             None,
         );
         host.add_subview(as_view(&slider));
 
-        let range = config.range.clone();
+        let range = config.range().clone();
         let action = slider.install_action({
-            let binding = config.value.clone();
+            let binding = config.value().clone();
             move |value| binding.set(value)
         });
 
         // The label's semantic text is announced on the control itself; the
         // visual label child is hidden from the accessibility tree below.
-        let accessibility_label = config.label.accessibility_label();
+        let accessibility_label = config.label().accessibility_label();
 
         let host_view: &PlatformView = &host;
+        let (label, min_value_label, max_value_label, _, value, ..) = config.into_parts();
         let children = Children {
             label: ctx
-                .render(waterui_backend_core::AnyView::new(config.label))
+                .render(waterui_backend_core::AnyView::new(label))
                 .mount(host_view),
-            min_label: ctx.render(config.min_value_label).mount(host_view),
-            max_label: ctx.render(config.max_value_label).mount(host_view),
+            min_label: ctx.render(min_value_label).mount(host_view),
+            max_label: ctx.render(max_value_label).mount(host_view),
         };
         cocoa_ui::view::hide_from_accessibility(children.label.view());
 
@@ -374,7 +375,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // Signal → control: push binding changes (clamped into range) with
         // the animation the watcher metadata carries.
-        leaf.watch(&config.value, {
+        leaf.watch(&value, {
             let slider = slider.clone();
             move |ctx| {
                 let animation = value_animation(ctx.metadata());

@@ -12,10 +12,21 @@ use thiserror::Error;
 
 /// An external command could not be executed or exited unsuccessfully.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CommandError {
     /// The command could not be spawned.
     #[error("failed to spawn `{program}`: {source}")]
     Spawn {
+        /// The program that was invoked.
+        program: String,
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// The input streamed into the command's stdin could not be read or
+    /// written.
+    #[error("failed to feed input to `{program}`: {source}")]
+    Input {
         /// The program that was invoked.
         program: String,
         /// The underlying I/O error.
@@ -30,6 +41,17 @@ pub enum CommandError {
         /// The process exit status.
         status: ExitStatus,
         /// Formatted diagnostic tail of the captured output streams.
+        report: String,
+    },
+    /// The command did not exit before its deadline; it and every process it
+    /// started were killed.
+    #[error("command `{program}` did not exit within {after:?} and was killed{report}")]
+    TimedOut {
+        /// The program that was invoked.
+        program: String,
+        /// The deadline that elapsed.
+        after: std::time::Duration,
+        /// Formatted diagnostic tail of the output captured before the kill.
         report: String,
     },
 }
@@ -198,6 +220,7 @@ pub fn parse_semver_version(input: &str) -> Result<Version, VersionParseError> {
 
 /// A version string `parse_semver_version` could not normalize.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum VersionParseError {
     /// The version string was empty.
     #[error("version is empty")]
@@ -251,6 +274,56 @@ pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Resu
     unblock(move || copy_file_overwriting(&from, &to)).await
 }
 
+/// Feed `path`'s length and then its bytes into `hasher`, streamed in
+/// chunks so a large file is never held in memory. The length prefix keeps
+/// consecutive files in one digest from running into each other.
+///
+/// Blocking: call it inside `smol::unblock`.
+///
+/// # Errors
+/// - If `path` cannot be opened or read; the error names the path.
+pub(crate) fn hash_file_into(hasher: &mut sha2::Sha256, path: &Path) -> io::Result<()> {
+    use sha2::Digest as _;
+
+    let named =
+        |error: io::Error| io::Error::new(error.kind(), format!("{}: {error}", path.display()));
+    let mut file = std::fs::File::open(path).map_err(named)?;
+    hasher.update(file.metadata().map_err(named)?.len().to_le_bytes());
+    stream_into(hasher, &mut file).map_err(named)
+}
+
+/// The lowercase hex SHA-256 of the file at `path`, read in chunks off the
+/// executor thread.
+///
+/// # Errors
+/// - If the file cannot be read.
+pub async fn file_sha256(path: &Path) -> io::Result<String> {
+    use sha2::Digest as _;
+
+    let path = path.to_path_buf();
+    unblock(move || {
+        let mut hasher = sha2::Sha256::new();
+        stream_into(&mut hasher, &mut std::fs::File::open(path)?)?;
+        Ok(hex::encode(hasher.finalize()))
+    })
+    .await
+}
+
+/// Feed the rest of `file` into `hasher` in 64 KiB chunks.
+fn stream_into(hasher: &mut sha2::Sha256, file: &mut std::fs::File) -> io::Result<()> {
+    use sha2::Digest as _;
+    use std::io::Read as _;
+
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(());
+        }
+        hasher.update(&chunk[..read]);
+    }
+}
+
 /// Copy `from` onto `to` only when its bytes differ.
 ///
 /// The write-on-change path for file-to-file copies — the counterpart of
@@ -298,7 +371,28 @@ pub fn copy_file_if_changed_sync(from: &Path, to: &Path) -> io::Result<()> {
 fn copy_file_overwriting(from: &Path, to: &Path) -> io::Result<()> {
     let from_modified = std::fs::metadata(from)?.modified()?;
     replace_with_copy(from, to)?;
-    filetime::set_file_mtime(to, filetime::FileTime::from_system_time(from_modified))
+    set_file_mtime(to, filetime::FileTime::from_system_time(from_modified))
+}
+
+/// Stamp `time` on `path`, which may carry a read-only mode inherited from
+/// the copy's source.
+///
+/// `filetime::set_file_mtime` opens the path for `GENERIC_WRITE`, which
+/// Windows refuses on a read-only file even though only attributes change.
+/// `FILE_WRITE_ATTRIBUTES` is the access a timestamp write actually needs.
+#[cfg(windows)]
+fn set_file_mtime(path: &Path, time: filetime::FileTime) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let file = std::fs::OpenOptions::new()
+        .access_mode(windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES)
+        .open(path)?;
+    filetime::set_file_handle_times(&file, None, Some(time))
+}
+
+#[cfg(not(windows))]
+fn set_file_mtime(path: &Path, time: filetime::FileTime) -> io::Result<()> {
+    filetime::set_file_mtime(path, time)
 }
 
 /// Remove `to` and copy `from`'s bytes in its place — `reflink_or_copy`
@@ -313,6 +407,19 @@ fn replace_with_copy(from: &Path, to: &Path) -> io::Result<()> {
     match std::fs::remove_file(to) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        #[cfg(windows)]
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "Windows-only: clears the read-only attribute so the file can be unlinked; there is no Unix mode to widen"
+        )]
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            // A copy that kept a read-only mode cannot be unlinked until the
+            // attribute is cleared; Unix ignores it for unlink.
+            let mut permissions = std::fs::metadata(to)?.permissions();
+            permissions.set_readonly(false);
+            std::fs::set_permissions(to, permissions)?;
+            std::fs::remove_file(to)?;
+        }
         Err(error) => return Err(error),
     }
     reflink_copy::reflink_or_copy(from, to).map(|_| ())

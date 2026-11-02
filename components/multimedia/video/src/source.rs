@@ -103,6 +103,10 @@ impl MediaMetadata {
 /// Transport/delivery strategy for a media item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations open each delivery strategy variant by variant; a new strategy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum Delivery {
     /// Progressive file playback (local file or HTTP object URL).
     #[default]
@@ -320,15 +324,42 @@ mod drm_tests {
 
 /// Sidecar subtitle track associated with a media item.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SubtitleTrack {
     /// Location of the subtitle asset.
-    pub source: Url,
+    source: Url,
     /// Human-readable label shown in track pickers.
-    pub label: Option<String>,
+    label: Option<String>,
     /// Optional BCP-47 language tag.
-    pub language: Option<String>,
+    language: Option<String>,
     /// `true` when the track is forced narrative text.
-    pub forced: bool,
+    forced: bool,
+}
+
+impl SubtitleTrack {
+    /// Location of the subtitle asset.
+    #[must_use]
+    pub const fn source(&self) -> &Url {
+        &self.source
+    }
+
+    /// Human-readable label shown in track pickers.
+    #[must_use]
+    pub fn get_label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// Optional BCP-47 language tag.
+    #[must_use]
+    pub fn get_language(&self) -> Option<&str> {
+        self.language.as_deref()
+    }
+
+    /// `true` when the track is forced narrative text.
+    #[must_use]
+    pub const fn get_forced(&self) -> bool {
+        self.forced
+    }
 }
 
 impl SubtitleTrack {
@@ -366,19 +397,58 @@ impl SubtitleTrack {
 
 /// Canonical description of one playable media item.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MediaItem {
     /// Stable identity used by playlists and item-transition events.
-    pub id: MediaItemId,
+    id: MediaItemId,
     /// The primary video source.
-    pub source: Url,
+    source: Url,
     /// Transport strategy used to load the item.
-    pub delivery: Delivery,
+    delivery: Delivery,
     /// Sidecar subtitle tracks associated with this item.
-    pub subtitle_tracks: Vec<SubtitleTrack>,
+    subtitle_tracks: Vec<SubtitleTrack>,
     /// User-provided metadata used for system media sessions and now playing UI.
-    pub metadata: MediaMetadata,
+    metadata: MediaMetadata,
     /// Platform-CDM request policy for protected content.
-    pub drm: Option<DrmConfiguration>,
+    drm: Option<DrmConfiguration>,
+}
+
+impl MediaItem {
+    /// Stable identity used by playlists and item-transition events.
+    #[must_use]
+    pub const fn get_id(&self) -> MediaItemId {
+        self.id
+    }
+
+    /// The primary video source.
+    #[must_use]
+    pub const fn source(&self) -> &Url {
+        &self.source
+    }
+
+    /// Transport strategy used to load the item.
+    #[must_use]
+    pub const fn get_delivery(&self) -> Delivery {
+        self.delivery
+    }
+
+    /// Sidecar subtitle tracks associated with this item.
+    #[must_use]
+    pub const fn subtitle_tracks(&self) -> &[SubtitleTrack] {
+        self.subtitle_tracks.as_slice()
+    }
+
+    /// User-provided metadata used for system media sessions and now playing UI.
+    #[must_use]
+    pub const fn get_metadata(&self) -> &MediaMetadata {
+        &self.metadata
+    }
+
+    /// Platform-CDM request policy for protected content.
+    #[must_use]
+    pub const fn get_drm(&self) -> Option<&DrmConfiguration> {
+        self.drm.as_ref()
+    }
 }
 
 impl_constant!(MediaItem);
@@ -429,6 +499,15 @@ impl MediaItem {
     pub const fn delivery(mut self, delivery: Delivery) -> Self {
         self.delivery = delivery;
         self
+    }
+}
+
+/// A playlist aligns its items by [`MediaItem::id`].
+impl nami::Identifiable for MediaItem {
+    type Id = MediaItemId;
+
+    fn id(&self) -> MediaItemId {
+        self.id
     }
 }
 

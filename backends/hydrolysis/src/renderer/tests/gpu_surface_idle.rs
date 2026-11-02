@@ -92,7 +92,7 @@ struct CountingView(RenderCounter);
 
 impl GpuContent for CountingView {
     fn setup(&mut self, gpu: &GpuContext<'_>) {
-        *self.0.redraw.lock().expect("redraw slot") = Some(gpu.redraw.clone());
+        *self.0.redraw.lock().expect("redraw slot") = Some(gpu.redraw().clone());
     }
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {

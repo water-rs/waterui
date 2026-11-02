@@ -24,25 +24,33 @@ use std::fmt;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
-use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_foundation::{NSArray, NSDictionary, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    UIBarButtonItem, UIBarButtonItemStyle, UIBarPosition, UIBarPositioning,
-    UIBarPositioningDelegate, UIButton, UIControl, UIGestureRecognizer,
-    UIGestureRecognizerDelegate, UINavigationBar, UINavigationBarDelegate, UINavigationController,
-    UINavigationControllerDelegate, UINavigationItem, UINavigationItemLargeTitleDisplayMode,
-    UISearchController, UISearchResultsUpdating, UITransitionContextFromViewControllerKey,
-    UIViewController, UIViewControllerTransitionCoordinator,
-    UIViewControllerTransitionCoordinatorContext,
+    NSDirectionalRectEdge, NSForegroundColorAttributeName, UIBarButtonItem, UIBarButtonItemStyle,
+    UIBarPosition, UIBarPositioning, UIBarPositioningDelegate, UIButton, UIColor, UIControl,
+    UIGestureRecognizer, UIGestureRecognizerDelegate, UINavigationBar, UINavigationBarAppearance,
+    UINavigationBarDelegate, UINavigationController, UINavigationControllerDelegate,
+    UINavigationItem, UINavigationItemLargeTitleDisplayMode, UIScrollView, UISearchController,
+    UISearchResultsUpdating, UITransitionContextFromViewControllerKey, UIViewController,
+    UIViewControllerTransitionCoordinator, UIViewControllerTransitionCoordinatorContext,
 };
+
+use crate::callback::guarded;
 
 /// `viewWillAppear:` listener, called with `UIKit`'s `animated` flag.
 type WillAppearHandler = Rc<dyn Fn(bool)>;
 
+/// Answers the page's top-edge scroll view for `contentScrollViewForEdge:`.
+type ScrollSurfaceHandler = Rc<dyn Fn(&NavContentController) -> Option<Retained<UIScrollView>>>;
+
 /// A plain content view controller, reporting when its view appears.
 pub struct NavContentControllerIvars {
+    /// Answers `contentScrollViewForEdge:` for the top edge.
+    scroll_surface: RefCell<Option<ScrollSurfaceHandler>>,
     /// Called when the controller's view appears.
     appear: RefCell<Option<Rc<dyn Fn()>>>,
     /// Called when the controller's view is about to appear.
@@ -109,6 +117,27 @@ define_class!(
             }
         }
 
+        // SAFETY: `contentScrollViewForEdge:` is `UIViewController`'s
+        // query for the scroll view that controls edge chrome. `UIKit`
+        // asks it for the top edge to tie the navigation bar — large
+        // title collapse, the search field's reveal — to the page's
+        // list. Re-resolving on every query keeps the answer current as
+        // the page's content changes; every other edge is `super`'s.
+        #[unsafe(method_id(contentScrollViewForEdge:))]
+        fn content_scroll_view_for_edge(
+            &self,
+            edge: NSDirectionalRectEdge,
+        ) -> Option<Retained<UIScrollView>> {
+            guarded("NavContentController contentScrollViewForEdge:", || {
+                if edge.contains(NSDirectionalRectEdge::Top) {
+                    let handler = self.ivars().scroll_surface.borrow().clone();
+                    return handler.and_then(|handler| handler(self));
+                }
+                // SAFETY: forwards the same selector to `super`.
+                unsafe { msg_send![super(self), contentScrollViewForEdge: edge] }
+            })
+        }
+
         // SAFETY: overriding `viewDidDisappear:` carries no obligations.
         #[unsafe(method(viewDidDisappear:))]
         fn view_did_disappear(&self, animated: bool) {
@@ -128,6 +157,7 @@ impl NavContentController {
     #[must_use]
     pub fn new(mtm: MainThreadMarker, view: &objc2_ui_kit::UIView) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(NavContentControllerIvars {
+            scroll_surface: RefCell::new(None),
             appear: RefCell::new(None),
             will_appear: RefCell::new(None),
             disappear: RefCell::new(None),
@@ -161,6 +191,17 @@ impl NavContentController {
         this
     }
 
+    /// The scroll view controlling top-edge chrome — the navigation
+    /// bar's tracking surface — answered whenever `UIKit` asks this
+    /// controller's `contentScrollViewForEdge:`. The handler re-resolves
+    /// the surface on each query.
+    pub fn set_top_scroll_surface(
+        &self,
+        handler: impl Fn(&Self) -> Option<Retained<UIScrollView>> + 'static,
+    ) {
+        self.ivars().scroll_surface.replace(Some(Rc::new(handler)));
+    }
+
     /// Runs `handler` each time the page's view appears.
     pub fn set_appear_handler(&self, handler: impl Fn() + 'static) {
         self.ivars().appear.replace(Some(Rc::new(handler)));
@@ -175,6 +216,15 @@ impl NavContentController {
     /// Runs `handler` each time the page's view disappears.
     pub fn set_disappear_handler(&self, handler: impl Fn() + 'static) {
         self.ivars().disappear.replace(Some(Rc::new(handler)));
+    }
+
+    /// Draws the page's title and large title in `color`, over the bar's
+    /// default background.
+    pub fn set_title_color(&self, color: &UIColor) {
+        // SAFETY: `navigationItem` is a `UIViewController` getter on the
+        // main thread; the returned item is owned by the controller.
+        let item: Retained<UINavigationItem> = unsafe { msg_send![self, navigationItem] };
+        TitleAppearances::new(self.mtm(), color, None).apply_to_item(&item);
     }
 
     /// The navigation item chrome this page installs.
@@ -445,8 +495,11 @@ pub struct NavSearch {
     /// `None` leaves the platform default in place.
     pub placement: Option<SearchBarPlacement>,
     /// `hidesSearchBarWhenScrolling`: when true the bar's height tracks the
-    /// content scroll offset — a bar `UIKit` never sees scroll begins at
-    /// zero height. `None` leaves the platform default in place.
+    /// offset of the page's top-edge scroll view
+    /// (`contentScrollViewForEdge:`) — a bar `UIKit` never sees scroll
+    /// begins at zero height. `None` leaves the platform default in place:
+    /// the field tucked under the large title, revealed by pulling the
+    /// content down.
     pub hides_when_scrolling: Option<bool>,
 }
 
@@ -516,6 +569,11 @@ type ShowHandler = Rc<dyn Fn(usize)>;
 pub struct BarButtonIvars {
     /// Called when the button is tapped.
     action: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The hosted view.
+    hosted: Retained<objc2_ui_kit::UIView>,
+    /// The hosted view's measured size: the frame its owner gave it before
+    /// hosting, which the owner took from the content's own measure.
+    content: CGSize,
 }
 
 impl fmt::Debug for BarButtonIvars {
@@ -547,6 +605,39 @@ define_class!(
                 handler();
             }
         }
+
+        // SAFETY: `intrinsicContentSize` carries `UIView`'s signature. The
+        // bar sizes a custom view by this, so it reports the hosted
+        // content's measured size.
+        #[unsafe(method(intrinsicContentSize))]
+        fn intrinsic_content_size(&self) -> CGSize {
+            self.ivars().content
+        }
+
+        // SAFETY: `sizeThatFits:` carries `UIView`'s signature; the control
+        // is exactly as large as its content whatever size is proposed.
+        #[unsafe(method(sizeThatFits:))]
+        fn size_that_fits(&self, _size: CGSize) -> CGSize {
+            self.ivars().content
+        }
+
+        // SAFETY: `layoutSubviews` carries `UIView`'s signature. The bar may
+        // give the control more room than its content (the glass platter),
+        // so the content keeps its size, centred in the bounds.
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews(&self) {
+            // SAFETY: `super`'s `layoutSubviews` takes and returns nothing.
+            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            let ivars = self.ivars();
+            let bounds = self.bounds().size;
+            ivars.hosted.setFrame(CGRect::new(
+                CGPoint::new(
+                    (bounds.width - ivars.content.width) / 2.0,
+                    (bounds.height - ivars.content.height) / 2.0,
+                ),
+                ivars.content,
+            ));
+        }
     }
 );
 
@@ -556,6 +647,8 @@ impl BarButton {
     pub fn new(mtm: MainThreadMarker, view: &objc2_ui_kit::UIView) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(BarButtonIvars {
             action: RefCell::new(None),
+            hosted: view.retain(),
+            content: view.frame().size,
         });
         // SAFETY: `initWithFrame:` is `UIControl`'s designated initializer;
         // the button is measured by its hosted view.
@@ -605,11 +698,74 @@ pub fn bar_item(
     image_bar_item(mtm, image.as_deref(), action)
 }
 
+/// The three appearances (standard, compact, scroll-edge) that draw a
+/// bar's title and large title in `title`.
+///
+/// With no `background` the bar keeps `UIKit`'s default material, and the
+/// scroll-edge appearance keeps the transparent background `UIKit` gives a
+/// large-title bar at the top of its content. With a `background` every
+/// state draws that opaque colour, as a bar tint does.
+struct TitleAppearances {
+    standard: Retained<UINavigationBarAppearance>,
+    compact: Retained<UINavigationBarAppearance>,
+    scroll_edge: Retained<UINavigationBarAppearance>,
+}
+
+impl TitleAppearances {
+    fn new(mtm: MainThreadMarker, title: &UIColor, background: Option<&UIColor>) -> Self {
+        let appearance = |transparent: bool| {
+            let appearance = UINavigationBarAppearance::new(mtm);
+            match background {
+                Some(background) => {
+                    appearance.configureWithOpaqueBackground();
+                    appearance.setBackgroundColor(Some(background));
+                }
+                None if transparent => appearance.configureWithTransparentBackground(),
+                None => appearance.configureWithDefaultBackground(),
+            }
+            // SAFETY: `NSForegroundColorAttributeName` is an exported
+            // `NSAttributedStringKey` and its value is a `UIColor`, the
+            // attribute's documented type.
+            let attributes: Retained<NSDictionary<NSString, AnyObject>> = unsafe {
+                NSDictionary::from_slices(&[NSForegroundColorAttributeName], &[title.as_ref()])
+            };
+            // SAFETY: the dictionary maps the foreground-colour attribute
+            // to a colour, a valid text attribute set for both titles.
+            unsafe {
+                appearance.setTitleTextAttributes(&attributes);
+                appearance.setLargeTitleTextAttributes(&attributes);
+            }
+            appearance
+        };
+        Self {
+            standard: appearance(false),
+            compact: appearance(false),
+            scroll_edge: appearance(true),
+        }
+    }
+
+    fn apply_to_item(&self, item: &UINavigationItem) {
+        item.setStandardAppearance(Some(&self.standard));
+        item.setCompactAppearance(Some(&self.compact));
+        item.setScrollEdgeAppearance(Some(&self.scroll_edge));
+    }
+
+    fn apply_to_bar(&self, bar: &UINavigationBar) {
+        bar.setStandardAppearance(&self.standard);
+        bar.setCompactAppearance(Some(&self.compact));
+        bar.setScrollEdgeAppearance(Some(&self.scroll_edge));
+    }
+}
+
 /// A standalone `UINavigationBar` — the in-content bar
 /// when no `UINavigationController` hosts the page.
 pub struct NavBarIvars {
     /// The one item the bar shows.
     item: Retained<UINavigationItem>,
+    /// The colour of the title and large title, once the page sets one.
+    title_color: RefCell<Option<Retained<UIColor>>>,
+    /// The bar's background colour, when the page sets one.
+    bar_color: RefCell<Option<Retained<UIColor>>>,
 }
 
 impl fmt::Debug for NavBarIvars {
@@ -656,7 +812,11 @@ impl NavBar {
         // SAFETY: `UINavigationItem` initializes through `init`.
         let item: Retained<UINavigationItem> =
             unsafe { msg_send![mtm.alloc::<UINavigationItem>(), init] };
-        let this = Self::alloc(mtm).set_ivars(NavBarIvars { item });
+        let this = Self::alloc(mtm).set_ivars(NavBarIvars {
+            item,
+            title_color: RefCell::new(None),
+            bar_color: RefCell::new(None),
+        });
         // SAFETY: `init` is `UIView`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         let items = NSArray::from_retained_slice(&[this.ivars().item.clone()]);
@@ -666,6 +826,29 @@ impl NavBar {
         // status-bar band.
         this.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         this
+    }
+
+    /// Draws the title and large title in `color`, keeping the bar colour.
+    pub fn set_title_color(&self, color: &UIColor) {
+        self.ivars().title_color.replace(Some(color.retain()));
+        self.refresh_appearance();
+    }
+
+    /// Fills the bar with `color`.
+    pub fn set_bar_color(&self, color: &UIColor) {
+        self.setBarTintColor(Some(color));
+        self.ivars().bar_color.replace(Some(color.retain()));
+        self.refresh_appearance();
+    }
+
+    /// Installs the appearances for the title and bar colours set so far.
+    fn refresh_appearance(&self) {
+        let ivars = self.ivars();
+        let Some(title) = ivars.title_color.borrow().clone() else {
+            return;
+        };
+        let background = ivars.bar_color.borrow().clone();
+        TitleAppearances::new(self.mtm(), &title, background.as_deref()).apply_to_bar(self);
     }
 
     /// Applies a page's chrome to the bar's item — the subset of
@@ -748,6 +931,34 @@ pub fn first_button(view: &objc2_ui_kit::UIView) -> Option<Retained<UIButton>> {
     None
 }
 
+/// Mirrors `button`'s enabled state onto `item`.
+///
+/// Seeds `isEnabled` from the button's current value, then keeps the item
+/// in step through the button's enabled handler. The handler holds the
+/// item weakly — the item's action already retains the button, so a
+/// strong hold back would cycle.
+///
+/// # Panics
+///
+/// When `button` is not a [`CocoaUiButton`]: every `UIButton` this crate
+/// constructs is the subclass, so a plain `UIButton` found in rendered
+/// content means an invariant was broken somewhere else.
+///
+/// [`CocoaUiButton`]: crate::uikit::button::CocoaUiButton
+pub fn mirror_enabled(button: &UIButton, item: &UIBarButtonItem) {
+    item.setEnabled(button.isEnabled());
+    let button = button
+        .downcast_ref::<crate::uikit::button::CocoaUiButton>()
+        .expect("every `UIButton` cocoa-ui constructs is a `CocoaUiButton`");
+    let weak = Weak::new(item);
+    button.set_enabled_handler(move |enabled| {
+        let Some(item) = weak.load() else {
+            return;
+        };
+        item.setEnabled(enabled);
+    });
+}
+
 /// A `UIBarButtonItem` drawing `image` inside the bar's chrome — the symbol
 /// and view-rendered icons alike; `action` fires on tap.
 #[must_use]
@@ -762,6 +973,34 @@ pub fn image_bar_item(
         UIBarButtonItem::initWithImage_style_target_action(
             mtm.alloc(),
             image,
+            UIBarButtonItemStyle::Plain,
+            None,
+            None,
+        )
+    };
+    if let Some(action) = action {
+        item.setPrimaryAction(Some(&handler_action(mtm, move || action())));
+    }
+    item
+}
+
+/// A `UIBarButtonItem` whose title the bar draws itself.
+///
+/// A text toolbar button goes through here. Hosting the rendered button
+/// would hand the bar a `UIButton` whose configuration carries no title,
+/// and the bar draws that as an empty capsule.
+#[must_use]
+pub fn title_bar_item(
+    mtm: MainThreadMarker,
+    title: &str,
+    action: Option<Rc<dyn Fn()>>,
+) -> Retained<UIBarButtonItem> {
+    // SAFETY: `initWithTitle:style:target:action:` is a `UIBarButtonItem`
+    // designated initializer; nil target/action are valid.
+    let item = unsafe {
+        UIBarButtonItem::initWithTitle_style_target_action(
+            mtm.alloc(),
+            Some(&NSString::from_str(title)),
             UIBarButtonItemStyle::Plain,
             None,
             None,
@@ -963,6 +1202,19 @@ impl NavigationController {
     /// inert and every title draws inline.
     pub fn set_prefers_large_titles(&self, prefers: bool) {
         self.navigationBar().setPrefersLargeTitles(prefers);
+    }
+
+    /// Inserts `child` into the controller's view above its pages and
+    /// beneath the navigation bar and toolbar.
+    ///
+    /// # Panics
+    ///
+    /// When the controller's view is not loaded.
+    pub fn insert_beneath_bars(&self, child: &objc2_ui_kit::UIView) {
+        let view = self
+            .view()
+            .expect("a navigation controller's view is loaded");
+        view.insertSubview_belowSubview(child, &self.navigationBar());
     }
 
     /// The pages currently on the stack, root first.

@@ -47,6 +47,8 @@ fn write(priority: c_int, tag: &CStr, line: &str) {
     let Ok(text) = CString::new(line) else {
         return;
     };
+    // SAFETY: `tag` and `text` are NUL-terminated strings valid for the
+    // call.
     unsafe {
         __android_log_write(priority, tag.as_ptr(), text.as_ptr());
     }

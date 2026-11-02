@@ -8,6 +8,7 @@ use waterui_text::{IntoText, font::Title};
 
 /// Visual style for a [`Card`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CardStyle {
     /// Use the card style provided by the installed theme.
     #[default]

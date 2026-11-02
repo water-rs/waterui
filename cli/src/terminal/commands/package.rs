@@ -9,7 +9,7 @@ use crate::shell::Shell;
 use crate::{header, success};
 use waterui_cli::toolchain_checks;
 use waterui_cli::{
-    android::platform::{AndroidAbi, AndroidPlatform},
+    android::platform::AndroidAbi,
     apple::{
         platform::{build_rust_lib, package_apple, stage_packaged_host_library},
         toolchain::AppleSdk,
@@ -54,8 +54,6 @@ pub enum TargetPlatform {
 pub enum TargetBackend {
     /// Apple backend (UIKit/AppKit).
     Apple,
-    /// Android backend.
-    Android,
     /// GTK4 backend.
     Gtk4,
     /// Hydrolysis backend.
@@ -69,7 +67,6 @@ impl TargetBackend {
     const fn from_lib(backend: LibTargetBackend) -> Self {
         match backend {
             LibTargetBackend::Apple => Self::Apple,
-            LibTargetBackend::Android => Self::Android,
             LibTargetBackend::Gtk4 => Self::Gtk4,
             LibTargetBackend::Hydrolysis => Self::Hydrolysis,
             LibTargetBackend::WinUi => Self::WinUi,
@@ -79,14 +76,13 @@ impl TargetBackend {
     /// Whether the backend is experimental — shipped without full testing
     /// ahead of milestone releases — so selecting it asks for confirmation.
     const fn is_experimental(self) -> bool {
-        matches!(self, Self::Gtk4 | Self::WinUi)
+        self.cli_backend().lib_backend().is_experimental()
     }
 
     /// The shared command-line backend this packaging backend is.
     const fn cli_backend(self) -> super::TargetBackend {
         match self {
             Self::Apple => super::TargetBackend::Apple,
-            Self::Android => super::TargetBackend::Android,
             Self::Gtk4 => super::TargetBackend::Gtk4,
             Self::Hydrolysis => super::TargetBackend::Hydrolysis,
             Self::WinUi => super::TargetBackend::WinUi,
@@ -121,6 +117,12 @@ impl AndroidArch {
 
 /// Arguments for the package command.
 #[derive(ClapArgs, Debug)]
+// CLI flag structs collect booleans by nature; each flag is a documented
+// `--flag`, not structural state.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "every boolean is a documented --flag, not structural state — the shape follows the CLI surface"
+)]
 pub struct Args {
     /// Target platform to package for.
     #[arg(short, long, value_enum)]
@@ -146,12 +148,18 @@ pub struct Args {
 
     /// Leave a release build unsigned, for a host with no signing identity
     /// (CI, a build VM). Applies to iOS device builds with the Apple backend
-    /// and Android builds with the Android or Hydrolysis backend. Linkage and
+    /// and Android builds with the Hydrolysis backend. Linkage and
     /// profile are those of the signed build; sign the artifact (`codesign`,
     /// `apksigner`) before installing it. On Android it combines with
     /// `--distribution` to produce an unsigned AAB; on iOS it does not.
     #[arg(long)]
     unsigned: bool,
+
+    /// Hardware UDID of the iOS device the package is provisioned for; the
+    /// embedded development profile is selected — or requested from Xcode —
+    /// to cover that device. Only valid with `--platform ios`.
+    #[arg(long)]
+    device: Option<String>,
 
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
@@ -162,6 +170,13 @@ pub struct Args {
     /// Required when packaging Android backend.
     #[arg(long, value_enum, value_delimiter = ',')]
     arch: Vec<AndroidArch>,
+
+    /// Package without accessing the network — the same switch as
+    /// `cargo build --offline`, and `CARGO_NET_OFFLINE` is honoured the same
+    /// way. A declared font missing from the font cache then fails the
+    /// packaging instead of being fetched.
+    #[arg(long)]
+    offline: bool,
 
     /// Skip the confirmation prompt required by experimental backends
     /// (needed in non-interactive environments).
@@ -238,10 +253,17 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         args.profile(),
         args.distribution,
     );
-    check_packaging_toolchain(shell, args.platform, context.backend, &args.arch).await?;
+    let kotlin_toolchain =
+        check_packaging_toolchain(shell, args.platform, context.backend, &args.arch).await?;
     // The per-backend artifact builds cross clippy's `large_futures` threshold
     // (16 KiB) on Windows, so the future is pinned on the heap.
-    let built = Box::pin(build_packaging_artifacts(shell, &args, &context)).await?;
+    let built = Box::pin(build_packaging_artifacts(
+        shell,
+        &args,
+        &context,
+        kotlin_toolchain.as_ref(),
+    ))
+    .await?;
     // The packaging step's future crosses the same threshold, so it is
     // pinned too.
     Box::pin(package_artifact(shell, &args, &context, built.as_ref())).await
@@ -256,22 +278,21 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         args.backend
             .map(|backend| backend.cli_backend().lib_backend()),
     )?);
-    // Hydrolysis on Android opens no managed backend — the old widget-FFI
-    // backend is not its runtime; the Hydrolysis launcher crate
-    // `ensure_generated_backend` produces is.
+    // Hydrolysis on Android opens no managed backend crate: its runtime is
+    // the Hydrolysis launcher crate `ensure_generated_backend` produces.
     let managed_backends =
         if (args.platform, backend) == (TargetPlatform::Android, TargetBackend::Hydrolysis) {
             ManagedBackends::NONE
         } else {
             ManagedBackends::for_platform(lib_platform(args.platform))
         };
-    let project = Project::open(
-        &waterui_cli::toolchain::Host::current(),
+    let project = Project::open_for_build(
+        &waterui_cli::toolchain::Host::current().with_offline(args.offline),
         &project_path,
         managed_backends,
     )
     .await?;
-    if project.manifest().package.embedded {
+    if project.manifest().package().embedded() {
         bail!(
             "`water package` does not apply to embedded projects: `water build` already produces the host-consumable artifact"
         );
@@ -285,6 +306,7 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         args.unsigned,
         args.distribution,
     )?;
+    validate_device_args(args.platform, args.device.as_deref(), args.unsigned)?;
     backend
         .cli_backend()
         .lib_backend()
@@ -300,8 +322,8 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
     // nothing installs or accepts. The plan is bound to this project and to
     // the final package options, and the Gradle step re-proves that binding
     // instead of re-probing the manifest and the environment. `[signing.
-    // android]` is an Android platform contract, so both Android backends
-    // resolve it here.
+    // android]` is an Android platform contract, resolved here for every
+    // Android package.
     let package_options = PackageOptions::packaging(
         if args.distribution {
             PackageAudience::Distribution
@@ -315,6 +337,7 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
     } else {
         DeviceSigning::Automatic
     })
+    .with_device_udid(args.device.clone())
     .with_progress(shell.build_progress());
     let prepared_signing = (lib_platform(args.platform) == LibTargetPlatform::Android)
         .then(|| {
@@ -376,9 +399,9 @@ async fn check_packaging_toolchain(
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     let spinner = shell.spinner("Checking toolchain...");
-    check_toolchain_for_backend(
+    let kotlin_toolchain = check_toolchain_for_backend(
         &waterui_cli::toolchain::Host::current(),
         platform,
         backend,
@@ -389,26 +412,16 @@ async fn check_packaging_toolchain(
         pb.finish_and_clear();
     }
     success!(shell, "Toolchain ready");
-    Ok(())
+    Ok(kotlin_toolchain)
 }
 
 async fn build_packaging_artifacts(
     shell: &Shell,
     args: &Args,
     context: &PackagingContext,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<Option<BuiltTarget>> {
     match context.backend {
-        TargetBackend::Android => {
-            // The per-backend artifact builds cross clippy's `large_futures`
-            // threshold (16 KiB) on Windows, so the future is pinned on the heap.
-            Box::pin(build_android_packaging_artifacts(
-                shell,
-                &context.project,
-                &args.arch,
-                context.build_options.clone(),
-            ))
-            .await
-        }
         TargetBackend::Apple => {
             Box::pin(build_apple_packaging_artifacts(
                 shell,
@@ -429,6 +442,8 @@ async fn build_packaging_artifacts(
                 args.platform,
                 &args.arch,
                 context.build_options.clone(),
+                kotlin_toolchain,
+                hydrolysis_android::resolve_painter(&context.project, args.painter),
             ))
             .await
         }
@@ -437,37 +452,6 @@ async fn build_packaging_artifacts(
                 .await
         }
     }
-}
-
-async fn build_android_packaging_artifacts(
-    shell: &Shell,
-    project: &Project,
-    arch: &[AndroidArch],
-    build_options: BuildOptions,
-) -> Result<Option<BuiltTarget>> {
-    let mut built = None;
-    // Every tool the build spawns, the prologue's included, echoes to the
-    // terminal the user is watching.
-    let project = &project.with_std_output(shell.is_interactive());
-    AndroidPlatform::clean_jni_libs(project).await?;
-    // The companion render, permission audit and font staging do not
-    // depend on the ABI — run them once for the whole set.
-    AndroidPlatform::prepare_for_build(project).await?;
-    for arch in arch {
-        let abi = arch.to_abi();
-        let spinner = shell.spinner(format!("Building Rust library ({})...", abi.as_str()));
-        // The Android build future crosses clippy's `large_futures` threshold
-        // (16 KiB) on Windows, so it is pinned on the heap.
-        let target =
-            Box::pin(AndroidPlatform::new(abi).build_prepared(project, build_options.clone()))
-                .await?;
-        built = Some(target);
-        if let Some(pb) = spinner {
-            pb.finish_and_clear();
-        }
-        success!(shell, "Built for {}", abi.as_str());
-    }
-    Ok(built)
 }
 
 async fn build_apple_packaging_artifacts(
@@ -532,12 +516,17 @@ async fn build_hydrolysis_packaging_artifacts(
     platform: TargetPlatform,
     arch: &[AndroidArch],
     build_options: BuildOptions,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
+    painter: HydrolysisAndroidPainter,
 ) -> Result<Option<BuiltTarget>> {
     if platform == TargetPlatform::Web {
         return Ok(None);
     }
 
     if platform == TargetPlatform::Android {
+        let kotlin = kotlin_toolchain.ok_or_else(|| {
+            eyre::eyre!("Internal error: Android build has no resolved Kotlin toolchain")
+        })?;
         let mut built = None;
         hydrolysis_android::clean_jni_libs(project).await?;
         for arch in arch {
@@ -546,7 +535,9 @@ async fn build_hydrolysis_packaging_artifacts(
             let target = hydrolysis_android::build(
                 &project.with_std_output(shell.is_interactive()),
                 abi,
+                painter,
                 build_options.clone(),
+                kotlin,
             )
             .await?;
             built = Some(target);
@@ -622,22 +613,6 @@ async fn package_artifact_inner(
     let project = &context.project.with_std_output(std_output);
     let package_options = context.package_options.clone();
     match context.backend {
-        TargetBackend::Android => {
-            let abis: Vec<AndroidAbi> = args.arch.iter().map(|arch| arch.to_abi()).collect();
-            let built = built.ok_or_else(|| {
-                eyre::eyre!("Internal error: Android packaging has no build result")
-            })?;
-            AndroidPlatform::package_with_abis(
-                project,
-                package_options,
-                &abis,
-                built,
-                context.prepared_signing.as_ref().ok_or_else(|| {
-                    eyre::eyre!("Internal error: Android packaging has no signing plan")
-                })?,
-            )
-            .await
-        }
         TargetBackend::Apple => {
             let built = built.ok_or_else(|| {
                 eyre::eyre!("Internal error: Apple packaging has no build result")
@@ -705,11 +680,11 @@ fn validate_unsigned_args(
 ) -> Result<()> {
     let android = platform == TargetPlatform::Android;
     let applies = (platform == TargetPlatform::Ios && backend == TargetBackend::Apple)
-        || (android && matches!(backend, TargetBackend::Android | TargetBackend::Hydrolysis));
+        || (android && backend == TargetBackend::Hydrolysis);
     if unsigned && !applies {
         bail!(
             "--unsigned only applies to an iOS device build with the Apple backend or an \
-             Android build with the Android or Hydrolysis backend; simulator and desktop \
+             Android build with the Hydrolysis backend; simulator and desktop \
              packages are not signed per device"
         );
     }
@@ -734,13 +709,35 @@ fn validate_unsigned_args(
     Ok(())
 }
 
+fn validate_device_args(
+    platform: TargetPlatform,
+    device: Option<&str>,
+    unsigned: bool,
+) -> Result<()> {
+    if device.is_none() {
+        return Ok(());
+    }
+    if platform != TargetPlatform::Ios {
+        bail!(
+            "--device only applies to `--platform ios`; {} packages are not provisioned per device",
+            platform_name(platform)
+        );
+    }
+    if unsigned {
+        bail!(
+            "--device cannot combine with --unsigned: an unsigned package embeds no provisioning profile"
+        );
+    }
+    Ok(())
+}
+
 fn validate_arch_args(
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
 ) -> Result<()> {
-    let packages_android = backend == TargetBackend::Android
-        || (platform == TargetPlatform::Android && backend == TargetBackend::Hydrolysis);
+    let packages_android =
+        platform == TargetPlatform::Android && backend == TargetBackend::Hydrolysis;
 
     if packages_android && arch.is_empty() {
         let backend_arg = format!("{backend:?}").to_lowercase();
@@ -764,7 +761,7 @@ async fn check_toolchain_for_backend(
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     match backend {
         TargetBackend::Apple => {
             let sdk = match platform {
@@ -779,13 +776,6 @@ async fn check_toolchain_for_backend(
                 }
             };
             toolchain_checks::check_apple(host, sdk).await?;
-        }
-        TargetBackend::Android => {
-            if platform != TargetPlatform::Android {
-                bail!("Internal error: Android backend is not supported on {platform:?}");
-            }
-            let required_abis = arch.iter().map(|arch| arch.to_abi()).collect::<Vec<_>>();
-            toolchain_checks::check_android_build_or_package_for_abis(host, &required_abis).await?;
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
@@ -804,9 +794,14 @@ async fn check_toolchain_for_backend(
             }
             if platform == TargetPlatform::Android {
                 let required_abis = arch.iter().map(|arch| arch.to_abi()).collect::<Vec<_>>();
-                toolchain_checks::check_android_build_or_package_for_abis(host, &required_abis)
-                    .await?;
-            } else if platform == TargetPlatform::Web {
+                return toolchain_checks::check_android_build_or_package_for_abis(
+                    host,
+                    &required_abis,
+                )
+                .await
+                .map(Some);
+            }
+            if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
             } else {
                 toolchain_checks::check_hydrolysis(host).await?;
@@ -819,7 +814,7 @@ async fn check_toolchain_for_backend(
             toolchain_checks::check_winui(host).await?;
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
@@ -861,7 +856,6 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
 const fn backend_name(backend: TargetBackend) -> &'static str {
     match backend {
         TargetBackend::Apple => "Apple",
-        TargetBackend::Android => "Android",
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
         TargetBackend::WinUi => "WinUI",
@@ -872,7 +866,7 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
 mod tests {
     use super::{
         AndroidArch, BuildProfile, TargetBackend, TargetPlatform, validate_arch_args,
-        validate_unsigned_args,
+        validate_device_args, validate_unsigned_args,
     };
 
     #[test]
@@ -883,9 +877,8 @@ mod tests {
             TargetPlatform::Android,
             TargetPlatform::Macos,
         );
-        let (apple, android_be, hydrolysis, gtk4) = (
+        let (apple, hydrolysis, gtk4) = (
             TargetBackend::Apple,
-            TargetBackend::Android,
             TargetBackend::Hydrolysis,
             TargetBackend::Gtk4,
         );
@@ -901,32 +894,16 @@ mod tests {
         // Android, both backends: unsigned is valid for release APK and AAB
         // (distribution), never for debug — the flag would be ignored since a
         // debug build always signs with the debug keystore.
-        for backend in [android_be, hydrolysis] {
-            assert!(
-                v(android, backend, release, true, false).is_ok(),
-                "{backend:?}"
-            );
-            assert!(
-                v(android, backend, release, true, true).is_ok(),
-                "{backend:?}"
-            );
-            assert!(
-                v(android, backend, debug, true, false).is_err(),
-                "{backend:?}"
-            );
-        }
+        assert!(v(android, hydrolysis, release, true, false).is_ok());
+        assert!(v(android, hydrolysis, release, true, true).is_ok());
+        assert!(v(android, hydrolysis, debug, true, false).is_err());
 
         // Everywhere else --unsigned means nothing.
         assert!(v(macos, apple, release, true, false).is_err());
         assert!(v(ios, hydrolysis, release, true, false).is_err());
         assert!(v(macos, gtk4, release, true, false).is_err());
         // No --unsigned: every combination validates.
-        for (platform, backend) in [
-            (ios, apple),
-            (android, android_be),
-            (android, hydrolysis),
-            (macos, gtk4),
-        ] {
+        for (platform, backend) in [(ios, apple), (android, hydrolysis), (macos, gtk4)] {
             assert!(v(platform, backend, release, false, false).is_ok());
             assert!(v(platform, backend, debug, false, false).is_ok());
         }
@@ -945,15 +922,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_arch_for_android_backend() {
-        assert!(validate_arch_args(TargetPlatform::Android, TargetBackend::Android, &[]).is_err());
+    fn rejects_empty_arch_for_android() {
         assert!(
             validate_arch_args(TargetPlatform::Android, TargetBackend::Hydrolysis, &[]).is_err()
         );
     }
 
     #[test]
-    fn rejects_arch_for_non_android_backend() {
+    fn rejects_arch_for_a_non_android_target() {
         let err = validate_arch_args(
             TargetPlatform::Macos,
             TargetBackend::Apple,
@@ -977,18 +953,33 @@ mod tests {
         assert!(
             validate_arch_args(
                 TargetPlatform::Android,
-                TargetBackend::Android,
-                &[AndroidArch::Arm64]
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_arch_args(
-                TargetPlatform::Android,
                 TargetBackend::Hydrolysis,
                 &[AndroidArch::Arm64]
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn device_arg_applies_to_ios_device_packages_only() {
+        const UDID: &str = "00008140-0000ABCD00112233";
+
+        // A signed iOS package accepts --device; every other platform
+        // rejects it naming the platform.
+        assert!(validate_device_args(TargetPlatform::Ios, Some(UDID), false).is_ok());
+        for (platform, name) in [
+            (TargetPlatform::IosSimulator, "iOS Simulator"),
+            (TargetPlatform::Android, "Android"),
+            (TargetPlatform::Macos, "macOS"),
+        ] {
+            let Err(err) = validate_device_args(platform, Some(UDID), false) else {
+                panic!("{name} must reject --device");
+            };
+            assert!(err.to_string().contains(name), "{err}");
+        }
+        // An unsigned package embeds no profile for --device to steer.
+        assert!(validate_device_args(TargetPlatform::Ios, Some(UDID), true).is_err());
+        // No --device: every platform validates.
+        assert!(validate_device_args(TargetPlatform::Macos, None, false).is_ok());
     }
 }

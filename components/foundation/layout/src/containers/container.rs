@@ -214,6 +214,7 @@ impl LazyContainer {
             direction: Computed::constant(LayoutDirection::default()),
         }
     }
+
     /// Returns the boxed layout object together with the collected child views.
     #[must_use]
     pub fn into_inner(self) -> (Box<dyn Layout>, AnyViews<AnyView>) {

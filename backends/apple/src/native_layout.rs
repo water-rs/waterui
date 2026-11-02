@@ -67,7 +67,7 @@ fn owns_safe_area(view: &PlatformView) -> bool {
 /// transparent wrapper forwards the declaration through its
 /// `cocoaUiPrimaryContent` chain: `Color.opacity(..)` in a background
 /// slot stays a fill without the wrapper copying the bit.
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", feature = "fixed_container"))]
 pub fn is_fill(view: &PlatformView) -> bool {
     if view.respondsToSelector(objc2::sel!(cocoaUiIsFill))
         // SAFETY: cocoa-ui's classes declare this selector as a boolean query.
@@ -112,6 +112,31 @@ fn window_frame(view: &PlatformView) -> CGRect {
 #[cfg(target_os = "ios")]
 fn keyboard_rect(view: &PlatformView) -> CGRect {
     cocoa_ui::uikit::keyboard::window_keyboard(view).map_or(CGRect::ZERO, |(frame, _)| frame)
+}
+
+/// Whether `view` is a native bar — `UINavigationBar`, `UIToolbar` or
+/// `UITabBar`. `UIKit` places a bar's items itself, so a view inside one
+/// answers to the bar's own bounds, not the window's regions.
+#[cfg(target_os = "ios")]
+fn is_native_bar(view: &PlatformView) -> bool {
+    use cocoa_ui::objc2_ui_kit::{UINavigationBar, UITabBar, UIToolbar};
+    view.downcast_ref::<UINavigationBar>().is_some()
+        || view.downcast_ref::<UIToolbar>().is_some()
+        || view.downcast_ref::<UITabBar>().is_some()
+}
+
+/// The nearest native bar `view` hangs inside — the bar whose bounds are
+/// its layout boundary — or `None` outside bar chrome.
+#[cfg(target_os = "ios")]
+fn enclosing_bar(view: &PlatformView) -> Option<Retained<PlatformView>> {
+    let mut current = Some(Retained::from(view));
+    while let Some(candidate) = current {
+        if is_native_bar(&candidate) {
+            return Some(candidate);
+        }
+        current = view::superview(&candidate);
+    }
+    None
 }
 
 /// The depth `band` eats into `frame` on each edge — positive only where
@@ -191,8 +216,9 @@ const fn covered_release_mask(mask: u16) -> u16 {
 }
 
 /// The band `candidate` covers inside its subtree on each edge — a view
-/// whose `safeAreaInsets` on an edge run deeper than the window's
-/// container inset hosts a chrome band there (the tab bar's band inside
+/// whose `safeAreaInsets` on an edge run deeper than the context's
+/// baseline (the window's container inset, or in a capture window the
+/// capture root's own insets) hosts a chrome band there (the tab bar's band inside
 /// `UITabBarController`'s pane, the navigation bar's band inside a
 /// pushed page); everything inside is covered by it.
 #[cfg(target_os = "ios")]
@@ -201,7 +227,7 @@ fn cover_contribution(covered: &mut Covered, candidate: &PlatformView, context: 
     let frame = window_frame(candidate);
     for edge in 0..4u16 {
         let depth = depth_at(&insets, edge);
-        if depth <= depth_at(&context.container, edge) + 0.5 {
+        if depth <= depth_at(&context.baseline, edge) + 0.5 {
             continue;
         }
         // The band's inner edge: the candidate's own safe boundary on
@@ -235,7 +261,21 @@ fn covered_bands(view: &PlatformView, context: &WindowContext) -> Covered {
     }
     let mut current: Option<Retained<PlatformView>> = Some(Retained::from(view));
     while let Some(candidate) = current {
+        if is_native_bar(&candidate) {
+            break;
+        }
         cover_contribution(&mut covered, &candidate, context);
+        if context.capture_root {
+            // The capture root stands in for the window: nothing above it
+            // is a band of the captured subtree.
+            if view::window(&candidate)
+                .and_then(|window| window.rootViewController())
+                .and_then(|controller| controller.view())
+                .is_some_and(|root| core::ptr::eq(&raw const *root, &raw const *candidate))
+            {
+                break;
+            }
+        }
         current = view::superview(&candidate);
     }
     covered
@@ -250,32 +290,73 @@ struct WindowContext {
     container: EdgeInsets,
     /// The keyboard region's depth on the window's edges.
     keyboard: EdgeInsets,
+    /// The depth a view's `safeAreaInsets` must exceed to count as a
+    /// chrome band: `container` in an ordinary window, the capture root's
+    /// own insets in a capture window (the device bands `UIKit` propagates
+    /// into the capture are not chrome).
+    baseline: EdgeInsets,
+    /// Whether the context is a capture window's, whose root stands in for
+    /// the window.
+    capture_root: bool,
 }
 
 #[cfg(target_os = "ios")]
 impl WindowContext {
     /// The two regions' depths at window level for `view` — no window means
     /// no regions: a detached view's own frame stands in for the window.
+    /// Inside a native bar the bar's own bounds are the boundary: `UIKit`
+    /// places the items and no window region reaches into the chrome.
     fn of(view: &PlatformView) -> Self {
+        if let Some(bar) = enclosing_bar(view) {
+            return Self {
+                window: window_frame(&bar),
+                container: EdgeInsets::ZERO,
+                keyboard: EdgeInsets::ZERO,
+                baseline: EdgeInsets::ZERO,
+                capture_root: false,
+            };
+        }
         let Some(window) = view::window(view) else {
             return Self {
                 window: window_frame(view),
                 container: EdgeInsets::ZERO,
                 keyboard: EdgeInsets::ZERO,
+                baseline: EdgeInsets::ZERO,
+                capture_root: false,
             };
         };
+        if cocoa_ui::bitmap::is_capture_window(&window) {
+            // The capture contract: the capture root stands in for the
+            // window, no container or keyboard region applies, and the
+            // device bands UIKit propagates into the capture are the
+            // root's own insets, not chrome.
+            let root = window
+                .rootViewController()
+                .and_then(|controller| controller.view())
+                .expect("a capture window is mounted through its root controller");
+            return Self {
+                window: window_frame(&root),
+                container: EdgeInsets::ZERO,
+                keyboard: EdgeInsets::ZERO,
+                baseline: EdgeInsets::from(root.safeAreaInsets()),
+                capture_root: true,
+            };
+        }
         let window: &PlatformView = &window;
+        let container = EdgeInsets::from(window.safeAreaInsets());
         Self {
             window: window.bounds(),
             // The container region is the window's own `safeAreaInsets` —
             // the bands system bars, cutouts and the home indicator
             // reserve; a root controller's `additionalSafeAreaInsets` are
             // the app's layout choice, not region geometry.
-            container: EdgeInsets::from(window.safeAreaInsets()),
+            container,
             // `keyboard_rect` resolves the window from the view it is
             // given: a `UIWindow` is inside no window, so the lookup must
             // run on `view` itself.
             keyboard: band_depths(window.bounds(), keyboard_rect(view)),
+            baseline: container,
+            capture_root: false,
         }
     }
 
@@ -328,6 +409,7 @@ impl WindowContext {
 
     /// The window's bounds in `view`'s coordinate space — the outermost
     /// extension target.
+    #[cfg(feature = "fixed_container")]
     fn window_rect(&self, view: &PlatformView) -> Rect {
         let frame = window_frame(view);
         Rect::new(
@@ -372,15 +454,14 @@ fn edge_reaches(frame: CGRect, boundary: f64, edge: u16, tolerance: f64) -> bool
 }
 
 /// The ignorer chain `view` hangs under: `(declared mask, window frame)`
-/// pairs outermost first, stopping before a scroll surface — a surface
-/// owns the safe-area contract for its subtree, so nothing inside it
-/// accumulates.
+/// pairs outermost first, stopping before a scroll surface or native bar: each
+/// owns the region boundary for its subtree.
 #[cfg(target_os = "ios")]
 fn ignorer_chain(view: &PlatformView) -> Vec<(u16, CGRect)> {
     let mut chain = Vec::new();
     let mut ancestor = view::superview(view);
     while let Some(current) = ancestor {
-        if view::is_scroll_surface(&current) {
+        if view::is_scroll_surface(&current) || is_native_bar(&current) {
             break;
         }
         let mask = declared_mask(&current);
@@ -426,6 +507,7 @@ fn fold_released(
 
 /// Half a physical pixel on `view`'s display — the distance at which a
 /// laid-out frame counts as ending on a boundary (§7.1 "touches").
+#[cfg(any(target_os = "ios", feature = "fixed_container"))]
 fn touch_tolerance(view: &PlatformView) -> f64 {
     0.5 / view::backing_scale_factor(view)
 }
@@ -538,6 +620,7 @@ impl<'a> LayoutContext<'a> {
     /// the host's bounds. On an edge no region releases, the target is
     /// the boundary itself, so an edge with no extension stays where it
     /// was laid out.
+    #[cfg(feature = "fixed_container")]
     #[must_use]
     pub fn extend_child(&self, child: &PlatformView, frame: Rect, fill_slot: bool) -> Rect {
         // Inside a scroll surface nothing touches an edge — the surface
@@ -618,6 +701,7 @@ impl<'a> LayoutContext<'a> {
 
     /// `AppKit` keeps the container region only: a safe-area manager
     /// extends to the host's bounds on the edges it touches.
+    #[cfg(feature = "fixed_container")]
     #[must_use]
     pub fn extend_child(&self, child: &PlatformView, frame: Rect, _fill_slot: bool) -> Rect {
         if manages_safe_area(child) {
@@ -636,10 +720,28 @@ impl<'a> LayoutContext<'a> {
     /// otherwise.
     #[must_use]
     pub fn content_frame(&self, content: &PlatformView) -> Rect {
+        self.region_frame(content, view::bounds(self.host))
+    }
+
+    /// The frame the host hands one `content` view placed in `region`, a
+    /// rect inside the host's bounds: the whole region when the content
+    /// manages its own safe area, the region clipped to the safe-area
+    /// rect otherwise. [`Self::content_frame`] is this over the bounds.
+    #[must_use]
+    pub fn region_frame(&self, content: &PlatformView, region: Rect) -> Rect {
         if manages_safe_area(content) {
-            view::bounds(self.host)
-        } else {
-            self.safe_rect()
+            return region;
         }
+        let safe = self.safe_rect();
+        let min_x = region.origin.x.max(safe.origin.x);
+        let min_y = region.origin.y.max(safe.origin.y);
+        let max_x = (region.origin.x + region.size.width).min(safe.origin.x + safe.size.width);
+        let max_y = (region.origin.y + region.size.height).min(safe.origin.y + safe.size.height);
+        Rect::new(
+            min_x,
+            min_y,
+            (max_x - min_x).max(0.0),
+            (max_y - min_y).max(0.0),
+        )
     }
 }

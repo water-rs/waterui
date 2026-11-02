@@ -89,7 +89,7 @@ mod tests {
         let install_dir = dxc
             .install_dir(&machine.host(Vec::<(String, String)>::new()))
             .unwrap();
-        let binary = install_dir.join(&dxc.binary);
+        let binary = install_dir.join(dxc.binary());
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(&binary, b"").unwrap();
 
@@ -103,7 +103,7 @@ mod tests {
         let dxc = crate::toolchain::managed_tool::dxc();
         let host = machine.host(Vec::<(String, String)>::new());
         let install_dir = dxc.install_dir(&host).unwrap();
-        let binary = install_dir.join(&dxc.binary);
+        let binary = install_dir.join(dxc.binary());
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(&binary, b"").unwrap();
 

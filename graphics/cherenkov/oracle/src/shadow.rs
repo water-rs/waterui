@@ -132,6 +132,22 @@ pub fn affine_blur(
     for (_, _, weight) in &mut kernel {
         *weight /= total;
     }
+    // A diagonal covariance is separable. Use the independent quadrature
+    // kernel's marginals, retaining its finite support and normalization.
+    // This is exact separability, not an approximation for small rotations.
+    if xy == 0.0 {
+        let mut horizontal = vec![0.0; (2 * rx + 1) as usize];
+        let mut vertical = vec![0.0; (2 * ry + 1) as usize];
+        for &(dx, dy, weight) in &kernel {
+            horizontal[(dx + rx) as usize] += weight;
+            vertical[(dy + ry) as usize] += weight;
+        }
+        let mut intermediate = vec![0.0; src.len()];
+        convolve_lines(src, &mut intermediate, &horizontal, width, height, 1, width);
+        let mut out = vec![0.0; src.len()];
+        convolve_lines(&intermediate, &mut out, &vertical, height, width, width, 1);
+        return out;
+    }
     let mut out = vec![0.0; src.len()];
     for y in 0..height {
         for x in 0..width {
@@ -147,4 +163,54 @@ pub fn affine_blur(
         }
     }
     out
+}
+
+/// Convolve independent strided lines with transparent padding. Keeping the
+/// layout explicit lets rows and columns use the same accumulation order.
+fn convolve_lines(
+    src: &[f64],
+    dst: &mut [f64],
+    kernel: &[f64],
+    length: usize,
+    lines: usize,
+    stride: usize,
+    line_stride: usize,
+) {
+    let radius = kernel.len() / 2;
+    for line in 0..lines {
+        let base = line * line_stride;
+        for position in 0..length {
+            let first = radius.saturating_sub(position);
+            let end = kernel.len().min(length + radius - position);
+            let mut value = 0.0;
+            for (tap, &weight) in kernel.iter().enumerate().take(end).skip(first) {
+                let source = position + tap - radius;
+                value = weight.mul_add(src[base + source * stride], value);
+            }
+            dst[base + position * stride] = value;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::affine_blur;
+
+    #[test]
+    fn diagonal_covariance_matches_dense_limit() {
+        for (width, height) in [(1, 1), (1, 7), (9, 1), (7, 9)] {
+            let src: Vec<_> = (0..width * height)
+                .map(|index| f64::from(u32::try_from((index * 7 + 3) % 19).unwrap()) / 19.0)
+                .collect();
+            for (x, y) in [(1.0, 1.0), (0.5, 2.0), (-2.0, 0.75)] {
+                let diagonal = affine_blur(&src, width, height, 1.3, [x, 0.0, 0.0, y]);
+                // A nonzero cross term exercises the independent dense
+                // quadrature path while perturbing the covariance by <1e-13.
+                let dense = affine_blur(&src, width, height, 1.3, [x, 1e-14, 0.0, y]);
+                for (actual, expected) in diagonal.into_iter().zip(dense) {
+                    assert!((actual - expected).abs() < 1e-12);
+                }
+            }
+        }
+    }
 }

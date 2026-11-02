@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 #[cfg(platform_timing)]
 use cocoa_ui::core_animation::Timing;
+#[cfg(any(platform_timing, frame_progress))]
 use waterui::animation::Animation;
 #[cfg(watcher_animation)]
 use waterui::reactive::watcher::Metadata;

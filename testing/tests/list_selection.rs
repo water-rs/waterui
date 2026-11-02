@@ -8,6 +8,7 @@ use waterui::Binding;
 use waterui::Signal;
 use waterui::ViewExt as _;
 use waterui::component::button;
+use waterui::component::hstack;
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
 use waterui::id::SelfId;
@@ -198,6 +199,124 @@ fn keyboard_without_selection_moves_focus_only_and_enter_activates() {
     app.press_named_key("Enter");
     assert_eq!(taps.snapshot(), 1);
     assert_row_focused!(app, 3);
+}
+
+/// A row whose content is under `.disabled` is inert to selection
+/// (water-rs/waterui#2244): neither a pointer tap nor an accessibility
+/// `Click` selects it, its `ListItem` node reports disabled without a click
+/// action, and an enabled sibling still selects.
+#[test]
+fn disabled_row_is_inert_to_selection() {
+    let selection = Binding::container(Option::<i32>::None);
+    let binding = selection.clone();
+    let mut app = ui()
+        .theme(hydrolysis_m3::Material3::defaults())
+        .viewport(360, 240)
+        .mount_offscreen(move || {
+            List::for_each(row_items(), move |item| {
+                let row = item.into_inner();
+                ListItem::new(text(row_label(row)).disabled(row == 2))
+            })
+            .selection(&binding)
+        });
+
+    // The disabled row keeps its label and reports disabled without
+    // advertising the click action.
+    let disabled_row = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label(row_label(2))
+        .single();
+    assert!(
+        !disabled_row.node().enabled(),
+        "the disabled row must report disabled"
+    );
+    assert!(
+        !disabled_row
+            .node()
+            .actions()
+            .contains(&accesskit::Action::Click),
+        "the disabled row must not advertise the click action"
+    );
+
+    // The real pointer path: a tap on the disabled row leaves the
+    // selection alone.
+    app.query()
+        .role(Role::LIST_ITEM)
+        .label(row_label(2))
+        .tap_at(0.5, 0.5);
+    assert_eq!(
+        selection.snapshot(),
+        None,
+        "a pointer tap must not select a disabled row"
+    );
+
+    // So does a dispatched accessibility `Click`: the stored row target
+    // carries no selection to write.
+    let disabled_row = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label(row_label(2))
+        .single();
+    app.perform_action(disabled_row.id(), accesskit::Action::Click, None);
+    assert_eq!(
+        selection.snapshot(),
+        None,
+        "an accessibility Click must not select a disabled row"
+    );
+
+    // An enabled sibling still selects through the pointer path...
+    app.query()
+        .role(Role::LIST_ITEM)
+        .label(row_label(3))
+        .tap_at(0.5, 0.5);
+    assert_eq!(selection.snapshot(), Some(3));
+
+    // ...and through the accessibility `Click` path.
+    app.query().role(Role::LIST_ITEM).label(row_label(1)).tap();
+    assert_eq!(selection.snapshot(), Some(1));
+}
+
+/// Only the row content's *own* environment scope gates selection
+/// (water-rs/waterui#2244): a `.disabled` descendant inside the row — a
+/// disabled button — leaves the row selectable, because the scope a
+/// descendant installs never leaks into the row's answer.
+#[test]
+fn disabled_child_does_not_disable_row() {
+    let selection = Binding::container(Option::<i32>::None);
+    let binding = selection.clone();
+    let mut app = ui()
+        .theme(hydrolysis_m3::Material3::defaults())
+        .viewport(360, 240)
+        .mount_offscreen(move || {
+            List::for_each(row_items(), move |item| {
+                let row = item.into_inner();
+                ListItem::new(hstack((text(row_label(row)), button("Go").disabled(true))))
+            })
+            .selection(&binding)
+        });
+
+    // The row stays enabled and keeps its click action.
+    let row = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label_contains("Row 2")
+        .single();
+    assert!(
+        row.node().enabled(),
+        "a disabled descendant must not disable its row"
+    );
+    assert!(
+        row.node().actions().contains(&accesskit::Action::Click),
+        "the row must keep its click action"
+    );
+
+    // And it still selects through the pointer path.
+    app.query()
+        .role(Role::LIST_ITEM)
+        .label_contains("Row 2")
+        .tap_at(0.5, 0.5);
+    assert_eq!(selection.snapshot(), Some(2));
 }
 
 /// The real pointer path: a click on the row commits the selection while the

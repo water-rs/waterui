@@ -400,11 +400,16 @@ impl Entry {
 /// The projective pipelines and their layouts, built on the first frame
 /// that composes a projective layer.
 pub struct Pipelines {
+    cache: super::PipelineCache,
     /// The composite's group-1 layout.
     pub layout: wgpu::BindGroupLayout,
-    /// `[format index][replace]` composite pipelines: format 0 = surface
-    /// (and local images), 1 = scratch; source-over or replace.
-    pub composite: [[wgpu::RenderPipeline; 2]; 2],
+    /// The composite's pipeline layout and module, kept for the formats
+    /// a later surface draws into.
+    composite_layout: wgpu::PipelineLayout,
+    program: super::shaders::RenderProgram,
+    /// `[format slot][replace]` composite pipelines, source-over or
+    /// replace, built for each format a projective composite lands in.
+    composite: super::FormatCells<Option<[wgpu::RenderPipeline; 2]>>,
     /// Linear/linear/linear clamp-to-edge sampling without hardware
     /// anisotropy: the shader integrates the anisotropic footprint.
     pub sampler: wgpu::Sampler,
@@ -415,14 +420,14 @@ pub struct Pipelines {
 }
 
 impl Pipelines {
-    /// Builds the composite pipelines for the surface format and
-    /// `scratch_format` over the engine's group-0 `layout0`, and the mip
-    /// pipeline.
+    /// Builds the composite's layouts over the engine's group-0
+    /// `layout0`, and the mip pipeline; [`Self::prepare`] builds the
+    /// composite for each target format.
     pub fn new(
         device: &wgpu::Device,
         delivery: super::shaders::ShaderDelivery,
         layout0: &wgpu::BindGroupLayout,
-        scratch_format: wgpu::TextureFormat,
+        cache: super::PipelineCache,
     ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cherenkov projective 1"),
@@ -433,31 +438,7 @@ impl Pipelines {
             bind_group_layouts: &[Some(layout0), Some(&layout)],
             immediate_size: 0,
         });
-        let module = delivery.projective_module(device);
-        let composite = [super::TARGET_FORMAT, scratch_format].map(|format| {
-            [false, true].map(|replace| {
-                let component = wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: if replace {
-                        wgpu::BlendFactor::Zero
-                    } else {
-                        wgpu::BlendFactor::OneMinusSrcAlpha
-                    },
-                    operation: wgpu::BlendOperation::Add,
-                };
-                quad_pipeline(
-                    device,
-                    &pipeline_layout,
-                    &module,
-                    "fs_projective",
-                    format,
-                    Some(wgpu::BlendState {
-                        color: component,
-                        alpha: component,
-                    }),
-                )
-            })
-        });
+        let program = delivery.projective_program(device);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("projective image"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -481,18 +462,67 @@ impl Pipelines {
         let mip = quad_pipeline(
             device,
             &mip_pipeline_layout,
-            &delivery.mip_module(device),
-            "fs_main",
+            &delivery.mip_program(device),
             wgpu::TextureFormat::Rgba16Float,
             None,
+            &cache,
         );
         Self {
+            cache,
             layout,
-            composite,
+            composite_layout: pipeline_layout,
+            program,
+            composite: Default::default(),
             sampler,
             mip_layout,
             mip,
         }
+    }
+
+    /// Whether the composite into `format` is built.
+    pub const fn has(&self, format: wgpu::TextureFormat) -> bool {
+        self.composite[super::format_slot(format)].is_some()
+    }
+
+    /// Builds the source-over and replace composites into `format`,
+    /// unless they exist.
+    pub fn prepare(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+        let cell = &mut self.composite[super::format_slot(format)];
+        if cell.is_some() {
+            return;
+        }
+        *cell = Some([false, true].map(|replace| {
+            let component = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: if replace {
+                    wgpu::BlendFactor::Zero
+                } else {
+                    wgpu::BlendFactor::OneMinusSrcAlpha
+                },
+                operation: wgpu::BlendOperation::Add,
+            };
+            quad_pipeline(
+                device,
+                &self.composite_layout,
+                &self.program,
+                format,
+                Some(wgpu::BlendState {
+                    color: component,
+                    alpha: component,
+                }),
+                &self.cache,
+            )
+        }));
+    }
+
+    /// The composite into format slot `slot`, source-over or `replace`.
+    ///
+    /// # Panics
+    /// When [`Self::prepare`] has not built that format's composite.
+    pub fn composite(&self, slot: usize, replace: bool) -> &wgpu::RenderPipeline {
+        &self.composite[slot]
+            .as_ref()
+            .expect("projective composite prepared for the target format")[usize::from(replace)]
     }
 }
 
@@ -501,23 +531,23 @@ impl Pipelines {
 pub(super) fn quad_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
-    module: &wgpu::ShaderModule,
-    fragment: &'static str,
+    program: &super::shaders::RenderProgram,
     format: wgpu::TextureFormat,
     blend: Option<wgpu::BlendState>,
+    cache: &super::PipelineCache,
 ) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(fragment),
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(program.fragment_entry),
         layout: Some(layout),
         vertex: wgpu::VertexState {
-            module,
-            entry_point: Some("vs_main"),
+            module: &program.vertex,
+            entry_point: Some(program.vertex_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[],
         },
         fragment: Some(wgpu::FragmentState {
-            module,
-            entry_point: Some(fragment),
+            module: &program.fragment,
+            entry_point: Some(program.fragment_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -533,8 +563,10 @@ pub(super) fn quad_pipeline(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
-        cache: None,
-    })
+        cache: cache.handle.as_ref(),
+    });
+    cache.persist();
+    pipeline
 }
 
 #[cfg(test)]

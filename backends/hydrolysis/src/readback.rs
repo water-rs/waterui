@@ -13,6 +13,7 @@ const COPY_BYTES_PER_ROW_ALIGNMENT: u64 = 256;
 
 /// Why a texture readback produced no pixels.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ReadbackError {
     /// The surface's device was lost, so the texture holds no rendered frame.
     #[error("the GPU device was lost: {reason}")]

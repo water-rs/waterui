@@ -92,7 +92,7 @@ fn clip_to_rect(s: Segment, x0: f64, y0: f64, x1: f64, y1: f64) -> Option<Segmen
 fn pixel_area(
     segs: &[Segment],
     cand: &[u32],
-    subs: &[Vec<u32>],
+    subs: Span<'_>,
     x0: f64,
     y0: f64,
     rule: FillRule,
@@ -152,7 +152,7 @@ fn pixel_area(
     }
     if inside_segs.is_empty() {
         // Uniformly covered or empty: decide by the centre's winding.
-        let w = winding_at(segs, &subs[sub_of(y0 + 0.5, y0)], x0 + 0.5, y0 + 0.5);
+        let w = winding_at(segs, subs.get(sub_of(y0 + 0.5, y0)), x0 + 0.5, y0 + 0.5);
         return f64::from(inside(w, rule));
     }
     crit_ys.sort_by(f64::total_cmp);
@@ -185,7 +185,7 @@ fn pixel_area(
         xs.sort_by(|a, b| a.0.total_cmp(&b.0));
         // Wind from the pixel's left edge; crossings strictly right of it
         // are already counted by `seed_winding`.
-        let mut wind = seed_winding(segs, &subs[sub_of(ymid, y0)], x0, ymid);
+        let mut wind = seed_winding(segs, subs.get(sub_of(ymid, y0)), x0, ymid);
         let mut xprev = x0;
         let mut i = 0;
         while i < xs.len() {
@@ -274,12 +274,15 @@ impl Coverage {
         }
     }
 
-    /// Accumulate the boundary segment `(x0,y0)-(x1,y1)`. Horizontal or
-    /// degenerate segments carry no area.
+    /// Accumulate the boundary segment `(x0,y0)-(x1,y1)`.
+    ///
+    /// Every segment is kept, however short: the winding count's half-open
+    /// crossing rule pairs crossings only along an unbroken chain of
+    /// shared endpoints, and dropping a sliver between two neighbours
+    /// leaves one crossing unpaired on every scanline through its y range,
+    /// which inks the whole row from the left edge. A zero-length segment
+    /// crosses no scanline and carries no area.
     pub fn add_line(&mut self, x0: f64, y0: f64, x1: f64, y1: f64) {
-        if (x0 - x1).abs() <= EPS && (y0 - y1).abs() <= EPS {
-            return;
-        }
         self.segs.push((x0, y0, x1, y1));
     }
 
@@ -316,21 +319,57 @@ impl Coverage {
     #[must_use]
     #[expect(
         clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "pixel indices are far below 2^53; row indices are clamped to bounds"
+        reason = "pixel indices are far below 2^53"
     )]
     pub fn finish(&self, rule: FillRule) -> Vec<f64> {
-        // `rows[r]` lists, in original order, the segments whose y range
-        // overlaps `[r - EPS, r + 1 + EPS]` — a superset of the segments
-        // that can contribute to any computation in the row.
         let (w, h) = (self.width, self.height);
         let mut out = vec![0.0; w * h];
         if h == 0 || w == 0 {
             return out;
         }
-        let mut cells: Vec<Vec<u32>> = (0..w * h).map(|_| Vec::new()).collect();
-        let mut subs: Vec<Vec<u32>> = (0..h * SUB).map(|_| Vec::new()).collect();
+        // Count each bucket's entries, then lay the buckets out back to
+        // back at exactly that size and fill them in a second identical
+        // pass, so no bucket ever grows.
+        let mut cell_counts = vec![0; w * h];
+        let mut sub_counts = vec![0; h * SUB];
+        self.index(&mut |cell, _| cell_counts[cell] += 1, &mut |sub, _| {
+            sub_counts[sub] += 1;
+        });
+        let mut cells = Buckets::with_counts(&cell_counts);
+        let mut subs = Buckets::with_counts(&sub_counts);
+        let (mut cell_next, mut sub_next) = (cells.cursors(), subs.cursors());
+        self.index(
+            &mut |cell, i| cells.put(&mut cell_next, cell, i),
+            &mut |sub, i| {
+                subs.put(&mut sub_next, sub, i);
+            },
+        );
+        out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            let row_subs = subs.span(y * SUB..(y + 1) * SUB);
+            let row_has_subs = !row_subs.is_empty();
+            for (x, px) in row.iter_mut().enumerate() {
+                let cand = cells.get(y * w + x);
+                if cand.is_empty() && !row_has_subs {
+                    continue;
+                }
+                *px = pixel_area(&self.segs, cand, row_subs, x as f64, y as f64, rule);
+            }
+        });
+        out
+    }
+
+    /// Report, in segment order, every pixel cell (`y * width + x`) whose
+    /// padded bounding box a segment's intersects to `cell`, and every
+    /// sub-row band (`row * SUB + band`) its y range overlaps to `sub`, each
+    /// with the segment's index — the two indexes of [`Coverage::finish`].
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "pixel indices are far below 2^53; row indices are clamped to bounds"
+    )]
+    fn index(&self, cell: &mut impl FnMut(usize, u32), sub: &mut impl FnMut(usize, u32)) {
+        let (w, h) = (self.width, self.height);
         for (i, &s) in self.segs.iter().enumerate() {
             let (xmin, xmax) = (s.0.min(s.2), s.0.max(s.2));
             let (ymin, ymax) = (s.1.min(s.3), s.1.max(s.3));
@@ -355,7 +394,7 @@ impl Coverage {
             let cy1 = ((ymax + EPS).floor().max(0.0) as usize).min(h - 1);
             for cy in cy0..=cy1 {
                 for cx in cx0..=cx1 {
-                    cells[cy * w + cx].push(i);
+                    cell(cy * w + cx, i);
                 }
             }
             // Rows the segment can contribute a scanline crossing to,
@@ -369,22 +408,78 @@ impl Coverage {
                 let b0 = (((ymin - r as f64) * SUB_F).floor() as isize).clamp(0, SUB_I - 1);
                 let b1 = (((ymax - r as f64) * SUB_F).ceil() as isize - 1).clamp(0, SUB_I - 1);
                 for b in b0..=b1 {
-                    subs[r * SUB + b as usize].push(i);
+                    sub(r * SUB + b as usize, i);
                 }
             }
         }
-        out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-            let row_subs = &subs[y * SUB..(y + 1) * SUB];
-            let row_has_subs = row_subs.iter().any(|v| !v.is_empty());
-            for (x, px) in row.iter_mut().enumerate() {
-                let cand = &cells[y * w + x];
-                if cand.is_empty() && !row_has_subs {
-                    continue;
-                }
-                *px = pixel_area(&self.segs, cand, row_subs, x as f64, y as f64, rule);
-            }
-        });
-        out
+    }
+}
+
+/// Segment indices grouped into numbered buckets, stored back to back:
+/// bucket `k` is `items[start[k]..start[k + 1]]`.
+struct Buckets {
+    start: Vec<usize>,
+    items: Vec<u32>,
+}
+
+impl Buckets {
+    /// Buckets of `counts[k]` entries each, to be filled through
+    /// [`Buckets::put`].
+    fn with_counts(counts: &[usize]) -> Self {
+        let mut start = Vec::with_capacity(counts.len() + 1);
+        let mut total = 0;
+        start.push(total);
+        for &count in counts {
+            total += count;
+            start.push(total);
+        }
+        Self {
+            start,
+            items: vec![0; total],
+        }
+    }
+
+    /// Each bucket's next free slot, for [`Buckets::put`].
+    fn cursors(&self) -> Vec<usize> {
+        self.start[..self.start.len() - 1].to_vec()
+    }
+
+    /// Append segment `i` to bucket `k`.
+    fn put(&mut self, cursors: &mut [usize], k: usize, i: u32) {
+        self.items[cursors[k]] = i;
+        cursors[k] += 1;
+    }
+
+    /// Bucket `k`.
+    fn get(&self, k: usize) -> &[u32] {
+        &self.items[self.start[k]..self.start[k + 1]]
+    }
+
+    /// The consecutive buckets `range`, as buckets of their own.
+    fn span(&self, range: std::ops::Range<usize>) -> Span<'_> {
+        Span {
+            start: &self.start[range.start..=range.end],
+            items: &self.items,
+        }
+    }
+}
+
+/// A run of consecutive buckets: one pixel row's sub-row bands.
+#[derive(Clone, Copy)]
+struct Span<'a> {
+    start: &'a [usize],
+    items: &'a [u32],
+}
+
+impl<'a> Span<'a> {
+    /// Bucket `k` of the run.
+    fn get(self, k: usize) -> &'a [u32] {
+        &self.items[self.start[k]..self.start[k + 1]]
+    }
+
+    /// Whether every bucket of the run is empty.
+    fn is_empty(self) -> bool {
+        self.start.first() == self.start.last()
     }
 }
 
@@ -440,5 +535,93 @@ mod tests {
                 assert!(v >= 1.0 - 1e-9, "reverse={reverse} (16,{y}) = {v}");
             }
         }
+    }
+
+    /// One round-capped dash from kurbo's stroke outline, a 1.5 px wide
+    /// capsule whose cap-to-side vertices lie at y = 51.5 and 56.5 — on the
+    /// sample rows of pixel rows 51 and 56. The flattened top cap's last
+    /// point before its end lands an ulp away from it, so the outline
+    /// carries a sliver segment straddling y = 51.5. Every pixel's coverage
+    /// must match the capsule's exact area, and no row may be inked away
+    /// from it.
+    #[test]
+    fn a_sample_row_through_a_vertex_covers_only_the_shape() {
+        const R: f64 = 0.75;
+        // The quarter-circle cubic handle, 4/3 (sqrt 2 - 1) r.
+        const K: f64 = R * 4.0 / 3.0 * (std::f64::consts::SQRT_2 - 1.0);
+        const W: usize = 128;
+        const H: usize = 96;
+        let (cx, top, bottom) = (70.0, 51.5, 56.5);
+        let mut path = kurbo::BezPath::new();
+        path.move_to((cx - R, bottom));
+        path.line_to((cx - R, top));
+        path.curve_to((cx - R, top - K), (cx - K, top - R), (cx, top - R));
+        path.curve_to((cx + K, top - R), (cx + R, top - K), (cx + R, top));
+        path.line_to((cx + R, bottom));
+        path.curve_to((cx + R, bottom + K), (cx + K, bottom + R), (cx, bottom + R));
+        path.curve_to((cx - K, bottom + R), (cx - R, bottom + K), (cx - R, bottom));
+        let shape = cherenkov_scene::Shape::Path { path };
+        let mut coverage = Coverage::new(W, H);
+        for (x0, y0, x1, y1) in crate::path::edges(&crate::path::shape_polylines(
+            &shape,
+            kurbo::Affine::IDENTITY,
+        )) {
+            coverage.add_line(x0, y0, x1, y1);
+        }
+        let actual = coverage.finish(FillRule::NonZero);
+
+        // The capsule spans x in [69.25, 70.75] and is symmetric about
+        // x = 70, so pixel columns 69 and 70 each hold half of a row's
+        // area: the integral of the half-width over the row. `g` is the
+        // antiderivative of the cap's half-width sqrt(r² - t²).
+        let g = |t: f64| 0.5 * t.mul_add(t.mul_add(-t, R * R).sqrt(), R * R * (t / R).asin());
+        let half_row = |y: f64| {
+            let cap_top = g((y + 1.0 - top).clamp(-R, 0.0)) - g((y - top).clamp(-R, 0.0));
+            let cap_bottom = g((y + 1.0 - bottom).clamp(0.0, R)) - g((y - bottom).clamp(0.0, R));
+            let side = R * ((y + 1.0).min(bottom) - y.max(top)).max(0.0);
+            cap_top + side + cap_bottom
+        };
+        let mut expected = vec![0.0; W * H];
+        for y in 0..H {
+            let area = half_row(f64::from(u32::try_from(y).expect("a small row index")));
+            expected[y * W + 69] = area;
+            expected[y * W + 70] = area;
+        }
+        crate::metrics::assert_close(&actual, &expected);
+    }
+}
+
+/// Independent per-pixel coverage for renderer tests.
+#[cfg(feature = "testing")]
+pub mod testing {
+    /// Exact area of one pixel in a flattened polygon, without the image
+    /// rasterizer's spatial index. Intended for independent compiler tests.
+    ///
+    /// # Panics
+    /// If the segment count exceeds u32.
+    #[must_use]
+    pub fn pixel_area(
+        segments: &[(f64, f64, f64, f64)],
+        pixel: [f64; 2],
+        rule: cherenkov_scene::FillRule,
+    ) -> f64 {
+        let candidates: Vec<u32> =
+            (0..u32::try_from(segments.len()).expect("test segments fit u32")).collect();
+        // Every sub-row band holds every segment.
+        let mut subs = super::Buckets::with_counts(&[candidates.len(); super::SUB]);
+        let mut next = subs.cursors();
+        for band in 0..super::SUB {
+            for &i in &candidates {
+                subs.put(&mut next, band, i);
+            }
+        }
+        super::pixel_area(
+            segments,
+            &candidates,
+            subs.span(0..super::SUB),
+            pixel[0],
+            pixel[1],
+            rule,
+        )
     }
 }

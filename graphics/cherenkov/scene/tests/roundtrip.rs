@@ -260,8 +260,35 @@ fn image_encodings_roundtrip() {
             sampling: Sampling::Nearest,
         }),
     );
+    for format in [
+        cherenkov_scene::ImageCompression::Astc4x4,
+        cherenkov_scene::ImageCompression::Bc7,
+        cherenkov_scene::ImageCompression::Etc2Rgba,
+    ] {
+        scene.root().image_encoded(
+            raw_hash,
+            ImageEncoding::BlockCompressed {
+                format,
+                width: 7,
+                height: 5,
+                color_space: ImageColorSpace::DisplayP3,
+                premultiplied: true,
+            },
+            Rect::new(0.0, 0.0, 8.0, 8.0),
+            Sampling::Bilinear,
+        );
+    }
     let scene = scene.build();
     assert!(scene.features.contains(&Feature::ImageF16));
+    for format in [
+        cherenkov_scene::ImageCompression::Astc4x4,
+        cherenkov_scene::ImageCompression::Bc7,
+        cherenkov_scene::ImageCompression::Etc2Rgba,
+    ] {
+        assert!(scene.features.contains(&Feature::ImageCompressed(format)));
+        assert_eq!(format.byte_len(7, 5), Some(64));
+        assert_eq!(format.byte_len(u32::MAX, u32::MAX), None);
+    }
     assert!(
         scene
             .features

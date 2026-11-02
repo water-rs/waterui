@@ -1,12 +1,11 @@
-//! `vello-hybrid` adapter: `vello_hybrid` (CPU strip rasterizer + GPU
+//! `vello-hybrid` adapter: `vello_gpu` (CPU strip rasterizer + GPU
 //! colour pass) on `wgpu`.
 //!
 //! Route: strips and coverage are computed on the CPU into GPU-accessible
 //! geometry, then a wgpu colour pass writes into the target texture (format
-//! chosen from queried adapter capabilities). GPU time is a real `wgpu`
-//! timestamp pair written in standalone submissions after a full queue
-//! drain — never estimated, and serialized CPU+GPU by construction (see
-//! [`crate::wgpu_ctx::drain_and_stamp`]).
+//! chosen from queried adapter capabilities). GPU time is unavailable:
+//! the renderer does not expose timestamps inside its render passes.
+//! Independent queue markers would include CPU submission gaps.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -15,17 +14,22 @@ use cherenkov_scene::Feature;
 use kurbo::{Affine, BezPath, Rect, Stroke};
 use peniko::{BlendMode as PBlendMode, Fill, FontData, ImageBrush};
 use vello_common::paint::{ImageSource, PaintType};
-use vello_hybrid::{
-    RenderSize, RenderTargetConfig, Renderer, Resources, Scene as HybridScene, TextureBindings,
+use vello_gpu::{
+    RenderSize, RenderTargetConfig, Renderer, Resources, Scene as HybridScene, TargetInit,
+    TextureBindings,
 };
 
 use crate::convert::{self, Prepared};
-use crate::memory::{AdapterMemory, Reading, wgpu29_allocator, wgpu29_vk_memory_budget};
-use crate::vello_like::{Lowered, VelloLikeCtx, lower, replay, vello_features, vello_missing_api};
-use crate::wgpu_ctx::{Gpu, Target, drain_and_stamp, readback, resolve_timestamps};
+use crate::memory::{
+    AdapterMemory, Reading, allocator_report, wgpu_metal_allocated_bytes, wgpu_vk_memory_budget,
+};
+use crate::vello_like::{
+    Lowered, Op, VelloLikeCtx, lower, replay, vello_features, vello_missing_api,
+};
+use crate::wgpu_ctx::{Gpu, Target, readback};
 use crate::{BenchError, Counters, DeviceInfo, EncodeInput, Engine, EngineInfo, GpuSample, Submit};
 
-/// `vello_hybrid` adapter.
+/// `vello_gpu` adapter (the `vello-hybrid` baseline).
 pub struct VelloHybrid {
     info: EngineInfo,
     gpu: Gpu,
@@ -34,9 +38,14 @@ pub struct VelloHybrid {
     res: Option<Resources>,
     scene: Option<HybridScene>,
     target: Option<Target>,
+    depth_view: Option<wgpu::TextureView>,
     prepared: Option<Prepared>,
     lowered: Option<Lowered<PaintType>>,
+    /// Fonts whose runs draw bitmap glyphs, from `bitmap_glyph_fonts`.
+    bitmap_fonts: BitmapFonts,
     counters: Counters,
+    /// Whether a submitted frame awaits [`Engine::completion`].
+    awaiting_completion: bool,
 }
 
 /// The GPU and renderer state do not format.
@@ -57,19 +66,19 @@ impl VelloHybrid {
     /// # Errors
     /// [`BenchError::Gpu`] when no adapter exists.
     pub fn new() -> Result<Self, BenchError> {
-        let gpu = Gpu::new()?;
+        let gpu = Gpu::new(wgpu::Features::empty())?;
         Ok(Self {
             info: EngineInfo {
                 name: Self::NAME,
-                engine_crate: "vello_hybrid",
-                crate_version: env!("DEP_VELLO_HYBRID_VERSION"),
-                source_rev: option_env!("DEP_VELLO_HYBRID_SOURCE_REV").map(String::from),
+                engine_crate: "vello_gpu",
+                crate_version: env!("DEP_VELLO_GPU_VERSION"),
+                source_rev: option_env!("DEP_VELLO_GPU_SOURCE_REV").map(String::from),
                 output_format: format!("wgpu {:?} texture", gpu.target_format),
                 precision: "vello_common strip rasterizer in f32; GPU colour pass writes rgba8unorm",
                 route: "hybrid (cpu strips + gpu colour pass)",
                 color_note: "peniko brushes (sRGB-tagged); output quantized to rgba8unorm sRGB; \
                              readback decoded sRGB→linear P3",
-                encode_scope: "records `vello_hybrid::Scene` calls (set_paint/fill_path/\
+                encode_scope: "records `vello_gpu::Scene` calls (set_paint/fill_path/\
                                push_layer/glyph_run) against fonts and atlas-resident images \
                                prepared once",
             },
@@ -79,25 +88,37 @@ impl VelloHybrid {
             res: None,
             scene: None,
             target: None,
+            depth_view: None,
             prepared: None,
             lowered: None,
+            bitmap_fonts: BitmapFonts::new(),
             counters: Counters::default(),
+            awaiting_completion: false,
         })
     }
 }
 
-/// The `VelloLikeCtx` view over a `vello_hybrid::Scene` + its `Resources`.
+/// The `VelloLikeCtx` view over a `vello_gpu::Scene` + its `Resources`.
 ///
-/// `vello_hybrid` 0.2 renders images only through
+/// `vello_gpu` 0.3 renders images only through
 /// [`ImageSource::OpaqueId`] — inline [`ImageSource::Pixmap`] paints panic
-/// inside the GPU paint encoder by design (`vello_hybrid::Scene::set_paint`
+/// inside the GPU paint encoder by design (`vello_gpu::Scene::set_paint`
 /// documents pixmap sources as out of scope). The adapter therefore uploads
 /// every image to the atlas via [`Renderer::upload_image`] once in
 /// `prepare`, and [`Prepared::paint_type`] already resolves image paints
 /// to their `OpaqueId` — `set_paint` needs no interception.
+///
+/// Bitmap glyphs (CBDT, sbix) follow the same rule: `glifo` draws one
+/// through `vello_gpu`'s glyph atlas, an `OpaqueId` source, only when the
+/// run enables the atlas cache; otherwise it paints the decoded strike as
+/// an inline pixmap. Runs in a font that draws bitmap glyphs therefore
+/// enable the atlas, and `prepare` reports the bitmap glyphs the atlas
+/// cannot take as unsupported (`bitmap_glyph_fonts`). Other runs keep
+/// the uncached path.
 pub struct HybridCtx<'a> {
     scene: &'a mut HybridScene,
     res: &'a mut Resources,
+    bitmap_fonts: &'a BitmapFonts,
 }
 
 /// The borrowed scene and resources do not format.
@@ -171,14 +192,97 @@ impl VelloLikeCtx for HybridCtx<'_> {
     ) {
         self.scene
             .glyph_run(self.res, font)
+            .atlas_cache(self.bitmap_fonts.contains(&(font.data.id(), font.index)))
             .font_size(size)
             .normalized_coords(coords)
             .fill_glyphs(glyphs.iter().map(|g| glifo::Glyph {
                 id: g.id,
                 x: g.x,
                 y: g.y,
-            }));
+            }))
+            .expect("vello_gpu glyph run renders");
     }
+}
+
+/// Fonts, as (`FontData` blob id, collection index), whose runs draw
+/// bitmap glyphs through `vello_gpu`'s glyph atlas.
+type BitmapFonts = BTreeSet<(u64, u32)>;
+
+/// The `vello_gpu` limit a `bitmap_glyph_fonts` rejection names.
+const BITMAP_GLYPH_API: &str = "vello_gpu draws bitmap glyphs only from its glyph atlas, which \
+                                takes no rotation, skew or mirroring and no size above \
+                                GlyphCacheConfig::max_cached_font_size";
+
+/// The fonts whose runs draw bitmap glyphs, which `encode` draws through
+/// the glyph atlas.
+///
+/// `glifo` resolves each glyph COLR first, then a PNG bitmap strike at the
+/// draw size, then the outline. A bitmap glyph reaches `vello_gpu` through
+/// the glyph atlas only when the run's transform has no rotation or skew
+/// and positive axis scales, and its draw size — the run size times a
+/// positive uniform scale, which `glifo` absorbs — is within the default
+/// [`glifo::GlyphCacheConfig`] that `vello_gpu::Resources` uses. Any other
+/// bitmap glyph is painted as an inline pixmap, which `vello_gpu`'s paint
+/// encoder rejects by panicking.
+///
+/// # Errors
+/// [`BenchError::Unsupported`] for a run with a bitmap glyph the atlas
+/// cannot take; [`BenchError::Engine`] for a font `skrifa` cannot read.
+fn bitmap_glyph_fonts(lowered: &Lowered<PaintType>) -> Result<BitmapFonts, BenchError> {
+    use skrifa::MetadataProvider;
+    use skrifa::bitmap::BitmapData;
+    use skrifa::instance::Size;
+
+    // `glifo`'s tolerance for a zero transform coefficient.
+    const NEARLY_ZERO: f64 = 1.0 / 4096.0;
+    let max_cached_size = glifo::GlyphCacheConfig::default().max_cached_font_size;
+    let mut fonts = BitmapFonts::new();
+    for op in &lowered.ops {
+        let Op::Glyphs {
+            transform,
+            font,
+            size,
+            glyphs,
+            ..
+        } = op
+        else {
+            continue;
+        };
+        let [a, b, c, d, _, _] = transform.as_coeffs();
+        let axis_aligned = b.abs() <= NEARLY_ZERO && c.abs() <= NEARLY_ZERO && a > 0.0 && d > 0.0;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "glifo absorbs the scale into its f32 font size the same way"
+        )]
+        let draw_size = if axis_aligned && (a - d).abs() <= NEARLY_ZERO {
+            size * d as f32
+        } else {
+            *size
+        };
+        let font_ref = skrifa::FontRef::from_index(font.data.data(), font.index)
+            .map_err(|e| BenchError::Engine(format!("vello-hybrid: unreadable font: {e}")))?;
+        let colr = font_ref.color_glyphs();
+        let strikes = font_ref.bitmap_strikes();
+        let draws_bitmap = glyphs.iter().any(|g| {
+            let id = skrifa::GlyphId::new(g.id);
+            colr.get(id).is_none()
+                && strikes
+                    .glyph_for_size(Size::new(draw_size), id)
+                    .is_some_and(|bitmap| matches!(bitmap.data, BitmapData::Png(_)))
+        });
+        if !draws_bitmap {
+            continue;
+        }
+        if !axis_aligned || draw_size > max_cached_size {
+            return Err(BenchError::Unsupported {
+                engine: VelloHybrid::NAME,
+                feature: Feature::Glyphs,
+                api: Some(BITMAP_GLYPH_API),
+            });
+        }
+        fonts.insert((font.data.id(), font.index));
+    }
+    Ok(fonts)
 }
 
 impl Engine for VelloHybrid {
@@ -197,10 +301,15 @@ impl Engine for VelloHybrid {
             &vello_features(),
             vello_missing_api,
         )?;
+        let dim = |v: u32| {
+            u16::try_from(v)
+                .map_err(|_| BenchError::Engine("vello-hybrid: scene exceeds u16 dims".into()))
+        };
+        let (width, height) = (dim(input.scene.width)?, dim(input.scene.height)?);
         let config = RenderTargetConfig {
             format: self.gpu.target_format,
-            width: input.scene.width,
-            height: input.scene.height,
+            width,
+            height,
         };
         // The renderer is built for one target size and format —
         // recreate it when they change rather than reusing the first
@@ -228,7 +337,7 @@ impl Engine for VelloHybrid {
             let mut encoder =
                 self.gpu
                     .device
-                    .create_command_encoder(&wgpu29::CommandEncoderDescriptor {
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                         label: Some("vello-hybrid image uploads"),
                     });
             for hash in hashes {
@@ -252,7 +361,7 @@ impl Engine for VelloHybrid {
         // Lower after the atlas uploads so `image_fn` resolves OpaqueId
         // sources — `prepare` produces the pre-resolved op list `encode`
         // replays.
-        self.lowered = Some(lower(
+        let lowered = lower(
             input.scene,
             &prepared,
             Self::NAME,
@@ -264,8 +373,16 @@ impl Engine for VelloHybrid {
                     sampler: convert::image_sampler(sampling),
                 }))
             },
-        )?);
+        )?;
+        self.bitmap_fonts = bitmap_glyph_fonts(&lowered)?;
+        self.lowered = Some(lowered);
         self.prepared = Some(prepared);
+        // The depth buffer the 0.2 renderer owned internally is now
+        // caller-owned; passing it keeps the front-to-back opaque pass.
+        self.depth_view = Some(Renderer::create_depth_texture_view(
+            &self.gpu.device,
+            &RenderSize { width, height },
+        ));
         self.target = Some(Target::new(
             &self.gpu.device,
             input.scene.width,
@@ -299,12 +416,18 @@ impl Engine for VelloHybrid {
         let mut ctx = HybridCtx {
             scene: self.scene.as_mut().expect("set above"),
             res: self.res.as_mut().expect("renderer created in prepare"),
+            bitmap_fonts: &self.bitmap_fonts,
         };
         let lowered = self
             .lowered
             .as_ref()
             .ok_or_else(|| BenchError::Engine("vello-hybrid: encode before prepare".into()))?;
-        replay(&mut ctx, lowered, &mut self.counters);
+        replay(
+            &mut ctx,
+            lowered,
+            &mut self.counters,
+            input.scroll_transform(),
+        );
         // `bytes_uploaded` counts the decoded texels uploaded to the
         // atlas in `prepare` — the same quantity vello-classic reports
         // for its texture uploads.
@@ -312,27 +435,26 @@ impl Engine for VelloHybrid {
         Ok(())
     }
 
-    fn submit(&mut self, frame: u64, readback_flag: bool) -> Result<Submit, BenchError> {
-        let (Some(scene), Some(res), Some(renderer), Some(target)) =
-            (&self.scene, &mut self.res, &mut self.renderer, &self.target)
-        else {
+    fn submit(&mut self, _frame: u64, readback_flag: bool) -> Result<Submit, BenchError> {
+        let (Some(scene), Some(res), Some(renderer), Some(target), Some(depth_view), Some(config)) = (
+            &self.scene,
+            &mut self.res,
+            &mut self.renderer,
+            &self.target,
+            &self.depth_view,
+            &self.renderer_config,
+        ) else {
             return Err(BenchError::Engine(
                 "vello-hybrid: submit before encode".into(),
             ));
         };
-        // Bracket the engine submission with timestamps written in their
-        // own submissions, each after a full queue drain: on job-scheduled
-        // tiled GPUs a timestamp in the same encoder shares no hazard with
-        // the render and would bracket an empty interval. The drain
-        // serializes CPU and GPU for the measured frame by design.
-        drain_and_stamp(&self.gpu, 0)?;
         let render_at = Instant::now();
-        let mut encoder =
-            self.gpu
-                .device
-                .create_command_encoder(&wgpu29::CommandEncoderDescriptor {
-                    label: Some("vello-hybrid frame"),
-                });
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("vello-hybrid frame"),
+            });
         renderer
             .render(
                 scene,
@@ -341,16 +463,18 @@ impl Engine for VelloHybrid {
                 &self.gpu.queue,
                 &mut encoder,
                 &RenderSize {
-                    width: target.width,
-                    height: target.height,
+                    width: config.width,
+                    height: config.height,
                 },
                 &target.view,
+                Some(depth_view),
                 &TextureBindings::new(),
+                // The scene's first draw is the clear-colour rect, over
+                // the target as it stands — the 0.2 renderer's load-op.
+                TargetInit::SrcOver,
             )
             .map_err(|e| BenchError::Gpu(format!("vello-hybrid render: {e}")))?;
         self.gpu.queue.submit([encoder.finish()]);
-        drain_and_stamp(&self.gpu, 1)?;
-        let gpu_seconds = resolve_timestamps(&self.gpu)?;
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = Instant::now();
         let image = if readback_flag {
@@ -358,13 +482,47 @@ impl Engine for VelloHybrid {
         } else {
             None
         };
+        self.awaiting_completion = true;
         Ok(Submit {
             image,
-            gpu: GpuSample::whole_frame(frame, gpu_seconds),
-            phases: None,
+            gpu: Vec::new(),
+            phases: Vec::new(),
+            composition: None,
+            gpu_wait_seconds: 0.0,
             render_seconds: Some(render_seconds),
             readback_seconds: readback_flag.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(crate::Completion::WGPU_SIGNAL)
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        if !std::mem::take(&mut self.awaiting_completion) {
+            return Err(BenchError::Engine(format!(
+                "{}: completion requested without a submitted frame",
+                Self::NAME
+            )));
+        }
+        // Nothing has been submitted on this queue since the frame's submit
+        // returned, so its latest submission is the frame's.
+        Ok(Some(crate::Completion::on_submitted_work_done(
+            &self.gpu.queue,
+        )))
+    }
+
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        Some("Vello hybrid does not expose render-pass GPU timestamps")
+    }
+
+    fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
+        self.wait_idle()?;
+        Ok(Vec::new())
+    }
+
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        crate::wgpu_ctx::wait(&self.gpu, None, "the Vello hybrid frames")
     }
 
     fn counters(&self) -> Counters {
@@ -378,12 +536,16 @@ impl Engine for VelloHybrid {
     fn memory(&self) -> AdapterMemory {
         AdapterMemory {
             engine: Reading::unavailable("Vello hybrid does not expose engine memory"),
-            wgpu_allocator: wgpu29_allocator(&self.gpu.device, self.gpu.info.backend),
+            wgpu_allocator: allocator_report(&self.gpu.device, self.gpu.info.backend),
             skia_budgeted: Reading::unavailable("Vello hybrid has no Skia budget"),
-            vk_memory_budget: wgpu29_vk_memory_budget(
+            vk_memory_budget: wgpu_vk_memory_budget(
                 &self.gpu.device,
                 self.gpu.info.backend,
                 &self.gpu.info.name,
+            ),
+            metal_allocated_bytes: wgpu_metal_allocated_bytes(
+                &self.gpu.device,
+                self.gpu.info.backend,
             ),
         }
     }

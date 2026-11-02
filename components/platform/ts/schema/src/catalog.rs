@@ -28,46 +28,181 @@ use crate::tree::{StructSchema, TypeSchema};
 /// The whole vocabulary: every component JSX may name, and every modifier
 /// attribute that may be written on one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CatalogSchema {
     /// The components, in the order the catalog declares them.
-    pub components: &'static [ComponentSchema],
+    components: &'static [ComponentSchema],
     /// The view modifiers, which apply to every component.
-    pub modifiers: &'static [ModifierSchema],
+    modifiers: &'static [ModifierSchema],
+}
+
+impl CatalogSchema {
+    /// The components, in the order the catalog declares them.
+    #[must_use]
+    pub const fn components(&self) -> &'static [ComponentSchema] {
+        self.components
+    }
+
+    /// The view modifiers, which apply to every component.
+    #[must_use]
+    pub const fn modifiers(&self) -> &'static [ModifierSchema] {
+        self.modifiers
+    }
+}
+
+impl CatalogSchema {
+    /// A catalog of `components` and `modifiers`, in declaration order.
+    #[must_use]
+    pub const fn new(
+        components: &'static [ComponentSchema],
+        modifiers: &'static [ModifierSchema],
+    ) -> Self {
+        Self {
+            components,
+            modifiers,
+        }
+    }
 }
 
 /// One component: its tag name, its configuration attributes, and what its
 /// children are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ComponentSchema {
     /// The JSX tag name — `"VStack"`, `"Toggle"`.
-    pub name: &'static str,
+    name: &'static str,
     /// One sentence describing the component, for the generated `.d.ts` and
     /// for `water components`.
-    pub summary: &'static str,
+    summary: &'static str,
     /// The configuration attributes: the props struct the host reads a
     /// configuration object with, whose fields are the attributes.
     ///
     /// The schema is that struct's own constant — [`attributes_of`] lifts it
     /// out of its [`TypeSchema`] — so the attribute list and the conversion
     /// that reads the object are the same declaration.
-    pub attributes: StructSchema,
+    attributes: StructSchema,
     /// What this component's JSX children are.
-    pub children: ChildrenSlot,
+    children: ChildrenSlot,
+}
+
+impl ComponentSchema {
+    /// The JSX tag name — `"VStack"`, `"Toggle"`.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// One sentence describing the component, for the generated `.d.ts` and
+    /// for `water components`.
+    #[must_use]
+    pub const fn summary(&self) -> &'static str {
+        self.summary
+    }
+
+    /// The configuration attributes: the props struct the host reads a
+    /// configuration object with, whose fields are the attributes.
+    ///
+    /// The schema is that struct's own constant — [`attributes_of`] lifts it
+    /// out of its [`TypeSchema`] — so the attribute list and the conversion
+    /// that reads the object are the same declaration.
+    #[must_use]
+    pub const fn attributes(&self) -> StructSchema {
+        self.attributes
+    }
+
+    /// What this component's JSX children are.
+    #[must_use]
+    pub const fn children(&self) -> ChildrenSlot {
+        self.children
+    }
+}
+
+impl ComponentSchema {
+    /// The component `name`, described by `summary`, configured by the props
+    /// struct `attributes`, whose JSX children are `children`.
+    #[must_use]
+    pub const fn new(
+        name: &'static str,
+        summary: &'static str,
+        attributes: StructSchema,
+        children: ChildrenSlot,
+    ) -> Self {
+        Self {
+            name,
+            summary,
+            attributes,
+            children,
+        }
+    }
 }
 
 /// One modifier attribute and the shape its value takes.
+///
+/// The `.d.ts` generator opens every modifier's doc comment with
+/// [`MODIFIER_ORDER_SENTENCE`] followed by [`summary`](Self::summary): the
+/// ordering rule is stated where writing the attributes in the wrong order
+/// happens, and this entry stays the modifier's own sentence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ModifierSchema {
     /// The attribute name — `"padding"`, `"background"`.
-    pub name: &'static str,
+    name: &'static str,
     /// One sentence describing the modifier.
-    pub summary: &'static str,
+    summary: &'static str,
     /// The value it accepts.
-    pub value: &'static TypeSchema,
+    value: &'static TypeSchema,
 }
+
+impl ModifierSchema {
+    /// The attribute name — `"padding"`, `"background"`.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// One sentence describing the modifier.
+    #[must_use]
+    pub const fn summary(&self) -> &'static str {
+        self.summary
+    }
+
+    /// The value it accepts.
+    #[must_use]
+    pub const fn value(&self) -> &'static TypeSchema {
+        self.value
+    }
+}
+
+impl ModifierSchema {
+    /// The modifier attribute `name`, described by `summary`, accepting
+    /// `value`.
+    #[must_use]
+    pub const fn new(
+        name: &'static str,
+        summary: &'static str,
+        value: &'static TypeSchema,
+    ) -> Self {
+        Self {
+            name,
+            summary,
+            value,
+        }
+    }
+}
+
+/// The sentence every modifier attribute's generated doc comment opens with.
+///
+/// Modifier order is the one JSX rule an author cannot infer from the
+/// vocabulary, so the `.d.ts` generator prepends this verbatim to each
+/// [`ModifierSchema::summary`]. It is data rather than prose beside the data:
+/// the generator copies it, so it lives in the one table every generated
+/// surface is built from instead of being repeated inside each entry's
+/// summary.
+pub const MODIFIER_ORDER_SENTENCE: &str = "Modifier attributes apply in written order, left to right; reordering them changes the result.";
 
 /// What a component's JSX children are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum ChildrenSlot {
     /// The component takes no children; passing any is an error.
     None,
@@ -195,35 +330,98 @@ pub const fn encode_catalog<const N: usize>(catalog: &CatalogSchema) -> [u8; N] 
 
 /// An owned [`CatalogSchema`], recovered from an artifact.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Catalog {
     /// The components, in catalog order.
-    pub components: Vec<Component>,
+    components: Vec<Component>,
     /// The view modifiers, which apply to every component.
-    pub modifiers: Vec<Modifier>,
+    modifiers: Vec<Modifier>,
+}
+
+impl Catalog {
+    /// The components, in catalog order.
+    #[must_use]
+    pub const fn components(&self) -> &[Component] {
+        self.components.as_slice()
+    }
+
+    /// The view modifiers, which apply to every component.
+    #[must_use]
+    pub const fn modifiers(&self) -> &[Modifier] {
+        self.modifiers.as_slice()
+    }
 }
 
 /// An owned [`ComponentSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Component {
     /// The JSX tag name.
-    pub name: String,
+    name: String,
     /// One sentence describing the component.
-    pub summary: String,
+    summary: String,
     /// The configuration attributes, in declaration order.
-    pub attributes: Vec<owned::Field>,
+    attributes: Vec<owned::Field>,
     /// What this component's children are.
-    pub children: ChildrenSlot,
+    children: ChildrenSlot,
+}
+
+impl Component {
+    /// The JSX tag name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// One sentence describing the component.
+    #[must_use]
+    pub const fn summary(&self) -> &str {
+        self.summary.as_str()
+    }
+
+    /// The configuration attributes, in declaration order.
+    #[must_use]
+    pub const fn attributes(&self) -> &[owned::Field] {
+        self.attributes.as_slice()
+    }
+
+    /// What this component's children are.
+    #[must_use]
+    pub const fn children(&self) -> ChildrenSlot {
+        self.children
+    }
 }
 
 /// An owned [`ModifierSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Modifier {
     /// The attribute name.
-    pub name: String,
+    name: String,
     /// One sentence describing the modifier.
-    pub summary: String,
+    summary: String,
     /// The value it accepts.
-    pub value: owned::Schema,
+    value: owned::Schema,
+}
+
+impl Modifier {
+    /// The attribute name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// One sentence describing the modifier.
+    #[must_use]
+    pub const fn summary(&self) -> &str {
+        self.summary.as_str()
+    }
+
+    /// The value it accepts.
+    #[must_use]
+    pub const fn value(&self) -> &owned::Schema {
+        &self.value
+    }
 }
 
 impl From<&CatalogSchema> for Catalog {
@@ -242,7 +440,7 @@ impl From<&ComponentSchema> for Component {
             summary: component.summary.to_owned(),
             attributes: component
                 .attributes
-                .fields
+                .fields()
                 .iter()
                 .map(owned::Field::from)
                 .collect(),
@@ -304,12 +502,14 @@ pub fn decode_catalog(payload: &[u8]) -> Result<Catalog, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
-    if payload.get(reader.pos) != Some(&kind::CATALOG) {
+    // Read rather than peeked: a payload that ends after the version byte is
+    // truncated, not a payload of another kind.
+    let found = reader.byte()?;
+    if found != kind::CATALOG {
         return Err(DecodeError::NotACatalog {
-            found: payload_kind(payload.get(reader.pos).copied()),
+            found: payload_kind(found),
         });
     }
-    reader.pos += 1;
 
     let count = reader.length()?;
     if count == 0 {
@@ -351,7 +551,7 @@ fn read_component(reader: &mut Reader<'_>) -> Result<Component, DecodeError> {
     // entry's, not the whole catalog's.
     reader.depth = 0;
     let attributes = match reader.node()? {
-        owned::Schema::Struct(attributes) => attributes.fields,
+        owned::Schema::Struct(attributes) => attributes.into_fields(),
         other => {
             return Err(DecodeError::AttributesNotAStruct {
                 component: name,

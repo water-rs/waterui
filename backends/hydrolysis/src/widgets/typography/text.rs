@@ -6,42 +6,42 @@ use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 use waterui_text::TextConfig;
 
-impl HydroNativeView for Native<TextConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TextConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
-        let content = state.measure_signal(&view.as_inner().content);
-        let alignment = state.measure_signal(&view.as_inner().paragraph_alignment);
+        let content = state.measure_signal(view.as_inner().content());
+        let alignment = state.measure_signal(view.as_inner().paragraph_alignment());
         HydrolysisRenderer::measure_text_dimensions(
             state,
             content,
             alignment,
             env,
             None,
-            view.as_inner().line_limit.map(NonZeroUsize::get),
+            view.as_inner().line_limit().map(NonZeroUsize::get),
         )
         .size
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
-        let content = state.measure_signal(&view.as_inner().content);
-        let alignment = state.measure_signal(&view.as_inner().paragraph_alignment);
+        let content = state.measure_signal(view.as_inner().content());
+        let alignment = state.measure_signal(view.as_inner().paragraph_alignment());
         HydrolysisRenderer::measure_text_dimensions(
             state,
             content,
             alignment,
             env,
             proposal.width,
-            view.as_inner().line_limit.map(NonZeroUsize::get),
+            view.as_inner().line_limit().map(NonZeroUsize::get),
         )
     }
 }

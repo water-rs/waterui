@@ -36,7 +36,7 @@ use std::ops::Range;
 
 use crate::platform::KeyCode;
 use crate::renderer::{FocusedEditorSnapshot, InteractionKey, SemanticCore, TextContextMenuAction};
-use crate::text::{SessionTextLayout, TextLayout as _, TextPosition};
+use crate::text::{TextLayout as _, TextPosition};
 
 /// Decodes the W3C `KeyboardEvent.key` value the Kotlin host's `w3cKey`
 /// reports for a `sendKeyEvent` key: the W3C logical key, and the legacy
@@ -349,7 +349,10 @@ impl EditingSession {
     /// text/selection/pre-edit is spliced into the mirror — an external
     /// binding update lands here too, mid-composition included. Returns
     /// whether the IME-visible state changed.
-    pub fn sync_from_renderer(&mut self, snapshot: Option<&FocusedEditorSnapshot>) -> bool {
+    pub fn sync_from_renderer<E: crate::text::TextEngine>(
+        &mut self,
+        snapshot: Option<&FocusedEditorSnapshot<E>>,
+    ) -> bool {
         let new_key = snapshot.map(|snap| snap.key.clone());
         let editor_changed = new_key != self.key;
         if editor_changed {
@@ -410,8 +413,8 @@ impl EditingSession {
     /// text with the pre-edit spliced at the selection slot, the composition
     /// as a UTF-16 range over the splice, and the composition caret as the
     /// collapsed selection.
-    fn project_snapshot(
-        snap: &FocusedEditorSnapshot,
+    fn project_snapshot<E: crate::text::TextEngine>(
+        snap: &FocusedEditorSnapshot<E>,
     ) -> (String, Option<Range<usize>>, (usize, usize)) {
         let committed = &snap.text;
         snap.preedit.as_ref().map_or_else(
@@ -480,7 +483,7 @@ impl EditingSession {
     /// Write the mirror's projection into the focused model — deferred to
     /// the outermost `endBatchEdit` while a batch is open, matching Android's
     /// "the other side sees nothing until `endBatchEdit`" contract.
-    pub fn flush(&mut self, core: &mut SemanticCore) -> bool {
+    pub fn flush<E: crate::text::TextEngine>(&mut self, core: &mut SemanticCore<E>) -> bool {
         if self.batch_depth > 0 {
             self.pending_apply = true;
             return false;
@@ -654,11 +657,11 @@ impl EditingSession {
     /// `performContextMenuAction` for the actions a platform menu can send —
     /// select-all/cut/copy/paste reach the same primitives the rendered
     /// context menu executes, so a secure field still refuses cut/copy.
-    pub fn perform_context_action(
+    pub fn perform_context_action<E: crate::text::TextEngine>(
         &self,
         editor_id: u64,
         action: EditorContextAction,
-        core: &mut SemanticCore,
+        core: &mut SemanticCore<E>,
     ) -> bool {
         if !self.live(editor_id) {
             return false;
@@ -676,11 +679,11 @@ impl EditingSession {
     /// submit when the field declares it, a newline otherwise; an explicit
     /// action only ever submits, returning false when the field declines it
     /// (the system then hides the IME or moves focus itself).
-    pub fn perform_editor_action(
+    pub fn perform_editor_action<E: crate::text::TextEngine>(
         &mut self,
         editor_id: u64,
         action: i32,
-        core: &SemanticCore,
+        core: &SemanticCore<E>,
     ) -> bool {
         if !self.live(editor_id) {
             return false;
@@ -713,7 +716,10 @@ impl EditingSession {
     /// subscription is active or nothing is focused. Character bounds are
     /// resolved from the snapshot's display layout — committed + pre-edit for
     /// a field, the mask glyphs for a secure field.
-    pub fn anchor_info(&self, snapshot: &FocusedEditorSnapshot) -> Option<AnchorInfo> {
+    pub fn anchor_info<E: crate::text::TextEngine>(
+        &self,
+        snapshot: &FocusedEditorSnapshot<E>,
+    ) -> Option<AnchorInfo> {
         if !self.cursor_updates_subscribed() {
             return None;
         }
@@ -754,7 +760,10 @@ impl EditingSession {
     /// snapshot's display layout and offset by `text_bounds`. A surrogate
     /// pair occupies two UTF-16 units but one entry — Android keys
     /// `CursorAnchorInfo` bounds by the character's start index.
-    fn character_bounds(&self, snapshot: &FocusedEditorSnapshot) -> Vec<(usize, kurbo::Rect)> {
+    fn character_bounds<E: crate::text::TextEngine>(
+        &self,
+        snapshot: &FocusedEditorSnapshot<E>,
+    ) -> Vec<(usize, kurbo::Rect)> {
         let display = snapshot.display_text.as_str();
         if display.is_empty() {
             return Vec::new();
@@ -776,7 +785,8 @@ impl EditingSession {
             if in_window {
                 let display_start = self.display_byte(snapshot, display, u16_pos);
                 let display_next = self.display_byte(snapshot, display, u16_pos + char_u16);
-                let rect = char_rect(layout_of(snapshot), display, display_start, display_next);
+                let rect =
+                    char_rect::<E>(layout_of(snapshot), display, display_start, display_next);
                 {
                     entries.push((
                         u16_pos,
@@ -800,9 +810,9 @@ impl EditingSession {
     /// The display-layout byte index for a mirror UTF-16 index: direct for a
     /// text field (display == mirror text), the code-point ordinal for a
     /// secure field (mask glyphs are one byte each).
-    fn display_byte(
+    fn display_byte<E: crate::text::TextEngine>(
         &self,
-        snapshot: &FocusedEditorSnapshot,
+        snapshot: &FocusedEditorSnapshot<E>,
         display: &str,
         u16_index: usize,
     ) -> usize {
@@ -908,15 +918,15 @@ impl EditingSession {
     }
 }
 
-const fn layout_of(snapshot: &FocusedEditorSnapshot) -> &SessionTextLayout {
+const fn layout_of<E: crate::text::TextEngine>(snapshot: &FocusedEditorSnapshot<E>) -> &E::Layout {
     &snapshot.display_layout
 }
 
 /// A character's bounding rect from its display layout: the caret geometry
 /// at its start extended to the next character's caret x — the convention
 /// `CursorAnchorInfo.Builder.addCharacterBounds` expects.
-fn char_rect(
-    layout: &SessionTextLayout,
+fn char_rect<E: crate::text::TextEngine>(
+    layout: &E::Layout,
     display: &str,
     byte_start: usize,
     byte_next: usize,

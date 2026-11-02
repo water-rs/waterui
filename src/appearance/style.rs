@@ -103,13 +103,14 @@ impl Default for FloatingStyle {
 /// A shadow is defined by its color, offset from the original element, blur
 /// radius, and the silhouette of the element casting it.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Shadow {
     /// The color of the shadow, including alpha for opacity.
-    pub color: Color,
+    color: Color,
     /// The offset of the shadow from the original element.
-    pub offset: Vector<f32>,
+    offset: Vector<f32>,
     /// The blur radius of the shadow in pixels.
-    pub radius: f32,
+    radius: f32,
     /// The shape of the element casting the shadow.
     ///
     /// Backends that rasterize the shadow themselves blur this shape, so it
@@ -117,7 +118,39 @@ pub struct Shadow {
     /// or the shadow will not follow the element's outline. It carries the
     /// shape's [`ShapeKind`](waterui_shape::ShapeKind), so a normalized corner
     /// radius and an absolute one can never be confused.
-    pub silhouette: ClipShape,
+    silhouette: ClipShape,
+}
+
+impl Shadow {
+    /// The color of the shadow, including alpha for opacity.
+    #[must_use]
+    pub const fn color(&self) -> &Color {
+        &self.color
+    }
+
+    /// The offset of the shadow from the original element.
+    #[must_use]
+    pub const fn offset(&self) -> &Vector<f32> {
+        &self.offset
+    }
+
+    /// The blur radius of the shadow in pixels.
+    #[must_use]
+    pub const fn radius(&self) -> f32 {
+        self.radius
+    }
+
+    /// The shape of the element casting the shadow.
+    ///
+    /// Backends that rasterize the shadow themselves blur this shape, so it
+    /// must be the caster's own shape — the one it is filled or clipped with —
+    /// or the shadow will not follow the element's outline. It carries the
+    /// shape's [`ShapeKind`](waterui_shape::ShapeKind), so a normalized corner
+    /// radius and an absolute one can never be confused.
+    #[must_use]
+    pub const fn silhouette(&self) -> &ClipShape {
+        &self.silhouette
+    }
 }
 
 impl MetadataKey for Shadow {}
@@ -291,13 +324,34 @@ impl Default for Anchor {
 /// let pulsing = text!("Hello").scale(factor, 1.0);
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Scale {
     /// Scale factor along X axis (1.0 = no scale)
-    pub x: Computed<f32>,
+    x: Computed<f32>,
     /// Scale factor along Y axis (1.0 = no scale)
-    pub y: Computed<f32>,
+    y: Computed<f32>,
     /// Anchor point for the scale transform
-    pub anchor: Anchor,
+    anchor: Anchor,
+}
+
+impl Scale {
+    /// Scale factor along X axis (1.0 = no scale)
+    #[must_use]
+    pub const fn x(&self) -> &Computed<f32> {
+        &self.x
+    }
+
+    /// Scale factor along Y axis (1.0 = no scale)
+    #[must_use]
+    pub const fn y(&self) -> &Computed<f32> {
+        &self.y
+    }
+
+    /// Anchor point for the scale transform
+    #[must_use]
+    pub const fn anchor(&self) -> Anchor {
+        self.anchor
+    }
 }
 
 impl MetadataKey for Scale {}
@@ -371,11 +425,26 @@ impl Scale {
 /// let spinning = text!("Hello").rotation(angle);
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Rotation {
     /// Rotation angle in degrees (positive = clockwise)
-    pub angle: Computed<f32>,
+    angle: Computed<f32>,
     /// Anchor point for the rotation transform
-    pub anchor: Anchor,
+    anchor: Anchor,
+}
+
+impl Rotation {
+    /// Rotation angle in degrees (positive = clockwise)
+    #[must_use]
+    pub const fn angle(&self) -> &Computed<f32> {
+        &self.angle
+    }
+
+    /// Anchor point for the rotation transform
+    #[must_use]
+    pub const fn anchor(&self) -> Anchor {
+        self.anchor
+    }
 }
 
 impl MetadataKey for Rotation {}

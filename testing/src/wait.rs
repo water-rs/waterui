@@ -32,11 +32,26 @@ pub enum ExpectationKind {
 
 /// Wait behavior configuration.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct WaitOptions {
     /// Maximum time to wait before returning a timeout result.
-    pub timeout: Duration,
+    timeout: Duration,
     /// Whether non-inverted expectations must be fulfilled in list order.
-    pub enforce_order: bool,
+    enforce_order: bool,
+}
+
+impl WaitOptions {
+    /// Maximum time to wait before returning a timeout result.
+    #[must_use]
+    pub const fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// Whether non-inverted expectations must be fulfilled in list order.
+    #[must_use]
+    pub const fn get_enforce_order(&self) -> bool {
+        self.enforce_order
+    }
 }
 
 impl WaitOptions {
@@ -65,6 +80,10 @@ impl Default for WaitOptions {
 
 /// XCTest-like wait result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "callers report each wait outcome distinctly; a new outcome must fail their build"
+)]
 pub enum WaitResult {
     /// All expectations were fulfilled.
     Completed,

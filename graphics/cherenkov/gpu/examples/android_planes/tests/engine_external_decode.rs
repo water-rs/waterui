@@ -91,6 +91,7 @@ fn the_engine_decodes_the_nv12_pattern() {
             pixel_stride: 2,
         },
     ];
+    // SAFETY: the planes describe `mapped`'s own luma and UV regions.
     unsafe { pattern::fill_nv12(&planes, 0) };
 
     let shared = SharedDevice::create(&GpuConfig::default()).expect("shared device");

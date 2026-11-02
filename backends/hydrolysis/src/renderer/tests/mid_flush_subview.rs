@@ -207,11 +207,11 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
     // legitimately use the token; the pill's fill must exceed that baseline.
     at += Duration::from_millis(16);
     let baseline = count_rgb(
-        &runtime
+        runtime
             .pump_at(true, at)
-            .snapshot
+            .snapshot()
             .expect("the frame must capture")
-            .rgba8,
+            .rgba8(),
         SURFACE,
         2,
     );
@@ -226,9 +226,9 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
     at += Duration::from_millis(16);
     let snapshot = runtime
         .pump_at(true, at)
-        .snapshot
+        .into_snapshot()
         .expect("the frame must capture");
-    let painted = count_rgb(&snapshot.rgba8, SURFACE, 2);
+    let painted = count_rgb(snapshot.rgba8(), SURFACE, 2);
     assert!(
         painted > baseline + 200,
         "the first frame after `open` applies must already paint the `when` \
@@ -239,7 +239,7 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
     // The paint must sit below the message rows — where the pill's new bounds
     // are — not at some stale placement elsewhere in the sub-view.
     let lower_painted = count_rgb(
-        &snapshot.rgba8[(WINDOW_WIDTH as usize) * 4 * 70..],
+        &snapshot.rgba8()[(WINDOW_WIDTH as usize) * 4 * 70..],
         SURFACE,
         2,
     );
@@ -252,9 +252,9 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
     // The first post-toggle frame must not stack rows on top of each other:
     // every painted band keeps its measured height (~18.75pt here) and the
     // bands stay disjoint — the appended inner row belongs *below* the first.
-    let setter = ink_span(&snapshot.rgba8, SETTER_ROW).expect("setter row painted");
-    let inner_a = ink_span(&snapshot.rgba8, INNER_ROW_A).expect("inner row A painted");
-    let inner_b = ink_span(&snapshot.rgba8, INNER_ROW_B).expect("inner row B painted");
+    let setter = ink_span(snapshot.rgba8(), SETTER_ROW).expect("setter row painted");
+    let inner_a = ink_span(snapshot.rgba8(), INNER_ROW_A).expect("inner row A painted");
+    let inner_b = ink_span(snapshot.rgba8(), INNER_ROW_B).expect("inner row B painted");
     assert!(
         inner_a.0 > setter.1,
         "inner row A (y{}..{}) must start below the setter row (y{}..{}); \
@@ -290,9 +290,9 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
 
     let snapshot = runtime
         .pump_at(true, at)
-        .snapshot
+        .into_snapshot()
         .expect("the frame must capture");
-    let painted = count_rgb(&snapshot.rgba8, SURFACE, 2);
+    let painted = count_rgb(snapshot.rgba8(), SURFACE, 2);
     assert!(
         painted > baseline + 200,
         "the `when` subtree's `.background(Surface)` must keep painting after \
@@ -300,9 +300,9 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
     );
 
     // Steady state keeps the same row placement invariants.
-    let setter = ink_span(&snapshot.rgba8, SETTER_ROW).expect("setter row painted");
-    let inner_a = ink_span(&snapshot.rgba8, INNER_ROW_A).expect("inner row A painted");
-    let inner_b = ink_span(&snapshot.rgba8, INNER_ROW_B).expect("inner row B painted");
+    let setter = ink_span(snapshot.rgba8(), SETTER_ROW).expect("setter row painted");
+    let inner_a = ink_span(snapshot.rgba8(), INNER_ROW_A).expect("inner row A painted");
+    let inner_b = ink_span(snapshot.rgba8(), INNER_ROW_B).expect("inner row B painted");
     assert!(
         inner_a.0 > setter.1 && inner_b.0 > inner_a.1,
         "painted rows must stay disjoint: setter y{}..{}, A y{}..{}, B y{}..{}",

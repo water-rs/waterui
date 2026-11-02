@@ -13,12 +13,16 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::{Output, Stdio},
+    time::Duration,
 };
 
 use cargo_metadata::{Metadata, MetadataCommand};
 use smol::{io::AsyncReadExt as _, process::Command, unblock};
 
-use crate::utils::{CommandError, format_failure_stream};
+use crate::{
+    toolchain::process_tree::ProcessTree,
+    utils::{CommandError, format_failure_stream},
+};
 
 mod detached;
 
@@ -32,7 +36,7 @@ mod detached;
 /// what a spawned child sees. Detection code must read all of those
 /// through this value so a declared host cannot leak real-machine state
 /// into a check.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Host {
     env: BTreeMap<OsString, OsString>,
     cwd: PathBuf,
@@ -41,6 +45,22 @@ pub struct Host {
     /// terminal — the policy `crate::utils::command` and [`Host::output`]
     /// apply per invocation.
     std_output: bool,
+    #[cfg(test)]
+    http_responses: Option<std::sync::Arc<std::sync::Mutex<BTreeMap<String, zenwave::Response>>>>,
+}
+
+// `env` holds credentials handed to tools (`WATERUI_INSPECTOR_TOKEN` and
+// the like): `Debug` names environment keys, never their values, and skips
+// the canned-response table entirely.
+impl std::fmt::Debug for Host {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Host")
+            .field("env_keys", &self.env.keys().collect::<Vec<_>>())
+            .field("cwd", &self.cwd)
+            .field("app_dirs", &self.app_dirs)
+            .field("std_output", &self.std_output)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Host {
@@ -56,6 +76,8 @@ impl Host {
             cwd: env::current_dir().expect("process must have a working directory"),
             app_dirs: default_app_dirs(),
             std_output: false,
+            #[cfg(test)]
+            http_responses: None,
         }
     }
 
@@ -102,7 +124,44 @@ impl Host {
             cwd: env::current_dir().expect("process must have a working directory"),
             app_dirs: Vec::new(),
             std_output: false,
+            #[cfg(test)]
+            http_responses: Some(std::sync::Arc::default()),
         }
+    }
+
+    /// Fetch a URL using this host's explicitly supplied request headers.
+    pub(crate) async fn http_get(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<zenwave::Response, zenwave::Error> {
+        use zenwave::Client as _;
+
+        #[cfg(test)]
+        if let Some(responses) = &self.http_responses {
+            return Ok(responses
+                .lock()
+                .expect("HTTP fixture lock")
+                .remove(url)
+                .unwrap_or_else(|| panic!("unexpected HTTP request: {url}")));
+        }
+        let mut client = zenwave::client();
+        let mut request = client.method(zenwave::Method::GET, url)?;
+        for (name, value) in headers {
+            request = request.header(*name, *value)?;
+        }
+        request.await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_http_response(self, url: &str, response: zenwave::Response) -> Self {
+        self.http_responses
+            .as_ref()
+            .expect("HTTP fixtures require a declared host")
+            .lock()
+            .expect("HTTP fixture lock")
+            .insert(url.to_owned(), response);
+        self
     }
 
     /// Override the working directory (builder-style).
@@ -138,6 +197,33 @@ impl Host {
     #[must_use]
     pub const fn std_output(&self) -> bool {
         self.std_output
+    }
+
+    /// A host whose builds stay off the network.
+    ///
+    /// `offline` binds `CARGO_NET_OFFLINE` — the switch Cargo reads for its
+    /// own `--offline` — so the policy reaches the CLI's own downloads and
+    /// every Cargo invocation the host spawns alike.
+    #[must_use]
+    pub fn with_offline(&self, offline: bool) -> Self {
+        if offline {
+            self.with_env("CARGO_NET_OFFLINE", "true")
+        } else {
+            self.clone()
+        }
+    }
+
+    /// Whether this host is asked to keep builds off the network.
+    ///
+    /// `CARGO_NET_OFFLINE` carries it — set in the environment or bound by a
+    /// command's `--offline` flag through [`Host::with_offline`] — spelled
+    /// the way the environment spells booleans (`1`, `true`, `yes`, `on`).
+    #[must_use]
+    pub fn offline(&self) -> bool {
+        self.env("CARGO_NET_OFFLINE").is_some_and(|value| {
+            let value = value.to_string_lossy().trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
     }
 
     /// An environment variable on this host.
@@ -344,6 +430,56 @@ impl Host {
         self.with_env("HOME", &home).with_env("USERPROFILE", &home)
     }
 
+    /// A host whose environment no longer binds `key`.
+    ///
+    /// The removal follows the platform's environment semantics — variable
+    /// names are case-insensitive on Windows — matching [`Host::env`]'s
+    /// lookup.
+    #[must_use]
+    pub fn without_env(&self, key: impl AsRef<OsStr>) -> Self {
+        let mut host = self.clone();
+        let key = key.as_ref();
+        if cfg!(target_os = "windows") {
+            host.env
+                .retain(|existing, _| !existing.as_os_str().eq_ignore_ascii_case(key));
+        } else {
+            host.env.remove(key);
+        }
+        host
+    }
+
+    /// A host whose environment carries no Cargo target-directory override:
+    /// `CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET_DIR` — the
+    /// `build.target-dir` config key's environment spelling — are both
+    /// removed.
+    ///
+    /// Test fixtures cloning the real environment strip these so every
+    /// `cargo` a test spawns builds into a directory the test owns: under
+    /// the inherited override a fixture's `cargo build` writes — and a
+    /// `cargo clean` deletes — the developer's own build directory
+    /// (water-rs/waterui#3098). The real CLI keeps honoring the override,
+    /// so this stays a fixture-construction choice rather than a behavior
+    /// of [`Host::current`].
+    #[must_use]
+    pub fn without_cargo_target_dir(&self) -> Self {
+        self.without_env("CARGO_TARGET_DIR")
+            .without_env("CARGO_BUILD_TARGET_DIR")
+    }
+
+    /// A host whose environment carries no compiler wrapper: `RUSTC_WRAPPER`
+    /// and its config spelling `CARGO_BUILD_RUSTC_WRAPPER` are both removed.
+    ///
+    /// Test fixtures that redirect the home directory strip these too: the
+    /// developer's wrapper is configured for the real home, and sccache on
+    /// Windows panics resolving its config directory under a scratch
+    /// `USERPROFILE`, failing every `cargo` the fixture spawns
+    /// (water-rs/waterui#3124). The real CLI keeps honoring the wrapper.
+    #[must_use]
+    pub fn without_compile_wrapper(&self) -> Self {
+        self.without_env("RUSTC_WRAPPER")
+            .without_env("CARGO_BUILD_RUSTC_WRAPPER")
+    }
+
     /// Every environment variable on this host, in map order.
     ///
     /// For resolvers that take the whole environment at once rather than
@@ -362,16 +498,20 @@ impl Host {
     /// feeds or forwards input sets `.stdin(...)` on the returned command
     /// explicitly. Other stdio is left to the caller — see
     /// `crate::utils::command` for the CLI's capture/inherit policy.
-    #[must_use]
-    pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides. A program given as a
+    ///   path is used as given.
+    pub fn command(&self, program: impl AsRef<OsStr>) -> io::Result<Command> {
         withhold_std_handles_from_children();
-        let mut command = Command::new(self.resolve_program(program.as_ref()));
+        let mut command = Command::new(self.resolve_program(program.as_ref())?);
         command
             .env_clear()
             .envs(&self.env)
             .current_dir(&self.cwd)
             .stdin(Stdio::null());
-        command
+        Ok(command)
     }
 
     /// A [`std::process::Command`] that runs `program` under this host.
@@ -379,16 +519,20 @@ impl Host {
     /// Same environment, working directory and null-stdin default as
     /// [`Host::command`], for the places that need synchronous or `std`-only
     /// command features (process groups, spawning from a non-async thread).
-    #[must_use]
-    pub fn std_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides. A program given as a
+    ///   path is used as given.
+    pub fn std_command(&self, program: impl AsRef<OsStr>) -> io::Result<std::process::Command> {
         withhold_std_handles_from_children();
-        let mut command = std::process::Command::new(self.resolve_program(program.as_ref()));
+        let mut command = std::process::Command::new(self.resolve_program(program.as_ref())?);
         command
             .env_clear()
             .envs(&self.env)
             .current_dir(&self.cwd)
             .stdin(Stdio::null());
-        command
+        Ok(command)
     }
 
     /// A [`std::process::Command`] that runs `program` under this host with
@@ -401,14 +545,20 @@ impl Host {
     /// launchers that take the TTY over entirely. The
     /// `std` type is returned so callers that `exec` or group the child can;
     /// async callers wrap it with `smol::process::Command::from`.
-    #[must_use]
-    pub fn interactive_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
-        let mut command = self.std_command(program);
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides.
+    pub fn interactive_command(
+        &self,
+        program: impl AsRef<OsStr>,
+    ) -> io::Result<std::process::Command> {
+        let mut command = self.std_command(program)?;
         command
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        command
+        Ok(command)
     }
 
     /// A [`std::process::Command`] that inherits the terminal for output but
@@ -419,11 +569,17 @@ impl Host {
     /// never reads stdin — `water bench` running `cargo nextest` — in
     /// contrast to [`Host::interactive_command`], which owns the whole
     /// terminal.
-    #[must_use]
-    pub fn monitored_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
-        let mut command = self.std_command(program);
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides.
+    pub fn monitored_command(
+        &self,
+        program: impl AsRef<OsStr>,
+    ) -> io::Result<std::process::Command> {
+        let mut command = self.std_command(program)?;
         command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-        command
+        Ok(command)
     }
 
     /// A [`Command`] that spawns `program` as the leader of a new process
@@ -437,14 +593,17 @@ impl Host {
     /// termination path the supervisor cannot order or count. The group
     /// boundary exists only on Unix, where `std` lowers `process_group(0)`
     /// to `setpgid` in the child before `exec`.
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides.
     #[cfg(unix)]
-    #[must_use]
-    pub fn command_in_own_process_group(&self, program: impl AsRef<OsStr>) -> Command {
+    pub fn command_in_own_process_group(&self, program: impl AsRef<OsStr>) -> io::Result<Command> {
         use std::os::unix::process::CommandExt as _;
 
-        let mut command = self.std_command(program);
+        let mut command = self.std_command(program)?;
         command.process_group(0);
-        Command::from(command)
+        Ok(Command::from(command))
     }
 
     /// Spawn `program` with `args` under this host, capturing output.
@@ -466,7 +625,75 @@ impl Host {
         program: impl AsRef<OsStr>,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> Result<Output, CommandError> {
-        let program = program.as_ref();
+        self.collect_output(program.as_ref(), args, None::<smol::io::Empty>, None)
+            .await
+    }
+
+    /// [`Host::output`] bound by `deadline`.
+    ///
+    /// The child leads its own process tree. When `deadline` elapses before
+    /// it exits, the whole tree is killed and the run ends in
+    /// [`CommandError::TimedOut`] carrying what the child had written so far.
+    ///
+    /// # Errors
+    /// - [`CommandError::Spawn`] when the program cannot be spawned, awaited
+    ///   or grouped.
+    /// - [`CommandError::TimedOut`] when `deadline` elapses first.
+    pub async fn output_within(
+        &self,
+        program: impl AsRef<OsStr>,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        deadline: Duration,
+    ) -> Result<Output, CommandError> {
+        self.collect_output(
+            program.as_ref(),
+            args,
+            None::<smol::io::Empty>,
+            Some(deadline),
+        )
+        .await
+    }
+
+    /// [`Host::output`] with `input` streamed into the child's stdin, which
+    /// is closed once `input` reaches its end so the child sees end-of-file.
+    ///
+    /// The feed runs alongside the stdout/stderr drains, so a child that
+    /// writes while it reads cannot deadlock against a full pipe. A child
+    /// that exits without reading all of `input` closes its end of the pipe;
+    /// the feed then stops, and the exit status in the returned [`Output`]
+    /// is the verdict on the run.
+    ///
+    /// # Errors
+    /// - [`CommandError::Spawn`] when the program cannot be spawned or awaited.
+    /// - [`CommandError::Input`] when reading `input` or writing it to the
+    ///   child fails for any reason other than the child having closed stdin.
+    pub async fn output_with_input(
+        &self,
+        program: impl AsRef<OsStr>,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        input: impl smol::io::AsyncRead,
+    ) -> Result<Output, CommandError> {
+        self.collect_output(program.as_ref(), args, Some(input), None)
+            .await
+    }
+
+    /// The spawn-feed-drain behind [`Host::output`],
+    /// [`Host::output_with_input`] and [`Host::output_within`]: stdin is
+    /// piped only when there is `input` to feed, and null otherwise (see
+    /// [`Host::command`]). With a `deadline` the child leads a process tree
+    /// that is killed when the deadline passes.
+    ///
+    /// # Panics
+    /// Panics if the piped-stdio invariant is violated — the streams are
+    /// configured `piped` immediately before spawn, so `take()` always sees
+    /// `Some`.
+    async fn collect_output(
+        &self,
+        program: &OsStr,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        input: Option<impl smol::io::AsyncRead>,
+        deadline: Option<Duration>,
+    ) -> Result<Output, CommandError> {
         let program_name = program.to_string_lossy().into_owned();
         let args = args
             .into_iter()
@@ -474,16 +701,31 @@ impl Host {
             .collect::<Vec<_>>();
         tracing::debug!(program = %program_name, ?args, "spawning");
         let started = std::time::Instant::now();
-        let mut command = self.command(program);
-        command
-            .args(&args)
-            .kill_on_drop(true)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|source| CommandError::Spawn {
+        let spawn_error = |source| CommandError::Spawn {
             program: program_name.clone(),
             source,
-        })?;
+        };
+        let mut command = self.std_command(program).map_err(spawn_error)?;
+        command.args(&args);
+        let pipe_stdin = input.is_some();
+        let pipe_and_spawn = |command: std::process::Command| {
+            let mut command = Command::from(command);
+            command
+                .kill_on_drop(true)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if pipe_stdin {
+                command.stdin(Stdio::piped());
+            }
+            command.spawn()
+        };
+        let (mut child, tree) = if deadline.is_some() {
+            ProcessTree::spawn(command, pipe_and_spawn).map(|(child, tree)| (child, Some(tree)))
+        } else {
+            pipe_and_spawn(command).map(|child| (child, None))
+        }
+        .map_err(spawn_error)?;
+        let feed = feed_child_stdin(input.zip(child.stdin.take()));
 
         let echo = self.std_output;
         let stdout_task = smol::spawn(drain_child_pipe(
@@ -497,18 +739,37 @@ impl Host {
             echo,
         ));
 
-        let status = child.status().await.map_err(|source| CommandError::Spawn {
+        let waited = futures_util::future::join(feed, child.status());
+        let (input_fed, status) = match deadline.zip(tree.as_ref()) {
+            None => waited.await,
+            Some((after, tree)) => {
+                let expiry = async {
+                    smol::Timer::after(after).await;
+                    None
+                };
+                if let Some(finished) = smol::future::or(async { Some(waited.await) }, expiry).await
+                {
+                    finished
+                } else {
+                    tree.signal(false);
+                    let _ = child.status().await;
+                    let stdout = stdout_task.await.unwrap_or_default();
+                    let stderr = stderr_task.await.unwrap_or_default();
+                    return Err(CommandError::TimedOut {
+                        program: program_name.clone(),
+                        after,
+                        report: failure_report(&stdout, &stderr),
+                    });
+                }
+            }
+        };
+        let status = status.map_err(spawn_error)?;
+        input_fed.map_err(|source| CommandError::Input {
             program: program_name.clone(),
             source,
         })?;
-        let stdout = stdout_task.await.map_err(|source| CommandError::Spawn {
-            program: program_name.clone(),
-            source,
-        })?;
-        let stderr = stderr_task.await.map_err(|source| CommandError::Spawn {
-            program: program_name.clone(),
-            source,
-        })?;
+        let stdout = stdout_task.await.map_err(spawn_error)?;
+        let stderr = stderr_task.await.map_err(spawn_error)?;
         tracing::debug!(
             program = %program_name,
             %status,
@@ -534,20 +795,24 @@ impl Host {
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> Result<String, CommandError> {
         let program = program.as_ref();
-        let output = self.output(program, args).await?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            Err(CommandError::Failed {
-                program: program.to_string_lossy().into_owned(),
-                status: output.status,
-                report: format!(
-                    "{}{}",
-                    format_failure_stream("stderr", &output.stderr),
-                    format_failure_stream("stdout", &output.stdout),
-                ),
-            })
-        }
+        succeeded(program, &self.output(program, args).await?)
+    }
+
+    /// [`Host::run`] bound by `deadline`, as [`Host::output_within`] bounds
+    /// [`Host::output`].
+    ///
+    /// # Errors
+    /// - [`CommandError::Spawn`] when the program cannot be spawned.
+    /// - [`CommandError::Failed`] when it exits non-zero.
+    /// - [`CommandError::TimedOut`] when `deadline` elapses first.
+    pub async fn run_within(
+        &self,
+        program: impl AsRef<OsStr>,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        deadline: Duration,
+    ) -> Result<String, CommandError> {
+        let program = program.as_ref();
+        succeeded(program, &self.output_within(program, args, deadline).await?)
     }
 
     /// `cargo metadata` as `command` configures it, run on this host.
@@ -567,8 +832,21 @@ impl Host {
         &self,
         command: &MetadataCommand,
     ) -> Result<Metadata, cargo_metadata::Error> {
+        let json = self.cargo_metadata_json(command).await?;
+        unblock(move || MetadataCommand::parse(json)).await
+    }
+
+    /// The JSON document [`Host::cargo_metadata`] parses — the first stdout
+    /// line of the run that opens a JSON object.
+    ///
+    /// # Errors
+    /// Every error [`MetadataCommand::exec`] reports before parsing.
+    pub async fn cargo_metadata_json(
+        &self,
+        command: &MetadataCommand,
+    ) -> Result<String, cargo_metadata::Error> {
         let invocation = command.cargo_command();
-        let mut cargo = self.command("cargo");
+        let mut cargo = self.command("cargo")?;
         cargo.args(invocation.get_args()).kill_on_drop(true);
         if let Some(dir) = invocation.get_current_dir() {
             cargo.current_dir(dir);
@@ -579,20 +857,18 @@ impl Host {
                 None => cargo.env_remove(key),
             };
         }
+        tracing::debug!(args = ?invocation.get_args().collect::<Vec<_>>(), "spawning cargo metadata");
         let output = cargo.output().await?;
-        unblock(move || {
-            if !output.status.success() {
-                return Err(cargo_metadata::Error::CargoMetadata {
-                    stderr: String::from_utf8(output.stderr)?,
-                });
-            }
-            let json = std::str::from_utf8(&output.stdout)?
-                .lines()
-                .find(|line| line.starts_with('{'))
-                .ok_or(cargo_metadata::Error::NoJson)?;
-            MetadataCommand::parse(json)
-        })
-        .await
+        if !output.status.success() {
+            return Err(cargo_metadata::Error::CargoMetadata {
+                stderr: String::from_utf8(output.stderr)?,
+            });
+        }
+        let json = std::str::from_utf8(&output.stdout)?
+            .lines()
+            .find(|line| line.starts_with('{'))
+            .ok_or(cargo_metadata::Error::NoJson)?;
+        Ok(json.to_owned())
     }
 
     /// Run `program` to completion with nothing of this process in its hands:
@@ -620,7 +896,12 @@ impl Host {
             .map(|argument| argument.as_ref().to_os_string())
             .collect::<Vec<_>>();
         tracing::debug!(program = %program_name, ?args, "spawning detached");
-        let resolved = self.resolve_program(program.as_ref());
+        let resolved =
+            self.resolve_program(program.as_ref())
+                .map_err(|source| CommandError::Spawn {
+                    program: program_name.clone(),
+                    source,
+                })?;
         let env = self.env.clone();
         let cwd = self.cwd.clone();
         let status = unblock(move || detached::run(&resolved, &args, &env, &cwd))
@@ -635,21 +916,34 @@ impl Host {
 
     /// Resolve a bare program name against this host's `PATH`.
     ///
-    /// `CreateProcess` searches the *parent's* `PATH`, never the child's, so
-    /// passing a bare name through `env_clear` + `envs` would miss tools that
-    /// exist only on this host — exactly what fake-tool tests install.
-    /// Resolving here makes `command`/`std_command`/`output` agree with
-    /// [`Host::which`] on every platform. Paths (anything with a separator)
-    /// and names this host cannot resolve pass through unchanged, so a spawn
-    /// error still names what the caller asked for.
-    fn resolve_program(&self, program: &OsStr) -> OsString {
+    /// `CreateProcess` resolves a bare name itself — against the *parent's*
+    /// `PATH` and then the Windows system directories — so passing a name
+    /// through would both miss tools that exist only on this host (exactly
+    /// what fake-tool tests install) and let a name the host does not
+    /// declare run the real tool out of `C:\Windows\System32`
+    /// (water-rs/waterui#3142). Resolving here makes
+    /// `command`/`std_command`/`output` agree with [`Host::which`] on every
+    /// platform: a program given as a path (anything with a separator) is
+    /// used as given, while a bare name the host cannot resolve is an
+    /// error, never passed to the OS to search outside the host's `PATH`.
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides.
+    fn resolve_program(&self, program: &OsStr) -> io::Result<OsString> {
         let path = Path::new(program);
         if path.components().count() > 1 {
-            return program.to_os_string();
+            return Ok(program.to_os_string());
         }
         let paths = self.joined_path();
         which::which_in(program, paths, &self.cwd)
-            .map_or_else(|_| program.to_os_string(), PathBuf::into_os_string)
+            .map(PathBuf::into_os_string)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("`{}` is not on the host's PATH", program.to_string_lossy()),
+                )
+            })
     }
 
     /// The declared `PATH` re-joined after empty-component filtering.
@@ -716,6 +1010,66 @@ const fn withhold_std_handles_from_children() {
     // POSIX children receive only the descriptors we pass: every descriptor
     // the standard library opens is close-on-exec, and daemons detach through
     // fork rather than handle inheritance.
+}
+
+/// `output`'s stdout as text when `program` exited successfully, else
+/// [`CommandError::Failed`] carrying its captured streams.
+fn succeeded(program: &OsStr, output: &Output) -> Result<String, CommandError> {
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(CommandError::Failed {
+            program: program.to_string_lossy().into_owned(),
+            status: output.status,
+            report: failure_report(&output.stdout, &output.stderr),
+        })
+    }
+}
+
+/// The diagnostic tails of a failed command's captured streams.
+fn failure_report(stdout: &[u8], stderr: &[u8]) -> String {
+    format!(
+        "{}{}",
+        format_failure_stream("stderr", stderr),
+        format_failure_stream("stdout", stdout),
+    )
+}
+
+/// Copy `input` into a child's piped stdin, then close it so the child sees
+/// end-of-file. `None` — no input, or stdin was not piped — feeds nothing.
+///
+/// A `BrokenPipe` on the write side means the child closed its stdin, so
+/// the feed stops there and leaves the verdict to the child's exit status;
+/// any other read or write failure is the feed's own error.
+async fn feed_child_stdin(
+    feed: Option<(impl smol::io::AsyncRead, smol::process::ChildStdin)>,
+) -> io::Result<()> {
+    use smol::io::AsyncWriteExt as _;
+
+    /// A write failure, unless it is the child having closed its stdin.
+    fn unless_closed(result: io::Result<()>) -> io::Result<()> {
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            result => result,
+        }
+    }
+
+    let Some((input, mut stdin)) = feed else {
+        return Ok(());
+    };
+    let mut input = std::pin::pin!(input);
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let read = input.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        let written = stdin.write_all(&chunk[..read]).await;
+        if written.is_err() {
+            return unless_closed(written);
+        }
+    }
+    unless_closed(stdin.close().await)
 }
 
 /// Drain a piped child stream to EOF.
@@ -830,6 +1184,32 @@ mod tests {
     /// ambient process environment.
     const UNDECLARED: &str = "WATERUI_TEST_NEVER_DECLARED";
 
+    /// `Host::Debug` is a diagnostic surface — environment values are
+    /// credentials (`WATERUI_INSPECTOR_TOKEN` carries one to `adb`), so the
+    /// rendering names keys only.
+    #[test]
+    fn the_debug_form_names_keys_never_values() {
+        let host = Host::new(
+            Vec::<std::path::PathBuf>::new(),
+            [
+                (
+                    String::from("WATERUI_INSPECTOR_TOKEN"),
+                    String::from("s3cret-inspector-token"),
+                ),
+                (
+                    String::from("WATERUI_TEST_OTHER_SECRET"),
+                    String::from("s3cret-other-value"),
+                ),
+            ],
+        );
+        let rendered = format!("{host:?}");
+        assert!(!rendered.contains("s3cret-inspector-token"), "{rendered}");
+        assert!(!rendered.contains("s3cret-other-value"), "{rendered}");
+        assert!(rendered.contains("WATERUI_INSPECTOR_TOKEN"), "{rendered}");
+        assert!(rendered.contains("WATERUI_TEST_OTHER_SECRET"), "{rendered}");
+        assert!(rendered.contains("cwd"), "{rendered}");
+    }
+
     #[test]
     fn declared_host_env_contains_only_what_was_declared() {
         let host = Host::new(
@@ -898,6 +1278,26 @@ mod tests {
         });
     }
 
+    /// A bare name the host's `PATH` cannot resolve fails at command
+    /// construction — never passed to the OS, which on Windows would find
+    /// the real tool in the system directories (water-rs/waterui#3142).
+    #[test]
+    fn command_rejects_a_bare_name_the_host_path_cannot_resolve() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        for program in [
+            "definitely-not-a-tool-xyz",
+            // A tool that exists on every real system must still be
+            // missing on a declared host that does not install it.
+            if cfg!(windows) { "cmd" } else { "sh" },
+        ] {
+            let error = host
+                .std_command(program)
+                .expect_err("a program missing from the host's PATH must not build a command");
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{program}");
+        }
+    }
+
     #[test]
     fn spawned_children_see_the_declared_environment() {
         let machine = TestMachine::new();
@@ -921,9 +1321,9 @@ mod tests {
         let host = machine.host(Vec::<(String, String)>::new());
         smol::block_on(async {
             let mut child = host
-                .command_in_own_process_group("/bin/sh")
-                .arg("-c")
-                .arg("/bin/sleep 60")
+                .command_in_own_process_group("/bin/sleep")
+                .expect("/bin/sleep is a path, so resolution always succeeds")
+                .arg("60")
                 .kill_on_drop(true)
                 .spawn()
                 .expect("spawn a child through the process-group seam");

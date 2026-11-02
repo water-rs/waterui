@@ -30,11 +30,18 @@ serde = { workspace = true, features = ["derive", "std"] }
 cargo_metadata.workspace = true
 waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 
+[features]
+# TypeScript views in a test: `ui()` installs the runtime loaded from the
+# bundle `WATERUI_TS_BUNDLE` names — set by `water test` — into the test
+# environment, so a view that reaches a `tsx!` mount renders. A test that
+# mounts no TypeScript never needs the variable.
+ts = ["waterui/ts"]
+
 [dev-dependencies]
+approx = "0.5"
 async-io = "2.6"
 bitflags.workspace = true
 hydrolysis-m3.workspace = true
-waterui-backend-core = { workspace = true, features = ["widgets"] }
 waterui-canvas.workspace = true
 
 [lints]

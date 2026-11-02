@@ -7,11 +7,11 @@ use crate::renderer::{
     measure_text_field_size_with_label_size, transformed_rect,
 };
 use crate::text::{TextLayout as _, TextPosition};
+use crate::theme::ModalInteraction;
 use core::num::NonZeroUsize;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
-use waterui_backend_core::widget::ModalInteraction;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native, Str};
@@ -22,19 +22,19 @@ use waterui_text::styled::{Style, StyledStr};
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame under the animated
 /// label transform so reactive label content stays live.
-pub struct TextFieldRenderState {
+pub struct TextFieldRenderState<E: crate::text::TextEngine> {
     config: ResolvedTextFieldConfig,
-    label_view: RetainedSubview,
+    label_view: RetainedSubview<E>,
     /// The caret/selection anchor+focus for this field, owned by the node so it
     /// persists across frames without a renderer-global, flush-order-indexed slot
     /// pool. Node-owned control state is reset only when this node is dropped.
     selection_slot: Rc<RefCell<TextSelectionSlot>>,
 }
 
-impl TextFieldRenderState {
+impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
     pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
         }
@@ -44,10 +44,17 @@ impl TextFieldRenderState {
     /// `&mut HydroState`, no renderer, so it must be built before then).
     pub(crate) fn prebuild(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.label_view.ensure_built(renderer, env);
+    }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the field's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
     }
 }
 
@@ -55,17 +62,17 @@ impl TextFieldRenderState {
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame under the animated
 /// label transform so reactive label content stays live.
-pub struct SecureFieldRenderState {
+pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
     config: SecureFieldConfig,
-    label_view: RetainedSubview,
+    label_view: RetainedSubview<E>,
     /// Node-owned caret/selection state; see [`TextFieldRenderState::selection_slot`].
     selection_slot: Rc<RefCell<TextSelectionSlot>>,
 }
 
-impl SecureFieldRenderState {
+impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
     pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
         }
@@ -75,10 +82,17 @@ impl SecureFieldRenderState {
     /// `&mut HydroState`, no renderer, so it must be built before then).
     pub(crate) fn prebuild(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.label_view.ensure_built(renderer, env);
+    }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the field's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
     }
 }
 
@@ -98,50 +112,50 @@ const CONTENT_ENTER_DELAY_PORTION: f32 = 1.0 - CONTENT_VISIBLE_PORTION;
 const TEXT_FIELD_LABEL_ANIMATION_KEY: usize = 1;
 const SECURE_FIELD_LABEL_ANIMATION_KEY: usize = 2;
 
-impl HydroNativeView for Native<ResolvedTextFieldConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedTextFieldConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_text_field_intrinsic(view.as_inner(), state, env, theme)
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let text_field = view.as_inner();
-        let label_size = measure_label_intrinsic(&text_field.label, state, env, theme);
+        let label_size = measure_label_intrinsic(text_field.label(), state, env, theme);
         ViewDimensions::new(measure_text_field_size_with_label_size(
             text_field, label_size, state, env, theme, proposal,
         ))
     }
 }
 
-impl HydroNativeView for Native<SecureFieldConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SecureFieldConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_secure_field_intrinsic(view.as_inner(), state, env, theme)
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let secure_field = view.as_inner();
-        let label_size = measure_label_intrinsic(&secure_field.label, state, env, theme);
+        let label_size = measure_label_intrinsic(secure_field.label(), state, env, theme);
         ViewDimensions::new(measure_secure_field_size_with_label_size(
             secure_field,
             label_size,
@@ -157,9 +171,9 @@ impl HydroNativeView for Native<SecureFieldConfig> {
 /// render-driven a11y, so the inline a11y is emitted by `render_text_field_parts`
 /// itself; this node suppresses it when the field is accessibility-hidden (the
 /// dispatch path's render-driven suppression contract).
-pub fn render_text_field_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TextFieldRenderState>>,
+pub fn render_text_field_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TextFieldRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -181,9 +195,9 @@ pub fn render_text_field_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_text_field_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TextFieldRenderState>>,
+pub fn render_text_field_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TextFieldRenderState<E>>>,
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
@@ -209,17 +223,17 @@ pub fn render_text_field_parts(
     let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
         let text_field = &state.config;
         (
-            text_field.label.clone(),
-            text_field.value.clone(),
-            text_field.prompt.content.clone(),
-            text_field.selection_menu.clone(),
-            text_field.line_limit,
-            text_field.on_submit.clone(),
+            text_field.label().clone(),
+            text_field.value().clone(),
+            text_field.prompt().content().clone(),
+            text_field.selection_menu().clone(),
+            text_field.line_limit(),
+            text_field.on_submit().cloned(),
         )
     };
     #[cfg(feature = "accessibility")]
     let default_accessibility_label =
-        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
@@ -241,15 +255,16 @@ pub fn render_text_field_parts(
             default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
         let local = ctx.bounds;
         let bounds = local;
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 if line_limit == Some(1) {
                     AccessibilityNodeRole::TextInput
                 } else {
                     AccessibilityNodeRole::MultilineTextInput
                 },
-            ));
+            ),
+        );
         let label = ctx
             .renderer_mut()
             .resolve_accessibility_label(env, default_label);
@@ -283,7 +298,7 @@ pub fn render_text_field_parts(
                 line_limit,
             }),
         ) {
-            if let Some(content_type) = state.config.content_type {
+            if let Some(content_type) = state.config.content_type() {
                 ctx.renderer_mut()
                     .register_accessibility_content_type(node_id, content_type);
             }
@@ -375,25 +390,25 @@ pub fn render_text_field_parts(
             interaction_motion.focus_exit
         },
     );
-    // The prompt-as-label is sized the way a label view is: its own laid-out
-    // height floored at the theme's minimum label height. The minimum alone
-    // shrinks the Material line box and drops the resting prompt below
-    // centre (#1705).
-    let prompt_styled = prompt_as_label
-        .then(|| StyledStr::plain(prompt.clone()).foreground(theme.input_placeholder_color()));
-    let prompt_label_height = prompt_styled.as_ref().map_or(0.0, |styled| {
-        material_input_label_height(
-            HydrolysisRenderer::measure_text_dimensions(
-                ctx.state_mut(),
-                styled.clone(),
-                HorizontalAlignment::Leading,
-                env,
-                None,
-                Some(1),
-            )
-            .size,
-            input_metrics.label_height,
+    // The prompt-as-label reserves the same band a label view does, but its
+    // resting rect and laid-out box are still the prompt's own line box —
+    // the band's smaller height would drop the resting prompt below centre
+    // (#1705).
+    let prompt_label = prompt_as_label.then(|| {
+        let styled = StyledStr::plain(prompt.clone()).foreground(theme.input_placeholder_color());
+        let size = HydrolysisRenderer::measure_text_dimensions(
+            ctx.state_mut(),
+            styled.clone(),
+            HorizontalAlignment::Leading,
+            env,
+            None,
+            Some(1),
         )
+        .size;
+        (styled, size)
+    });
+    let prompt_label_height = prompt_label.as_ref().map_or(0.0, |(_, size)| {
+        material_input_label_height(*size, input_metrics.label_height)
     });
     if label_height > 0.0 {
         flush_material_label(
@@ -403,9 +418,10 @@ pub fn render_text_field_parts(
             field_rect,
             input_metrics.horizontal_inset,
             label_height,
+            f64::from(label_size.height),
             label_progress,
         );
-    } else if let Some(prompt_styled) = prompt_styled {
+    } else if let Some((prompt_styled, prompt_size)) = prompt_label {
         flush_material_prompt_label(
             ctx,
             env,
@@ -413,6 +429,7 @@ pub fn render_text_field_parts(
             field_rect,
             input_metrics.horizontal_inset,
             prompt_label_height,
+            f64::from(prompt_size.height),
             label_progress,
         );
     }
@@ -569,9 +586,9 @@ pub fn render_text_field_parts(
 /// render-driven a11y, so the inline a11y is emitted by `render_secure_field_parts`
 /// itself; this node suppresses it when the field is accessibility-hidden (the
 /// dispatch path's render-driven suppression contract).
-pub fn render_secure_field_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<SecureFieldRenderState>>,
+pub fn render_secure_field_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<SecureFieldRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -593,9 +610,9 @@ pub fn render_secure_field_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_secure_field_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<SecureFieldRenderState>>,
+pub fn render_secure_field_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<SecureFieldRenderState<E>>>,
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
@@ -615,11 +632,11 @@ pub fn render_secure_field_parts(
     // flushed under the animated transform each frame.
     let (label, value_binding) = {
         let secure_field = &state.config;
-        (secure_field.label.clone(), secure_field.value.clone())
+        (secure_field.label().clone(), secure_field.value().clone())
     };
     #[cfg(feature = "accessibility")]
     let default_accessibility_label =
-        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
@@ -634,11 +651,12 @@ pub fn render_secure_field_parts(
             .count();
         let local = ctx.bounds;
         let bounds = local;
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::PasswordInput,
-            ));
+            ),
+        );
         let label = ctx
             .renderer_mut()
             .resolve_accessibility_label(env, default_accessibility_label);
@@ -732,6 +750,7 @@ pub fn render_secure_field_parts(
             field_rect,
             input_metrics.horizontal_inset,
             label_height,
+            f64::from(label_size.height),
             label_progress,
         );
     }
@@ -843,12 +862,12 @@ pub fn render_secure_field_parts(
 /// Measures a retained text-field leaf from its [`TextFieldRenderState`], mirroring
 /// [`measure_text_field_intrinsic`] but reading the label size from its already-built
 /// [`RetainedSubview`] so layout and the floating-label render agree.
-pub fn measure_text_field_node(
-    render_state: &TextFieldRenderState,
+pub fn measure_text_field_node<E: crate::text::TextEngine>(
+    render_state: &TextFieldRenderState<E>,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_size = render_state.label_view.measure_built(state, env, theme);
     ViewDimensions::new(measure_text_field_size_with_label_size(
@@ -864,12 +883,12 @@ pub fn measure_text_field_node(
 /// Measures a retained secure-field leaf from its [`SecureFieldRenderState`],
 /// mirroring [`measure_secure_field_intrinsic`] but reading the label size from its
 /// already-built [`RetainedSubview`] so layout and the floating-label render agree.
-pub fn measure_secure_field_node(
-    render_state: &SecureFieldRenderState,
+pub fn measure_secure_field_node<E: crate::text::TextEngine>(
+    render_state: &SecureFieldRenderState<E>,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_size = render_state.label_view.measure_built(state, env, theme);
     ViewDimensions::new(measure_secure_field_size_with_label_size(
@@ -882,9 +901,15 @@ pub fn measure_secure_field_node(
     ))
 }
 
-fn material_input_label_height(label_size: LayoutSize, min_label_height: f64) -> f64 {
+/// The band a labeled field reserves for its floating label is exactly the
+/// theme's `label_height` — matching `measured_input_label_height` on the
+/// measure path so the dealt frame and the rendered geometry agree. The
+/// label's own measure only decides whether the band exists; it still sizes
+/// the resting rect and the laid-out label box the transform scales into
+/// the band (water-rs/waterui#2387).
+fn material_input_label_height(label_size: LayoutSize, label_height: f64) -> f64 {
     if label_size.width > 0.0 || label_size.height > 0.0 {
-        f64::from(label_size.height).max(min_label_height)
+        label_height
     } else {
         0.0
     }
@@ -922,23 +947,34 @@ fn material_input_resting_label_rect(
 /// (translate from resting to floating position + scale). The label is a retained
 /// node sub-view re-laid-out and re-flushed each frame, so reactive label content
 /// stays live without re-dispatch.
-fn flush_material_label(
-    ctx: &mut WidgetRenderContext<'_>,
+///
+/// `label_height` is the reserved band (the theme's `label_height` exactly);
+/// `measured_label_height` is the label's own unscaled height — it centres the
+/// resting box and gives the label its natural layout box, which the transform
+/// scales down into the band.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "threads the full flush context; grouping into a struct would not improve clarity"
+)]
+fn flush_material_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     env: &Environment,
-    label_view: &mut RetainedSubview,
+    label_view: &mut RetainedSubview<E>,
     field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
+    measured_label_height: f64,
     progress: f32,
 ) {
     let progress = f64::from(progress.clamp(0.0, 1.0));
-    let resting = material_input_resting_label_rect(field_rect, horizontal_inset, label_height);
+    let resting =
+        material_input_resting_label_rect(field_rect, horizontal_inset, measured_label_height);
     let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
     let scale = (FLOATING_LABEL_SCALE - 1.0).mul_add(progress, 1.0);
     let x = (floating.x0 - resting.x0).mul_add(progress, resting.x0);
     let y = (floating.y0 - resting.y0).mul_add(progress, resting.y0);
     let width = floating.width() / scale;
-    let height = label_height / scale;
+    let height = measured_label_height;
     let transform = kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale);
     let child = ctx.child(transform, kurbo::Rect::new(0.0, 0.0, width, height));
     #[allow(clippy::cast_possible_truncation)]
@@ -972,18 +1008,26 @@ fn material_input_content_alpha(has_label: bool, progress: f32) -> f32 {
 /// Draws the prompt text under the Material floating-label transform —
 /// the resting spot centred in the container, floating to the top scaled
 /// down — used when the field has no label view so the prompt stands in as
-/// the label (#85).
-fn flush_material_prompt_label(
-    ctx: &mut WidgetRenderContext<'_>,
+/// the label (#85). `label_height` is the reserved band while
+/// `measured_label_height` is the prompt's own line-box height — the same
+/// split [`flush_material_label`] makes between band and content.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "threads the full flush context; grouping into a struct would not improve clarity"
+)]
+fn flush_material_prompt_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     env: &Environment,
     prompt_styled: StyledStr,
     field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
+    measured_label_height: f64,
     progress: f32,
 ) {
     let progress = f64::from(progress.clamp(0.0, 1.0));
-    let resting = material_input_resting_label_rect(field_rect, horizontal_inset, label_height);
+    let resting =
+        material_input_resting_label_rect(field_rect, horizontal_inset, measured_label_height);
     let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
     let scale = (FLOATING_LABEL_SCALE - 1.0).mul_add(progress, 1.0);
     let x = (floating.x0 - resting.x0).mul_add(progress, resting.x0);
@@ -991,13 +1035,10 @@ fn flush_material_prompt_label(
     let width = floating.width() / scale;
     let child = ctx.child(
         kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale),
-        kurbo::Rect::new(0.0, 0.0, width, label_height / scale),
+        kurbo::Rect::new(0.0, 0.0, width, measured_label_height),
     );
     let renderer = ctx.renderer_mut();
-    let (state, scene) = renderer.state_and_run_mut();
-    HydrolysisRenderer::render_styled_text_limited(
-        state,
-        scene,
+    renderer.render_styled_text_limited(
         child,
         prompt_styled,
         HorizontalAlignment::Leading,
@@ -1086,9 +1127,9 @@ fn material_input_cursor_rect(
     clippy::too_many_lines,
     reason = "the emission walks every text-field element in one ordered sequence; splitting it would obscure the node ordering"
 )]
-pub fn emit_text_field_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<TextFieldRenderState>>,
+pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<TextFieldRenderState<E>>>,
     env: &Environment,
 ) {
     if env
@@ -1106,31 +1147,32 @@ pub fn emit_text_field_accessibility(
     let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
         let text_field = &state.config;
         (
-            text_field.label.clone(),
-            text_field.value.clone(),
-            text_field.prompt.content.clone(),
-            text_field.selection_menu.clone(),
-            text_field.line_limit,
-            text_field.on_submit.clone(),
+            text_field.label().clone(),
+            text_field.value().clone(),
+            text_field.prompt().content().clone(),
+            text_field.selection_menu().clone(),
+            text_field.line_limit(),
+            text_field.on_submit().cloned(),
         )
     };
     let default_accessibility_label =
-        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
     let line_limit = line_limit_raw.map(NonZeroUsize::get);
     {
         let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
         let value = renderer.read_signal(&value_binding).to_plain().to_string();
         let default_label =
             default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 if line_limit == Some(1) {
                     AccessibilityNodeRole::TextInput
                 } else {
                     AccessibilityNodeRole::MultilineTextInput
                 },
-            ));
+            ),
+        );
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
@@ -1156,7 +1198,7 @@ pub fn emit_text_field_accessibility(
                 line_limit,
             }),
         ) {
-            if let Some(content_type) = state.config.content_type {
+            if let Some(content_type) = state.config.content_type() {
                 renderer.register_accessibility_content_type(node_id, content_type);
             }
             renderer.push_pending_text_input_accessibility_node(node_id);
@@ -1203,9 +1245,9 @@ pub fn emit_text_field_accessibility(
 /// for the semantic walk — the same node `render_secure_field_parts`
 /// registers, with no bounds.
 #[cfg(feature = "accessibility")]
-pub fn emit_secure_field_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<SecureFieldRenderState>>,
+pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<SecureFieldRenderState<E>>>,
     env: &Environment,
 ) {
     if env
@@ -1222,21 +1264,22 @@ pub fn emit_secure_field_accessibility(
     let mut state = state.borrow_mut();
     let (label, value_binding) = {
         let secure_field = &state.config;
-        (secure_field.label.clone(), secure_field.value.clone())
+        (secure_field.label().clone(), secure_field.value().clone())
     };
     let default_accessibility_label =
-        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
     {
         let secure_len = renderer
             .read_signal(&value_binding)
             .expose()
             .chars()
             .count();
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::PasswordInput,
-            ));
+            ),
+        );
         let label = renderer.resolve_accessibility_label(env, default_accessibility_label);
         if let Some(label) = label {
             node.set_label(label);

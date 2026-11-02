@@ -40,7 +40,6 @@ body:
         - water CLI
         - Core framework (runtime, layout, reactivity)
         - Components
-        - FFI
         - Graphics / rendering
         - DevTools (inspector, MCP, preview)
         - CI / release plumbing

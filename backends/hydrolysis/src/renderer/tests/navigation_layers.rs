@@ -73,7 +73,10 @@ fn env_with_top_inset(top: f32) -> Environment {
     env
 }
 
-fn capture(view: impl waterui_core::View, env: &Environment) -> HydrolysisRenderer {
+fn capture(
+    view: impl waterui_core::View,
+    env: &Environment,
+) -> HydrolysisRenderer<crate::text::ParleyEngine> {
     let mut renderer = test_renderer();
     render_frame(&mut renderer, AnyView::new(view), env);
     renderer
@@ -81,7 +84,11 @@ fn capture(view: impl waterui_core::View, env: &Environment) -> HydrolysisRender
 
 /// Renders one frame of the window tree; the tree is built by the first frame
 /// and later frames reuse it, so `view` matters only the first time.
-fn render_frame(renderer: &mut HydrolysisRenderer, view: AnyView, env: &Environment) {
+fn render_frame(
+    renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+    view: AnyView,
+    env: &Environment,
+) {
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(view, env, WINDOW, Affine::IDENTITY, Affine::IDENTITY);
@@ -98,7 +105,9 @@ struct Presented {
 }
 
 /// Every GPU content layer the frame presents.
-fn presented_gpu_layers(renderer: &HydrolysisRenderer) -> Vec<Presented> {
+fn presented_gpu_layers(
+    renderer: &HydrolysisRenderer<crate::text::ParleyEngine>,
+) -> Vec<Presented> {
     let mirror = renderer.mirror();
     mirror
         .installs()
@@ -120,7 +129,7 @@ fn presented_gpu_layers(renderer: &HydrolysisRenderer) -> Vec<Presented> {
 }
 
 /// Every GPU content layer the frame presents, as its window-space rect.
-fn presented_gpu_rects(renderer: &HydrolysisRenderer) -> Vec<Rect> {
+fn presented_gpu_rects(renderer: &HydrolysisRenderer<crate::text::ParleyEngine>) -> Vec<Rect> {
     presented_gpu_layers(renderer)
         .into_iter()
         .map(|layer| layer.rect)
@@ -218,7 +227,7 @@ fn a_non_presented_page_unmounts_and_remounts_its_gpu_layers() {
     .transition(navigation_transition::none());
     let env = test_environment();
     let mut renderer = test_renderer();
-    let installed = |renderer: &HydrolysisRenderer| -> Vec<(f64, f64)> {
+    let installed = |renderer: &HydrolysisRenderer<crate::text::ParleyEngine>| -> Vec<(f64, f64)> {
         renderer
             .mirror()
             .installs()

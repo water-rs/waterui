@@ -1,6 +1,5 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
-#[cfg(feature = "accessibility")]
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
 use crate::renderer::SafeAreaLayout;
 use crate::renderer::bounded_proposal;
@@ -26,6 +25,7 @@ use waterui::navigation::{
     resolve_navigation_root,
 };
 use waterui::theme::color::{Background, Surface};
+use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
@@ -41,9 +41,46 @@ fn navigation_leading_reserve(env: &Environment) -> f64 {
         .map_or(0.0, |reserve| reserve.0)
 }
 
-fn back_button_title_reserve(theme: &Rc<dyn crate::engine::WidgetTheme>) -> f64 {
+fn back_button_title_reserve(theme: &Rc<dyn crate::theme::WidgetTheme>) -> f64 {
     let metrics = theme.navigation_metrics();
     metrics.back_button_size + metrics.title_leading_inset
+}
+
+/// The x the bar's leading toolbar group starts at. A pushed page's back
+/// button owns the bar's leading edge, so the group starts at the button's
+/// trailing edge plus the bar's inter-item gap; on a root page it starts at
+/// the bar inset (water-rs/waterui#1939 — without the offset a pushed
+/// `Cancellation` item paints under the button).
+fn navigation_leading_items_x0(
+    bar_x0: f64,
+    leading_reserve: f64,
+    metrics: &crate::theme::NavigationMetrics,
+) -> f64 {
+    if leading_reserve > 0.0 {
+        bar_x0 + metrics.back_button_leading_inset + metrics.back_button_size + metrics.item_spacing
+    } else {
+        bar_x0 + metrics.horizontal_inset
+    }
+}
+
+/// The x the bar title starts at for a measured leading-group width and the
+/// pushed page's back-button reserve — the single rule the visual flush and
+/// the accessibility emission share so their title rects agree.
+fn navigation_title_x0(
+    bar_x0: f64,
+    leading_width: f64,
+    leading_reserve: f64,
+    metrics: &crate::theme::NavigationMetrics,
+) -> f64 {
+    if leading_width > 0.0 {
+        navigation_leading_items_x0(bar_x0, leading_reserve, metrics)
+            + leading_width
+            + metrics.item_spacing
+    } else if leading_reserve > 0.0 {
+        bar_x0 + metrics.horizontal_inset + leading_reserve + metrics.item_spacing
+    } else {
+        bar_x0 + metrics.title_leading_inset
+    }
 }
 
 /// The environment a page is presented under: `base`, plus the stack's
@@ -55,7 +92,7 @@ fn back_button_title_reserve(theme: &Rc<dyn crate::engine::WidgetTheme>) -> f64 
 fn presented_page_env(
     base: &Environment,
     identity: u64,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> Environment {
     let mut env = base.clone();
     if identity != 0 {
@@ -71,19 +108,19 @@ fn presented_page_env(
 /// reactive appearance signals (`color`/`hidden`) are kept and read through
 /// `read_signal`; the static `display_mode` and the `search` model (cloneable, used
 /// to build a fresh `TextField` each frame) are kept by value.
-pub struct NavigationViewRenderState {
-    title: RetainedSubview,
-    subtitle: RetainedSubview,
-    principal: Vec<RetainedSubview>,
-    leading: Vec<RetainedSubview>,
-    trailing: Vec<RetainedSubview>,
-    bottom: Vec<RetainedSubview>,
-    content: RetainedSubview,
+pub struct NavigationViewRenderState<E: crate::text::TextEngine> {
+    title: RetainedSubview<E>,
+    subtitle: RetainedSubview<E>,
+    principal: Vec<RetainedSubview<E>>,
+    leading: Vec<RetainedSubview<E>>,
+    trailing: Vec<RetainedSubview<E>>,
+    bottom: Vec<RetainedSubview<E>>,
+    content: RetainedSubview<E>,
     search: Option<NavigationSearch>,
     /// The search field as a retained node sub-view (the `TextField`'s reactive text
     /// binding stays live through the node's own re-flush). `Some` exactly when
     /// `search` is present.
-    search_field: Option<RetainedSubview>,
+    search_field: Option<RetainedSubview<E>>,
     color: Computed<WorkingColor>,
     hidden: Computed<bool>,
     display_mode: NavigationTitleDisplayMode,
@@ -109,13 +146,36 @@ fn navigation_slot_is_empty(view: &AnyView) -> bool {
     }
 }
 
-impl NavigationViewRenderState {
+/// The environment a bar item builds, measures and renders under: `env`
+/// with labels defaulting to icon-only, as the platform bars present them.
+/// An explicit `LabelDisplayMode` keeps precedence; the title stays the
+/// button's accessible name.
+pub fn toolbar_item_env(env: &Environment) -> Environment {
+    if env
+        .get::<LabelDisplayMode>()
+        .is_none_or(|mode| matches!(mode, LabelDisplayMode::Automatic))
+    {
+        env.extending(LabelDisplayMode::IconOnly)
+    } else {
+        env.clone()
+    }
+}
+
+/// `content` scoped to [`toolbar_item_env`]. The scope is baked into the
+/// view because an environment snapshot in the content replaces the
+/// environment wholesale, so build, measure and render all see one scope.
+pub fn toolbar_item_view(content: AnyView, env: &Environment) -> AnyView {
+    let (content, scoped) = crate::renderer::flatten_environment_metadata_owned(content, env);
+    AnyView::new(Metadata::new(content, toolbar_item_env(&scoped)))
+}
+
+impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
     pub(crate) fn from_view(navigation: NavigationView, env: &Environment) -> Self {
         let NavigationView { bar, content, .. } = navigation;
         let Bar {
             title,
             subtitle,
-            toolbar,
+            mut toolbar,
             search,
             color,
             hidden,
@@ -130,9 +190,10 @@ impl NavigationViewRenderState {
         let mut leading = Vec::new();
         let mut trailing = Vec::new();
         let mut bottom = Vec::new();
-        for item in toolbar.items {
-            let retained = RetainedSubview::new(item.content);
-            match item.placement {
+        for item in toolbar.take_items() {
+            let (placement, content, ..) = item.into_parts();
+            let retained = RetainedSubview::new(toolbar_item_view(content, env));
+            match placement {
                 NavigationToolbarPlacement::Principal => principal.push(retained),
                 NavigationToolbarPlacement::Cancellation
                 | NavigationToolbarPlacement::TopBarLeading => leading.push(retained),
@@ -149,9 +210,9 @@ impl NavigationViewRenderState {
             // A search field shows only its placeholder, so the prompt doubles
             // as the accessible name and the visible label is suppressed.
             RetainedSubview::new(AnyView::new(
-                TextField::new(search.prompt.clone(), &search.text)
+                TextField::new(search.prompt().clone(), search.text())
                     .hide_label()
-                    .prompt(search.prompt.clone()),
+                    .prompt(search.prompt().clone()),
             ))
         });
         Self {
@@ -175,7 +236,7 @@ impl NavigationViewRenderState {
     /// build on), mirroring the dispatch path's normalization.
     pub(crate) fn prebuild(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.title.ensure_built(renderer, env);
@@ -196,23 +257,53 @@ impl NavigationViewRenderState {
         }
         self.content.ensure_built(renderer, env);
     }
+
+    /// The built screen content: the root a navigation stack claims its
+    /// page transition from.
+    pub(crate) const fn content_node(&self) -> &crate::renderer::RenderNode<E> {
+        self.content
+            .node()
+            .expect("Hydrolysis navigation view content is prebuilt with the view")
+    }
+
+    /// Consume the bar/content sub-views' layout-dirty marks: their measured
+    /// sizes feed the navigation view's, so an enclosing retained sub-view
+    /// must see them (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        let mut dirty = self.title.take_layout_dirty_if_built()
+            | self.subtitle.take_layout_dirty_if_built()
+            | self.content.take_layout_dirty_if_built();
+        for item in self
+            .principal
+            .iter_mut()
+            .chain(&mut self.leading)
+            .chain(&mut self.trailing)
+            .chain(&mut self.bottom)
+        {
+            dirty |= item.take_layout_dirty_if_built();
+        }
+        if let Some(search_field) = &mut self.search_field {
+            dirty |= search_field.take_layout_dirty_if_built();
+        }
+        dirty
+    }
 }
 
-impl HydroNativeView for Native<NavigationView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<NavigationView> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_navigation_view_intrinsic(view.as_inner(), state, env, theme)
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         if let (Some(width), Some(height)) = (proposal.width, proposal.height) {
@@ -232,13 +323,13 @@ impl HydroNativeView for Native<NavigationView> {
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn navigation_view_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
     hidden: &Computed<bool>,
     display_mode: NavigationTitleDisplayMode,
-    state: &NavigationViewRenderState,
+    state: &NavigationViewRenderState<E>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -262,10 +353,10 @@ pub fn navigation_view_accessibility(
                     let bar_height =
                         navigation_base_bar_height_for_display_mode(display_mode, theme);
                     let bar_rect = kurbo::Rect::new(
-                        ctx.bounds.x0,
-                        ctx.bounds.y0,
-                        ctx.bounds.x1,
-                        (ctx.bounds.y0 + bar_height).min(ctx.bounds.y1),
+                        ctx.bounds().x0,
+                        ctx.bounds().y0,
+                        ctx.bounds().x1,
+                        (ctx.bounds().y0 + bar_height).min(ctx.bounds().y1),
                     );
                     let title_height = if matches!(display_mode, NavigationTitleDisplayMode::Large)
                     {
@@ -278,13 +369,27 @@ pub fn navigation_view_accessibility(
                     } else {
                         (bar_height - title_height).mul_add(0.5, bar_rect.y0)
                     };
-                    let title_leading = navigation_leading_reserve(env);
+                    // The same leading-slot rule the flush uses, so the
+                    // title node's bounds match the rendered title —
+                    // including the leading group's width and the pushed
+                    // page's back-button offset (water-rs/waterui#1939).
+                    let leading_width = f64::from(
+                        measure_retained_toolbar_group(
+                            &state.leading,
+                            renderer.state_mut(),
+                            env,
+                            theme,
+                        )
+                        .width,
+                    );
+                    let title_leading = navigation_title_x0(
+                        bar_rect.x0,
+                        leading_width,
+                        navigation_leading_reserve(env),
+                        &metrics,
+                    );
                     let title_rect = kurbo::Rect::new(
-                        if title_leading > 0.0 {
-                            bar_rect.x0 + metrics.horizontal_inset + title_leading
-                        } else {
-                            bar_rect.x0 + metrics.title_leading_inset
-                        },
+                        title_leading.min(bar_rect.x1),
                         title_y0,
                         bar_rect.x1 - metrics.title_trailing_inset,
                         title_y0 + title_height,
@@ -309,11 +414,12 @@ pub fn navigation_view_accessibility(
                     };
                     (Some(bar_rect), title_bounds, subtitle_bounds)
                 });
-        let mut bar_node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut bar_node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::Navigation,
-            ));
+            ),
+        );
         let bar_label = renderer.resolve_accessibility_label(env, None);
         if let Some(label) = bar_label {
             bar_node.set_label(label);
@@ -321,11 +427,12 @@ pub fn navigation_view_accessibility(
         if let Some(value) = renderer.resolve_accessibility_value(env, None) {
             bar_node.set_value(value);
         }
-        let mut title_node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut title_node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::Header,
-            ));
+            ),
+        );
         let title_label = renderer.resolve_accessibility_label(env, default_title_label);
         if let Some(label) = title_label {
             title_node.set_label(label);
@@ -340,11 +447,12 @@ pub fn navigation_view_accessibility(
             bar_node.push_child(title_node_id);
         }
         if state.subtitle_present {
-            let mut subtitle_node =
-                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+            let mut subtitle_node = AccessibilityNode::new(
+                crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     env,
                     AccessibilityNodeRole::Label,
-                ));
+                ),
+            );
             let subtitle_label = renderer.resolve_accessibility_label(env, default_subtitle_label);
             if let Some(label) = subtitle_label {
                 subtitle_node.set_label(label);
@@ -383,12 +491,12 @@ pub fn navigation_view_accessibility(
 /// Fills both axes when a concrete proposal is supplied (matching the dispatch-path
 /// `dimensions`), otherwise falls back to the intrinsic size computed from the
 /// prebuilt bar/content sub-views (mirroring `measure_navigation_view_intrinsic`).
-pub fn measure_navigation_view_node(
-    state: &NavigationViewRenderState,
+pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
+    state: &NavigationViewRenderState<E>,
     proposal: ProposalSize,
-    hydro: &mut HydroState,
+    hydro: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     if let (Some(width), Some(height)) = (proposal.width, proposal.height) {
         return ViewDimensions::new(LayoutSize::new(width, height));
@@ -468,11 +576,11 @@ pub fn measure_navigation_view_node(
     ))
 }
 
-fn measure_retained_toolbar_group(
-    group: &[RetainedSubview],
-    hydro: &mut HydroState,
+fn measure_retained_toolbar_group<E: crate::text::TextEngine>(
+    group: &[RetainedSubview<E>],
+    hydro: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let metrics = theme.navigation_metrics();
     let mut width = 0.0_f64;
@@ -493,9 +601,9 @@ fn measure_retained_toolbar_group(
 
 /// Renders a retained navigation view leaf every flush: emits the bar/title a11y
 /// (unless hidden) then the bar chrome + content, reading the bar's live signals.
-pub fn render_navigation_view_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<NavigationViewRenderState>>,
+pub fn render_navigation_view_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<NavigationViewRenderState<E>>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -529,9 +637,9 @@ pub fn render_navigation_view_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_navigation_view_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<NavigationViewRenderState>>,
+pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<NavigationViewRenderState<E>>>,
     env: &Environment,
 ) {
     let (hidden_signal, color_signal, display_mode, search, has_bottom) = {
@@ -620,10 +728,12 @@ pub fn render_navigation_view_parts(
         };
         let leading_width = f64::from(leading_size.width);
         let trailing_width = f64::from(trailing_size.width);
+        let leading_reserve = navigation_leading_reserve(env);
+        let leading_x0 = navigation_leading_items_x0(bar_rect.x0, leading_reserve, &metrics);
         let leading_rect = kurbo::Rect::new(
-            bar_rect.x0 + metrics.horizontal_inset,
+            leading_x0,
             bar_rect.y0,
-            (bar_rect.x0 + metrics.horizontal_inset + leading_width).min(bar_rect.x1),
+            (leading_x0 + leading_width).min(bar_rect.x1),
             (bar_rect.y0 + base_bar_height).min(bar_rect.y1),
         );
         let trailing_rect = kurbo::Rect::new(
@@ -662,12 +772,7 @@ pub fn render_navigation_view_parts(
         } else {
             (base_bar_height - title_height).mul_add(0.5, bar_rect.y0)
         };
-        let effective_leading_width = leading_width.max(navigation_leading_reserve(env));
-        let title_x0 = if effective_leading_width > 0.0 {
-            bar_rect.x0 + metrics.horizontal_inset + effective_leading_width + metrics.item_spacing
-        } else {
-            bar_rect.x0 + metrics.title_leading_inset
-        };
+        let title_x0 = navigation_title_x0(bar_rect.x0, leading_width, leading_reserve, &metrics);
         let title_x1 = if trailing_width > 0.0 {
             bar_rect.x1 - metrics.horizontal_inset - trailing_width - metrics.item_spacing
         } else {
@@ -781,11 +886,11 @@ enum ToolbarAlignment {
     Trailing,
 }
 
-fn measure_toolbar_group_intrinsic(
-    group: &mut [RetainedSubview],
-    renderer: &mut HydrolysisRenderer,
+fn measure_toolbar_group_intrinsic<E: crate::text::TextEngine>(
+    group: &mut [RetainedSubview<E>],
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let metrics = theme.navigation_metrics();
     let mut width = 0.0_f64;
@@ -804,9 +909,9 @@ fn measure_toolbar_group_intrinsic(
     )
 }
 
-fn flush_toolbar_group(
-    ctx: &mut WidgetRenderContext<'_>,
-    group: &mut [RetainedSubview],
+fn flush_toolbar_group<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    group: &mut [RetainedSubview<E>],
     env: &Environment,
     bounds: kurbo::Rect,
     alignment: ToolbarAlignment,
@@ -870,9 +975,9 @@ fn title_and_subtitle_rects(
     (title_rect, subtitle_rect)
 }
 
-fn flush_title_and_subtitle(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &mut NavigationViewRenderState,
+fn flush_title_and_subtitle<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &mut NavigationViewRenderState<E>,
     env: &Environment,
     bounds: kurbo::Rect,
     bar: &crate::renderer::ChromeBar,
@@ -911,7 +1016,7 @@ fn flush_title_and_subtitle(
 }
 
 /// Retained adaptive split state for both two- and three-column configurations.
-pub struct NavigationSplitRenderState {
+pub struct NavigationSplitRenderState<E: crate::text::TextEngine> {
     primary_selection: nami::Binding<Option<Id>>,
     content_builder: Option<NavigationSplitDetailBuilder>,
     secondary_selection: Option<nami::Binding<Option<Id>>>,
@@ -919,13 +1024,13 @@ pub struct NavigationSplitRenderState {
     visibility: Computed<waterui::navigation::NavigationSplitColumnVisibility>,
     column_width: waterui::navigation::ColumnWidth,
     style: waterui::navigation::NativeNavigationSplitStyle,
-    primary: RetainedSubview,
-    placeholder: RetainedSubview,
-    content: Option<(Id, bool, RetainedSubview)>,
-    detail: Option<(Id, bool, RetainedSubview)>,
+    primary: RetainedSubview<E>,
+    placeholder: RetainedSubview<E>,
+    content: Option<(Id, bool, RetainedSubview<E>)>,
+    detail: Option<(Id, bool, RetainedSubview<E>)>,
 }
 
-impl NavigationSplitRenderState {
+impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
     pub(crate) fn from_layout(split: NavigationSplitLayout) -> Self {
         let (
             primary,
@@ -955,7 +1060,7 @@ impl NavigationSplitRenderState {
 
     pub(crate) fn prebuild(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.primary.ensure_built(renderer, env);
@@ -966,7 +1071,11 @@ impl NavigationSplitRenderState {
     /// any measure pass reads them. Building belongs to a selection change — a
     /// probe only ever reads what is retained — so this runs in the layout-time
     /// prepare pass, and keeps whichever compact variant the column last built.
-    pub(crate) fn prepare_columns(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
+    pub(crate) fn prepare_columns(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+    ) {
         self.prebuild(renderer, env);
         let primary_selection = self.primary_selection.snapshot();
         if let Some(selected) = primary_selection.filter(|_| self.content_builder.is_some()) {
@@ -990,7 +1099,7 @@ impl NavigationSplitRenderState {
         &mut self,
         id: Id,
         compact: bool,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         let needs_rebuild = self
@@ -1014,7 +1123,7 @@ impl NavigationSplitRenderState {
         &mut self,
         id: Id,
         compact: bool,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         let needs_rebuild = self
@@ -1033,14 +1142,29 @@ impl NavigationSplitRenderState {
     const fn is_three_column(&self) -> bool {
         self.content_builder.is_some()
     }
+
+    /// Consume the column sub-views' layout-dirty marks: their measured
+    /// sizes feed the split's, so an enclosing retained sub-view must see
+    /// them (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        let mut dirty = self.primary.take_layout_dirty_if_built()
+            | self.placeholder.take_layout_dirty_if_built();
+        if let Some((_, _, subview)) = self.content.as_mut() {
+            dirty |= subview.take_layout_dirty_if_built();
+        }
+        if let Some((_, _, subview)) = self.detail.as_mut() {
+            dirty |= subview.take_layout_dirty_if_built();
+        }
+        dirty
+    }
 }
 
-impl HydroNativeView for Native<NavigationSplitLayout> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<NavigationSplitLayout> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_navigation_split_layout(
             view.as_inner(),
@@ -1052,10 +1176,10 @@ impl HydroNativeView for Native<NavigationSplitLayout> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         ViewDimensions::new(measure_navigation_split_layout(
@@ -1132,11 +1256,11 @@ fn split_measure_plan(
 /// The retained column a selection occupies — its mounted view when built,
 /// the placeholder otherwise (the placeholder also answers for an absent
 /// selection).
-fn retained_split_column<'a>(
+fn retained_split_column<'a, E: crate::text::TextEngine>(
     selected: Option<Id>,
-    column: Option<&'a (Id, bool, RetainedSubview)>,
-    placeholder: &'a RetainedSubview,
-) -> &'a RetainedSubview {
+    column: Option<&'a (Id, bool, RetainedSubview<E>)>,
+    placeholder: &'a RetainedSubview<E>,
+) -> &'a RetainedSubview<E> {
     if selected.is_some() {
         column.map_or(placeholder, |(_, _, view)| view)
     } else {
@@ -1153,12 +1277,12 @@ fn retained_split_column<'a>(
     clippy::too_many_lines,
     reason = "the layout resolves pane columns and dividers in a single sweep; the length is the enumeration, not logic"
 )]
-fn measure_navigation_split_layout(
+fn measure_navigation_split_layout<E: crate::text::TextEngine>(
     split: &NavigationSplitLayout,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let primary_selection = state.measure_signal(split.primary_selection());
     let detail_selection = split
@@ -1272,12 +1396,12 @@ fn measure_navigation_split_layout(
     )
 }
 
-pub fn measure_navigation_split_node(
-    split: &NavigationSplitRenderState,
+pub fn measure_navigation_split_node<E: crate::text::TextEngine>(
+    split: &NavigationSplitRenderState<E>,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let primary_selection = state.measure_signal(&split.primary_selection);
     let detail_selection = split
@@ -1353,17 +1477,17 @@ pub fn measure_navigation_split_node(
     ))
 }
 
-pub fn render_navigation_split_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<NavigationSplitRenderState>>,
+pub fn render_navigation_split_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<NavigationSplitRenderState<E>>>,
     env: &Environment,
 ) {
     render_navigation_split_parts(ctx, state, env);
 }
 
-pub fn render_navigation_split_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<NavigationSplitRenderState>>,
+pub fn render_navigation_split_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<NavigationSplitRenderState<E>>>,
     env: &Environment,
 ) {
     let bounds = ctx.bounds;
@@ -1568,12 +1692,15 @@ fn compact_split_front(
 /// "Back" with the Focus/Click actions every actionable control carries —
 /// shared by a navigation stack's back button and a collapsed split's.
 #[cfg(feature = "accessibility")]
-fn back_button_accessibility_node(env: &Environment) -> AccessibilityNode {
-    let mut node =
-        AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+fn back_button_accessibility_node<E: crate::text::TextEngine>(
+    env: &Environment,
+) -> AccessibilityNode {
+    let mut node = AccessibilityNode::new(
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
             env,
             AccessibilityNodeRole::Button,
-        ));
+        ),
+    );
     node.set_label(crate::localization::text(env, "back"));
     node.add_action(AccessibilityAction::Focus);
     node.add_action(AccessibilityAction::Click);
@@ -1585,10 +1712,12 @@ fn back_button_accessibility_node(env: &Environment) -> AccessibilityNode {
 /// the same navigation the pointer target performs, so `Click` needs no
 /// bounds.
 #[cfg(feature = "accessibility")]
-fn split_back_action_target(selection: nami::Binding<Option<Id>>) -> AccessibilityActionTarget {
+fn split_back_action_target<E: crate::text::TextEngine>(
+    selection: nami::Binding<Option<Id>>,
+) -> AccessibilityActionTarget<E> {
     AccessibilityActionTarget::Activate {
         action: Rc::new(RefCell::new(
-            move |_renderer: &mut crate::renderer::SemanticCore, _env: &Environment| {
+            move |_renderer: &mut crate::renderer::SemanticCore<E>, _env: &Environment| {
                 selection.set(None);
                 true
             },
@@ -1596,9 +1725,9 @@ fn split_back_action_target(selection: nami::Binding<Option<Id>>) -> Accessibili
     }
 }
 
-fn render_compact_split(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<NavigationSplitRenderState>>,
+fn render_compact_split<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<NavigationSplitRenderState<E>>>,
     env: &Environment,
     selection: &CompactSplitSelection,
 ) {
@@ -1614,7 +1743,7 @@ fn render_compact_split(
         // The back node precedes the front pane's nodes in the tree, the
         // same order the navigation stack emits its back button in.
         let _ = ctx.renderer_mut().register_accessibility_node(
-            back_button_accessibility_node(env),
+            back_button_accessibility_node::<E>(env),
             back_rect,
             env,
             Some(split_back_action_target(back_binding)),
@@ -1656,9 +1785,9 @@ fn render_compact_split(
     }
 }
 
-fn render_split_content(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<NavigationSplitRenderState>>,
+fn render_split_content<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<NavigationSplitRenderState<E>>>,
     env: &Environment,
     selected: Option<Id>,
     compact: bool,
@@ -1696,9 +1825,9 @@ fn render_split_content(
     }
 }
 
-fn render_split_detail(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<NavigationSplitRenderState>>,
+fn render_split_detail<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<NavigationSplitRenderState<E>>>,
     env: &Environment,
     selected: Option<Id>,
     compact: bool,
@@ -1739,14 +1868,14 @@ fn render_split_detail(
 /// The retained render state of a `NavigationStack`. Both the root and every pushed
 /// destination own a persistent render node, so inactive pages retain local widget
 /// state and a transition never reconstructs its source or destination subtree.
-pub struct NavigationStackRenderState {
+pub struct NavigationStackRenderState<E: crate::text::TextEngine> {
     unresolved_root: Option<AnyView>,
-    root: Option<RetainedSubview>,
+    root: Option<crate::renderer::navigation_state::StackPage<E>>,
     background: Option<Computed<WorkingColor>>,
     transition_style: AnyNavigationTransition,
 }
 
-impl NavigationStackRenderState {
+impl<E: crate::text::TextEngine> NavigationStackRenderState<E> {
     pub(crate) fn from_stack(stack: NavigationStack<(), ()>) -> Self {
         let transition_style = stack.transition_style().clone();
         Self {
@@ -1767,16 +1896,18 @@ impl NavigationStackRenderState {
             transition: _,
         } = resolve_navigation_root(unresolved_root, env);
         self.background = Some(Color::new(Background).resolve(env));
-        self.root = Some(RetainedSubview::new(AnyView::new(NavigationView {
-            bar,
-            content,
-            state: NavigationDestinationState::default(),
-            transition: None,
-        })));
+        self.root = Some(crate::renderer::navigation_state::StackPage::new(
+            AnyView::new(NavigationView {
+                bar,
+                content,
+                state: NavigationDestinationState::default(),
+                transition: None,
+            }),
+        ));
         Some(state)
     }
 
-    const fn root_mut(&mut self) -> &mut RetainedSubview {
+    const fn root_mut(&mut self) -> &mut crate::renderer::navigation_state::StackPage<E> {
         self.root
             .as_mut()
             .expect("Hydrolysis navigation root must be resolved before rendering")
@@ -1787,10 +1918,86 @@ impl NavigationStackRenderState {
             .clone()
             .expect("Hydrolysis navigation background must be resolved before rendering")
     }
+
+    /// Consume the root page's layout-dirty marks: its measured size feeds
+    /// the stack's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957). Pushed pages' marks are consumed by their
+    /// own record pass — the stack's slot places them at its full size
+    /// either way.
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.root
+            .as_mut()
+            .is_some_and(crate::renderer::navigation_state::StackPage::take_layout_dirty_if_built)
+    }
 }
 
-fn navigation_entry_identity(
-    entries: &crate::renderer::navigation_state::NavigationEntries,
+/// The transition the moving page's root declares, building the page first —
+/// a pushed page has not recorded yet. A destination declares its arrival
+/// once: a page-root `.transition(...)` together with the destination's own
+/// navigation transition is rejected.
+fn moving_page_transition<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    state: &Rc<RefCell<NavigationStackRenderState<E>>>,
+    slot_key: &crate::renderer::NavigationKey,
+    stack_env: &Environment,
+    identity: u64,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
+) -> Option<waterui_core::transition::TransitionSpec> {
+    let env = presented_page_env(stack_env, identity, theme);
+    if identity == ROOT_NAVIGATION_IDENTITY {
+        let mut state = state.borrow_mut();
+        let root = state.root_mut();
+        root.ensure_built(renderer, &env);
+        return root.transition().cloned();
+    }
+    let (entries, pending_removed) = {
+        let slot = renderer
+            .navigation
+            .slots
+            .get(slot_key)
+            .expect("Hydrolysis navigation slot missing during a transition");
+        (Rc::clone(&slot.entries), Rc::clone(&slot.pending_removed))
+    };
+    let mut entries = entries.borrow_mut();
+    let mut pending_removed = pending_removed.borrow_mut();
+    let entry = entries
+        .iter_mut()
+        .chain(pending_removed.iter_mut())
+        .find(|entry| entry.identity == identity)
+        .unwrap_or_else(|| {
+            panic!("Hydrolysis navigation entry identity {identity} is not retained")
+        });
+    entry.content.ensure_built(renderer, &env);
+    let declared = entry.content.transition().cloned();
+    assert!(
+        declared.is_none() || entry.transition.is_none(),
+        "Hydrolysis: a navigation destination declares both a navigation transition \
+         (`NavigationView::transition`) and a `.transition(...)` on its page root; a \
+         destination declares how it arrives and leaves once"
+    );
+    declared
+}
+
+/// What the destination `identity` asked to arrive with
+/// (`NavigationView::transition`), looked up among the stack's entries and,
+/// on a pop, the departing entries held until their teardown runs — the only
+/// place a popped destination's declaration survives.
+fn declared_navigation_transition<E: crate::text::TextEngine>(
+    slot: &crate::renderer::navigation_state::NavigationSlot<E>,
+    identity: u64,
+) -> Option<AnyNavigationTransition> {
+    let declared = |entries: &crate::renderer::navigation_state::NavigationEntries<E>| {
+        entries
+            .borrow()
+            .iter()
+            .find(|entry| entry.identity == identity)
+            .and_then(|entry| entry.transition.clone())
+    };
+    declared(&slot.entries).or_else(|| declared(&slot.pending_removed))
+}
+
+fn navigation_entry_identity<E: crate::text::TextEngine>(
+    entries: &crate::renderer::navigation_state::NavigationEntries<E>,
     index: usize,
 ) -> u64 {
     entries
@@ -1801,7 +2008,7 @@ fn navigation_entry_identity(
 }
 
 /// How the stack presents one page this frame.
-struct PagePresentation {
+struct PagePresentation<'a, E: crate::text::TextEngine> {
     /// The page scope's layer transform in the stack's record space.
     layer: kurbo::Affine,
     alpha: f32,
@@ -1812,6 +2019,10 @@ struct PagePresentation {
     hit: bool,
     /// The matched elements a transition lists outside this page.
     matched: Vec<(bool, Id)>,
+    /// The page's own transition while it moves under its root declaration:
+    /// `layer`, `alpha` and `clip` already carry its sampled transform and
+    /// opacity; the page records through its blur.
+    transition: Option<&'a crate::renderer::TransitionPaint<'a, E>>,
 }
 
 /// Records one page into its `("page", identity)` scope: its background,
@@ -1820,16 +2031,16 @@ struct PagePresentation {
     clippy::too_many_arguments,
     reason = "the call carries the page record's inputs; the safe-area context is the §7.1 addition that tips the count"
 )]
-fn record_navigation_page(
-    renderer: &mut HydrolysisRenderer,
-    state: &Rc<RefCell<NavigationStackRenderState>>,
+fn record_navigation_page<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    state: &Rc<RefCell<NavigationStackRenderState<E>>>,
     slot_key: &crate::renderer::NavigationKey,
     identity: u64,
     env: &Environment,
     size: LayoutSize,
     safe_area: Option<SafeAreaLayout>,
-    presented: PagePresentation,
-) -> crate::renderer::navigation_state::NavigationRecordedPage {
+    presented: PagePresentation<'_, E>,
+) -> crate::renderer::navigation_state::NavigationRecordedPage<E> {
     let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
     let background = state.borrow().background();
     let background = Paint::Solid(renderer.read_signal(&background));
@@ -1851,7 +2062,44 @@ fn record_navigation_page(
         renderer.push_accessibility_suppression();
     }
     renderer.begin_navigation_page(presented.matched);
-    let origin = renderer.program().origin();
+    let page_ctx = RenderContext::new(renderer.program().origin(), bounds);
+    let record = |renderer: &mut HydrolysisRenderer<E>, page_ctx: RenderContext| {
+        record_page_body(
+            renderer, state, slot_key, identity, env, size, safe_area, background, page_ctx,
+        );
+    };
+    match presented.transition {
+        Some(paint) => crate::renderer::record_blurred(renderer, page_ctx, paint, record),
+        None => record(renderer, page_ctx),
+    }
+    let page = renderer.finish_navigation_page();
+    #[cfg(feature = "accessibility")]
+    if !presented.hit {
+        renderer.pop_accessibility_suppression();
+    }
+    renderer.close_scope();
+    page
+}
+
+/// Records a page's background, its retained root and — on a pushed page —
+/// the back chevron, at `page_ctx`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the page body records with the same inputs as its page scope"
+)]
+fn record_page_body<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    state: &Rc<RefCell<NavigationStackRenderState<E>>>,
+    slot_key: &crate::renderer::NavigationKey,
+    identity: u64,
+    env: &Environment,
+    size: LayoutSize,
+    safe_area: Option<SafeAreaLayout>,
+    background: Paint,
+    page_ctx: RenderContext,
+) {
+    let origin = page_ctx.local();
+    let bounds = page_ctx.bounds();
     renderer
         .scene_mut()
         .fill_paint(peniko::Fill::NonZero, origin, background, &bounds);
@@ -1884,43 +2132,32 @@ fn record_navigation_page(
         entry
             .content
             .record_built_page(renderer, env, size, safe_area);
-        let context = RenderContext {
-            local: origin,
-            bounds,
-        };
         let theme = renderer.theme();
-        renderer.draw_context(context, |draw| {
+        renderer.draw_context(page_ctx, |draw| {
             theme.draw_navigation_back_button(
                 draw,
                 navigation_back_button_rect(bounds, theme.navigation_metrics()),
             );
         });
     }
-    let page = renderer.finish_navigation_page();
-    #[cfg(feature = "accessibility")]
-    if !presented.hit {
-        renderer.pop_accessibility_suppression();
-    }
-    renderer.close_scope();
-    page
 }
 
 /// The stack inputs every page record of one frame shares.
-struct PageRecorder<'a> {
-    state: &'a Rc<RefCell<NavigationStackRenderState>>,
+struct PageRecorder<'a, E: crate::text::TextEngine> {
+    state: &'a Rc<RefCell<NavigationStackRenderState<E>>>,
     slot_key: &'a crate::renderer::NavigationKey,
     size: LayoutSize,
 }
 
-impl PageRecorder<'_> {
+impl<E: crate::text::TextEngine> PageRecorder<'_, E> {
     fn record(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         identity: u64,
         env: &Environment,
         safe_area: Option<SafeAreaLayout>,
-        presented: PagePresentation,
-    ) -> crate::renderer::navigation_state::NavigationRecordedPage {
+        presented: PagePresentation<'_, E>,
+    ) -> crate::renderer::navigation_state::NavigationRecordedPage<E> {
         record_navigation_page(
             renderer,
             self.state,
@@ -1948,9 +2185,9 @@ struct MatchedFrame {
 /// Presents a matched-geometry frame: both pages fade in their page scopes
 /// and the element travels between them in its `matched-from`/`matched-to`
 /// scopes.
-fn present_matched_transition(
-    renderer: &mut HydrolysisRenderer,
-    pages: &PageRecorder<'_>,
+fn present_matched_transition<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    pages: &PageRecorder<'_, E>,
     page_area: Option<SafeAreaLayout>,
     [(from_identity, from_env), (to_identity, to_env)]: [(u64, &Environment); 2],
     MatchedFrame {
@@ -1975,6 +2212,7 @@ fn present_matched_transition(
         clip_space: transform,
         hit: identity == active_identity,
         matched: vec![(source, id)],
+        transition: None,
     };
     let from_page = pages.record(
         renderer,
@@ -2032,11 +2270,11 @@ fn present_matched_transition(
 /// Lists a matched element in its own scope (§D.2): the element keeps its
 /// structural placement for hit testing while its paint parent moves to the
 /// scope, which flies it from its page frame onto `target`.
-fn present_matched_element(
-    renderer: &mut HydrolysisRenderer,
+fn present_matched_element<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     key: crate::renderer::mount::ScopeKey,
     transform: kurbo::Affine,
-    element: &crate::renderer::navigation_state::NavigationMatchedElement,
+    element: &crate::renderer::navigation_state::NavigationMatchedElement<E>,
     target: kurbo::Rect,
     alpha: f32,
 ) {
@@ -2067,13 +2305,88 @@ fn matched_scope_item(id: Id) -> u64 {
     hasher.finish()
 }
 
-type NavigationPresentationFrame = (
+type NavigationPresentationFrame<E> = (
     AnyNavigationTransition,
     NavigationTransitionDirection,
     f64,
     crate::renderer::navigation_state::NavigationPage,
     crate::renderer::navigation_state::NavigationPage,
+    Option<Rc<RefCell<dyn crate::renderer::navigation_state::PageMotion<E>>>>,
 );
+
+/// One frame of a navigation transition a page root's own declaration
+/// drives.
+struct PageTransitionFrame {
+    transform: kurbo::Affine,
+    bounds: kurbo::Rect,
+    paint_bounds: kurbo::Rect,
+    active_identity: u64,
+}
+
+/// Records a transition the moving page's root declares (layout-spec.md
+/// §4.5): the stationary page stays put beneath, and the moving page draws
+/// above it under its own declaration — inserted on push, removed on pop.
+fn present_page_transition<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    pages: &PageRecorder<'_, E>,
+    page_area: Option<SafeAreaLayout>,
+    [from, to]: [(u64, &Environment); 2],
+    page: &dyn crate::renderer::navigation_state::PageMotion<E>,
+    PageTransitionFrame {
+        transform,
+        bounds,
+        paint_bounds,
+        active_identity,
+    }: PageTransitionFrame,
+) {
+    let (moving, stationary) = if page.identity() == to.0 {
+        (to, from)
+    } else {
+        (from, to)
+    };
+    pages.record(
+        renderer,
+        stationary.0,
+        stationary.1,
+        page_area.clone(),
+        PagePresentation {
+            layer: transform,
+            alpha: 1.0,
+            clip: Some(paint_bounds),
+            clip_space: transform,
+            hit: stationary.0 == active_identity,
+            matched: Vec::new(),
+            transition: None,
+        },
+    );
+    let owner = renderer
+        .navigation
+        .slots
+        .get(pages.slot_key)
+        .expect("Hydrolysis navigation slot missing during page record")
+        .target
+        .borrow()
+        .upgrade()
+        .expect("Hydrolysis navigation slot is bound to its stack's cell");
+    let hit = moving.0 == active_identity;
+    let paint = page.paint(pages.size, hit, &owner);
+    let local = crate::renderer::transition_transform(&paint.properties, bounds);
+    pages.record(
+        renderer,
+        moving.0,
+        moving.1,
+        page_area,
+        PagePresentation {
+            layer: transform * local,
+            alpha: paint.properties.opacity(),
+            clip: Some(local.transform_rect_bbox(paint_bounds)),
+            clip_space: transform,
+            hit,
+            matched: Vec::new(),
+            transition: Some(&paint),
+        },
+    );
+}
 
 /// Records the pages the stack shows this frame, each in its page scope:
 /// the active page alone, or a transition's two pages under their layers.
@@ -2081,16 +2394,16 @@ type NavigationPresentationFrame = (
     clippy::too_many_arguments,
     reason = "the call carries the stack's per-frame presentation inputs"
 )]
-fn present_navigation_pages(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<NavigationStackRenderState>>,
+fn present_navigation_pages<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<NavigationStackRenderState<E>>>,
     slot_key: &crate::renderer::NavigationKey,
     stack_env: &Environment,
     active_identity: u64,
     size: LayoutSize,
     page_area: Option<SafeAreaLayout>,
-    motion: waterui_backend_core::widget::NavigationMotion,
-    presentation: Option<NavigationPresentationFrame>,
+    motion: crate::theme::NavigationMotion,
+    presentation: Option<NavigationPresentationFrame<E>>,
 ) {
     use crate::renderer::{
         NavigationPresentation, navigation_presentation, transition_layer_transform,
@@ -2103,15 +2416,17 @@ fn present_navigation_pages(
     let paint_bounds = ctx.chrome_paint_bounds();
     let theme = ctx.theme();
     let renderer = ctx.renderer_mut();
-    let Some((style, direction, progress, from, to)) = presentation else {
+    let pages = PageRecorder {
+        state,
+        slot_key,
+        size,
+    };
+    let Some((style, direction, progress, from, to, page)) = presentation else {
         let env = presented_page_env(stack_env, active_identity, &theme);
-        record_navigation_page(
+        pages.record(
             renderer,
-            state,
-            slot_key,
             active_identity,
             &env,
-            size,
             page_area,
             PagePresentation {
                 layer: transform,
@@ -2120,20 +2435,33 @@ fn present_navigation_pages(
                 clip_space: transform,
                 hit: true,
                 matched: Vec::new(),
+                transition: None,
             },
         );
         return;
     };
     let from_env = presented_page_env(stack_env, from.identity, &theme);
     let to_env = presented_page_env(stack_env, to.identity, &theme);
+    if let Some(page) = page {
+        present_page_transition(
+            renderer,
+            &pages,
+            page_area,
+            [(from.identity, &from_env), (to.identity, &to_env)],
+            &*page.borrow(),
+            PageTransitionFrame {
+                transform,
+                bounds,
+                paint_bounds,
+                active_identity,
+            },
+        );
+        return;
+    }
     match navigation_presentation(&style, motion, direction, progress, paint_bounds.width()) {
         NavigationPresentation::Matched(id) => present_matched_transition(
             renderer,
-            &PageRecorder {
-                state,
-                slot_key,
-                size,
-            },
+            &pages,
             page_area,
             [(from.identity, &from_env), (to.identity, &to_env)],
             MatchedFrame {
@@ -2146,8 +2474,8 @@ fn present_navigation_pages(
             },
         ),
         NavigationPresentation::Layers(resolved) => {
-            let outgoing = (&from, &from_env, resolved.outgoing);
-            let incoming = (&to, &to_env, resolved.incoming);
+            let outgoing = (&from, &from_env, resolved.outgoing());
+            let incoming = (&to, &to_env, resolved.incoming());
             let order = match direction {
                 NavigationTransitionDirection::Push => [outgoing, incoming],
                 NavigationTransitionDirection::Pop => [incoming, outgoing],
@@ -2164,11 +2492,12 @@ fn present_navigation_pages(
                     page_area.clone(),
                     PagePresentation {
                         layer: transform * local,
-                        alpha: layer.opacity,
+                        alpha: layer.opacity(),
                         clip: Some(local.transform_rect_bbox(paint_bounds)),
                         clip_space: transform,
                         hit: page.identity == active_identity,
                         matched: Vec::new(),
+                        transition: None,
                     },
                 );
             }
@@ -2176,12 +2505,12 @@ fn present_navigation_pages(
     }
 }
 
-impl HydroNativeView for Native<NavigationStack<(), ()>> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<NavigationStack<(), ()>> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::zero()
     }
@@ -2192,11 +2521,11 @@ impl HydroNativeView for Native<NavigationStack<(), ()>> {
 /// `Widget`-node path passes its [`RenderContext`]; the semantic emission walk
 /// passes `None` — the back button's `Click` pops the stack directly, so it
 /// needs no bounds.
-pub fn navigation_stack_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn navigation_stack_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
-    state: &Rc<RefCell<NavigationStackRenderState>>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
+    state: &Rc<RefCell<NavigationStackRenderState<E>>>,
     env: &Environment,
 ) {
     let slot_key = crate::renderer::NavigationKey::for_rc(state);
@@ -2207,7 +2536,7 @@ pub fn navigation_stack_accessibility(
         if depth == 0 {
             return;
         }
-        let back_node = back_button_accessibility_node(env);
+        let back_node = back_button_accessibility_node::<E>(env);
         // Direct semantic activation: pop through the slot's controller, the
         // same path the pointer target takes, so `Click` works with no bounds.
         let action_target = renderer
@@ -2219,7 +2548,8 @@ pub fn navigation_stack_accessibility(
                 let back_slot_key = slot_key;
                 AccessibilityActionTarget::Activate {
                     action: Rc::new(RefCell::new(
-                        move |renderer: &mut crate::renderer::SemanticCore, env: &Environment| {
+                        move |renderer: &mut crate::renderer::SemanticCore<E>,
+                              env: &Environment| {
                             // A denied pop is a handled activation whose
                             // outcome is "attempt reported, destination
                             // stays" — `attempt_pop` already fired
@@ -2238,7 +2568,7 @@ pub fn navigation_stack_accessibility(
                 let metrics = theme
                     .expect("rendered navigation stack accessibility passes the theme")
                     .navigation_metrics();
-                let back_bounds = navigation_back_button_rect(ctx.bounds, metrics);
+                let back_bounds = navigation_back_button_rect(ctx.bounds(), metrics);
                 let _ = renderer.register_accessibility_node(
                     back_node,
                     back_bounds,
@@ -2259,12 +2589,12 @@ pub fn navigation_stack_accessibility(
 }
 
 /// Measures a navigation stack leaf (zero intrinsic, matching the dispatch path).
-pub fn measure_navigation_stack_node(
-    _state: &NavigationStackRenderState,
+pub fn measure_navigation_stack_node<E: crate::text::TextEngine>(
+    _state: &NavigationStackRenderState<E>,
     _proposal: ProposalSize,
-    _hydro: &mut HydroState,
+    _hydro: &mut HydroState<E>,
     _env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     ViewDimensions::new(LayoutSize::zero())
 }
@@ -2275,9 +2605,9 @@ pub fn measure_navigation_stack_node(
 /// dispatch wrapper's `accessibility`-then-`render` order); when the stack is
 /// accessibility-hidden it runs that step inside a suppression scope so the entries
 /// are still bound while the a11y nodes are suppressed.
-pub fn render_navigation_stack_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<NavigationStackRenderState>>,
+pub fn render_navigation_stack_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<NavigationStackRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -2310,9 +2640,9 @@ pub fn render_navigation_stack_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_navigation_stack_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<NavigationStackRenderState>>,
+pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<NavigationStackRenderState<E>>>,
     env: &Environment,
 ) {
     let transition_style = state.borrow().transition_style.clone();
@@ -2397,6 +2727,27 @@ pub fn render_navigation_stack_parts(
     };
 
     let now = ctx.renderer_mut().frame_instant();
+    // The moving page — arriving on a push, leaving on a pop — owns the
+    // motion. A declaration on its root replaces the stack style for this
+    // transaction (layout-spec.md §4.5); the page is built first, because a
+    // pushed page has not recorded yet.
+    let page_transition = navigation_change.and_then(|(previous_identity, previous_depth)| {
+        let moving = if depth >= previous_depth {
+            active_identity
+        } else {
+            previous_identity
+        };
+        let theme = ctx.theme();
+        moving_page_transition(
+            ctx.renderer_mut(),
+            state,
+            &slot_key,
+            &stack_env,
+            moving,
+            &theme,
+        )
+        .map(|spec| (moving, spec))
+    });
     let (transition_frame, complete_transaction) = {
         let slot = ctx
             .renderer_mut()
@@ -2407,7 +2758,9 @@ pub fn render_navigation_stack_parts(
         if let Some((previous_identity, previous_depth)) = navigation_change {
             let skip_transition = slot.skip_next_pop_transition && depth < previous_depth;
             slot.skip_next_pop_transition = false;
-            if transition_style.retained() == RetainedNavigationTransition::None || skip_transition
+            if skip_transition
+                || (transition_style.retained() == RetainedNavigationTransition::None
+                    && page_transition.is_none())
             {
                 slot.transition = None;
             } else {
@@ -2430,39 +2783,41 @@ pub fn render_navigation_stack_parts(
                 } else {
                     previous_identity
                 };
-                let declared = entries
-                    .borrow()
-                    .iter()
-                    .find(|entry| entry.identity == moving_identity)
-                    .and_then(|entry| entry.transition.clone());
-                let style = declared
-                    .or_else(|| {
-                        // On a pop the departing entry has already left
-                        // `entries`; it is held here until its teardown runs,
-                        // which is the only place its declaration survives.
-                        slot.pending_removed
-                            .borrow()
-                            .iter()
-                            .find(|entry| entry.identity == moving_identity)
-                            .and_then(|entry| entry.transition.clone())
-                    })
+                let style = declared_navigation_transition(slot, moving_identity)
                     .unwrap_or_else(|| transition_style.clone());
-                slot.transition = Some(
-                    crate::renderer::navigation_state::NavigationTransitionState::new(
-                        style,
-                        direction,
-                        from_page,
-                        active_page.clone(),
-                        now,
-                        transition_motion.transition_duration,
-                    ),
+                let transition = crate::renderer::navigation_state::NavigationTransitionState::new(
+                    style,
+                    direction,
+                    from_page,
+                    active_page.clone(),
+                    now,
+                    transition_motion.transition_duration,
                 );
+                slot.transition = Some(match &page_transition {
+                    Some((moving, spec)) => transition.with_page(
+                        crate::renderer::navigation_state::PageTransition::start(
+                            *moving, spec, direction, &local_env, now,
+                        ),
+                    ),
+                    None => transition,
+                });
             }
             slot.last_depth = depth;
-        } else if let Some(transition) = slot.transition.as_ref()
-            && !transition.is_active(now)
-        {
-            slot.transition = None;
+        } else {
+            if let Some(page) = slot
+                .transition
+                .as_ref()
+                .and_then(|transition| transition.page.as_ref())
+            {
+                page.borrow_mut().advance(now);
+            }
+            if slot
+                .transition
+                .as_ref()
+                .is_some_and(|transition| !transition.is_active(now))
+            {
+                slot.transition = None;
+            }
         }
         let frame = slot.transition.as_ref().map(|transition| {
             (
@@ -2471,6 +2826,9 @@ pub fn render_navigation_stack_parts(
                 transition.eased_progress(now, transition_motion),
                 transition.from_page.clone(),
                 transition.to_page.clone(),
+                transition.page.clone().map(|page| {
+                    page as Rc<RefCell<dyn crate::renderer::navigation_state::PageMotion<E>>>
+                }),
             )
         });
         slot.last_page = Some(active_page.clone());
@@ -2483,6 +2841,30 @@ pub fn render_navigation_stack_parts(
             .complete_navigation_transaction(&slot_key, &local_env);
     }
 
+    // An interactive pop drives what the departing page declares, in the
+    // same precedence a programmatic pop resolves: its root's transition,
+    // then its navigation transition, then the stack style — the gesture
+    // supplies the progress in place of the clock.
+    let departing = ctx
+        .renderer_mut()
+        .navigation
+        .slots
+        .get(&slot_key)
+        .expect("Hydrolysis navigation slot missing")
+        .interactive_pop
+        .as_ref()
+        .map(|interactive| interactive.from_page.identity);
+    let departing_page_transition = departing.and_then(|identity| {
+        let theme = ctx.theme();
+        moving_page_transition(
+            ctx.renderer_mut(),
+            state,
+            &slot_key,
+            &stack_env,
+            identity,
+            &theme,
+        )
+    });
     let interactive_frame = {
         let slot = ctx
             .renderer_mut()
@@ -2490,30 +2872,30 @@ pub fn render_navigation_stack_parts(
             .slots
             .get_mut(&slot_key)
             .expect("Hydrolysis navigation slot missing");
+        let declared =
+            departing.and_then(|identity| declared_navigation_transition(slot, identity));
         slot.interactive_pop.as_mut().map(|interactive| {
             let (progress, completed, cancelled) = interactive.sample(now, transition_motion);
+            let page = departing_page_transition.as_ref().map(|spec| {
+                interactive.page_motion(spec, &local_env, now)
+                    as Rc<RefCell<dyn crate::renderer::navigation_state::PageMotion<E>>>
+            });
             (
-                progress,
-                completed,
-                cancelled,
-                interactive.from_page.clone(),
-                interactive.to_page.clone(),
+                (completed, cancelled),
+                (
+                    declared.unwrap_or_else(|| transition_style.clone()),
+                    NavigationTransitionDirection::Pop,
+                    progress,
+                    interactive.from_page.clone(),
+                    interactive.to_page.clone(),
+                    page,
+                ),
             )
         })
     };
 
-    let presentation = interactive_frame
-        .as_ref()
-        .map(|(progress, _, _, from_page, to_page)| {
-            (
-                transition_style.clone(),
-                NavigationTransitionDirection::Pop,
-                *progress,
-                from_page.clone(),
-                to_page.clone(),
-            )
-        })
-        .or(transition_frame);
+    let (interactive_end, interactive_presentation) = interactive_frame.unzip();
+    let presentation = interactive_presentation.or(transition_frame);
     present_navigation_pages(
         ctx,
         state,
@@ -2525,7 +2907,7 @@ pub fn render_navigation_stack_parts(
         transition_motion,
         presentation,
     );
-    if let Some((_, completed, cancelled, _, _)) = interactive_frame {
+    if let Some((completed, cancelled)) = interactive_end {
         if completed || cancelled {
             let slot = ctx
                 .renderer_mut()
@@ -2671,9 +3053,9 @@ pub fn render_navigation_stack_parts(
 /// subtitle sub-views flush under suppression (their semantics live on the
 /// bar's own nodes), so they emit nothing here.
 #[cfg(feature = "accessibility")]
-pub fn emit_navigation_view_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<NavigationViewRenderState>>,
+pub fn emit_navigation_view_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<NavigationViewRenderState<E>>>,
     env: &Environment,
 ) {
     if env
@@ -2720,9 +3102,9 @@ pub fn emit_navigation_view_accessibility(
 /// its subtree retires and never reaches the accessibility tree, exactly as
 /// in the rendered path.
 #[cfg(feature = "accessibility")]
-pub fn emit_navigation_split_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<NavigationSplitRenderState>>,
+pub fn emit_navigation_split_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<NavigationSplitRenderState<E>>>,
     env: &Environment,
 ) {
     let (selection, compact, show_all) = {
@@ -2758,7 +3140,7 @@ pub fn emit_navigation_split_accessibility(
         // same order the rendered path registers it in.
         if let Some(back_binding) = back_binding {
             let _ = renderer.register_accessibility_node_semantic(
-                back_button_accessibility_node(env),
+                back_button_accessibility_node::<E>(env),
                 env,
                 Some(split_back_action_target(back_binding)),
             );
@@ -2831,9 +3213,9 @@ pub fn emit_navigation_split_accessibility(
 /// when the stack is empty, the topmost pushed destination otherwise.
 /// Transition scenes are presentation and emit nothing.
 #[cfg(feature = "accessibility")]
-pub fn emit_navigation_stack_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<NavigationStackRenderState>>,
+pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<NavigationStackRenderState<E>>>,
     env: &Environment,
 ) {
     navigation_stack_accessibility(renderer, None, None, state, env);

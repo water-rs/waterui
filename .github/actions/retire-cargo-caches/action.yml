@@ -1,38 +1,50 @@
 name: Retire superseded Cargo caches
 
 description: >-
-  Deletes every Actions cache entry on the current ref whose key starts
-  with one of the calling job's own family prefixes, except the keys this
-  run is about to save. A lockfile or toolchain bump mints a new key, so
-  the superseded generation must be removed after all checks pass and
-  BEFORE the replacement save — otherwise the save itself can evict a
-  live, unrelated cache while the stale generation sits under quota.
-  Ref-scoped family prefixes only: pull-request caches, other families,
-  and other refs are never touched; API errors fail the step.
+  Retires superseded Actions cache entries on the current ref, in the two
+  places a cache writer calls it.
 
-  With `sweep` the same call also retires all but the newest generation
-  of EVERY cache purpose on the current ref — grouped by stripping a
-  trailing `-<8+ hex>` content fingerprint from the key — which covers
-  the rotating families no single job owns: install-tool version pins,
-  SwiftPM archives, the apt package cache, in-tree tool builds. One
-  mechanism, no second sweeper job.
+  BEFORE the saves, with `sweep`, it retires all but the newest
+  generation of EVERY cache purpose on the current ref — grouped by
+  stripping a trailing `-<8+ hex>` content fingerprint from the key —
+  which covers the rotating families no single job owns: install-tool
+  version pins, SwiftPM archives, the apt package cache, in-tree tool
+  builds. The replacement of the calling job's own families is not saved
+  yet at that point, so the generation it supersedes is still the newest
+  of its purpose and is kept: pull requests keep restoring it.
+
+  AFTER the saves, with `families`, it deletes every entry on the current
+  ref whose key starts with one of the calling job's own family prefixes,
+  except `primary-keys`. It first requires each primary key to exist on
+  this ref or on the default branch — the replacement was saved, or was
+  the exact key restored — and fails without deleting anything otherwise,
+  so a superseded generation is only ever retired once a usable
+  replacement is restorable. The saves before it are gated by the
+  cache-headroom action, so the moment both generations coexist cannot
+  push usage over the storage limit.
+
+  Ref-scoped only: pull-request caches and other refs are never touched;
+  API errors fail the step.
 
 inputs:
   families:
     description: >-
-      Comma-separated cache key prefixes owned by the calling job
-      (for example "cargo-sources-Linux-,lint-target-Linux-X64-").
-    required: true
+      Comma-separated cache key prefixes owned by the calling job (for
+      example "cargo-sources-Linux-,lint-target-Linux-X64-"), retired after
+      the saves. Empty skips family retirement.
+    required: false
+    default: ""
   primary-keys:
     description: >-
-      Pipe-separated exact keys this run is about to save; they are
-      never deleted.
+      Pipe-separated exact keys this run restores or saves; they are never
+      deleted. With `families`, each must exist on this ref or the default
+      branch.
     required: true
   sweep:
     description: >-
-      "true" also retires all but the newest same-ref entry of every
-      cache purpose (key minus a trailing -<8+ hex> fingerprint). Keys
-      listed in primary-keys are still never deleted.
+      "true" retires all but the newest same-ref entry of every cache
+      purpose (key minus a trailing -<8+ hex> fingerprint). Keys listed in
+      primary-keys are never deleted.
     required: false
     default: "false"
   github-token:
@@ -52,57 +64,55 @@ runs:
         github-token: ${{ inputs.github-token }}
         script: |
           const families = process.env.FAMILY_PREFIXES.split(',').filter(Boolean);
-          const primaries = new Set(process.env.PRIMARY_KEYS.split('|'));
+          const primaries = new Set(process.env.PRIMARY_KEYS.split('|').filter(Boolean));
           const { owner, repo } = context.repo;
           // Materialize the whole list first: deleting mid-iteration
           // would shift page offsets and could skip stale entries.
           const entries = await github.paginate(
             github.rest.actions.getActionsCacheList,
             { owner, repo, per_page: 100 });
-          const stale = entries.filter((e) =>
-            e.ref === context.ref &&
-            families.some((f) => e.key.startsWith(f)) &&
-            !primaries.has(e.key));
-          // Deletes run with bounded concurrency; any API error aborts
-          // the batch and fails the step.
-          const retired = [];
-          for (let i = 0; i < stale.length; i += 4) {
-            await Promise.all(stale.slice(i, i + 4).map(async (e) => {
-              await github.rest.actions.deleteActionsCacheById(
-                { owner, repo, cache_id: e.id });
-              retired.push(`${e.key}#${e.id}`);
-            }));
-          }
-          core.info(`retired ${retired.length} superseded cache entries: ${retired.join(', ') || 'none'}`);
+          const retire = async (doomed) => {
+            // Bounded concurrency; any API error aborts the batch and
+            // fails the step.
+            for (let i = 0; i < doomed.length; i += 4) {
+              await Promise.all(doomed.slice(i, i + 4).map((e) =>
+                github.rest.actions.deleteActionsCacheById({ owner, repo, cache_id: e.id })));
+            }
+            return doomed.map((e) => `${e.key}#${e.id} (${(e.size_in_bytes / 1024 ** 3).toFixed(2)} GiB)`);
+          };
 
           if (process.env.SWEEP === 'true') {
             // Purpose-grouped sweep: a purpose is the key minus a trailing
             // `-<8+ hex>` fingerprint, so every content-addressed family
             // keeps exactly its newest generation on this ref. Pinned keys
             // carry no fingerprint suffix, so each is its own purpose and
-            // always kept — same coverage the dedicated cache-gc sweep had.
-            const retiredIds = new Set(stale.map((e) => e.id));
+            // always kept.
             const purposeOf = (k) => k.replace(/-[0-9a-fA-F]{8,}$/, '');
             const newest = new Map();
             for (const e of entries) {
-              if (e.ref !== context.ref || retiredIds.has(e.id) || primaries.has(e.key)) continue;
+              if (e.ref !== context.ref || primaries.has(e.key)) continue;
               const cur = newest.get(purposeOf(e.key));
               if (!cur || Date.parse(e.created_at) > Date.parse(cur.created_at)) {
                 newest.set(purposeOf(e.key), e);
               }
             }
-            const superseded = entries.filter((e) =>
-              e.ref === context.ref && !retiredIds.has(e.id) && !primaries.has(e.key) &&
-              newest.get(purposeOf(e.key)) !== e);
-            const swept = [];
-            for (let i = 0; i < superseded.length; i += 4) {
-              await Promise.all(superseded.slice(i, i + 4).map(async (e) => {
-                await github.rest.actions.deleteActionsCacheById(
-                  { owner, repo, cache_id: e.id });
-                swept.push(`${e.key}#${e.id}`);
-              }));
+            const swept = await retire(entries.filter((e) =>
+              e.ref === context.ref && !primaries.has(e.key) &&
+              newest.get(purposeOf(e.key)) !== e));
+            core.info(`sweep retired ${swept.length} superseded cache entries across ${newest.size} live purposes: ${swept.join(', ') || 'none'}`);
+          }
+
+          if (families.length > 0) {
+            const reachable = new Set([context.ref, `refs/heads/${context.payload.repository.default_branch}`]);
+            const missing = [...primaries].filter((key) =>
+              !entries.some((e) => e.key === key && reachable.has(e.ref)));
+            if (missing.length > 0) {
+              core.setFailed(`no superseded generation retired: the replacement ${missing.join(', ')} exists neither on ${context.ref} nor on the default branch`);
+              return;
             }
-            const gib = (e) => ((e.size_in_bytes || 0) / 1024 ** 3).toFixed(2);
-            for (const e of superseded) core.info(`swept ${e.key}#${e.id} (${gib(e)} GiB)`);
-            core.info(`sweep retired ${swept.length} superseded cache entries across ${newest.size} live purposes`);
+            const retired = await retire(entries.filter((e) =>
+              e.ref === context.ref &&
+              families.some((f) => e.key.startsWith(f)) &&
+              !primaries.has(e.key)));
+            core.info(`retired ${retired.length} superseded cache entries: ${retired.join(', ') || 'none'}`);
           }

@@ -110,6 +110,10 @@ impl Footprint {
     /// is axis-independent, and `extent` is measured against the image as a
     /// whole.
     #[must_use]
+    #[allow(
+        clippy::suboptimal_flops,
+        reason = "`no_std` has no `f32::mul_add`, and plain multiply-add keeps the loop vectorisable"
+    )]
     pub fn resolve(&self, (width, height): (f32, f32)) -> f32 {
         self.extent * width.max(height) + self.pixels
     }
@@ -247,6 +251,7 @@ mod tests {
     const SPATIAL: SpatialStage = SpatialStage {
         name: "spatial",
         source: "",
+        source_f16: None,
         params: &[ParamSource::Param(0), ParamSource::Param(1)],
         space: OperatingSpace::Working,
         shape: None,

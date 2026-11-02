@@ -67,7 +67,10 @@ fn now_playing_bar() -> impl View {
 // navigation.md writes `mdi::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_01() -> impl View {
+    use waterui::id::SelfId;
     use waterui::navigation::tab_style;
+    use waterui::reactive::collection::List;
+    use waterui::views::ForEach;
 
     fn inbox_stack() -> impl View {
         text("inbox stack")
@@ -84,28 +87,37 @@ pub fn navigation_block_01() -> impl View {
 
     let pane = binding(Pane::Inbox);
 
+    // Tabs takes any `Views` collection keyed by the selection's type:
+    // `ForEach` over a `List` of `SelfId`s makes each pane variant the tab's
+    // identity; a fixed set can also be `vec![Tab::new(..), ..]` with a
+    // `Binding<usize>` selecting by position.
+    let tabs = std::collections::BTreeMap::from([
+        (
+            Pane::Inbox,
+            Tab::container(label("Inbox").icon(mdi::inbox()), inbox_stack).badge(unread_count),
+        ),
+        (
+            Pane::Library,
+            Tab::container(label("Library").icon(mdi::image_album()), library_split),
+        ),
+        (
+            Pane::Settings,
+            Tab::container(label("Settings").icon(mdi::cog()), settings_stack),
+        ),
+        (
+            Pane::Search,
+            Tab::container(label("Search").icon(mdi::magnify()), search_stack)
+                .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
+        ),
+    ]);
+    let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
     Tabs::new(
         &pane,
-        vec![
-            Tab::container(Pane::Inbox, label("Inbox").icon(mdi::inbox()), inbox_stack)
-                .badge(unread_count),
-            Tab::container(
-                Pane::Library,
-                label("Library").icon(mdi::image_album()),
-                library_split,
-            ),
-            Tab::container(
-                Pane::Settings,
-                label("Settings").icon(mdi::cog()),
-                settings_stack,
-            ),
-            Tab::container(
-                Pane::Search,
-                label("Search").icon(mdi::magnify()),
-                search_stack,
-            )
-            .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
-        ],
+        ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
+            tabs.get(&pane.into_inner())
+                .expect("a keyed tab collection reports a tab for every id")
+                .clone()
+        }),
     )
     .style(tab_style::automatic())
     .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown) // iOS 26 collapses the bar while scrolling; ignored elsewhere
@@ -358,7 +370,7 @@ pub fn navigation_block_10() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 11/13
+// navigation.md § "## Windows" — rust block 11/14
 // ---------------------------------------------------------------------------
 #[expect(
     clippy::redundant_closure,
@@ -393,7 +405,8 @@ pub fn navigation_block_11(env: Environment) -> App {
 // with a `WindowStyle` or a `Binding<WindowStyle>`, `handle().set_style(..)`,
 // `.background(..)` with a `Binding<WindowBackground>`, `set_background(..)`
 // with a colour and a material, `.background(..)` with a Color or a Material,
-// the three `WindowBackground` variants, `.resizable(bool)`,
+// the three `WindowBackground` variants, `.icon(..)` with a `WindowIcon` or a
+// `Binding<Option<WindowIcon>>`, `set_icon(..)`, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
 // `.level(..)` / `.resize_increments(..)`, the `WindowState` variants, and the
 // `WindowHandle` controls. Not counted as a rust block.
@@ -401,7 +414,7 @@ pub fn navigation_block_11(env: Environment) -> App {
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
     use waterui::window::{
-        UserAttention, Window, WindowBackground, WindowLevel, WindowState, WindowStyle,
+        UserAttention, Window, WindowBackground, WindowIcon, WindowLevel, WindowState, WindowStyle,
     };
 
     let state = binding::<WindowState>(WindowState::default());
@@ -416,6 +429,7 @@ pub fn navigation_window_builder_prose() {
         .resize_increments(Size::new(80.0, 24.0));
     let handle = window.handle();
     handle.maximize();
+    handle.request_close();
     handle.request_attention(UserAttention::Informational);
     handle.cancel_attention();
     let _ = Window::new("W", state.clone(), || text("c"))
@@ -433,6 +447,13 @@ pub fn navigation_window_builder_prose() {
     window.handle().set_background(Material::UltraThin);
     background.set(WindowBackground::Material(Material::Thin));
     background.set(WindowBackground::Color(Color::transparent()));
+    let icon = WindowIcon::new(1, 1, vec![255_u8, 0, 0, 255]);
+    let themed_icon = binding(None::<WindowIcon>);
+    let _ = Window::new("W", binding(WindowState::Closed), || text("c")).icon(icon.clone());
+    let window =
+        Window::new("W", binding(WindowState::Closed), || text("c")).icon(themed_icon.clone());
+    window.handle().set_icon(icon);
+    window.handle().set_icon(None);
 
     let _ = WindowStyle::FullSizeContentView;
     let _ = WindowState::Normal;
@@ -443,7 +464,7 @@ pub fn navigation_window_builder_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 12/13
+// navigation.md § "## Windows" — rust block 12/14
 // ---------------------------------------------------------------------------
 pub fn navigation_block_12() -> impl View {
     use waterui::window::WindowState;
@@ -456,9 +477,39 @@ pub fn navigation_block_12() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows that open and close" — rust block 13/13
+// navigation.md § "## Windows" — rust block 13/14
 // ---------------------------------------------------------------------------
-pub fn navigation_block_13() -> impl View {
+pub fn navigation_block_13() -> waterui::window::Window {
+    fn editor_content() -> impl View {
+        text("editor")
+    }
+
+    use waterui::window::CloseReply;
+    use waterui::window::{Window, WindowState};
+
+    let unsaved = binding(true);
+    // While set, the editor shows a "Discard changes?" prompt whose Discard button
+    // writes `WindowState::Closed` — a close that does not ask again.
+    let confirm_discard = binding(false);
+    let window_state = binding(WindowState::Normal);
+
+    Window::new("Editor", window_state.clone(), editor_content).on_close_request(move || {
+        let ask = unsaved.snapshot();
+        confirm_discard.set(ask);
+        async move {
+            if ask {
+                CloseReply::Cancel
+            } else {
+                CloseReply::Close
+            }
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Windows that open and close" — rust block 14/14
+// ---------------------------------------------------------------------------
+pub fn navigation_block_14() -> impl View {
     fn inspector_content() -> impl View {
         text("inspector")
     }

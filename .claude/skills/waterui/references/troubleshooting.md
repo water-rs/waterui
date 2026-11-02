@@ -93,6 +93,8 @@ Use `app.pump_for(duration)`.
 | `this function takes 2 arguments` on `row("Title")` | `row`/`detail_row` take (label, value) | `row("Streak", "14 days")` |
 | wrong `row` / `grid` resolves | list `row` vs grid `row` name collision | `use waterui::layout::grid::{grid as layout_grid, row as grid_row};` |
 | `the trait bound ...: Identifiable is not satisfied` | collection item lacks an id | `#[derive(Clone, Identifiable)]` + `#[id]`, or manual `impl` for enums (disjoint id ranges) |
+| ``cannot borrow `rows` as mutable`` on `push`/`remove`/`replace` | list mutators take `&mut self` | `let mut rows = …`, or `mut state: AppState` in a handler; a clone shares the same list |
+| ``can't compare `Row` with `Row` `` on `replace` or `SignalCollection` | the diff compares surviving rows | `#[derive(Clone, PartialEq, Identifiable)]` |
 | `expected 'Binding<T>', found '&Binding<T>'` (or the reverse) | two-way controls borrow, modifiers own | controls take `&binding`; modifiers take `binding.clone()` |
 | `cannot find macro 'text'` | macro not imported | `use waterui::prelude::*;` then bare `text!` — never `waterui::text!` (same rule for `include_markdown!`, `shader!`) |
 | `ForEach<..>: View is not satisfied` (or "expected an `FnOnce()` closure") | `ForEach` is a `Views` collection, not a view | `Lazy::for_each(data, f)`, `VStack::for_each(data, f)`, or `List::for_each` |

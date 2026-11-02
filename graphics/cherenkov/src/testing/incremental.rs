@@ -1,4 +1,4 @@
-//! Exact incremental/full lowering checks shared by the CPU and GPU backends.
+//! Incremental/full lowering equivalence checks shared by the CPU and GPU backends.
 
 use crate::Instant;
 use std::collections::hash_map::DefaultHasher;
@@ -12,19 +12,34 @@ use crate::{
     OffscreenFormat, Operand, Paint, Picture, Pressure, Prop, Renderer, Shadow, ShapeData,
     SlotUpdate, SurfaceFrame, SurfaceId, SurfaceTree, WorkingColor,
 };
+use cherenkov_oracle::image::F32Image;
+use cherenkov_oracle::metrics::assert_images_match;
 use cherenkov_record::LayerOp;
+
+/// A readback as an image for the visual-equivalence comparison.
+fn image(readback: &crate::Readback) -> F32Image {
+    F32Image {
+        width: readback.width,
+        height: readback.height,
+        pixels: readback.pixels.clone(),
+    }
+}
 
 /// Runs deterministic randomized slot changes against fresh full lowering.
 /// Backend initialization must succeed: a missing GPU must fail this test.
 ///
+/// `font` is the outline face the fixture's glyph runs draw (glyph ids 36
+/// to 43). The caller loads it, so the harness reads no file and runs the
+/// same wherever the caller can obtain the bytes.
+///
 /// # Panics
 /// If a backend fails, output differs, or unrelated commands are re-lowered.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn equivalence<R: Renderer>(renderer: &mut R)
+pub fn equivalence<R: Renderer>(renderer: &mut R, font: FontData)
 where
     R::Target: From<Offscreen>,
 {
-    let font = register_font(renderer);
+    let font = register_font(renderer, font);
     let mut list = fixture(font).display_list().clone();
     let stable = Picture::record(|c| c.fill(Rect::new(1., 1., 4., 4.), WorkingColor::WHITE));
     let mut tree = SurfaceTree::new();
@@ -105,13 +120,7 @@ where
         }
         let a = renderer.readback(ids[0]).expect("incremental readback");
         let b = renderer.readback(ids[1]).expect("full readback");
-        for (pixel, (a, b)) in a.pixels.iter().zip(&b.pixels).enumerate() {
-            assert_eq!(
-                a.map(f32::to_bits),
-                b.map(f32::to_bits),
-                "frame {step}, pixel {pixel}"
-            );
-        }
+        assert_images_match(&image(&b), &image(&a));
     }
     assert_patch_counts(
         renderer,
@@ -130,17 +139,16 @@ where
 #[cfg(target_arch = "wasm32")]
 /// Browser version of the same deterministic incremental/full comparison.
 ///
+/// `font` is the outline face the fixture's glyph runs draw (glyph ids 36
+/// to 43); a page has no filesystem, so the caller embeds it.
+///
 /// # Panics
 /// If rendering fails, pixels differ, or unchanged commands are rebuilt.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the browser twin of the native equivalence routine above; keeping them line-parallel outweighs the limit"
-)]
-pub async fn equivalence<R: Renderer>(renderer: &mut R)
+pub async fn equivalence<R: Renderer>(renderer: &mut R, font: FontData)
 where
     R::Target: From<Offscreen>,
 {
-    let font = register_font(renderer);
+    let font = register_font(renderer, font);
     let mut list = fixture(font).display_list().clone();
     let stable = Picture::record(|c| c.fill(Rect::new(1., 1., 4., 4.), WorkingColor::WHITE));
     let mut tree = SurfaceTree::new();
@@ -224,13 +232,7 @@ where
             .await
             .expect("incremental readback");
         let b = renderer.readback(ids[1]).await.expect("full readback");
-        for (pixel, (a, b)) in a.pixels.iter().zip(&b.pixels).enumerate() {
-            assert_eq!(
-                a.map(f32::to_bits),
-                b.map(f32::to_bits),
-                "frame {step}, pixel {pixel}"
-            );
-        }
+        assert_images_match(&image(&b), &image(&a));
     }
     assert_patch_counts(
         renderer,
@@ -247,23 +249,9 @@ where
     renderer.remove_font(font);
 }
 
-fn register_font<R: Renderer>(renderer: &mut R) -> FontId {
+fn register_font<R: Renderer>(renderer: &mut R, data: FontData) -> FontId {
     let font = FontId::new(1);
-    // The scene tree is generated, not committed: read it at call time so
-    // the `testing` feature compiles for consumers pinned by git, and only
-    // `equivalence` needs the generated fonts.
-    let data = std::fs::read(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/fonts/NotoSans.ttf"),
-    )
-    .expect("scenes/fonts/NotoSans.ttf is generated; run `python3 scenes/tools/generate.py` first");
-    renderer.add_font(
-        font,
-        R::prepare_font(FontData {
-            data: data.into(),
-            index: 0,
-        })
-        .expect("prepare font"),
-    );
+    renderer.add_font(font, R::prepare_font(data).expect("prepare font"));
     font
 }
 

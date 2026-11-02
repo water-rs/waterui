@@ -23,7 +23,7 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
         .make_where_clause()
         .predicates
         .push(syn::parse_quote!(
-            #identifier_type: core::hash::Hash + core::cmp::Ord + Clone
+            #identifier_type: core::cmp::Ord + Clone
         ));
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 

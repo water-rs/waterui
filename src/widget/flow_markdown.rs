@@ -324,6 +324,7 @@ impl FlowMarkdownConfig {
 
 /// Preset animation profile for streamed markdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FlowAnimationPreset {
     /// Optimized for assistant/LLM output.
     AssistantDefault,
@@ -335,6 +336,7 @@ pub enum FlowAnimationPreset {
 
 /// Element kinds used for animation overrides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum FlowElementKind {
     /// Plain paragraph text and fallback text nodes.
     Text,
@@ -372,6 +374,7 @@ const INCOMPLETE_LINK_SENTINEL: &str = "flowmarkdown:incomplete-link";
 
 /// Animation policy for flow updates.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum FlowAnimationPolicy {
     /// No animation.
     None,
@@ -390,6 +393,7 @@ pub enum FlowAnimationPolicy {
 
 /// Stream update model for flow markdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FlowStreamMode {
     /// Tail-append optimized model.
     AppendOnly,
@@ -397,6 +401,7 @@ pub enum FlowStreamMode {
 
 /// Policy for incomplete tables in streaming mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FlowTablePolicy {
     /// Do not animate table blocks and avoid exposing raw markdown while incomplete.
     NoAnimationReadablePending,
@@ -415,7 +420,7 @@ struct FlowUpdate {
     typewriter: Option<TypewriterRun>,
 }
 
-#[derive(Clone, crate::Identifiable)]
+#[derive(Clone, PartialEq, crate::Identifiable)]
 struct FlowBlockSlot {
     #[id]
     identity: u64,
@@ -449,6 +454,15 @@ struct FlowBlockContentState {
     current: FlowBlockRender,
     subscribers: HashMap<u64, DynamicHandler>,
     next_subscriber_identity: u64,
+}
+
+/// Identity equality: a slot's content is a live handle whose renders reach
+/// its subscribers directly, so the slot list only changes when a block
+/// gains or loses its handle.
+impl PartialEq for FlowBlockContent {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl FlowBlockContent {
@@ -1883,17 +1897,12 @@ mod tests {
             updates: SerialDispatch::new(),
         });
 
-        // `List::watch` invokes the watcher once with the current contents
-        // before it is registered; only post-registration changes dispatch the
+        // Registering delivers nothing; the first change dispatches the
         // nested update.
-        let initial_call = Cell::new(true);
         let nested = Cell::new(false);
         let _guard = slots.watch(.., {
             let runtime = Rc::clone(&runtime);
             move |_, _| {
-                if initial_call.replace(false) {
-                    return;
-                }
                 if !nested.replace(true) {
                     runtime.dispatch(FlowMarkdownUpdate::Source(
                         Str::from("# nested"),

@@ -21,23 +21,23 @@ fn spacer_intrinsic(spacer: &Spacer, env: &Environment) -> LayoutSize {
     }
 }
 
-impl HydroNativeView for Native<()> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<()> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::zero()
     }
 }
 
-impl HydroNativeView for Native<Spacer> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<Spacer> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         spacer_intrinsic(view.as_inner(), env)
     }
@@ -47,28 +47,28 @@ impl HydroNativeView for Native<Spacer> {
 // impl_widget_behavior dispatches every measure fn with a `&T` borrow,
 // including the Copy ones.
 #[allow(clippy::trivially_copy_pass_by_ref)]
-pub fn measure_empty_node(
+pub fn measure_empty_node<E: crate::text::TextEngine>(
     _empty: &(),
     _proposal: ProposalSize,
-    _state: &mut HydroState,
+    _state: &mut HydroState<E>,
     _env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     ViewDimensions::new(LayoutSize::zero())
 }
 
 /// Renders a retained empty (`()`) leaf every flush: a no-op (it draws nothing and
 /// has no accessibility), mirroring the dispatch path.
-pub const fn render_empty_node(
-    ctx: &mut WidgetRenderContext<'_>,
+pub const fn render_empty_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     empty: &Rc<RefCell<()>>,
     env: &Environment,
 ) {
     render_empty_parts(ctx, empty, env);
 }
 
-pub const fn render_empty_parts(
-    _ctx: &mut WidgetRenderContext<'_>,
+pub const fn render_empty_parts<E: crate::text::TextEngine>(
+    _ctx: &mut WidgetRenderContext<'_, E>,
     _empty: &Rc<RefCell<()>>,
     _env: &Environment,
 ) {
@@ -78,28 +78,28 @@ pub const fn render_empty_parts(
 /// stack's main axis whatever the proposal (the answer is the floor the
 /// stack keeps under compression, expansion happens at placement),
 /// matching the dispatch path.
-pub fn measure_spacer_node(
+pub fn measure_spacer_node<E: crate::text::TextEngine>(
     spacer: &Spacer,
     _proposal: ProposalSize,
-    _state: &mut HydroState,
+    _state: &mut HydroState<E>,
     env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     ViewDimensions::new(spacer_intrinsic(spacer, env))
 }
 
 /// Renders a retained spacer leaf every flush: a no-op (it draws nothing and has
 /// no accessibility), mirroring the dispatch path.
-pub const fn render_spacer_node(
-    ctx: &mut WidgetRenderContext<'_>,
+pub const fn render_spacer_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     spacer: &Rc<RefCell<Spacer>>,
     env: &Environment,
 ) {
     render_spacer_parts(ctx, spacer, env);
 }
 
-pub const fn render_spacer_parts(
-    _ctx: &mut WidgetRenderContext<'_>,
+pub const fn render_spacer_parts<E: crate::text::TextEngine>(
+    _ctx: &mut WidgetRenderContext<'_, E>,
     _spacer: &Rc<RefCell<Spacer>>,
     _env: &Environment,
 ) {

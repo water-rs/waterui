@@ -240,7 +240,9 @@ pub trait SceneBackend: 'static {
     /// # Errors
     ///
     /// [`ResourceError::TooLarge`] when the image exceeds
-    /// [`image_limits`](Self::image_limits), [`ResourceError::Image`] when
+    /// [`image_limits`](Self::image_limits),
+    /// [`ResourceError::OverBudget`] when it does not fit the image budget
+    /// beside the images already registered, [`ResourceError::Image`] when
     /// the target rejects the upload for another cause,
     /// [`ResourceError::Lost`] when the renderer is gone.
     fn register_rgba8(&self, data: ImageData<Rgba8>) -> Result<Handle<ImageId>, ResourceError>;
@@ -250,17 +252,21 @@ pub trait SceneBackend: 'static {
     /// # Errors
     ///
     /// [`ResourceError::TooLarge`] when the image exceeds
-    /// [`image_limits`](Self::image_limits), [`ResourceError::Image`] when
+    /// [`image_limits`](Self::image_limits),
+    /// [`ResourceError::OverBudget`] when it does not fit the image budget
+    /// beside the images already registered, [`ResourceError::Image`] when
     /// the target rejects the upload for another cause,
     /// [`ResourceError::Lost`] when the renderer is gone.
     fn register_rgba16f(&self, data: ImageData<Rgba16F>) -> Result<Handle<ImageId>, ResourceError>;
 
-    /// The largest image the target admits, in each dimension and in
-    /// total texels — the device's texture limit, or the per-image share
-    /// of the target's memory budget. Fixed for the target's life: an
-    /// image it does not admit fails at registration with
-    /// [`ResourceError::TooLarge`] instead of failing every render that
-    /// draws it.
+    /// The images the target admits: the largest image in each dimension
+    /// — the device's texture limit — and the image budget, the texels
+    /// every registered image holds together — the target's memory
+    /// budget. Fixed for the target's life: an image it does not admit
+    /// alone fails at registration with [`ResourceError::TooLarge`], and
+    /// one that does not fit beside the images already registered with
+    /// [`ResourceError::OverBudget`], instead of failing every render
+    /// that draws it.
     fn image_limits(&self) -> crate::draw::ImageLimits;
 }
 
@@ -398,15 +404,10 @@ where
         + cherenkov::ShaderPaintCapability,
 {
     fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError> {
-        match source.language {
+        let (source, language, animated) = source.into_parts();
+        match language {
             ShaderLanguage::Wgsl => {
-                let shader = Self::shader(
-                    self,
-                    cherenkov::ShaderSource {
-                        source: source.source,
-                        animated: source.animated,
-                    },
-                )?;
+                let shader = Self::shader(self, cherenkov::ShaderSource { source, animated })?;
                 Ok(Handle::new(shader))
             }
             language @ ShaderLanguage::Agsl => Err(ResourceError::Shader(format!(
@@ -894,8 +895,10 @@ impl Table {
 /// The calling thread's only waits are inside that validation — a font's
 /// parse, a shader's pre-validation, an image's check against
 /// [`image_limits`](Self::image_limits): an image the limits do not
-/// admit fails here with [`ResourceError::TooLarge`] before anything is
-/// queued, never as a failed render.
+/// admit fails here with [`ResourceError::TooLarge`], and one that does
+/// not fit the image budget beside the images already registered with
+/// [`ResourceError::OverBudget`], before anything is queued, never as a
+/// failed render.
 ///
 /// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
 pub struct SceneResources {
@@ -949,7 +952,7 @@ impl SceneResources {
     }
 
     /// The largest image the target admits, in each dimension and in
-    /// total texels — what it reports through
+    /// stored bytes — what it reports through
     /// [`SceneBackend::image_limits`]. Fixed for the target's life.
     /// [`ImageLimits::fit`](crate::draw::ImageLimits::fit) gives the
     /// largest admitted size at a kept aspect ratio, for content that
@@ -964,7 +967,7 @@ impl SceneResources {
     /// the source is hashed for [`intern`](Self::intern), so an oversized
     /// image is rejected without hashing it at all.
     fn admit_image<F: Format>(&self, data: &ImageData<F>) -> Result<(), ResourceError> {
-        self.image_limits().check(data.width(), data.height())
+        self.image_limits().check::<F>(data.width(), data.height())
     }
 
     /// The live registration of `bytes` in `shape`, or a new one from
@@ -1067,9 +1070,11 @@ impl SceneResources {
     /// # Errors
     ///
     /// [`ResourceError::TooLarge`] when the image exceeds the target's
-    /// image limits, [`ResourceError::Image`] when the target rejects the
-    /// upload for another cause, [`ResourceError::Lost`] when the render
-    /// thread is gone.
+    /// image limits, [`ResourceError::OverBudget`] when it does not fit the
+    /// image budget beside the images already registered,
+    /// [`ResourceError::Image`] when the target rejects the upload for
+    /// another cause, [`ResourceError::Lost`] when the render thread is
+    /// gone.
     pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<ImageId>, ResourceError> {
         self.admit_image(&data)?;
         self.intern(
@@ -1091,9 +1096,11 @@ impl SceneResources {
     /// # Errors
     ///
     /// [`ResourceError::TooLarge`] when the image exceeds the target's
-    /// image limits, [`ResourceError::Image`] when the target rejects the
-    /// upload for another cause, [`ResourceError::Lost`] when the render
-    /// thread is gone.
+    /// image limits, [`ResourceError::OverBudget`] when it does not fit the
+    /// image budget beside the images already registered,
+    /// [`ResourceError::Image`] when the target rejects the upload for
+    /// another cause, [`ResourceError::Lost`] when the render thread is
+    /// gone.
     pub fn image16f(&self, data: ImageData<Rgba16F>) -> Result<Registered<ImageId>, ResourceError> {
         self.admit_image(&data)?;
         self.intern(
@@ -1123,15 +1130,15 @@ impl SceneResources {
         let Some(backend) = self.table.shaders.clone() else {
             return Err(ResourceError::Unsupported("shader paint"));
         };
-        let bytes = match &source.source {
+        let bytes = match &source.source() {
             Cow::Borrowed(text) => SourceBytes::Static(text.as_bytes()),
             Cow::Owned(text) => SourceBytes::Shared(Arc::from(text.as_bytes())),
         };
         self.intern(
             |table| &table.shaders_cache,
             ShaderShape {
-                animated: source.animated,
-                language: source.language,
+                animated: source.get_animated(),
+                language: source.language(),
             },
             bytes,
             EntryKey::Shader,

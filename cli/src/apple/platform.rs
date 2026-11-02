@@ -20,6 +20,7 @@ use crate::{
     apple::app_bundle,
     apple::backend::AppleBackend,
     apple::dynamic_runtime,
+    apple::widgets,
     assets,
     build::{
         ArtifactLockScope, BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage,
@@ -27,11 +28,11 @@ use crate::{
     },
     device::Artifact,
     platform::{PackageOptions, TargetBackend, TargetPlatform},
-    project::{BrowserRuntimePlan, Project, ResolvedWebViewBackend},
+    project::{BrowserRuntimePlan, Project},
     utils::copy_file,
 };
 
-/// The generated FFI crate's application binary — the `[[bin]]` target
+/// The generated Apple companion's application binary — the `[[bin]]` target
 /// `src/bin/waterui-apple-main.rs` declares.
 ///
 /// Entry-owning Apple packaging installs it as the bundle executable; the
@@ -222,27 +223,26 @@ pub async fn stage_packaged_host_library(
 /// Returns an error when the project's enabled capabilities cannot be resolved.
 pub(crate) async fn apple_dependency_features(
     project: &Project,
-    browser_runtime: BrowserRuntimePlan,
+    browser_runtime: &BrowserRuntimePlan,
     target: &Triple,
 ) -> eyre::Result<Vec<String>> {
-    let build_manifest = project.ffi_crate_path().join("Cargo.toml");
+    let build_manifest = project.apple_crate_path().join("Cargo.toml");
     let mut features = Vec::new();
     features.extend(
-        crate::project_model::assets::capability_ffi_features(project, &build_manifest, target)
-            .await?,
+        crate::project_model::assets::capability_features(project, &build_manifest, target).await?,
     );
-    if browser_runtime.chromium {
+    if browser_runtime.chromium() {
         features.push("chromium".to_string());
     }
-    if matches!(browser_runtime.webview, Some(ResolvedWebViewBackend::Cef)) {
+    if browser_runtime.cef_webview() {
         features.push("webview-cef".to_string());
     }
     Ok(features)
 }
 
-pub(crate) async fn apple_build_features(
+async fn apple_build_features(
     project: &Project,
-    browser_runtime: BrowserRuntimePlan,
+    browser_runtime: &BrowserRuntimePlan,
     linkage: RustLinkage,
     target: &Triple,
 ) -> eyre::Result<Vec<String>> {
@@ -252,16 +252,66 @@ pub(crate) async fn apple_build_features(
         // The inspector is devtooling: development sessions get it through the
         // shared-runtime linkage while a packaged build leaves its server
         // stack out. The generated manifest forwards `inspector` only when
-        // the resolved `waterui-ffi` declares it, so the build can only name
-        // it when the scaffold declared it.
-        if crate::templates::generated_ffi_manifest_declares(
-            &project.ffi_crate_path().join("Cargo.toml"),
+        // the resolved `waterui-apple` declares it, so the build can only
+        // name it when the scaffold declared it.
+        if crate::templates::generated_manifest_declares(
+            &project.apple_crate_path().join("Cargo.toml"),
             "inspector",
         )? {
             features.push("inspector".to_string());
         }
     }
     Ok(features)
+}
+
+/// The cargo configuration every Apple build of a generated crate compiles
+/// under: the companion `water build`/`water run` link, and the in-process
+/// preview binary.
+///
+/// Everything that reaches a unit's fingerprint — features, the
+/// `CARGO_PROFILE_*` overrides of `options`' profile, the rustflags of its
+/// linkage, the environment build scripts read, the target directory — is
+/// decided here once. The generated crates share the target directory, so
+/// two builds that disagreed on any of it would recompile the shared runtime
+/// and its dependency graph on every switch between them. A caller adds only
+/// what is specific to its final artifact, as `cargo rustc` trailing
+/// arguments that leave dependency fingerprints alone.
+///
+/// # Errors
+///
+/// Returns an error when the browser runtime plan, the features, or the
+/// target directory cannot be resolved.
+pub(crate) async fn apple_rust_build(
+    project: &Project,
+    crate_path: PathBuf,
+    platform: TargetPlatform,
+    triple: Triple,
+    options: &BuildOptions,
+) -> eyre::Result<RustBuild> {
+    let browser_runtime_plan = project
+        .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
+        .await?;
+    let features =
+        apple_build_features(project, &browser_runtime_plan, options.linkage(), &triple).await?;
+    let target = triple.to_string();
+    let target_underscore = target.replace('-', "_");
+    let mut build = RustBuild::for_project(project, crate_path, triple)
+        .with_features(features)
+        .with_envs(options.cargo_envs().iter().cloned())
+        .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
+        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
+        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target}"), "1")
+        .with_target_dir(project.water_target_dir(options.linkage()).await?);
+    if options.linkage() == RustLinkage::SharedRuntime {
+        build = build.with_preferred_dynamic_linking();
+    }
+    if let Some(sccache_path) = options.sccache_path() {
+        build = build.with_sccache(sccache_path.to_path_buf());
+    }
+    if let Some(progress) = options.progress() {
+        build = build.with_progress(progress.clone());
+    }
+    Ok(build)
 }
 
 /// The triple an Apple build produces — the explicitly requested target,
@@ -308,64 +358,52 @@ pub(crate) async fn build_rust_lib_with_links(
     // Apple-invalid one before the Rust build pays for it. An embedded build
     // produces a library the host app embeds, so its identifier never reaches
     // an Apple manifest here.
-    if !project.manifest().package.embedded {
+    if !project.manifest().package().embedded() {
         let _ = project
             .bundle_identifier()
             .apple_bundle_identifier()
             .map_err(|error| eyre::eyre!("{error}"))?;
     }
-    let options = if project.manifest().package.embedded {
+    let options = if project.manifest().package().embedded() {
         options.with_static_runtime()
     } else {
         options
     };
 
-    // The ffi companion is the crate this builds — render it for the graph
+    // The Apple companion is the crate this builds — render it for the graph
     // its `cfg` tables serve before anything reads its manifest.
-    project.scaffold_ffi_companion().await?;
+    project.scaffold_apple_companion().await?;
 
     // Resolve fonts BEFORE cargo build - this ensures icons.json is present
     // for crates like fontawesome7 that need it during build.rs
-    let font_declarations =
-        crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = crate::assets::scan_fonts(
+        project,
+        &project.apple_crate_path().join("Cargo.toml"),
+        &[platform.font_platform()],
+    )
+    .await?;
     let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
-    let browser_runtime_plan = project
-        .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
-        .await?;
 
     let target = triple.to_string();
-    let target_underscore = target.replace('-', "_");
     let host_library = AppleHostLibrary::for_linkage(options.linkage());
-    let mut build = RustBuild::for_project(project, project.ffi_crate_path(), triple.clone())
-        .with_features(
-            apple_build_features(project, browser_runtime_plan, options.linkage(), &triple).await?,
-        )
-        .with_envs(options.cargo_envs().iter().cloned());
-    if let Some(sccache_path) = options.sccache_path() {
-        build = build.with_sccache(sccache_path.to_path_buf());
-    }
-    if let Some(progress) = options.progress() {
-        build = build.with_progress(progress.clone());
-    }
-    if project.manifest().package.embedded {
+    let mut build = apple_rust_build(
+        project,
+        project.apple_crate_path(),
+        platform,
+        triple.clone(),
+        &options,
+    )
+    .await?;
+    if project.manifest().package().embedded() {
         build = build.with_final_rustc_arg("--print=native-static-libs");
     }
-    build = build
-        .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
-        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
-        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target}"), "1");
-    if options.linkage() == RustLinkage::SharedRuntime {
-        build = build.with_preferred_dynamic_linking();
-    }
-
     let target_dir = project.water_target_dir(options.linkage()).await?;
-    let build = build.with_target_dir(target_dir.clone());
     let mut built_target = match host_library {
         // The shared runtime's lib build emits every crate type the
         // manifest declares — not a `--crate-type` selection, which
         // writes only the chosen artifact — because this build feeds
         // two consumers: the staged cdylib and the unhashed
-        // `deps/lib<ffi>.rlib` that `localize_archive_symbols` edits
+        // `deps/lib<companion>.rlib` that `localize_archive_symbols` edits
         // below and the entry binary's `--extern` resolves. Selecting
         // `cdylib` alone leaves the rlib unwritten on a clean target
         // dir; the dylib is picked out of Cargo's report by extension.
@@ -374,7 +412,7 @@ pub(crate) async fn build_rust_lib_with_links(
         // keeps its single-crate-type build and the `native_static_libraries`
         // call below stays in the same dependency mode — a union emit here
         // would leave the override compiling the whole graph a second time.
-        AppleHostLibrary::Archive if project.manifest().package.embedded => {
+        AppleHostLibrary::Archive if project.manifest().package().embedded() => {
             build
                 .clone()
                 .with_crate_type_override(host_library.crate_type())
@@ -466,7 +504,7 @@ pub(crate) async fn build_rust_lib_with_links(
         dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
     }
 
-    if project.manifest().package.embedded {
+    if project.manifest().package().embedded() {
         let links = build
             .clone()
             .with_crate_type_override("staticlib")
@@ -481,7 +519,7 @@ pub(crate) async fn build_rust_lib_with_links(
     if host_library == AppleHostLibrary::Dynamic {
         let ffi_rlib = deps_dir.join(format!(
             "lib{}.rlib",
-            project.ffi_crate_name().as_str().replace('-', "_")
+            project.apple_crate_name().as_str().replace('-', "_")
         ));
         // The rlib's codegen units also export `rust_eh_personality`. The
         // copy lives in the build dir and is only consumed by this link, so
@@ -498,10 +536,10 @@ pub(crate) async fn build_rust_lib_with_links(
     // VideoToolbox serves the media codec chain (`waterkit-codec`'s hardware
     // decode); an app without the media capability never loads it, so it
     // joins the link line only when the resolved graph says so — the same
-    // predicate that selects the `media` FFI surface.
+    // predicate that selects the `media` capability surface.
     if crate::project_model::assets::capability_enabled(
         project,
-        &project.ffi_crate_path().join("Cargo.toml"),
+        &project.apple_crate_path().join("Cargo.toml"),
         "media",
         &triple,
     )
@@ -544,7 +582,7 @@ pub(crate) async fn build_rust_lib_with_links(
             .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
             .build_binary(
                 &crate::project_model::project_types::cef_helper_binary_name(
-                    project.ffi_crate_name().as_str(),
+                    project.apple_crate_name().as_str(),
                 ),
                 options.is_release(),
             )
@@ -566,75 +604,106 @@ fn link_search_flag(dir: &OsStr) -> String {
 /// The archive keeps every member — only the symbol's visibility changes —
 /// so the symbols still resolve for the member's own internal references
 /// while stopping `ld`'s duplicate-symbol diagnostics.
+///
+/// The members are read in-process; `ld -r` and `ar r` run only for a
+/// member that still exports one of the symbols, so an archive localized
+/// by an earlier build — Cargo did not rewrite it — costs one read.
 #[cfg(target_os = "macos")]
 async fn localize_archive_symbols(
     host: &crate::toolchain::Host,
     archive: &Path,
     symbols: &[&str],
 ) -> eyre::Result<()> {
+    let path = archive.to_path_buf();
+    let names = symbols
+        .iter()
+        .map(|symbol| format!("_{symbol}"))
+        .collect::<Vec<_>>();
+    let exporting = smol::unblock(move || archive_members_exporting(&path, &names)).await?;
+    if exporting.is_empty() {
+        return Ok(());
+    }
     let scratch = archive.with_extension("localize-work");
     fs::create_dir_all(&scratch).await?;
-    let members = host
-        .run(
-            "ar",
-            ["t".into(), archive.as_os_str().to_owned()].map(OsString::from),
-        )
-        .await?;
-    for member in members
-        .lines()
-        .map(str::trim)
-        .filter(|member| !member.is_empty() && *member != "__.SYMDEF")
-    {
-        let member_path = scratch.join(member);
-        host.run(
-            "sh",
-            [
-                OsString::from("-c"),
-                OsString::from(format!(
-                    "ar p '{}' '{}' > '{}'",
-                    archive.display(),
-                    member,
-                    member_path.display()
-                )),
-            ],
-        )
-        .await?;
-        let nm = host
-            .run("nm", [member_path.as_os_str().to_owned()])
-            .await
-            .unwrap_or_default();
-        let mut args = vec![member_path.as_os_str().to_owned()];
-        let mut changed = false;
-        for symbol in symbols {
-            if nm
-                .lines()
-                .any(|line| line.contains(&format!(" T _{symbol}")))
-            {
-                args.push("-unexported_symbol".into());
-                args.push(format!("_{symbol}").into());
-                changed = true;
-            }
-        }
-        if !changed {
-            continue;
+    for member in exporting {
+        let member_path = scratch.join(&member.name);
+        fs::write(&member_path, &member.data).await?;
+        let mut args = vec![OsString::from("-r"), member_path.clone().into_os_string()];
+        for symbol in member.symbols {
+            args.push("-unexported_symbol".into());
+            args.push(symbol.into());
         }
         args.push("-o".into());
-        args.push(member_path.as_os_str().to_owned());
-        host.run("ld", std::iter::once(OsString::from("-r")).chain(args))
-            .await?;
+        args.push(member_path.clone().into_os_string());
+        host.run("ld", args).await?;
         host.run(
             "ar",
             [
-                "r".into(),
+                OsString::from("r"),
                 archive.as_os_str().to_owned(),
-                member_path.as_os_str().to_owned(),
-            ]
-            .map(OsString::from),
+                member_path.into_os_string(),
+            ],
         )
         .await?;
     }
     let _ = fs::remove_dir_all(&scratch).await;
     Ok(())
+}
+
+/// An archive member that defines some of the wanted symbols as global
+/// text — `nm`'s `T`.
+#[cfg(target_os = "macos")]
+struct ExportingMember {
+    name: String,
+    data: Vec<u8>,
+    symbols: Vec<String>,
+}
+
+/// The members of the archive at `archive` that define one of `symbols`
+/// (Mach-O names, underscore included) as an external text symbol. A
+/// member that is not an object file — `lib.rmeta` — defines nothing.
+#[cfg(target_os = "macos")]
+fn archive_members_exporting(
+    archive: &Path,
+    symbols: &[String],
+) -> eyre::Result<Vec<ExportingMember>> {
+    use object::{Object as _, ObjectSymbol as _};
+
+    let data =
+        std::fs::read(archive).wrap_err_with(|| format!("cannot read {}", archive.display()))?;
+    let parsed = object::read::archive::ArchiveFile::parse(data.as_slice())
+        .wrap_err_with(|| format!("{} is not an archive", archive.display()))?;
+    let mut exporting = Vec::new();
+    for member in parsed.members() {
+        let member = member.wrap_err_with(|| format!("{} is corrupt", archive.display()))?;
+        let bytes = member
+            .data(data.as_slice())
+            .wrap_err_with(|| format!("{} is corrupt", archive.display()))?;
+        let Ok(file) = object::File::parse(bytes) else {
+            continue;
+        };
+        let defined = file
+            .symbols()
+            .filter(|symbol| {
+                symbol.is_global()
+                    && symbol.is_definition()
+                    && symbol.kind() == object::SymbolKind::Text
+            })
+            .filter_map(|symbol| symbol.name().ok())
+            .filter(|name| symbols.iter().any(|symbol| symbol == name))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if !defined.is_empty() {
+            exporting.push(ExportingMember {
+                name: String::from_utf8(member.name().to_vec()).wrap_err_with(|| {
+                    format!("{} names a member in non-UTF-8", archive.display())
+                })?,
+                data: bytes.to_vec(),
+                symbols: defined,
+            });
+        }
+    }
+    Ok(exporting)
 }
 
 /// The framework metadata key for each Apple platform family.
@@ -651,7 +720,9 @@ const fn apple_deployment_platform(platform: TargetPlatform) -> Option<&'static 
     }
 }
 
-/// Resolve the deployment-target environment variable an Apple build must carry.
+/// Resolve the deployment-target environment variable an Apple build must
+/// carry, and the effective target it is set to: the project's
+/// `[apple.deployment-targets]` declaration, else the framework's floor.
 ///
 /// # Errors
 ///
@@ -667,10 +738,11 @@ pub async fn apple_deployment_target(
         eyre::eyre!("Platform {platform:?} does not have an Apple deployment target")
     })?;
     let target = project
-        .resolved_framework()
-        .await?
-        .apple_deployment_target(key)?;
-    Ok((environment, target.to_string()))
+        .manifest()
+        .apple()
+        .deployment_targets()
+        .effective(project.resolved_framework().await?, key)?;
+    Ok((environment, target))
 }
 
 /// The `*_DEPLOYMENT_TARGET` environment variable a Cargo compilation for
@@ -683,10 +755,14 @@ pub async fn apple_deployment_target(
 /// Mac Catalyst keys on the iOS variable: the build scripts a macabi
 /// compilation runs read `IPHONEOS_DEPLOYMENT_TARGET`, and no consumer in
 /// the graph reads `MACOSX_DEPLOYMENT_TARGET` for it.
-pub(crate) fn apple_deployment_target_env<'a>(
-    framework: &'a crate::framework::ResolvedFramework,
+///
+/// The value is the effective target: what `declared` raises above the
+/// framework's floor.
+pub(crate) fn apple_deployment_target_env(
+    framework: &crate::framework::ResolvedFramework,
+    declared: &crate::apple_targets::AppleDeploymentTargets,
     triple: &target_lexicon::Triple,
-) -> eyre::Result<Option<(&'static str, &'a str)>> {
+) -> eyre::Result<Option<(&'static str, String)>> {
     use target_lexicon::{Environment, OperatingSystem};
     let platform = match triple.operating_system {
         OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => TargetPlatform::MacOS,
@@ -703,7 +779,8 @@ pub(crate) fn apple_deployment_target_env<'a>(
         platform
             .deployment_target_setting()
             .expect("Apple platform"),
-        framework.apple_deployment_target(
+        declared.effective(
+            framework,
             apple_deployment_platform(platform).expect("Apple platform"),
         )?,
     )))
@@ -712,33 +789,6 @@ pub(crate) fn apple_deployment_target_env<'a>(
 // ============================================================================
 // Validation
 // ============================================================================
-
-/// The checkout the project's `waterui-apple` dependency compiles from —
-/// the source directory `cargo metadata` resolved for the ffi crate's
-/// dependency, whether it names the canonical `waterui_path/backends/apple`
-/// checkout or the framework repository's member at the selected revision.
-///
-/// # Errors
-/// Returns an error when the backend source cannot be located.
-pub(crate) async fn apple_backend_source_root(project: &Project) -> eyre::Result<PathBuf> {
-    let mut command = cargo_metadata::MetadataCommand::new();
-    command.manifest_path(project.ffi_crate_path().join("Cargo.toml"));
-    let metadata = project
-        .host()
-        .cargo_metadata(&command)
-        .await
-        .wrap_err("cargo metadata failed to resolve the Apple backend source")?;
-    let package = metadata
-        .packages
-        .iter()
-        .find(|package| package.name.as_str() == "waterui-apple")
-        .ok_or_else(|| eyre::eyre!("the ffi crate does not depend on a `waterui-apple` package"))?;
-    package
-        .manifest_path
-        .parent()
-        .map(|directory| directory.as_std_path().to_path_buf())
-        .ok_or_else(|| eyre::eyre!("`waterui-apple` manifest path has no parent"))
-}
 
 // ============================================================================
 // Clean
@@ -772,7 +822,7 @@ pub async fn clean_apple(project: &Project) -> eyre::Result<()> {
 
 /// Package an Apple app in entry-owning mode.
 ///
-/// The `.app` bundle is assembled directly — the ffi crate's
+/// The `.app` bundle is assembled directly — the companion crate's
 /// `waterui-apple-main` binary as the executable, resources copied in,
 /// `actool` compiling the asset catalog, `codesign` signing — with no Xcode
 /// project anywhere in the generated tree.
@@ -801,9 +851,9 @@ pub async fn package_apple(
         .apple_bundle_identifier()
         .map_err(|error| eyre::eyre!("{error}"))?;
     let triple = platform.triple();
-    // The ffi companion's manifest feeds the declaration scan below —
+    // The Apple companion's manifest feeds the declaration scan below —
     // render it before it is read.
-    project.scaffold_ffi_companion().await?;
+    project.scaffold_apple_companion().await?;
     let browser_runtime_plan = project
         .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
         .await?;
@@ -812,11 +862,11 @@ pub async fn package_apple(
     // bundle work.
     let mut apple_declarations = crate::assets::scan_apple_declarations(
         project,
-        &project.ffi_crate_path().join("Cargo.toml"),
-        &apple_dependency_features(project, browser_runtime_plan, &triple).await?,
+        &project.apple_crate_path().join("Cargo.toml"),
+        &apple_dependency_features(project, &browser_runtime_plan, &triple).await?,
     )
     .await?;
-    apple_declarations.supply_app_values(&project.manifest().app_values)?;
+    apple_declarations.supply_app_values(project.manifest().app_values())?;
 
     let project_path = project.backend_path::<AppleBackend>();
 
@@ -836,8 +886,9 @@ pub async fn package_apple(
     let staging_dir = project_path.join("DerivedData/AssetStaging");
     copy_assets_and_fonts(
         project,
+        platform,
         &staging_dir,
-        &built.app_symbols()?,
+        &built.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;
@@ -896,18 +947,16 @@ pub async fn package_apple(
         &product_name,
         &staging_dir,
         &info_plist,
-        &app_bundle::AppleSdkSpec {
-            sdk_name,
-            deployment_target: &deployment_target,
-        },
+        &app_bundle::AppleSdkSpec::new(sdk_name, &deployment_target),
     )
     .await?;
 
     // The shared-runtime development linkage ships `libwaterui_dylib` and the
     // Rust standard library inside the bundle's Frameworks directory; a
     // statically linked package carries neither.
-    let shared_runtime = if options.uses_shared_rust_runtime() {
+    let shared_runtime = if options.uses_shared_rust_runtime(&triple) {
         let bin_built = BuiltTarget {
+            features: built.features.clone(),
             profile_dir: built.profile_dir.clone(),
             artifact: layout.executable_file(&product_name),
             executable: Some(SharedExecutable::unlocked(
@@ -919,9 +968,9 @@ pub async fn package_apple(
             cef_helper: None,
         };
         let libraries = RustDynamicLibraries::resolve(&bin_built, &triple, project).await?;
-        libraries.stage(&layout.frameworks_dir).await?;
+        libraries.stage(layout.frameworks_dir()).await?;
         let staged_runtime = libraries
-            .stage_apple_canonical(&layout.frameworks_dir)
+            .stage_apple_canonical(layout.frameworks_dir())
             .await?;
         // Redirect the executable's recorded runtime dependency to the
         // canonical `@rpath` name of the staged Rust runtime.
@@ -934,7 +983,7 @@ pub async fn package_apple(
         dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
         Some(libraries)
     } else {
-        RustDynamicLibraries::remove_staged(&layout.frameworks_dir, &triple).await?;
+        RustDynamicLibraries::remove_staged(layout.frameworks_dir(), &triple).await?;
         None
     };
     let _ = shared_runtime;
@@ -964,6 +1013,24 @@ pub async fn package_apple(
         }
     }
 
+    // `#[widget]` declarations the app artifact carries compile into a
+    // `WidgetKit` extension under `PlugIns/` — after the shared-runtime
+    // libraries are staged (the extension links `libwaterui_app.dylib` in a
+    // development build), before the app's signature seals the bundle.
+    widgets::assemble_widget_extensions(
+        project,
+        platform,
+        &triple,
+        &layout,
+        built,
+        &options,
+        project_path.as_path(),
+        &deployment_target,
+        &bundle_id,
+        &product_name,
+    )
+    .await?;
+
     app_bundle::sign_apple_app(
         &layout,
         platform,
@@ -988,6 +1055,7 @@ pub async fn package_apple(
 /// `waterui_meta_bundle_*` statics declare the asset mounts.
 async fn copy_assets_and_fonts(
     project: &Project,
+    platform: TargetPlatform,
     dest_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
@@ -997,8 +1065,12 @@ async fn copy_assets_and_fonts(
         assets::stage_project_assets_for_apple(project, dest_dir, symbols, dev_server).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &project.apple_crate_path().join("Cargo.toml"),
+        &[platform.font_platform()],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

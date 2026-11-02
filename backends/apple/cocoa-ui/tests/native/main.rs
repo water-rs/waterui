@@ -19,12 +19,39 @@ mod uikit;
 
 use libtest_mimic::{Arguments, Trial};
 
+// On Mac Catalyst the binary is spawned without a bundle: its embedded
+// `Info.plist` declares `LSUIElement`, so the process arrives at the
+// `Prohibited` activation policy and `UIKit`'s Mac backgrounding
+// controller leaves the cases' scene-less windows alone. The iOS targets
+// spawn with no `Info.plist` and keep it that way, so the section is
+// emitted on Catalyst only.
+#[cfg(all(target_os = "ios", target_abi = "macabi"))]
+#[used]
+#[unsafe(link_section = "__TEXT,__info_plist")]
+static NATIVE_SPAWN_INFO_PLIST: [u8; include_bytes!("native.plist").len()] =
+    *include_bytes!("native.plist");
+
 fn main() {
     let mut arguments = Arguments::from_args();
     // The main thread is the point of this harness: with a single runner
     // `libtest-mimic` executes every trial on the calling thread — `main`'s
     // — where `pthread_main` answers true.
     arguments.test_threads = Some(1);
+    // The precondition the windowed presenter and capture cases rely on:
+    // an awake display — a sleeping one presents nothing (#3529).
+    // `--list` mounts nothing and skips it.
+    #[cfg(target_os = "macos")]
+    let _display_awake = (!arguments.list).then(cocoa_ui::native_test::DisplayAwake::hold);
+    // A Catalyst spawn has no `UIApplication`, no scene and no
+    // `NSApplication`. A scene-less `UIWindow`'s unassociated scene reads
+    // the `AppKit` delegate the moment the window is created, and its
+    // `UINSApplicationDelegate` raises when no `NSApplication` exists —
+    // so the process's `AppKit` side comes up at the `Prohibited` policy
+    // before any case mounts a window. `--list` mounts nothing and skips
+    // it.
+    #[cfg(all(target_os = "ios", target_abi = "macabi"))]
+    let _background_application = (!arguments.list)
+        .then(|| cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(harness::marker()));
     libtest_mimic::run(&arguments, trials()).exit();
 }
 

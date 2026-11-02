@@ -8,6 +8,7 @@ use cherenkov::{
 };
 use cherenkov::{Engine, EngineError, Offscreen, OffscreenFormat};
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_close;
 
 const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
 const BLUE: WorkingColor = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
@@ -29,17 +30,19 @@ fn engine() -> Option<Engine<Gpu>> {
 }
 
 split_fn! {
-/// Renders a red backdrop rect and a blue blend-layer rect; returns the
-/// overlap pixel at (24,32) — inside the backdrop only for x < 32 — plus
-/// the pass count.
+/// Renders a backdrop rect and a blend-layer rect in the given colours;
+/// returns the overlap pixel at (24,32) — inside the backdrop only for
+/// x < 32 — plus the pass count.
 fn render_blend(
     engine: &Engine<Gpu>,
     mode: BlendMode,
+    backdrop: WorkingColor,
+    source: WorkingColor,
 ) -> Result<([f32; 4], u32), Box<dyn std::error::Error>> {
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
-            c.fill(Rect::new(0., 0., 32., 64.), RED);
+            c.fill(Rect::new(0., 0., 32., 64.), backdrop);
         }));
     });
     let layer = surface.layer();
@@ -49,7 +52,7 @@ fn render_blend(
     });
     surface.update(|tx| {
         tx[&layer].content(surface.record(|c| {
-            c.fill(Rect::new(16., 0., 64., 64.), BLUE);
+            c.fill(Rect::new(16., 0., 64., 64.), source);
         }));
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
@@ -66,7 +69,7 @@ fn multiply_blends_the_overlap() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let (px, passes) = wait!(render_blend(&engine, BlendMode::Multiply))?;
+    let (px, passes) = wait!(render_blend(&engine, BlendMode::Multiply, RED, BLUE))?;
     // Opaque red × opaque blue = opaque black.
     for c in &px[..3] {
         assert!(c.abs() < 1e-2, "multiply overlap: {px:?}");
@@ -82,7 +85,7 @@ fn screen_blends_the_overlap() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let (px, _) = wait!(render_blend(&engine, BlendMode::Screen))?;
+    let (px, _) = wait!(render_blend(&engine, BlendMode::Screen, RED, BLUE))?;
     // screen(red, blue) = 1-(1-r)(1-b) per channel → (1, 0, 1) magenta.
     let [r, g, b, a] = px;
     assert!(
@@ -100,7 +103,7 @@ fn dest_out_knocks_out_the_overlap() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let (overlap, _) = wait!(render_blend(&engine, BlendMode::DestOut))?;
+    let (overlap, _) = wait!(render_blend(&engine, BlendMode::DestOut, RED, BLUE))?;
     for c in overlap {
         assert!(
             c.abs() < 1e-2,
@@ -113,18 +116,149 @@ fn dest_out_knocks_out_the_overlap() -> Result<(), Box<dyn std::error::Error>> {
 
 split_test! {
 /// Hue sets the backdrop's luminance on the source's hue and saturation:
-/// `SetLum(blue, Lum(red))` = (0.19, 0.19, 1) — the non-separable formula,
-/// not a channel-wise blend.
+/// `SetLum(blue, Lum(red))` = (19/89, 19/89, 1) — `ClipColor`'s high clip
+/// at x = 1.19, l = 0.3 pulls the low channels to 0.3 − 0.11·0.7/0.89.
+/// The non-separable formula, not a channel-wise blend.
 fn hue_is_non_separable() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let (px, _) = wait!(render_blend(&engine, BlendMode::Hue))?;
+    let (px, _) = wait!(render_blend(&engine, BlendMode::Hue, RED, BLUE))?;
     let [r, g, b, _a] = px;
+    let want = 19.0 / 89.0;
     assert!(
-        (r - 0.19).abs() < 5e-2 && (g - 0.19).abs() < 5e-2 && (b - 1.0).abs() < 5e-2,
+        (r - want).abs() < 5e-2 && (g - want).abs() < 5e-2 && (b - 1.0).abs() < 5e-2,
         "hue overlap should be SetLum(blue, 0.3): {px:?}"
     );
+    Ok(())
+}
+}
+
+const GREY4: WorkingColor = WorkingColor::new([4.0, 4.0, 4.0, 1.0]);
+const GREY2: WorkingColor = WorkingColor::new([2.0, 2.0, 2.0, 1.0]);
+const NEG2: WorkingColor = WorkingColor::new([-2.0, -2.0, -2.0, 1.0]);
+
+split_test! {
+/// #2908: the non-separable modes evaluate on the affine domain covering
+/// both straight colours — grey 4 under grey 2 keeps the backdrop
+/// luminance (Hue/Saturation/Color → 4), Luminosity takes the source's
+/// (→ 2), and identical out-of-range greys pass through untouched instead
+/// of clamping into SDR.
+fn nonseparable_modes_blend_in_the_extended_domain() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    for (mode, want) in [
+        (BlendMode::Hue, 4.0_f32),
+        (BlendMode::Saturation, 4.0),
+        (BlendMode::Color, 4.0),
+        (BlendMode::Luminosity, 2.0),
+    ] {
+        let (px, _) = wait!(render_blend(&engine, mode, GREY4, GREY2))?;
+        for c in &px[..3] {
+            assert!((c - want).abs() < 0.02, "{mode:?} grey4 x grey2: {px:?}");
+        }
+        assert!((px[3] - 1.0).abs() < 0.02, "{mode:?} alpha: {px:?}");
+    }
+    for mode in [
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
+    ] {
+        for g in [GREY4, NEG2] {
+            let (px, _) = wait!(render_blend(&engine, mode, g, g))?;
+            for c in &px[..3] {
+                assert!(
+                    c.is_finite() && (c - g.components[0]).abs() < 0.02,
+                    "{mode:?} identical {g:?}: {px:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// #2908's trigger shape on the GPU path: a non-separable blended layer
+/// under a clip compositing HDR content — the corpus
+/// `blend-{color,hue,saturation}-clip-hdr` scenes. Finite output is not
+/// enough by itself (the GPU rendered finite even with the SDR-domain
+/// bug), so the clipped region's HDR greys must also keep the backdrop
+/// luminance.
+fn nonseparable_blends_under_a_clip_on_hdr_stay_finite() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::RoundedRect;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    for (mode, want) in [
+        (BlendMode::Hue, 4.0_f32),
+        (BlendMode::Saturation, 4.0),
+        (BlendMode::Color, 4.0),
+        (BlendMode::Luminosity, 2.0),
+    ] {
+        let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), GREY4);
+            }));
+        });
+        let layer = surface.layer();
+        surface.update(|tx| {
+            tx[&layer].blend(mode);
+            tx[&layer].clip(RoundedRect::new(4.0, 4.0, 28.0, 28.0, 4.0));
+            tx[surface.root()].push(&layer);
+        });
+        surface.update(|tx| {
+            tx[&layer].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), GREY2);
+            }));
+        });
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        let pixels = wait!(surface.readback())?.pixels;
+        for (i, px) in pixels.iter().enumerate() {
+            assert!(
+                px.iter().all(|c| c.is_finite()),
+                "{mode:?} wrote non-finite pixel {i}: {px:?}"
+            );
+        }
+        // A pixel inside the clip kept the blend semantics; a pixel
+        // outside it kept the backdrop.
+        let inside = pixels[16 * 32 + 16];
+        let outside = pixels[2 * 32 + 2];
+        for c in &inside[..3] {
+            assert!((c - want).abs() < 0.02, "{mode:?} clipped inside: {inside:?}");
+        }
+        for c in &outside[..3] {
+            assert!((c - 4.0).abs() < 0.02, "{mode:?} outside clip: {outside:?}");
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// A half-alpha extended-range source still composites source-over on the
+/// un-normalized straight values: H/S/C keep `Cr` at backdrop grey 4
+/// (`0.5·4 + 0.5·4 = 4`), Luminosity mixes to `0.5·2 + 0.5·4 = 3`.
+fn nonseparable_hdr_half_alpha_uses_source_over() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    for (mode, want) in [
+        (BlendMode::Hue, 4.0_f32),
+        (BlendMode::Saturation, 4.0),
+        (BlendMode::Color, 4.0),
+        (BlendMode::Luminosity, 3.0),
+    ] {
+        let (px, _) = wait!(render_blend(&engine, mode, GREY4, GREY2.with_alpha(0.5)))?;
+        for c in &px[..3] {
+            assert!(
+                (c - want).abs() < 0.02,
+                "{mode:?} half-alpha grey2 over grey4: {px:?}"
+            );
+        }
+        assert!((px[3] - 1.0).abs() < 0.02, "{mode:?} alpha: {px:?}");
+    }
     Ok(())
 }
 }
@@ -162,8 +296,9 @@ fn extend_none_is_transparent_outside_the_range() -> Result<(), Box<dyn std::err
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let rb = wait!(surface.readback())?;
     let px = |x: u32, y: u32| rb.pixels[(y * rb.width + x) as usize];
-    assert_eq!(px(4, 32), [0.0; 4], "left of range must be clear");
-    assert_eq!(px(60, 32), [0.0; 4], "right of range must be clear");
+    // Outside the gradient's range nothing is drawn: the cleared zero.
+    assert_close(&px(4, 32), &[0.0; 4]);
+    assert_close(&px(60, 32), &[0.0; 4]);
     assert!(px(32, 32)[3] > 0.99, "mid-range must be opaque");
     Ok(())
 }
@@ -240,8 +375,9 @@ fn blended_descendant_isolates_its_normal_group() -> Result<(), Box<dyn std::err
     // outer group's offscreen, which then composites `Normal` over the red
     // background. Without outer isolation the `Clear` reached the scene
     // framebuffer and every pixel came out transparent.
-    for (i, px) in rb.pixels.iter().enumerate() {
-        assert_eq!(*px, [1.0, 0.0, 0.0, 1.0], "pixel {i}");
+    for px in &rb.pixels {
+        // The isolated `Clear` leaves the opaque red background unchanged.
+        assert_close(px, &[1.0, 0.0, 0.0, 1.0]);
     }
     Ok(())
 }
@@ -274,14 +410,8 @@ fn tree_layer_isolates_blended_child_layer() -> Result<(), Box<dyn std::error::E
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let pixels = wait!(surface.readback())?.pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    assert_close(&pixel(3, 3), &[1.0_f32, 0.0, 0.0, 1.0]);
     Ok(())
 }
 }
@@ -309,14 +439,8 @@ fn tree_layer_isolates_blended_content_group() -> Result<(), Box<dyn std::error:
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let pixels = wait!(surface.readback())?.pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    assert_close(&pixel(3, 3), &[1.0_f32, 0.0, 0.0, 1.0]);
     Ok(())
 }
 }
@@ -353,14 +477,8 @@ fn nested_tree_layers_isolate_at_the_blending_parent() -> Result<(), Box<dyn std
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let pixels = wait!(surface.readback())?.pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 1.0, 0.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 1.0, 0.0, 1.0]);
+    assert_close(&pixel(3, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
     Ok(())
 }
 }

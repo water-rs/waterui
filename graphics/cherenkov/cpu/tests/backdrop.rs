@@ -1,18 +1,116 @@
 //! Backdrop groups on the CPU backend: captures scheduled into bands.
 
 #![cfg(not(target_arch = "wasm32"))]
+use std::ops::Range;
 use std::sync::mpsc;
 
 use cherenkov::kurbo::{Circle, Ellipse, Rect, RoundedRect};
 use cherenkov::{BackdropOuter, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor};
 use cherenkov_cpu::{BandPixels, Bands, Raster, RasterConfig};
+use cherenkov_oracle::F32Image;
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
+
+#[path = "support/visual.rs"]
+mod visual;
 
 fn engine() -> Engine<Raster> {
     Engine::<Raster>::new(RasterConfig::default()).expect("engine")
 }
 
+#[test]
+fn reduced_capture_repaints_members_when_only_sampling_apron_changes() {
+    let engine = engine();
+    let size = (128, 512);
+    let target = || Offscreen::new(size, OffscreenFormat::LinearF32);
+    let build = |surface: &cherenkov::Surface<Raster>| {
+        let group = surface.backdrop_group(
+            filtrate::filters::GaussianBlur::new(3.0f32),
+            cherenkov::CaptureScale::new(0.5).unwrap(),
+        );
+        let patch = surface.layer();
+        let glass = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()]
+                .push(&patch)
+                .push(&glass)
+                .content(surface.record(|r| {
+                    r.fill(
+                        Rect::new(0.0, 0.0, 128.0, 512.0),
+                        WorkingColor::new([0.1, 0.2, 0.3, 1.0]),
+                    );
+                }));
+            tx[&glass]
+                .clip(Rect::new(24.0, 64.0, 88.0, 96.0))
+                .backdrop(group.sample());
+        });
+        (patch, glass, group)
+    };
+    let surface = engine.surface(target(), || {}).unwrap();
+    let (patch, _glass, _group) = build(&surface);
+    for (step, (y, color)) in [
+        (Some(58.0), WorkingColor::new([3.0, 0.1, 0.0, 1.0])),
+        (Some(58.0), WorkingColor::new([0.1, 2.0, 0.0, 1.0])),
+        (Some(400.0), WorkingColor::WHITE),
+        (None, WorkingColor::WHITE),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let paint = |r: &mut cherenkov::Recorder| {
+            if let Some(y) = y {
+                r.fill(Rect::new(32.0, y, 80.0, y + 4.0), color);
+            }
+        };
+        surface.update(|tx| {
+            tx[&patch].content(surface.record(paint));
+        });
+        engine.render(FrameTime::now()).unwrap();
+        if step > 0 {
+            let passes = engine.stats().passes;
+            assert!(passes > 0 && passes < 16, "frame {step}: {passes} bands");
+        }
+        let actual = surface.readback().unwrap();
+        let reference = engine.surface(target(), || {}).unwrap();
+        let (reference_patch, _reference_glass, _reference_group) = build(&reference);
+        reference.update(|tx| {
+            tx[&reference_patch].content(reference.record(paint));
+        });
+        engine.render(FrameTime::now()).unwrap();
+        let expected = reference.readback().unwrap();
+        let actual = F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: actual.pixels,
+        };
+        let expected = F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: expected.pixels,
+        };
+        actual
+            .write_png(
+                &std::env::temp_dir().join(format!("cherenkov-cpu-capture-damage-{step}.png")),
+            )
+            .unwrap();
+        assert_images_match(&expected, &actual);
+    }
+}
+
 fn pixel(readback: &cherenkov::Readback, x: usize, y: usize) -> [f32; 4] {
     readback.pixels[y * readback.width as usize + x]
+}
+
+/// The `x` by `y` window of `readback` as an image.
+fn crop(readback: &cherenkov::Readback, x: Range<usize>, y: Range<usize>) -> F32Image {
+    let width = readback.width as usize;
+    F32Image {
+        width: u32::try_from(x.len()).expect("window width fits u32"),
+        height: u32::try_from(y.len()).expect("window height fits u32"),
+        pixels: y
+            .flat_map(|row| x.clone().map(move |col| (col, row)))
+            .map(|(col, row)| readback.pixels[row * width + col])
+            .collect(),
+    }
 }
 
 fn assert_pixel(actual: [f32; 4], expected: [f32; 4], tolerance: f32) {
@@ -278,7 +376,7 @@ fn member_sample_is_attenuated_by_layer_opacity() {
             [0.0, 0.0, 1.0, 1.0]
         }
     };
-    let faded = |full: &cherenkov::Readback, x: usize, y: usize| {
+    let faded = |full: &cherenkov::Readback, x: usize, y: usize| -> [f32; 4] {
         std::array::from_fn(|c| 0.5f32.mul_add(pixel(full, x, y)[c], 0.5 * dst(x)[c]))
     };
     let normal = cherenkov::BlendMode::Normal;
@@ -287,10 +385,10 @@ fn member_sample_is_attenuated_by_layer_opacity() {
     // Sample-only over red, content-covered at the step, covered
     // content, and the clip's corner edge.
     for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
-        assert_pixel(pixel(&half, x, y), faded(&full, x, y), 1e-5);
+        assert_close(&pixel(&half, x, y), &faded(&full, x, y));
     }
     // Outside the clip the surface is untouched.
-    assert_pixel(pixel(&half, 1, 16), [1.0, 0.0, 0.0, 1.0], 1e-5);
+    assert_close(&pixel(&half, 1, 16), &[1.0, 0.0, 0.0, 1.0]);
     // A filtered member at the same pixels: the sample is attenuated —
     // never swapped — and fades with the member's content, so the rule
     // holds at covered pixels too; the member scope compositing sample
@@ -299,11 +397,7 @@ fn member_sample_is_attenuated_by_layer_opacity() {
     let filtered_full = render(1.0, Some(SWAP), normal);
     let filtered_half = render(0.5, Some(SWAP), normal);
     for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
-        assert_pixel(
-            pixel(&filtered_half, x, y),
-            faded(&filtered_full, x, y),
-            1e-5,
-        );
+        assert_close(&pixel(&filtered_half, x, y), &faded(&filtered_full, x, y));
     }
     // An identity-filtered member equals the unfiltered member: the
     // member scope's nested scopes change nothing — on the clip's rim,
@@ -313,8 +407,8 @@ fn member_sample_is_attenuated_by_layer_opacity() {
     let identity_full = render(1.0, Some(IDENTITY), normal);
     let identity_half = render(0.5, Some(IDENTITY), normal);
     for &(x, y) in &[(6, 5), (5, 5), (8, 16), (16, 16), (24, 16)] {
-        assert_pixel(pixel(&identity_full, x, y), pixel(&full, x, y), 1e-5);
-        assert_pixel(pixel(&identity_half, x, y), pixel(&half, x, y), 1e-5);
+        assert_close(&pixel(&identity_full, x, y), &pixel(&full, x, y));
+        assert_close(&pixel(&identity_half, x, y), &pixel(&half, x, y));
     }
     // A member's non-Normal blend applies to its sample, for both member
     // kinds: `Multiply` blends the whole member — sample and content —
@@ -330,9 +424,9 @@ fn member_sample_is_attenuated_by_layer_opacity() {
         // Sample-only pixel over red: Multiply blends S as S·D — the
         // swapped sample is blue over red, so only black survives.
         let s = pixel(base, 8, 16);
-        assert_pixel(pixel(&multi, 8, 16), [s[0], 0.0, 0.0, 1.0], 1e-5);
+        assert_close(&pixel(&multi, 8, 16), &[s[0], 0.0, 0.0, 1.0]);
         // Covered content over the step: green × blue = black.
-        assert_pixel(pixel(&multi, 24, 16), [0.0, 0.0, 0.0, 1.0], 1e-5);
+        assert_close(&pixel(&multi, 24, 16), &[0.0, 0.0, 0.0, 1.0]);
     }
 }
 
@@ -444,15 +538,18 @@ fn band_streamed_backdrop_matches_offscreen_byte_for_byte() {
     }
     assert_eq!(next_y, size.1);
     let expected = offscreen.readback().expect("readback").pixels;
-    let streamed_bits = streamed
-        .iter()
-        .flat_map(|pixel| pixel.map(f32::to_bits))
-        .collect::<Vec<_>>();
-    let expected_bits = expected
-        .iter()
-        .flat_map(|pixel| pixel.map(f32::to_bits))
-        .collect::<Vec<_>>();
-    assert_eq!(streamed_bits, expected_bits);
+    assert_images_match(
+        &F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: expected,
+        },
+        &F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: streamed,
+        },
+    );
 }
 
 /// A blurred member taller than a band: sampling identical spans at
@@ -501,6 +598,69 @@ fn multi_band_capture_has_no_band_seams() {
             pair[0],
             pair[1]
         );
+    }
+}
+
+/// A blurred group nested in a blurred group's member, the whole scene
+/// translated down by `shift` rows over a backdrop that moves with it.
+fn nested_blur(shift: u16, scale: f32) -> cherenkov::Readback {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 160), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let scale = cherenkov::CaptureScale::new(scale).expect("in range");
+    let outer = surface.backdrop_group(filtrate::filters::GaussianBlur::new(4.0f32), scale);
+    let inner = surface.backdrop_group(filtrate::filters::GaussianBlur::new(1.5f32), scale);
+    let m1 = surface.layer();
+    let m2 = surface.layer();
+    let dy = f64::from(shift);
+    surface.update(|tx| {
+        // Every row differs, so a band seam shows as a step.
+        tx[surface.root()].content(surface.record(|r| {
+            for y in 0..160_u16 {
+                let k = f32::from((y + 160 - shift) % 160);
+                let y = f64::from(y);
+                r.fill(
+                    Rect::new(0.0, y, 32.0, y + 1.0),
+                    WorkingColor::new([(k * 0.37).fract(), (k * 0.11).fract(), k / 160.0, 1.0]),
+                );
+            }
+        }));
+        tx[surface.root()].push(&m1);
+        tx[&m1]
+            .clip(Rect::new(2.0, 32.0 + dy, 30.0, 112.0 + dy))
+            .backdrop(outer.sample())
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(2.0, 32.0 + dy, 30.0, 112.0 + dy),
+                    WorkingColor::new([0.0, 0.0, 1.0, 0.25]),
+                );
+            }));
+        tx[&m1].push(&m2);
+        tx[&m2]
+            .clip(Rect::new(6.0, 46.0 + dy, 26.0, 98.0 + dy))
+            .backdrop(inner.sample());
+    });
+    engine.render(FrameTime::now()).expect("render");
+    surface.readback().expect("readback")
+}
+
+/// A nested group's capture reads what the enclosing group's member drew
+/// in rows past the band. Moving the scene through every band phase must
+/// not change any pixel: the enclosing capture keeps the rows the nested
+/// capture's window reads, not only its own band's.
+#[test]
+fn nested_blurred_groups_have_no_band_seams() {
+    for (scale, step) in [(1.0, 1), (0.5, 2)] {
+        let base = nested_blur(0, scale);
+        for shift in (step..=16).step_by(usize::from(step)) {
+            let moved = nested_blur(shift, scale);
+            let shift = usize::from(shift);
+            assert_images_match(
+                &crop(&base, 0..32, 24..120),
+                &crop(&moved, 0..32, 24 + shift..120 + shift),
+            );
+        }
     }
 }
 
@@ -762,6 +922,50 @@ fn reduced_multi_band_capture_has_no_band_seams() {
 }
 
 #[test]
+fn refraction_past_the_surface_keeps_the_clamped_edge_row() {
+    for (clip, row) in [
+        (Rect::new(-100.0, 31.0, 100.0, 160.0), 31),
+        (Rect::new(-100.0, -160.0, 100.0, 1.0), 0),
+    ] {
+        let engine = engine();
+        let surface = engine
+            .surface(Offscreen::new((64, 32), OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        let group = surface.backdrop_group(
+            filtrate::filters::Brightness(0.25f32),
+            cherenkov::CaptureScale::FULL,
+        );
+        let parent = surface.layer();
+        let member = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 64.0, 32.0),
+                    WorkingColor::new([0.2, 0.3, 0.4, 1.0]),
+                );
+            }));
+            tx[surface.root()].push(&parent);
+            // The inherited coverage mask spans the surface, although
+            // the parent's right edge is strictly inside it.
+            tx[&parent]
+                .clip(RoundedRect::new(4.0, 0.0, 28.0, 32.0, 4.0))
+                .push(&member);
+            tx[&member]
+                .clip(clip)
+                .backdrop(group.sample_with(cherenkov::Refraction {
+                    depth: 4.0,
+                    strength: 128.0,
+                }));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let readback = surface.readback().expect("readback");
+        // Every visible sample is displaced beyond the surface. The
+        // filtered edge row must still be captured for clamped sampling.
+        assert_pixel(pixel(&readback, 16, row), [0.45, 0.55, 0.65, 1.0], 1e-5);
+    }
+}
+
+#[test]
 fn reduced_refraction_samples_the_displaced_point_on_the_capture_grid() {
     let engine = engine();
     let surface = engine
@@ -806,6 +1010,64 @@ fn reduced_refraction_samples_the_displaced_point_on_the_capture_grid() {
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
 }
 
+/// A union member's refracted sample follows the union field's gradient,
+/// which inside a member can tilt toward a sibling — landing the displaced
+/// read outside the member's own clip and outside the pixel's raster band.
+/// The capture keeps `apron + reach` extra rows past each band, so the
+/// read does not clamp to the kept window's edge row.
+#[test]
+fn union_refraction_reads_capture_rows_beyond_the_band() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 64), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let a = surface.layer();
+    let b = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 26.0, 32.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(0.0, 0.0, 32.0, 26.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(0.0, 32.0, 32.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&a);
+        tx[surface.root()].push(&b);
+        tx[&a]
+            .clip(Rect::new(0.0, 16.0, 16.0, 37.0))
+            .backdrop(group.sample_with(cherenkov::Refraction {
+                depth: 12.0,
+                strength: 6.0,
+            }));
+        tx[&b]
+            .clip(Rect::new(16.0, 30.0, 32.0, 54.0))
+            .backdrop(group.sample());
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    // Pixel (10, 33) is 3.5 inside a's bottom edge; the union field there
+    // blends a's (0, 1) gradient with b's (1, 0) for n ≈ (0.355, 0.935),
+    // displacing the sample to (9.78, 31.60) — two rows above the band
+    // ([32, 48)) the pixel draws in: ~0.9 of the red stripe's row 31 and
+    // ~0.1 of row 32's blue. Kept only to the band, the read clamps to
+    // row 32's blue.
+    let p = pixel(&readback, 10, 33);
+    assert!(
+        p[0] > 0.75 && p[2] < 0.25 && (p[3] - 1.0).abs() < 1e-5,
+        "pixel {p:?}, expected mostly red"
+    );
+}
+
 #[test]
 fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid() {
     let engine = engine();
@@ -844,6 +1106,69 @@ fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid() {
     assert_pixel(pixel(&readback, 54, 32), [0.25, 0.781_25, 0.75, 1.0], 1e-5);
     // Past the rim's width the sample is unlit.
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
+}
+
+/// A member bound to a signal of its refraction re-renders with the new
+/// parameters on the next frame, with no transaction.
+#[test]
+fn a_bound_refraction_change_rerenders_the_member() {
+    use nami::{SignalExt, binding};
+
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let member = surface.layer();
+    let depth = binding(8.0_f32);
+    let sample = {
+        let group = group.id();
+        depth.map(move |depth| {
+            cherenkov::BackdropSample::with_effect(
+                group,
+                cherenkov::Refraction {
+                    depth,
+                    strength: 4.0,
+                },
+            )
+        })
+    };
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 52.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(52.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(sample);
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    // Pixel 54's centre is 1.5 inside the right edge. Over a depth of 8 it
+    // is displaced 4 · (1 − 1.5/8)² ≈ 2.6 px to the left, across the
+    // red/blue boundary at 52, so red mixes in.
+    let displaced = pixel(&readback, 54, 32);
+    assert!(displaced[0] > 0.25, "displaced pixel {displaced:?}");
+    let captures = engine.memory().backdrop_captures;
+
+    // Over a depth of 1 the pixel is past the rim: the unshifted blue.
+    depth.set(1.0);
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    assert_pixel(pixel(&readback, 54, 32), [0.0, 0.0, 1.0, 1.0], 1e-5);
+    assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
+    assert_eq!(
+        engine.memory().backdrop_captures,
+        captures,
+        "the group keeps its capture"
+    );
 }
 
 /// A 33×33 surface, column 32 blue and the rest red, captured at full
@@ -1002,15 +1327,10 @@ fn deep_level_member(with_plain: bool) -> cherenkov::Readback {
 fn deep_level_reads_are_independent_of_the_other_members() {
     let alone = deep_level_member(false);
     let shared = deep_level_member(true);
-    for y in 8..56 {
-        for x in 600..840 {
-            assert_eq!(
-                pixel(&alone, x, y),
-                pixel(&shared, x, y),
-                "member pixel ({x}, {y}) depends on the other member"
-            );
-        }
-    }
+    assert_images_match(
+        &crop(&alone, 600..840, 8..56),
+        &crop(&shared, 600..840, 8..56),
+    );
 }
 
 /// Two groups anchored at the same layer each capture the anchor's canvas
@@ -1276,10 +1596,7 @@ fn union_bridge(a_opacity: f32, b_opacity: f32, swap: bool) -> cherenkov::Readba
 fn union_members_composite_identically_in_any_order() {
     let ab = union_bridge(0.5, 0.5, false);
     let ba = union_bridge(0.5, 0.5, true);
-    assert_eq!(
-        ab.pixels, ba.pixels,
-        "the union composite depends on member order"
-    );
+    assert_images_match(&visual::image(&ab), &visual::image(&ba));
 }
 
 #[test]
@@ -2083,7 +2400,7 @@ fn isolated_members_under_a_masked_ancestor_match_unclipped() {
         // Deep inside the triangle the ancestor's coverage is 1, so the
         // masked render must read like the unclipped one.
         for (x, y) in [(32usize, 14usize), (35, 20), (38, 12), (33, 11)] {
-            assert_pixel(pixel(&masked, x, y), pixel(&plain, x, y), 3e-3);
+            assert_close(&pixel(&masked, x, y), &pixel(&plain, x, y));
         }
     }
 }

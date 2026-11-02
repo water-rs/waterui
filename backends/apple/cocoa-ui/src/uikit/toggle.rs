@@ -107,7 +107,9 @@ impl Toggle {
                 let (Some(unchecked), Some(checked)) = (unchecked, checked) else {
                     panic!("cocoa-ui checkbox requires the system square symbols");
                 };
-                let button = UIButton::buttonWithType(UIButtonType::System, mtm);
+                let button =
+                    crate::uikit::button::CocoaUiButton::with_type(mtm, UIButtonType::System)
+                        .into_super();
                 // SAFETY: `UIFontTextStyleBody` is a documented, immutable
                 // shared text style.
                 let configuration = unsafe {

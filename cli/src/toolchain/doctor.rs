@@ -47,6 +47,7 @@ use crate::{
         spirv_tools::SpirvTools,
         web::{PackageManagerToolchain, WasmPack, wasm32_target},
         windows_arm64_llvm::WindowsArm64LlvmToolchain,
+        windows_long_paths::WindowsLongPaths,
     },
     utils::parse_semver_version,
     winui::toolchain::WinUiToolchain,
@@ -56,6 +57,10 @@ use serde::{Deserialize, Serialize};
 
 /// Status of a toolchain check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal renders each check status variant by variant"
+)]
 pub enum CheckStatus {
     /// Toolchain is available and working.
     Ok,
@@ -88,6 +93,7 @@ pub type BoxedInstallFn =
 /// before the optional ones in [`DoctorGroup::ORDER`], the order a new user
 /// needs them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DoctorGroup {
     /// The rustup-managed Rust toolchain every backend builds with.
     Rust,
@@ -179,7 +185,7 @@ impl DoctorGroup {
     pub fn of(id: &str) -> Self {
         match id {
             ids::RUST => Self::Rust,
-            ids::GIT | ids::C_TOOLCHAIN => Self::Host,
+            ids::GIT | ids::C_TOOLCHAIN | ids::WINDOWS_LONG_PATHS => Self::Host,
             ids::XCODE
             | ids::IOS_SDK
             | ids::IOS_SIMULATOR_SDK
@@ -217,12 +223,48 @@ impl DoctorGroup {
 #[derive(Debug)]
 pub struct DoctorSection {
     /// The group the items belong to.
-    pub group: DoctorGroup,
+    group: DoctorGroup,
     /// `true` when the group's backend is out of scope, so its missing items
     /// are hints rather than failures.
-    pub optional: bool,
+    optional: bool,
     /// The group's items, in [`ids::ALL`] order.
-    pub items: Vec<DoctorItem>,
+    items: Vec<DoctorItem>,
+}
+impl DoctorSection {
+    /// A `DoctorSection` carrying each of its fields.
+    #[must_use]
+    pub const fn new(group: DoctorGroup, optional: bool, items: Vec<DoctorItem>) -> Self {
+        Self {
+            group,
+            optional,
+            items,
+        }
+    }
+
+    /// The section's items, moved out.
+    #[must_use]
+    pub fn into_items(self) -> Vec<DoctorItem> {
+        self.items
+    }
+
+    /// The group the items belong to.
+    #[must_use]
+    pub const fn group(&self) -> &DoctorGroup {
+        &self.group
+    }
+
+    /// `true` when the group's backend is out of scope, so its missing items
+    /// are hints rather than failures.
+    #[must_use]
+    pub const fn optional(&self) -> bool {
+        self.optional
+    }
+
+    /// The group's items, in [`ids::ALL`] order.
+    #[must_use]
+    pub fn items(&self) -> &[DoctorItem] {
+        &self.items
+    }
 }
 
 /// Group `items` by [`DoctorGroup`] in report order: in-scope groups in
@@ -263,26 +305,100 @@ pub fn sections(items: Vec<DoctorItem>) -> Vec<DoctorSection> {
 /// A single item in the doctor report.
 pub struct DoctorItem {
     /// Stable machine-readable identifier (e.g. `android-sdk`).
-    pub id: &'static str,
+    id: &'static str,
     /// Human-readable name of the toolchain or component.
-    pub name: &'static str,
+    name: &'static str,
     /// The heading the item is reported under.
-    pub group: DoctorGroup,
+    group: DoctorGroup,
     /// `true` when the item's backend is out of scope for the current project
     /// or host: it is reported with its hint but neither fails the run nor
     /// counts toward `--fix`.
-    pub optional: bool,
+    optional: bool,
     /// Status of the check.
-    pub status: CheckStatus,
+    status: CheckStatus,
     /// Optional message with details or suggestions.
-    pub message: Option<String>,
+    message: Option<String>,
     /// `true` when running the fix modifies the machine outside `~/.water`
     /// (a system installer, `msiexec`, ...): `water doctor --fix` asks before
     /// it runs unless `--yes` was passed or the shell is non-interactive
     /// without consent semantics. Set from [`Installation::modifies_system`].
-    pub system_wide: bool,
+    system_wide: bool,
     /// Optional installation function if the issue can be fixed automatically.
-    pub install_fn: Option<BoxedInstallFn>,
+    install_fn: Option<BoxedInstallFn>,
+}
+impl DoctorItem {
+    /// Stable machine-readable identifier (e.g. `android-sdk`).
+    #[must_use]
+    pub const fn id(&self) -> &'static str {
+        self.id
+    }
+
+    /// Human-readable name of the toolchain or component.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The heading the item is reported under.
+    #[must_use]
+    pub const fn group(&self) -> &DoctorGroup {
+        &self.group
+    }
+
+    /// `true` when the item's backend is out of scope for the current project
+    /// or host: it is reported with its hint but neither fails the run nor
+    /// counts toward `--fix`.
+    #[must_use]
+    pub const fn optional(&self) -> bool {
+        self.optional
+    }
+
+    /// Status of the check.
+    #[must_use]
+    pub const fn status(&self) -> CheckStatus {
+        self.status
+    }
+
+    /// Optional message with details or suggestions.
+    #[must_use]
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    /// `true` when running the fix modifies the machine outside `~/.water`
+    /// (a system installer, `msiexec`, ...): `water doctor --fix` asks before
+    /// it runs unless `--yes` was passed or the shell is non-interactive
+    /// without consent semantics. Set from [`Installation::modifies_system`].
+    #[must_use]
+    pub const fn system_wide(&self) -> bool {
+        self.system_wide
+    }
+
+    /// Optional installation function if the issue can be fixed automatically.
+    #[must_use]
+    pub const fn install_fn(&self) -> Option<&BoxedInstallFn> {
+        self.install_fn.as_ref()
+    }
+
+    /// The install closure, moved out for an auto-fix attempt.
+    pub fn take_install_fn(&mut self) -> Option<BoxedInstallFn> {
+        self.install_fn.take()
+    }
+
+    /// Marks the item system-wide.
+    pub const fn set_system_wide(&mut self, system_wide: bool) {
+        self.system_wide = system_wide;
+    }
+
+    /// Marks the item optional under a different group.
+    pub const fn set_optional(&mut self, optional: bool) {
+        self.optional = optional;
+    }
+
+    /// Reassigns the item's group.
+    pub const fn set_group(&mut self, group: DoctorGroup) {
+        self.group = group;
+    }
 }
 
 impl std::fmt::Debug for DoctorItem {
@@ -310,22 +426,71 @@ impl std::fmt::Debug for DoctorItem {
 pub struct DoctorItemRecord {
     /// Record discriminator, like the shell's other typed records.
     #[serde(rename = "type")]
-    pub ty: Cow<'static, str>,
+    ty: Cow<'static, str>,
     /// Stable machine-readable item identifier.
-    pub id: Cow<'static, str>,
+    id: Cow<'static, str>,
     /// Human-readable item name.
-    pub name: Cow<'static, str>,
+    name: Cow<'static, str>,
     /// The [`DoctorGroup`] label the item is reported under.
-    pub group: Cow<'static, str>,
+    group: Cow<'static, str>,
     /// Whether the item's backend is out of scope for the project or host.
-    pub optional: bool,
+    optional: bool,
     /// `ok`, `missing`, or `skipped`.
-    pub status: Cow<'static, str>,
+    status: Cow<'static, str>,
     /// Whether `--fix` can remediate the item automatically.
-    pub fixable: bool,
+    fixable: bool,
     /// Detail or suggestion shown to the user, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
+    message: Option<String>,
+}
+impl DoctorItemRecord {
+    /// Record discriminator, like the shell's other typed records.
+    #[must_use]
+    pub fn ty(&self) -> &str {
+        &self.ty
+    }
+
+    /// Stable machine-readable item identifier.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Human-readable item name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The [`DoctorGroup`] label the item is reported under.
+    #[must_use]
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+
+    /// Whether the item's backend is out of scope for the project or host.
+    #[must_use]
+    pub const fn optional(&self) -> bool {
+        self.optional
+    }
+
+    /// `ok`, `missing`, or `skipped`.
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Whether `--fix` can remediate the item automatically.
+    #[must_use]
+    pub const fn fixable(&self) -> bool {
+        self.fixable
+    }
+
+    /// Detail or suggestion shown to the user, when present.
+    #[must_use]
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
 }
 
 impl From<&DoctorItem> for DoctorItemRecord {
@@ -344,30 +509,47 @@ impl From<&DoctorItem> for DoctorItemRecord {
 }
 
 impl DoctorItem {
-    fn ok(id: &'static str, name: &'static str) -> Self {
+    /// An in-scope item `id` named `name`, reported under `group` with
+    /// `status`, carrying no message and no automatic fix.
+    #[must_use]
+    pub const fn new(
+        id: &'static str,
+        name: &'static str,
+        group: DoctorGroup,
+        status: CheckStatus,
+    ) -> Self {
         Self {
             id,
             name,
-            group: DoctorGroup::of(id),
+            group,
             optional: false,
-            status: CheckStatus::Ok,
+            status,
             message: None,
             system_wide: false,
             install_fn: None,
         }
     }
 
+    /// Attaches the detail or suggestion shown to the user.
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    /// Makes the item fixable by `install_fn`.
+    #[must_use]
+    pub fn with_install_fn(mut self, install_fn: BoxedInstallFn) -> Self {
+        self.install_fn = Some(install_fn);
+        self
+    }
+
+    fn ok(id: &'static str, name: &'static str) -> Self {
+        Self::new(id, name, DoctorGroup::of(id), CheckStatus::Ok)
+    }
+
     fn missing(id: &'static str, name: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            id,
-            name,
-            group: DoctorGroup::of(id),
-            optional: false,
-            status: CheckStatus::Missing,
-            message: Some(message.into()),
-            system_wide: false,
-            install_fn: None,
-        }
+        Self::new(id, name, DoctorGroup::of(id), CheckStatus::Missing).with_message(message)
     }
 
     fn fixable<I: Installation + Send + 'static>(
@@ -394,16 +576,7 @@ impl DoctorItem {
     }
 
     fn skipped(id: &'static str, name: &'static str) -> Self {
-        Self {
-            id,
-            name,
-            group: DoctorGroup::of(id),
-            optional: false,
-            status: CheckStatus::Skipped,
-            message: None,
-            system_wide: false,
-            install_fn: None,
-        }
+        Self::new(id, name, DoctorGroup::of(id), CheckStatus::Skipped)
     }
 
     fn skipped_with_message(
@@ -411,16 +584,7 @@ impl DoctorItem {
         name: &'static str,
         message: impl Into<String>,
     ) -> Self {
-        Self {
-            id,
-            name,
-            group: DoctorGroup::of(id),
-            optional: false,
-            status: CheckStatus::Skipped,
-            message: Some(message.into()),
-            system_wide: false,
-            install_fn: None,
-        }
+        Self::skipped(id, name).with_message(message)
     }
 
     /// Returns `true` if the issue can be fixed automatically.
@@ -451,6 +615,9 @@ pub mod ids {
     pub const GIT: &str = "git";
     /// The C compiler driver (`cc`) and linker (`ld`) native builds invoke.
     pub const C_TOOLCHAIN: &str = "c-toolchain";
+    /// `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` —
+    /// the machine setting Windows checkouts past `MAX_PATH` need.
+    pub const WINDOWS_LONG_PATHS: &str = "windows-long-paths";
     /// iOS device and simulator rustup targets on the selected toolchain.
     pub const APPLE_RUST_TARGETS: &str = "apple-rust-targets";
     /// Android SDK root + `sdkmanager`.
@@ -510,6 +677,7 @@ pub mod ids {
         RUST,
         GIT,
         C_TOOLCHAIN,
+        WINDOWS_LONG_PATHS,
         XCODE,
         IOS_SDK,
         IOS_SIMULATOR_SDK,
@@ -571,10 +739,11 @@ impl BackendScope {
 ///
 /// A [`TargetBackend`] keys on itself; a [`TargetPlatform`] keys on the
 /// platform itself. The Android toolchain — SDK, NDK, Java, Kotlin and
-/// friends — is a platform requirement the Kotlin runtime and Hydrolysis
-/// share, so the Android group keys on the platform and is in scope
+/// friends — is a platform requirement, so the Android group keys on the
+/// platform and is in scope
 /// wherever Android is targeted — which on a bare host is never.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DoctorScope {
     /// In scope when this backend is.
     Backend(TargetBackend),
@@ -613,14 +782,12 @@ impl ProjectContext {
     /// command selects. Outside a project the host decides: the backends
     /// the machine can build for — Apple on macOS, `WinUI` on Windows,
     /// GTK4 on Linux, Hydrolysis on every desktop host — are
-    /// [`BackendScope::HostDefault`]; the Kotlin Android backend needs a
-    /// project to select it and is optional everywhere.
+    /// [`BackendScope::HostDefault`].
     ///
     /// A [`DoctorScope::Platform`] key is host-default only when the host
     /// itself builds for the platform — never for Android: Hydrolysis
     /// cross-compiling to Android does not mean the host targets Android,
-    /// so the Android group stays optional without a project, exactly as
-    /// the Kotlin backend does.
+    /// so the Android group stays optional without a project.
     fn scope(&self, key: impl Into<DoctorScope>) -> BackendScope {
         match key.into() {
             DoctorScope::Backend(backend) => self.backend_scope(backend),
@@ -631,8 +798,8 @@ impl ProjectContext {
     /// A platform's scope comes from the platform itself: outside a
     /// project it is host-default only when the host builds for it — its
     /// own Apple toolchain on macOS, its own desktop on Linux or Windows.
-    /// Android, the web and the ESP32 chips are cross-compiled targets a
-    /// project must select.
+    /// Android and the web are cross-compiled targets a project must
+    /// select.
     fn platform_scope(&self, platform: TargetPlatform) -> BackendScope {
         self.manifest.as_ref().map_or_else(
             || {
@@ -654,7 +821,6 @@ impl ProjectContext {
                     TargetBackend::WinUi => cfg!(target_os = "windows"),
                     TargetBackend::Gtk4 => cfg!(target_os = "linux"),
                     TargetBackend::Hydrolysis => true,
-                    TargetBackend::Android => false,
                 };
                 if host_builds {
                     BackendScope::HostDefault
@@ -697,7 +863,7 @@ async fn project_context(host: &Host) -> ProjectContext {
         if let Some(floor) = cargo_manifest_rust_version(&host.cwd().join("Cargo.toml")).await {
             rust_floor = rust_floor.max(floor);
         }
-        let framework_floor = match (&manifest.framework, &manifest.waterui_path) {
+        let framework_floor = match (manifest.framework(), manifest.waterui_path()) {
             (Some(framework), _) => framework.rust_version().cloned(),
             (None, Some(waterui_path)) => {
                 let path = Path::new(waterui_path);
@@ -834,9 +1000,10 @@ async fn ios_simulator_check(host: &Host) -> DoctorItem {
     }
 }
 
-/// The iOS device and simulator rustup targets an Apple-backend project
-/// needs on its selected toolchain. (The macOS target is the host triple the
-/// `rust` item already requires.)
+/// The iOS device, simulator and Mac Catalyst rustup targets an
+/// Apple-backend project needs on its selected toolchain — Mac Catalyst is
+/// the target `water preview --platform ios` builds for. (The macOS target
+/// is the host triple the `rust` item already requires.)
 async fn apple_rust_targets_check(host: &Host, project: &ProjectContext) -> DoctorItem {
     const NAME: &str = "Apple Rust targets";
     if !project.in_scope(TargetBackend::Apple) {
@@ -850,10 +1017,11 @@ async fn apple_rust_targets_check(host: &Host, project: &ProjectContext) -> Doct
         host,
         ids::APPLE_RUST_TARGETS,
         NAME,
-        "Required iOS targets are missing on the selected Rust toolchain",
+        "Required iOS and Mac Catalyst targets are missing on the selected Rust toolchain",
         crate::toolchain::rust::SelectedToolchainTargets::new(vec![
             TargetPlatform::IOS.triple().to_string(),
             TargetPlatform::IOSSimulator.triple().to_string(),
+            TargetPlatform::MacCatalyst.triple().to_string(),
         ]),
     )
     .await
@@ -863,9 +1031,8 @@ async fn apple_rust_targets_check(host: &Host, project: &ProjectContext) -> Doct
 /// follow the SDK probe; the rustup targets, run targets, and the `CMake` /
 /// Java / Kotlin helpers are independent of it and run alongside.
 ///
-/// The group serves every Android backend — the Kotlin runtime and
-/// Hydrolysis alike — so the probes are unconditional and the items'
-/// [`DoctorItem::optional`] flag carries the scope.
+/// The probes are unconditional and the items' [`DoctorItem::optional`]
+/// flag carries the scope.
 async fn android_checks(host: &Host) -> Vec<DoctorItem> {
     let components = async {
         let sdk = toolchain_check(
@@ -1174,36 +1341,59 @@ async fn cargo_helpers_check(host: &Host) -> DoctorItem {
 }
 
 /// Host-level tools every workflow needs regardless of backend: `git`, which
-/// `water create` invokes to initialize the scaffolded repository, and the C
-/// toolchain rustc links through.
+/// `water create` invokes to initialize the scaffolded repository, the C
+/// toolchain rustc links through, and the Windows `LongPathsEnabled` machine
+/// setting checkouts past `MAX_PATH` require.
 ///
 /// The C toolchain is Linux-only here — macOS gets `cc`/`ld` from the Xcode
-/// Command Line Tools (the `apple` group) and Windows from MSVC/LLVM — but it
-/// still reports as a skipped item so every id in [`ids::ALL`] appears.
+/// Command Line Tools (the `apple` group) and Windows from MSVC/LLVM — and
+/// long paths are Windows-only, but both still report as skipped items so
+/// every id in [`ids::ALL`] appears.
 async fn host_checks(host: &Host) -> Vec<DoctorItem> {
-    let git = toolchain_check(
-        host,
-        ids::GIT,
-        "git",
-        "git is missing — `water create` needs it to initialize the project repository",
-        Git,
-    )
-    .await;
-
-    let c_toolchain = if cfg!(target_os = "linux") {
+    let c_toolchain = async {
+        if cfg!(target_os = "linux") {
+            toolchain_check(
+                host,
+                ids::C_TOOLCHAIN,
+                "C toolchain",
+                "a C compiler (`cc`) and linker (`ld`) are missing — rustc links through `cc`",
+                CToolchain,
+            )
+            .await
+        } else {
+            DoctorItem::skipped(ids::C_TOOLCHAIN, "C toolchain")
+        }
+    };
+    let long_paths = async {
+        if cfg!(target_os = "windows") {
+            toolchain_check(
+                host,
+                ids::WINDOWS_LONG_PATHS,
+                "Windows long paths",
+                "`HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem\\LongPathsEnabled` is not 1 — the build cache nests Android host checkouts and Gradle paths past the 260-character MAX_PATH limit, so checkouts fail or silently drop files. `--fix` sets it through an elevated `reg add` (a UAC prompt; modifies the system outside ~/.water).",
+                WindowsLongPaths,
+            )
+            .await
+        } else {
+            DoctorItem::skipped_with_message(
+                ids::WINDOWS_LONG_PATHS,
+                "Windows long paths",
+                "Only required on Windows hosts.",
+            )
+        }
+    };
+    let (git, c_toolchain, long_paths) = join!(
         toolchain_check(
             host,
-            ids::C_TOOLCHAIN,
-            "C toolchain",
-            "a C compiler (`cc`) and linker (`ld`) are missing — rustc links through `cc`",
-            CToolchain,
-        )
-        .await
-    } else {
-        DoctorItem::skipped(ids::C_TOOLCHAIN, "C toolchain")
-    };
-
-    vec![git, c_toolchain]
+            ids::GIT,
+            "git",
+            "git is missing — `water create` needs it to initialize the project repository",
+            Git,
+        ),
+        c_toolchain,
+        long_paths,
+    );
+    vec![git, c_toolchain, long_paths]
 }
 
 /// The Linux system packages and the GTK4 probe, as
@@ -1358,8 +1548,8 @@ async fn web_package_manager_check(host: &Host, project: &ProjectContext) -> Opt
     let web = project
         .manifest
         .as_ref()
-        .and_then(|manifest| manifest.web.as_ref())?;
-    let package_manager = web.package_manager;
+        .and_then(|manifest| manifest.web())?;
+    let package_manager = web.package_manager();
     let name: &'static str = match package_manager {
         crate::web::PackageManager::Bun => "bun (web package manager)",
         crate::web::PackageManager::Pnpm => "pnpm (web package manager)",
@@ -1705,18 +1895,13 @@ mod tests {
     }
 
     /// Outside a project the host decides: Hydrolysis everywhere, Apple on
-    /// macOS, GTK4 on Linux, `WinUI` on Windows; the Kotlin Android backend
-    /// optional.
+    /// macOS, GTK4 on Linux, `WinUI` on Windows.
     #[test]
     fn scope_outside_a_project_follows_the_host() {
         let project = project_less();
         assert_eq!(
             project.scope(TargetBackend::Hydrolysis),
             BackendScope::HostDefault
-        );
-        assert_eq!(
-            project.scope(TargetBackend::Android),
-            BackendScope::Optional
         );
         let host_only = |backend, on_host: bool| {
             let expected = if on_host {
@@ -1731,18 +1916,13 @@ mod tests {
         host_only(TargetBackend::WinUi, cfg!(target_os = "windows"));
     }
 
-    /// The Android group's scope keys on the platform, whichever backend
-    /// serves it: no host targets Android natively — Hydrolysis merely
-    /// cross-compiles to it — so the platform and its toolchain items are
-    /// optional without a project and selected inside one.
+    /// The Android group's scope keys on the platform: no host targets
+    /// Android natively — Hydrolysis merely cross-compiles to it — so the
+    /// platform and its toolchain items are optional without a project and
+    /// selected inside one.
     #[test]
     fn android_scope_covers_whichever_backend_serves_it() {
         let project = project_less();
-        assert_eq!(
-            project.scope(TargetBackend::Android),
-            BackendScope::Optional,
-            "selecting the Kotlin backend still takes a project"
-        );
         assert_eq!(
             project.scope(TargetPlatform::Android),
             BackendScope::Optional,
@@ -1783,7 +1963,6 @@ mod tests {
         let project = project_with("");
         for backend in [
             TargetBackend::Apple,
-            TargetBackend::Android,
             TargetBackend::Gtk4,
             TargetBackend::Hydrolysis,
             TargetBackend::WinUi,

@@ -25,7 +25,7 @@ use serde::Serialize;
 
 use crate::memory::{
     AdapterMemory, EngineBytes, MemorySnapshot, Reading, SampleDetail, wgpu_allocator,
-    wgpu_vk_memory_budget,
+    wgpu_metal_allocated_bytes, wgpu_vk_memory_budget,
 };
 use crate::{BenchError, conditions, report::Conditions};
 
@@ -85,15 +85,17 @@ fn snapshot(
     device: Option<&wgpu::Device>,
     engine: Reading<EngineBytes>,
 ) -> MemorySnapshot {
-    let (wgpu_allocator, vk_memory_budget) = match (adapter, device) {
+    let (wgpu_allocator, vk_memory_budget, metal_allocated_bytes) = match (adapter, device) {
         (Some(adapter), Some(device)) => {
             let info = adapter.get_info();
             (
                 wgpu_allocator(device, info.backend),
                 wgpu_vk_memory_budget(device, info.backend, &info.name),
+                wgpu_metal_allocated_bytes(device, info.backend),
             )
         }
         _ => (
+            Reading::unavailable("device not yet created"),
             Reading::unavailable("device not yet created"),
             Reading::unavailable("device not yet created"),
         ),
@@ -104,6 +106,7 @@ fn snapshot(
             wgpu_allocator,
             skia_budgeted: Reading::unavailable("not a Skia adapter"),
             vk_memory_budget,
+            metal_allocated_bytes,
         },
         SampleDetail::Full,
     )
@@ -116,6 +119,8 @@ fn engine_bytes(engine: &Engine<Gpu>) -> Reading<EngineBytes> {
         cpu_bytes: usage.cpu.0,
         gpu_bytes: usage.gpu.0,
         backdrop_capture_bytes: usage.backdrop_captures.0,
+        filter_target_bytes: usage.filter_targets.0,
+        filter_image_bytes: usage.filter_images.0,
     })
 }
 

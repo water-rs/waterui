@@ -25,6 +25,10 @@ use core::time::Duration;
 /// oscillating nature, so they have a separate variant.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each easing curve natively, variant by variant; a new curve must fail their build instead of falling into a wildcard arm"
+)]
 pub enum EasingCurve {
     /// Cubic bezier curve with control points (x1, y1, x2, y2).
     ///

@@ -161,11 +161,11 @@ fn measure_rebuild(gpu: &OffscreenGpuContext, cards: usize, with_text: bool) -> 
         );
         let result = rt.pump_at(false, Instant::now());
         assert!(
-            result.rebuilt,
+            result.rebuilt(),
             "cards={cards} with_text={with_text}: the initial build must re-dispatch"
         );
-        dispatch.push(result.profile.phases.scene_dispatch);
-        build.push(result.profile.phases.build_content);
+        dispatch.push(result.profile().phases().scene_dispatch());
+        build.push(result.profile().phases().build_content());
     }
     percentiles(dispatch, build)
 }
@@ -207,11 +207,11 @@ fn measure_replay(gpu: &OffscreenGpuContext, cards: usize, with_text: bool) -> (
     let mut rebuilt_frames = 0u32;
     for f in 0..SAMPLE_FRAMES as u64 {
         let result = pump(&mut rt, WARMUP_FRAMES as u64 + f + 1);
-        if result.rebuilt {
+        if result.rebuilt() {
             rebuilt_frames += 1; // a frame that escalated to re-dispatch is not a replay sample
         }
-        dispatch.push(result.profile.phases.scene_dispatch);
-        build.push(result.profile.phases.build_content);
+        dispatch.push(result.profile().phases().scene_dispatch());
+        build.push(result.profile().phases().build_content());
     }
     (percentiles(dispatch, build), rebuilt_frames)
 }

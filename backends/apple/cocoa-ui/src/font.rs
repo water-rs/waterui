@@ -12,7 +12,7 @@
 
 use objc2::{MainThreadMarker, rc::Retained};
 #[cfg(target_os = "macos")]
-use objc2_app_kit::NSFont;
+use objc2_app_kit::{NSControlSize, NSFont};
 use objc2_foundation::NSString;
 #[cfg(target_os = "ios")]
 use objc2_ui_kit::UIFont;
@@ -51,6 +51,15 @@ pub mod weight {
 #[must_use]
 pub fn system_size() -> f64 {
     Font::systemFontSize()
+}
+
+/// The font size `AppKit` pairs with a control size class: 11 pt for
+/// small, 9 pt for mini, the regular system size for regular and large.
+/// `UIKit` has no per-control-size font.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn system_size_for_control_size(size: NSControlSize) -> f64 {
+    NSFont::systemFontSizeForControlSize(size)
 }
 
 /// The system face at `size` and `weight`, both on the platform's own scale.

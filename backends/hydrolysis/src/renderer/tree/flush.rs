@@ -7,7 +7,7 @@ use super::layout::kurbo_rect;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Records this subtree into the nodes' programs using the cached
     /// placements. Runs every frame.
     // `_focus_node` is bound only for the accessibility surface-input path; on
@@ -21,7 +21,7 @@ impl RenderNode {
     /// before recording.
     pub(crate) fn flush(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         env: &Environment,
         placement_delta: kurbo::Affine,
@@ -35,7 +35,7 @@ impl RenderNode {
     /// node into the enclosing node's program at `ctx`.
     fn record_linked(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         env: &Environment,
     ) {
@@ -50,13 +50,18 @@ impl RenderNode {
             if !matched {
                 self.core().cell.placement().set_paint_parent(None);
             }
-            renderer.record_layer_node_in(self.core(), ctx.bounds, !matched, |renderer, local| {
-                self.flush_inner(renderer, local, env);
-            });
+            renderer.record_layer_node_in(
+                self.core(),
+                ctx.bounds(),
+                !matched,
+                |renderer, local| {
+                    self.flush_inner(renderer, local, env);
+                },
+            );
             return;
         }
         if self.is_layer_node() {
-            renderer.record_layer_node(self.core(), ctx.bounds, |renderer, local| {
+            renderer.record_layer_node(self.core(), ctx.bounds(), |renderer, local| {
                 self.flush_inner(renderer, local, env);
             });
         } else {
@@ -78,13 +83,13 @@ impl RenderNode {
             | Self::Rotation(_)
             | Self::Offset(_)
             | Self::SceneView(_)
-            | Self::GpuContent(_)
-            | Self::ExternalFrame(_)
             | Self::Filtered(_)
             | Self::Scroll(_)
             | Self::LazyStack(_)
             | Self::Collection(_)
             | Self::Widget(_) => true,
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => true,
             Self::Wrapper(node) => matches!(
                 node.effect,
                 WrapperEffect::Clip(_)
@@ -108,7 +113,7 @@ impl RenderNode {
     /// stack slot.
     pub(crate) fn flush_anchored(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         env: &Environment,
         anchor: Option<std::rc::Rc<crate::renderer::Placement>>,
@@ -132,19 +137,20 @@ impl RenderNode {
     )]
     fn flush_inner(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         env: &Environment,
     ) {
         match self {
             Self::Color(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                let color = waterui_graphics::draw::Paint::Solid(renderer.read_signal(&node.color));
-                renderer.scene_mut().fill_paint(
-                    peniko::Fill::NonZero,
-                    ctx.local,
-                    color,
-                    &ctx.bounds,
+                if nami::Signal::snapshot(&node.bounds) != ctx.bounds() {
+                    node.bounds.set(ctx.bounds());
+                }
+                renderer.scene_mut().live_rect(
+                    ctx.local(),
+                    node.bounds.clone().into(),
+                    node.color.clone(),
                 );
             }
             // §7.1's fill rule, paint side: the extension layout recorded
@@ -166,18 +172,34 @@ impl RenderNode {
                 // has no surrounding widget to watch it, so the node must do so itself.)
                 let styled = renderer.read_signal(&text.content);
                 let alignment = renderer.read_signal(&text.alignment);
+                #[cfg(feature = "accessibility")]
+                let text_node_id = TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
+                #[cfg(not(feature = "accessibility"))]
                 TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
-                let (state, scene) = renderer.state_and_run_mut();
-                HydrolysisRenderer::render_styled_text_limited(
-                    state,
-                    scene,
-                    ctx,
-                    styled,
-                    alignment,
-                    env,
-                    text.line_limit.map_or(TailMark::None, TailMark::Ellipsis),
-                );
+                let tail = text.line_limit.map_or(TailMark::None, TailMark::Ellipsis);
+                if styled.tap_spans().is_empty() {
+                    // Content that lost its spans drops their retained targets.
+                    text.tap_span_targets.borrow_mut().clear();
+                    renderer.render_styled_text_limited(ctx, styled, alignment, env, tail);
+                } else {
+                    let layout =
+                        renderer.render_styled_text_with_layout(ctx, &styled, alignment, env, tail);
+                    // Span targets and `Link` children belong to this leaf:
+                    // register them under its render owner so their ancestry
+                    // matches the node that emitted them.
+                    renderer.push_render_owner(&text.accessibility_identity);
+                    text.flush_tap_spans(
+                        renderer,
+                        ctx,
+                        &layout,
+                        &styled,
+                        env,
+                        #[cfg(feature = "accessibility")]
+                        text_node_id,
+                    );
+                    renderer.pop_render_owner();
+                }
             }
             Self::Container(container) => {
                 renderer.push_render_owner(&container.accessibility_identity);
@@ -188,7 +210,7 @@ impl RenderNode {
                 #[cfg(feature = "accessibility")]
                 let container_scope = accessibility_container_child_environment(env).map(|_| {
                     let (bounds, extent) = (
-                        ctx.bounds,
+                        ctx.bounds(),
                         renderer.resolve_window_rect(kurbo_rect(container.resolved)),
                     );
                     renderer.begin_accessibility_container(bounds, Some(extent), env)
@@ -229,68 +251,74 @@ impl RenderNode {
             }
             Self::Opacity(node) => {
                 let alpha = renderer.resolve_owned_scalar(
-                    &node.value.value,
+                    node.value.value(),
                     &node.core.cell,
                     OPACITY_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_SLOW,
                 );
                 let program = renderer.program().program_mut();
                 program.opacity = alpha;
-                program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
+                program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds()));
                 renderer.push_placement_scope(
                     crate::renderer::ScopeDelta::RECORD_SPACE,
-                    Some(ctx.bounds),
+                    Some(ctx.bounds()),
                 );
                 node.child
                     .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
                 renderer.pop_placement_scope();
             }
             Self::Scale(node) => {
-                let center = anchor_point(ctx.bounds, node.value.anchor);
+                let center = anchor_point(ctx.bounds(), node.value.anchor());
                 let scale_x = renderer.resolve_owned_scalar(
-                    &node.value.x,
+                    node.value.x(),
                     &node.core.cell,
                     SCALE_X_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let scale_y = renderer.resolve_owned_scalar(
-                    &node.value.y,
+                    node.value.y(),
                     &node.core.cell,
                     SCALE_Y_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let transform = kurbo::Affine::translate((center.x, center.y))
                     * kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
                     * kurbo::Affine::translate((-center.x, -center.y));
                 node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
+                    .flush(renderer, ctx.child(transform, ctx.bounds()), env, transform);
             }
             Self::Rotation(node) => {
-                let center = anchor_point(ctx.bounds, node.value.anchor);
+                let center = anchor_point(ctx.bounds(), node.value.anchor());
                 let radians = f64::from(renderer.resolve_owned_scalar(
-                    &node.value.angle,
+                    node.value.angle(),
                     &node.core.cell,
                     ROTATION_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 ))
                 .to_radians();
                 let transform = kurbo::Affine::translate((center.x, center.y))
                     * kurbo::Affine::rotate(radians)
                     * kurbo::Affine::translate((-center.x, -center.y));
                 node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
+                    .flush(renderer, ctx.child(transform, ctx.bounds()), env, transform);
             }
             Self::Offset(node) => {
                 let offset_x = renderer.resolve_owned_scalar(
                     &node.value.x,
                     &node.core.cell,
                     OFFSET_X_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let offset_y = renderer.resolve_owned_scalar(
                     &node.value.y,
                     &node.core.cell,
                     OFFSET_Y_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let transform =
                     kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
                 node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
+                    .flush(renderer, ctx.child(transform, ctx.bounds()), env, transform);
             }
             Self::Dynamic(node) => {
                 if node.apply_pending_mid_pass(renderer) {
@@ -302,16 +330,14 @@ impl RenderNode {
                     // sub-view re-lays out (re-placing this host) before its
                     // next flush.
                     #[allow(clippy::cast_possible_truncation)]
-                    let size = Size::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
+                    let size = Size::new(ctx.bounds().width() as f32, ctx.bounds().height() as f32);
                     let proposal = ProposalSize::new(Some(size.width), Some(size.height));
                     let safe_area = node.safe_area.as_deref().cloned();
                     node.child
                         .borrow_mut()
                         .layout(renderer, &node.env, safe_area, proposal, size);
                 }
-                node.child
-                    .borrow()
-                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+                node.flush_content(renderer, ctx, env);
             }
             Self::Retain(node) => node
                 .child
@@ -379,8 +405,7 @@ impl RenderNode {
                         let scope = renderer
                             .material_group_scopes
                             .last()
-                            .map(Rc::as_ptr)
-                            .map(|cell| cell as usize);
+                            .map(|cell| mount::backdrop::scope_id(cell));
                         // Scope membership must never depend on where a flush
                         // starts: a member with a `.material_group()` cell on
                         // its ancestry that reads an empty stack is a partial
@@ -392,12 +417,12 @@ impl RenderNode {
                             "hydrolysis renderer: a material member under a `.material_group()` scope re-recorded with an empty scope stack — the partial descent did not establish the enclosing scopes"
                         );
                         let program = renderer.program().program_mut();
-                        program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
+                        program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds()));
                         program.material = Some(mount::MaterialRequest {
                             scope,
                             level: *level,
                             scheme,
-                            bounds: ctx.bounds,
+                            bounds: ctx.bounds(),
                             visible,
                         });
                         node.child
@@ -434,8 +459,20 @@ impl RenderNode {
                             },
                         );
                     }
+                    WrapperEffect::Dialog(value) => {
+                        HydrolysisRenderer::apply_dialog(renderer, child_env, value, |r| {
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                        });
+                    }
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
+                    }
+                    WrapperEffect::Transition(declaration) => {
+                        // The owning site paints the transition around its
+                        // whole instance; the declaration itself draws through.
+                        declaration.assert_owned();
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
@@ -571,20 +608,21 @@ impl RenderNode {
                         content: Rc::clone(&node.content),
                         invalidator: Rc::clone(&node.invalidator),
                         association: Rc::clone(&node.association),
-                        bounds: ctx.bounds,
+                        bounds: ctx.bounds(),
                     }));
                 // Content that handles its own input receives the pointer,
                 // keyboard, IME and scroll events landing on its bounds, through
                 // the same routing an interactive `GpuContentView` uses.
                 if wants_input {
                     renderer.register_surface_input_target(
-                        ctx.bounds,
+                        ctx.bounds(),
                         Rc::clone(&node.content),
                         #[cfg(feature = "accessibility")]
                         _focus_node,
                     );
                 }
             }
+            #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 // The view's own name and content, read every flush — it is
@@ -614,18 +652,19 @@ impl RenderNode {
                 let visible = renderer.record_alpha() != 0.0;
                 renderer.program().program_mut().producer = Some(mount::ProducerContent::Gpu {
                     runtime: Rc::clone(&node.runtime),
-                    bounds: ctx.bounds,
+                    bounds: ctx.bounds(),
                     visible,
                 });
                 if wants_input {
                     renderer.register_surface_input_target(
-                        ctx.bounds,
+                        ctx.bounds(),
                         Rc::clone(&node.runtime),
                         #[cfg(feature = "accessibility")]
                         _focus_node,
                     );
                 }
             }
+            #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 let (content_label, content_value) = {
@@ -653,7 +692,7 @@ impl RenderNode {
                 renderer.program().program_mut().producer =
                     Some(mount::ProducerContent::External {
                         runtime: Rc::clone(&node.runtime),
-                        bounds: ctx.bounds,
+                        bounds: ctx.bounds(),
                         visible,
                     });
             }
@@ -682,7 +721,7 @@ impl RenderNode {
                 // grown by the extension layout computed — the surface
                 // paints through the bands its frame touched, clips its
                 // content there, and its own subtree owns the inset.
-                let viewport_rect = safe_area::grow_rect(ctx.bounds, node.surface.extension());
+                let viewport_rect = safe_area::grow_rect(ctx.bounds(), node.surface.extension());
                 let Some(handle) = node.handle.borrow().clone() else {
                     return;
                 };
@@ -707,10 +746,7 @@ impl RenderNode {
                             f64::from(node.content_size.width),
                             f64::from(node.content_size.height),
                         );
-                        let content_ctx = RenderContext {
-                            local: ctx.local,
-                            bounds: content_bounds,
-                        };
+                        let content_ctx = RenderContext::new(ctx.local(), content_bounds);
                         // Publish the visible window (in content coordinates) —
                         // the viewport window grown by the same extension —
                         // so a virtualized `LazyStack` child builds the rows
@@ -764,10 +800,14 @@ impl RenderNode {
                         );
                         let viewport = renderer.current_placement();
                         viewport.set_content_offset(-offset);
-                        renderer
-                            .program()
-                            .begin_inner(viewport_rect, offset, Rc::clone(&viewport));
-                        let world = renderer.record_world(content_ctx.local);
+                        let stretch = renderer.scroll_stretch(&handle);
+                        renderer.program().begin_inner(
+                            viewport_rect,
+                            offset,
+                            stretch,
+                            Rc::clone(&viewport),
+                        );
+                        let world = renderer.record_world(content_ctx.local());
                         renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
                             bounds: lazy_viewport,
                             transform: world * kurbo::Affine::translate(-offset),
@@ -792,7 +832,7 @@ impl RenderNode {
                 crate::widgets::draw_scroll_indicators(
                     &mut widget_ctx,
                     &node.env,
-                    ctx.bounds,
+                    ctx.bounds(),
                     metrics,
                     node.axis,
                     &handle,
@@ -826,7 +866,7 @@ impl RenderNode {
     }
 }
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Emits this subtree's accessibility nodes for the semantic walk — the
     /// same tree `flush` produces under a `RenderContext`, with no bounds, no
     /// scene writes, no layers, and no pointer/hit targets. This is the
@@ -835,7 +875,7 @@ impl RenderNode {
     /// produce, and every registration goes through the no-bounds semantic
     /// path.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore, env: &Environment) {
+    pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
         renderer.with_reader(self.core(), ReaderPhase::Record, |renderer| {
             self.emit_accessibility_inner(renderer, env);
         });
@@ -850,14 +890,26 @@ impl RenderNode {
         clippy::option_if_let_else,
         reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
     )]
-    fn emit_accessibility_inner(&self, renderer: &mut SemanticCore, env: &Environment) {
+    fn emit_accessibility_inner(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
         match self {
             // A color fill carries no semantics.
             Self::Color(_) => {}
             Self::Text(text) => {
                 renderer.push_accessibility_owner(&text.accessibility_identity);
                 let styled = renderer.read_signal(&text.content);
-                TextNode::emit_accessibility(renderer, None, &styled, env);
+                let text_node_id = TextNode::emit_accessibility(renderer, None, &styled, env);
+                let tap_spans = styled.tap_spans();
+                if !tap_spans.is_empty() {
+                    let plain = styled.to_plain();
+                    TextNode::emit_tap_span_accessibility(
+                        renderer,
+                        None,
+                        tap_spans,
+                        &plain,
+                        env,
+                        text_node_id,
+                    );
+                }
                 renderer.pop_accessibility_owner();
             }
             Self::Container(container) => {
@@ -897,17 +949,32 @@ impl RenderNode {
                 let child_env = &node.env;
                 match &node.effect {
                     WrapperEffect::GestureObserver(effect) => {
-                        let claimed_node = HydrolysisRenderer::emit_gesture_observer_accessibility(
+                        let claim = HydrolysisRenderer::emit_gesture_observer_accessibility(
                             renderer, child_env, effect,
                         );
                         // The gesture's node claimed the naming scope: the
                         // content walks under the same shielded environment a
                         // naming container hands its children, so a leaf cannot
                         // repeat the claim's role and label as a second node.
+                        // A *synthesized* claim (a bare `.on_tap` with no
+                        // naming scope of its own) drops the
+                        // name-from-contents marker instead: the wrapped
+                        // content keeps its own nodes and the claim collapses
+                        // onto a lone one below, so the action lands on the
+                        // node the gesture wraps rather than on a swallowed
+                        // composite (water-rs/waterui#1070).
                         let content_env;
-                        let walk_env = if claimed_node.is_some() {
-                            content_env = accessibility_container_child_environment(child_env)
-                                .unwrap_or_else(|| child_env.clone());
+                        let walk_env = if let Some(claim) = &claim {
+                            content_env = accessibility_container_child_environment(&claim.env)
+                                .map_or_else(
+                                    || claim.env.clone(),
+                                    |mut walk_env| {
+                                        if claim.synthesized {
+                                            walk_env.remove::<AccessibilityNameFromContents>();
+                                        }
+                                        walk_env
+                                    },
+                                );
                             &content_env
                         } else {
                             child_env
@@ -916,8 +983,14 @@ impl RenderNode {
                         // claims this naming scope — an observer that registers
                         // no node (a long-press, or a silenced tap) must not
                         // consume the flag, or it suppresses the inner element
-                        // the flag names (water-rs/hydrolysis#266).
-                        if claimed_node.is_some()
+                        // the flag names (water-rs/hydrolysis#266). The claim
+                        // parents the content's nodes for the walk — without it
+                        // they register beside the claim and the synthesized
+                        // claim's single-child collapse has nothing to merge.
+                        if let Some(claim) = &claim {
+                            renderer.push_accessibility_parent(claim.node_id);
+                        }
+                        if claim.is_some()
                             && child_env
                                 .get::<AccessibilityChildren>()
                                 .is_some_and(AccessibilityChildren::excludes_descendants)
@@ -928,8 +1001,14 @@ impl RenderNode {
                         } else {
                             node.child.emit_accessibility(renderer, walk_env);
                         }
-                        if let Some(node_id) = claimed_node {
-                            renderer.drain_claim_scope(node_id, child_env);
+                        if claim.is_some() {
+                            renderer.pop_accessibility_parent();
+                        }
+                        if let Some(claim) = claim {
+                            renderer.drain_claim_scope(claim.node_id, &claim.env);
+                            if claim.synthesized {
+                                renderer.collapse_synthesized_claim(claim.node_id);
+                            }
                         }
                     }
                     WrapperEffect::Focused(value) => {
@@ -949,6 +1028,33 @@ impl RenderNode {
                         if let Some(hook) = effect.appear.take() {
                             hook.call();
                         }
+                    }
+                    WrapperEffect::Dialog(effect) => {
+                        // The walk reports to the same dialog stack the
+                        // rendered flush does. The dialog on screen emits its
+                        // modal layer in place of the child; publication then
+                        // keeps that layer's modal node alone under the
+                        // window, so everything beneath is inert.
+                        let presented = renderer.read_signal(effect.dialog.is_presented());
+                        let focus = renderer.hit_test.keyboard_focus.clone();
+                        if renderer.popup_menu.dialog_stack.report(
+                            &effect.marker,
+                            &effect.dialog,
+                            presented,
+                            focus,
+                        ) {
+                            let env = dialog_modal_environment(child_env, &effect.dialog);
+                            effect
+                                .content
+                                .borrow_mut()
+                                .emit_accessibility(renderer, &env);
+                        } else {
+                            node.child.emit_accessibility(renderer, child_env);
+                        }
+                    }
+                    WrapperEffect::Transition(declaration) => {
+                        declaration.assert_owned();
+                        node.child.emit_accessibility(renderer, child_env);
                     }
                     _ => node.child.emit_accessibility(renderer, child_env),
                 }
@@ -985,6 +1091,7 @@ impl RenderNode {
                     );
                 }
             }
+            #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => {
                 let (content_label, content_value, wants_input) = {
                     let view = &node.runtime.borrow().view;
@@ -1012,6 +1119,7 @@ impl RenderNode {
                     );
                 }
             }
+            #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => {
                 let (content_label, content_value) = {
                     let view = &node.runtime.borrow().view;
@@ -1052,6 +1160,10 @@ impl RenderNode {
                             f64::INFINITY,
                             f64::INFINITY,
                             (0.0, 0.0),
+                            // The semantic domain is not real geometry: the
+                            // painted pass's position report stays attached
+                            // and is reported against its own extents.
+                            None,
                         )
                     } else {
                         ScrollHandle::new(
@@ -1111,14 +1223,14 @@ impl RenderNode {
     }
 }
 
-fn flush_navigation_transition_element(
-    renderer: &mut HydrolysisRenderer,
+fn flush_navigation_transition_element<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     ctx: RenderContext,
     env: &Environment,
-    child: &RenderNode,
+    child: &RenderNode<E>,
     source: bool,
     id: RawId,
 ) {
-    renderer.note_navigation_element(source, id, ctx.bounds);
+    renderer.note_navigation_element(source, id, ctx.bounds());
     child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
 }

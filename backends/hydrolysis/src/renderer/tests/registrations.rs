@@ -18,18 +18,20 @@ use nami::collection::SignalCollection;
 use waterui::animation::Animation;
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
+use waterui::graphics::Color;
 use waterui::prelude::ContextMenu;
 use waterui::{AnyView, ViewExt as _};
+use waterui_backend_core::View;
 use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
 use waterui_core::Native;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::id::{Id, SelfId};
-use waterui_layout::collection_transition::collection_transition;
+use waterui_core::id::SelfId;
+use waterui_core::transition::PropertyTransition;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::scroll;
-use waterui_layout::stack::{VStack, vstack};
+use waterui_layout::stack::{VStack, vstack, zstack};
 use waterui_navigation::tab::{Tab, TabsLayout};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
 
@@ -148,35 +150,41 @@ fn hits_at(runtime: &HeadlessRuntime, x: f32, y: f32) -> (usize, usize) {
 fn a_hidden_tabs_button_is_not_hittable_after_the_switch() {
     let fired1 = Rc::new(Cell::new(false));
     let fired2 = Rc::new(Cell::new(false));
-    let selection = Binding::container(Id::try_from(1).expect("non-zero tab id"));
+    let tab_items = waterui_core::views::SharedAnyViews::new(
+        (1_i32..=2)
+            .map(|i| {
+                let fired = if i == 1 {
+                    fired1.clone()
+                } else {
+                    fired2.clone()
+                };
+                Tab::new(format!("Tab {i}"), move || {
+                    let fired = fired.clone();
+                    NavigationView::new(
+                        format!("Pane {i}"),
+                        button(format!("Fire {i}")).action(move || fired.set(true)),
+                    )
+                })
+            })
+            .collect::<Vec<_>>(),
+    );
+    let tab_ids = waterui_core::views::Views::snapshot(&tab_items);
+    let selection = Binding::container(
+        waterui_core::views::ViewSnapshot::get_id(&tab_ids, 0)
+            .expect("a non-empty tab set reports an id"),
+    );
+    let second = waterui_core::views::ViewSnapshot::get_id(&tab_ids, 1)
+        .expect("a non-empty tab set reports an id");
     let builder = {
         let selection = selection.clone();
-        let (fired1, fired2) = (fired1.clone(), fired2.clone());
         AnyViewBuilder::<AnyView>::new(move || {
-            let tabs = (1_i32..=2)
-                .map(|i| {
-                    let id = Id::try_from(i).expect("non-zero tab id");
-                    let fired = if i == 1 {
-                        fired1.clone()
-                    } else {
-                        fired2.clone()
-                    };
-                    Tab::new(id, format!("Tab {i}"), move || {
-                        let fired = fired.clone();
-                        NavigationView::new(
-                            format!("Pane {i}"),
-                            button(format!("Fire {i}")).action(move || fired.set(true)),
-                        )
-                    })
-                })
-                .collect();
-            AnyView::new(TabsLayout::new(selection.clone(), tabs))
+            AnyView::new(TabsLayout::new(selection.clone(), tab_items.clone()))
         })
     };
     let mut runtime = runtime(builder);
     let (x, y) = midpoint(bounds_of(&mut runtime, "Fire 1"));
 
-    selection.set(Id::try_from(2).expect("non-zero tab id"));
+    selection.set(second);
     pump_until_settled(&mut runtime);
 
     assert_eq!(
@@ -399,7 +407,7 @@ fn the_platform_view_table_holds_each_view_once_after_n_frames() {
         // A snapshot pump renders the frame like a real host's encoded
         // frame; publish runs once per encoded frame, as the host does.
         let pump = runtime.pump_at(true, at);
-        assert!(pump.profile.counters.rendered);
+        assert!(pump.profile().counters().rendered());
         sink.table().borrow_mut().publish();
     }
 
@@ -410,10 +418,96 @@ fn the_platform_view_table_holds_each_view_once_after_n_frames() {
         2,
         "each platform view holds its placement once, got {placements:?}"
     );
-    let mut ids: Vec<u64> = placements.iter().map(|placement| placement.id).collect();
+    let mut ids: Vec<u64> = placements
+        .iter()
+        .map(crate::platform_view::PlatformViewPlacement::id)
+        .collect();
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 2, "no view may record twice in one frame");
+}
+
+/// Two runtimes in one process mint placement ids independently: the id
+/// space lives in the sink each runtime installed, so the second runtime's
+/// first leaf takes the same first id instead of continuing the first
+/// runtime's count — the behaviour the process-global counter broke.
+#[test]
+fn each_runtime_mints_platform_view_ids_from_its_own_sink() {
+    let first_published_id = || {
+        let sink = PlatformViewSink::new();
+        let mut env = test_environment();
+        env.insert(sink.clone());
+        let builder = AnyViewBuilder::<AnyView>::new(|| {
+            AnyView::new(Native::new(PlatformView::new("probe")))
+        });
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            env,
+            builder,
+            WINDOW.0,
+            WINDOW.1,
+            MinimalTestTheme::default(),
+        );
+        let pump = runtime.pump_at(true, Instant::now());
+        assert!(pump.profile().counters().rendered());
+        sink.table().borrow_mut().publish();
+        let placements = sink.table().borrow().placements().to_vec();
+        let [placement] = placements.as_slice() else {
+            panic!("the probe view is placed exactly once, got {placements:?}");
+        };
+        placement.id()
+    };
+    let first = first_published_id();
+    let second = first_published_id();
+    assert_eq!(
+        first, second,
+        "each runtime's sink mints from its own first id, got {first} then {second}"
+    );
+    assert_eq!(first, 1, "a runtime's placement ids start at 1");
+}
+
+/// A platform view yields a press only where an interactive target is
+/// painted above it: a decorative layer covering the whole view leaves the
+/// view its press, and a button stacked over it takes the press inside its
+/// own bounds — the rule hosted planes publish as their occlusion.
+#[test]
+fn only_an_interactive_target_above_a_platform_view_takes_its_press() {
+    let mut env = test_environment();
+    env.insert(PlatformViewSink::new());
+    let builder = AnyViewBuilder::<AnyView>::new(|| {
+        AnyView::new(zstack((
+            AnyView::new(Native::new(PlatformView::new("probe"))).size(300.0, 300.0),
+            Color::srgb(20, 20, 20).size(300.0, 300.0),
+            button("Above"),
+        )))
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        builder,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let (button_x, button_y) = midpoint(bounds_of(&mut runtime, "Above"));
+    let core = runtime.renderer();
+    let [placed] = core.materialized_platform_views.as_slice() else {
+        panic!("the probe view is placed exactly once");
+    };
+    let view = placed.placement.id();
+    let decorated = kurbo::Point::new(
+        f64::from(placed.placement.x()) + 10.0,
+        f64::from(placed.placement.y()) + 10.0,
+    );
+    assert!(
+        !core.platform_view_occluded(view, decorated),
+        "decorative ink above the view must leave it the press"
+    );
+    assert!(
+        core.platform_view_occluded(
+            view,
+            kurbo::Point::new(f64::from(button_x), f64::from(button_y))
+        ),
+        "the button painted above the view takes the press"
+    );
 }
 
 /// The materialized paint order keeps dev's per-frame registration ranking:
@@ -729,7 +823,7 @@ fn a_list_row_inside_a_pushed_navigation_page_is_hit_below_the_stack_offset() {
 #[test]
 fn a_collection_entry_mid_transition_is_hit_at_its_single_offset_position() {
     let tapped = Rc::new(Cell::new(None));
-    let list: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let mut list: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
         let tapped = tapped.clone();
@@ -738,16 +832,13 @@ fn a_collection_entry_mid_transition_is_hit_at_its_single_offset_position() {
             let collection = VStack::for_each(list.clone(), move |item: SelfId<u64>| {
                 let id = *item;
                 let tapped = tapped.clone();
-                AnyView::new(
-                    vstack((text(format!("Item {id}")),))
-                        .size(120.0, 40.0)
-                        .on_tap(move || tapped.set(Some(id))),
-                )
+                vstack((text(format!("Item {id}")),))
+                    .size(120.0, 40.0)
+                    .on_tap(move || tapped.set(Some(id)))
+                    .transition(PropertyTransition::opacity())
+                    .animation(Animation::linear(Duration::from_millis(1_000)))
             });
-            AnyView::new(collection_transition(
-                collection,
-                Animation::linear(Duration::from_millis(1_000)),
-            ))
+            AnyView::new(collection)
         })
     };
     let mut runtime = runtime(builder);

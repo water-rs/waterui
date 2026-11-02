@@ -17,7 +17,7 @@ use objc2::rc::{Retained, Weak};
 use objc2::{MainThreadMarker, MainThreadOnly, msg_send};
 use objc2_app_kit::{
     NSButton, NSButtonType, NSControl, NSControlStateValueOff, NSControlStateValueOn, NSFont,
-    NSLayoutAttribute, NSPopUpButton, NSSegmentedControl, NSStackView,
+    NSLayoutAttribute, NSPopUpButton, NSSegmentDistribution, NSSegmentedControl, NSStackView,
     NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_core_foundation::CGRect;
@@ -116,6 +116,9 @@ impl Picker {
                 // initializer.
                 let segmented: Retained<NSSegmentedControl> =
                     unsafe { msg_send![segmented, initWithFrame: CGRect::ZERO] };
+                // The row fills the width it is given, dividing it into
+                // equal segments (`docs/layout-spec.md` §6).
+                segmented.setSegmentDistribution(NSSegmentDistribution::FillEqually);
                 Control::Segmented(segmented)
             }
             PickerStyle::Radio => {

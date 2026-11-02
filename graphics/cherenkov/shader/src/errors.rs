@@ -2,6 +2,7 @@
 
 /// A snippet violates the snippet contract.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SnippetError {
     /// The WGSL source does not parse.
     #[error("snippet `{name}` ({variant}) does not parse:\n{message}")]
@@ -66,6 +67,7 @@ pub enum SnippetError {
 
 /// A chain cannot be composed.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ComposeError {
     /// The chain has no stages.
     #[error("the chain is empty")]
@@ -127,6 +129,7 @@ pub enum ComposeError {
 
 /// A module cannot be emitted for a back end.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EmitError {
     /// The module does not validate with the given capabilities.
     #[error("the module is not valid: {0}")]

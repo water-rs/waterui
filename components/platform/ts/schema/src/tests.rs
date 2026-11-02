@@ -16,54 +16,45 @@ use crate::{
 };
 
 /// A three-level tree exercising every node kind that carries children.
-const NESTED: TypeSchema = TypeSchema::Struct(StructSchema {
-    name: "Root",
-    fields: &[
-        FieldSchema {
-            name: "state",
-            ty: TypeSchema::Enum(EnumSchema {
-                name: "State",
-                representation: EnumRepresentation::DEFAULT_TAGGED,
-                variants: &[
-                    VariantSchema {
-                        name: "Idle",
-                        payload: VariantPayload::Unit,
-                    },
-                    VariantSchema {
-                        name: "Loading",
-                        payload: VariantPayload::Tuple(&[TypeSchema::Number(NumberKind::U32)]),
-                    },
-                    VariantSchema {
-                        name: "Failed",
-                        payload: VariantPayload::Struct(&[FieldSchema {
-                            name: "message",
-                            ty: TypeSchema::String,
-                        }]),
-                    },
+const NESTED: TypeSchema = TypeSchema::Struct(StructSchema::new(
+    "Root",
+    &[
+        FieldSchema::new(
+            "state",
+            TypeSchema::Enum(EnumSchema::new(
+                "State",
+                EnumRepresentation::DEFAULT_TAGGED,
+                &[
+                    VariantSchema::new("Idle", VariantPayload::Unit),
+                    VariantSchema::new(
+                        "Loading",
+                        VariantPayload::Tuple(&[TypeSchema::Number(NumberKind::U32)]),
+                    ),
+                    VariantSchema::new(
+                        "Failed",
+                        VariantPayload::Struct(&[FieldSchema::new("message", TypeSchema::String)]),
+                    ),
                 ],
-            }),
-        },
-        FieldSchema {
-            name: "tags",
-            ty: TypeSchema::List(&TypeSchema::Option(&TypeSchema::String)),
-        },
-        FieldSchema {
-            name: "counts",
-            ty: TypeSchema::Map {
+            )),
+        ),
+        FieldSchema::new(
+            "tags",
+            TypeSchema::List(&TypeSchema::Option(&TypeSchema::String)),
+        ),
+        FieldSchema::new(
+            "counts",
+            TypeSchema::Map {
                 key: &TypeSchema::String,
                 value: &TypeSchema::Number(NumberKind::U64),
             },
-        },
-        FieldSchema {
-            name: "on_pick",
-            ty: TypeSchema::Callback(&[TypeSchema::Number(NumberKind::I32), TypeSchema::Bool]),
-        },
-        FieldSchema {
-            name: "slot",
-            ty: TypeSchema::View,
-        },
+        ),
+        FieldSchema::new(
+            "on_pick",
+            TypeSchema::Callback(&[TypeSchema::Number(NumberKind::I32), TypeSchema::Bool]),
+        ),
+        FieldSchema::new("slot", TypeSchema::View),
     ],
-});
+));
 
 /// The encoding of [`NESTED`], terminator included.
 const NESTED_ENCODED: [u8; encoded_len(&NESTED) + 1] = encode(&NESTED);
@@ -398,38 +389,35 @@ mod encoder_invariants {
     #[test]
     #[should_panic(expected = "a string-union variant cannot carry a payload")]
     fn encoding_rejects_a_string_union_variant_with_a_payload() {
-        const BAD: TypeSchema = TypeSchema::Enum(EnumSchema {
-            name: "E",
-            representation: EnumRepresentation::StringUnion,
-            variants: &[VariantSchema {
-                name: "V",
-                payload: VariantPayload::Tuple(&[TypeSchema::Bool]),
-            }],
-        });
+        const BAD: TypeSchema = TypeSchema::Enum(EnumSchema::new(
+            "E",
+            EnumRepresentation::StringUnion,
+            &[VariantSchema::new(
+                "V",
+                VariantPayload::Tuple(&[TypeSchema::Bool]),
+            )],
+        ));
         let _ = encoded_len(&BAD);
     }
 
     #[test]
     #[should_panic(expected = "a struct name must not be empty")]
     fn encoding_rejects_an_empty_struct_name() {
-        const BAD: TypeSchema = TypeSchema::Struct(StructSchema {
-            name: "",
-            fields: &[],
-        });
+        const BAD: TypeSchema = TypeSchema::Struct(StructSchema::new("", &[]));
         let _ = encoded_len(&BAD);
     }
 
     #[test]
     #[should_panic(expected = "a tagged enum's `tag` property name must not be empty")]
     fn encoding_rejects_an_empty_tagged_property_name() {
-        const BAD: TypeSchema = TypeSchema::Enum(EnumSchema {
-            name: "E",
-            representation: EnumRepresentation::Tagged {
+        const BAD: TypeSchema = TypeSchema::Enum(EnumSchema::new(
+            "E",
+            EnumRepresentation::Tagged {
                 tag: "",
                 content: "content",
             },
-            variants: &[],
-        });
+            &[],
+        ));
         let _ = encoded_len(&BAD);
     }
 }
@@ -613,7 +601,7 @@ mod raw_identifiers {
         let TypeSchema::Struct(schema) = Kinded::SCHEMA else {
             panic!("`Kinded` is a struct")
         };
-        assert_eq!(schema.fields[0].name, "type");
+        assert_eq!(schema.fields()[0].name(), "type");
     }
 
     #[test]
@@ -621,8 +609,8 @@ mod raw_identifiers {
         let TypeSchema::Enum(schema) = Keywords::SCHEMA else {
             panic!("`Keywords` is an enum")
         };
-        assert_eq!(schema.variants[0].name, "match");
-        assert_eq!(schema.variants[1].name, "type");
+        assert_eq!(schema.variants()[0].name(), "match");
+        assert_eq!(schema.variants()[1].name(), "type");
     }
 
     #[test]
@@ -630,7 +618,7 @@ mod raw_identifiers {
         let TypeSchema::Struct(schema) = r#Type::SCHEMA else {
             panic!("`r#Type` is a struct")
         };
-        assert_eq!(schema.name, "Type");
+        assert_eq!(schema.name(), "Type");
         // The metadata static exists only in debug builds, and its bytes are
         // the directory record: the unrawed name, NUL, the contract, NUL.
         #[cfg(debug_assertions)]
@@ -657,49 +645,40 @@ mod catalog {
     const PADDING: TypeSchema = TypeSchema::Union(&[
         TypeSchema::Bool,
         TypeSchema::Number(NumberKind::F64),
-        TypeSchema::Struct(StructSchema {
-            name: "EdgeInsets",
-            fields: &[FieldSchema {
-                name: "top",
-                ty: TypeSchema::Number(NumberKind::F64),
-            }],
-        }),
+        TypeSchema::Struct(StructSchema::new(
+            "EdgeInsets",
+            &[FieldSchema::new("top", TypeSchema::Number(NumberKind::F64))],
+        )),
     ]);
 
-    const TOGGLE_ATTRIBUTES: TypeSchema = TypeSchema::Struct(StructSchema {
-        name: "ToggleAttributes",
-        fields: &[FieldSchema {
-            name: "value",
-            ty: TypeSchema::Signal(&TypeSchema::Bool),
-        }],
-    });
+    const TOGGLE_ATTRIBUTES: TypeSchema = TypeSchema::Struct(StructSchema::new(
+        "ToggleAttributes",
+        &[FieldSchema::new(
+            "value",
+            TypeSchema::Signal(&TypeSchema::Bool),
+        )],
+    ));
 
-    const SPACER_ATTRIBUTES: TypeSchema = TypeSchema::Struct(StructSchema {
-        name: "SpacerAttributes",
-        fields: &[],
-    });
+    const SPACER_ATTRIBUTES: TypeSchema =
+        TypeSchema::Struct(StructSchema::new("SpacerAttributes", &[]));
 
-    const CATALOG: CatalogSchema = CatalogSchema {
-        components: &[
-            ComponentSchema {
-                name: "Toggle",
-                summary: "A two-state switch.",
-                attributes: attributes_of(&TOGGLE_ATTRIBUTES),
-                children: ChildrenSlot::Label,
-            },
-            ComponentSchema {
-                name: "Spacer",
-                summary: "A flexible gap.",
-                attributes: attributes_of(&SPACER_ATTRIBUTES),
-                children: ChildrenSlot::None,
-            },
+    const CATALOG: CatalogSchema = CatalogSchema::new(
+        &[
+            ComponentSchema::new(
+                "Toggle",
+                "A two-state switch.",
+                attributes_of(&TOGGLE_ATTRIBUTES),
+                ChildrenSlot::Label,
+            ),
+            ComponentSchema::new(
+                "Spacer",
+                "A flexible gap.",
+                attributes_of(&SPACER_ATTRIBUTES),
+                ChildrenSlot::None,
+            ),
         ],
-        modifiers: &[ModifierSchema {
-            name: "padding",
-            summary: "Insets the view.",
-            value: &PADDING,
-        }],
-    };
+        &[ModifierSchema::new("padding", "Insets the view.", &PADDING)],
+    );
 
     const ENCODED: [u8; catalog_encoded_len(&CATALOG) + 1] = encode_catalog(&CATALOG);
 
@@ -707,17 +686,33 @@ mod catalog {
     fn a_catalog_decodes_to_the_constant_the_compiler_encoded() {
         let decoded = decode_catalog(payload(&ENCODED)).expect("the catalog payload decodes");
         assert_eq!(decoded, Catalog::from(&CATALOG));
-        assert_eq!(decoded.components[0].attributes[0].name, "value");
-        assert_eq!(decoded.components[1].attributes, []);
+        assert_eq!(decoded.components()[0].attributes()[0].name(), "value");
+        assert_eq!(decoded.components()[1].attributes(), []);
         assert_eq!(
-            decoded.modifiers[0].value,
-            crate::owned::Schema::from(&PADDING)
+            decoded.modifiers()[0].value(),
+            &crate::owned::Schema::from(&PADDING)
         );
     }
 
     #[test]
     fn the_catalog_payload_is_nul_free_so_the_cli_can_find_its_end() {
         assert!(!payload(&ENCODED).contains(&0));
+    }
+
+    #[test]
+    fn the_modifier_order_sentence_is_a_sentence() {
+        // The generator copies the constant into every modifier's doc
+        // comment verbatim, so it has to be a complete sentence here —
+        // a fragment or a missing full stop would be copied everywhere.
+        assert!(
+            !crate::MODIFIER_ORDER_SENTENCE.is_empty(),
+            "the sentence every modifier's doc opens with cannot be empty"
+        );
+        assert!(
+            crate::MODIFIER_ORDER_SENTENCE.ends_with('.'),
+            "the sentence must end with a full stop: {:?}",
+            crate::MODIFIER_ORDER_SENTENCE
+        );
     }
 
     #[test]
@@ -765,6 +760,8 @@ mod catalog {
     fn each_decoder_refuses_the_other_payload_kinds() {
         const MOUNT: [u8; crate::mount_encoded_len("src/promo.tsx", "PromoProps", 7) + 1] =
             crate::encode_mount("src/promo.tsx", "PromoProps", 7);
+        const HALF: [u8; crate::runtime_half_encoded_len(crate::RuntimePart::Library, 7) + 1] =
+            crate::encode_runtime_half(crate::RuntimePart::Library, 7);
         let props =
             crate::encode::<{ crate::encoded_len(&TOGGLE_ATTRIBUTES) + 1 }>(&TOGGLE_ATTRIBUTES);
         assert_eq!(
@@ -791,6 +788,25 @@ mod catalog {
                 found: "a component catalog"
             }
         );
+        assert_eq!(
+            decode(payload(&HALF)).expect_err("a runtime half is not a type tree"),
+            crate::DecodeError::NotATypeTree {
+                found: "a runtime fingerprint half"
+            }
+        );
+        assert_eq!(
+            crate::decode_mount(payload(&HALF)).expect_err("a runtime half is not a mount point"),
+            crate::DecodeError::NotAMountPoint {
+                found: "a runtime fingerprint half"
+            }
+        );
+        assert_eq!(
+            crate::decode_runtime_half(payload(&ENCODED))
+                .expect_err("a catalog is not a runtime half"),
+            crate::DecodeError::NotARuntimeHalf {
+                found: "a component catalog"
+            }
+        );
     }
 }
 
@@ -802,13 +818,10 @@ mod mount {
     };
 
     /// A props contract whose name the mount point records.
-    const PROMO: TypeSchema = TypeSchema::Struct(StructSchema {
-        name: "PromoProps",
-        fields: &[FieldSchema {
-            name: "headline",
-            ty: TypeSchema::String,
-        }],
-    });
+    const PROMO: TypeSchema = TypeSchema::Struct(StructSchema::new(
+        "PromoProps",
+        &[FieldSchema::new("headline", TypeSchema::String)],
+    ));
 
     /// A hash with bits set above `u32`, so a decoder reading it at the wrong
     /// width loses something a test can see.
@@ -823,11 +836,7 @@ mod mount {
     fn a_mount_point_decodes_to_the_constant_the_compiler_encoded() {
         assert_eq!(
             decode_mount(payload(&ENCODED)).expect("the mount payload decodes"),
-            MountPoint {
-                module: MODULE.to_owned(),
-                props: "PromoProps".to_owned(),
-                contract_hash: HASH,
-            }
+            MountPoint::new(MODULE.to_owned(), "PromoProps".to_owned(), HASH)
         );
     }
 
@@ -851,6 +860,20 @@ mod mount {
         );
     }
 
+    /// A payload that stops after its version byte has no kind byte to read:
+    /// it is truncated, not a payload of the default kind.
+    #[test]
+    fn a_payload_that_ends_after_the_version_is_truncated_for_every_decoder() {
+        let version = [crate::FORMAT_VERSION];
+        for error in [
+            decode_mount(&version).expect_err("no kind byte to be a mount point"),
+            crate::decode_catalog(&version).expect_err("no kind byte to be a catalog"),
+            crate::decode_runtime_half(&version).expect_err("no kind byte to be a runtime half"),
+        ] {
+            assert_eq!(error, crate::DecodeError::Truncated { offset: 1 });
+        }
+    }
+
     #[test]
     fn trailing_bytes_after_the_hash_are_refused() {
         let mut bytes = payload(&ENCODED).to_vec();
@@ -859,5 +882,265 @@ mod mount {
             decode_mount(&bytes).expect_err("a payload with extra bytes is malformed"),
             crate::DecodeError::Trailing { extra: 1 }
         );
+    }
+}
+
+/// The runtime-fingerprint half payload and the fingerprint built from two.
+mod runtime {
+    use crate::{
+        FORMAT_VERSION, HASH_BASIS, RuntimeFingerprint, RuntimeHalf, RuntimePart, contract_hash,
+        decode_runtime_half, encode_runtime_half, hash_extend, payload, runtime_half_encoded_len,
+    };
+
+    /// Hashes with bits set above `u32`, so a decoder reading one at the
+    /// wrong width loses something a test can see.
+    const LIBRARY: u64 = 0xfedc_ba98_7654_3210;
+    const CATALOG: u64 = 0x0123_4567_89ab_cdef;
+
+    const LIBRARY_HALF: [u8; runtime_half_encoded_len(RuntimePart::Library, LIBRARY) + 1] =
+        encode_runtime_half(RuntimePart::Library, LIBRARY);
+    const CATALOG_HALF: [u8; runtime_half_encoded_len(RuntimePart::Catalog, CATALOG) + 1] =
+        encode_runtime_half(RuntimePart::Catalog, CATALOG);
+
+    #[test]
+    fn each_half_decodes_to_the_constant_the_compiler_encoded() {
+        assert_eq!(
+            decode_runtime_half(payload(&LIBRARY_HALF)).expect("the library half decodes"),
+            RuntimeHalf::new(RuntimePart::Library, LIBRARY)
+        );
+        assert_eq!(
+            decode_runtime_half(payload(&CATALOG_HALF)).expect("the catalog half decodes"),
+            RuntimeHalf::new(RuntimePart::Catalog, CATALOG)
+        );
+    }
+
+    #[test]
+    fn the_half_payload_is_nul_free_so_the_cli_can_find_its_end() {
+        assert!(!payload(&LIBRARY_HALF).contains(&0));
+        assert!(!payload(&CATALOG_HALF).contains(&0));
+    }
+
+    #[test]
+    fn the_halves_combine_into_the_fingerprint_text_the_manifest_carries() {
+        let library = decode_runtime_half(payload(&LIBRARY_HALF)).expect("decodes");
+        let catalog = decode_runtime_half(payload(&CATALOG_HALF)).expect("decodes");
+        let fingerprint = RuntimeFingerprint::new(library.hash(), catalog.hash());
+        let text = fingerprint.to_string();
+        assert_eq!(
+            text,
+            format!("{FORMAT_VERSION}-fedcba9876543210-0123456789abcdef")
+        );
+        assert_eq!(
+            text.parse::<RuntimeFingerprint>()
+                .expect("the text form parses"),
+            fingerprint
+        );
+        assert_eq!(
+            serde_json::to_string(&fingerprint).expect("serializes"),
+            format!("\"{text}\"")
+        );
+        assert_eq!(
+            serde_json::from_str::<RuntimeFingerprint>(&format!("\"{text}\"")).expect("parses"),
+            fingerprint
+        );
+    }
+
+    #[test]
+    fn a_fingerprint_for_another_format_or_hash_is_a_different_fingerprint() {
+        let fingerprint = RuntimeFingerprint::new(LIBRARY, CATALOG);
+        let other_format = format!("{}-fedcba9876543210-0123456789abcdef", FORMAT_VERSION + 1)
+            .parse::<RuntimeFingerprint>()
+            .expect("parses");
+        assert_ne!(fingerprint, other_format);
+        assert_ne!(fingerprint, RuntimeFingerprint::new(LIBRARY, CATALOG ^ 1));
+        assert_ne!(fingerprint, RuntimeFingerprint::new(LIBRARY ^ 1, CATALOG));
+    }
+
+    #[test]
+    fn malformed_fingerprint_text_is_refused_naming_the_part() {
+        for text in [
+            "",
+            "2",
+            "2-fedcba9876543210",
+            "2-fedcba9876543210-0123456789abcdef-extra",
+            "x-fedcba9876543210-0123456789abcdef",
+            "2-FEDCBA9876543210-0123456789abcdef",
+            "2-fedcba987654321-0123456789abcdef",
+            "2-fedcba9876543210-0123456789abcdeg",
+        ] {
+            assert!(
+                text.parse::<RuntimeFingerprint>().is_err(),
+                "{text:?} is not a fingerprint"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_part_byte_is_refused() {
+        let mut bytes = payload(&LIBRARY_HALF).to_vec();
+        bytes[2] = 9;
+        let error = decode_runtime_half(&bytes).expect_err("an unknown part byte cannot decode");
+        assert!(
+            matches!(
+                error,
+                crate::DecodeError::UnknownTag {
+                    kind: "runtime part",
+                    tag: 9,
+                    offset: 2
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_truncated_half_is_an_error_not_a_guess() {
+        let bytes = payload(&LIBRARY_HALF);
+        let error =
+            decode_runtime_half(&bytes[..bytes.len() - 1]).expect_err("a cut hash cannot decode");
+        assert!(
+            matches!(error, crate::DecodeError::Truncated { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn trailing_bytes_after_the_hash_are_refused() {
+        let mut bytes = payload(&LIBRARY_HALF).to_vec();
+        bytes.push(1);
+        assert_eq!(
+            decode_runtime_half(&bytes).expect_err("a payload with extra bytes is malformed"),
+            crate::DecodeError::Trailing { extra: 1 }
+        );
+    }
+
+    #[test]
+    fn extending_from_the_basis_is_the_contract_hash() {
+        let bytes = payload(&CATALOG_HALF);
+        assert_eq!(hash_extend(HASH_BASIS, bytes), contract_hash(bytes));
+        let (head, tail) = bytes.split_at(3);
+        assert_eq!(
+            hash_extend(hash_extend(HASH_BASIS, head), tail),
+            contract_hash(bytes),
+            "chaining two slices hashes their concatenation"
+        );
+    }
+}
+
+/// The bundle manifest and the bytes its signature covers.
+mod manifest {
+    use std::collections::BTreeMap;
+
+    use crate::{
+        BundleFile, BundleManifest, ContractHash, HexBytes, RuntimeFingerprint, Sha256Digest,
+        SignedManifest,
+    };
+
+    fn manifest() -> BundleManifest {
+        BundleManifest::new(
+            3,
+            RuntimeFingerprint::new(0xfedc_ba98_7654_3210, 0x0123_4567_89ab_cdef),
+            BundleFile::new(
+                String::from("bundle-3.js"),
+                48213,
+                Sha256Digest::new([0xab; 32]),
+            ),
+            BTreeMap::from([
+                (String::from("src/views/promo.tsx"), ContractHash(0x1)),
+                (
+                    String::from("src/about.tsx"),
+                    ContractHash(0xffff_ffff_ffff_ffff),
+                ),
+            ]),
+        )
+    }
+
+    #[test]
+    fn the_signed_bytes_are_the_compact_canonical_form() {
+        let expected = format!(
+            "{{\"version\":3,\"runtime\":\"{}-fedcba9876543210-0123456789abcdef\",\"bundle\":{{\"url\":\"bundle-3.js\",\"size\":48213,\"sha256\":\"{}\"}},\"modules\":{{\"src/about.tsx\":\"ffffffffffffffff\",\"src/views/promo.tsx\":\"0000000000000001\"}}}}",
+            crate::FORMAT_VERSION,
+            "ab".repeat(32)
+        );
+        assert_eq!(manifest().signed_bytes(), expected.into_bytes());
+    }
+
+    #[test]
+    fn translations_appear_only_when_present_and_sorted_by_locale() {
+        let mut with = manifest();
+        with.set_translations(BTreeMap::from([
+            (
+                String::from("zh-Hans"),
+                String::from("greeting = \"你好\"\n"),
+            ),
+            (String::from("en"), String::from("greeting = \"Hello\"\n")),
+        ]));
+        let bytes = String::from_utf8(with.signed_bytes()).expect("utf-8");
+        assert!(bytes.ends_with(
+            ",\"translations\":{\"en\":\"greeting = \\\"Hello\\\"\\n\",\"zh-Hans\":\"greeting = \\\"你好\\\"\\n\"}}"
+        ), "{bytes}");
+        assert_eq!(
+            BundleManifest::from_json(&with.to_json()).expect("round-trips"),
+            with
+        );
+    }
+
+    #[test]
+    fn the_signed_bytes_do_not_depend_on_how_the_document_was_written() {
+        // Members reversed, whitespace everywhere: what a hand-edited or
+        // re-serialized file looks like. The verifier signs what it parsed,
+        // not what it read.
+        let reordered = format!(
+            "{{ \"modules\" : {{ \"src/views/promo.tsx\" : \"0000000000000001\" ,\n \"src/about.tsx\" : \"ffffffffffffffff\" }},\n \"bundle\" : {{ \"sha256\" : \"{}\" , \"url\" : \"bundle-3.js\" , \"size\" : 48213 }},\n \"runtime\" : \"{}-fedcba9876543210-0123456789abcdef\" , \"version\" : 3 }}",
+            "ab".repeat(32),
+            crate::FORMAT_VERSION
+        );
+        assert_eq!(
+            BundleManifest::from_json(&reordered)
+                .expect("member order does not matter on the way in")
+                .signed_bytes(),
+            manifest().signed_bytes()
+        );
+    }
+
+    #[test]
+    fn a_signed_manifest_round_trips_through_json() {
+        let signed = SignedManifest::new(manifest(), HexBytes::new([0x5a; 64]));
+        let text = signed.to_json();
+        assert_eq!(SignedManifest::from_json(&text).expect("parses"), signed);
+        assert!(text.contains(&"5a".repeat(64)));
+    }
+
+    #[test]
+    fn hashes_are_fixed_width_lowercase_hex_and_nothing_else() {
+        for text in ["\"0000000000000001\"", "\"ffffffffffffffff\""] {
+            assert!(serde_json::from_str::<ContractHash>(text).is_ok(), "{text}");
+        }
+        for text in [
+            "\"1\"",
+            "\"0x0000000000000001\"",
+            "\"000000000000000G\"",
+            "\"FFFFFFFFFFFFFFFF\"",
+            "1",
+        ] {
+            assert!(
+                serde_json::from_str::<ContractHash>(text).is_err(),
+                "{text}"
+            );
+        }
+        assert!(serde_json::from_str::<Sha256Digest>(&format!("\"{}\"", "ab".repeat(31))).is_err());
+        assert!(serde_json::from_str::<Sha256Digest>(&format!("\"{}\"", "AB".repeat(32))).is_err());
+        assert_eq!(
+            serde_json::from_str::<Sha256Digest>(&format!("\"{}\"", "ab".repeat(32)))
+                .expect("parses"),
+            Sha256Digest::new([0xab; 32])
+        );
+    }
+
+    #[test]
+    fn an_unknown_member_is_refused() {
+        let mut text = manifest().to_json();
+        text.insert_str(text.len() - 2, ",\n  \"extra\": 1\n");
+        assert!(BundleManifest::from_json(&text).is_err(), "{text}");
     }
 }

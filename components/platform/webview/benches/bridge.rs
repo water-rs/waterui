@@ -10,8 +10,8 @@
 //! engine's `JSON.parse`, which is C++ and not ours to improve, nor the IPC hop
 //! inside a multi-process browser, which dwarfs both.
 //!
-//! Run with `cargo bench -p waterui-webview`. On an M-series Mac the first run
-//! gave:
+//! Run with `cargo bench -p waterui-webview`; each benchmark takes the payload
+//! size in bytes as its argument. On an M-series Mac the first run gave:
 //!
 //! ```text
 //! parse JSON envelope   (100 B)      1.75 µs      (10 KB)  151 µs   (1 MB)  17.6 ms
@@ -44,8 +44,8 @@
 //!   loader and never builds a Rust-side document at all.
 
 use std::hint::black_box;
-use std::time::Instant;
 
+use divan::Bencher;
 use waterui_webview::bridge::{Reply, Request};
 use waterui_webview::{IntoJsReply, Json};
 
@@ -78,72 +78,53 @@ fn binary_envelope(bytes: usize) -> String {
     format!(r#"{{"id":1,"name":"upload","b64":"{payload}"}}"#)
 }
 
-fn measure(label: &str, iterations: u32, mut body: impl FnMut()) {
-    // Warm up so the first allocation does not colour the result.
-    for _ in 0..iterations.min(64) {
-        body();
-    }
-    let start = Instant::now();
-    for _ in 0..iterations {
-        body();
-    }
-    let elapsed = start.elapsed();
-    let each = elapsed / iterations;
-    println!("{label:<44} {each:>12?} per call");
+/// Payload sizes: 100 B, 10 KB and 1 MB.
+const SIZES: [usize; 3] = [100, 10_240, 1_048_576];
+
+#[divan::bench(args = SIZES)]
+fn parse_json_envelope(bencher: Bencher, size: usize) {
+    let envelope = json_envelope(size);
+    bencher.bench_local(|| Request::parse(black_box(&envelope)).expect("well-formed"));
+}
+
+#[divan::bench(args = SIZES)]
+fn parse_binary_envelope(bencher: Bencher, size: usize) {
+    let envelope = binary_envelope(size);
+    bencher.bench_local(|| Request::parse(black_box(&envelope)).expect("well-formed"));
+}
+
+#[divan::bench(args = SIZES)]
+fn render_reply_script(bencher: Bencher, size: usize) {
+    let reply = Reply::Bytes(vec![7_u8; size]);
+    bencher.bench_local(|| reply.resolve_script(black_box(1)));
+}
+
+// A value reply is the common path now. It used to be sent as base64 like
+// any other bytes, which is what made `await waterui.invoke(...)` resolve to
+// a base64 string; it goes out as JSON through `RawValue`, so the handler's
+// own bytes land in the envelope rather than being parsed and printed again.
+#[divan::bench(args = SIZES)]
+fn render_value_reply(bencher: Bencher, size: usize) {
+    let reply = Reply::Json(json_payload(size).into_bytes());
+    bencher.bench_local(|| reply.resolve_script(black_box(1)));
+}
+
+// Serializing a handler's answer walks it once to tag integers a JavaScript
+// number cannot hold. Measured against a plain `to_vec` of the same value,
+// because the walk is on every JSON reply: it should be small enough not to
+// matter, and it is worth knowing when that stops being true.
+#[divan::bench(args = SIZES)]
+fn serialize_reply_plain(bencher: Bencher, size: usize) {
+    let value: serde_json::Value = serde_json::from_str(&json_payload(size)).expect("well-formed");
+    bencher.bench_local(|| serde_json::to_vec(black_box(&value)).expect("serializes"));
+}
+
+#[divan::bench(args = SIZES)]
+fn serialize_reply_tagging(bencher: Bencher, size: usize) {
+    let value: serde_json::Value = serde_json::from_str(&json_payload(size)).expect("well-formed");
+    bencher.bench_local(|| Json(black_box(&value)).into_js_reply().expect("serializes"));
 }
 
 fn main() {
-    println!("WaterUI bridge, Rust-side cost per call\n");
-
-    for (label, size) in [("100 B", 100_usize), ("10 KB", 10_240), ("1 MB", 1_048_576)] {
-        let envelope = json_envelope(size);
-        measure(&format!("parse JSON envelope ({label})"), 2_000, || {
-            black_box(Request::parse(black_box(&envelope)).expect("well-formed"));
-        });
-    }
-
-    for (label, size) in [("100 B", 100_usize), ("10 KB", 10_240), ("1 MB", 1_048_576)] {
-        let envelope = binary_envelope(size);
-        measure(&format!("parse binary envelope ({label})"), 2_000, || {
-            black_box(Request::parse(black_box(&envelope)).expect("well-formed"));
-        });
-    }
-
-    for (label, size) in [("100 B", 100_usize), ("10 KB", 10_240), ("1 MB", 1_048_576)] {
-        let reply = Reply::Bytes(vec![7_u8; size]);
-        measure(&format!("render reply script ({label})"), 2_000, || {
-            black_box(reply.resolve_script(black_box(1)));
-        });
-    }
-
-    // A value reply is the common path now. It used to be sent as base64 like
-    // any other bytes, which is what made `await waterui.invoke(...)` resolve to
-    // a base64 string; it goes out as JSON through `RawValue`, so the handler's
-    // own bytes land in the envelope rather than being parsed and printed again.
-    for (label, size) in [("100 B", 100_usize), ("10 KB", 10_240), ("1 MB", 1_048_576)] {
-        let reply = Reply::Json(json_payload(size).into_bytes());
-        measure(&format!("render value reply ({label})"), 2_000, || {
-            black_box(reply.resolve_script(black_box(1)));
-        });
-    }
-
-    // Serializing a handler's answer walks it once to tag integers a JavaScript
-    // number cannot hold. Measured against a plain `to_vec` of the same value,
-    // because the walk is on every JSON reply: it should be small enough not to
-    // matter, and it is worth knowing when that stops being true.
-    for (label, size) in [("100 B", 100_usize), ("10 KB", 10_240), ("1 MB", 1_048_576)] {
-        let value: serde_json::Value =
-            serde_json::from_str(&json_payload(size)).expect("well-formed");
-
-        measure(&format!("serialize reply, plain ({label})"), 2_000, || {
-            black_box(serde_json::to_vec(black_box(&value)).expect("serializes"));
-        });
-        measure(
-            &format!("serialize reply, tagging ({label})"),
-            2_000,
-            || {
-                black_box(Json(black_box(&value)).into_js_reply().expect("serializes"));
-            },
-        );
-    }
+    divan::main();
 }

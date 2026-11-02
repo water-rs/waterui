@@ -89,23 +89,50 @@ impl PluralForms {
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct DualPluralForms {
     /// one + one
     #[serde(default)]
-    pub one_one: Option<String>,
+    one_one: Option<String>,
 
     /// one + other
     #[serde(default)]
-    pub one_other: Option<String>,
+    one_other: Option<String>,
 
     /// other + one
     #[serde(default)]
-    pub other_one: Option<String>,
+    other_one: Option<String>,
 
     /// other + other (fallback, required)
-    pub other_other: String,
+    other_other: String,
     // Additional combinations can be added as needed
     // zero_zero, zero_one, etc.
+}
+
+impl DualPluralForms {
+    /// one + one
+    #[must_use]
+    pub fn one_one(&self) -> Option<&str> {
+        self.one_one.as_deref()
+    }
+
+    /// one + other
+    #[must_use]
+    pub fn one_other(&self) -> Option<&str> {
+        self.one_other.as_deref()
+    }
+
+    /// other + one
+    #[must_use]
+    pub fn other_one(&self) -> Option<&str> {
+        self.other_one.as_deref()
+    }
+
+    /// other + other (fallback, required)
+    #[must_use]
+    pub const fn other_other(&self) -> &str {
+        self.other_other.as_str()
+    }
 }
 
 impl DualPluralForms {
@@ -126,6 +153,7 @@ impl DualPluralForms {
 /// Translation value in TOML file.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum TranslationValue {
     /// Simple string translation
     Simple(String),
@@ -191,6 +219,7 @@ impl TranslationFile {
 
 /// Validation error for translation files.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ValidationError {
     /// Invalid plural form for locale.
     InvalidPluralForm {

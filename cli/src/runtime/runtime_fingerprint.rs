@@ -8,7 +8,7 @@ use tracing::info;
 
 use crate::runtime_compat::{runtime_fingerprint_root_dirs, runtime_fingerprint_root_files};
 use crate::templates::scaffold_template_digest;
-use crate::toolchain::Host;
+use crate::toolchain::{Host, git};
 
 #[expect(
     clippy::redundant_pub_crate,
@@ -64,15 +64,14 @@ fn compute_runtime_fingerprint_sync(
 /// rather than rejected — refusing to build is no answer for tools whose whole
 /// purpose is to look at what you are in the middle of changing.
 fn compute_git_fingerprint(host: &Host, root: &Path, runtime_identity: &str) -> Result<String> {
-    if !is_git_work_tree(host, root) {
+    if !is_git_work_tree(host, root)? {
         bail!(
             "Preview dev mode requires `waterui_path` to point at a git worktree: {}",
             root.display()
         );
     }
 
-    let head = host
-        .std_command("git")
+    let head = git::std_command(host)?
         .arg("-C")
         .arg(root)
         .arg("rev-parse")
@@ -151,8 +150,7 @@ fn git_output<'a>(
     args: impl IntoIterator<Item = &'a str>,
     what: &str,
 ) -> Result<Vec<u8>> {
-    let output = host
-        .std_command("git")
+    let output = git::std_command(host)?
         .arg("-C")
         .arg(root)
         .args(args)
@@ -166,19 +164,18 @@ fn git_output<'a>(
     Ok(output.stdout)
 }
 
-fn is_git_work_tree(host: &Host, root: &Path) -> bool {
-    let inside_work_tree = host
-        .std_command("git")
+fn is_git_work_tree(host: &Host, root: &Path) -> std::io::Result<bool> {
+    let inside_work_tree = git::std_command(host)?
         .arg("-C")
         .arg(root)
         .arg("rev-parse")
         .arg("--is-inside-work-tree")
         .output();
     let Ok(inside_work_tree) = inside_work_tree else {
-        return false;
+        return Ok(false);
     };
-    inside_work_tree.status.success()
-        && String::from_utf8_lossy(&inside_work_tree.stdout).trim() == "true"
+    Ok(inside_work_tree.status.success()
+        && String::from_utf8_lossy(&inside_work_tree.stdout).trim() == "true")
 }
 
 #[cfg(test)]
@@ -189,24 +186,25 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn uses_git_commit_fingerprint_when_tree_is_clean() {
+    fn uses_git_commit_fingerprint_when_tree_is_clean() -> std::io::Result<()> {
         let dir = tempdir().expect("temp dir");
-        init_git_repo(dir.path());
+        init_git_repo(dir.path())?;
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
-        commit_all(dir.path(), "init");
+        commit_all(dir.path(), "init")?;
 
         let fingerprint =
             compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
                 .expect("fingerprint");
         assert!(fingerprint.contains(":git:"));
+        Ok(())
     }
 
     #[test]
-    fn dirty_runtime_inputs_change_the_fingerprint() {
+    fn dirty_runtime_inputs_change_the_fingerprint() -> std::io::Result<()> {
         let dir = tempdir().expect("temp dir");
-        init_git_repo(dir.path());
+        init_git_repo(dir.path())?;
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
-        commit_all(dir.path(), "init");
+        commit_all(dir.path(), "init")?;
 
         let clean =
             compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
@@ -233,14 +231,15 @@ mod tests {
             compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
                 .expect("fingerprint");
         assert_ne!(dirty, other, "two different edits must not share a key");
+        Ok(())
     }
 
     #[test]
-    fn untracked_runtime_inputs_change_the_fingerprint() {
+    fn untracked_runtime_inputs_change_the_fingerprint() -> std::io::Result<()> {
         let dir = tempdir().expect("temp dir");
-        init_git_repo(dir.path());
+        init_git_repo(dir.path())?;
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
-        commit_all(dir.path(), "init");
+        commit_all(dir.path(), "init")?;
 
         let clean =
             compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
@@ -253,14 +252,15 @@ mod tests {
 
         assert_ne!(clean, with_untracked, "a new file must not reuse the key");
         assert!(with_untracked.contains(":dirty:"), "got {with_untracked}");
+        Ok(())
     }
 
     #[test]
-    fn reverting_an_edit_restores_the_clean_fingerprint() {
+    fn reverting_an_edit_restores_the_clean_fingerprint() -> std::io::Result<()> {
         let dir = tempdir().expect("temp dir");
-        init_git_repo(dir.path());
+        init_git_repo(dir.path())?;
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
-        commit_all(dir.path(), "init");
+        commit_all(dir.path(), "init")?;
 
         let clean =
             compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
@@ -278,19 +278,20 @@ mod tests {
                 .expect("fingerprint"),
             "a worktree back at its commit must reuse the commit's build"
         );
+        Ok(())
     }
 
     #[test]
-    fn ignores_example_changes_for_git_fast_path() {
+    fn ignores_example_changes_for_git_fast_path() -> std::io::Result<()> {
         let dir = tempdir().expect("temp dir");
-        init_git_repo(dir.path());
+        init_git_repo(dir.path())?;
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
         write_runtime_file(
             dir.path(),
             "examples/demo/src/lib.rs",
             "pub fn preview() {}\n",
         );
-        commit_all(dir.path(), "init");
+        commit_all(dir.path(), "init")?;
 
         write_runtime_file(
             dir.path(),
@@ -302,19 +303,19 @@ mod tests {
             compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
                 .expect("fingerprint");
         assert!(fingerprint.contains(":git:"));
+        Ok(())
     }
 
     #[test]
-    fn clean_git_fingerprint_is_stable_across_clone_paths() {
+    fn clean_git_fingerprint_is_stable_across_clone_paths() -> std::io::Result<()> {
         let dir = tempdir().expect("temp dir");
-        init_git_repo(dir.path());
+        init_git_repo(dir.path())?;
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
-        commit_all(dir.path(), "init");
+        commit_all(dir.path(), "init")?;
 
         let clone_dir = tempdir().expect("clone dir");
         let cloned_repo = clone_dir.path().join("repo");
-        let status = Host::current()
-            .std_command("git")
+        let status = git::std_command(&Host::current())?
             .arg("clone")
             .arg(dir.path())
             .arg(&cloned_repo)
@@ -333,6 +334,7 @@ mod tests {
             compute_runtime_fingerprint_sync(&Host::current(), &cloned_repo, "waterui-core@0.0.1")
                 .expect("cloned fingerprint");
         assert_eq!(original, cloned);
+        Ok(())
     }
 
     #[test]
@@ -357,29 +359,29 @@ mod tests {
         fs::write(path, contents).expect("write runtime file");
     }
 
-    fn init_git_repo(root: &Path) {
-        run_git(root, ["init"]);
-        run_git(root, ["config", "user.name", "WaterUI Test"]);
-        run_git(root, ["config", "user.email", "waterui-test@example.com"]);
+    fn init_git_repo(root: &Path) -> std::io::Result<()> {
+        run_git(root, ["init"])?;
+        run_git(root, ["config", "user.name", "WaterUI Test"])?;
+        run_git(root, ["config", "user.email", "waterui-test@example.com"])
     }
 
-    fn commit_all(root: &Path, message: &str) {
-        run_git(root, ["add", "."]);
-        run_git(root, ["commit", "-m", message]);
+    fn commit_all(root: &Path, message: &str) -> std::io::Result<()> {
+        run_git(root, ["add", "."])?;
+        run_git(root, ["commit", "-m", message])
     }
 
-    fn run_git<I, S>(root: &Path, args: I)
+    fn run_git<I, S>(root: &Path, args: I) -> std::io::Result<()>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let status = Host::current()
-            .std_command("git")
+        let status = git::std_command(&Host::current())?
             .arg("-C")
             .arg(root)
             .args(args)
             .status()
             .expect("git command should run");
         assert!(status.success(), "git command failed in {}", root.display());
+        Ok(())
     }
 }

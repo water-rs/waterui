@@ -1598,6 +1598,7 @@ impl Native {
         draws: &[OpDraw],
         dynamic_offset: u32,
         view_gen: u64,
+        scissors: &crate::render::repaint::Scissors<'_>,
     ) -> Result<(), NativeError> {
         // `dev` clones cheaply (a handle): holding it across the cache
         // lookups below keeps them borrowable on `self`.
@@ -1691,7 +1692,20 @@ impl Native {
                     &[set0, set1],
                     &[dynamic_offset],
                 );
-                dev.cmd_draw(cb, 6, draw.instance_count, 0, draw.first_instance);
+                for [x, y, width, height] in scissors.rectangles() {
+                    dev.cmd_set_scissor(
+                        cb,
+                        0,
+                        &[vk::Rect2D {
+                            offset: vk::Offset2D {
+                                x: i32::try_from(x).expect("scissor x"),
+                                y: i32::try_from(y).expect("scissor y"),
+                            },
+                            extent: vk::Extent2D { width, height },
+                        }],
+                    );
+                    dev.cmd_draw(cb, 6, draw.instance_count, 0, draw.first_instance);
+                }
             }
         }
         // SAFETY: `cb` is inside the render pass begun above.

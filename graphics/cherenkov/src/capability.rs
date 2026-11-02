@@ -29,8 +29,9 @@ pub trait ShaderPaint: Backend {
     /// [`ResourceError::Shader`] when the source fails validation.
     fn validate_shader(source: &ShaderSource) -> Result<(), ResourceError>;
     /// Registers a shader [`ShaderPaint::validate_shader`] accepted, on the
-    /// render thread. A rejection fails every later render that draws the
-    /// shader with [`RenderError::Rejected`](crate::RenderError::Rejected).
+    /// render thread. A rejection leaves every surface whose content draws
+    /// the shader out of later frames, reported as
+    /// [`RenderError::Rejected`](crate::RenderError::Rejected).
     ///
     /// # Errors
     /// [`ResourceError::Shader`] when pipeline creation fails.
@@ -245,8 +246,8 @@ pub trait BackdropShaders: Backdrop {
     /// Registers a backdrop effect shader
     /// [`BackdropShaders::validate_backdrop_shader`] accepted, on the render
     /// thread, compiled for the composite contract; the pipeline is built
-    /// here, never at draw time. A rejection fails every later render that
-    /// samples the shader with
+    /// here, never at draw time. A rejection leaves every surface that
+    /// samples the shader out of later frames, reported as
     /// [`RenderError::Rejected`](crate::RenderError::Rejected).
     ///
     /// # Errors
@@ -296,7 +297,8 @@ pub trait Planes: Backend {}
 /// falls back to composition.
 pub trait HostedLayers: Planes + GpuInstalls {
     /// The platform object the host hands over: an `NSView` on macOS, a
-    /// `CALayer` on iOS, a `SurfaceControl` on Android.
+    /// `CALayer` on iOS, a `SurfaceControl` on Android, an `HtmlElement` on
+    /// the web.
     type Object: Clone + crate::RenderTransfer + 'static;
     /// Binds `object` as the content of `layer` on `surface`, its own
     /// coordinate space mapped onto the layer's content space with

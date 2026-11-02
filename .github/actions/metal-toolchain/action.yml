@@ -4,7 +4,7 @@ description: >-
   turns every WGSL shader into a Metal library with `xcrun metal` while cargo
   builds filtrate, so a job that compiles a WaterUI app on macOS needs the
   toolchain even though the app it packages never links Metal sources itself.
-  The macos-26 runner image ships Xcode 26 without the separately downloaded
+  The macOS runner images ship Xcode without the separately downloaded
   Metal toolchain; the action asks Xcode for the component's install state
   with `xcodebuild -showComponent MetalToolchain -json` and downloads it only
   when the query does not report it installed.

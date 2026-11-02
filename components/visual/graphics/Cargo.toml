@@ -43,10 +43,13 @@ gpu = [
     "dep:pollster",
     "dep:shaderloom",
     "dep:event-listener",
+    "dep:wgpu-external-frame",
 ]
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps.
 cpu = ["cherenkov", "dep:cherenkov-cpu", "dep:image"]
+# Include GLES and the compact WGSL artifacts it consumes only on request.
+gles = ["gpu", "wgpu/gles", "cherenkov-gpu/gles", "filtrate/gles", "shaderloom/gles", "wgpu-external-frame/gles"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
@@ -61,6 +64,9 @@ cherenkov = { workspace = true, optional = true }
 cherenkov-gpu = { workspace = true, optional = true }
 cherenkov-cpu = { workspace = true, optional = true }
 color.workspace = true
+# The working-space ↔ sRGB matrices and transfer, the engine's one
+# definition (`filtrate_core::space`).
+filtrate-core.workspace = true
 filtrate = { workspace = true, optional = true }
 pastey.workspace = true
 wgpu = { workspace = true, optional = true }
@@ -82,6 +88,12 @@ event-listener = { version = "5", optional = true }
 # artifacts require (`shaderloom::required_features`).
 shaderloom = { workspace = true, optional = true, features = ["runtime"] }
 
+# `ahardware_buffer::request_device` opens the shared Android device with the
+# hardware-buffer import extensions and the `samplerYcbcrConversion` feature a
+# camera or decoder frame's zero-copy import needs (water-rs/waterui#1902);
+# wgpu never requests them on its own.
+[target.'cfg(target_os = "android")'.dependencies]
+wgpu-external-frame = { workspace = true, optional = true }
 # `GpuContent` is `Send` because natively a frame's content renders on the
 # render thread. wasm32 without atomics has one thread, and there wgpu marks
 # its WebGPU handles `!Send` unless this feature is on; it has no effect on a
@@ -99,7 +111,7 @@ ttf-parser = "0.25"
 # No font bytes are committed: the recording tests resolve the `Roboto` face
 # the test-fonts install script puts in the user font location (see
 # `backends/hydrolysis/test-fonts`) through system font discovery.
-fontique = "0.11"
+fontique = "0.12"
 # The external-frame tests count the device's live textures and read back
 # `Rgba16Float` host targets.
 wgpu = { workspace = true, features = ["counters"] }

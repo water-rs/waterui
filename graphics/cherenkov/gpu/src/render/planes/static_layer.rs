@@ -1,13 +1,13 @@
 //! Retained layer pixels and measured admission inputs.
 
-use cherenkov::{Command, DisplayList, GlyphStyle, RenderError};
+use cherenkov::{DisplayList, GlyphStyle, RenderError};
 use kurbo::{Affine, Rect, Shape};
 use rustc_hash::FxHashMap;
 use skrifa::MetadataProvider;
 
 use crate::render::{
     bitmap, glyph,
-    prepared::{Op, Outline, ResolvedPaint},
+    prepared::{Op, ResolvedPaint},
 };
 
 /// A local source domain. Its integer origin and dimensions include the
@@ -46,6 +46,7 @@ pub struct Observation {
     pub stamp: u64,
     pub resources: (u64, u64),
     pub domain: Option<Domain>,
+    pub range: crate::render::present::ColorRange,
     pub density: f64,
     pub quiet_frames: u64,
     /// Admission must outlast a recent content period, and is at most eight frames.
@@ -55,10 +56,10 @@ pub struct Observation {
 
 impl Capture {
     pub fn bytes(&self) -> u64 {
-        self.source.as_ref().map_or(0, |_| {
+        self.source.as_ref().map_or(0, |(texture, _)| {
             u64::from(self.domain.size.0)
                 * u64::from(self.domain.size.1)
-                * crate::render::texel_bytes(crate::render::TARGET_FORMAT)
+                * crate::render::texel_bytes(texture.format())
         })
     }
 }
@@ -69,6 +70,7 @@ impl Observation {
             stamp,
             resources,
             domain: None,
+            range: crate::render::present::ColorRange::Standard,
             density: 0.0,
             quiet_frames: 0,
             quiet_required: 2,
@@ -177,26 +179,6 @@ fn glyph_bounds(
     Ok(bounds.unwrap_or(Rect::ZERO))
 }
 
-/// Conservative finite bounds from the actual retained display list. A
-/// filter or shader can change without a source edit and is not static.
-fn path_bounds(outline: &Outline, list: &DisplayList) -> Rect {
-    match outline {
-        Outline::Fill { elements, .. } => {
-            kurbo::BezPath::from_vec(elements.to_vec()).bounding_box()
-        }
-        Outline::Stroke { shape, stroke } => shape
-            .bounds()
-            .inflate(stroke_margin(stroke), stroke_margin(stroke)),
-        Outline::Source { command, .. } => match &list.commands()[*command] {
-            Command::Fill { shape, .. } => shape.bounds(),
-            Command::Stroke { shape, stroke, .. } => shape
-                .bounds()
-                .inflate(stroke_margin(stroke), stroke_margin(stroke)),
-            _ => unreachable!("prepared path source"),
-        },
-    }
-}
-
 fn bounds(
     ops: &[Op],
     list: &DisplayList,
@@ -236,9 +218,11 @@ fn bounds(
                 if matches!(paint, ResolvedPaint::Shader(_)) {
                     return Ok(None);
                 }
-                (*local, path_bounds(outline, list))
+                (*local, outline.get(list).bounds())
             }
-            Op::Glyphs { local, run, paint } => {
+            Op::Glyphs {
+                local, run, paint, ..
+            } => {
                 if matches!(paint, ResolvedPaint::Shader(_)) {
                     return Ok(None);
                 }
@@ -248,7 +232,6 @@ fn bounds(
                 local,
                 font,
                 glyph,
-                origin,
                 size,
             } => {
                 let font = &fonts[font];
@@ -258,12 +241,7 @@ fn bounds(
                 else {
                     continue;
                 };
-                (
-                    *local
-                        * Affine::translate((f64::from(origin[0]), f64::from(origin[1])))
-                        * Affine::scale(f64::from(*size)),
-                    decoded.em,
-                )
+                (*local * Affine::scale(f64::from(*size)), decoded.em)
             }
             Op::BeginShadow { parameters, .. } => {
                 let margin = 6.0_f64.mul_add(parameters.sigma, parameters.spread.max(0.0));
@@ -415,7 +393,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(domain.density, 1.25);
+        assert_eq!(domain.density.to_bits(), 1.25_f64.to_bits());
         assert!(domain.raster().is_finite());
     }
 
@@ -432,6 +410,6 @@ mod tests {
         }
         assert!(entry.observe(4, (0, 0), 1.25));
         assert!(!entry.observe(4, (0, 0), 1.25));
-        assert_eq!(entry.density, 1.25);
+        assert_eq!(entry.density.to_bits(), 1.25_f64.to_bits());
     }
 }

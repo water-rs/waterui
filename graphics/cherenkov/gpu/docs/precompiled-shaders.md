@@ -1,11 +1,18 @@
 # Precompiled engine shaders
 
-Issue #57. The engine's fixed WGSL modules — the three `VARIANT`
-specializations of `shader.wgsl` plus `present.wgsl` — are parsed, validated
-and translated by naga once in `cherenkov-gpu`'s `build.rs`, instead of wgpu
+Issue #57. The engine's fixed WGSL modules, including the five `VARIANT`
+specializations of `shader.wgsl` and the presentation and helper shaders, are
+parsed, validated and translated by naga once in `cherenkov-gpu`'s `build.rs`, instead of wgpu
 running naga per pipeline at device and pipeline creation. The runtime embeds
 the products with `include_bytes!` and loads them through
 `Device::create_shader_module_passthrough`.
+
+The ordinary modules retain the linear gradient-stop scan and exclude the
+binary-search block. Draw lowering selects the long-gradient module for
+linear, radial and sweep paints above eight stops. Both modules share the
+same endpoint handling and interpolation. Metal and Vulkan tile composition
+use corresponding short- and long-gradient modules with the same attachment
+interfaces; union members use their separate module.
 
 Delivery by backend (a property of the selected backend, never a runtime
 fallback):
@@ -15,7 +22,8 @@ fallback):
 | Vulkan | SPIR-V passthrough | `<name>.spv`: naga emission as-is. A `spirv-opt -O` step ran here until issue #124 measured it on the Pixel 9 Pro (Mali-G715): ~0.64 s faster cold pipeline creation, but the effects scene's GPU time ~78% slower at p50 and ~2.7x at p99 — so the driver's own compiler does the optimizing |
 | Metal | `.metallib` passthrough | `<name>.metallib`: naga MSL at wgpu-hal's argument slots, compiled by `xcrun -sdk <sdk> metal` + `metallib` during the build |
 | WebGPU (wasm32) | WGSL | The original source, via `create_shader_module_trusted` with unchecked runtime checks |
-| DX12, GL, BrowserWebGpu native | WGSL | Same trusted-WGSL path; wgpu 29 passthrough has no GLSL producer and this build produces no DXIL/HLSL — WGSL is the declared delivery for those backends |
+| DX12 (Windows targets) | DXIL passthrough | `<name>.<vertex>.<fragment>.vs.dxil` and `<name>.<fragment>.ps.dxil` per render program and `<name>.<entry>.cs.dxil` per compute entry (issue #2726): naga HLSL at wgpu-hal's DX12 root-signature registers, the vertex stage written against the fragment stage it links with, compiled by `dxc` from `PATH` with optimization and stripped debug and reflection data. A DXIL module holds one entry point, so each stage loads as its own module |
+| GL, BrowserWebGpu native | WGSL | Same trusted-WGSL path; wgpu 29 passthrough has no GLSL producer — WGSL is the declared delivery for those backends |
 
 Dynamic shaders — `color.wgsl`/`paint.wgsl` composites, user shader-paint
 sources and `interop::shader_module` — are unaffected: they keep the checked
@@ -58,8 +66,8 @@ exist. None of the fixed shaders call `arrayLength`, so the pin is exact.
 A backend that takes passthrough shaders but a device without
 `Features::PASSTHROUGH_SHADERS` — possible only with a host-supplied
 `interop::SharedDevice` — is an explicit `EngineError::Backend` at engine
-creation. Engine-created devices request the feature on Vulkan and Metal,
-which wgpu-hal advertises unconditionally there.
+creation. Engine-created devices request the feature on Vulkan, Metal and
+DX12, which wgpu-hal advertises unconditionally there.
 
 ## Build requirements
 
@@ -77,6 +85,11 @@ which wgpu-hal advertises unconditionally there.
   settings participate in that resolution and invalidate the build script.
   The workspace defaults both to 26.0, matching the native Apple contract
   in `docs/api.md` and both iOS host manifests.
+- Windows targets run `dxc` from `PATH` — the DirectXShaderCompiler
+  release CI and the CLI pin (v1.8.2505.1) — in debug and release builds
+  alike; a missing `dxc` or a failed compile is a build error. Microsoft
+  publishes Windows and Linux binaries, so macOS hosts need a self-built
+  `dxc`.
 - wasm32 targets skip the toolchain entirely (nothing embeds the artifacts);
   the WGSL is still parsed and validated.
 
@@ -92,7 +105,7 @@ rustup default stable
 
 # 1. Build for macOS — compiles .metal -> .air -> .metallib via xcrun.
 cargo build -p cherenkov-gpu
-ls target/debug/build/cherenkov-gpu-*/out/*.metallib   # 4 files expected
+ls target/debug/build/cherenkov-gpu-*/out/*.metallib   # engine, helper and tile libraries
 
 # 2. Lint + test on Metal hardware.
 cargo clippy --locked -p cherenkov-gpu --all-targets -- -D warnings
@@ -117,7 +130,8 @@ cargo build --locked --release -p cherenkov-bench --features cherenkov
     --scene graphics/cherenkov/scenes/perf/map --warmup 5 --frames 60 --out out/measure-metal.json
 ```
 
-Expected: build emits `engine{0,1,2}.metallib` + `present.metallib`; tests
+Expected: build emits `engine{0,1,2,3,4}.metallib`, the fixed helper libraries,
+and `engine_tile{,_long}.metallib`; tests
 pass; corpus renders byte-identical to dev; `wgpu::Backend::Metal` selects
 `ShaderDelivery::Metallib` (visible via `RUST_LOG=cherenkov_gpu=debug` or the
 `shader_delivery` return on a shared device).

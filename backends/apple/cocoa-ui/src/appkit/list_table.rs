@@ -2,11 +2,13 @@
 //! data source and delegate are the scroll view itself.
 //!
 //! [`TableView`] is the leaf surface a list renders into. The wrapped
-//! [`NSTableView`] (`table_view()`) holds a single `content` column and
+//! [`InnerTable`] (`table_view()`) holds a single `content` column and
 //! answers the `NSTableViewDataSource`/`NSTableViewDelegate` callbacks by
 //! forwarding to the [`TableSource`] the consumer installs; the scroll view
-//! owns the scroll chrome (vertical scroller, autohide, top content inset)
-//! and is flipped so document space is top-left origin.
+//! owns the scroll chrome (vertical scroller, autohide, content insets)
+//! and is flipped so document space is top-left origin. `InnerTable` also
+//! bounds the accessibility rows it vends to realized or selected rows so
+//! an assistive tree walk cannot materialize every row of a large list.
 //!
 //! [`TableRowView`] is the `NSTableRowView` that draws a hairline separator
 //! under a row when its consumer installs a separator handler, and answers
@@ -37,10 +39,10 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use objc2::rc::Retained;
-use objc2::runtime::Bool;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
+    NSAccessibilityIndexAttribute, NSAccessibilityRoleAttribute, NSAccessibilityRowRole,
     NSBezelStyle, NSButton, NSColor, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo,
     NSFont, NSLayoutConstraint, NSPasteboardItem, NSPasteboardType, NSPasteboardWriting,
     NSRectFill, NSScrollView, NSTableColumn, NSTableRowView, NSTableView,
@@ -49,7 +51,7 @@ use objc2_app_kit::{
     NSView,
 };
 use objc2_foundation::{
-    NSArray, NSEdgeInsets, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotFound, NSNotification,
+    NSArray, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotFound, NSNotification,
     NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString,
 };
 
@@ -60,6 +62,11 @@ use crate::scroll_flight::{FlightPlan, ScrollFlight};
 
 /// The table's content-bearing column identifier.
 const COLUMN_IDENTIFIER: &str = "content";
+
+/// The space the list gains between its top safe-area edge and the first
+/// row — `SwiftUI`'s breathing room above the first row, which scrolls
+/// away with the rows.
+const TOP_GAP: f64 = 10.0;
 
 /// The data the wrapped `NSTableView` reads rows from — the list's model.
 ///
@@ -179,6 +186,133 @@ impl TableViewIvars {
     fn source(&self) -> Option<Rc<dyn TableSource>> {
         self.source.borrow().as_ref().cloned()
     }
+}
+
+/// The per-instance state [`InnerTable`] stores — none: the accessibility
+/// overrides read `NSTableView`'s own realized-row and selection state.
+pub struct InnerTableIvars {}
+
+define_class!(
+    // SAFETY: `NSTableView`'s designated initializer is `initWithFrame:`,
+    // which `InnerTable::new` calls, and the class does not implement `Drop`.
+    #[unsafe(super(NSTableView))]
+    #[name = "CocoaUiListInnerTable"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = InnerTableIvars]
+    /// The `NSTableView` a [`TableView`] wraps.
+    ///
+    /// `AppKit` vends an `NSTableRow` accessibility proxy for every row in
+    /// the table, realized or not, and an unrealized row's cell child
+    /// materializes the row when an assistive client asks that child for
+    /// children — the mock resolves through
+    /// `viewAtColumn:row:makeIfNecessary:YES`. On a 200,000-row list a
+    /// bounded accessibility walk then realizes every row and times out
+    /// (water-rs/waterui#1489). The overrides bound the rows they vend:
+    /// the generic children queries keep only realized rows, so a tree
+    /// walk cannot reach an unrealized row's cell; `accessibilityRows`
+    /// keeps realized and selected rows so the row model and selection
+    /// remain readable; and `accessibilitySelectedRows` is left alone
+    /// because `AppKit` builds its proxies independently — a selected row
+    /// stays reportable without being walkable.
+    pub struct InnerTable;
+
+    unsafe impl NSObjectProtocol for InnerTable {}
+
+    impl InnerTable {
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityRows))]
+        fn accessibility_rows_override(&self) -> Option<Retained<NSArray>> {
+            // SAFETY: `super` answers the table's own row proxies.
+            let rows: Option<Retained<NSArray>> =
+                unsafe { msg_send![super(self), accessibilityRows] };
+            rows.map(|rows| self.exposed_elements(&rows, true))
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityChildren))]
+        fn accessibility_children_override(&self) -> Option<Retained<NSArray>> {
+            // SAFETY: `super` answers the table's own children.
+            let children: Option<Retained<NSArray>> =
+                unsafe { msg_send![super(self), accessibilityChildren] };
+            children.map(|children| self.exposed_elements(&children, false))
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityChildrenInNavigationOrder))]
+        fn accessibility_children_in_navigation_order_override(
+            &self,
+        ) -> Option<Retained<NSArray>> {
+            // SAFETY: `super` answers the table's own children.
+            let children: Option<Retained<NSArray>> = unsafe {
+                msg_send![super(self), accessibilityChildrenInNavigationOrder]
+            };
+            children.map(|children| self.exposed_elements(&children, false))
+        }
+    }
+);
+
+impl InnerTable {
+    /// Creates the wrapped table; `TableView::new` wires the column, data
+    /// source and delegate.
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(InnerTableIvars {});
+        // SAFETY: `initWithFrame:` is `NSTableView`'s designated initializer.
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+
+    /// `elements` minus the `AXRow` elements for rows an assistive walk
+    /// must not reach, because reaching an unrealized row's cell child
+    /// would materialize it. `keep_selected` retains selected-but-unrealized
+    /// rows: the row model keeps selection reachable, while the generic
+    /// children list — what a recursive tree walk descends — does not.
+    fn exposed_elements(&self, elements: &NSArray, keep_selected: bool) -> Retained<NSArray> {
+        let exposed: Vec<Retained<AnyObject>> = elements
+            .to_vec()
+            .into_iter()
+            .filter(|element| {
+                row_index(element).is_none_or(|row| self.exposes_row(row, keep_selected))
+            })
+            .collect();
+        NSArray::from_retained_slice(&exposed)
+    }
+
+    /// Whether `row` stays visible to assistive clients: a realized row is
+    /// already materialized, and — under `keep_selected` — a selected row
+    /// remains reachable so selection can be read and moved.
+    fn exposes_row(&self, row: NSInteger, keep_selected: bool) -> bool {
+        row >= 0
+            && row < self.numberOfRows()
+            && (self.rowViewAtRow_makeIfNecessary(row, false).is_some()
+                || (keep_selected && self.isRowSelected(row)))
+    }
+}
+
+/// The row index an accessibility element proxies, or `None` when the
+/// element is not an `AXRow` (a column element, a header, a scroller).
+fn row_index(element: &AnyObject) -> Option<NSInteger> {
+    // SAFETY: `accessibilityAttributeValue:` is the informal `NSObject`
+    // category's generic attribute getter and answers `nil` for attributes
+    // the element does not vend. `NSTableRow` proxies implement the legacy
+    // attribute getters, not the modern `accessibilityRole` /
+    // `accessibilityIndex` selectors, so the attributes are queried
+    // directly.
+    let role: Option<Retained<AnyObject>> =
+        unsafe { msg_send![element, accessibilityAttributeValue: NSAccessibilityRoleAttribute] };
+    let is_row = role
+        .and_then(|role| role.downcast::<NSString>().ok())
+        // SAFETY: the role attribute constant is a plain `NSString` static.
+        .is_some_and(|role| role.isEqualToString(unsafe { NSAccessibilityRowRole }));
+    if !is_row {
+        return None;
+    }
+    // SAFETY: the same generic getter, for the row's index attribute.
+    let index: Option<Retained<AnyObject>> =
+        unsafe { msg_send![element, accessibilityAttributeValue: NSAccessibilityIndexAttribute] };
+    index.and_then(|index| {
+        // SAFETY: the index attribute is vended as an `NSNumber`.
+        let index: NSInteger = unsafe { msg_send![&*index, integerValue] };
+        (index >= 0).then_some(index)
+    })
 }
 
 define_class!(
@@ -339,15 +473,32 @@ define_class!(
             true
         }
 
-        /// Keeps `AppKit`'s layout — its clip corrections counted as the
+        /// Keeps `AppKit`'s resize, counted as the flight's own writes: it
+        /// re-tiles the clip and resizes the table with it, and the clip's
+        /// re-clamp to the new document frame is `AppKit`'s correction,
+        /// never the user's scroll.
+        #[unsafe(method(setFrameSize:))]
+        fn set_frame_size_override(&self, new_size: NSSize) {
+            guarded("TableView setFrameSize", || {
+                self.ivars().flight.own_writes(|| {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
+                });
+            });
+        }
+
+        /// Insets the rows by the safe area and the list's top gap, keeps
+        /// `AppKit`'s layout — its clip corrections counted as the
         /// flight's own writes — then reports it so the consumer can
         /// track the content width onto the column.
         #[unsafe(method(layout))]
         fn layout_override(&self) {
             guarded("TableView layout", || {
                 self.ivars().flight.own_writes(|| {
-                    // SAFETY: see the module safety note.
-                    let _: () = unsafe { msg_send![super(self), layout] };
+                    super::scroll::layout_with_safe_area_insets(self, TOP_GAP, || {
+                        // SAFETY: see the module safety note.
+                        let _: () = unsafe { msg_send![super(self), layout] };
+                    });
                 });
                 if let Some(handler) = self.ivars().layout.borrow().as_ref().cloned() {
                     handler(self);
@@ -388,7 +539,8 @@ define_class!(
 impl TableView {
     /// A list-shaped table: one `content` column, no header, `fullWidth`
     /// rows, zero intercell spacing, text-background fill, autohiding
-    /// vertical scroller, and a 10pt top content inset that scrolls away.
+    /// vertical scroller, and content inset by the safe area plus a top
+    /// gap that scrolls away.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(TableViewIvars::new(mtm));
@@ -399,7 +551,7 @@ impl TableView {
             &this.ivars().flight,
         ));
 
-        let table = NSTableView::new(mtm);
+        let table = InnerTable::new(mtm);
         let column = NSTableColumn::initWithIdentifier(
             NSTableColumn::alloc(mtm),
             &NSString::from_str(COLUMN_IDENTIFIER),
@@ -421,14 +573,9 @@ impl TableView {
         this.setHasVerticalScroller(true);
         this.setAutohidesScrollers(true);
         this.setDrawsBackground(false);
+        // `-layout` insets the rows by the safe area and the list's gap.
         this.setAutomaticallyAdjustsContentInsets(false);
-        this.setContentInsets(NSEdgeInsets {
-            top: 10.0,
-            left: 0.0,
-            bottom: 0.0,
-            right: 0.0,
-        });
-        this.ivars().table.replace(Some(table));
+        this.ivars().table.replace(Some(table.into_super()));
         this.ivars()
             .live_scroll
             .replace(this.ivars().flight.watch_user_scroll(&this, mtm));
@@ -531,6 +678,8 @@ type SeparatorHandler = Rc<dyn Fn(&TableRowView) -> (f64, f64)>;
 pub struct TableRowViewIvars {
     /// `(leading, trailing)` insets for the hairline; `None` draws none.
     separator: RefCell<Option<SeparatorHandler>>,
+    /// Whether the hairline paints — a section's last member draws none.
+    shows_separator: Cell<bool>,
 }
 
 impl fmt::Debug for TableRowViewIvars {
@@ -559,10 +708,26 @@ define_class!(
     impl TableRowView {
         /// Selection emphasis follows the window's key state: the table
         /// never takes first responder (clicks go to the row content), yet
-        /// a selected row in a key window shows the accent highlight.
+        /// a selected row in a key window shows the accent highlight — but
+        /// never in a source-list table, whose sidebar selection is the
+        /// unemphasised pill the platform draws for a list that cannot
+        /// take focus.
         #[unsafe(method(isEmphasized))]
         fn is_emphasized(&self) -> bool {
-            self.window().is_some_and(|window| window.isKeyWindow())
+            // SAFETY: see the module safety note — the row view walks only
+            // live `NSView` ancestors.
+            let mut ancestor = unsafe { self.superview() };
+            let source_list = loop {
+                let Some(view) = ancestor else {
+                    break false;
+                };
+                if let Some(table) = view.downcast_ref::<NSTableView>() {
+                    break table.style() == NSTableViewStyle::SourceList;
+                }
+                // SAFETY: see the module safety note.
+                ancestor = unsafe { view.superview() };
+            };
+            !source_list && self.window().is_some_and(|window| window.isKeyWindow())
         }
 
         /// Keeps `AppKit`'s row fill, then paints the hairline inside the
@@ -571,6 +736,9 @@ define_class!(
         fn draw_rect(&self, dirty_rect: NSRect) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), drawRect: dirty_rect] };
+            if !self.ivars().shows_separator.get() {
+                return;
+            }
             let Some(handler) = self.ivars().separator.borrow().as_ref().cloned() else {
                 return;
             };
@@ -606,6 +774,14 @@ impl TableRowView {
     pub fn set_separator_handler(&self, handler: Option<SeparatorHandler>) {
         self.ivars().separator.replace(handler);
         self.setNeedsDisplay(true);
+    }
+
+    /// Whether the row paints its separator. A changed answer marks the
+    /// row dirty so a gained or lost hairline redraws.
+    pub fn set_shows_separator(&self, shows: bool) {
+        if self.ivars().shows_separator.replace(shows) != shows {
+            self.setNeedsDisplay(true);
+        }
     }
 }
 
@@ -816,9 +992,24 @@ fn index_set(indexes: &[usize]) -> Retained<NSIndexSet> {
 }
 
 impl TableView {
-    /// Applies `deletes` and `inserts` as one update block — `.effectFade`
-    /// when `animated`, no animation otherwise.
-    pub fn apply_row_updates(&self, deletes: &[usize], inserts: &[usize], animated: bool) {
+    /// Applies one update block — `.effectFade` when `animated`, no
+    /// animation otherwise. `AppKit` applies each edit against the rows the
+    /// previous one left, so the block runs in that order: `deletes` are
+    /// removed (indexes before the block), then each `(from, to)` of `moves`
+    /// moves a row within the remaining rows, then `inserts` go in at their
+    /// final positions (indexes after the block).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a move names a row index past `NSInteger::MAX`.
+    pub fn apply_row_updates(
+        &self,
+        deletes: &[usize],
+        moves: &[(usize, usize)],
+        inserts: &[usize],
+        claimed_inserts: &[usize],
+        animated: bool,
+    ) {
         let animation = if animated {
             NSTableViewAnimationOptions::EffectFade
         } else {
@@ -827,7 +1018,20 @@ impl TableView {
         let table = self.table_view();
         table.beginUpdates();
         table.removeRowsAtIndexes_withAnimation(&index_set(deletes), animation);
+        for &(from, to) in moves {
+            table.moveRowAtIndex_toIndex(
+                from.try_into()
+                    .expect("a table row index fits in NSInteger"),
+                to.try_into().expect("a table row index fits in NSInteger"),
+            );
+        }
         table.insertRowsAtIndexes_withAnimation(&index_set(inserts), animation);
+        // Rows whose own structural transition replaces the row animation
+        // insert with no effect.
+        table.insertRowsAtIndexes_withAnimation(
+            &index_set(claimed_inserts),
+            NSTableViewAnimationOptions::EffectNone,
+        );
         table.endUpdates();
     }
 
@@ -887,15 +1091,19 @@ impl TableView {
         self.ivars().flight.jump_to(self, point);
     }
 
-    /// The clip position that puts `row`'s top edge at the clip's top —
-    /// `rectOfRow` is exact (the table answers `heightOfRow` for every
-    /// row), and the clip's constraint clamps it, so a last-screenful row
-    /// lands at the document's end rather than past it.
+    /// The clip position that puts `row`'s top edge at the inset content
+    /// edge — below the window toolbar the table's `contentInsets` carry
+    /// ([`layout_with_safe_area_insets`](super::scroll::layout_with_safe_area_insets)),
+    /// not at the clip's own top. `rectOfRow` is exact (the table answers
+    /// `heightOfRow` for every row), and the clip's constraint clamps it,
+    /// so a last-screenful row lands at the document's end rather than
+    /// past it.
     fn row_top(&self, row: usize) -> Point {
         self.layoutSubtreeIfNeeded();
+        let inset = EdgeInsets::from(self.contentInsets());
         ScrollFlight::constrained(
             &self.contentView(),
-            Point::new(0.0, self.rect_of_row(row).origin.y),
+            Point::new(-inset.left, self.rect_of_row(row).origin.y - inset.top),
         )
     }
 
@@ -967,21 +1175,30 @@ impl TableView {
         self.ivars().flight.in_flight()
     }
 
+    /// Installs a stepped clock on this surface's scroll flights and
+    /// returns it — the native test suite's hand on flight time. Call it
+    /// before the surface's first flight.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn install_manual_scroll_clock(&self) -> Rc<crate::native_test::ManualScrollClock> {
+        self.ivars().flight.install_manual_clock()
+    }
+
     /// Whether the scroll view is in a window.
     #[must_use]
     pub fn in_window(&self) -> bool {
         self.window().is_some()
     }
 
-    /// Runs `handler` once per row view currently materialized.
-    pub fn enumerate_row_views(&self, handler: impl Fn(&NSTableRowView) + 'static) {
-        let block = block2::RcBlock::new(
-            move |row_view: NonNull<NSTableRowView>, _index: NSInteger| {
+    /// Runs `handler` once per row view currently materialized, with the
+    /// row's index.
+    pub fn enumerate_row_views(&self, handler: impl Fn(usize, &NSTableRowView) + 'static) {
+        let block =
+            block2::RcBlock::new(move |row_view: NonNull<NSTableRowView>, index: NSInteger| {
                 // SAFETY: `AppKit` lends a live row view for the block's
                 // duration.
-                unsafe { handler(row_view.as_ref()) };
-            },
-        );
+                unsafe { handler(index.cast_unsigned(), row_view.as_ref()) };
+            });
         self.table_view()
             .enumerateAvailableRowViewsUsingBlock(&block);
     }

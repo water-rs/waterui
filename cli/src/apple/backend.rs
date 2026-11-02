@@ -23,9 +23,9 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct AppleBackend {
     /// Path to the generated Apple project below the managed backends root.
-    pub project_path: PathBuf,
+    project_path: PathBuf,
     /// The scheme to use for building the Apple project.
-    pub scheme: String,
+    scheme: String,
 }
 
 /// What this project's built application bundle is called.
@@ -45,7 +45,7 @@ pub struct AppleBackend {
 /// Returns an error when the name cannot be a bundle's: empty, or containing a
 /// path separator that would place the bundle somewhere else entirely.
 pub fn apple_product_name(project: &Project) -> Result<&str, eyre::Report> {
-    let name = project.manifest().package.name.as_str();
+    let name = project.manifest().package().name();
     if name.is_empty() {
         eyre::bail!("This project has no name; `package.name` in Water.toml names the application");
     }
@@ -71,6 +71,12 @@ impl AppleBackend {
     #[must_use]
     pub fn project_path(&self) -> &Path {
         &self.project_path
+    }
+
+    /// The scheme to use for building the Apple project.
+    #[must_use]
+    pub fn scheme(&self) -> &str {
+        &self.scheme
     }
 }
 
@@ -105,7 +111,7 @@ impl AppleBackend {
         // time, rather than letting an invalid value surface inside codesign
         // or provisioning. An embedded project's identifier is the host
         // app's concern; it never reaches a `CFBundleIdentifier` here.
-        if !manifest.package.embedded {
+        if !manifest.package().embedded() {
             let _ = project
                 .bundle_identifier()
                 .apple_bundle_identifier()
@@ -113,7 +119,7 @@ impl AppleBackend {
         }
         let (_, app_name, crate_name_for_template) = Self::scaffold_names();
         let ios_permissions = manifest
-            .permissions
+            .permissions()
             .iter()
             .filter(|(_, entry)| entry.is_enabled())
             .filter_map(|(key, entry)| {
@@ -126,17 +132,24 @@ impl AppleBackend {
             .collect();
         // The generated project names the launch assets the catalog will
         // hold, so the two are decided from the same resolution.
-        let launch = crate::assets::project_launch_assets(project)?;
+        let launch = crate::assets::project_launch_plan(project)?;
         let launch_entry = templates::LaunchTemplateEntry {
-            has_background: launch.plan().background(ColorScheme::Light).is_some(),
-            has_image: launch.has_artwork(),
+            has_background: launch.background(ColorScheme::Light).is_some(),
+            has_image: launch.image().is_some(),
         };
+        let framework = project.resolved_framework().await?;
+        // The generated crates name the in-tree `waterui-apple` member — a
+        // framework whose manifest declares no `apple-backend-path` ships the
+        // backend as the external package it was before the move, and cannot
+        // host this layout. Judge the manifest here, before a single scaffold
+        // file is written, rather than inside `member_dependency` mid-render.
+        framework.require_in_tree_member(crate::framework::APPLE_BACKEND)?;
         Ok(TemplateContext::for_project_manifest(
             project.host(),
             manifest,
             crate_name_for_template,
             app_name,
-            project.resolved_framework().await?,
+            framework,
             project.local_sources(),
         )
         .with_backend_project_path(project.backend_path::<Self>())
@@ -148,7 +161,7 @@ impl AppleBackend {
     /// Whether the generated Apple project differs from what the current
     /// templates and manifest would render — a `waterui_path` checkout,
     /// `branch` or `revision` change rewrites the backend
-    /// dependency the ffi crate's manifest pins.
+    /// dependency the companion crate's manifest pins.
     ///
     /// # Errors
     ///
@@ -250,39 +263,22 @@ mod tests {
         toolchain::Host,
     };
 
-    /// The channel's pins resolve without a network: `waterui` and
-    /// `waterui-ffi` ride `[patch.crates-io]` onto vendor stubs (the only
-    /// source `[patch]` can redirect offline), and `waterui-apple` is the
-    /// canonical `backends/apple` slot in the stub checkout `waterui_path`
-    /// names — a path dependency — so the ffi companion's feature-table
-    /// probe resolves entirely locally.
+    /// The channel's pins resolve without a network: `waterui` rides
+    /// `[patch.crates-io]` onto a vendor stub (the only source `[patch]`
+    /// can redirect offline), and `waterui-apple` is the canonical
+    /// `backends/apple` slot in the stub checkout `waterui_path` names — a
+    /// path dependency — so the Apple companion's feature-table probe
+    /// resolves entirely locally.
     fn vendor_offline_resolution(host: &Host, root: &Path, vendor_dir: &Path) {
         // The vendored checkout mirrors the real framework layout: the
-        // `waterui` facade is the root package, `waterui-ffi` lives at
-        // `ffi`, and the Apple backend is the canonical `backends/apple`
-        // slot the generated manifest resolves as a path dependency.
+        // `waterui` facade is the root package and the Apple backend is the
+        // canonical `backends/apple` slot the generated manifest resolves as
+        // a path dependency.
         let stubs = [
             (
                 "waterui",
                 vendor_dir.to_path_buf(),
                 &["dynamic_linking", "media"][..],
-            ),
-            (
-                "waterui-ffi",
-                vendor_dir.join("ffi"),
-                &[
-                    "android-jni",
-                    "c-api",
-                    "chromium",
-                    "dev",
-                    "gpu",
-                    "inspector",
-                    "map",
-                    "media",
-                    "video",
-                    "webview",
-                    "webview-cef",
-                ][..],
             ),
             (
                 "waterui-apple",
@@ -301,7 +297,7 @@ mod tests {
             }
             if name == "waterui" {
                 stub_manifest["workspace"]["members"] =
-                    toml_edit::value(toml_edit::Array::from_iter(["ffi", "backends/apple"]));
+                    toml_edit::value(toml_edit::Array::from_iter(["backends/apple"]));
             }
             std::fs::write(stub.join("Cargo.toml"), stub_manifest.to_string())
                 .expect("stub manifest");
@@ -312,13 +308,8 @@ mod tests {
             .expect("project Cargo.toml exists")
             .parse()
             .expect("project Cargo.toml parses");
-        for (name, dir) in [
-            ("waterui", vendor_dir.to_path_buf()),
-            ("waterui-ffi", vendor_dir.join("ffi")),
-        ] {
-            document["patch"]["crates-io"][name]["path"] =
-                toml_edit::value(dir.to_string_lossy().as_ref());
-        }
+        document["patch"]["crates-io"]["waterui"]["path"] =
+            toml_edit::value(vendor_dir.to_string_lossy().as_ref());
         std::fs::write(&manifest_path, document.to_string()).expect("write the patch table");
         let water_toml = root.join("Water.toml");
         let mut water_document: toml_edit::DocumentMut = std::fs::read_to_string(&water_toml)
@@ -351,18 +342,12 @@ mod tests {
         smol::block_on(Project::create(
             &host,
             &root,
-            CreateOptions {
-                name: "Water Example".to_string(),
-                bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
-                    .expect("bundle identifier"),
-                waterui_path: None,
-                channel: None,
-                framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
-                framework_lock: None,
-                author: "Lexo Liu".to_string(),
-                web: None,
-            },
+            CreateOptions::new(
+                "Water Example".to_string(),
+                BundleIdentifier::try_from("dev.waterui.waterexample").expect("bundle identifier"),
+                "Lexo Liu".to_string(),
+            )
+            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
         ))
         .expect("project creation must succeed");
 
@@ -427,18 +412,13 @@ mod tests {
         let project = smol::block_on(Project::create(
             &host,
             &root,
-            CreateOptions {
-                name: "Menu Example".to_string(),
-                bundle_identifier: BundleIdentifier::try_from("com.waterui.menu_example")
+            CreateOptions::new(
+                "Menu Example".to_string(),
+                BundleIdentifier::try_from("com.waterui.menu_example")
                     .expect("the shared identifier grammar accepts underscores"),
-                waterui_path: None,
-                channel: None,
-                framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
-                framework_lock: None,
-                author: "Lexo Liu".to_string(),
-                web: None,
-            },
+                "Lexo Liu".to_string(),
+            )
+            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
         ))
         .expect("project creation must succeed");
 
@@ -461,18 +441,13 @@ mod tests {
         smol::block_on(Project::create(
             &host,
             &root,
-            CreateOptions {
-                name: "Liquid Glass".to_string(),
-                bundle_identifier: BundleIdentifier::try_from("dev.waterui.liquid-glass")
+            CreateOptions::new(
+                "Liquid Glass".to_string(),
+                BundleIdentifier::try_from("dev.waterui.liquid-glass")
                     .expect("the shared identifier grammar accepts hyphens"),
-                waterui_path: None,
-                channel: None,
-                framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
-                framework_lock: None,
-                author: "Lexo Liu".to_string(),
-                web: None,
-            },
+                "Lexo Liu".to_string(),
+            )
+            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
         ))
         .expect("project creation must succeed");
 
@@ -515,18 +490,12 @@ mod tests {
         smol::block_on(Project::create(
             &host,
             &root,
-            CreateOptions {
-                name: "Water Example".to_string(),
-                bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
-                    .expect("bundle identifier"),
-                waterui_path: None,
-                channel: None,
-                framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
-                framework_lock: None,
-                author: "Lexo Liu".to_string(),
-                web: None,
-            },
+            CreateOptions::new(
+                "Water Example".to_string(),
+                BundleIdentifier::try_from("dev.waterui.waterexample").expect("bundle identifier"),
+                "Lexo Liu".to_string(),
+            )
+            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
         ))
         .expect("project creation must succeed");
 

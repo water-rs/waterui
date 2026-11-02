@@ -164,6 +164,10 @@ impl Axis {
 /// `ZStack`, an absolute overlay — lays out its whole membership and returns
 /// `None` here.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a lazy stack runs vertically or horizontally"
+)]
 pub enum LazyStackAxis {
     /// Items run top to bottom, aligned horizontally.
     Vertical {

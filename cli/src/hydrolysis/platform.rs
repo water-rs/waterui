@@ -144,33 +144,27 @@ pub async fn build_hydrolysis_with_envs_and_features(
     // this seed is the carrier when `waterui_path` pins a checkout instead —
     // the path is the record there, so the framework resolves from the
     // checkout, whose own `Cargo.lock` is the canonical pin.
-    let has_framework =
-        project.manifest().framework.is_some() || project.manifest().waterui_path.is_some();
-    let canonical = if has_framework {
-        project
-            .resolved_framework()
-            .await?
-            .canonical_lock(project.root())
-            .await?
-    } else {
-        None
-    };
-    crate::templates::seed_lockfile(
-        &backend_path,
-        &project.lockfile_path().await?,
-        canonical.as_ref(),
-    )
-    .await?;
+    assets::seed_managed_crate_lock(project, &cargo_toml).await?;
+
+    // The target owns the linkage decision: a Windows build links
+    // statically, and a project that resolved `waterui/dynamic_linking`
+    // anyway is rejected before anything compiles.
+    let options = options.with_supported_linkage(&platform.triple());
+    crate::build::reject_unsupported_dynamic_linking(project, &cargo_toml, &platform.triple())
+        .await?;
 
     // The generated `build.rs` embeds `app-icon.ico` into the executable when
-    // targeting Windows, so it has to exist before the backend compiles.
-    // Assets and fonts stage after the build instead: the mount metadata they
-    // need is read from the library artifact this build produces.
-    crate::templates::write_file_if_changed(
-        &backend_path.join("app-icon.ico"),
-        &assets::project_windows_ico(project)?,
-    )
-    .await?;
+    // targeting Windows, so there it has to exist before the backend
+    // compiles; no other target reads it. Assets and fonts stage after the
+    // build instead: the mount metadata they need is read from the library
+    // artifact this build produces.
+    if platform.triple().operating_system == OperatingSystem::Windows {
+        crate::templates::write_file_if_changed(
+            &backend_path.join("app-icon.ico"),
+            &assets::project_windows_ico(project)?,
+        )
+        .await?;
+    }
 
     let llvm_envs = WindowsArm64LlvmToolchain
         .cargo_envs(project.host())
@@ -237,8 +231,9 @@ pub async fn build_hydrolysis_with_envs_and_features(
 
     copy_assets_and_fonts(
         project,
+        platform,
         &backend_path,
-        &built_target.app_symbols()?,
+        &built_target.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;
@@ -267,7 +262,14 @@ pub(crate) async fn stage_hydrolysis_shared_runtime(
     if !is_hydrolysis_native_platform(platform) {
         bail!("Hydrolysis shared runtime can only be staged for macOS, Linux, and Windows");
     }
-    let libraries = RustDynamicLibraries::resolve(built, &platform.triple(), project).await?;
+    // A platform without shared-runtime linkage — Windows — resolves no
+    // libraries; `None` prunes whatever an earlier linkage left beside the
+    // binary.
+    let libraries = if RustLinkage::supports_shared_runtime(&platform.triple()) {
+        Some(RustDynamicLibraries::resolve(built, &platform.triple(), project).await?)
+    } else {
+        None
+    };
     // The staged runtime lands beside the `<profile>/<name>` uplift the
     // launch path executes — the profile directory itself, never `deps/`:
     // `built.artifact` lives there and pruning staged names would delete
@@ -275,7 +277,7 @@ pub(crate) async fn stage_hydrolysis_shared_runtime(
     synchronize_shared_runtime(
         project.host(),
         &built.profile_dir,
-        Some(&libraries),
+        libraries.as_ref(),
         &platform.triple(),
     )
     .await
@@ -309,9 +311,10 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
 
     // The target directories are shared with every other generated backend, so only
     // this backend's own package is cleaned — its dependency artifacts stay for
-    // the other backends that resolve them identically.
-    for linkage in [RustLinkage::SharedRuntime, RustLinkage::Static] {
-        let shared_target_dir = project.water_target_dir(linkage).await?;
+    // the other backends that resolve them identically. Hydrolysis builds for
+    // the host triple only, so it cleans the linkages that triple supports.
+    for linkage in RustLinkage::supported_on(&Triple::host()) {
+        let shared_target_dir = project.water_target_dir(*linkage).await?;
         if !shared_target_dir.exists() {
             continue;
         }
@@ -379,8 +382,9 @@ pub async fn package_hydrolysis(
     let backend_path = project.backend_path::<HydrolysisBackend>();
     copy_assets_and_fonts(
         project,
+        platform,
         &backend_path,
-        &built.app_symbols()?,
+        &built.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;
@@ -394,7 +398,7 @@ pub async fn package_hydrolysis(
             &platform.triple(),
         )
         .await?;
-    let shared_libraries = if options.uses_shared_rust_runtime() {
+    let shared_libraries = if options.uses_shared_rust_runtime(&platform.triple()) {
         Some(RustDynamicLibraries::resolve(built, &platform.triple(), project).await?)
     } else {
         None
@@ -468,7 +472,7 @@ pub async fn package_hydrolysis(
     if platform == TargetPlatform::Linux {
         crate::platforming::linux_share::write_linux_share_material(
             project,
-            &project.manifest().package.name,
+            project.manifest().package().name(),
             binary_name.as_str(),
             &runtime_dir.join("share"),
         )
@@ -525,8 +529,8 @@ async fn package_hydrolysis_macos(
         .map_err(|error| eyre::eyre!("{error}"))?;
     let app_name = project
         .manifest()
-        .package
-        .name
+        .package()
+        .name()
         .chars()
         .filter(|character| character.is_alphanumeric() || *character == ' ')
         .collect::<String>();
@@ -539,26 +543,20 @@ async fn package_hydrolysis_macos(
     fs::create_dir_all(&dist_dir).await?;
     let usage_descriptions = project
         .manifest()
-        .permissions
+        .permissions()
         .iter()
         .filter(|(_, entry)| entry.is_enabled())
         .flat_map(|(key, entry)| {
-            key.macos_usage_description_keys()
-                .iter()
-                .map(|&plist_key| MacOsUsageDescription {
-                    plist_key,
-                    description: entry.description().to_string(),
-                })
+            key.macos_usage_description_keys().iter().map(|&plist_key| {
+                MacOsUsageDescription::new(plist_key, entry.description().to_string())
+            })
         })
         .collect::<Vec<_>>();
     let icns = assets::project_macos_icns(project)?;
     let app_path = package_binary_as_app(
         binary_path,
         &bundle_id,
-        MacOsAppNames {
-            app_name: &app_name,
-            executable_name: project.hydrolysis_binary_name().as_str(),
-        },
+        MacOsAppNames::new(&app_name, project.hydrolysis_binary_name().as_str()),
         &usage_descriptions,
         Some(&backend_path.join("resources")),
         &icns,
@@ -595,7 +593,7 @@ async fn package_hydrolysis_macos(
         },
         PackageAudience::Distribution => {
             MacOsSigning::Distribution(crate::macos_bundle::DistributionSigning::from_manifest(
-                project.manifest().signing.macos.as_ref(),
+                project.manifest().signing().macos(),
                 None,
             )?)
         }
@@ -612,16 +610,18 @@ async fn synchronize_shared_runtime(
 ) -> eyre::Result<()> {
     if let Some(libraries) = libraries {
         libraries.stage(destination).await?;
-        // A shared-runtime hydrolysis binary renders through wgpu, whose
-        // DirectX 12 backend `LoadLibrary`s `dxcompiler.dll` and `dxil.dll`
-        // by name at run time; the pair has to sit beside the executable.
-        if triple.operating_system == OperatingSystem::Windows {
-            stage_dxc_runtime(host, destination).await?;
-        }
-        Ok(())
     } else {
-        RustDynamicLibraries::remove_staged(destination, triple).await
+        RustDynamicLibraries::remove_staged(destination, triple).await?;
     }
+    // A hydrolysis binary renders through wgpu, whose DirectX 12 backend
+    // `LoadLibrary`s `dxcompiler.dll` and `dxil.dll` by name at run time.
+    // That holds under either linkage, so the pair sits beside the
+    // executable on every Windows staging — the shared runtime is not what
+    // brings it.
+    if triple.operating_system == OperatingSystem::Windows {
+        stage_dxc_runtime(host, destination).await?;
+    }
+    Ok(())
 }
 
 /// Check if a platform is supported by the hydrolysis backend.
@@ -649,6 +649,7 @@ const fn is_hydrolysis_native_platform(platform: TargetPlatform) -> bool {
 /// asset mounts.
 async fn copy_assets_and_fonts(
     project: &Project,
+    platform: TargetPlatform,
     backend_path: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
@@ -658,7 +659,12 @@ async fn copy_assets_and_fonts(
     let manifest =
         assets::stage_project_assets_for_gtk(project, &resources_dir, symbols, dev_server).await?;
 
-    let font_declarations = assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &[platform.font_platform()],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
     if !resolved_fonts.is_empty() {
@@ -781,6 +787,14 @@ async fn package_hydrolysis_web_site(
         );
     }
 
+    // wasm-pack resolves the managed crate the moment its `cargo metadata`
+    // and `cargo build` run, so the `Cargo.lock` seed has to land first, the
+    // same way `build_hydrolysis` seeds before its build — an unseeded
+    // resolution pins whatever the registry holds newest, and the font
+    // scan's later seed then rewrites the lock under the graph the build
+    // already compiled (#2493).
+    assets::seed_managed_crate_lock(project, &cargo_toml).await?;
+
     let site_root = backend_path.join(if dev_site { "dist/web-dev" } else { "dist/web" });
     if site_root.exists() {
         fs::remove_dir_all(&site_root).await?;
@@ -788,7 +802,7 @@ async fn package_hydrolysis_web_site(
     fs::create_dir_all(&site_root).await?;
 
     // The shell is written after the bundle so the page knows the wasm size.
-    build_hydrolysis_web_bundle(project.host(), &backend_path, &site_root, debug).await?;
+    build_hydrolysis_web_bundle(project, &backend_path, &site_root, debug).await?;
     super::web_launch::write_web_shell(project, &site_root).await?;
     copy_web_assets_and_fonts(project, &backend_path, &site_root).await?;
 
@@ -796,11 +810,12 @@ async fn package_hydrolysis_web_site(
 }
 
 async fn build_hydrolysis_web_bundle(
-    host: &crate::toolchain::Host,
+    project: &Project,
     backend_path: &Path,
     site_root: &Path,
     debug: bool,
 ) -> eyre::Result<()> {
+    let host = project.host();
     let wasm_pack = host
         .which("wasm-pack")
         .await
@@ -808,7 +823,24 @@ async fn build_hydrolysis_web_bundle(
     let pkg_dir = site_root.join("pkg");
     fs::create_dir_all(&pkg_dir).await?;
 
-    let mut wasm_pack_cmd = host.command(wasm_pack);
+    // wasm-pack's `cargo build` compiles into the shared static target the
+    // native builds use — the managed backend's own `target/` is not a
+    // `CACHE_PATHS` entry, so artifacts cached there die with the next
+    // backend regeneration (#2493). The directory rides the trailing `--`
+    // options wasm-pack forwards to cargo; the emitted `.wasm` is located
+    // through cargo's own `--message-format` artifact records, so the
+    // lookup follows the same target dir. The lease keeps the tree out of
+    // the build-cache collector's reach for the compile, the same guard
+    // `RustBuild` holds for the native builds.
+    let target_dir = project.water_target_dir(RustLinkage::Static).await?;
+    let shared_root = crate::water_dir::shared_target_dir_path(host).await?;
+    let _target_lease = if target_dir.starts_with(&shared_root) {
+        Some(crate::water_dir::lease_shared_target_dir(&shared_root).await?)
+    } else {
+        None
+    };
+
+    let mut wasm_pack_cmd = host.command(wasm_pack)?;
     let wasm_pack_cmd = command(&mut wasm_pack_cmd, host.std_output());
     wasm_pack_cmd
         .current_dir(backend_path)
@@ -824,6 +856,7 @@ async fn build_hydrolysis_web_bundle(
     } else {
         wasm_pack_cmd.arg("--release");
     }
+    wasm_pack_cmd.arg("--").arg("--target-dir").arg(&target_dir);
 
     let output = wasm_pack_cmd.output().await?;
     if !output.status.success() {
@@ -1011,21 +1044,20 @@ mod tests {
             None,
             &stable_framework(),
             false,
-            None,
             &crate::templates::LocalBackendSources::default(),
         )
         .with_project_packages(std::collections::BTreeSet::from(["demo".to_string()]))
     }
 
-    /// `ctx` with `answers` recorded for every desktop OS — the hydrolysis
-    /// manifest writes a `cfg` section per OS, so all three must answer
-    /// for a render to compute.
+    /// `ctx` with `answers` recorded for every desktop OS and the Android
+    /// section — the hydrolysis manifest writes a `cfg` section per OS,
+    /// so all four must answer for a render to compute.
     fn all_os_browser(
         ctx: TemplateContext,
         answers: crate::templates::BrowserAnswers,
     ) -> TemplateContext {
         ctx.with_browser(crate::templates::BrowserTemplateContext::desktop(
-            answers, answers, answers,
+            answers, answers, answers, answers,
         ))
     }
 
@@ -1212,5 +1244,118 @@ mod tests {
         assert!(declares_cef_helper(Some(ResolvedWebViewBackend::Cef)));
         assert!(!declares_cef_helper(Some(ResolvedWebViewBackend::Wpe)));
         assert!(!declares_cef_helper(None));
+    }
+
+    /// water-rs/waterui#2493: `wasm-pack` resolves and compiles the managed
+    /// backend crate the moment it runs, so the crate's `Cargo.lock` must be
+    /// seeded before the invocation — an unseeded resolution pins whatever
+    /// the registry holds newest instead of the graph the application locks
+    /// — and the build must write into the shared static target the native
+    /// builds use, because the backend's own `target/` is deleted with every
+    /// backend regeneration. The fake `wasm-pack` records whether the lock
+    /// and its seed stamp were in place when it ran, and the invocation log
+    /// records the `--target-dir` cargo was pointed at.
+    #[test]
+    fn web_packaging_seeds_the_lock_and_builds_in_the_shared_target() {
+        smol::block_on(async {
+            use crate::{
+                build::RustLinkage,
+                project::{ManagedBackends, Manifest, Project},
+                project_model::project_types::{CrateName, generated_crate_name},
+                toolchain::testing::TestMachine,
+            };
+
+            let machine = TestMachine::new();
+            let root = machine.root().join("app");
+            std::fs::create_dir_all(root.join("src")).expect("crate src");
+            std::fs::create_dir_all(root.join("assets/fonts")).expect("assets dir");
+            std::fs::write(
+                root.join("Cargo.toml"),
+                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            )
+            .expect("Cargo.toml");
+            std::fs::write(root.join("src/lib.rs"), "").expect("lib.rs");
+            // `cargo metadata --locked` reads the lockfile; a
+            // dependency-free crate's lock holds only itself.
+            std::fs::write(
+                root.join("Cargo.lock"),
+                "version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("Cargo.lock");
+            let mut manifest = Manifest::parse(
+                "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n\n\
+                 [[assets.font]]\nname = \"Fixture Sans\"\n\
+                 local_path = \"assets/fonts/FixtureSans.ttf\"\n",
+            )
+            .expect("Water.toml parses");
+            manifest.set_framework(Some(stable_framework()));
+            std::fs::write(
+                root.join("Water.toml"),
+                toml::to_string(&manifest).expect("manifest serializes"),
+            )
+            .expect("Water.toml");
+            std::fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/fonts/Roboto-Regular.ttf"),
+                root.join("assets/fonts/FixtureSans.ttf"),
+            )
+            .expect("fixture font");
+
+            machine.install("wasm-pack");
+            let log = machine.file("invocations.log", "");
+            let host = machine.host_with_rust_toolchain([("WATERUI_FAKE_LOG", log.as_os_str())]);
+            let project = Project::open(&host, &root, ManagedBackends::NONE)
+                .await
+                .expect("fixture project opens");
+
+            // The managed backend crate wasm-pack compiles, kept
+            // dependency-free so its `cargo metadata` resolves without the
+            // network.
+            let backend_path =
+                project.backend_path::<crate::hydrolysis::backend::HydrolysisBackend>();
+            let backend_crate = generated_crate_name(
+                &CrateName::try_from("fixture").expect("crate name"),
+                "hydrolysis",
+                &root,
+            );
+            std::fs::create_dir_all(backend_path.join("src")).expect("backend src");
+            std::fs::write(
+                backend_path.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{backend_crate}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+                ),
+            )
+            .expect("backend manifest");
+            std::fs::write(backend_path.join("src/lib.rs"), "").expect("backend lib");
+
+            let site_root = super::package_hydrolysis_web_site(&project, false, false)
+                .await
+                .expect("web packaging succeeds");
+
+            assert!(
+                site_root.join("pkg/app_bg.wasm").is_file(),
+                "the site ships the bundle wasm-pack emitted"
+            );
+            let invocations = std::fs::read_to_string(&log).expect("invocation log");
+            assert!(
+                invocations
+                    .contains("wasm-pack-observes Cargo.lock=present Cargo.lock.seed=present"),
+                "wasm-pack must run only after the managed lock is seeded: {invocations}"
+            );
+            let wasm_pack_build = invocations
+                .lines()
+                .find(|line| line.starts_with("wasm-pack build"))
+                .expect("wasm-pack was invoked for the bundle");
+            let target_dir = project
+                .water_target_dir(RustLinkage::Static)
+                .await
+                .expect("the shared static target resolves");
+            assert!(
+                wasm_pack_build.contains(&format!("--target-dir {}", target_dir.display())),
+                "wasm-pack's cargo build must write into the shared static target \
+                 {}: {wasm_pack_build}",
+                target_dir.display()
+            );
+        });
     }
 }

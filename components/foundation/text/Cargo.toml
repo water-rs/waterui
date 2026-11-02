@@ -30,8 +30,10 @@ smallvec.workspace = true
 # std's implementations regardless.
 parley = { workspace = true, optional = true, features = ["libm"] }
 # `Code`, the fenced-code widget, composes its block out of the layout
-# primitives and reports clipboard failures through `tracing`. Both sit behind
-# `highlight`, the feature the widget itself is behind.
+# primitives and reports clipboard failures through `tracing`, which also
+# carries the font collection's note when a face's source cannot be loaded.
+# The widget's deps sit behind `highlight`, the feature the widget itself is
+# behind; `tracing` is also enabled by `font-collection`.
 waterui-layout = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
@@ -68,11 +70,16 @@ highlight = [
 # Markdown parsing: `StyledStr::from_markdown` and the `pulldown-cmark` types
 # its inline builder is driven by.
 markdown = ["dep:pulldown-cmark"]
-# `collection::FontCollection`: the one `parley` font collection a host installs
-# into the environment and every component that shapes or typesets text itself
-# reads back out. Turned on by those components (`waterui-math` and friends),
-# not by applications.
-font-collection = ["dep:parley"]
+# `collection::FontCollection`: the one font collection a host installs into
+# the environment and every component that draws text itself reads back out,
+# as semantic `faces` — `parley` stays the collection's engine and out of its
+# API. Turned on by those components (`waterui-math` and friends), not by
+# applications.
+font-collection = ["dep:parley", "dep:tracing"]
+# `FontCollection::from_parley` and `FontCollection::with_parley`: the `parley`
+# context behind the collection, for the self-drawn text engine (hydrolysis)
+# that shapes with it. A component that reads `faces` does not enable it.
+engine = ["font-collection"]
 # Discovering the platform's fonts, which is how a host that owns no font stack
 # of its own — the native Apple, Android and GTK backends — obtains the
 # collection it installs. A renderer that registers its own faces (hydrolysis,

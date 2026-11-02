@@ -135,8 +135,8 @@ fn asset_constructor_tokens(
     bundle: &TokenStream2,
     asset: &PlannedAsset,
 ) -> TokenStream2 {
-    let relative = asset.relative_path.to_string_lossy().replace('\\', "/");
-    match asset.kind {
+    let relative = asset.relative_path().to_string_lossy().replace('\\', "/");
+    match asset.kind() {
         AssetKind::Font => quote! { #waterui::FontAsset::new(#bundle, #relative) },
         AssetKind::Image => quote! { #waterui::ImageAsset::new(#bundle, #relative) },
         AssetKind::Video => quote! { #waterui::VideoAsset::new(#bundle, #relative) },
@@ -174,9 +174,9 @@ fn emit_module(
     let mut asset_tokens = Vec::new();
     for asset in &node.assets {
         let ident = syn_ident(&asset.item_name());
-        let ty = asset_type_tokens(waterui, asset.kind);
+        let ty = asset_type_tokens(waterui, asset.kind());
         let ctor = asset_constructor_tokens(waterui, bundle, asset);
-        let doc = format!("Returns the `{}` asset.", asset.logical_path.display());
+        let doc = format!("Returns the `{}` asset.", asset.logical_path().display());
         asset_tokens.push(quote! {
             #[doc = #doc]
             pub fn #ident() -> #ty {
@@ -238,7 +238,7 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
     let mut node = ModuleNode::default();
     let mut tracking = Vec::with_capacity(planned.len());
     for asset in planned {
-        let file = LitStr::new(asset.source_path.to_string_lossy().as_ref(), span);
+        let file = LitStr::new(asset.source_path().to_string_lossy().as_ref(), span);
         tracking.push(quote! {
             const _: &[u8] = include_bytes!(#file);
         });
@@ -246,15 +246,15 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
     }
     let body = emit_module(&waterui, &bundle, &node, true);
 
-    let meta = BundleMountMeta {
-        mount: if main {
+    let meta = BundleMountMeta::new(
+        if main {
             "assets".to_string()
         } else {
             mount.to_string()
         },
-        path: root,
-        project: None,
-    };
+        root,
+        None,
+    );
     let meta_ident = syn_ident(&meta.record_name());
     let record = meta.to_record();
     let record_len = record.len();
@@ -271,11 +271,11 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
             // The record lives in the metadata directory section, not on the
             // symbol table: a linked image need not carry one (a PE keeps
             // none), so the record names itself.
-            #[allow(non_upper_case_globals)]
-            #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
-            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
-            #[doc(hidden)]
-            pub static #meta_ident: [u8; #record_len] = *#record_lit;
+            #waterui::__meta::dir_static! {
+                #[allow(non_upper_case_globals)]
+                #[doc(hidden)]
+                pub static #meta_ident: [u8; #record_len] = *#record_lit;
+            }
         }
     }
 }
@@ -287,6 +287,8 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
 /// the path comes from `Water.toml`'s `[package].assets_path` (default
 /// `assets/`). The generated `assets` module is the main bundle: it keeps an
 /// empty path prefix and is the only mount that can claim the `AppIcon` role.
+///
+/// Requires the `assets` feature of the `waterui` crate.
 pub fn assets(input: TokenStream) -> TokenStream {
     if !proc_macro2::TokenStream::from(input).is_empty() {
         return compile_error("assets!() does not accept arguments", Span::call_site());
@@ -307,6 +309,8 @@ pub fn assets(input: TokenStream) -> TokenStream {
 /// static so the CLI stages the directory at package time without scanning
 /// sources. The path is resolved against `CARGO_MANIFEST_DIR` at expansion
 /// time.
+///
+/// Requires the `assets` feature of the `waterui` crate.
 pub fn include_bundle(input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(input as IncludeBundleArgs);
     let path_span = args.path.span();
@@ -427,6 +431,18 @@ const WEB_MOUNT: &str = "web";
 /// `include_web!(resources, "web").serve(MyApi).inject(..).on_event(..)`.
 ///
 /// Requires the `webview` and `assets` features of the `waterui` crate.
+///
+/// # Apple OS 27
+///
+/// The expansion installs the `stay_on_origin` navigation policy, and
+/// `WebViewOpen::navigation_policy` is available only where the Apple
+/// deployment target is OS 27 or newer (`WKWebView` tells the application's
+/// loads from the page's own through `WKNavigationAction.mainFrameNavigation`,
+/// public from OS 27). On an Apple build below that, the call does not compile
+/// and the error names the `Water.toml` key to raise: set the platforms you
+/// ship under `[apple.deployment-targets]` to `27.0`. `water create` writes
+/// them for a project that bundles a web frontend. Other targets are
+/// unaffected.
 pub fn include_web(input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(input as IncludeWebArgs);
     let resources = &args.resources;
@@ -476,11 +492,7 @@ pub fn include_web(input: TokenStream) -> TokenStream {
         Err(error) => return error.into_compile_error().into(),
     };
 
-    let meta = BundleMountMeta {
-        mount: WEB_MOUNT.to_string(),
-        path: out,
-        project: Some(root.clone()),
-    };
+    let meta = BundleMountMeta::new(WEB_MOUNT.to_string(), out, Some(root.clone()));
     let meta_ident = syn_ident(&meta.record_name());
     let record = meta.to_record();
     let record_len = record.len();
@@ -494,16 +506,17 @@ pub fn include_web(input: TokenStream) -> TokenStream {
 
     quote! {
         {
-            #[allow(non_upper_case_globals)]
-            #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
-            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
-            #[doc(hidden)]
-            static #meta_ident: [u8; #record_len] = *#record_lit;
+            #waterui::__meta::dir_static! {
+                #[allow(non_upper_case_globals)]
+                #[doc(hidden)]
+                static #meta_ident: [u8; #record_len] = *#record_lit;
+            }
             // A block-scoped static is private: it is only emitted into the
             // object file when the surrounding code refers to it, so this
             // throwaway reference is what puts the record into the rlib the
-            // CLI reads. `#[used]` would do that too, but it also survives
-            // the linker's dead stripping and ships in the binary.
+            // CLI reads — on Apple the macro's own `#[used]` already does,
+            // and the release `__DWARF` placement keeps it out of the
+            // shipped binary.
             let _ = &#meta_ident;
 
             // Cargo does not see a proc macro's filesystem reads, so the
@@ -522,7 +535,7 @@ pub fn include_web(input: TokenStream) -> TokenStream {
                     ::core::option::Option::None
                 }
             };
-            match dev {
+            let view = match dev {
                 ::core::option::Option::Some(url) => #waterui::webview::WebView::open(url),
                 ::core::option::Option::None => #waterui::webview::WebView::open_assets(
                     #waterui::webview::DirectoryServer::new(
@@ -533,7 +546,14 @@ pub fn include_web(input: TokenStream) -> TokenStream {
                     .into_server_fn(),
                     #entry_lit,
                 ),
-            }
+            };
+            // A bundled frontend's links that leave its origin open in the
+            // system browser; an application's `.navigation_policy(..)`
+            // replaces this. The web `<iframe>` backend cannot intercept
+            // navigations, so the policy does not exist there.
+            #[cfg(not(target_arch = "wasm32"))]
+            let view = view.navigation_policy(#waterui::webview::stay_on_origin);
+            view
         }
     }
     .into()
@@ -544,6 +564,8 @@ pub fn include_web(input: TokenStream) -> TokenStream {
 ///
 /// Local paths are relative to the packaged asset root. Native handles take
 /// a `ResourceContext` for loading; image/video views obtain it from their environment.
+///
+/// Requires the `assets` feature of the `waterui` crate.
 pub fn asset(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as AssetInput);
     let waterui = match waterui_crate_path() {

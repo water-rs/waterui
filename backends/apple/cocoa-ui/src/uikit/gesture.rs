@@ -20,9 +20,12 @@ use std::fmt;
 use std::rc::Rc;
 
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{NSObject, ProtocolObject};
+use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
 use objc2::sel;
-use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{
+    ClassType, DefinedClass, DowncastTarget, MainThreadMarker, MainThreadOnly, define_class,
+    msg_send,
+};
 use objc2_foundation::NSObjectProtocol;
 use objc2_ui_kit::{
     UIEvent, UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState,
@@ -44,8 +47,12 @@ fn state_of(recognizer: &UIGestureRecognizer) -> GestureState {
     }
 }
 
+/// The closure a [`Target`] holds: the recognizer's normalized state and
+/// the recognizer itself, so the handler can read its geometry.
+type RecognizerHandler = Rc<dyn Fn(GestureState, &UIGestureRecognizer)>;
+
 struct TargetIvars {
-    handler: Rc<dyn Fn(GestureState)>,
+    handler: RecognizerHandler,
 }
 
 define_class!(
@@ -62,18 +69,18 @@ define_class!(
 
     impl Target {
         /// The action every recognizer this module creates sends: the
-        /// recognizer, whose state the handler reads.
+        /// recognizer, whose state and geometry the handler reads.
         #[unsafe(method(invoke:))]
         fn invoke(&self, recognizer: &UIGestureRecognizer) {
             guarded("CocoaUiGestureTarget invoke:", || {
-                (self.ivars().handler)(state_of(recognizer));
+                (self.ivars().handler)(state_of(recognizer), recognizer);
             });
         }
     }
 );
 
 impl Target {
-    fn new(mtm: MainThreadMarker, handler: Rc<dyn Fn(GestureState)>) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, handler: RecognizerHandler) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(TargetIvars { handler });
         // SAFETY: `init` is `NSObject`'s designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -149,6 +156,58 @@ impl fmt::Debug for ButtonFilter {
     }
 }
 
+/// The closure a [`Gate`] runs: given the recognizer about to begin,
+/// answers whether it may. The recognizer's geometry — `locationInView:` —
+/// is already valid at this point.
+type GateHandler = Rc<dyn Fn(&UIGestureRecognizer) -> bool>;
+
+struct GateIvars {
+    gate: GateHandler,
+}
+
+define_class!(
+    /// Gates recognition: `gestureRecognizerShouldBegin:` declines a
+    /// recognizer whose gate rejects it, so the touch fails through to the
+    /// view hierarchy and sibling recognizers as if the recognizer were
+    /// never there.
+    ///
+    // SAFETY: `NSObject` has no subclassing requirements; the class holds a
+    // main-thread closure and does not implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[name = "CocoaUiGestureGate"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = GateIvars]
+    struct Gate;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject` subclass.
+    unsafe impl NSObjectProtocol for Gate {}
+
+    // SAFETY: `gestureRecognizerShouldBegin:` has the signature
+    // `UIGestureRecognizerDelegate` declares.
+    unsafe impl UIGestureRecognizerDelegate for Gate {
+        #[unsafe(method(gestureRecognizerShouldBegin:))]
+        fn should_begin(&self, recognizer: &UIGestureRecognizer) -> bool {
+            guarded("CocoaUiGestureGate gestureRecognizerShouldBegin:", || {
+                (self.ivars().gate)(recognizer)
+            })
+        }
+    }
+);
+
+impl Gate {
+    fn new(mtm: MainThreadMarker, gate: GateHandler) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(GateIvars { gate });
+        // SAFETY: `init` is `NSObject`'s designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+impl fmt::Debug for Gate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Gate").finish_non_exhaustive()
+    }
+}
+
 /// A recognizer attached to a view, together with the objects that own its
 /// handler and button filter.
 ///
@@ -161,9 +220,11 @@ pub struct GestureAttachment {
     target: Retained<Target>,
     recognizer: Weak<UIGestureRecognizer>,
     /// The event-button filter, where the recognizer cannot carry the mask
-    /// itself; kept only for ownership.
-    #[allow(dead_code)]
+    /// itself: the recognizer's `delegate` is weak, so the attachment owns it.
     filter: Option<Retained<ButtonFilter>>,
+    /// The should-begin gate a gated recognizer carries, owned for the same
+    /// reason.
+    gate: Option<Retained<Gate>>,
 }
 
 impl GestureAttachment {
@@ -179,14 +240,21 @@ impl Drop for GestureAttachment {
         let Some(recognizer) = self.recognizer.load() else {
             return;
         };
-        if let Some(filter) = &self.filter {
-            let ours = recognizer.delegate().is_some_and(|delegate| {
-                Retained::as_ptr(&delegate) == Retained::as_ptr(filter).cast()
-            });
-            if ours {
-                // Clearing the delegate this attachment installed.
-                recognizer.setDelegate(None);
-            }
+        let ours = recognizer.delegate().is_some_and(|delegate| {
+            let delegate = Retained::as_ptr(&delegate).cast::<AnyObject>();
+            let filter = self
+                .filter
+                .as_ref()
+                .map(|ours| Retained::as_ptr(ours).cast());
+            let gate = self.gate.as_ref().map(|ours| Retained::as_ptr(ours).cast());
+            [filter, gate]
+                .into_iter()
+                .flatten()
+                .any(|ours| ours == delegate)
+        });
+        if ours {
+            // Clearing the delegate this attachment installed.
+            recognizer.setDelegate(None);
         }
         // SAFETY: `removeTarget:action:` is the documented inverse of the
         // `addTarget:action:` in `attach`.
@@ -200,13 +268,23 @@ fn attach<R>(
     view: &UIView,
     recognizer: Retained<R>,
     buttons: Option<ButtonMask>,
-    handler: Rc<dyn Fn(GestureState)>,
+    handler: impl Fn(GestureState, &R) + 'static,
 ) -> GestureAttachment
 where
-    R: ClassType<Super = UIGestureRecognizer> + MainThreadOnly + 'static,
+    R: ClassType<Super = UIGestureRecognizer> + MainThreadOnly + DowncastTarget + 'static,
 {
     let mtm = recognizer.mtm();
-    let target = Target::new(mtm, handler);
+    let target = Target::new(
+        mtm,
+        Rc::new(move |state, recognizer| {
+            handler(
+                state,
+                recognizer
+                    .downcast_ref::<R>()
+                    .expect("the recognizer is the class this constructor built"),
+            );
+        }),
+    );
     let recognizer: Retained<UIGestureRecognizer> = recognizer.into_super();
     // SAFETY: UIKit stores the target unretained; the attachment owns it and
     // `Drop` removes it while the recognizer may still be alive.
@@ -223,11 +301,54 @@ where
         target,
         recognizer: Weak::new(&recognizer),
         filter,
+        gate: None,
     }
+}
+
+/// A tap recognizer on `view` that begins only when `gate` accepts the
+/// recognition.
+///
+/// The gate runs in `gestureRecognizerShouldBegin:`, where `locationInView:`
+/// already answers the tap point. A tap it declines fails the recognizer,
+/// letting the touch reach ancestor recognizers and the view hierarchy as if
+/// this recognizer were not there.
+///
+/// # Panics
+///
+/// If the gate delegate is asked about a recognizer other than the
+/// `UITapGestureRecognizer` this function installs it on.
+pub fn tap_gated(
+    view: &UIView,
+    taps: usize,
+    buttons: ButtonMask,
+    gate: impl Fn(&UITapGestureRecognizer) -> bool + 'static,
+    handler: impl Fn(GestureState, &UITapGestureRecognizer) + 'static,
+) -> GestureAttachment {
+    let mtm = view.mtm();
+    let recognizer = UITapGestureRecognizer::new(mtm);
+    recognizer.setNumberOfTapsRequired(taps.max(1));
+    recognizer.setButtonMaskRequired(objc2_ui_kit::UIEventButtonMask(buttons.bits() as isize));
+    let gate = Gate::new(
+        mtm,
+        Rc::new(move |recognizer| {
+            gate(
+                recognizer
+                    .downcast_ref::<UITapGestureRecognizer>()
+                    .expect("the recognizer is the class this constructor built"),
+            )
+        }),
+    );
+    recognizer.setDelegate(Some(ProtocolObject::from_ref(&*gate)));
+    let mut attachment = attach(view, recognizer, None, handler);
+    attachment.gate = Some(gate);
+    attachment
 }
 
 /// A tap recognizer on `view`: `taps` consecutive taps (at least one) from a
 /// pointer button in `buttons`.
+///
+/// The handler receives the recognizer's normalized state and the
+/// recognizer itself, so it can read the recognition point.
 ///
 /// `buttonMaskRequired` follows the same DOM `buttons` bit order
 /// [`ButtonMask`] uses, so the mask applies verbatim.
@@ -235,62 +356,70 @@ pub fn tap(
     view: &UIView,
     taps: usize,
     buttons: ButtonMask,
-    handler: impl Fn(GestureState) + 'static,
+    handler: impl Fn(GestureState, &UITapGestureRecognizer) + 'static,
 ) -> GestureAttachment {
     let mtm = view.mtm();
     let recognizer = UITapGestureRecognizer::new(mtm);
     recognizer.setNumberOfTapsRequired(taps.max(1));
     recognizer.setButtonMaskRequired(objc2_ui_kit::UIEventButtonMask(buttons.bits() as isize));
-    attach(view, recognizer, None, Rc::new(handler))
+    attach(view, recognizer, None, handler)
 }
 
 /// A long-press recognizer on `view`: a press of at least
 /// `minimum_seconds` from a pointer button in `buttons`.
+///
+/// The handler receives the recognizer's normalized state and the
+/// recognizer itself.
 pub fn long_press(
     view: &UIView,
     minimum_seconds: f64,
     buttons: ButtonMask,
-    handler: impl Fn(GestureState) + 'static,
+    handler: impl Fn(GestureState, &UILongPressGestureRecognizer) + 'static,
 ) -> GestureAttachment {
     let mtm = view.mtm();
     let recognizer = UILongPressGestureRecognizer::new(mtm);
     recognizer.setMinimumPressDuration(minimum_seconds);
-    attach(view, recognizer, Some(buttons), Rc::new(handler))
+    attach(view, recognizer, Some(buttons), handler)
 }
 
 /// A pan recognizer on `view`, from a pointer button in `buttons`.
+///
+/// The handler receives the recognizer's normalized state and the
+/// recognizer itself, so it can read `translationInView:`/`velocityInView:`.
 pub fn pan(
     view: &UIView,
     buttons: ButtonMask,
-    handler: impl Fn(GestureState) + 'static,
+    handler: impl Fn(GestureState, &UIPanGestureRecognizer) + 'static,
 ) -> GestureAttachment {
     let mtm = view.mtm();
     attach(
         view,
         UIPanGestureRecognizer::new(mtm),
         Some(buttons),
-        Rc::new(handler),
+        handler,
     )
 }
 
 /// A pinch recognizer on `view`.
-pub fn pinch(view: &UIView, handler: impl Fn(GestureState) + 'static) -> GestureAttachment {
+///
+/// The handler receives the recognizer's normalized state and the
+/// recognizer itself.
+pub fn pinch(
+    view: &UIView,
+    handler: impl Fn(GestureState, &UIPinchGestureRecognizer) + 'static,
+) -> GestureAttachment {
     let mtm = view.mtm();
-    attach(
-        view,
-        UIPinchGestureRecognizer::new(mtm),
-        None,
-        Rc::new(handler),
-    )
+    attach(view, UIPinchGestureRecognizer::new(mtm), None, handler)
 }
 
 /// A rotation recognizer on `view`.
-pub fn rotation(view: &UIView, handler: impl Fn(GestureState) + 'static) -> GestureAttachment {
+///
+/// The handler receives the recognizer's normalized state and the
+/// recognizer itself.
+pub fn rotation(
+    view: &UIView,
+    handler: impl Fn(GestureState, &UIRotationGestureRecognizer) + 'static,
+) -> GestureAttachment {
     let mtm = view.mtm();
-    attach(
-        view,
-        UIRotationGestureRecognizer::new(mtm),
-        None,
-        Rc::new(handler),
-    )
+    attach(view, UIRotationGestureRecognizer::new(mtm), None, handler)
 }

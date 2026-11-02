@@ -15,6 +15,7 @@ const BOX_BLUR: &str = include_str!(concat!(
 pub const HORIZONTAL: SpatialStage = SpatialStage {
     name: "box_blur_horizontal",
     source: BOX_BLUR,
+    source_f16: None,
     params: &[ParamSource::Param(0), ParamSource::Constant(&[1.0, 0.0])],
     space: OperatingSpace::Working,
     shape: None,
@@ -25,6 +26,7 @@ pub const HORIZONTAL: SpatialStage = SpatialStage {
 const VERTICAL: SpatialStage = SpatialStage {
     name: "box_blur_vertical",
     source: BOX_BLUR,
+    source_f16: None,
     params: &[ParamSource::Param(0), ParamSource::Constant(&[0.0, 1.0])],
     space: OperatingSpace::Working,
     shape: None,

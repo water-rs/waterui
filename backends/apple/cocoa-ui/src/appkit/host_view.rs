@@ -14,11 +14,11 @@ use std::rc::Rc;
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::runtime::{Bool, ProtocolObject, Sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
-    NSView,
+    NSAccessibilityFrameInView, NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea,
+    NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{NSArray, NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize};
 
@@ -27,6 +27,7 @@ use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, MeasureProposal, Point, Rect, Size};
 use crate::keys::{self, KeyEvent};
 use crate::pointer::{PointerEvent, PointerEvents};
+use crate::visibility::VisibilityEmitter;
 
 /// What a [`HostView`]'s hit-test handler decides for a point.
 #[derive(Debug, Clone)]
@@ -55,6 +56,9 @@ type MouseHandler = Rc<dyn Fn(&HostView, &NSEvent)>;
 type PointerHandler = Rc<dyn Fn(&HostView, PointerEvent) -> bool>;
 type KeyHandler = Rc<dyn Fn(&HostView, &KeyEvent) -> bool>;
 type RightMouseHandler = Rc<dyn Fn(&HostView, &NSEvent)>;
+/// The handler `accessibilityPerformPress` calls; its answer is whether
+/// the press was handled.
+type AccessibilityPressHandler = Rc<dyn Fn(&HostView) -> bool>;
 
 /// The handlers a [`HostView`] calls.
 #[derive(Default)]
@@ -82,8 +86,15 @@ pub struct HostViewIvars {
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
     key: RefCell<Option<KeyHandler>>,
     right_mouse: RefCell<Option<RightMouseHandler>>,
+    /// `accessibilityPerformPress` — installed when the mounted content is
+    /// operable through an assistive client's press action.
+    accessibility_press: RefCell<Option<AccessibilityPressHandler>>,
     /// `viewDidChangeBackingProperties` subscribers — backing-scale changes.
     backing_changed: RefCell<Option<WindowHandler>>,
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent a labelled layout container resolves
+    /// to — instead of the view's own frame (water-rs/waterui#1482).
+    reports_content_extent: Cell<bool>,
     /// Whether the view's own content is laid out against its bounds — the
     /// answer to "does this view manage its own safe area".
     manages_safe_area: std::cell::Cell<bool>,
@@ -99,8 +110,16 @@ pub struct HostViewIvars {
     intrinsic_auto_layout: std::cell::Cell<bool>,
     /// The width the intrinsic-content-size query was last invalidated for.
     last_auto_layout_width: std::cell::Cell<f64>,
+    /// The instance-owned visibility event: fires when this view's hidden,
+    /// alpha, frame, bounds, window or superview state changes so
+    /// subscribed descendants re-check presentation visibility.
+    emitter: VisibilityEmitter,
     /// The capturable surface the mounted leaf stored on this view.
     capturable: crate::capture::CapturableSlot,
+    /// One-way ghost mark: a retired host and its subtree are pure visuals —
+    /// outside hit testing, accessibility and focus. Not a handler slot, so
+    /// `clear_handlers` cannot revoke it.
+    retired: Cell<bool>,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -133,8 +152,15 @@ impl fmt::Debug for HostViewIvars {
             .field("pointer_inside", &self.pointer_inside.get())
             .field("tracking_area", &self.tracking_area.borrow().is_some())
             .field("key", &self.key.borrow().is_some())
+            .field("reports_content_extent", &self.reports_content_extent.get())
             .field("right_mouse", &self.right_mouse.borrow().is_some())
+            .field(
+                "accessibility_press",
+                &self.accessibility_press.borrow().is_some(),
+            )
             .field("capturable", &self.capturable.get().is_some())
+            .field("emitter", &self.emitter)
+            .field("retired", &self.retired.get())
             .finish()
     }
 }
@@ -190,6 +216,7 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -276,6 +303,47 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self, new_size.into());
                 }
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrameOrigin:))]
+        fn set_frame_origin_override(&self, new_origin: NSPoint) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrameOrigin: new_origin] };
+            guarded("HostView setFrameOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setBoundsSize:))]
+        fn set_bounds_size_override(&self, new_size: NSSize) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setBoundsSize: new_size] };
+            guarded("HostView setBoundsSize: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setBoundsOrigin:))]
+        fn set_bounds_origin_override(&self, new_origin: NSPoint) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setBoundsOrigin: new_origin] };
+            guarded("HostView setBoundsOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlphaValue:))]
+        fn set_alpha_value_override(&self, alpha: f64) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setAlphaValue: alpha] };
+            guarded("HostView setAlphaValue: visibility emit", || {
+                self.ivars().emitter.emit();
             });
         }
 
@@ -289,6 +357,7 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self, hidden);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -302,6 +371,7 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -421,10 +491,14 @@ define_class!(
             });
         }
 
-        // SAFETY: see the module safety note.
+        // SAFETY: see the module safety note. A retired host answers nil
+        // before any handler — the ghost keeps no hit-test membership.
         #[unsafe(method_id(hitTest:))]
         fn hit_test_override(&self, point: NSPoint) -> Option<Retained<NSView>> {
             guarded("HostView hitTest:", || {
+                if self.ivars().retired.get() {
+                    return None;
+                }
                 let handler = self.ivars().hit_test.borrow().clone();
                 match handler.map_or(HitTest::Default, |handler| handler(self, point.into())) {
                     // SAFETY: see the module safety note.
@@ -536,6 +610,86 @@ define_class!(
             });
         }
 
+        // SAFETY: see the module safety note. Overriding the method is what
+        // puts `AXPress` in the element's action list — `AppKit` detects the
+        // override when an assistive client asks for `AXActions`.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press_override(&self) -> bool {
+            guarded("HostView accessibilityPerformPress", || {
+                let handler = self.ivars().accessibility_press.borrow().clone();
+                if let Some(handler) = handler {
+                    return handler(self);
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), accessibilityPerformPress] }
+            })
+        }
+
+        // SAFETY: see the module safety note. A retired host reports no
+        // accessibility children — the ghost is outside the tree.
+        #[unsafe(method_id(accessibilityChildren))]
+        fn accessibility_children_override(
+            &self,
+        ) -> Option<Retained<NSArray<objc2::runtime::AnyObject>>> {
+            guarded("HostView accessibilityChildren", || {
+                if self.ivars().retired.get() {
+                    return Some(NSArray::new());
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), accessibilityChildren] }
+            })
+        }
+
+        // SAFETY: see the module safety note. A retired host is not an
+        // accessibility element.
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element_override(&self) -> Bool {
+            if self.ivars().retired.get() {
+                return Bool::NO;
+            }
+            // SAFETY: see the module safety note.
+            unsafe { msg_send![super(self), isAccessibilityElement] }
+        }
+
+        // SAFETY: see the module safety note. A retired host refuses first
+        // responder — the ghost keeps no focus membership.
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder_override(&self) -> Bool {
+            if self.ivars().retired.get() {
+                return Bool::NO;
+            }
+            // SAFETY: see the module safety note.
+            unsafe { msg_send![super(self), acceptsFirstResponder] }
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("HostView accessibilityFrame", || {
+                if !self.ivars().reports_content_extent.get() {
+                    // SAFETY: see the module safety note.
+                    return unsafe { msg_send![super(self), accessibilityFrame] };
+                }
+                NSAccessibilityFrameInView(self, self.content_extent())
+            })
+        }
+
+        // SAFETY: see the module safety note. The override above puts
+        // `AXPress` on every host that is an accessibility element; the
+        // action is allowed only while a press handler is installed, so a
+        // host that is an element for another reason (a role set through
+        // accessibility metadata) advertises no press it cannot perform.
+        #[unsafe(method(isAccessibilitySelectorAllowed:))]
+        fn is_accessibility_selector_allowed_override(&self, selector: Sel) -> bool {
+            guarded("HostView isAccessibilitySelectorAllowed:", || {
+                if selector == sel!(accessibilityPerformPress) {
+                    return self.ivars().accessibility_press.borrow().is_some();
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), isAccessibilitySelectorAllowed: selector] }
+            })
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(rightMouseDown:))]
         fn right_mouse_down_override(&self, event: &NSEvent) {
@@ -609,6 +763,12 @@ impl HostView {
         self.ivars().window.replace(Some(Rc::new(handler)));
     }
 
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
+    }
+
     /// Calls `handler` every time the view moves into or out of a superview —
     /// `viewDidMoveToSuperview`, the point where an enclosing scroll surface
     /// may have changed.
@@ -663,6 +823,46 @@ impl HostView {
         self.ivars().right_mouse.replace(Some(Rc::new(handler)));
     }
 
+    /// Calls `handler` on `accessibilityPerformPress` — an assistive
+    /// client's press on this element — and reports its answer as whether
+    /// the press was handled, replacing any handler set before.
+    ///
+    /// Installing one is what makes the view operable: `AppKit` lists
+    /// `AXPress` in the element's actions for a class that overrides
+    /// `accessibilityPerformPress`, so the override alone puts the action
+    /// on the element and this handler decides what it does.
+    pub fn set_accessibility_press_handler(&self, handler: impl Fn(&Self) -> bool + 'static) {
+        self.ivars()
+            .accessibility_press
+            .replace(Some(Rc::new(handler)));
+    }
+
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent this container resolved its content
+    /// to — instead of the view's own frame. A labelled layout container
+    /// (`Frame`, `vstack`, …) is assigned the whole region but places its
+    /// content in the resolved box, so a label on it announces the
+    /// children's extent, not the assignment (water-rs/waterui#1482).
+    /// Computed live on every read; nothing is stored.
+    pub fn set_reports_content_extent(&self, reports: bool) {
+        self.ivars().reports_content_extent.set(reports);
+    }
+
+    /// The union of the direct, non-hidden subviews' frames — in this
+    /// view's coordinate space — or the view's own bounds when it has
+    /// none.
+    fn content_extent(&self) -> NSRect {
+        let mut extent: Option<NSRect> = None;
+        for subview in &self.subviews() {
+            if subview.isHidden() {
+                continue;
+            }
+            let frame = subview.frame();
+            extent = Some(extent.map_or(frame, |u| union(u, frame)));
+        }
+        extent.unwrap_or_else(|| self.bounds())
+    }
+
     /// Lets `handler` answer the view's intrinsic measurements,
     /// `fittingSize` and `intrinsicContentSize`, for a layout container.
     pub fn set_measure_handler(&self, handler: impl Fn(&Self, MeasureProposal) -> Size + 'static) {
@@ -683,7 +883,8 @@ impl HostView {
     /// than reaching state the owner released, and the handlers no longer
     /// keep that state alive: layout, resize, hit-test, backing-changed,
     /// window, superview, measure, primary content, scroll surface,
-    /// hidden, mouse, drop, pointer, key and right-mouse. The pointer
+    /// hidden, mouse, drop, pointer, key, right-mouse and
+    /// accessibility-press. The pointer
     /// tracking area is removed as well, since it exists only to serve the
     /// pointer handler.
     pub fn clear_handlers(&self) {
@@ -706,7 +907,25 @@ impl HostView {
         self.updateTrackingAreas();
         ivars.key.replace(None);
         ivars.right_mouse.replace(None);
+        ivars.accessibility_press.replace(None);
         ivars.backing_changed.replace(None);
+    }
+
+    /// One-way: from now on this view and its subtree are a ghost —
+    /// pure visuals the transition host keeps on screen after semantics
+    /// end. Survives `clear_handlers`: the mark is an ivar, not a handler
+    /// slot. A retired host's `hitTest:` answers nil before consulting the
+    /// handler, `accessibilityChildren` answers empty, and
+    /// `isAccessibilityElement` / `acceptsFirstResponder` answer `NO`.
+    pub fn retire(&self) {
+        self.ivars().retired.set(true);
+    }
+
+    /// Whether [`retire`](HostView::retire) ran — the mark descendants
+    /// test to know their visual ownership already transferred.
+    #[must_use]
+    pub fn is_retired(&self) -> bool {
+        self.ivars().retired.get()
     }
 
     /// Whether the intrinsic content size reports the height the current
@@ -906,4 +1125,11 @@ impl HostView {
         } = self.safeAreaInsets();
         EdgeInsets::new(top, left, bottom, right)
     }
+}
+
+/// The smallest rect containing `a` and `b`.
+fn union(a: NSRect, b: NSRect) -> NSRect {
+    let min = NSPoint::new(a.min().x.min(b.min().x), a.min().y.min(b.min().y));
+    let max = NSPoint::new(a.max().x.max(b.max().x), a.max().y.max(b.max().y));
+    NSRect::new(min, NSSize::new(max.x - min.x, max.y - min.y))
 }

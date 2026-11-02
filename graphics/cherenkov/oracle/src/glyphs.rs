@@ -908,17 +908,6 @@ fn bitmap_image(width: u32, height: u32, rgba: &[u8], premultiplied: bool) -> cr
     }
 }
 
-#[expect(
-    clippy::many_single_char_names,
-    reason = "affine coefficients and eigenvalue formula use standard notation"
-)]
-fn sigma_max(transform: Affine) -> f64 {
-    let [a, b, c, d, ..] = transform.as_coeffs();
-    let p = a.mul_add(a, b * b) + c.mul_add(c, d * d);
-    let det = a.mul_add(d, -(b * c));
-    p.midpoint(p.mul_add(p, -4.0 * det * det).sqrt()).sqrt()
-}
-
 /// Expand a [`GlyphRun`] into scene [`Item`]s.
 ///
 /// Each glyph is drawn at `Size::unscaled()` (font units, **unhinted**) under
@@ -961,7 +950,7 @@ pub fn items_for_glyph_run(
         clippy::cast_possible_truncation,
         reason = "strike selection uses the font's f32 ppem metadata"
     )]
-    let device_ppem = (f64::from(run.size) * sigma_max(transform)) as f32;
+    let device_ppem = (f64::from(run.size) * transform.spectral_norm()) as f32;
 
     let coords: Vec<F2Dot14Coord> = run
         .normalized_coords
@@ -1058,7 +1047,8 @@ pub fn items_for_glyph_run(
                     clippy::cast_possible_truncation,
                     reason = "strike selection uses the font's f32 ppem metadata"
                 )]
-                let ppem = (f64::from(run.size) * sigma_max(transform * bitmap_place)) as f32;
+                let ppem =
+                    (f64::from(run.size) * (transform * bitmap_place).spectral_norm()) as f32;
                 bitmap_font.select(ppem)
             };
             let Some(bitmap) = decode_bitmap(&font, bitmap_font, strike, gid_u16)? else {

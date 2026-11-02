@@ -17,7 +17,7 @@ proc-macro = true
 proc-macro2 = "1"
 proc-macro-crate = "3"
 quote = "1"
-syn = { version = "3", features = ["full", "parsing"] }
+syn = { version = "3.0.9", default-features = false, features = ["parsing", "printing", "proc-macro", "full"] }
 waterui-assets-core.workspace = true
 waterui-assets-planner.workspace = true
 

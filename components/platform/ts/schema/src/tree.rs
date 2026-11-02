@@ -17,6 +17,7 @@ use core::fmt;
 /// bridge draws, and for the same reason — a `u64` round-tripped through a
 /// double loses its low bits silently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum NumberKind {
     /// `f32`.
     F32,
@@ -102,6 +103,7 @@ impl NumberKind {
 /// Nodes reference their children through `&'static Self`, which a const
 /// initializer produces by borrowing the child type's own `SCHEMA` constant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TypeSchema {
     /// `()`, projected as `void`.
     Unit,
@@ -172,31 +174,115 @@ pub enum TypeSchema {
 
 /// A struct with named fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct StructSchema {
     /// The Rust type name, which is also the generated TypeScript type name.
-    pub name: &'static str,
+    name: &'static str,
     /// The fields in declaration order.
-    pub fields: &'static [FieldSchema],
+    fields: &'static [FieldSchema],
+}
+
+impl StructSchema {
+    /// The Rust type name, which is also the generated TypeScript type name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The fields in declaration order.
+    #[must_use]
+    pub const fn fields(&self) -> &'static [FieldSchema] {
+        self.fields
+    }
+}
+
+impl StructSchema {
+    /// A struct named `name` with `fields` in declaration order.
+    #[must_use]
+    pub const fn new(name: &'static str, fields: &'static [FieldSchema]) -> Self {
+        Self { name, fields }
+    }
 }
 
 /// One named field of a struct or a struct-shaped enum variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FieldSchema {
     /// The field name, which is also the generated property name.
-    pub name: &'static str,
+    name: &'static str,
     /// The field type.
-    pub ty: TypeSchema,
+    ty: TypeSchema,
+}
+
+impl FieldSchema {
+    /// The field name, which is also the generated property name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The field type.
+    #[must_use]
+    pub const fn ty(&self) -> &TypeSchema {
+        &self.ty
+    }
+}
+
+impl FieldSchema {
+    /// A field named `name` of type `ty`.
+    #[must_use]
+    pub const fn new(name: &'static str, ty: TypeSchema) -> Self {
+        Self { name, ty }
+    }
 }
 
 /// An enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EnumSchema {
     /// The Rust type name, which is also the generated TypeScript type name.
-    pub name: &'static str,
+    name: &'static str,
     /// How the variants are laid out on the TypeScript side.
-    pub representation: EnumRepresentation,
+    representation: EnumRepresentation,
     /// The variants in declaration order.
-    pub variants: &'static [VariantSchema],
+    variants: &'static [VariantSchema],
+}
+
+impl EnumSchema {
+    /// The Rust type name, which is also the generated TypeScript type name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// How the variants are laid out on the TypeScript side.
+    #[must_use]
+    pub const fn representation(&self) -> EnumRepresentation {
+        self.representation
+    }
+
+    /// The variants in declaration order.
+    #[must_use]
+    pub const fn variants(&self) -> &'static [VariantSchema] {
+        self.variants
+    }
+}
+
+impl EnumSchema {
+    /// An enum named `name`, laid out as `representation`, with `variants` in
+    /// declaration order.
+    #[must_use]
+    pub const fn new(
+        name: &'static str,
+        representation: EnumRepresentation,
+        variants: &'static [VariantSchema],
+    ) -> Self {
+        Self {
+            name,
+            representation,
+            variants,
+        }
+    }
 }
 
 /// How an enum's variants are laid out on the TypeScript side.
@@ -205,6 +291,10 @@ pub struct EnumSchema {
 /// attributes at conversion time: the runtime converter follows the schema, so
 /// the only place the layout is decided is here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the converters and the declaration generator lay out each representation variant by variant; a new one must fail their build instead of falling into a wildcard arm"
+)]
 pub enum EnumRepresentation {
     /// Every variant is a unit variant, so the enum is a union of string
     /// literals: `"Idle" | "Running"`.
@@ -231,15 +321,39 @@ impl EnumRepresentation {
 
 /// One variant of an enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VariantSchema {
     /// The variant name, which is also its tag value.
-    pub name: &'static str,
+    name: &'static str,
     /// What the variant carries.
-    pub payload: VariantPayload,
+    payload: VariantPayload,
+}
+
+impl VariantSchema {
+    /// The variant name, which is also its tag value.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// What the variant carries.
+    #[must_use]
+    pub const fn payload(&self) -> VariantPayload {
+        self.payload
+    }
+}
+
+impl VariantSchema {
+    /// A variant named `name` carrying `payload`.
+    #[must_use]
+    pub const fn new(name: &'static str, payload: VariantPayload) -> Self {
+        Self { name, payload }
+    }
 }
 
 /// What an enum variant carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VariantPayload {
     /// Nothing.
     Unit,

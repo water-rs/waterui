@@ -1,12 +1,16 @@
-//! Renderer presentation tests for graphics views: the image nodes' bounds on
-//! the rendered runtime.
+//! Rendered-flush twin of `waterui-graphics`'s accessibility coverage: the
+//! graphics leaves' nodes carry real bounds on the rendered runtime, and
+//! decorative leaves stay out of the published tree until the application
+//! names them. The semantic legs — role, label, naming precedence — live in
+//! the component crate's `e2e_semantics.rs`.
 //!
 //! Received from water-rs/waterui under water-rs/waterui#1130 (class 2 —
-//! renderer presentation); every case names its origin file and asserts what
-//! it asserted there, mounted under `Material3::defaults()` on the rendered
-//! runtime.
+//! renderer presentation).
+
+mod support;
 
 use kurbo::{Rect, Shape as _};
+use support::{mount_rendered, node_bounds_with_role, nodes};
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::text;
@@ -15,8 +19,8 @@ use waterui::graphics::draw::{Draw, Paint, WorkingColor};
 use waterui::layout::Size;
 use waterui::reactive::constant;
 use waterui::shape::{Circle, ShapeExt as _};
+use waterui_core::Environment;
 use waterui_graphics::{FlowingGradient, Gradient, Picture, ShaderPaintView};
-use waterui_testing::{OffscreenApp, Role};
 
 fn linear_gradient_view() -> impl waterui::View {
     Gradient::linear(
@@ -62,65 +66,72 @@ fn renamed_picture_view() -> impl waterui::View {
     labeled_picture_view().a11y_label("Severe weather")
 }
 
-fn assert_image_node(app: &mut OffscreenApp, case: &str, label: &str) {
-    let node = app.query().role(Role::IMAGE).label(label).single();
-    let bounds = node.bounds();
+#[track_caller]
+fn assert_image_node<V: waterui::View>(
+    view: impl Fn() -> V + Clone + 'static,
+    case: &str,
+    label: &str,
+) {
+    let mut app = mount_rendered(Environment::new(), view, 320, 240);
+    app.settle();
+    let bounds = node_bounds_with_role(app.tree(), accesskit::Role::Image, label);
     assert!(bounds.width() > 0.0, "{case}: width must be positive");
     assert!(bounds.height() > 0.0, "{case}: height must be positive");
 }
 
-// Origin: waterui `components/visual/graphics/tests/e2e_semantics.rs`.
-#[waterui::test(linear_gradient_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
-fn linear_gradient_exposes_accessibility_image(app: &mut OffscreenApp) {
+#[test]
+fn linear_gradient_exposes_accessibility_image() {
     assert_image_node(
-        app,
+        linear_gradient_view,
         "linear-gradient-exposes-accessibility-image",
         "Linear gradient",
     );
 }
 
-// Origin: waterui `components/visual/graphics/tests/e2e_semantics.rs`.
-#[waterui::test(animated_mesh_gradient_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
-fn animated_mesh_gradient_exposes_accessibility_image(app: &mut OffscreenApp) {
+#[test]
+fn animated_mesh_gradient_exposes_accessibility_image() {
     assert_image_node(
-        app,
+        animated_mesh_gradient_view,
         "animated-mesh-gradient-exposes-accessibility-image",
         "Animated mesh gradient",
     );
 }
 
-// Origin: waterui `components/visual/graphics/tests/e2e_semantics.rs`.
-#[waterui::test(shader_surface_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
-fn shader_surface_exposes_accessibility_image(app: &mut OffscreenApp) {
+#[test]
+fn shader_surface_exposes_accessibility_image() {
     assert_image_node(
-        app,
+        shader_surface_view,
         "shader-surface-exposes-accessibility-image",
         "Shader surface",
     );
 }
 
-// Origin: waterui `components/visual/graphics/tests/e2e_semantics.rs`.
-#[waterui::test(labeled_picture_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
-fn a_picture_offers_its_own_name(app: &mut OffscreenApp) {
-    assert_image_node(app, "a-picture-offers-its-own-name", "Warning sign");
+#[test]
+fn a_picture_offers_its_own_name() {
+    assert_image_node(
+        labeled_picture_view,
+        "a-picture-offers-its-own-name",
+        "Warning sign",
+    );
 }
 
-// Origin: waterui `components/visual/graphics/tests/e2e_semantics.rs`.
-#[waterui::test(renamed_picture_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
-fn the_application_label_wins_over_the_pictures_own(app: &mut OffscreenApp) {
-    assert_image_node(
-        app,
-        "the-application-label-wins-over-the-pictures-own",
-        "Severe weather",
+#[test]
+fn the_application_label_wins_over_the_pictures_own() {
+    let mut app = mount_rendered(Environment::new(), renamed_picture_view, 320, 240);
+    app.settle();
+    let bounds = node_bounds_with_role(app.tree(), accesskit::Role::Image, "Severe weather");
+    assert!(
+        bounds.width() > 0.0 && bounds.height() > 0.0,
+        "the renamed picture's node carries bounds"
     );
     assert!(
-        !app.query().label("Warning sign").exists(),
+        !support::nodes(app.tree()).any(|(_, node)| node.label() == Some("Warning sign")),
         "the picture's own name must not reach the tree once the application named it"
     );
 }
 
-// Origin: water-rs/hydrolysis#148 — decorative graphics leaves must stay out
-// of the accessibility tree until the application names them.
+/// Decorative graphics leaves must stay out of the accessibility tree until
+/// the application names them (water-rs/hydrolysis#148).
 fn decorative_background_view() -> impl waterui::View {
     text("Content").background(Gradient::linear(
         vec![
@@ -132,30 +143,34 @@ fn decorative_background_view() -> impl waterui::View {
     ))
 }
 
-#[waterui::test(decorative_background_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
-fn an_unlabelled_background_fill_emits_no_accessibility_node(app: &mut OffscreenApp) {
+#[test]
+fn an_unlabelled_background_fill_emits_no_accessibility_node() {
+    let mut app = mount_rendered(Environment::new(), decorative_background_view, 320, 240);
+    app.settle();
     assert!(
-        !app.query().role(Role::IMAGE).exists(),
+        !nodes(app.tree()).any(|(_, node)| node.role() == accesskit::Role::Image),
         "a decorative background fill must not emit an unnamed Image node"
     );
 }
 
-// Origin: water-rs/hydrolysis#148.
+/// water-rs/hydrolysis#148.
 fn decorative_shape_view() -> impl waterui::View {
     Circle
         .fill(waterui::Color::srgb_hex("#3B82F6"))
         .size(24.0, 24.0)
 }
 
-#[waterui::test(decorative_shape_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
-fn an_unlabelled_shape_fill_emits_no_accessibility_node(app: &mut OffscreenApp) {
+#[test]
+fn an_unlabelled_shape_fill_emits_no_accessibility_node() {
+    let mut app = mount_rendered(Environment::new(), decorative_shape_view, 320, 240);
+    app.settle();
     assert!(
-        !app.query().role(Role::IMAGE).exists(),
+        !nodes(app.tree()).any(|(_, node)| node.role() == accesskit::Role::Image),
         "a decorative shape fill must not emit an unnamed Image node"
     );
 }
 
-// Origin: water-rs/hydrolysis#148.
+/// water-rs/hydrolysis#148.
 fn labeled_shape_view() -> impl waterui::View {
     Circle
         .fill(waterui::Color::srgb_hex("#3B82F6"))
@@ -163,12 +178,16 @@ fn labeled_shape_view() -> impl waterui::View {
         .a11y_label("Avatar")
 }
 
-#[waterui::test(labeled_shape_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
-fn a_labelled_shape_emits_a_named_image_node(app: &mut OffscreenApp) {
-    assert_image_node(app, "a-labelled-shape-emits-a-named-image-node", "Avatar");
+#[test]
+fn a_labelled_shape_emits_a_named_image_node() {
+    assert_image_node(
+        labeled_shape_view,
+        "a-labelled-shape-emits-a-named-image-node",
+        "Avatar",
+    );
 }
 
-// Origin: water-rs/hydrolysis#148.
+/// water-rs/hydrolysis#148.
 fn image_role_shape_view() -> impl waterui::View {
     Circle
         .fill(waterui::Color::srgb_hex("#3B82F6"))
@@ -176,10 +195,12 @@ fn image_role_shape_view() -> impl waterui::View {
         .a11y_role(AccessibilityRole::Image)
 }
 
-#[waterui::test(image_role_shape_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
-fn an_explicit_image_role_keeps_the_shape_in_the_tree(app: &mut OffscreenApp) {
+#[test]
+fn an_explicit_image_role_keeps_the_shape_in_the_tree() {
+    let mut app = mount_rendered(Environment::new(), image_role_shape_view, 320, 240);
+    app.settle();
     assert!(
-        app.query().role(Role::IMAGE).exists(),
+        nodes(app.tree()).any(|(_, node)| node.role() == accesskit::Role::Image),
         "an explicit image role keeps the leaf in the tree"
     );
 }

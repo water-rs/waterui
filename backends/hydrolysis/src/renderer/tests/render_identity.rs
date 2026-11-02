@@ -36,7 +36,7 @@ use crate::renderer::mount::cell::NodeCell;
 /// Collect the tree's cells as live `Rc`s: holding them keeps every retired
 /// address un-reused across a comparison, so two nodes compare by
 /// `Rc::ptr_eq` exactly — never by an address an allocator could recycle.
-fn tree_cells(runtime: &HeadlessRuntime) -> Vec<Rc<NodeCell>> {
+fn tree_cells(runtime: &HeadlessRuntime) -> Vec<Rc<NodeCell<crate::text::ParleyEngine>>> {
     let mut cells = Vec::new();
     runtime
         .renderer()
@@ -46,7 +46,10 @@ fn tree_cells(runtime: &HeadlessRuntime) -> Vec<Rc<NodeCell>> {
     cells
 }
 
-fn contains_cell(cells: &[Rc<NodeCell>], cell: &Rc<NodeCell>) -> bool {
+fn contains_cell<E: crate::text::TextEngine>(
+    cells: &[Rc<NodeCell<E>>],
+    cell: &Rc<NodeCell<E>>,
+) -> bool {
     cells.iter().any(|other| Rc::ptr_eq(other, cell))
 }
 
@@ -149,7 +152,7 @@ fn dynamic_swap_replaces_only_the_swapped_mounts() {
 /// cells.
 #[test]
 fn collection_reconcile_replaces_only_the_touched_mounts() {
-    #[derive(Clone)]
+    #[derive(Clone, PartialEq)]
     struct Shade {
         id: u64,
         level: u8,
@@ -176,7 +179,7 @@ fn collection_reconcile_replaces_only_the_touched_mounts() {
 
     // Removal: only the dropped item's cells leave; every survivor keeps its
     // node.
-    let list: List<Shade> = List::from(vec![
+    let mut list: List<Shade> = List::from(vec![
         Shade { id: 0, level: 0 },
         Shade { id: 1, level: 1 },
         Shade { id: 2, level: 2 },

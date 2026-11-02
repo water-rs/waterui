@@ -17,8 +17,8 @@ use alloc::{
 use std::collections::HashMap;
 
 use cherenkov_shader::{
-    ComposeOptions, LibrarySource, ParamType, ParamValue, Piece, SamplerFilter, Segment, Snippet,
-    SnippetKind, SnippetSource, Stage, compose,
+    ComposeOptions, LibrarySource, ParamType, ParamValue, Piece, Precision, SamplerFilter, Segment,
+    Snippet, SnippetKind, SnippetSource, Stage, Variant, compose,
     naga::{Module, valid::Capabilities},
 };
 use filtrate_core::{
@@ -33,7 +33,7 @@ use crate::effect::EffectSetupError;
 /// stage that operates in sRGB.
 const TO_SRGB: ColorStage = ColorStage {
     name: "to_srgb",
-    source: include_str!("../shaders/space/to_srgb.wgsl"),
+    source: filtrate_core::space::TO_SRGB_WGSL,
     params: &[],
     space: OperatingSpace::Working,
 };
@@ -41,7 +41,7 @@ const TO_SRGB: ColorStage = ColorStage {
 /// Converts back to premultiplied linear Display P3 after it.
 const FROM_SRGB: ColorStage = ColorStage {
     name: "from_srgb",
-    source: include_str!("../shaders/space/from_srgb.wgsl"),
+    source: filtrate_core::space::FROM_SRGB_WGSL,
     params: &[],
     space: OperatingSpace::Working,
 };
@@ -50,9 +50,12 @@ const FROM_SRGB: ColorStage = ColorStage {
 /// a source of plain functions, not a stage; the composer imports each
 /// referenced function once into the composed module.
 const LIBRARIES: &[LibrarySource<'static>] = &[
-    LibrarySource::new("hsl", include_str!("../shaders/lib/hsl.wgsl")),
-    LibrarySource::new("sampling", include_str!("../shaders/lib/sampling.wgsl")),
-    LibrarySource::new("rotate", include_str!("../shaders/lib/rotate.wgsl")),
+    LibrarySource::new("hsl", include_str!("../shaders/lib/hsl.wgsl"))
+        .f16(include_str!("../shaders/lib/hsl.wgsl")),
+    LibrarySource::new("sampling", include_str!("../shaders/lib/sampling.wgsl"))
+        .f16(include_str!("../shaders/lib/sampling.wgsl")),
+    LibrarySource::new("rotate", include_str!("../shaders/lib/rotate.wgsl"))
+        .f16(include_str!("../shaders/lib/rotate.wgsl")),
 ];
 
 /// A stage as the filter reported it.
@@ -100,6 +103,7 @@ struct Expanded {
     kind: SnippetKind,
     name: &'static str,
     source: &'static str,
+    source_f16: Option<&'static str>,
     params: &'static [ParamSource],
     param_base: usize,
     shape: Option<ShapeInput>,
@@ -112,6 +116,7 @@ impl Expanded {
             kind: SnippetKind::Color,
             name: placed.stage.name,
             source: placed.stage.source,
+            source_f16: None,
             params: placed.stage.params,
             param_base: placed.param_base,
             shape: None,
@@ -188,6 +193,7 @@ impl Plan {
         input_filterable: bool,
         intermediate_filterable: bool,
         fold: bool,
+        precision: Precision,
     ) -> Result<Self, EffectSetupError> {
         let mut collector = Collector(Vec::new());
         filter.collect_stages(&mut collector);
@@ -211,6 +217,9 @@ impl Plan {
             .iter()
             .map(|stage| {
                 let mut source = SnippetSource::new(stage.name, stage.kind, stage.source);
+                if let Some(half) = stage.source_f16 {
+                    source = source.variant(Variant::new(Precision::F16, false), half);
+                }
                 for library in LIBRARIES {
                     source = source.library(library.clone());
                 }
@@ -235,7 +244,12 @@ impl Plan {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let composition = compose(&stages, ComposeOptions::default())
+        let precision = if expanded.iter().any(|stage| stage.source_f16.is_some()) {
+            precision
+        } else {
+            Precision::F32
+        };
+        let composition = compose(&stages, ComposeOptions::new(precision, false))
             .map_err(|error| EffectSetupError::Compose(error.to_string()))?;
         let (module, capabilities, pieces) = composition.into_parts();
         Ok(Self {
@@ -265,21 +279,21 @@ fn bind_params<'s>(
     check_inputs(stage, snippet)?;
     let mut composed = Stage::new(snippet);
     for (param, source) in snippet.params().iter().zip(stage.params) {
-        let components = components(param.ty);
+        let components = components(param.ty());
         match *source {
             ParamSource::Constant(values) => {
-                let value = param_value(param.ty, values).ok_or_else(|| {
+                let value = param_value(param.ty(), values).ok_or_else(|| {
                     mismatch(
                         stage.name,
                         format!(
                             "parameter `{}` is {:?}, but its constant has {} components",
-                            param.name,
-                            param.ty,
+                            param.name(),
+                            param.ty(),
                             values.len()
                         ),
                     )
                 })?;
-                composed = composed.constant(&param.name, value);
+                composed = composed.constant(param.name(), value);
             }
             ParamSource::Param(offset) => {
                 let first = stage.param_base + offset;
@@ -288,12 +302,12 @@ fn bind_params<'s>(
                         stage.name,
                         format!(
                             "parameter `{}` reads filter parameters {first}..{}, but the filter has {param_count}",
-                            param.name,
+                            param.name(),
                             first + components
                         ),
                     ));
                 }
-                dynamic.insert((index, param.name.clone()), (first, components));
+                dynamic.insert((index, param.name().to_owned()), (first, components));
             }
         }
     }
@@ -335,19 +349,20 @@ fn passes(
                 // sample; a point-sampled fold works anywhere.
                 let folded = match (fold, folded) {
                     (true, Some(folded))
-                        if folded.sampler == SamplerFilter::Point
-                            || filterable(folded.segment.stages.start) =>
+                        if folded.sampler() == SamplerFilter::Point
+                            || filterable(folded.segment().stages().start) =>
                     {
                         Some(folded)
                     }
                     _ => None,
                 };
-                match (folded, filterable(plain.stages.start), manual) {
+                match (folded, filterable(plain.stages().start), manual) {
                     // The colour prefix runs inside the stage's samples:
                     // this pass replaces it.
                     (Some(folded), _, _) => {
                         selected.pop();
-                        selected.push((folded.segment, Some(folded.sampler)));
+                        let (segment, _, sampler) = folded.into_parts();
+                        selected.push((segment, Some(sampler)));
                     }
                     // The input has no hardware filtering: texel loads
                     // implement the sample, bound with a point sampler.
@@ -362,7 +377,7 @@ fn passes(
 
     let mut pass_of_stage = alloc::vec![0; expanded.len()];
     for (pass, (segment, _)) in selected.iter().enumerate() {
-        for stage in segment.stages.clone() {
+        for stage in segment.stages().clone() {
             pass_of_stage[stage] = pass;
         }
     }
@@ -374,7 +389,7 @@ fn passes(
             // piece has no shape or auxiliary inputs.
             let (name, shape, aux) = match sampler {
                 Some(_) => {
-                    let stage = &expanded[segment.stages.end - 1];
+                    let stage = &expanded[segment.stages().end - 1];
                     let aux = stage
                         .aux
                         .iter()
@@ -386,16 +401,16 @@ fn passes(
                         .collect();
                     (stage.name, stage.shape, aux)
                 }
-                None => (expanded[segment.stages.start].name, None, Vec::new()),
+                None => (expanded[segment.stages().start].name, None, Vec::new()),
             };
             let uniforms = segment
-                .uniform
-                .members
+                .uniform()
+                .members()
                 .iter()
                 .map(|member| {
-                    let (param, components) = dynamic[&(member.stage, member.param.clone())];
+                    let (param, components) = dynamic[&(member.stage(), member.param().to_owned())];
                     UniformSlot {
-                        offset: member.offset,
+                        offset: member.offset(),
                         param,
                         components,
                     }
@@ -418,10 +433,15 @@ fn passes(
 fn expand<F: Filter>(declared: &[Declared]) -> Result<Vec<Expanded>, EffectSetupError> {
     let mut expanded = Vec::with_capacity(declared.len());
     let mut position = Vec::with_capacity(declared.len());
+    let mut space = OperatingSpace::Working;
     for (index, stage) in declared.iter().enumerate() {
-        let srgb = stage.space() == OperatingSpace::Srgb;
-        if srgb {
-            expanded.push(Expanded::color(Placed::new(&TO_SRGB)));
+        if stage.space() != space {
+            let conversion = match stage.space() {
+                OperatingSpace::Working => &FROM_SRGB,
+                OperatingSpace::Srgb => &TO_SRGB,
+            };
+            expanded.push(Expanded::color(Placed::new(conversion)));
+            space = stage.space();
         }
         position.push(expanded.len());
         expanded.push(match stage {
@@ -437,6 +457,7 @@ fn expand<F: Filter>(declared: &[Declared]) -> Result<Vec<Expanded>, EffectSetup
                     kind: SnippetKind::Spatial,
                     name: placed.stage.name,
                     source: placed.stage.source,
+                    source_f16: placed.stage.source_f16,
                     params: placed.stage.params,
                     param_base: placed.param_base,
                     shape: placed.stage.shape,
@@ -444,9 +465,9 @@ fn expand<F: Filter>(declared: &[Declared]) -> Result<Vec<Expanded>, EffectSetup
                 }
             }
         });
-        if srgb {
-            expanded.push(Expanded::color(Placed::new(&FROM_SRGB)));
-        }
+    }
+    if space == OperatingSpace::Srgb {
+        expanded.push(Expanded::color(Placed::new(&FROM_SRGB)));
     }
     Ok(expanded)
 }

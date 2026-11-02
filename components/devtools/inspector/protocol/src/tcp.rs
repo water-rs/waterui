@@ -14,13 +14,34 @@ pub const DEFAULT_PORT_RANGE: u16 = 20;
 
 /// TCP configuration shared by the target application and the inspector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct InspectorTcpConfig {
     /// Address to bind or connect to.
-    pub host: IpAddr,
+    host: IpAddr,
     /// First port to try.
-    pub port_start: u16,
+    port_start: u16,
     /// Number of consecutive ports to try.
-    pub port_range: u16,
+    port_range: u16,
+}
+
+impl InspectorTcpConfig {
+    /// Address to bind or connect to.
+    #[must_use]
+    pub const fn host(&self) -> IpAddr {
+        self.host
+    }
+
+    /// First port to try.
+    #[must_use]
+    pub const fn port_start(&self) -> u16 {
+        self.port_start
+    }
+
+    /// Number of consecutive ports to try.
+    #[must_use]
+    pub const fn port_range(&self) -> u16 {
+        self.port_range
+    }
 }
 
 impl Default for InspectorTcpConfig {
@@ -83,6 +104,7 @@ impl InspectorTcpConfig {
 
 /// Failures parsing the endpoint environment configuration.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// `WATERUI_INSPECTOR_HOST` is not an IP address.
     #[error("invalid WATERUI_INSPECTOR_HOST")]

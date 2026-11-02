@@ -62,23 +62,72 @@ impl Default for Font {
 #[non_exhaustive]
 pub struct ResolvedFont {
     /// Font size in points.
-    pub size: f32,
+    size: f32,
     /// Font weight.
-    pub weight: FontWeight,
+    weight: FontWeight,
     /// Absolute line height in logical points.
     ///
     /// `None` uses the selected font's preferred metrics.
-    pub line_height: Option<f32>,
+    line_height: Option<f32>,
     /// Additional spacing between adjacent glyphs in logical points.
-    pub letter_spacing: f32,
+    letter_spacing: f32,
     /// Optional font family name (e.g., "MaterialIcons-Regular").
     /// None means use the system default font.
-    pub family: Option<Str>,
+    family: Option<Str>,
     /// The design the face is chosen from when no family is named.
     ///
     /// A named family is exact and wins; the design says which of the
     /// platform's own faces to use in its absence.
-    pub design: FontDesign,
+    design: FontDesign,
+}
+
+impl ResolvedFont {
+    /// Font size in points.
+    #[must_use]
+    pub const fn size(&self) -> f32 {
+        self.size
+    }
+
+    /// Sets the `size`.
+    pub const fn set_size(&mut self, size: f32) {
+        self.size = size;
+    }
+
+    /// Font weight.
+    #[must_use]
+    pub const fn weight(&self) -> FontWeight {
+        self.weight
+    }
+
+    /// Absolute line height in logical points.
+    ///
+    /// `None` uses the selected font's preferred metrics.
+    #[must_use]
+    pub const fn line_height(&self) -> Option<f32> {
+        self.line_height
+    }
+
+    /// Additional spacing between adjacent glyphs in logical points.
+    #[must_use]
+    pub const fn letter_spacing(&self) -> f32 {
+        self.letter_spacing
+    }
+
+    /// Optional font family name (e.g., "MaterialIcons-Regular").
+    /// None means use the system default font.
+    #[must_use]
+    pub const fn family(&self) -> Option<&Str> {
+        self.family.as_ref()
+    }
+
+    /// The design the face is chosen from when no family is named.
+    ///
+    /// A named family is exact and wins; the design says which of the
+    /// platform's own faces to use in its absence.
+    #[must_use]
+    pub const fn design(&self) -> FontDesign {
+        self.design
+    }
 }
 
 /// A semantic choice of typeface, resolved by each backend to a platform face.
@@ -93,6 +142,10 @@ pub struct ResolvedFont {
 /// Exhaustive on purpose: every backend maps each design to a face, so a new
 /// design is a change every backend has to answer, and the compiler says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each font design variant by variant; a new font design must fail their build instead of falling into a wildcard arm"
+)]
 pub enum FontDesign {
     /// The platform's default proportional face.
     #[default]
@@ -160,6 +213,10 @@ impl ResolvedFont {
 
 /// Font weight enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the nine CSS weights from 100 to 900"
+)]
 pub enum FontWeight {
     /// Thin weight (100).
     Thin,
@@ -195,6 +252,7 @@ impl_constant!(Font, ResolvedFont, FontWeight, FontDesign);
 /// [`FontFamily::Inherited`]. `Binding<Option<Str>>` therefore passes
 /// straight to [`Font::family`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum FontFamily {
     /// Keep the family the font already resolves to.
     #[default]

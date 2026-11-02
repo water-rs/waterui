@@ -1,15 +1,17 @@
 //! `NavigationSplitLayout` — the two/three-column adaptive container.
 //!
-//! iOS renders a `UISplitViewController` (double or triple column); each
-//! column hosts a [`NavContentController`] wrapping the rendered subtree, so a
-//! column's own `NavigationView` draws its standalone bar inside the column.
+//! iOS renders a `UISplitViewController` (double or triple column): the
+//! sidebar column hosts a [`NavContentController`] inside an implicit
+//! `UINavigationController`, while the middle and detail columns are
+//! stack-driven `UINavigationController`s, so a column's own
+//! `NavigationView` chrome lands on `navigationItem` and a collapse onto
+//! compact pushes the page with the platform's back affordance.
 //! macOS renders the kit [`SplitViewController`] (`NSSplitViewController`).
 //! Selection bindings rebuild the downstream columns; column visibility maps
 //! to per-column collapse.
 
 use core::cell::RefCell;
 
-use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
 use waterui::navigation::{
     NavigationSplitLayout, split::NavigationSplitDetailBuilder as DetailBuilder,
@@ -66,31 +68,64 @@ struct Columns {
 }
 
 impl Columns {
-    /// The middle column's leaf: built from the primary selection (three
-    /// columns) or the placeholder.
-    fn middle(&self) -> NativeLeaf {
-        let view = match (&self.content, self.primary.snapshot()) {
-            (Some(content), Some(id)) => AnyView::new(content.build(id)),
-            _ => self.placeholder.build(),
-        };
-        self.renderer.render(view)
+    /// The middle column's selected content (three columns), or `None`
+    /// when nothing is selected or the split has two columns.
+    fn middle_destination(&self) -> Option<AnyView> {
+        match (&self.content, self.primary.snapshot()) {
+            (Some(content), Some(id)) => Some(AnyView::new(content.build(id))),
+            _ => None,
+        }
     }
 
-    /// The detail column's leaf: the primary selection drives two-column
-    /// splits; the secondary selection drives three-column splits.
-    fn detail(&self) -> NativeLeaf {
-        let view = self
-            .secondary
+    /// The detail column's selected content: the primary selection drives
+    /// two-column splits; the secondary selection drives three-column
+    /// splits. `None` when nothing is selected.
+    fn detail_destination(&self) -> Option<AnyView> {
+        self.secondary
             .as_ref()
             .map_or_else(
                 || self.primary.snapshot(),
                 waterui::reactive::Signal::snapshot,
             )
-            .map_or_else(
-                || self.placeholder.build(),
-                |id| AnyView::new(self.detail.build(id)),
-            );
-        self.renderer.render(view)
+            .map(|id| AnyView::new(self.detail.build(id)))
+    }
+
+    /// The middle column's content, or the placeholder.
+    #[cfg(target_os = "macos")]
+    fn middle_view(&self) -> AnyView {
+        self.middle_destination()
+            .unwrap_or_else(|| self.placeholder.build())
+    }
+
+    /// The detail column's content, or the placeholder.
+    #[cfg(target_os = "macos")]
+    fn detail_view(&self) -> AnyView {
+        self.detail_destination()
+            .unwrap_or_else(|| self.placeholder.build())
+    }
+
+    /// The root of a stack-driven column: a selected destination is
+    /// resolved to its `NavigationView`; the empty-selection placeholder
+    /// becomes the content of a `NavigationView` with the default,
+    /// untitled bar, since it is a plain view with no navigation root to
+    /// resolve.
+    #[cfg(target_os = "ios")]
+    fn column_root(
+        &self,
+        destination: Option<AnyView>,
+    ) -> crate::components::navigation::stack::ColumnRoot {
+        use crate::components::navigation::stack::ColumnRoot;
+        destination.map_or_else(
+            || {
+                ColumnRoot::Resolved(Box::new(waterui::navigation::NavigationView {
+                    bar: waterui::navigation::Bar::default(),
+                    content: self.placeholder.build(),
+                    state: waterui::navigation::NavigationDestinationState::default(),
+                    transition: None,
+                }))
+            },
+            ColumnRoot::Destination,
+        )
     }
 }
 
@@ -112,10 +147,11 @@ mod platform {
 
     use crate::contract::KeepAlive;
 
-    /// `WuiSplitColumnPageController`: `UIKit` wraps each column in a nav
-    /// controller whose bar reserves its height in the safe area even when
-    /// it draws nothing, so the page hides the bar while it is the stack's
-    /// base — a pushed page keeps it for the back affordance.
+    /// `UIKit` wraps the sidebar column in a nav controller whose bar
+    /// reserves its height in the safe area even when it draws nothing, so
+    /// the page hides the bar while it is the stack's base — a pushed page
+    /// keeps it for the back affordance. (The detail and middle columns
+    /// are stack-driven nav controllers whose own bar carries chrome.)
     fn hide_bar_when_base(vc: &Retained<NavContentController>) {
         let weak = cocoa_ui::objc2::rc::Weak::new(&**vc);
         vc.set_will_appear_handler(move |animated| {
@@ -134,7 +170,6 @@ mod platform {
     struct Split {
         columns: Columns,
         nav: Retained<SplitController>,
-        mtm: cocoa_ui::MainThreadMarker,
         applying_selection: Cell<bool>,
     }
 
@@ -170,6 +205,7 @@ mod platform {
             UINavigationController::alloc(mtm),
             &sidebar_vc,
         );
+        sidebar_nav.navigationBar().setPrefersLargeTitles(true);
         nav.set_column(UISplitViewControllerColumn::Primary, &sidebar_nav);
 
         let columns = Columns {
@@ -191,7 +227,6 @@ mod platform {
         let split = Rc::new(Split {
             columns,
             nav,
-            mtm,
             applying_selection: Cell::new(false),
         });
 
@@ -308,24 +343,33 @@ mod platform {
             }
         }
 
+        /// Middle/detail columns render through the stack driver: a real
+        /// `UINavigationController` per column, so the page's chrome —
+        /// large title, the `searchable` field, toolbar items — lands on
+        /// `navigationItem`, and a collapse pushes the top page onto the
+        /// compact stack with the platform's own back affordance.
         fn mount_middle(&self, keep: &mut KeepAlive) {
-            let leaf = self.columns.middle();
-            let vc = NavContentController::new(self.mtm, leaf.view());
-            hide_bar_when_base(&vc);
+            let ctx = self.columns.renderer.context();
+            let (leaf, column_nav) = crate::components::navigation::stack::column_leaf(
+                self.columns.column_root(self.columns.middle_destination()),
+                &ctx,
+            );
             self.nav
-                .set_column(UISplitViewControllerColumn::Supplementary, &vc);
+                .set_column(UISplitViewControllerColumn::Supplementary, &column_nav);
             keep.keep(leaf);
-            keep.keep(vc);
+            keep.keep(column_nav);
         }
 
         fn mount_detail(&self, keep: &mut KeepAlive) {
-            let leaf = self.columns.detail();
-            let vc = NavContentController::new(self.mtm, leaf.view());
-            hide_bar_when_base(&vc);
+            let ctx = self.columns.renderer.context();
+            let (leaf, column_nav) = crate::components::navigation::stack::column_leaf(
+                self.columns.column_root(self.columns.detail_destination()),
+                &ctx,
+            );
             self.nav
-                .set_column(UISplitViewControllerColumn::Secondary, &vc);
+                .set_column(UISplitViewControllerColumn::Secondary, &column_nav);
             keep.keep(leaf);
-            keep.keep(vc);
+            keep.keep(column_nav);
         }
     }
 }
@@ -334,7 +378,7 @@ mod platform {
 mod platform {
     use super::{Columns, Fill};
     use alloc::rc::Rc;
-    use core::cell::RefCell;
+    use core::cell::{Cell, RefCell};
 
     use crate::contract::{NativeLeaf, RenderContext};
     use cocoa_ui::appkit::{Column, ColumnWidth, HostView, SplitViewController, WindowToolbar};
@@ -349,6 +393,14 @@ mod platform {
         nav: Retained<SplitViewController>,
         /// The sidebar column's view, reinstalled on every `set_columns`.
         sidebar: Retained<cocoa_ui::PlatformView>,
+        /// Whether the split's host view is effectively visible. An
+        /// expanded `allowsFullHeightLayout` sidebar item claims titlebar
+        /// space even while its view is hidden, so a hidden pane's sidebar
+        /// item is collapsed for as long as the pane stays hidden.
+        chrome_active: Cell<bool>,
+        /// The sidebar collapse state the app or user wants — what
+        /// `apply_sidebar` restores when the pane shows again.
+        sidebar_collapsed: Cell<bool>,
     }
 
     /// `NSSplitViewController` with the sidebar leaf and rebuilt
@@ -368,7 +420,10 @@ mod platform {
         let mtm = ctx.mtm();
         let nav = SplitViewController::new(mtm);
 
-        let sidebar_leaf = ctx.render(sidebar.build());
+        let sidebar_env = ctx
+            .env()
+            .extending(waterui::component::list::SidebarContent);
+        let sidebar_leaf = ctx.with_env(&sidebar_env).render(sidebar.build());
         let columns = Columns {
             renderer: ctx.renderer(),
             content,
@@ -380,15 +435,17 @@ mod platform {
             watchers: RefCell::new(KeepAlive::default()),
         };
         let sidebar_view = cocoa_ui::view::retain_base(sidebar_leaf.view());
-        let nav_for_binds = nav.clone();
         let split = Rc::new(Split {
             columns,
             nav,
             sidebar: sidebar_view,
+            chrome_active: Cell::new(true),
+            sidebar_collapsed: Cell::new(false),
         });
 
         let mut keep = KeepAlive::default();
         keep.keep(sidebar_leaf);
+        keep.keep(sidebar_env);
         split.mount(&mut keep);
         *split.columns.mounted.borrow_mut() = keep;
 
@@ -411,7 +468,7 @@ mod platform {
         }
 
         split.columns.watchers.borrow_mut().bind(&visibility, {
-            let nav = nav_for_binds.clone();
+            let split = split.clone();
             move |visibility| {
                 let (sidebar, content) = match visibility {
                     NavigationSplitColumnVisibility::All
@@ -419,12 +476,28 @@ mod platform {
                     NavigationSplitColumnVisibility::DoubleColumn => (true, false),
                     NavigationSplitColumnVisibility::DetailOnly => (true, true),
                 };
-                nav.set_collapsed(Column::Sidebar, sidebar);
-                nav.set_collapsed(Column::Supplementary, content);
+                split.sidebar_collapsed.set(sidebar);
+                split.nav.set_collapsed(Column::Supplementary, content);
+                split.apply_sidebar();
             }
         });
 
-        nav_for_binds.set_column_widths(&[
+        // The platform's collapse reports are the user's own toggles, so
+        // they become the wanted state — but only while the pane's chrome
+        // is live. While the pane is hidden the reported collapse is this
+        // leaf's own forced one, which must not overwrite it. Captured
+        // weakly: `Split` owns `nav`, and `nav` owns the handler.
+        split.nav.set_collapse_handler({
+            let split = Rc::downgrade(&split);
+            move |column, collapsed| {
+                let Some(split) = split.upgrade() else { return };
+                if column == Column::Sidebar && split.chrome_active.get() {
+                    split.sidebar_collapsed.set(collapsed);
+                }
+            }
+        });
+
+        split.nav.set_column_widths(&[
             ColumnWidth {
                 preferred: Some(f64::from(sidebar_width.ideal())),
                 minimum: Some(f64::from(sidebar_width.min())),
@@ -449,7 +522,9 @@ mod platform {
     /// fills the host's bounds, and on a titled window the host registers it
     /// with the window's toolbar as the sidebar toggle. The coordinator is
     /// keyed per window, so attaching here shares the instance the
-    /// navigation pages publish into.
+    /// navigation pages publish into. While the host is hidden inside a
+    /// container the sidebar item collapses — an expanded one claims
+    /// titlebar space even unseen — and the offer withdraws with it.
     fn host_leaf(mtm: MainThreadMarker, split: Rc<Split>) -> NativeLeaf {
         let host = HostView::new(mtm, Rect::ZERO);
         // An `NSSplitViewController` owns its columns' insets — the sidebar
@@ -470,21 +545,31 @@ mod platform {
             }
         });
         let offer_sidebar = {
-            let nav = split.nav.clone();
+            let split = split.clone();
             move |host: &HostView| {
+                // A pane hidden inside a tab container contributes no
+                // sidebar chrome — and must release the sidebar's claim on
+                // the titlebar too: an expanded `allowsFullHeightLayout`
+                // item reserves that space even while its view is hidden,
+                // so the item collapses while the pane is hidden and the
+                // wanted collapse state comes back when it shows again.
+                let active = !view::is_hidden_in_hierarchy(host);
+                split.chrome_active.set(active);
+                split.apply_sidebar();
                 let Some(window) = view::window(host) else {
                     return;
                 };
                 if !window.styleMask().contains(NSWindowStyleMask::Titled) {
                     return;
                 }
-                // A pane hidden inside a tab container contributes no sidebar
-                // chrome: claim only while the split is effectively visible.
-                if view::is_hidden_in_hierarchy(host) {
-                    WindowToolbar::attached(&window).set_sidebar_split(None);
+                // The apply runs first so the toolbar's collapse-following
+                // toggle label reads the restored state, not the forced
+                // collapse the hidden pane carried.
+                WindowToolbar::attached(&window).set_sidebar_split(if active {
+                    Some(&split.nav)
                 } else {
-                    WindowToolbar::attached(&window).set_sidebar_split(Some(&nav));
-                }
+                    None
+                });
             }
         };
         host.set_window_handler({
@@ -503,12 +588,16 @@ mod platform {
 
     impl Split {
         /// Rebuilds the columns from the current selections and installs them
-        /// (`set_columns` replaces the split items in place).
+        /// (`set_columns` replaces the split items in place). The
+        /// replacements arrive expanded, so the sidebar state is re-imposed
+        /// afterwards: a selection change while the pane is hidden must not
+        /// bring back an expanded sidebar, and a visible pane keeps its
+        /// wanted collapse across the rebuild.
         fn mount(&self, keep: &mut KeepAlive) {
             // The sidebar leaf is already retained; the first column stays
             // mounted — only downstream columns rebuild.
-            let middle = self.columns.middle();
-            let detail = self.columns.detail();
+            let middle = self.columns.renderer.render(self.columns.middle_view());
+            let detail = self.columns.renderer.render(self.columns.detail_view());
             self.nav.set_columns(
                 &self.sidebar,
                 if self.columns.content.is_some() {
@@ -518,8 +607,20 @@ mod platform {
                 },
                 detail.view(),
             );
+            self.apply_sidebar();
             keep.keep(middle);
             keep.keep(detail);
+        }
+
+        /// Writes the effective sidebar collapse: forced collapsed while
+        /// the pane is hidden — an expanded full-height sidebar item
+        /// claims titlebar space even with its view hidden — else the
+        /// wanted `sidebar_collapsed`.
+        fn apply_sidebar(&self) {
+            self.nav.set_collapsed(
+                Column::Sidebar,
+                !self.chrome_active.get() || self.sidebar_collapsed.get(),
+            );
         }
     }
 }

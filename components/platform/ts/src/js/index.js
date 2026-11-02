@@ -34,5 +34,6 @@ export {
 } from "./host.js";
 
 export { Box, For, Show, Suspense } from "./components.js";
-export { mount, useLocale, useSafeArea, useTheme } from "./contexts.js";
+export { mount, useLocale, useTheme } from "./contexts.js";
+export { installRuntimeGlobal, makeCallback } from "./runtime-global.js";
 export { Fragment, jsx, jsxDEV, jsxs, spreadProps } from "./jsx-runtime.js";

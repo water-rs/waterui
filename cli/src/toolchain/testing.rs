@@ -171,9 +171,20 @@ impl TestMachine {
     }
 
     /// Stage canned output for a fake-tool response key.
+    ///
+    /// The dispatchers emit a canned file's contents line-wise — `.sh`'s
+    /// `print_file` terminates an unterminated final line and `.cmd`'s
+    /// `type` cannot append a bare LF — so the newline normalization lives
+    /// here instead: a non-empty response is staged newline-terminated and
+    /// both dispatchers then emit identical bytes.
     pub fn respond(&self, key: &str, contents: &str) {
         let dir = self.responses();
         fs::create_dir_all(&dir).expect("create responses dir");
+        let contents = if contents.is_empty() || contents.ends_with('\n') {
+            contents.to_owned()
+        } else {
+            format!("{contents}\n")
+        };
         fs::write(dir.join(key), contents).expect("write canned response");
     }
 
@@ -183,9 +194,9 @@ impl TestMachine {
     /// (file lookup only; `-`/`.` cannot appear in a Unix `${}` expansion).
     /// Staging also makes `--exists`/`--atleast-version` pass.
     ///
-    /// Only the `#[cfg(target_os = "linux")]` test modules probe pkg-config
-    /// modules, so the helper is compiled there only.
-    #[cfg(target_os = "linux")]
+    /// Only the Unix test modules probe pkg-config modules, so the helper is
+    /// compiled there only.
+    #[cfg(unix)]
     pub fn respond_pkg_config_module(&self, module: &str, modversion: &str) {
         self.respond(&format!("PKG_CONFIG_{module}"), modversion);
     }
@@ -197,7 +208,8 @@ impl TestMachine {
     }
 
     /// The declared host: `PATH` is only `bin/`, `cwd` is the scratch root,
-    /// and the environment is exactly `vars` plus `HOME`/`USERPROFILE` and
+    /// and the environment is exactly `vars` plus `HOME`/`USERPROFILE`, the
+    /// profile's `LOCALAPPDATA` a Windows session always carries, and
     /// `WATERUI_FAKE_RESPONSES`.
     pub fn host<K, V>(&self, vars: impl IntoIterator<Item = (K, V)>) -> Host
     where
@@ -240,6 +252,10 @@ impl TestMachine {
             ),
             (OsString::from("HOME"), self.home().into_os_string()),
             (OsString::from("USERPROFILE"), self.home().into_os_string()),
+            (
+                OsString::from("LOCALAPPDATA"),
+                self.home().join("AppData").join("Local").into_os_string(),
+            ),
         ];
         declared.extend(
             vars.into_iter()
@@ -268,7 +284,11 @@ impl TestMachine {
 
 /// The real toolchain with the Water home redirected to `home`: a project
 /// test that needs real `cargo`/`rustc` runs on the declared host and writes
-/// nothing under `~/.water`.
+/// nothing under `~/.water`. The Cargo target-directory overrides are
+/// stripped so a `cargo` the fixture spawns builds into a directory the
+/// test owns instead of the developer's (water-rs/waterui#3098), and the
+/// compiler wrapper with them, since it is configured for the real home
+/// (water-rs/waterui#3124).
 pub fn real_toolchain_host(home: impl AsRef<Path>) -> Host {
     let real = Host::current();
     let vars = real
@@ -276,6 +296,8 @@ pub fn real_toolchain_host(home: impl AsRef<Path>) -> Host {
         .filter(|(key, _)| !key.eq_ignore_ascii_case("PATH"))
         .map(|(key, value)| (key.to_os_string(), value.to_os_string()));
     Host::new(real.path_entries(), vars)
+        .without_cargo_target_dir()
+        .without_compile_wrapper()
         .with_home(home.as_ref())
         .with_cwd(home.as_ref().to_path_buf())
 }
@@ -307,6 +329,7 @@ fn dispatcher_source() -> PathBuf {
         // machine runs it, since the scratch machine has no `cp`.
         let status = Host::current()
             .std_command("cp")
+            .expect("resolve `cp` on the real host's PATH")
             .arg(FAKE_TOOL_SOURCE)
             .arg(&canonical)
             .status()

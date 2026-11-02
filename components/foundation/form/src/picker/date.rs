@@ -15,17 +15,57 @@ use waterui_core::{AnyView, Environment, Native, NativeView, View};
 #[non_exhaustive]
 pub struct DatePickerConfig {
     /// The label displayed for the date picker.
-    pub label: Label,
+    label: Label,
     /// The binding to the selected value.
-    pub value: Binding<DateTime>,
+    value: Binding<DateTime>,
     /// The range of valid values.
-    pub range: RangeInclusive<DateTime>,
+    range: RangeInclusive<DateTime>,
     /// The type of date picker.
-    pub ty: DatePickerType,
+    ty: DatePickerType,
+}
+
+impl DatePickerConfig {
+    /// The label displayed for the date picker.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: Label) {
+        self.label = label;
+    }
+
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
+    /// The binding to the selected value.
+    #[must_use]
+    pub const fn value(&self) -> &Binding<DateTime> {
+        &self.value
+    }
+
+    /// The range of valid values.
+    #[must_use]
+    pub const fn range(&self) -> &RangeInclusive<DateTime> {
+        &self.range
+    }
+
+    /// The type of date picker.
+    #[must_use]
+    pub const fn ty(&self) -> DatePickerType {
+        self.ty
+    }
 }
 
 /// Enum representing the different types of date pickers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each date picker type variant by variant; a new date picker type must fail their build instead of falling into a wildcard arm"
+)]
 pub enum DatePickerType {
     /// Date only.
     Date,

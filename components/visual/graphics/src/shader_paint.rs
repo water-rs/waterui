@@ -55,10 +55,11 @@ impl ShaderPaintView {
     /// A shader from a prepared source, animated when the source says so.
     #[must_use]
     pub fn from_source(source: ShaderSource) -> Self {
+        let (fragment, language, animated) = source.into_parts();
         Self {
-            fragment: source.source,
-            language: source.language,
-            animated: nami::constant(source.animated).computed(),
+            fragment,
+            language,
+            animated: nami::constant(animated).computed(),
             uniforms: nami::constant(Vec::new()).computed(),
         }
     }
@@ -126,11 +127,7 @@ impl SceneContent for ShaderContent {
             // The other source's registration, if any, is dropped here: in
             // the call that stops drawing it.
             _ => {
-                let source = ShaderSource {
-                    source: self.fragment.clone(),
-                    language: self.language,
-                    animated,
-                };
+                let source = ShaderSource::new(self.fragment.clone(), self.language, animated);
                 let shader = resources
                     .shader(source)
                     .unwrap_or_else(|error| panic!("shader paint: {error}"));

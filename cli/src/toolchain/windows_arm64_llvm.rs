@@ -89,6 +89,7 @@ impl Toolchain for WindowsArm64LlvmToolchain {
 /// Installation plan for Windows ARM64 LLVM tooling — the strategy `check`
 /// selected for this host.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum WindowsArm64LlvmInstallation {
     /// `winget install LLVM.LLVM`.
     Winget,
@@ -100,6 +101,7 @@ pub enum WindowsArm64LlvmInstallation {
 
 /// Errors that can occur when installing Windows ARM64 LLVM tooling.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallWindowsArm64Llvm {
     /// winget is required for automatic installation.
     #[error(

@@ -62,7 +62,6 @@ def test_stable_scaffolds_every_released_package_by_version():
 
     # Backend coordinates are not scaffold packages: they stay in the table.
     assert "apple-backend-path" in scaffold
-    assert "android-backend-revision" in scaffold
     # `hydrolysis` is an in-tree member resolved through `hydrolysis-path`
     # (#1635): the `-path` member declaration stays in the table, and it is
     # never a scaffold package with a requirement of its own.

@@ -98,39 +98,57 @@ impl HydrolysisBackend {
     ) -> eyre::Result<TemplateContext> {
         let manifest = project.manifest();
         let app_name = manifest
-            .package
-            .name
+            .package()
+            .name()
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
-        let section = |os: crate::platform::NativeOs| crate::project::GraphSection {
+        let remedy = "the dependency graph answers differently per target, so that section \
+                      needs a per-target split inside its own OS — a narrower `cfg` \
+                      separates the disagreeing targets";
+        let section = |table: &'static str| crate::project::GraphSection {
             manifest: "the generated Hydrolysis launcher manifest",
-            table: os.cfg(),
-            remedy: "the dependency graph answers differently per target, so that section \
-                     needs a per-target split inside its own OS — a narrower `cfg` \
-                     separates the disagreeing targets",
+            table,
+            remedy,
         };
         // The native table's serving set spans three OSes whose graphs
         // legitimately differ — `waterui-browser-wpe` enters on Linux —
         // so each OS's answers resolve from its own serving set while the
-        // engine-independent profile set resolves once for them all.
+        // engine-independent profile set resolves once for them all. The
+        // `cfg(target_os = "android")` table is a fourth section of the
+        // same manifest; its serving set is ABI triples rather than a
+        // `NativeOs`, so it resolves beside the OS sections instead of
+        // through `native_browser_answers`.
         let targets = hydrolysis_targets();
-        let (project_packages, macos, linux, windows) = futures_util::future::try_join4(
-            project.project_packages(framework, &targets),
-            project.native_browser_answers(
-                crate::platform::NativeOs::MacOs,
-                section(crate::platform::NativeOs::MacOs),
-            ),
-            project.native_browser_answers(
-                crate::platform::NativeOs::Linux,
-                section(crate::platform::NativeOs::Linux),
-            ),
-            project.native_browser_answers(
-                crate::platform::NativeOs::Windows,
-                section(crate::platform::NativeOs::Windows),
-            ),
-        )
-        .await?;
+        let android_targets = crate::android::platform::android_target_triples();
+        let web_section = crate::project::GraphSection {
+            manifest: "the generated Hydrolysis launcher manifest",
+            table: "cfg(target_arch = \"wasm32\")",
+            remedy: "the wasm32 table serves every wasm32 target alike; a graph that \
+                     enables video or the WebView on one of them must enable it on all",
+        };
+        let ((project_packages, macos, linux, windows, web), android) =
+            futures_util::future::try_join(
+                futures_util::future::try_join5(
+                    project.project_packages(framework, &targets),
+                    project.native_browser_answers(
+                        crate::platform::NativeOs::MacOs,
+                        section(crate::platform::NativeOs::MacOs.cfg()),
+                    ),
+                    project.native_browser_answers(
+                        crate::platform::NativeOs::Linux,
+                        section(crate::platform::NativeOs::Linux.cfg()),
+                    ),
+                    project.native_browser_answers(
+                        crate::platform::NativeOs::Windows,
+                        section(crate::platform::NativeOs::Windows.cfg()),
+                    ),
+                    project.web_answers(web_section),
+                ),
+                project
+                    .browser_answers_for(&android_targets, section("cfg(target_os = \"android\")")),
+            )
+            .await?;
         Ok(TemplateContext::for_project_manifest(
             project.host(),
             manifest,
@@ -143,8 +161,9 @@ impl HydrolysisBackend {
         .with_project_root_path(project.root().to_path_buf())
         .with_project_packages(project_packages)
         .with_browser(crate::templates::BrowserTemplateContext::desktop(
-            macos, linux, windows,
-        )))
+            macos, linux, windows, android,
+        ))
+        .with_web(web))
     }
 }
 
@@ -157,11 +176,12 @@ impl Default for HydrolysisBackend {
 impl Backend for HydrolysisBackend {
     const DEFAULT_PATH: &'static str = "hydrolysis";
 
-    // The build cache lives in the repository `target/`; the lockfile is
-    // dependency state, not generated content, and survives regeneration so
-    // resolved versions stay stable across template updates. The `.seed`
-    // copy records which application lockfile last seeded it, so it is
-    // preserved on the same grounds.
+    // The build cache lives in the shared `~/.water/build_cache/target`,
+    // not inside the backend; the lockfile is dependency state, not
+    // generated content, and survives regeneration so resolved versions
+    // stay stable across template updates. The `.seed` copy records which
+    // application lockfile last seeded it, so it is preserved on the same
+    // grounds.
     const CACHE_PATHS: &'static [&'static str] = &[
         "Cargo.lock",
         templates::LOCKFILE_SEED,
@@ -170,6 +190,7 @@ impl Backend for HydrolysisBackend {
         // changes when the painter or project does, which re-scaffolds
         // directly rather than through `reinit_backend`.
         "android",
+        "android-embedded",
         "android-host",
     ];
 
@@ -212,7 +233,15 @@ impl Backend for HydrolysisBackend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         if platform == TargetPlatform::Android {
-            return crate::hydrolysis::android::build(project, AndroidAbi::Arm64V8a, options).await;
+            let kotlin = crate::android::platform::require_kotlin(project.host()).await?;
+            return crate::hydrolysis::android::build(
+                project,
+                AndroidAbi::Arm64V8a,
+                crate::hydrolysis::android::resolve_painter(project, None),
+                options,
+                &kotlin,
+            )
+            .await;
         }
         project
             .browser_runtime_plan(platform, TargetBackend::Hydrolysis, &platform.triple())

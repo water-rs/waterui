@@ -13,6 +13,19 @@ pub fn widget_disabled(env: &Environment) -> Computed<bool> {
         .map_or_else(|| Computed::constant(false), |scope| scope.signal().clone())
 }
 
+/// The point a control's popup anchors at: the bottom-left corner of its
+/// bounds *in window space*. Popup window origins are window-space
+/// (`show_popup_menu_nodes`, `show_picker_menu`, `show_color_picker`,
+/// `show_date_picker`), so the node-local `ctx.bounds` must first resolve
+/// through the placement chain (`SemanticCore::resolve_window_rect`) — the
+/// pointer and the accessibility-activate paths anchor identically.
+pub const fn popup_anchor(window_bounds: kurbo::Rect) -> waterui_core::layout::Point {
+    waterui_core::layout::Point::new(
+        crate::num_cast::f64_as_f32(window_bounds.x0),
+        crate::num_cast::f64_as_f32(window_bounds.y1),
+    )
+}
+
 pub fn inset_rect(rect: kurbo::Rect, dx: f64, dy: f64) -> kurbo::Rect {
     kurbo::Rect::new(
         rect.x0 + dx,

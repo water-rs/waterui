@@ -1,0 +1,23 @@
+[package]
+name = "waterui-apple-os"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Compile-time gates on the Apple OS version a WaterUI build targets"
+keywords = ["apple", "deployment-target", "waterui"]
+categories = ["no-std"]
+
+# `apple_available!` expands to `objc2::available!`, reached through this
+# crate so an application names neither.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+waterui-macros = { path = "../../macros" }

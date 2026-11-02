@@ -8,7 +8,6 @@
 //! device is currently reachable over.
 
 use std::path::Path;
-#[cfg(unix)]
 use std::time::Duration;
 
 use eyre::{Context as _, bail, eyre};
@@ -23,8 +22,9 @@ use smol::{
 };
 use tracing::info;
 
+use crate::device::termination_grace;
 #[cfg(unix)]
-use crate::device::{TERMINATION_GRACE_PERIOD, TerminationOutcome, await_termination, within};
+use crate::device::{TerminationOutcome, await_termination, within};
 use crate::{
     device::{
         ApplicationExit, Artifact, Crash, CrashCause, Device, DeviceEvent, FailToRun, PanicInfo,
@@ -43,31 +43,109 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct ApplePhysicalDevice {
     /// `CoreDevice` identifier (e.g. `898E9834-79A1-5EAD-AA1A-C54E27F04456`).
-    pub identifier: String,
+    identifier: String,
     /// Hardware UDID (e.g. `00008140-00011C210CF3001C`).
-    pub udid: String,
+    udid: String,
     /// User-assigned device name.
-    pub name: String,
+    name: String,
     /// Marketing name from `hardwareProperties` (e.g. `iPhone 16 Pro`).
-    pub marketing_name: Option<String>,
+    marketing_name: Option<String>,
     /// OS version running on the device (e.g. iOS `27.0`).
-    pub os_version: Option<Version>,
+    os_version: Option<Version>,
     /// How the device is currently reachable (`wired` or `localNetwork`).
-    pub transport: Transport,
+    transport: Transport,
     /// `CoreDevice` tunnel state (`connected`, `disconnected`, `unavailable`).
     ///
     /// `disconnected` is not a problem: device commands establish the tunnel
     /// on demand. `unavailable` means the device cannot be reached at all.
-    pub tunnel_state: TunnelState,
+    tunnel_state: TunnelState,
     /// `deviceProperties.developerModeStatus` — must be `enabled` to run
     /// development-signed apps.
-    pub developer_mode_enabled: bool,
+    developer_mode_enabled: bool,
     /// `deviceProperties.bootState` — the device is usable when `booted`.
-    pub boot_state: String,
+    boot_state: String,
+}
+
+impl ApplePhysicalDevice {
+    /// `CoreDevice` identifier.
+    #[must_use]
+    pub fn identifier(&self) -> &str {
+        &self.identifier
+    }
+
+    /// Hardware UDID.
+    #[must_use]
+    pub fn udid(&self) -> &str {
+        &self.udid
+    }
+
+    /// User-assigned device name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Marketing name from `hardwareProperties`.
+    #[must_use]
+    pub fn marketing_name(&self) -> Option<&str> {
+        self.marketing_name.as_deref()
+    }
+
+    /// OS version running on the device.
+    #[must_use]
+    pub const fn os_version(&self) -> Option<&Version> {
+        self.os_version.as_ref()
+    }
+
+    /// How the device is currently reachable.
+    #[must_use]
+    pub const fn transport(&self) -> Transport {
+        self.transport
+    }
+
+    /// `CoreDevice` tunnel reachability state.
+    #[must_use]
+    pub const fn tunnel_state(&self) -> TunnelState {
+        self.tunnel_state
+    }
+
+    /// Whether developer mode is enabled on the device.
+    #[must_use]
+    pub const fn developer_mode_enabled(&self) -> bool {
+        self.developer_mode_enabled
+    }
+
+    /// `deviceProperties.bootState` — the device is usable when `booted`.
+    #[must_use]
+    pub fn boot_state(&self) -> &str {
+        &self.boot_state
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+impl ApplePhysicalDevice {
+    /// A fully populated device for the macOS test runner's fixtures.
+    pub(crate) fn fixture() -> Self {
+        Self {
+            identifier: "CORE-DEVICE-ID".to_string(),
+            udid: "00008140-0000ABCD00112233".to_string(),
+            name: "test-ipad".to_string(),
+            marketing_name: None,
+            os_version: Some(Version::new(18, 0, 0)),
+            transport: Transport::Wired,
+            tunnel_state: TunnelState::Connected,
+            developer_mode_enabled: true,
+            boot_state: "booted".to_string(),
+        }
+    }
 }
 
 /// How a paired device is connected to this Mac.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each device transport variant by variant"
+)]
 pub enum Transport {
     /// USB or Thunderbolt cable.
     Wired,
@@ -79,6 +157,7 @@ pub enum Transport {
 
 /// `CoreDevice` tunnel reachability state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TunnelState {
     /// The `CoreDevice` tunnel is up.
     Connected,
@@ -286,6 +365,7 @@ impl ApplePhysicalDevice {
 /// Why a paired device cannot run an app; each variant maps to the remedy the
 /// error message should name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeviceUnusable {
     /// The `CoreDevice` tunnel is `unavailable` — the device is off, unplugged
     /// and off-LAN, or locked out.
@@ -317,32 +397,67 @@ impl DeviceUnusable {
     }
 }
 
-/// `devicectl device process launch` environment-variable payload.
+/// `devicectl device process launch` for [`Device::run`] on a physical
+/// device. `--console` attaches the app's standard streams to devicectl's
+/// and waits for the app to exit: one child gives stdout/stderr streaming,
+/// exit detection, and signal forwarding (a signal to devicectl is
+/// delivered to the app) in a single process.
 ///
-/// The `-e` flag takes a JSON-encoded dictionary; every entry of
-/// [`crate::device::RunOptions::env_vars`] travels through it, so
-/// `WATERUI_DEV_URL`, `WATERUI_LOG`, `WATERUI_PROJECT_DIR` and
-/// `WATERUI_APP_NAME` reach the process exactly as `SIMCTL_CHILD_*` delivers
-/// them on a simulator.
-fn environment_json<'a>(env_vars: impl Iterator<Item = (&'a str, &'a str)>) -> String {
-    let map: serde_json::Map<String, serde_json::Value> = env_vars
-        .map(|(key, value)| {
-            (
-                key.to_string(),
-                serde_json::Value::String(value.to_string()),
-            )
-        })
-        .collect();
-    serde_json::Value::Object(map).to_string()
+/// Environment variables never enter argv: `devicectl` forwards every
+/// caller-side `DEVICECTL_CHILD_<key>` to the launched process, so each
+/// `RunOptions` entry rides the host's own prefixed channel — dev-server
+/// URL included. Any `DEVICECTL_CHILD_*` the host already carries is
+/// cleared from the child first, so `RunOptions` owns the namespace;
+/// the host's other variables pass through unchanged.
+fn physical_device_launch_command(
+    host: &Host,
+    selector: &str,
+    bundle_id: &str,
+    options: &crate::device::RunOptions,
+) -> std::io::Result<smol::process::Command> {
+    #[cfg(unix)]
+    let mut command = host.command_in_own_process_group("xcrun")?;
+    #[cfg(not(unix))]
+    let mut command = host.command("xcrun")?;
+    command.args([
+        "devicectl",
+        "--quiet",
+        "device",
+        "process",
+        "launch",
+        "--device",
+        selector,
+        "--terminate-existing",
+        "--console",
+        bundle_id,
+    ]);
+    for argument in options.arguments() {
+        command.arg(argument);
+    }
+    for (key, _) in host.envs() {
+        if key.as_encoded_bytes().starts_with(b"DEVICECTL_CHILD_") {
+            command.env_remove(key);
+        }
+    }
+    for (key, value) in options.env_vars() {
+        command.env(format!("DEVICECTL_CHILD_{key}"), value);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    Ok(command)
 }
 
-async fn install_device_app(
+pub(crate) async fn install_device_app(
     host: &Host,
     selector: &str,
     artifact_path: &Path,
 ) -> Result<(), FailToRun> {
     let output = host
         .command("xcrun")
+        .map_err(|error| FailToRun::Install(eyre!("Failed to install app: {error}")))?
         .args([
             "devicectl",
             "device",
@@ -365,6 +480,51 @@ async fn install_device_app(
         String::from_utf8_lossy(&output.stdout).trim(),
         String::from_utf8_lossy(&output.stderr).trim(),
     )))
+}
+
+impl ApplePhysicalDevice {
+    /// `devicectl device copy from` for the app's data container: pull
+    /// `source` (relative to the container root) to `destination` on the
+    /// host. A failed copy — the file is absent — is an error carrying
+    /// devicectl's stderr.
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn copy_from_data_container(
+        &self,
+        host: &Host,
+        bundle_id: &str,
+        source: &str,
+        destination: &Path,
+    ) -> eyre::Result<()> {
+        let output = host
+            .command("xcrun")
+            .wrap_err("failed to run devicectl device copy from")?
+            .args([
+                "devicectl",
+                "device",
+                "copy",
+                "from",
+                "--device",
+                self.selector(),
+                "--domain-type",
+                "appDataContainer",
+                "--domain-identifier",
+                bundle_id,
+                "--source",
+                source,
+                "--destination",
+            ])
+            .arg(destination)
+            .output()
+            .await
+            .wrap_err("failed to run devicectl device copy from")?;
+        if !output.status.success() {
+            bail!(
+                "devicectl device copy from failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Find the app's pid on the device by its executable name.
@@ -397,6 +557,7 @@ async fn find_remote_pid(
 
     let output = host
         .command("xcrun")
+        .wrap_err("Could not run devicectl device info processes")?
         .args([
             "devicectl",
             "device",
@@ -429,26 +590,14 @@ async fn find_remote_pid(
         .map(|process| process.process_identifier))
 }
 
-/// Send a signal to the process owned by this monitor.
+/// Send a signal to the `devicectl` process this monitor owns.
 #[cfg(unix)]
 fn signal_child(
     child: &smol::process::Child,
     signal: nix::sys::signal::Signal,
     sender: &Sender<DeviceEvent>,
 ) {
-    let Ok(raw_pid) = i32::try_from(child.id()) else {
-        report_monitor_error(
-            sender,
-            "devicectl PID does not fit in nix::unistd::Pid".to_string(),
-        );
-        return;
-    };
-    if let Err(error) = nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw_pid), signal) {
-        report_monitor_error(
-            sender,
-            format!("Could not signal devicectl process: {error}"),
-        );
-    }
+    crate::device::signal_child(child, signal, sender, "devicectl");
 }
 
 /// Bounds finding the app's remote PID and killing it with
@@ -479,22 +628,25 @@ async fn kill_console_session(
                 return;
             }
         };
-        let terminate = host
-            .command("xcrun")
-            .args([
-                "devicectl",
-                "device",
-                "process",
-                "terminate",
-                "--device",
-                selector,
-                "--kill",
-                "--pid",
-                &pid.to_string(),
-            ])
-            .kill_on_drop(true)
-            .output()
-            .await;
+        let terminate = match host.command("xcrun") {
+            Ok(mut command) => {
+                command
+                    .args([
+                        "devicectl",
+                        "device",
+                        "process",
+                        "terminate",
+                        "--device",
+                        selector,
+                        "--kill",
+                        "--pid",
+                        &pid.to_string(),
+                    ])
+                    .kill_on_drop(true);
+                command.output().await
+            }
+            Err(error) => Err(error),
+        };
         match terminate {
             Ok(output) if output.status.success() => {}
             Ok(output) => report_monitor_error(
@@ -534,6 +686,7 @@ async fn monitor_console_session(
     process_name: String,
     channels: ConsoleMonitorChannels,
     sender: Sender<DeviceEvent>,
+    termination_grace: Duration,
 ) {
     let ConsoleMonitorChannels {
         control,
@@ -550,6 +703,7 @@ async fn monitor_console_session(
         &process_name,
         &mut control,
         &sender,
+        termination_grace,
     )
     .await;
     let console_closed = async {
@@ -582,6 +736,7 @@ async fn wait_for_console_status(
     process_name: &str,
     control: &mut Option<smol::channel::Receiver<StopRequest>>,
     sender: &Sender<DeviceEvent>,
+    termination_grace: Duration,
 ) -> std::io::Result<std::process::ExitStatus> {
     use futures_util::future::{Either, select};
 
@@ -597,7 +752,7 @@ async fn wait_for_console_status(
             Either::Right((Ok(StopRequest::Terminate), _)) => {
                 signal_child(child, nix::sys::signal::Signal::SIGTERM, sender);
                 if let TerminationOutcome::Exited(status) =
-                    await_termination(child, control, TERMINATION_GRACE_PERIOD, sender).await
+                    await_termination(child, control, termination_grace, sender).await
                 {
                     return status;
                 }
@@ -621,6 +776,7 @@ async fn wait_for_console_status(
     _process_name: &str,
     control: &mut Option<smol::channel::Receiver<StopRequest>>,
     _sender: &Sender<DeviceEvent>,
+    _termination_grace: Duration,
 ) -> std::io::Result<std::process::ExitStatus> {
     use futures_util::future::{Either, select};
 
@@ -638,6 +794,108 @@ async fn wait_for_console_status(
                 return child.status().await;
             }
         }
+    }
+}
+
+impl ApplePhysicalDevice {
+    /// The `url` `devicectl` reports for the installed `bundle_id`, or
+    /// `None` when no such app is installed. Parsed from `--json-output`
+    /// — the human table is never scraped. `json_path` names the file the
+    /// command writes its report to.
+    ///
+    /// devicectl's `--json-output` writes its report to a file, and for an
+    /// installed app exposes only `bundleIdentifier`, `name` and `url`
+    /// (`file:///private/var/containers/Bundle/Application/<UUID>/<name>.app/`).
+    /// An overwrite install lands under a new UUID, so the URL changing is
+    /// how the test runner detects that something else installed the app.
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn installed_app_url(
+        &self,
+        host: &Host,
+        bundle_id: &str,
+        json_path: &std::path::Path,
+    ) -> eyre::Result<Option<String>> {
+        let output = host
+            .output(
+                "xcrun",
+                [
+                    "devicectl",
+                    "device",
+                    "info",
+                    "apps",
+                    "--device",
+                    self.selector(),
+                    "--bundle-id",
+                    bundle_id,
+                    "--json-output",
+                    &json_path.to_string_lossy(),
+                ],
+            )
+            .await
+            .wrap_err("failed to query the device's installed applications")?;
+        if !output.status.success() {
+            bail!(
+                "devicectl device info apps failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let text = std::fs::read_to_string(json_path)
+            .wrap_err("devicectl wrote no --json-output report")?;
+        installed_app_url_from_json(&text, bundle_id)
+            .map_err(|error| eyre!("could not parse devicectl's app report: {error:#}: {text}"))
+    }
+
+    /// Launch an already-installed artifact with `--console`, streaming its
+    /// output and owning its stop path — the install-free half of
+    /// [`Device::run`]. `process_name` is the bundle's executable name —
+    /// the name `devicectl device process list` reports — used to find the
+    /// remote pid for an escalating stop.
+    pub(crate) fn launch_monitored(
+        &self,
+        host: &Host,
+        artifact: &Artifact,
+        options: &crate::device::RunOptions,
+        process_name: &str,
+    ) -> Result<Running, FailToRun> {
+        let bundle_id = artifact.bundle_id().to_string();
+        let process_name = process_name.to_string();
+
+        // `--console` attaches the app's standard streams to devicectl's and
+        // waits for the app to exit: one child gives stdout/stderr streaming,
+        // exit detection, and signal forwarding (a signal to devicectl is
+        // delivered to the app) in a single process.
+        let mut child = physical_device_launch_command(host, self.selector(), &bundle_id, options)
+            .and_then(|mut command| command.spawn())
+            .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .expect("stdout is piped for the devicectl console");
+        let stderr = child
+            .stderr
+            .take()
+            .expect("stderr is piped for the devicectl console");
+
+        let (running, sender, control) = Running::new();
+
+        let (panic_rx, eof_rx) = spawn_console_streams(stdout, stderr, &sender);
+        spawn(monitor_console_session(
+            child,
+            host.clone(),
+            self.selector().to_string(),
+            process_name,
+            ConsoleMonitorChannels {
+                control,
+                eof: eof_rx,
+                panic: panic_rx,
+            },
+            sender,
+            termination_grace(),
+        ))
+        .detach();
+
+        Ok(running)
     }
 }
 
@@ -676,9 +934,7 @@ impl Device for ApplePhysicalDevice {
             self.identifier
         );
         install_device_app(host, self.selector(), artifact.path()).await?;
-
-        let env_json = environment_json(options.env_vars());
-        let bundle_id = artifact.bundle_id().to_string();
+        // A `water run` bundle's stem is its CFBundleExecutable name.
         let process_name = artifact
             .path()
             .file_stem()
@@ -690,75 +946,7 @@ impl Device for ApplePhysicalDevice {
                 ))
             })?
             .to_string();
-
-        // `--console` attaches the app's standard streams to devicectl's and
-        // waits for the app to exit: one child gives stdout/stderr streaming,
-        // exit detection, and signal forwarding (a signal to devicectl is
-        // delivered to the app) in a single process.
-        //
-        // The dev-server URL travels in the `-e` environment dictionary; a
-        // `--waterui-dev-url=` process argument repeats it, so `dev_url()`
-        // still finds it if a device-side launch path ever strips the
-        // environment.
-        #[cfg(unix)]
-        let mut command = host.command_in_own_process_group("xcrun");
-        #[cfg(not(unix))]
-        let mut command = host.command("xcrun");
-        command.args([
-            "devicectl",
-            "device",
-            "process",
-            "launch",
-            "--device",
-            self.selector(),
-            "--environment-variables",
-            &env_json,
-            "--terminate-existing",
-            "--console",
-            &bundle_id,
-        ]);
-        if let Some((_, dev_url)) = options
-            .env_vars()
-            .find(|(key, _)| *key == "WATERUI_DEV_URL")
-        {
-            command.arg(format!("--waterui-dev-url={dev_url}"));
-        }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .expect("stdout is piped for the devicectl console");
-        let stderr = child
-            .stderr
-            .take()
-            .expect("stderr is piped for the devicectl console");
-
-        let (running, sender, control) = Running::new();
-
-        let (panic_rx, eof_rx) = spawn_console_streams(stdout, stderr, &sender);
-        spawn(monitor_console_session(
-            child,
-            host.clone(),
-            self.selector().to_string(),
-            process_name,
-            ConsoleMonitorChannels {
-                control,
-                eof: eof_rx,
-                panic: panic_rx,
-            },
-            sender,
-        ))
-        .detach();
-
-        Ok(running)
+        self.launch_monitored(host, &artifact, &options, &process_name)
     }
 
     async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
@@ -838,10 +1026,42 @@ async fn stream_console(stream: impl smol::io::AsyncRead + Unpin, target: Consol
     let _ = target.eof.try_send(());
 }
 
+/// The `url` of `bundle_id` inside devicectl's `--json-output` report —
+/// the only parse the runner trusts, never the human table. The report's
+/// shape is `{"result": {"apps": [ … ]}}`; entries are matched on
+/// `bundleIdentifier` exactly.
+#[cfg(target_os = "macos")]
+fn installed_app_url_from_json(text: &str, bundle_id: &str) -> eyre::Result<Option<String>> {
+    #[derive(serde::Deserialize)]
+    struct Report {
+        result: ResultSection,
+    }
+    #[derive(serde::Deserialize)]
+    struct ResultSection {
+        #[serde(default)]
+        apps: Vec<App>,
+    }
+    #[derive(serde::Deserialize)]
+    struct App {
+        #[serde(rename = "bundleIdentifier")]
+        bundle_identifier: String,
+        url: Option<String>,
+    }
+
+    let report: Report = serde_json::from_str(text)?;
+    Ok(report
+        .result
+        .apps
+        .into_iter()
+        .find(|app| app.bundle_identifier == bundle_id)
+        .and_then(|app| app.url))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ApplePhysicalDevice, DeviceUnusable, Transport, TunnelState, environment_json};
-    use crate::device::Device as _;
+    use super::{
+        ApplePhysicalDevice, DeviceUnusable, Transport, TunnelState, physical_device_launch_command,
+    };
     #[cfg(unix)]
     use crate::workflows::device::test_support::{ProcessGroupGuard, term_ignoring_fixture};
 
@@ -924,27 +1144,167 @@ mod tests {
         );
     }
 
+    /// The command env folded last-wins-per-key, the way spawn resolves it.
+    fn command_env(command: &smol::process::Command) -> std::collections::HashMap<String, String> {
+        command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// RED for water-rs/waterui#2600: `RunOptions` values must ride the
+    /// caller-side `DEVICECTL_CHILD_*` channel — argv must never see them.
     #[test]
-    fn environment_json_encodes_all_vars() {
-        let vars = [
-            ("WATERUI_DEV_URL", "http://10.0.0.2:5173/"),
-            ("WATERUI_LOG", "debug"),
-        ];
-        let json = environment_json(vars.iter().copied());
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("env json parses");
-        assert_eq!(parsed["WATERUI_DEV_URL"], "http://10.0.0.2:5173/");
-        assert_eq!(parsed["WATERUI_LOG"], "debug");
+    fn the_launch_environment_never_enters_the_device_argv() -> std::io::Result<()> {
+        let machine = crate::toolchain::testing::TestMachine::new();
+        machine.install("xcrun");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let mut options = crate::device::RunOptions::new();
+        options.insert_env_var(
+            String::from("WATERUI_DUMMY_KEY"),
+            String::from("dummy-secret-value"),
+        );
+        options.insert_env_var(
+            String::from("WATERUI_DEV_URL"),
+            String::from("http://10.0.0.2:5173/"),
+        );
+
+        let command =
+            physical_device_launch_command(&host, "ABC123-SELECTOR", "com.example.app", &options)?;
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|arg| arg.contains("dummy-secret-value")),
+            "a declared value must never reach argv: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg.contains("http://10.0.0.2:5173/")),
+            "the dev URL is environment, not argv: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--environment-variables"),
+            "{args:?}"
+        );
+        assert_eq!(
+            args,
+            [
+                "devicectl",
+                "--quiet",
+                "device",
+                "process",
+                "launch",
+                "--device",
+                "ABC123-SELECTOR",
+                "--terminate-existing",
+                "--console",
+                "com.example.app",
+            ]
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    /// Every `RunOptions` pair lands as an exact `DEVICECTL_CHILD_<key>`
+    /// value — spaces, newlines, `=`, non-ASCII and empty survive verbatim.
+    #[test]
+    fn declared_values_ride_the_child_prefixed_channel_verbatim() -> std::io::Result<()> {
+        let machine = crate::toolchain::testing::TestMachine::new();
+        machine.install("xcrun");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let mut options = crate::device::RunOptions::new();
+        for (key, value) in [
+            ("SPACED", "a  b\nc"),
+            ("QUOTED", "say \"hi\" $HOME"),
+            ("EQUALS", "x=y"),
+            ("NONASCII", "日本語"),
+            ("EMPTY", ""),
+        ] {
+            options.insert_env_var(String::from(key), String::from(value));
+        }
+
+        let command = physical_device_launch_command(&host, "S", "com.example.app", &options)?;
+        let env = command_env(&command);
+        for (key, value) in [
+            ("SPACED", "a  b\nc"),
+            ("QUOTED", "say \"hi\" $HOME"),
+            ("EQUALS", "x=y"),
+            ("NONASCII", "日本語"),
+            ("EMPTY", ""),
+        ] {
+            assert_eq!(
+                env.get(&format!("DEVICECTL_CHILD_{key}"))
+                    .map(String::as_str),
+                Some(value),
+                "{key}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A `DEVICECTL_CHILD_*` the host already carries is cleared from the
+    /// child — `RunOptions` owns the namespace — while the host itself and
+    /// its unrelated variables stay untouched.
+    #[test]
+    fn run_options_own_the_child_prefixed_namespace() -> std::io::Result<()> {
+        let machine = crate::toolchain::testing::TestMachine::new();
+        machine.install("xcrun");
+        let host = machine.host([
+            (
+                String::from("DEVICECTL_CHILD_STALE"),
+                String::from("host-stale"),
+            ),
+            (
+                String::from("DEVICECTL_CHILD_OVERRIDDEN"),
+                String::from("host-value"),
+            ),
+        ]);
+        let mut options = crate::device::RunOptions::new();
+        options.insert_env_var(String::from("OVERRIDDEN"), String::from("run-value"));
+
+        let command = physical_device_launch_command(&host, "S", "com.example.app", &options)?;
+        let env = command_env(&command);
+        assert!(!env.contains_key("DEVICECTL_CHILD_STALE"), "{env:?}");
+        assert_eq!(
+            env.get("DEVICECTL_CHILD_OVERRIDDEN").map(String::as_str),
+            Some("run-value")
+        );
+        assert_eq!(
+            env.get("PATH").map(String::as_str),
+            host.env("PATH")
+                .map(|value| value.to_string_lossy().into_owned())
+                .as_deref()
+        );
+
+        // The host is immutable: its own env map never observed the purge.
+        assert_eq!(
+            host.env("DEVICECTL_CHILD_STALE")
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some(String::from("host-stale"))
+        );
+        Ok(())
     }
 
     #[cfg(unix)]
     fn console_run(
         machine: &crate::toolchain::testing::TestMachine,
-    ) -> (
+        termination_grace: std::time::Duration,
+    ) -> std::io::Result<(
         crate::device::Running,
         async_channel::Sender<()>,
         async_channel::Receiver<()>,
         ProcessGroupGuard,
-    ) {
+    )> {
         use std::process::Stdio;
 
         use crate::device::Running;
@@ -957,7 +1317,7 @@ mod tests {
         let script = term_ignoring_fixture(machine);
         let host = machine.host(Vec::<(String, String)>::new());
         let mut child = host
-            .command_in_own_process_group(&script)
+            .command_in_own_process_group(&script)?
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -982,15 +1342,16 @@ mod tests {
                 panic,
             },
             sender,
+            termination_grace,
         ))
         .detach();
         let (interrupt_tx, interrupt_rx) = async_channel::unbounded();
-        (running, interrupt_tx, interrupt_rx, group_guard)
+        Ok((running, interrupt_tx, interrupt_rx, group_guard))
     }
 
     #[cfg(unix)]
     #[test]
-    fn console_grace_overrun_reports_an_error_then_kills() {
+    fn console_grace_overrun_reports_an_error_then_kills() -> std::io::Result<()> {
         use futures_util::future::{Either, select};
         use smol::stream::StreamExt as _;
         use std::time::Duration;
@@ -998,7 +1359,8 @@ mod tests {
         use crate::device::DeviceEvent;
 
         let machine = crate::toolchain::testing::TestMachine::new();
-        let (running, interrupt_tx, interrupt_rx, group_guard) = console_run(&machine);
+        let (running, interrupt_tx, interrupt_rx, group_guard) =
+            console_run(&machine, Duration::from_millis(200))?;
         let exercise = async move {
             let _group_guard = group_guard;
             let mut events = std::pin::pin!(running.supervise(interrupt_rx));
@@ -1051,11 +1413,12 @@ mod tests {
             Err(nix::errno::Errno::ESRCH),
             "Stopped follows the confirmed child exit and reap"
         );
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn console_second_interrupt_kills_without_an_error() {
+    fn console_second_interrupt_kills_without_an_error() -> std::io::Result<()> {
         use futures_util::future::{Either, select};
         use smol::stream::StreamExt as _;
         use std::time::Duration;
@@ -1063,7 +1426,8 @@ mod tests {
         use crate::device::DeviceEvent;
 
         let machine = crate::toolchain::testing::TestMachine::new();
-        let (running, interrupt_tx, interrupt_rx, group_guard) = console_run(&machine);
+        let (running, interrupt_tx, interrupt_rx, group_guard) =
+            console_run(&machine, Duration::from_secs(3600))?;
         let exercise = async move {
             let _group_guard = group_guard;
             let mut events = std::pin::pin!(running.supervise(interrupt_rx));
@@ -1121,5 +1485,6 @@ mod tests {
             Err(nix::errno::Errno::ESRCH),
             "Stopped follows the confirmed child exit and reap"
         );
+        Ok(())
     }
 }

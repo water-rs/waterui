@@ -232,6 +232,7 @@ impl SafeAreaRegions {
 /// editor.ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct IgnoreSafeArea {
     /// Which safe-area regions are ignored.
     pub regions: SafeAreaRegions,

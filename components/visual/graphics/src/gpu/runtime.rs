@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use alloc::vec::Vec;
 use core::fmt;
+use core::mem::ManuallyDrop;
 #[cfg(not(target_arch = "wasm32"))]
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +28,7 @@ use cherenkov_gpu::{
 
 /// Why a [`GpuRuntime`] could not be created.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GpuRuntimeError {
     /// No adapter satisfied the request.
     #[error("no compatible GPU adapter: {0}")]
@@ -44,6 +46,11 @@ pub enum GpuRuntimeError {
     /// The adapter refused the device.
     #[error(transparent)]
     Device(#[from] wgpu::RequestDeviceError),
+    /// The Android device request failed, whether the device was opened
+    /// with the `AHardwareBuffer` import requirements or plainly.
+    #[cfg(target_os = "android")]
+    #[error(transparent)]
+    DeviceRequest(#[from] wgpu_external_frame::ahardware_buffer::DeviceRequestError),
 }
 
 /// What creating or presenting a hosted engine layer's frame can fail with.
@@ -165,7 +172,16 @@ type LossWakeup = Box<dyn Fn() + Send + Sync>;
 #[derive(Debug)]
 pub struct SharedGpuContext {
     generation: u64,
-    instance: Instance,
+    /// Never dropped: it lives as long as the process. Dropping a wgpu
+    /// `Instance` drops wgpu-hal's `libloading` handles for `libEGL` /
+    /// `libvulkan`, which `dlclose`s the driver they loaded. Mesa's software
+    /// drivers (llvmpipe, lavapipe — every GPU-less CI runner, container and
+    /// VM) and the LLVM inside them register `atexit` destructors, and once
+    /// the mapping is gone the process dies inside `exit()` after the last
+    /// context has been torn down cleanly. A driver has to outlive the process
+    /// by construction, so this is not a leak; the device is still dropped
+    /// with the context.
+    instance: ManuallyDrop<Instance>,
     adapter: Adapter,
     device: Device,
     queue: Queue,
@@ -192,14 +208,15 @@ impl SharedGpuContext {
     /// [`GpuRuntimeError`] when no adapter or device is available.
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "wgpu's wasm32 request_adapter/request_device resolve through JS promises kept in an Rc<RefCell>, so this future is !Send there; it is Send on native targets"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     pub async fn new(generation: u64) -> Result<Self, GpuRuntimeError> {
-        let instance =
-            Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        descriptor.backends &= cherenkov_gpu::GpuConfig::default().backends;
+        let instance = Instance::new(descriptor);
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -226,21 +243,23 @@ impl SharedGpuContext {
         {
             return Err(GpuRuntimeError::PassthroughShadersUnsupported { backend });
         }
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("waterui GpuRuntime"),
-                required_features,
-                // The adapter's own limits, not wgpu's defaults: a default
-                // that exceeds the adapter's ceiling fails the request
-                // outright (iOS simulator: default 16 > adapter 15).
-                required_limits: adapter.limits(),
-                ..Default::default()
-            })
-            .await?;
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("waterui GpuRuntime"),
+            required_features,
+            // The adapter's own limits, not wgpu's defaults: a default
+            // that exceeds the adapter's ceiling fails the request
+            // outright (iOS simulator: default 16 > adapter 15).
+            required_limits: adapter.limits(),
+            ..Default::default()
+        };
+        #[cfg(target_os = "android")]
+        let (device, queue) = super::device::request_device(&adapter, &descriptor).await?;
+        #[cfg(not(target_os = "android"))]
+        let (device, queue) = adapter.request_device(&descriptor).await?;
         let device_loss = DeviceLoss::observe(&device);
         Ok(Self {
             generation,
-            instance,
+            instance: ManuallyDrop::new(instance),
             adapter,
             device,
             queue,
@@ -260,7 +279,7 @@ impl SharedGpuContext {
 
     /// The instance surfaces are created from.
     #[must_use]
-    pub const fn instance(&self) -> &Instance {
+    pub fn instance(&self) -> &Instance {
         &self.instance
     }
 
@@ -420,9 +439,9 @@ impl GpuRuntime {
     /// requires of a shared device.
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "`wgpu::Instance::request_adapter` resolves through `navigator.gpu.requestAdapter()`, a JS promise the WebGPU backend keeps in an `Rc<RefCell<_>>`; the same future is `Send` on every other target"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     pub async fn new() -> Result<Self, GpuRuntimeError> {

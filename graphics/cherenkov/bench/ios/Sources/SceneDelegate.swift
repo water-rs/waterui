@@ -20,4 +20,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
         self.window = window
     }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        let windowScene = scene as! UIWindowScene
+        let app = UIApplication.shared.delegate as! AppDelegate
+        app.start(on: windowScene.screen)
+    }
 }

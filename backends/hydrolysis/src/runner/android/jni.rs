@@ -7,12 +7,16 @@
 //! pointers carried as `jlong` and driven only on the UI thread, which the
 //! Kotlin host guarantees.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::cell::Cell;
+use std::ptr::addr_of;
 use std::sync::OnceLock;
 
-use jni::objects::{GlobalRef, JClass, JObject, JString};
-use jni::sys::{jboolean, jdouble, jfloat, jint, jlong, jstring};
-use jni::{JNIEnv, JavaVM};
+use jni::errors::ErrorPolicy;
+use jni::objects::{Global, JClass, JObject, JString};
+use jni::strings::JNIString;
+use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
+use jni::vm::JavaVM;
+use jni::{Env, EnvUnowned, jni_str};
 
 use crate::platform::{
     BackEdge, BackNavigation, InputEvent, Modifiers, PointerButton, PointerKind,
@@ -20,7 +24,9 @@ use crate::platform::{
 
 use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 
-/// The JNI schema this build of the runner speaks — `nativeInit` returns it
+/// The JNI schema this build of the runner speaks — `nativeInit` returns it.
+/// 24 adds `DefineEffect` (`effect, stage_count, kind + 12 floats` stages)
+/// for native `RenderEffect` chains (#1750).
 /// and the Kotlin `NativeBridge` refuses a mismatch, so a stale native
 /// library cannot load against a newer host.
 /// Schema history: 1 = initial surface/input/IME events; 2 =
@@ -47,8 +53,31 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// takes its handle so every session shares it; 12 = `nativeSetHighRefresh`
 /// takes a typed `active` flag in place of the `-1f` sentinel float the
 /// runner decoded as a release, and `nativeSurfaceAttached` carries the
-/// display's peak refresh rate that flag asks for.
-pub const JNI_SCHEMA: jint = 12;
+/// display's peak refresh rate that flag asks for; 13 = a platform-view
+/// placement names either a factory `kind` or a registered `instance`, and
+/// the `HydrolysisWebView` natives join the edge; 14 =
+/// `nativePlatformViewFocus` reported whether a mounted platform-view child
+/// held UI focus; 15 = the report reads through the frame instead —
+/// `onNativePlatformViewFocus` / `platform_view_focus_inside` replaces the
+/// pushed native, which left with it; 16 = `onNativeFatalError` leaves the
+/// table — a lost GPU device is recreated instead of ending the session
+/// (water-rs/waterui#2742), and a recreation that exhausts its loss budget
+/// already reaches Kotlin as the frame call's `IllegalStateException`;
+/// 17 = `nativeSetFrameDemand` separates continuous work and touch demand,
+/// and surface attachment supplies the display's suggested ARR rates. 18 =
+/// the unlanded HWUI render-target work (water-rs/waterui#1811); the reserved
+/// number keeps a stale native/Kotlin pair from pairing up mid-development.
+/// 19 = the HWUI text wire carries a default-style row: row zero of every
+/// packed shape request is the paragraph's base paint. 20 = `nativeCreateSession`
+/// takes the session-owned painter object, and `nativeSetHostAttached` reports
+/// the host view's bind state (water-rs/waterui#1811). 21 = the
+/// `BindPlatformView` op binds a platform view inside its owner's `RenderNode`.
+/// 21->22 = `nativePlatformViewHitTest` answers the retained tree's platform
+/// view under a host pixel — the HWUI painter's ordered-input query.
+/// 23 = `nativeCreateSession` carries the configuration's night-mode flag so
+/// the colour-scheme signal starts on the real `uiMode`, and
+/// `nativeSetColorScheme` reports every later change (water-rs/waterui#3544).
+pub const JNI_SCHEMA: jint = 24;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -60,6 +89,7 @@ impl From<jni::errors::Error> for JniError {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl From<super::gpu::GpuError> for JniError {
     fn from(error: super::gpu::GpuError) -> Self {
         Self(error.0)
@@ -90,7 +120,7 @@ pub(super) fn java_vm() -> &'static JavaVM {
 /// reference it points at must outlive every such use: this slot owns it and
 /// is never cleared. It holds the `Application`, never an `Activity`, so
 /// nothing keeps a destroyed activity alive.
-static APPLICATION_CONTEXT: OnceLock<GlobalRef> = OnceLock::new();
+static APPLICATION_CONTEXT: OnceLock<Global<JObject<'static>>> = OnceLock::new();
 
 /// Publishes the `Application` of `context` to `ndk_context`, exactly once
 /// per process.
@@ -103,20 +133,20 @@ static APPLICATION_CONTEXT: OnceLock<GlobalRef> = OnceLock::new();
 /// reference. Sessions are created only on the UI thread, so the check and
 /// the publish do not race.
 pub(super) fn publish_application_context(
-    env: &mut JNIEnv,
+    env: &mut Env,
     vm: &JavaVM,
     context: &JObject,
 ) -> Result<(), JniError> {
     let application = env
         .call_method(
             context,
-            "getApplicationContext",
-            "()Landroid/content/Context;",
+            jni_str!("getApplicationContext"),
+            jni::jni_sig!("()Landroid/content/Context;"),
             &[],
         )?
         .l()?;
     if let Some(published) = APPLICATION_CONTEXT.get() {
-        return if env.is_same_object(published, &application)? {
+        return if env.is_same_object(published.as_obj(), &application)? {
             Ok(())
         } else {
             Err(JniError(
@@ -140,19 +170,99 @@ pub(super) fn publish_application_context(
     // `initialize_android_context`, guarded by that slot being empty, so
     // `ndk_context`'s at-most-once precondition holds.
     unsafe {
-        ndk_context::initialize_android_context(vm.get_java_vm_pointer().cast(), raw.cast());
+        ndk_context::initialize_android_context(vm.get_raw().cast(), raw.cast());
     }
     Ok(())
 }
 
-/// Decodes a session pointer. The host passes exactly what
-/// `nativeCreateSession` returned; anything else is a programming error.
-fn session(ptr: jlong) -> &'static mut AndroidSession {
+/// The heap allocation a session `jlong` points at. The Kotlin host owns
+/// it for the session's life; every entry point borrows `session` through
+/// [`session`], which `entered` makes exclusive.
+///
+/// `entered` sits beside `session` rather than inside it: a borrow is
+/// checked and cleared through `&Cell` on the flag's own field while the
+/// disjoint `session` field is lent mutably — the two never overlap.
+struct SessionBox {
+    entered: Cell<bool>,
+    session: AndroidSession,
+}
+
+/// One JNI call's exclusive borrow of the session [`session`] names.
+///
+/// While the guard lives, a re-entrant [`session`] call — a Kotlin
+/// callback synchronously invoking a native entry point under a session
+/// call — panics rather than minting a second `&mut AndroidSession`
+/// (water-rs/waterui#2953); `guard` reports the panic to that nested
+/// caller as `IllegalStateException`, the same surface every entry
+/// failure takes. Dropping the guard releases the borrow.
+struct SessionGuard {
+    entry: *mut SessionBox,
+}
+
+impl SessionGuard {
+    /// The `entered` flag of this guard's box, read through a field
+    /// projection so the shared borrow never covers the disjoint
+    /// `session` field this guard lends mutably.
+    fn entered(&self) -> &Cell<bool> {
+        // SAFETY: `addr_of!` projects to the `entered` field without
+        // borrowing the whole box, so this `&Cell` never aliases the
+        // `&mut AndroidSession` derived from the disjoint `session`
+        // field below.
+        unsafe { &*addr_of!((*self.entry).entered) }
+    }
+}
+
+impl std::ops::Deref for SessionGuard {
+    type Target = AndroidSession;
+    fn deref(&self) -> &AndroidSession {
+        // SAFETY: `session()` proves no other borrow was live when it
+        // minted this guard, and `entered` keeps a second guard from
+        // existing until this one drops.
+        unsafe { &(*self.entry).session }
+    }
+}
+
+impl std::ops::DerefMut for SessionGuard {
+    fn deref_mut(&mut self) -> &mut AndroidSession {
+        // SAFETY: same argument as `deref` — the guard is the exclusive
+        // borrow for the whole JNI call.
+        unsafe { &mut (*self.entry).session }
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.entered().set(false);
+    }
+}
+
+/// Decodes a session pointer and borrows its session for this call.
+/// The host passes exactly what `nativeCreateSession` returned; anything
+/// else is a programming error.
+///
+/// # Panics
+/// Panics when a borrow is already live: a Kotlin callback re-entered
+/// JNI under a running session call, where minting a second `&mut
+/// AndroidSession` would alias the first.
+fn session(ptr: jlong) -> SessionGuard {
     assert!(ptr != 0, "hydrolysis android: null session pointer");
-    // SAFETY: the pointer came from Box::into_raw on a session that the
-    // Kotlin host owns, and every entry point runs on the UI thread, so no
-    // aliased &mut ever coexists.
-    unsafe { &mut *(ptr as *mut AndroidSession) }
+    // SAFETY: the pointer came from `Box::into_raw` on a `SessionBox` in
+    // `nativeCreateSession`, and the Kotlin host keeps it alive until
+    // `nativeDestroySession`.
+    let entry = ptr as *mut SessionBox;
+    // Read and set the flag before the guard exists: a failed assertion
+    // has no guard to drop, so the live borrow's `entered` stays set
+    // instead of being released under it.
+    //
+    // SAFETY: same projection argument as `SessionGuard::entered` — the
+    // flag field never overlaps the disjoint `session` field.
+    let entered = unsafe { &*addr_of!((*entry).entered) };
+    assert!(
+        !entered.replace(true),
+        "hydrolysis android: a Kotlin callback re-entered JNI while a \
+         session call was still running"
+    );
+    SessionGuard { entry }
 }
 
 /// Decodes the UI-thread services pointer. The host passes exactly what
@@ -166,66 +276,82 @@ fn services(ptr: jlong) -> &'static UiThreadServices {
     unsafe { &*(ptr as *const UiThreadServices) }
 }
 
-/// Runs `f` on the session, mapping `JniError` → `IllegalStateException` and a
-/// panic → `IllegalStateException` (with the panic payload in the message).
-pub(super) fn guard<F>(env: &mut JNIEnv, f: F)
-where
-    F: FnOnce(&mut JNIEnv) -> Result<(), JniError>,
-{
-    match catch_unwind(AssertUnwindSafe(|| f(env))) {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            let _ = env.throw_new("java/lang/IllegalStateException", &error.0);
-        }
-        Err(payload) => {
-            let message = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("unknown panic");
-            let _ = env.throw_new(
-                "java/lang/IllegalStateException",
-                format!("hydrolysis android: {message}"),
-            );
-        }
+/// The error policy every entry point resolves through: a `JniError` or a
+/// panic becomes `IllegalStateException` (the panic's payload in the
+/// message), so a GPU or lifecycle failure is an explicit error on the
+/// Kotlin side, never a silent drop. The caller's default is the returned
+/// value on either path.
+struct ThrowIllegalState;
+
+impl<T: Default> ErrorPolicy<T, JniError> for ThrowIllegalState {
+    type Captures<'unowned_env_local: 'native_method, 'native_method> = T;
+
+    fn on_error<'unowned_env_local: 'native_method, 'native_method>(
+        env: &mut Env<'unowned_env_local>,
+        default: &mut T,
+        error: JniError,
+    ) -> jni::errors::Result<T> {
+        let _ = env.throw_new(
+            jni_str!("java/lang/IllegalStateException"),
+            JNIString::new(&error.0),
+        );
+        Ok(std::mem::take(default))
     }
+
+    fn on_panic<'unowned_env_local: 'native_method, 'native_method>(
+        env: &mut Env<'unowned_env_local>,
+        default: &mut T,
+        payload: Box<dyn std::any::Any + Send + 'static>,
+    ) -> jni::errors::Result<T> {
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown panic");
+        let _ = env.throw_new(
+            jni_str!("java/lang/IllegalStateException"),
+            JNIString::new(format!("hydrolysis android: {message}")),
+        );
+        Ok(std::mem::take(default))
+    }
+}
+
+/// Runs `f` on the session inside the caller's JNI frame, mapping
+/// `JniError` → `IllegalStateException` and a panic → `IllegalStateException`
+/// (with the panic payload in the message).
+pub fn guard<'local, F>(env: &mut EnvUnowned<'local>, f: F)
+where
+    F: FnOnce(&mut Env<'local>) -> Result<(), JniError>,
+{
+    env.with_env(f).resolve_with::<ThrowIllegalState, _>(|| ());
 }
 
 /// `guard` for calls returning a value — the error path throws and returns
 /// `default`.
-pub(super) fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
+pub fn guard_val<'local, T, F>(env: &mut EnvUnowned<'local>, default: T, f: F) -> T
 where
-    F: FnOnce(&mut JNIEnv) -> Result<T, JniError>,
+    T: Default,
+    F: FnOnce(&mut Env<'local>) -> Result<T, JniError>,
 {
-    let mut result = default;
-    guard(env, |env| {
-        result = f(env)?;
-        Ok(())
-    });
-    result
+    env.with_env(f)
+        .resolve_with::<ThrowIllegalState, _>(|| default)
 }
 
-/// `guard` for calls returning a value the caller converts first — throws
-/// and returns `default` on failure.
-fn guard_string<F>(env: &mut JNIEnv, f: F) -> jstring
+/// `guard` for calls returning a string — the error path throws and returns
+/// null.
+pub fn guard_string<'local, F>(env: &mut EnvUnowned<'local>, f: F) -> JString<'local>
 where
-    F: FnOnce(&mut JNIEnv) -> Result<Option<String>, JniError>,
+    F: FnOnce(&mut Env<'local>) -> Result<Option<String>, JniError>,
 {
-    let mut out: jstring = std::ptr::null_mut();
-    guard(env, |env| {
-        if let Some(json) = f(env)? {
-            let value = env.new_string(json)?;
-            out = value.into_raw();
-        }
-        Ok(())
-    });
-    out
+    env.with_env(|env| match f(env)? {
+        Some(json) => Ok(env.new_string(json)?),
+        None => Ok(JString::default()),
+    })
+    .resolve_with::<ThrowIllegalState, _>(JString::default)
 }
 
-pub fn get_string(env: &mut JNIEnv, value: &JString) -> Result<String, JniError> {
-    env.get_string(value)
-        .map(String::from)
-        .map_err(JniError::from)
+pub fn get_string(env: &mut Env, value: &JString) -> Result<String, JniError> {
+    value.try_to_string(env).map_err(JniError::from)
 }
 
 /// `log_level` is the `waterui.log.level` launch extra (a `tracing` level
@@ -233,11 +359,11 @@ pub fn get_string(env: &mut JNIEnv, value: &JString) -> Result<String, JniError>
 /// keeps its INFO default then. An unrecognized name is a contract breach,
 /// not something to guess around: it throws.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeInit(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeInit<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     _version: jint,
-    log_level: JString,
+    log_level: JString<'local>,
 ) -> jint {
     guard_val(&mut env, 0, |env| {
         // A null `waterui.log.level` extra keeps the INFO default.
@@ -260,9 +386,9 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeInit(
 /// Called once, on the UI thread (its main looper must already exist).
 /// The returned pointer is process-owned and never freed.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeUiThreadServices(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeUiThreadServices<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
 ) -> jlong {
     guard_val(&mut env, 0, |_env| {
         let services = UiThreadServices::init()?;
@@ -274,7 +400,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeUiThreadSe
 /// the `JavaVM` for the host's later calls, parse the caller's optional
 /// `tracing` level name (`None` keeps [`super::init_logging`]'s default), and
 /// install logging.
-pub(super) fn init_process(env: &mut JNIEnv, log_level: Option<&str>) -> Result<(), JniError> {
+pub(super) fn init_process(env: &mut Env, log_level: Option<&str>) -> Result<(), JniError> {
     let vm = env.get_java_vm()?;
     let _ = JAVA_VM.set(vm);
     let level = log_level
@@ -293,12 +419,14 @@ pub(super) fn init_process(env: &mut JNIEnv, log_level: Option<&str>) -> Result<
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSession(
-    mut env: JNIEnv,
-    _class: JClass,
-    host_view: JObject,
-    context: JObject,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSession<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    host_view: JObject<'local>,
+    context: JObject<'local>,
+    painter: JObject<'local>,
     services_ptr: jlong,
+    night: jboolean,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
         let vm = env.get_java_vm()?;
@@ -320,8 +448,19 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             max_fling_velocity_px: 0.0,
             scroll_friction: 0.0,
         };
-        let session = AndroidSession::create(env, vm, host_view, metrics, services(services_ptr))?;
-        Ok(Box::into_raw(session) as jlong)
+        let session = AndroidSession::create(
+            env,
+            vm,
+            host_view,
+            &painter,
+            metrics,
+            night,
+            services(services_ptr),
+        )?;
+        Ok(Box::into_raw(Box::new(SessionBox {
+            entered: Cell::new(false),
+            session: *session,
+        })) as jlong)
     })
 }
 
@@ -329,25 +468,35 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
 /// Kotlin caller as `IllegalStateException`, like every other entry point:
 /// a teardown that failed halfway is a defect to see, not one to discard.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeDestroySession(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeDestroySession<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
 ) {
     guard(&mut env, |_env| {
         assert!(session_ptr != 0, "hydrolysis android: null session pointer");
-        // SAFETY: the pointer came from nativeCreateSession, and the Kotlin
-        // session hands it here exactly once, on the UI thread, after
-        // closing its accessor — no other reference to the session exists.
-        drop(unsafe { Box::from_raw(session_ptr as *mut AndroidSession) });
+        let entry = session_ptr as *mut SessionBox;
+        assert!(
+            // SAFETY: the pointer came from nativeCreateSession, and the
+            // Kotlin session hands it here exactly once, on the UI thread,
+            // after closing its accessor. The flag read is the same
+            // disjoint-field projection `session` uses.
+            !unsafe { &*addr_of!((*entry).entered) }.get(),
+            "hydrolysis android: destroying a session while a call into \
+             it is still running"
+        );
+        // SAFETY: same pointer and exclusivity as the flag read above —
+        // `entered` being clear means no borrow of `session` is still live,
+        // so reclaiming the box frees nothing a borrow points into.
+        drop(unsafe { Box::from_raw(entry) });
         Ok(())
     });
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
     width_px: jint,
     height_px: jint,
@@ -389,9 +538,9 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
 /// another frame; `2` = the window asked to close. A deadline is read out
 /// with `nativeFrameDeadlineInNanos` when `4` is set.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
     _vsync_nanos: jlong,
 ) -> jlong {
@@ -412,9 +561,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeFrameDeadlineInNanos(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeFrameDeadlineInNanos<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
 ) -> jlong {
     guard_val(&mut env, -1, |_env| {
@@ -422,32 +573,37 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeFrameDeadl
     })
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAttached(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAttached<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
-    surface: JObject,
+    surface: JObject<'local>,
     peak_refresh_hz: jfloat,
+    normal_refresh_hz: jfloat,
+    high_refresh_hz: jfloat,
     width: jint,
     height: jint,
     generation: jlong,
 ) -> jboolean {
-    guard_val(&mut env, 0, |env| {
-        if !(peak_refresh_hz.is_finite() && peak_refresh_hz > 0.0) {
+    guard_val(&mut env, false, |env| {
+        if ![peak_refresh_hz, normal_refresh_hz, high_refresh_hz]
+            .into_iter()
+            .all(|rate| rate.is_finite() && rate > 0.0)
+        {
             return Err(JniError(format!(
-                "hydrolysis android: surface attached with peak refresh rate {peak_refresh_hz} Hz; \
-                 the host must report its display's positive peak rate"
+                "hydrolysis android: invalid display rates: peak={peak_refresh_hz}, \
+                 normal={normal_refresh_hz}, high={high_refresh_hz}; rates must be positive and finite"
             )));
         }
         let window = unsafe {
-            // SAFETY: env is a live JNIEnv and `surface` is the
+            // SAFETY: env is a live JNI environment and `surface` is the
             // android.view.Surface the band just produced; the call acquires
-            // the reference the attachment owns.
-            ndk::native_window::NativeWindow::from_surface(
-                env.get_native_interface(),
-                surface.as_raw(),
-            )
+            // the reference the attachment owns. ndk 0.9 binds `jni-sys`
+            // 0.3's JNIEnv while jni 0.22 binds 0.4's — both are the
+            // platform's `JNINativeInterface_` table pointer.
+            ndk::native_window::NativeWindow::from_surface(env.get_raw().cast(), surface.as_raw())
         };
         let Some(window) = window else {
             return Err(JniError(
@@ -457,40 +613,45 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
         session(session_ptr)
             .surface_attached_with_generation(
                 window,
-                peak_refresh_hz,
+                super::gpu::DisplayRefresh {
+                    peak: peak_refresh_hz,
+                    normal: normal_refresh_hz,
+                    high: high_refresh_hz,
+                },
                 crate::num_cast::i32_as_u32(width.max(0)),
                 crate::num_cast::i32_as_u32(height.max(0)),
                 crate::num_cast::i64_as_u64(generation),
             )
             .map_err(JniError)?;
-        Ok(1)
+        Ok(true)
     })
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceChanged(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceChanged<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
     width: jint,
     height: jint,
     generation: jlong,
 ) {
     guard(&mut env, |_env| {
-        session(session_ptr)
-            .surface_resized(
-                crate::num_cast::i32_as_u32(width.max(0)),
-                crate::num_cast::i32_as_u32(height.max(0)),
-                crate::num_cast::i64_as_u64(generation),
-            )
-            .map_err(JniError)
+        session(session_ptr).surface_resized(
+            crate::num_cast::i32_as_u32(width.max(0)),
+            crate::num_cast::i32_as_u32(height.max(0)),
+            crate::num_cast::i64_as_u64(generation),
+        );
+        Ok(())
     });
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDestroyed(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDestroyed<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
     generation: jlong,
 ) {
@@ -500,36 +661,101 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDes
     });
 }
 
-/// The Activity's started state — `onStart`/`onStop` drive the pump's
-/// hidden flag alongside the surface's own attach/detach.
+/// The configuration's night-mode flag — pushed by the host at bind and on
+/// every `onConfigurationChanged`, into the session's colour-scheme signal.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorScheme<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
-    visible: jboolean,
+    night: jboolean,
 ) {
     guard(&mut env, |_env| {
-        session(session_ptr).set_visible(visible != 0);
+        session(session_ptr).set_night_mode(night);
         Ok(())
     });
 }
 
-/// The scheduler's high-refresh demand: `active` asks the surface for its
-/// display's peak rate — reported with the surface attach — for as long as
-/// the pump runs or a touch is held; a cleared flag releases the request.
-/// The session holds the demand across surface generations, so a
-/// re-attached band gets it back without a demand change.
+/// The Activity's started state — `onStart`/`onStop` drive the pump's
+/// hidden flag alongside the surface's own attach/detach.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHighRefresh(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
-    active: jboolean,
+    visible: jboolean,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).set_visible(visible);
+        Ok(())
+    });
+}
+
+/// The retained tree's platform view under host pixel (`x`, `y`) — the
+/// ordered hit test the Kotlin host's gesture dispatch asks before latching
+/// a native gesture. `0` means no view is drawn there or an interactive
+/// target painted above it takes the point; non-interactive content never
+/// blocks a view. HWUI builds only: the GPU path's slots own their own hit
+/// order.
+#[cfg(hydrolysis_hwui)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformViewHitTest<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    x: jfloat,
+    y: jfloat,
+) -> jlong {
+    use crate::platform::PlatformWindow as _;
+
+    guard_val(&mut env, 0, |_env| {
+        let session = session(session_ptr);
+        let id = session
+            .runtime
+            .renderer
+            .platform_view_hit(
+                session.hwui.surface.encoder(),
+                kurbo::Point::new(f64::from(x), f64::from(y)),
+                session.runtime.platform.scale_factor(),
+            )
+            .map_err(|e| JniError(e.to_string()))?;
+        Ok(id.map_or(0, |id| i64::from_ne_bytes(id.to_ne_bytes())))
+    })
+}
+
+/// The Kotlin host bound (`true`) or unbound (`false`) its view: the
+/// session's attach gate — the HWUI painter's draw window and the common
+/// occlusion report's host half. GPU builds keep their own surface
+/// callbacks; this only records the host's binding state.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHostAttached<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    attached: jboolean,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).set_host_attached(attached);
+        Ok(())
+    });
+}
+
+/// The host's continuous-work and touch demand. The session combines these
+/// with the current engine content-rate range before voting on its window.
+#[cfg(hydrolysis_gpu_painter)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetFrameDemand<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    continuous: jboolean,
+    touching: jboolean,
 ) {
     guard(&mut env, |_env| {
         session(session_ptr)
-            .set_high_refresh_demand(active != 0)
+            .set_frame_demand(continuous, touching)
             .map_err(JniError)
     });
 }
@@ -552,9 +778,9 @@ const fn pointer_kind(tool_type: jint) -> PointerKind {
 /// `MotionEvent.ACTION_*`), `button` maps `getActionButton` for stylus
 /// barrel presses (0 primary, 1 secondary, 2 middle).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePointerEvent(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePointerEvent<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
     action: jint,
     pointer_id: jint,
@@ -600,9 +826,9 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePointerEve
 /// a back button's predictive animation carries. `progress` is the platform's
 /// `0..=1` report.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBackEvent(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBackEvent<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
     phase: jint,
     edge: jint,
@@ -633,9 +859,9 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBackEvent(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeScrollEvent(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeScrollEvent<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
     x: jfloat,
     y: jfloat,
@@ -658,11 +884,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeScrollEven
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeKeyEvent(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeKeyEvent<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
-    key: JString,
+    key: JString<'local>,
     pressed: jboolean,
     shift: jboolean,
     ctrl: jboolean,
@@ -672,18 +898,13 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeKeyEvent(
     guard(&mut env, |env| {
         let key = get_string(env, &key)?;
         let modifiers = Modifiers {
-            shift: shift != 0,
-            control: ctrl != 0,
-            alt: alt != 0,
-            super_key: meta != 0,
+            shift,
+            control: ctrl,
+            alt,
+            super_key: meta,
         };
-        let session = session(session_ptr);
-        super::ime::ImeBridge::key_event(
-            &mut session.runtime.platform,
-            &key,
-            pressed != 0,
-            modifiers,
-        );
+        let mut session = session(session_ptr);
+        super::ime::ImeBridge::key_event(&mut session.runtime.platform, &key, pressed, modifiers);
         Ok(())
     });
 }
@@ -694,25 +915,25 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeKeyEvent(
 // `HydrolysisInputConnection.kt`); the state push/pull travels as JSON.
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeEditOp(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeEditOp<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
     editor_id: jlong,
     op: jint,
     arg1: jint,
     arg2: jint,
-    text: JString,
+    text: JString<'local>,
 ) -> jboolean {
-    guard_val(&mut env, 0, |env| {
+    guard_val(&mut env, false, |env| {
         let text = get_string(env, &text)?;
-        Ok(u8::from(session(session_ptr).edit_op(
+        Ok(session(session_ptr).edit_op(
             crate::num_cast::i64_as_u64(editor_id),
             op,
             arg1,
             arg2,
             &text,
-        )))
+        ))
     })
 }
 
@@ -720,11 +941,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeEditOp(
 /// `EditingState` JSON — its `editorId` becomes the connection's generation
 /// token, and `focused=false` marks the connection dead on arrival.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeEditingState(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeEditingState<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
-) -> jstring {
+) -> JString<'local> {
     guard_string(&mut env, |_env| {
         Ok(Some(super::ime::editing_state_json(
             &session(session_ptr).ime.session.state(),
@@ -738,11 +959,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeEditingSta
 /// The serialized accesskit `TreeUpdate` the provider mirrors, or null when
 /// nothing changed since the last read.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibilityTree(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibilityTree<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
-) -> jstring {
+) -> JString<'local> {
     guard_string(&mut env, |_env| {
         #[cfg(feature = "accessibility")]
         {
@@ -760,9 +981,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibil
 /// hover hit test the host's `dispatchHoverEvent` consults for
 /// explore-by-touch.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibilityHitTest(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibilityHitTest<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
     x: jfloat,
     y: jfloat,
@@ -796,40 +1019,42 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibil
 /// means none) and `numeric` a numeric one (NaN means none) — only the
 /// channels the action's data kind uses are ever set.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibilityAction(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibilityAction<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
     virtual_view_id: jlong,
     action: jint,
     arg1: jint,
     arg2: jint,
-    text: JString,
+    text: JString<'local>,
     numeric: jdouble,
 ) -> jboolean {
-    guard_val(&mut env, 0, |env| {
+    guard_val(&mut env, false, |env| {
         let text = get_string(env, &text)?;
-        Ok(u8::from(super::accessibility::perform_action(
-            session(session_ptr),
+        super::accessibility::perform_action(
+            &mut session(session_ptr),
             virtual_view_id,
             action,
             arg1,
             arg2,
             (!text.is_empty()).then_some(text),
             (!numeric.is_nan()).then_some(numeric),
-        )?))
+        )
     })
 }
 
 /// The platform-view placement set as a JSON frame, or null when unchanged.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformViewFrames(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformViewFrames<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     session_ptr: jlong,
-) -> jstring {
+) -> JString<'local> {
     guard_string(&mut env, |_env| {
-        Ok(Some(super::platform_views::placements_json(session(
+        Ok(Some(super::platform_views::placements_json(&session(
             session_ptr,
         ))?))
     })

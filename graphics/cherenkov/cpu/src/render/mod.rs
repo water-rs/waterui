@@ -3,22 +3,50 @@
 //! end's render loop.
 
 mod account;
+mod bins;
 mod bitmap;
 mod blend;
 mod colr;
+pub mod coverage;
+mod damage;
 mod filter;
 mod font;
+mod geometry;
 mod glyph;
+mod gradient;
 mod image;
 mod mesh;
+#[cfg(any(test, feature = "testing"))]
+pub use image::CpuImage;
+#[cfg(not(any(test, feature = "testing")))]
 use image::CpuImage;
 use std::sync::Arc;
+mod intersect;
 mod lower;
 mod paint;
 mod prepared;
 pub mod present;
 mod projective;
 mod raster;
+mod shadow;
+mod span;
+mod tiles;
+mod topology;
+
+// The `testing` feature's surface: the span kernels and the types their
+// signatures name. `render` is a private module, so nothing is reachable
+// without `crate::testing`'s re-export, which does not exist without the
+// feature.
+#[cfg(any(test, feature = "testing"))]
+pub use lower::GeometryChange;
+#[cfg(any(test, feature = "testing"))]
+pub use lower::{ClipMask, ClipRef};
+#[cfg(any(test, feature = "testing"))]
+pub use paint::{PaintData, paint_data};
+#[cfg(any(test, feature = "testing"))]
+pub use raster::{ClipCoverage, ClipRun, Edge, composite_span};
+#[cfg(any(test, feature = "testing"))]
+pub use raster::{composite_solid, convert_span};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -52,6 +80,7 @@ enum Output {
 
 /// One surface's render-thread state.
 struct SurfaceState {
+    damage: damage::Damage,
     size: (u32, u32),
     /// Where finished pixels land; only `Offscreen` targets retain a
     /// full-frame buffer, in the format the host asked for.
@@ -68,6 +97,8 @@ struct SurfaceState {
     /// backdrop capture last frame (window, isolation stack and capture
     /// buffers). 0 when no capture ran.
     backdrop_capture_peak: u64,
+    /// Peak clip compiler, sample and pool storage across last frame's workers.
+    clip_scratch_peak: u64,
     /// Projective layers' realized local images, by layer, one per
     /// density bucket.
     projective: FxHashMap<LayerId, Vec<projective::Entry>>,
@@ -81,6 +112,16 @@ struct SurfaceState {
 }
 
 impl SurfaceState {
+    fn rendered_bands(&self) -> u32 {
+        let count = match &self.output {
+            Output::Stream { .. } => (self.size.1 as usize).div_ceil(raster::BAND_H),
+            Output::F32(_) | Output::F16(_) => {
+                usize::try_from(self.damage.bands().pixel_area()).expect("band count fits usize")
+            }
+        };
+        u32::try_from(count).expect("surface band count fits u32")
+    }
+
     /// Heap bytes of the output storage (`Stream` keeps none).
     const fn output_bytes(&self) -> u64 {
         match &self.output {
@@ -92,10 +133,13 @@ impl SurfaceState {
 
     /// Heap bytes of the surface's own band-format working buffer.
     const fn band_bytes(&self) -> u64 {
-        match &self.output {
-            Output::Stream { emit, .. } => (emit.capacity() * size_of::<[half::f16; 4]>()) as u64,
-            _ => 0,
-        }
+        self.clip_scratch_peak
+            + match &self.output {
+                Output::Stream { emit, .. } => {
+                    (emit.capacity() * size_of::<[half::f16; 4]>()) as u64
+                }
+                _ => 0,
+            }
     }
 }
 
@@ -103,6 +147,9 @@ impl SurfaceState {
 /// [`Renderer`] implementation.
 pub struct RasterRenderer {
     pool: rayon::ThreadPool,
+    /// The host CPU's SIMD level, detected once at construction: the
+    /// level every hot pass is dispatched under.
+    level: fearless_simd::Level,
     surfaces: FxHashMap<SurfaceId, SurfaceState>,
     pub(super) filters: filter::Registry,
     fonts: FxHashMap<u64, font::Font>,
@@ -113,6 +160,12 @@ pub struct RasterRenderer {
     glyph_cache: glyph::GlyphCache,
     /// Decoded colour-font bitmaps, bounded by `Budget::cpu`.
     bitmap_cache: bitmap::BitmapCache,
+    /// Fill and stroke geometry offered by realizations dropped or
+    /// rebuilt this frame; empty between frames.
+    geometry: geometry::GeometryCache,
+    /// Reusable build storage for retained geometry; high-water
+    /// capacity persists across frames.
+    edge_scratch: tiles::EdgeScratch,
     /// Bumped on every image replacement: the one change to what a
     /// current projective image read that arrives without a tree edit.
     /// A removal only runs once no installed content draws the image
@@ -120,6 +173,11 @@ pub struct RasterRenderer {
     image_replacements: u64,
     /// Counts rendered frames; the projective cache's recency clock.
     frame_count: u64,
+    /// Rebuilt for each raster call; capacity is shared across surfaces.
+    /// Boxed so lending it to a surface render moves a pointer, not the
+    /// index itself — a by-value move of the struct is a `memcpy` call
+    /// every frame. `None` only while a surface render holds it.
+    band_index: Option<Box<bins::FrameIndex>>,
 }
 
 impl std::fmt::Debug for RasterRenderer {
@@ -140,19 +198,21 @@ impl std::fmt::Debug for RasterRenderer {
 /// [`EngineError::Backend`] when the pool cannot be built.
 pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), EngineError> {
     let builder = rayon::ThreadPoolBuilder::new()
-        .num_threads(config.threads.unwrap_or(0))
+        .num_threads(cherenkov::workers::count(config.threads)?.get())
         .thread_name(|i| format!("cherenkov-raster-{i}"));
     builder
         .build()
         .map(|pool| {
+            let level = cherenkov_simd::detect();
             let info = RasterInfo {
                 threads: pool.current_num_threads(),
-                simd: "scalar",
+                simd: level_name(level),
                 cpu: cpu_model(),
             };
             (
                 RasterRenderer {
                     pool,
+                    level,
                     surfaces: FxHashMap::default(),
                     filters: filter::Registry::default(),
                     fonts: FxHashMap::default(),
@@ -161,13 +221,58 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     image_budget: config.budget.cpu.0,
                     glyph_cache: glyph::GlyphCache::new(config.budget.cpu.0),
                     bitmap_cache: bitmap::BitmapCache::new(config.budget.cpu.0),
+                    geometry: geometry::GeometryCache::default(),
+                    edge_scratch: tiles::EdgeScratch::default(),
                     image_replacements: 0,
                     frame_count: 0,
+                    band_index: Some(Box::default()),
                 },
                 info,
             )
         })
         .map_err(|e| EngineError::Backend(format!("rayon pool: {e}")))
+}
+
+/// The `RasterInfo::simd` string for `level` — the CPU level the span
+/// kernels actually dispatch to. The variant accessors are cfg-gated to
+/// the same conditions as the variants they unwrap (so a forced-fallback
+/// build reports `"fallback"` through `is_fallback`); an unrecognised
+/// level is a bug and panics.
+fn level_name(level: fearless_simd::Level) -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    if level.as_neon().is_some() {
+        return "neon";
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    if level.as_wasm_simd128().is_some() {
+        return "simd128";
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if level.as_avx2().is_some() {
+        return "avx2";
+    }
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        not(all(
+            target_feature = "avx2",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "cmpxchg16b",
+            target_feature = "f16c",
+            target_feature = "fma",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "popcnt",
+            target_feature = "xsave"
+        ))
+    ))]
+    if level.as_sse4_2().is_some() {
+        return "sse4.2";
+    }
+    if level.is_fallback() {
+        return "fallback";
+    }
+    unreachable!("unsupported SIMD level {level:?}")
 }
 
 /// The host CPU model, best effort.
@@ -182,6 +287,61 @@ fn cpu_model() -> Option<String> {
         }
     }
     None
+}
+
+impl RasterRenderer {
+    /// [`Renderer::add_image`]'s work, which never waits on a device.
+    fn register_image(&mut self, id: ImageId, image: &ImageUpload) -> Result<(), ResourceError> {
+        let decoded = Arc::new(CpuImage::decode(image)?);
+        self.images.insert(id.raw(), decoded);
+        self.refresh_cache_budgets();
+        Ok(())
+    }
+
+    /// [`Renderer::replace_image`]'s work, which never waits on a device.
+    fn swap_image(&mut self, id: ImageId, image: &ImageUpload) -> Result<(), ResourceError> {
+        let current = self
+            .images
+            .get(&id.raw())
+            .expect("replace targets a registered image");
+        let resized = if (current.width, current.height) == (image.width, image.height) {
+            CpuImage::validate(image)?;
+            None
+        } else {
+            Some(Arc::new(CpuImage::decode(image)?))
+        };
+        // Retained paint operands share the pixels and lowering resolved
+        // the dimensions: content sampling the image is lowered again.
+        self.image_replacements += 1;
+        for surface in self.surfaces.values_mut() {
+            for content in surface.layers.values_mut() {
+                let _ = content.invalidate_image(id);
+            }
+        }
+        let slot = self
+            .images
+            .get_mut(&id.raw())
+            .expect("replace targets a registered image");
+        if let Some(resized) = resized {
+            *slot = resized;
+            self.refresh_cache_budgets();
+        } else {
+            // Discarding the content above released every retained operand
+            // sharing the pixels. An operand that survived is an engine
+            // defect; it is reported as this replacement's rejection, which
+            // keeps the previous pixels and fails the renders that draw the
+            // image, instead of panicking the render thread.
+            Arc::get_mut(slot)
+                .ok_or_else(|| {
+                    ResourceError::Image(format!(
+                        "image {} is still shared by retained paint operands after its content was discarded",
+                        id.raw()
+                    ))
+                })?
+                .overwrite(image);
+        }
+        Ok(())
+    }
 }
 
 impl Renderer for RasterRenderer {
@@ -236,6 +396,7 @@ impl Renderer for RasterRenderer {
         self.surfaces.insert(
             id,
             SurfaceState {
+                damage: damage::Damage::default(),
                 size,
                 output,
                 refresh,
@@ -244,6 +405,7 @@ impl Renderer for RasterRenderer {
                 groups: Vec::new(),
                 anchor_scratch: lower::AnchorScratch::default(),
                 backdrop_capture_peak: 0,
+                clip_scratch_peak: 0,
                 projective: FxHashMap::default(),
                 visibility: Visibility::Visible,
                 waker,
@@ -263,6 +425,7 @@ impl Renderer for RasterRenderer {
             return;
         };
         state.size = size;
+        state.damage.forget();
         let pixels = (size.0 * size.1) as usize;
         match &mut state.output {
             Output::F32(fb) => *fb = vec![[0.0; 4]; pixels],
@@ -339,75 +502,41 @@ impl Renderer for RasterRenderer {
     fn image_limits(&self) -> cherenkov::ImageLimits {
         cherenkov::ImageLimits {
             max_dimension: u32::MAX,
-            // The decoded image is f32 RGBA: sixteen bytes a texel.
-            max_texels: self.image_budget / 16,
+            // The image budget: every registered image together holds at
+            // most the CPU budget, decoded as f32 RGBA at sixteen bytes a
+            // pixel. The engine admits registrations against it, and the
+            // glyph caches take what the images leave.
+            max_bytes: self.image_budget,
+            storage: cherenkov::ImageStorage::CPU,
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let resident: u64 = self.images.values().map(|image| image.bytes()).sum();
-        let required = u64::from(image.width)
-            .checked_mul(u64::from(image.height))
-            .and_then(|count| count.checked_mul(16));
-        if required.is_none_or(|bytes| bytes > self.image_budget.saturating_sub(resident)) {
-            return Err(ResourceError::Image("CPU image budget exhausted".into()));
-        }
-        let decoded = Arc::new(CpuImage::decode(&image)?);
-        self.images.insert(id.raw(), decoded);
-        self.refresh_cache_budgets();
-        Ok(())
+        self.register_image(id, &image)
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn add_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        core::future::ready(self.register_image(id, &image))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let current = self
-            .images
-            .get(&id.raw())
-            .expect("replace targets a registered image");
-        let resized = if (current.width, current.height) == (image.width, image.height) {
-            CpuImage::validate(&image)?;
-            None
-        } else {
-            let resident =
-                self.images.values().map(|image| image.bytes()).sum::<u64>() - current.bytes();
-            let required = u64::from(image.width)
-                .checked_mul(u64::from(image.height))
-                .and_then(|count| count.checked_mul(16));
-            if required.is_none_or(|bytes| bytes > self.image_budget.saturating_sub(resident)) {
-                return Err(ResourceError::Image("CPU image budget exhausted".into()));
-            }
-            Some(Arc::new(CpuImage::decode(&image)?))
-        };
-        // Retained paint operands share the pixels and lowering resolved
-        // the dimensions: content sampling the image is lowered again.
-        self.image_replacements += 1;
-        for surface in self.surfaces.values_mut() {
-            for content in surface.layers.values_mut() {
-                let _ = content.invalidate_image(id);
-            }
-        }
-        let slot = self
-            .images
-            .get_mut(&id.raw())
-            .expect("replace targets a registered image");
-        if let Some(resized) = resized {
-            *slot = resized;
-            self.refresh_cache_budgets();
-        } else {
-            // Discarding the content above released every retained operand
-            // sharing the pixels. An operand that survived is an engine
-            // defect; it is reported as this replacement's rejection, which
-            // keeps the previous pixels and fails the renders that draw the
-            // image, instead of panicking the render thread.
-            Arc::get_mut(slot)
-                .ok_or_else(|| {
-                    ResourceError::Image(format!(
-                        "image {} is still shared by retained paint operands after its content was discarded",
-                        id.raw()
-                    ))
-                })?
-                .overwrite(&image);
-        }
-        Ok(())
+        self.swap_image(id, &image)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn replace_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        core::future::ready(self.swap_image(id, &image))
     }
 
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {
@@ -440,7 +569,10 @@ impl Renderer for RasterRenderer {
             Some(ContentOp::Replace(list)) => state
                 .layers
                 .insert(layer, ContentData::new(list))
-                .map(cherenkov::lowering::Content::into_picture),
+                .map(|previous| {
+                    lower::harvest(&mut self.geometry, &previous);
+                    previous.into_picture()
+                }),
             Some(ContentOp::Update(updates)) => {
                 state
                     .layers
@@ -452,7 +584,10 @@ impl Renderer for RasterRenderer {
             Some(ContentOp::Picture(picture)) => state
                 .layers
                 .insert(layer, ContentData::picture(picture))
-                .map(cherenkov::lowering::Content::into_picture),
+                .map(|previous| {
+                    lower::harvest(&mut self.geometry, &previous);
+                    previous.into_picture()
+                }),
             None => state
                 .layers
                 .remove(&layer)
@@ -542,6 +677,7 @@ impl Renderer for RasterRenderer {
         for surface in self.surfaces.values() {
             categories.output += surface.output_bytes();
             categories.retained += surface.anchor_scratch.heap_bytes();
+            categories.retained += surface.damage.heap_bytes();
             categories.retained += surface
                 .layers
                 .values()
@@ -552,11 +688,16 @@ impl Renderer for RasterRenderer {
             .surfaces
             .values()
             .map(SurfaceState::band_bytes)
-            .sum::<u64>();
+            .sum::<u64>()
+            + self.band_index.as_ref().map_or(0, |index| {
+                size_of::<bins::FrameIndex>() as u64 + index.heap_bytes()
+            })
+            + self.edge_scratch.heap_bytes();
         categories.glyphs = self.glyph_cache.bytes();
         categories.images = self.images.values().map(|image| image.bytes()).sum();
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
         categories.bitmaps = self.bitmap_cache.bytes();
+        categories.geometry = self.geometry.bytes();
         categories.projective = self.projective_bytes();
         tracing::debug!(
             target: "cherenkov_cpu::memory",
@@ -567,6 +708,7 @@ impl Renderer for RasterRenderer {
             glyphs = categories.glyphs,
             colr = categories.colr,
             bitmaps = categories.bitmaps,
+            geometry = categories.geometry,
             projective = categories.projective,
             "memory usage",
         );
@@ -581,8 +723,18 @@ impl Renderer for RasterRenderer {
         MemoryUsage {
             gpu: cherenkov::Bytes(0),
             cpu: cherenkov::Bytes(categories.total()),
+            glyph_cache: cherenkov::Bytes(categories.glyphs + categories.colr + categories.bitmaps),
+            // The CPU backend has no tile memory to compose in.
+            tile_reserved: cherenkov::Bytes(0),
+            tile_committed: None,
             backdrop_captures: cherenkov::Bytes(backdrop_captures),
             backdrop_capture_format: (backdrop_captures > 0).then_some("linear-f32"),
+            // CPU filters run on the band's transient windows, accounted
+            // under `cpu`; no chain retains a target of its own.
+            filter_targets: cherenkov::Bytes(0),
+            // CPU-side auxiliary image data is already in the chain and
+            // accounted under `cpu`; no filter uploads an image here.
+            filter_images: cherenkov::Bytes(0),
         }
     }
 
@@ -594,6 +746,8 @@ impl Renderer for RasterRenderer {
             self.fonts.shrink_to_fit();
             self.glyph_cache.clear();
             self.bitmap_cache.clear();
+            self.geometry.clear();
+            self.band_index = Some(Box::default());
             for surface in self.surfaces.values_mut() {
                 for content in surface.layers.values_mut() {
                     content.trim();
@@ -629,11 +783,19 @@ impl RasterRenderer {
             });
             if sf.changed || filter_changed {
                 stats.frame = Some(frame.id);
-                self.render_surface(sf, frame.id, stats)?;
+                let mut index = self
+                    .band_index
+                    .take()
+                    .expect("the band index is lent only for one surface render");
+                let result = self.render_surface(sf, frame.id, stats, &mut index, filter_changed);
+                self.band_index = Some(index);
+                result?;
             }
         }
         let (used, used_groups) = self.filter_uses();
         self.evict_projective();
+        self.geometry.finish_frame();
+        self.edge_scratch.clear();
         self.filters.finish_frame(&used, &used_groups);
         self.update_filter_wakes();
         // Every visible surface whose filter or backdrop group still
@@ -711,7 +873,8 @@ impl RasterRenderer {
         self.glyph_cache
             .set_budget(available.saturating_sub(self.bitmap_cache.bytes()));
     }
-    /// Lowers and rasterizes one surface's frame.
+    /// Lowers and rasterizes one surface's frame, adding the time of each
+    /// phase to `stats.phases`.
     #[expect(
         clippy::many_single_char_names,
         reason = "w/h and r/g/b/a are the natural names"
@@ -721,17 +884,22 @@ impl RasterRenderer {
         sf: &cherenkov::SurfaceFrame<'_>,
         frame: cherenkov::FrameId,
         stats: &mut FrameStats,
+        index: &mut bins::FrameIndex,
+        filter_changed: bool,
     ) -> Result<(), RenderError> {
-        let profile = tracing::enabled!(target: "cherenkov_cpu::profile", tracing::Level::DEBUG);
-        let start = profile.then(cherenkov::Instant::now);
+        let phases = stats.phases;
         let id = sf.id;
-        let size = match self.surfaces.get(&id) {
-            Some(surf) => surf.size,
-            None => return Ok(()),
+        let Some(size) = self.surfaces.get(&id).map(|surf| surf.size) else {
+            return Ok(());
         };
-        let (projected, mut used) = self.realize_projective(sf, frame, stats)?;
+        // The frame's transient band-index metrics, shared by the
+        // projective realizations and the surface render: each records
+        // the frame-local peak.
+        let mut frame_mem = bins::FrameMeter::default();
+        let (projected, mut used) =
+            self.realize_projective(sf, frame, stats, index, &mut frame_mem)?;
         let mut items: Vec<Item> = Vec::new();
-        let (glyph_reqs, lowered_at) = self.lower_items(
+        let glyph_reqs = self.lower_items(
             sf,
             &mut items,
             size,
@@ -740,58 +908,96 @@ impl RasterRenderer {
             (None, projected),
             &mut used,
         )?;
-        if let Some(surf) = self.surfaces.get_mut(&id) {
-            surf.filters = used.filters.into_iter().collect();
-            surf.groups = used.groups.into_iter().collect();
-        }
-        let resolved_at = start.map(|_| cherenkov::Instant::now());
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
+        surf.filters = used.filters.into_iter().collect();
+        surf.groups = used.groups.into_iter().collect();
         let (w, h) = (surf.size.0 as usize, surf.size.1 as usize);
         let [r, g, b, a] = sf.clear.components;
         let clear = [r * a, g * a, b * a, a];
+        surf.damage
+            .prepare(&items, h, clear, self.image_replacements, filter_changed);
         let pool = &self.pool;
+        let level = self.level;
         let peak = std::sync::atomic::AtomicU64::new(0);
         let has_backdrop = !surf.groups.is_empty();
+        let shade_at = cherenkov::Instant::now();
         let (draws, edges) = match &mut surf.output {
             Output::F32(fb) => pool.install(|| {
-                raster::render_bands(&items, clear, fb, w, h, Some(&peak), has_backdrop)
+                raster::render_bands(
+                    level,
+                    &items,
+                    index,
+                    clear,
+                    fb,
+                    w,
+                    h,
+                    Some(&peak),
+                    has_backdrop,
+                    &mut frame_mem,
+                    Some(surf.damage.bands()),
+                )
             })?,
             Output::F16(out) => pool.install(|| {
-                raster::render_bands_f16(&items, clear, out, w, h, Some(&peak), has_backdrop)
+                raster::render_bands_f16(
+                    level,
+                    &items,
+                    index,
+                    clear,
+                    out,
+                    w,
+                    h,
+                    Some(&peak),
+                    has_backdrop,
+                    &mut frame_mem,
+                    Some(surf.damage.bands()),
+                )
             })?,
-            Output::Stream { format, sink, emit } => raster::render_bands_stream(
-                &items,
-                clear,
-                (w, h),
-                emit,
-                *format,
-                sink.as_mut(),
-                Some(&peak),
-                has_backdrop,
-            )?,
+            Output::Stream { format, sink, emit } => {
+                pool.install(|| index.rebuild(&items, h));
+                raster::render_bands_stream(
+                    level,
+                    &items,
+                    clear,
+                    (w, h),
+                    emit,
+                    *format,
+                    sink.as_mut(),
+                    Some(&peak),
+                    has_backdrop,
+                    index,
+                    &mut frame_mem,
+                )?
+            }
         };
+        surf.damage.commit();
+        stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
         surf.backdrop_capture_peak = peak.load(std::sync::atomic::Ordering::Relaxed);
-        if let (Some(start), Some(lowered), Some(resolved)) = (start, lowered_at, resolved_at) {
-            tracing::debug!(target: "cherenkov_cpu::profile",
-                lower_ns = lowered.duration_since(start).as_nanos(),
-                glyph_ns = resolved.duration_since(lowered).as_nanos(),
-                shade_ns = resolved.elapsed().as_nanos(),
-                items = items.len(), glyphs = glyph_reqs, "raster phases");
-        }
+        surf.clip_scratch_peak = frame_mem
+            .clip_peak
+            .load(std::sync::atomic::Ordering::Relaxed);
+        tracing::debug!(target: "cherenkov_cpu::profile",
+            lower_s = stats.phases.lower_seconds - phases.lower_seconds,
+            glyph_s = stats.phases.glyph_seconds - phases.glyph_seconds,
+            shade_s = stats.phases.shade_seconds - phases.shade_seconds,
+            items = items.len(), glyphs = glyph_reqs,
+            index_bytes = index.heap_bytes(),
+            query_peak = frame_mem.query_peak.load(std::sync::atomic::Ordering::Relaxed),
+            index_query_peak = frame_mem.peak.load(std::sync::atomic::Ordering::Relaxed),
+            "raster phases");
         stats.draws += draws;
         stats.instances += edges;
-        stats.passes += u32::try_from(h.div_ceil(raster::BAND_H)).unwrap_or(u32::MAX);
+        stats.passes += surf.rendered_bands();
         Ok(())
     }
 
     /// Lowers the tree into `items` for a raster of `size` — the surface,
     /// or with `local` a projective layer's local image — placing nested
     /// projective images from `projected`, then fills every glyph slot the
-    /// items read. Returns the glyph request count and the instant
-    /// lowering finished, before glyph resolution; the filters and
-    /// backdrop groups the items use are added to `used`.
+    /// items read. Returns the glyph request count; the filters and
+    /// backdrop groups the items use are added to `used`, and the time of
+    /// each step to `stats.phases` (`lower_seconds`, `glyph_seconds`).
     #[expect(
         clippy::too_many_arguments,
         reason = "one lowering's inputs travel together"
@@ -808,7 +1014,8 @@ impl RasterRenderer {
             FxHashMap<LayerId, projective::Placed>,
         ),
         used: &mut projective::Used,
-    ) -> Result<(usize, Option<cherenkov::Instant>), RenderError> {
+    ) -> Result<usize, RenderError> {
+        let lower_at = cherenkov::Instant::now();
         let id = sf.id;
         let glyph_reqs;
         let glyphs_rasterized;
@@ -816,7 +1023,7 @@ impl RasterRenderer {
         // before glyph resolution touches `self.fonts`/`self.glyph_cache`.
         let lowered = {
             let Some(surf) = self.surfaces.get_mut(&id) else {
-                return Ok((0, None));
+                return Ok(0);
             };
             let mut caches = std::mem::take(&mut surf.layers);
             let mut lowering = Lowering::new(
@@ -826,10 +1033,31 @@ impl RasterRenderer {
                 frame,
                 &mut self.fonts,
                 &self.bitmap_fonts,
-                &mut self.bitmap_cache,
+                (
+                    &mut self.bitmap_cache,
+                    &mut self.geometry,
+                    &mut self.edge_scratch,
+                ),
+                self.level,
+                &self.pool,
             );
             lowering.project(local, projected);
+            if local.is_none() {
+                lowering.damage_layers = std::mem::take(&mut surf.damage.layers);
+                lowering.damage_layers.clear();
+                lowering.damage_rows = std::mem::take(&mut surf.damage.command_rows);
+                lowering.damage_rows.clear();
+            }
             let result = lowering.run(id, sf.tree, &mut caches, &self.images);
+            if local.is_none() {
+                surf.damage.layers = std::mem::take(&mut lowering.damage_layers);
+                surf.damage.command_rows = std::mem::take(&mut lowering.damage_rows);
+                if result.is_err() {
+                    // Some command caches may already hold their new output.
+                    // A retry must not treat those cache hits as submitted pixels.
+                    surf.damage.forget();
+                }
+            }
             glyphs_rasterized = lowering.glyphs_rasterized;
             stats.glyphs_rasterized += glyphs_rasterized;
             stats.commands_lowered += lowering.commands_lowered;
@@ -843,10 +1071,11 @@ impl RasterRenderer {
         if glyphs_rasterized > 0 {
             self.refresh_cache_budgets();
         }
-        let lowered_at = tracing::enabled!(target: "cherenkov_cpu::profile", tracing::Level::DEBUG)
-            .then(cherenkov::Instant::now);
+        let glyph_at = cherenkov::Instant::now();
+        stats.phases.lower_seconds += glyph_at.duration_since(lower_at).as_secs_f64();
         self.resolve_glyphs(&glyph_reqs)?;
-        Ok((glyph_reqs.len(), lowered_at))
+        stats.phases.glyph_seconds += glyph_at.elapsed().as_secs_f64();
+        Ok(glyph_reqs.len())
     }
 
     /// Realizes every visible projective layer's local image, innermost
@@ -855,11 +1084,17 @@ impl RasterRenderer {
     /// animating.
     /// Returns the images placed directly in the surface, and the filters
     /// and groups the local images use.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeps plan lookup, realization and budget accounting together"
+    )]
     fn realize_projective(
         &mut self,
         sf: &cherenkov::SurfaceFrame<'_>,
         frame: cherenkov::FrameId,
         stats: &mut FrameStats,
+        index: &mut bins::FrameIndex,
+        meter: &mut bins::FrameMeter,
     ) -> Result<(FxHashMap<LayerId, projective::Placed>, projective::Used), RenderError> {
         let mut used = projective::Used::default();
         let Some(size) = self.surfaces.get(&sf.id).map(|surf| surf.size) else {
@@ -910,16 +1145,30 @@ impl RasterRenderer {
                     (Some((plan.layer, layout.local_to_texel)), nested),
                     &mut local_used,
                 )?;
+                let shade_at = cherenkov::Instant::now();
                 let (w, h) = (layout.size.0 as usize, layout.size.1 as usize);
                 let mut base = vec![[0.0_f32; 4]; w * h];
                 let has_backdrop = !local_used.groups.is_empty();
                 let (draws, edges) = self.pool.install(|| {
-                    raster::render_bands(&items, [0.0; 4], &mut base, w, h, None, has_backdrop)
+                    raster::render_bands(
+                        self.level,
+                        &items,
+                        index,
+                        [0.0; 4],
+                        &mut base,
+                        w,
+                        h,
+                        None,
+                        has_backdrop,
+                        meter,
+                        None,
+                    )
                 })?;
                 stats.draws += draws;
                 stats.instances += edges;
                 stats.passes += u32::try_from(h.div_ceil(raster::BAND_H)).unwrap_or(u32::MAX);
                 let image = Arc::new(projective::ProjectedImage::build(&base, layout.size));
+                stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
                 stats.projective_realized += 1;
                 let entry = projective::Entry {
                     key,

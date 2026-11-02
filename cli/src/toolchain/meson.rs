@@ -40,6 +40,7 @@ pub struct MesonInstallation;
 
 /// Errors that can occur during `meson` installation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallMeson {
     /// Homebrew not found error.
     #[error("Homebrew not found. Please install Homebrew to proceed.")]

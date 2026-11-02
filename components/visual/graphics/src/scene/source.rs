@@ -24,6 +24,7 @@ use std::path::Path;
 /// answers which the target accepts: a target without a platform font stack
 /// rejects the reference with [`ResourceError::Font`].
 #[derive(Clone)]
+#[non_exhaustive]
 pub enum FontSource {
     /// The bytes of a font file, plus the face's index in a collection.
     Bytes {
@@ -98,6 +99,7 @@ impl FontSource {
 
 /// A shading language a [`ShaderSource`] may carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ShaderLanguage {
     /// WGSL, the Cherenkov GPU backend's language.
     Wgsl,
@@ -121,14 +123,52 @@ impl std::fmt::Display for ShaderLanguage {
 /// is rejected at registration with [`ResourceError::Shader`] naming the
 /// language it did get — never dropped silently.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ShaderSource {
     /// The fragment's source text in `language`.
-    pub source: Cow<'static, str>,
+    source: Cow<'static, str>,
     /// The language `source` is written in.
-    pub language: ShaderLanguage,
+    language: ShaderLanguage,
     /// Whether the fragment samples `uniforms.time`, so the engine
     /// re-renders it every frame.
-    pub animated: bool,
+    animated: bool,
+}
+
+impl ShaderSource {
+    /// Creates a `ShaderSource` from its parts.
+    #[must_use]
+    pub const fn new(source: Cow<'static, str>, language: ShaderLanguage, animated: bool) -> Self {
+        Self {
+            source,
+            language,
+            animated,
+        }
+    }
+
+    /// The fragment's source text in `language`.
+    #[must_use]
+    pub const fn source(&self) -> &Cow<'static, str> {
+        &self.source
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Cow<'static, str>, ShaderLanguage, bool) {
+        (self.source, self.language, self.animated)
+    }
+
+    /// The language `source` is written in.
+    #[must_use]
+    pub const fn language(&self) -> ShaderLanguage {
+        self.language
+    }
+
+    /// Whether the fragment samples `uniforms.time`, so the engine
+    /// re-renders it every frame.
+    #[must_use]
+    pub const fn get_animated(&self) -> bool {
+        self.animated
+    }
 }
 
 impl std::fmt::Debug for ShaderSource {

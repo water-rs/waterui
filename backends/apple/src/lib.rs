@@ -6,35 +6,37 @@
 
 extern crate alloc;
 
-/// The offscreen capture shared by `view_renderer` and the macOS
-/// `preview` entry — nothing else references it. With `gpu_surface` the
-/// `AppKit` captures go through `capture_image`'s `ViewCapture` instead,
-/// so the bitmap-readback half only exists without it.
+/// The offscreen capture shared by `view_renderer` and the `preview`
+/// entry — nothing else references it. With `gpu_surface` the captures go
+/// through `capture_image`'s `ViewCapture` instead, so the
+/// bitmap-readback half only exists without it.
 #[cfg(all(
     not(feature = "gpu_surface"),
-    any(
-        feature = "view_renderer",
-        all(target_os = "macos", feature = "preview")
-    )
+    any(feature = "view_renderer", preview_entry)
 ))]
 pub(crate) mod capture;
+/// Awaiting the content a captured subtree owes — shared by the same two
+/// captures.
+#[cfg(any(feature = "view_renderer", preview_entry))]
+pub(crate) mod content;
 pub mod contract;
 pub mod dispatch;
 pub mod embedding;
 pub mod entry;
 mod native_layout;
 mod native_log;
-#[cfg(all(target_os = "macos", feature = "preview"))]
+#[cfg(preview_entry)]
 pub mod preview;
 pub mod resources;
 
-#[cfg(any(platform_timing, frame_progress))]
 mod animation;
 #[cfg(feature = "gpu_surface")]
 pub(crate) mod capture_image;
 pub(crate) mod components;
 pub(crate) mod first_paint;
 pub(crate) mod fonts;
+#[cfg(feature = "gpu_surface")]
+mod frozen_frame;
 #[cfg(feature = "gpu_surface")]
 mod gpu_completion;
 #[cfg(feature = "gpu_surface")]
@@ -64,11 +66,15 @@ mod registry;
 #[cfg(any(target_os = "ios", test))]
 mod scene_registry;
 pub(crate) mod startup;
+#[cfg(feature = "swiftui")]
+mod swiftui_meta;
 #[cfg(target_os = "macos")]
 mod termination;
 pub(crate) mod theme;
 #[cfg(target_os = "macos")]
 mod toolbar;
+mod toolbar_chrome;
+pub(crate) mod transition;
 pub(crate) mod window_background;
 pub(crate) mod windows;
 
@@ -100,10 +106,19 @@ macro_rules! export_app {
             host: *mut core::ffi::c_void,
             assets: *const core::ffi::c_char,
             fonts: *const core::ffi::c_char,
+            dark: bool,
+            rtl: bool,
+            locale: *const core::ffi::c_char,
+            host_fonts: *const f64,
         ) -> *mut core::ffi::c_void {
-            // SAFETY: the embedding host supplies the documented runtime, host and paths.
+            // SAFETY: the embedding host supplies the documented runtime, host,
+            // paths, and — when `host_fonts` is non-null — a live locale
+            // string and eighteen readable `f64`s.
+            let host_environment = (!host_fonts.is_null()).then(|| unsafe {
+                $crate::embedding::HostEnvironment::from_abi(dark, rtl, locale, host_fonts)
+            });
             unsafe {
-                $crate::embedding::mount(runtime, host, assets, fonts, |env| {
+                $crate::embedding::mount(runtime, host, assets, fonts, host_environment, |env| {
                     $app(::waterui::configure_environment!(env))
                 })
             }

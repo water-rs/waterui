@@ -24,7 +24,7 @@ struct Entry {
 impl Entry {
     /// Creates the module and pipeline of a user shader paint. Errors are
     /// reported through the caller's validation scope.
-    fn new(device: &wgpu::Device, source: &ShaderSource) -> Self {
+    fn new(device: &wgpu::Device, source: &ShaderSource, cache: &super::PipelineCache) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader paint"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(module_text(source))),
@@ -52,7 +52,7 @@ impl Entry {
                 entry_point: Some(FRAGMENT_ENTRY),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: super::TARGET_FORMAT,
+                    format: super::WORKING_FORMAT,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -61,7 +61,7 @@ impl Entry {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: cache.handle.as_ref(),
         });
         Self {
             pipeline,
@@ -79,7 +79,7 @@ const FRAGMENT_ENTRY: &str = "main";
 fn module_text(source: &ShaderSource) -> String {
     format!(
         "{}\n{}\n{}",
-        include_str!("color.wgsl"),
+        include_str!(concat!(env!("OUT_DIR"), "/color.wgsl")),
         include_str!("paint.wgsl"),
         source.source
     )
@@ -129,12 +129,14 @@ impl Registry {
         device: &wgpu::Device,
         id: u64,
         source: &ShaderSource,
+        cache: &super::PipelineCache,
     ) -> Result<(), ResourceError> {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let entry = Entry::new(device, source);
+        let entry = Entry::new(device, source, cache);
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(ResourceError::Shader(error.to_string()));
         }
+        cache.persist();
         self.insert(id, entry);
         Ok(())
     }
@@ -142,21 +144,23 @@ impl Registry {
     /// The browser variant of [`Registry::add`], awaiting the validation
     /// scope without blocking the JS event loop.
     #[cfg(target_arch = "wasm32")]
-    #[expect(
+    #[allow(
         clippy::future_not_send,
-        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+        reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
     )]
     pub async fn add(
         &mut self,
         device: &wgpu::Device,
         id: u64,
         source: &ShaderSource,
+        cache: &super::PipelineCache,
     ) -> Result<(), ResourceError> {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let entry = Entry::new(device, source);
+        let entry = Entry::new(device, source, cache);
         if let Some(error) = scope.pop().await {
             return Err(ResourceError::Shader(error.to_string()));
         }
+        cache.persist();
         self.insert(id, entry);
         Ok(())
     }
@@ -206,14 +210,14 @@ impl Registry {
                 "shader paint",
                 key.size,
                 super::TARGET_USAGES,
-                super::TARGET_FORMAT,
+                super::WORKING_FORMAT,
             );
             crate::diag::create(
                 device,
                 "shader paint",
                 u64::from(key.size.0)
                     * u64::from(key.size.1)
-                    * super::texel_bytes(super::TARGET_FORMAT),
+                    * super::texel_bytes(super::WORKING_FORMAT),
             );
             let globals = uniform_buffer(device, 16);
             let parameters = uniform_buffer(device, 256);
@@ -233,6 +237,8 @@ impl Registry {
             });
             Texture {
                 image: super::GpuImage {
+                    revision: 0,
+                    sampling_flags: 0,
                     texture,
                     view,
                     width: key.size.0,

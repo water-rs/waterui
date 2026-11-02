@@ -178,7 +178,11 @@ impl Shape {
             Self::RoundedRect(r) => r.to_path(tolerance),
             Self::Continuous(c) => c.to_path_at(tolerance),
             Self::Circle(c) => c.to_path(tolerance),
-            Self::Ellipse(e) => e.to_path(tolerance),
+            Self::Ellipse(e) => {
+                let mut path = e.to_path(tolerance);
+                path.close_path();
+                path
+            }
             Self::Line(l) => {
                 let mut p = BezPath::new();
                 p.push(PathEl::MoveTo(l.p0));

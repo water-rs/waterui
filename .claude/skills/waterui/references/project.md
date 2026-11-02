@@ -22,12 +22,12 @@ is never what a user of the framework wants.
 
 ```bash
 # macOS and Linux
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/waterui/releases/download/cli-latest/waterui-cli-installer.sh | sh
 ```
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/waterui/releases/download/cli-latest/waterui-cli-installer.ps1 | iex"
 ```
 
 `water update` replaces the binary with the newest release; `water update --check`
@@ -96,8 +96,8 @@ Generated projects carry a `dev` feature that forwards to `waterui/dynamic_linki
 dev = ["waterui/dynamic_linking"]
 ```
 
-Keep it. `dynamic_linking` builds the app as a dylib against a shared framework copy,
-which is what `water preview` and the fast dev loop link against — the difference between
+Keep it. `dynamic_linking` links the app against a shared framework runtime,
+which is what `water preview` and the fast dev loop reuse — the difference between
 a seconds-scale and a minutes-scale edit-to-render cycle. Every compiled example in the
 WaterUI repository declares exactly this stanza; a hand-added crate that omits it gets
 cold static builds and a preview pipeline that cannot load it. It is a build strategy,
@@ -148,6 +148,18 @@ them once here themes the whole app on every backend.
 The optional `[platforms.<platform>]` tables declare the project's backend for each
 platform; see [Platforms and backends](#platforms-and-backends). `water create` writes
 no declarations.
+
+Apple builds target the framework's deployment floor unless the project raises it. An API
+that needs a newer OS (`WebView::navigation_policy`, and so `include_web!`, need OS 27) does
+not compile below it, and the error names this table:
+
+```toml
+[apple.deployment-targets]
+ios = "27.0"      # any of macos, ios, tvos, watchos, visionos; below the framework floor is an error
+macos = "27.0"
+```
+
+`water create` writes it for a project that bundles a web frontend.
 
 When developing against a local WaterUI checkout, add `waterui_path = "../.."` at the top
 level so backends resolve locally instead of from the registry.
@@ -246,6 +258,7 @@ water run --native-logs                # include native platform logs too — no
 
 water build <target>                   # compile the Rust library for a platform
 water package                          # package the production (release) build; --debug for an unoptimized one
+water package --platform ios --device <udid>  # provision the package for a specific device
 water devices                          # list simulators and devices
 water doctor                           # check the toolchain
 water clean
@@ -275,7 +288,7 @@ the defaults below apply. `water create` leaves the tables absent.
 |---|---|---|
 | macOS | `apple` (AppKit) | `hydrolysis` |
 | iOS (+ simulator) | `apple` (UIKit) | — |
-| Android | `hydrolysis` | `android` (Kotlin runtime, Android View) |
+| Android | `hydrolysis` | — |
 | Linux | `gtk4` | `hydrolysis` |
 | Windows | `hydrolysis` | `winui` |
 | Web | `hydrolysis` (WASM + WebGPU) | — |
@@ -289,6 +302,12 @@ Native backends bridge to real platform widgets. `hydrolysis` is WaterUI's own
 renderer: it is GPU-required and targets high-refresh modern hardware. Choosing a
 self-drawn renderer is a deliberate decision, never a fallback for a native path that
 failed.
+
+TypeScript views (`tsx!`) run on an embedded JavaScript engine that differs by platform:
+JavaScriptCore on iOS, macOS, tvOS and visionOS; QuickJS-NG on Android, Linux and Windows;
+unsupported on watchOS — the platform ships no JavaScriptCore and embedding QuickJS-NG
+there is not supported. The asymmetry is documented, not faked: the `ts` feature does
+not build on watchOS, a compile error rather than a fallback.
 
 The same view code runs on all of them. Platform-specific behavior belongs in the backend,
 not in conditional app code.

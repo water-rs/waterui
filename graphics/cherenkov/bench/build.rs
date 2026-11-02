@@ -1,5 +1,7 @@
 //! Emits `DEP_*_VERSION` environment variables with the exact dependency
-//! versions resolved in `Cargo.lock`, for adapter provenance reporting.
+//! versions resolved in `Cargo.lock`, for adapter provenance reporting, and
+//! links the compiler-rt builtins archive the prebuilt Skia objects need on
+//! Apple targets.
 
 use std::path::{Path, PathBuf};
 
@@ -139,8 +141,68 @@ fn workspace_lock(manifest: &str) -> Option<String> {
     }
 }
 
+/// The prebuilt Skia archives `skia-bindings` downloads are compiled by
+/// Xcode's clang, whose `isOSVersionAtLeast` availability guards call
+/// `___isPlatformVersionAtLeast` — a builtin that lives in the toolchain's
+/// `libclang_rt.<platform>.a`, which nothing on rustc's default link line
+/// supplies. The Metal corpus leg could not link `cherenkov-bench` on the
+/// macOS runners for it (#2690); the same symbol broke iOS-simulator dylib
+/// links in #929. Emit the toolchain's darwin directory as a search path
+/// and the platform's archive as a link arg — the form `rustc-link-lib`
+/// cannot take, because rustc refuses to merge Apple's archive format into
+/// rlibs, while link args propagate to the final artifact's link.
+/// `rustc-link-arg` covers this package's bins/examples/benches; tests need
+/// their own directive. The iOS bench app links through Xcode's clang
+/// driver, which adds the runtime itself, so the staticlib needs nothing.
+fn link_compiler_rt() {
+    if std::env::var("CARGO_CFG_TARGET_VENDOR").as_deref() != Ok("apple") {
+        return;
+    }
+    // The undefined symbol arrives only with skia-safe's prebuilt objects.
+    if std::env::var_os("CARGO_FEATURE_SKIA").is_none()
+        && std::env::var_os("CARGO_FEATURE_SKIA_METAL").is_none()
+    {
+        return;
+    }
+    let (suffix, sdk) = match (
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        std::env::var("CARGO_CFG_TARGET_ABI").as_deref(),
+    ) {
+        (Ok("macos"), _) => ("osx", "macosx"),
+        (Ok("ios"), Ok("sim")) => ("iossim", "iphonesimulator"),
+        (Ok("ios"), _) => ("ios", "iphoneos"),
+        (os, abi) => panic!(
+            "no clang_rt platform suffix for Apple target os={os:?} abi={abi:?}; \
+             extend the match if Skia is supported there"
+        ),
+    };
+    // The resource dir is toolchain-level (its `lib/darwin` holds every
+    // platform's archive); the SDK only names which clang xcrun resolves.
+    let output = std::process::Command::new("xcrun")
+        .args(["--sdk", sdk, "clang", "-print-resource-dir"])
+        .output()
+        .expect("`xcrun clang -print-resource-dir` failed to start");
+    assert!(
+        output.status.success(),
+        "`xcrun --sdk {sdk} clang -print-resource-dir` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let resource = String::from_utf8(output.stdout).expect("xcrun printed non-utf-8 path");
+    let darwin = Path::new(resource.trim()).join("lib/darwin");
+    let archive = darwin.join(format!("libclang_rt.{suffix}.a"));
+    assert!(
+        archive.is_file(),
+        "compiler runtime {} does not exist",
+        archive.display()
+    );
+    println!("cargo:rustc-link-search=native={}", darwin.display());
+    println!("cargo:rustc-link-arg=-lclang_rt.{suffix}");
+    println!("cargo:rustc-link-arg-tests=-lclang_rt.{suffix}");
+}
+
 fn main() {
     emit_git_sha();
+    link_compiler_rt();
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let Some(text) = workspace_lock(&manifest) else {
         return;
@@ -148,7 +210,7 @@ fn main() {
     let packages = lockfile_packages(&text);
     for (pkg, env) in [
         ("vello", "DEP_VELLO"),
-        ("vello_hybrid", "DEP_VELLO_HYBRID"),
+        ("vello_gpu", "DEP_VELLO_GPU"),
         ("vello_cpu", "DEP_VELLO_CPU"),
         ("skia-safe", "DEP_SKIA_SAFE"),
         ("wgpu", "DEP_WGPU"),

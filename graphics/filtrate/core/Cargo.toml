@@ -33,4 +33,22 @@ cargo = { level = "warn", priority = -1 }
 undocumented_unsafe_blocks = "warn"
 multiple_crate_versions = "allow"
 
+[features]
+default = ["std"]
+# `std` swaps `libm::powf` for the platform `f32::powf` in `space`'s
+# transfer functions — the same per-pixel cost curve as the WGSL; off,
+# the crate is `no_std` and `libm` supplies `powf`.
+std = []
+
 [dependencies]
+libm = "0.2"
+
+# The build script renders `space/constants.rs` into the WGSL fragment
+# `space::WGSL` through a typed template.
+[build-dependencies]
+askama = "0.16"
+
+# askama is used only by build.rs (`use askama::Template`), which
+# cargo-machete does not scan for build-dependencies.
+[package.metadata.cargo-machete]
+ignored = ["askama"]

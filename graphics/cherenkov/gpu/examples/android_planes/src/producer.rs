@@ -72,6 +72,8 @@ impl Pool {
             }
             let mut kind =
                 vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE);
+            // SAFETY: `ash` is the live device and `kind` outlives the
+            // pNext chain of this call.
             let semaphore = unsafe {
                 ash.create_semaphore(
                     &vk::SemaphoreCreateInfo::default().push_next(&mut kind),
@@ -81,6 +83,8 @@ impl Pool {
             .map_err(|e| format!("timeline semaphore: {e}"))?;
             // Host-signal value 1 once: every frame's acquire at value 1
             // is immediately satisfied.
+            // SAFETY: `semaphore` is the live semaphore just created on
+            // `ash`.
             unsafe {
                 ash.signal_semaphore(
                     &vk::SemaphoreSignalInfo::default()
@@ -133,6 +137,8 @@ impl Pool {
         };
         self.stalled = false;
         let t = Instant::now();
+        // SAFETY: `slot.ahb` is a live pool-owned buffer; its slot is free,
+        // so nothing else is writing it.
         unsafe { ahb::fill(self.spec.format, slot.ahb, self.produced) };
         self.fill_ms = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
         let sync = self.semaphore.map(|semaphore| Wait::Timeline {
@@ -189,6 +195,7 @@ impl Pool {
                 events: libc::POLLIN,
                 revents: 0,
             };
+            // SAFETY: `pfd` names the live fd `flight.fd` owns.
             let rc = unsafe { libc::poll(&raw mut pfd, 1, 0) };
             if rc > 0 {
                 slot.flight = None;
@@ -201,9 +208,12 @@ impl Pool {
 impl Drop for Pool {
     fn drop(&mut self) {
         for slot in &self.slots {
+            // SAFETY: `slot.ahb` is the pool's owned reference.
             unsafe { ahb::release(slot.ahb) };
         }
         if let Some(semaphore) = self.semaphore {
+            // SAFETY: `semaphore` was created on `ash` and is destroyed
+            // only here.
             unsafe { self.ash.destroy_semaphore(semaphore, None) };
         }
     }

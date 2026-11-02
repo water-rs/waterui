@@ -55,9 +55,7 @@ mod containers;
 mod modifiers;
 
 pub use collections::{grid, scroll};
-pub use containers::{
-    absolute, aspect_ratio, collection_transition, container, divider, frame, spacer,
-};
+pub use containers::{absolute, aspect_ratio, container, divider, frame, spacer};
 pub use modifiers::{alignment_guide, background, overlay, padding, safe_area};
 
 pub use divider::Divider;
@@ -75,7 +73,6 @@ pub use alignment::{
 };
 pub use alignment_guide::{HorizontalAlignmentGuide, VerticalAlignmentGuide};
 pub use aspect_ratio::{AspectRatio, AspectRatioLayout, ContentMode, aspect_ratio};
-pub use collection_transition::{CollectionTransition, collection_transition};
 pub use container::LazyContainer;
 
 pub use background::{BackgroundLayout, BackgroundView, background};

@@ -86,9 +86,9 @@ fn platform_font(
     mtm: cocoa_ui::MainThreadMarker,
     resolved: &ResolvedFont,
 ) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    match resolved.family.as_deref() {
+    let size = f64::from(resolved.size());
+    let weight = platform_weight(resolved.weight());
+    match resolved.family() {
         Some(family) if !family.is_empty() => {
             let mut resolved_font = None;
             for candidate in family_candidates(family) {
@@ -106,7 +106,7 @@ fn platform_font(
                 )
             })
         }
-        _ => match resolved.design {
+        _ => match resolved.design() {
             FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
             FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
         },
@@ -250,10 +250,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The label renders above the field; its semantic text names the
         // control while the visual label leaves the accessibility tree —
         // `WuiControlAccessibility`'s split.
-        let accessibility_label = config.label.accessibility_label();
+        let (label, value) = config.into_parts();
+        let accessibility_label = label.accessibility_label();
         let host_view: &PlatformView = &host;
         let mounted = ctx
-            .render(waterui_backend_core::AnyView::new(config.label))
+            .render(waterui_backend_core::AnyView::new(label))
             .mount(host_view);
         view::hide_from_accessibility(mounted.view());
 
@@ -278,7 +279,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // value is skipped so a user's own edit cannot echo back and move
         // the caret (the role `isSyncingFromBinding` played in Swift —
         // nami notifies synchronously inside `binding.set`).
-        leaf.bind(&config.value, {
+        leaf.bind(&value, {
             let field = field.clone();
             move |secure: Secure| {
                 let text = secure.expose();
@@ -292,12 +293,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // `Secure` with no plaintext copy kept.
         #[cfg(target_os = "ios")]
         leaf.keep(field.install_change_handler({
-            let binding = config.value.clone();
+            let binding = value.clone();
             move |field| binding.set(Secure::new(field.string()))
         }));
         #[cfg(target_os = "macos")]
         field.on_change({
-            let binding = config.value.clone();
+            let binding = value.clone();
             move |field| binding.set(Secure::new(field.string()))
         });
 

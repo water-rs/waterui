@@ -1,7 +1,9 @@
 //! Subsets the full OFL fonts in `scenes/fonts/_full/` down to the corpus
 //! texts, writes the results to `scenes/fonts/`, and copies the OFL licence
-//! next to them. Run once before `generate-corpus`.
+//! next to them. Run once before `generate-corpus`. Takes the cherenkov
+//! root — the directory containing `scenes/` — as its only argument.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cherenkov_scene::corpus::{self, FONTS, LICENSE_FILE};
@@ -12,7 +14,13 @@ fn main() -> ExitCode {
         .without_time()
         .init();
 
-    let root = corpus::repo_root();
+    let mut args = std::env::args_os();
+    args.next();
+    let (Some(root), None) = (args.next(), args.next()) else {
+        tracing::error!("usage: prepare-fonts <cherenkov-root>");
+        return ExitCode::FAILURE;
+    };
+    let root = PathBuf::from(root);
     let full = corpus::full_fonts_dir(&root);
     let fonts = corpus::fonts_dir(&root);
     if let Err(e) = std::fs::create_dir_all(&fonts) {

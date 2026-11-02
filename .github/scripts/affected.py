@@ -17,6 +17,13 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
   everything — see the tool's module doc). Empty when nothing can be
   affected — a prose-only change still gets `cargo fmt`, nothing more.
 - `package-args` — `packages` rendered as `-p` flags for cargo.
+- `linux-package-args` — `package-args` without the crates the Linux lint
+  never compiles (`LINUX_EXCLUDED`); empty exactly when `package-args` is.
+- `workspace-wide` — `true` when `packages` is `workspace`, or the affected
+  packages that are Linux lint members reach `WORKSPACE_WIDE_SHARE` of
+  them (#3229): the pull request then compiles most of the workspace and
+  gets the integration lint budget. `false` for a scoped, comment-only or
+  empty diff.
 - `comment-only` — `true` when every changed file is either prose or a
   `.rs` file whose syntax tree is unchanged once comments, doc comments
   and doc attributes are removed (the `rust_semantic_diff` comparison the
@@ -26,15 +33,6 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
 - `msrv` — `true` when the diff can move the toolchain floor: a
   `rust-version` key, any Cargo.toml dependency section (including
   `target.<cfg>.dependencies`), or Cargo.lock.
-- `test-assets` — `true` when a package whose test code needs a
-  generated or installed asset is in scope, or the whole workspace is:
-  the cli's `#[cfg(test)]` code `include_bytes!`s the generated
-  `Roboto-Regular.ttf` fixture, and the `waterui-testing` dev-dependency
-  closure's styled tests resolve the test fonts `install.py` installs
-  by family name. The set is the tool's `test_asset_consumers` — the
-  dev-dependency closure plus `waterui-cli` itself — so a crate that
-  merely dev-depends on `waterui-testing`, `waterui-controls` say,
-  still gets the fonts installed before its check.
 - `scene-assets` — `true` when a package whose `--all-targets` compile
   `include_bytes!`s a generated Cherenkov scene font is in scope, or the
   whole workspace is. That is a fixed owner set, not a dev-dependency
@@ -45,6 +43,9 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
   integration tests and `cherenkov-bench` read the corpus at run time and
   are not in the set: the gate never runs tests. Jobs that execute those
   tests generate the corpus themselves.
+- `apple-legs` — JSON list of test.yml's `macos` matrix entries: the Apple
+  lint targets with an Apple-gated crate in scope (`apple_gated.py`),
+  `[]` when there is none, so no macOS runner starts to find nothing.
 
 Usage:
 
@@ -63,6 +64,7 @@ import subprocess
 import sys
 import tomllib
 
+from apple_gated import legs as apple_legs
 from rust_semantic_diff import changed_entries, git, semantic_differs, source_at
 
 # Cargo.toml tables whose content can move the dependency graph or the
@@ -84,6 +86,31 @@ DEPENDENCY_TABLES = (
 # intersected with the scoped package names: test-only code never
 # compiles for a dependent, so no dev-dependency closure is involved.
 SCENE_ASSET_OWNERS = {"cherenkov-oracle", "cherenkov-gpu", "cherenkov-cpu"}
+
+
+# The workspace members the Linux lint never compiles: they build only on
+# Apple hosts, so the macOS legs lint them and test.yml's Linux scope drops
+# them from the `-p` list (`-p` and `--exclude` cannot be combined).
+LINUX_EXCLUDED = {"waterui-apple", "cocoa-ui"}
+
+# A pull request whose affected packages are at least this share of the
+# Linux-linted members re-checks most of the workspace, so it gets the
+# 30-minute lint budget instead of the 10-minute scoped gate (#3229). A
+# cherenkov-gpu change reaches about 74% and overran the scoped gate (#3246).
+WORKSPACE_WIDE_SHARE = 0.7
+
+
+def linux_package_args(names):
+    """`-p` flags for the affected packages the Linux lint compiles."""
+    return " ".join(f"-p {name}" for name in names if name not in LINUX_EXCLUDED)
+
+
+def is_workspace_wide(names, members):
+    """Whether `names` (affected packages) reach `WORKSPACE_WIDE_SHARE` of
+    the Linux-linted `members` (every workspace member, from the tool)."""
+    linux_members = set(members) - LINUX_EXCLUDED
+    affected = set(names) & linux_members
+    return len(affected) >= WORKSPACE_WIDE_SHARE * len(linux_members)
 
 
 def is_prose(path):
@@ -142,14 +169,18 @@ def manifest_tables(source):
     return relevant
 
 
+# A change to the check must run the check.
+MSRV_CHECK = ".github/actions/msrv/"
+
+
 def msrv_relevant(base, head, entries):
-    """Whether the diff can move the toolchain floor: Cargo.lock, or a
-    Cargo.toml whose `rust-version` or dependency tables changed. A parse
-    failure or an added/deleted manifest counts as relevant — the gate
-    widens rather than guesses."""
+    """Whether the diff can move the toolchain floor: Cargo.lock, a
+    Cargo.toml whose `rust-version` or dependency tables changed, or the
+    MSRV check itself. A parse failure or an added/deleted manifest counts
+    as relevant — the gate widens rather than guesses."""
     for entry in entries:
         path = entry[-1]
-        if path == "Cargo.lock":
+        if path == "Cargo.lock" or path.startswith(MSRV_CHECK):
             return True
         if not path.endswith("Cargo.toml"):
             continue
@@ -185,9 +216,11 @@ def main():
     outputs = {
         "packages": "workspace",
         "package-args": "",
+        "linux-package-args": "",
+        "workspace-wide": "true",
         "comment-only": "false",
         "msrv": "true",
-        "test-assets": "true",
+        "apple-legs": json.dumps(apple_legs("workspace"), separators=(",", ":")),
     }
     try:
         base = git("merge-base", args.base, args.head).strip()
@@ -223,29 +256,30 @@ def main():
         )
 
         # The tool always runs: its `owners` map is the only path→crate
-        # mapper (the comment-only lane reads it), and
-        # `test_asset_consumers` drives `test-assets` in both lanes.
+        # mapper (the comment-only lane reads it).
         report = json.loads(
             subprocess.check_output(
                 [args.tool, "--base", base, "--head", args.head], text=True
             )
         ) if entries else None
 
-        consumers = set((report or {}).get("test_asset_consumers", []))
-
-        def assets_for(names):
-            return "true" if consumers & set(names) else "false"
-
         def scene_assets_for(names):
             return "true" if SCENE_ASSET_OWNERS & set(names) else "false"
+
+        def wide(names):
+            return "true" if is_workspace_wide(names, report["members"]) else "false"
+
+        def apple_legs_for(scope):
+            return json.dumps(apple_legs(scope), separators=(",", ":"))
 
         if not entries:
             outputs.update(
                 {
                     "packages": "",
+                    "workspace-wide": "false",
                     "msrv": "false",
-                    "test-assets": "false",
                     "scene-assets": "false",
+                    "apple-legs": "[]",
                 }
             )
         elif report["workspace"]:
@@ -254,9 +288,10 @@ def main():
             outputs.update(
                 {
                     "packages": "workspace",
+                    "workspace-wide": "true",
                     "msrv": "true" if msrv else "false",
-                    "test-assets": "true",
                     "scene-assets": "true",
+                    "apple-legs": apple_legs_for("workspace"),
                 }
             )
         elif comment_only:
@@ -271,10 +306,12 @@ def main():
                 {
                     "packages": " ".join(owners),
                     "package-args": " ".join(f"-p {name}" for name in owners),
+                    "linux-package-args": linux_package_args(owners),
+                    "workspace-wide": wide(owners),
                     "comment-only": "true",
                     "msrv": "true" if msrv else "false",
-                    "test-assets": assets_for(owners),
                     "scene-assets": scene_assets_for(owners),
+                    "apple-legs": apple_legs_for(" ".join(owners)),
                 }
             )
         else:
@@ -283,9 +320,11 @@ def main():
                 {
                     "packages": " ".join(affected),
                     "package-args": " ".join(f"-p {name}" for name in affected),
+                    "linux-package-args": linux_package_args(affected),
+                    "workspace-wide": wide(affected),
                     "msrv": "true" if msrv else "false",
-                    "test-assets": assets_for(affected),
                     "scene-assets": scene_assets_for(affected),
+                    "apple-legs": apple_legs_for(" ".join(affected)),
                 }
             )
     except Exception as error:  # widen on any failure — never scope on a guess

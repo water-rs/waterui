@@ -39,6 +39,9 @@ pub trait RuntimeDriver {
     /// Whether the mounted runtime is quiescent: no queued input, no spawned
     /// work awaiting a drain, and no renderer-scheduled semantic work.
     fn is_settled(&self) -> bool;
+    /// [`Self::is_settled`] except that repeat-forever animations do not
+    /// count: whether any work remains that will finish on its own.
+    fn is_settled_except_perpetual(&self) -> bool;
     /// Whether a state change has been requested but not yet flushed, so the
     /// tree the last pump produced no longer reflects the app's state.
     ///
@@ -59,6 +62,10 @@ pub trait RuntimeDriver {
     fn request_redraw(&mut self);
     /// Returns whether anything held UI focus to clear.
     fn clear_ui_focus(&mut self) -> bool;
+    /// Blocks until a task parked on an external wake — a timer, a fetch, a
+    /// decode on a worker thread — re-queues on the runtime's local executor,
+    /// returning whether one arrived within `timeout`.
+    fn wait_for_local_work(&self, timeout: Duration) -> bool;
 }
 
 /// What one pump produced: whether it rebuilt, the phase timings, the
@@ -76,20 +83,28 @@ pub struct DriverPumpResult {
 }
 
 impl RuntimeDriver for SemanticRuntime {
+    fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        Self::wait_for_local_work(self, timeout)
+    }
+
     fn pump_at(&mut self, at: Instant, _capture_snapshot: bool) -> DriverPumpResult {
-        let result = Self::pump_at(self, at);
+        let mut result = Self::pump_at(self, at);
         DriverPumpResult {
-            rebuilt: result.rebuilt,
-            profile: result.profile,
-            tree_update: result.tree_update,
-            content_types: result.content_types,
+            rebuilt: result.rebuilt(),
+            profile: result.profile(),
+            tree_update: result.take_tree_update(),
+            content_types: result.take_content_types(),
             snapshot: None,
-            ui_focus: result.ui_focus.map(NodeId::from),
+            ui_focus: result.ui_focus().map(NodeId::from),
         }
     }
 
     fn is_settled(&self) -> bool {
         Self::is_settled(self)
+    }
+
+    fn is_settled_except_perpetual(&self) -> bool {
+        Self::is_settled_except_perpetual(self)
     }
 
     fn has_pending_semantic_update(&self) -> bool {
@@ -114,24 +129,31 @@ impl RuntimeDriver for SemanticRuntime {
 }
 
 impl RuntimeDriver for HeadlessRuntime {
+    fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        Self::wait_for_local_work(self, timeout)
+    }
+
     fn pump_at(&mut self, at: Instant, capture_snapshot: bool) -> DriverPumpResult {
-        let result = Self::pump_at(self, capture_snapshot, at);
+        let mut result = Self::pump_at(self, capture_snapshot, at);
         DriverPumpResult {
-            rebuilt: result.rebuilt,
-            profile: result.profile,
-            tree_update: result.tree_update,
-            content_types: result.content_types,
-            snapshot: result.snapshot.map(|snapshot| Snapshot {
-                width: snapshot.width,
-                height: snapshot.height,
-                rgba8: snapshot.rgba8,
+            rebuilt: result.rebuilt(),
+            profile: result.profile(),
+            tree_update: result.take_tree_update(),
+            content_types: result.take_content_types(),
+            snapshot: result.take_snapshot().map(|snapshot| {
+                let (width, height, rgba8, _) = snapshot.into_parts();
+                Snapshot::new(width, height, rgba8)
             }),
-            ui_focus: result.ui_focus.map(NodeId::from),
+            ui_focus: result.ui_focus().map(NodeId::from),
         }
     }
 
     fn is_settled(&self) -> bool {
         Self::is_settled(self)
+    }
+
+    fn is_settled_except_perpetual(&self) -> bool {
+        Self::is_settled_except_perpetual(self)
     }
 
     fn has_pending_semantic_update(&self) -> bool {
@@ -157,15 +179,58 @@ impl RuntimeDriver for HeadlessRuntime {
 
 /// Timing collected for one complete offscreen Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
 pub struct FrameTiming {
     /// Wall-clock duration spent advancing one offscreen Hydrolysis frame.
-    pub total: std::time::Duration,
+    total: std::time::Duration,
     /// Whether the frame rebuilt scene/layout state.
-    pub rebuilt: bool,
+    rebuilt: bool,
     /// Detailed Hydrolysis phase timings and counters.
-    pub profile: FrameProfile,
+    profile: FrameProfile,
     /// Process CPU / memory sample collected immediately after the frame.
-    pub resources: ResourceSample,
+    resources: ResourceSample,
+}
+
+impl FrameTiming {
+    /// Creates a `FrameTiming` from its parts.
+    #[must_use]
+    pub const fn new(
+        total: std::time::Duration,
+        rebuilt: bool,
+        profile: FrameProfile,
+        resources: ResourceSample,
+    ) -> Self {
+        Self {
+            total,
+            rebuilt,
+            profile,
+            resources,
+        }
+    }
+
+    /// Wall-clock duration spent advancing one offscreen Hydrolysis frame.
+    #[must_use]
+    pub const fn total(&self) -> std::time::Duration {
+        self.total
+    }
+
+    /// Whether the frame rebuilt scene/layout state.
+    #[must_use]
+    pub const fn rebuilt(&self) -> bool {
+        self.rebuilt
+    }
+
+    /// Detailed Hydrolysis phase timings and counters.
+    #[must_use]
+    pub const fn profile(&self) -> FrameProfile {
+        self.profile
+    }
+
+    /// Process CPU / memory sample collected immediately after the frame.
+    #[must_use]
+    pub const fn resources(&self) -> ResourceSample {
+        self.resources
+    }
 }
 
 /// Host process resource sample captured during a perf run.

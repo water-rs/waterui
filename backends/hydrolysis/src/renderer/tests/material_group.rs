@@ -27,13 +27,14 @@ use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
 use waterui::prelude::text;
 use waterui::theme::ColorScheme;
 use waterui::widget::condition::when;
+use waterui_backend_core::View;
 use waterui_controls::button::button;
 use waterui_core::AnyView;
 use waterui_core::env::Store;
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_layout::collection_transition::collection_transition;
+use waterui_core::transition::PropertyTransition;
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, hstack, vstack, zstack};
 
@@ -42,14 +43,14 @@ use super::{
     mounts, pumped_test_environment, test_environment, test_renderer, window_mount,
 };
 use crate::HeadlessRuntime;
-use crate::engine::WidgetTheme;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
 use crate::renderer::mount::backdrop::BackdropScope;
 use crate::renderer::{
     FontFamilyResolution, HydroState, ProposalSize, measure_view_dimensions_with_proposal,
     normalize_layout_view, view_renders_nothing,
 };
-use crate::text::SessionTextEngine;
+use crate::text::ParleyEngine;
+use crate::theme::WidgetTheme;
 
 /// The window, in points.
 const WIDTH: u32 = 160;
@@ -95,9 +96,12 @@ fn rendered_at_scale(view: impl Fn() -> AnyView + 'static, scale: f64) -> Headle
     runtime
 }
 
-/// The `.material_group()` scope `member` flushed under — the cell address
-/// its key's `Scoped` identity carries — `None` outside every group.
-fn member_scope(runtime: &HeadlessRuntime, member: cherenkov::LayerId) -> Option<usize> {
+/// The `.material_group()` scope `member` flushed under — the cell
+/// identity its key's `Scoped` carries — `None` outside every group.
+fn member_scope(
+    runtime: &HeadlessRuntime,
+    member: cherenkov::LayerId,
+) -> Option<std::num::NonZeroU64> {
     match mounts(runtime).backdrop_scope(member)? {
         BackdropScope::Scoped(scope) => Some(scope),
         BackdropScope::Solo(_) => None,
@@ -153,8 +157,9 @@ fn assert_anchor_children_match(runtime: &mut HeadlessRuntime, anchor: cherenkov
     let members = material_layers(runtime);
     assert_eq!(members.len(), 1, "the fixture has one material member");
     let member = members[0];
-    let (scope, canvas, _) = mounts(runtime)
-        .anchor_registrations()
+    let (scope, canvas, _) = window_mount(runtime)
+        .scope_anchors()
+        .registrations()
         .into_iter()
         .find(|(_, _, layer)| *layer == anchor)
         .expect("the anchor has a registration");
@@ -544,10 +549,9 @@ fn a_material_in_an_anchored_overlay_does_not_join_the_outer_group() {
                 vstack((
                     member(Material::Regular),
                     button("host").action(|| {}).anchored_overlay(
-                        AnchoredOverlay::new(
-                            &open,
-                            AnyView::new(().size(60.0, 20.0).background(Material::Regular)),
-                        )
+                        AnchoredOverlay::new(&open, move || {
+                            AnyView::new(().size(60.0, 20.0).background(Material::Regular))
+                        })
                         .edge(AnchorEdge::Bottom),
                     ),
                 ))
@@ -602,7 +606,7 @@ fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
     // the `hstack` the group wraps, not the wrapper.
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::new(Some(crate::num_cast::u32_as_f32(WIDTH)), None);
     let grouped = normalize_layout_view(AnyView::new(row().material_group()), &env);
     let plain = normalize_layout_view(AnyView::new(row()), &env);
@@ -625,7 +629,7 @@ fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
     });
     pump(&mut runtime);
     assert!(
-        runtime.pump_at(true, Instant::now()).snapshot.is_some(),
+        runtime.pump_at(true, Instant::now()).snapshot().is_some(),
         "the lazy stack's grouped rows render a snapshot"
     );
     let layers = material_layers(&runtime);
@@ -717,7 +721,7 @@ fn a_grouped_empty_view_claims_no_stack_slot() {
     );
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::new(Some(200.0), None);
     let grouped = normalize_layout_view(
         AnyView::new(vstack((text("a"), ().material_group(), text("b")))),
@@ -910,16 +914,17 @@ fn snap(view: impl Fn() -> AnyView + 'static) -> crate::HeadlessSnapshot {
     let mut snapshot = None;
     for frame in 0..8 {
         let pumped = runtime.pump_at(true, start + Duration::from_millis(frame * 16));
-        if pumped.snapshot.is_some() {
-            snapshot = pumped.snapshot;
+        let frame = pumped.into_snapshot();
+        if frame.is_some() {
+            snapshot = frame;
         }
     }
     snapshot.expect("a snapshot")
 }
 
 fn px(snap: &crate::HeadlessSnapshot, x: usize, y: usize) -> [u8; 4] {
-    let i = (y * snap.width as usize + x) * 4;
-    snap.rgba8[i..i + 4].try_into().unwrap()
+    let i = (y * snap.width() as usize + x) * 4;
+    snap.rgba8()[i..i + 4].try_into().unwrap()
 }
 
 /// A `.material_group()`'s scope gets a plain layer at the scope's paint
@@ -944,7 +949,7 @@ fn a_scopes_groups_capture_beneath_its_anchor() {
     };
     let (grouped_runtime, grouped) = {
         let mut runtime = rendered(scope_view(true));
-        let snap = runtime.pump_snapshot().snapshot.expect("a snapshot");
+        let snap = runtime.pump_snapshot().into_snapshot().expect("a snapshot");
         (runtime, snap)
     };
     // The solo `Thick` member's own first-member capture holds only the
@@ -1045,7 +1050,7 @@ fn a_scopes_anchor_releases_with_the_scope() {
     assert_eq!(material_layers(&runtime), Vec::<cherenkov::LayerId>::new());
     assert_eq!(mounts(&runtime).backdrop_group_count(), 0);
     assert_eq!(
-        mounts(&runtime).anchor_registration_count(),
+        window_mount(&runtime).scope_anchors().registration_count(),
         0,
         "the scope's anchor registration released with it"
     );
@@ -1179,7 +1184,7 @@ fn a_partial_re_record_keeps_the_scope_anchored() {
     );
 }
 
-/// A `.material_group()` row leaving a `collection_transition` stack moves
+/// A `.material_group()` row leaving a `.transition()` stack moves
 /// between two mount lists mid-flight: while its exit transition runs, the
 /// row's scope cell flushes inside the departing entry's `Item::Scope` list
 /// instead of the collection's item list. The scope keeps exactly one anchor
@@ -1187,18 +1192,18 @@ fn a_partial_re_record_keeps_the_scope_anchored() {
 /// ordered child list against the mirror (water-rs/waterui#2097, MEDIUM-1).
 #[test]
 fn a_scope_moving_between_lists_keeps_one_owner() {
-    let rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
+    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
     let mut runtime = {
         let rows = rows.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let rows = rows.clone();
             let collection = VStack::for_each(rows, move |_| {
-                AnyView::new(member(Material::Regular).material_group())
+                member(Material::Regular)
+                    .material_group()
+                    .transition(PropertyTransition::opacity())
+                    .animation(Animation::linear(Duration::from_millis(1_000)))
             });
-            AnyView::new(collection_transition(
-                collection,
-                Animation::linear(Duration::from_millis(1_000)),
-            ))
+            AnyView::new(collection)
         });
         let mut runtime = HeadlessRuntime::new_for_tests(
             pumped_test_environment(),
@@ -1215,7 +1220,10 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
         runtime
     };
     assert_eq!(material_layers(&runtime).len(), 1);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
     let old_member = material_layers(&runtime)[0];
     let old_anchor = mounts(&runtime)
         .backdrop_anchor(old_member)
@@ -1231,7 +1239,7 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
     for step in 0..64 {
         let _ = runtime.pump_at(false, start + Duration::from_millis(step * 15));
     }
-    let registrations = mounts(&runtime).anchor_registrations();
+    let registrations = window_mount(&runtime).scope_anchors().registrations();
     assert_eq!(
         registrations.len(),
         1,
@@ -1255,23 +1263,26 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
     pump_until_settled(&mut runtime);
     assert_eq!(material_layers(&runtime).len(), 0);
     assert_eq!(mounts(&runtime).backdrop_group_count(), 0);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 0);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        0
+    );
 }
 
 #[test]
 fn a_scope_enter_completion_keeps_one_direct_owner() {
-    let rows: Membership<SelfId<u64>> = Membership::from(vec![]);
+    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![]);
     let builder = {
         let rows = rows.clone();
         AnyViewBuilder::<AnyView>::new(move || {
             let rows = rows.clone();
             let collection = VStack::for_each(rows, move |_| {
-                AnyView::new(member(Material::Regular).material_group())
+                member(Material::Regular)
+                    .material_group()
+                    .transition(PropertyTransition::opacity())
+                    .animation(Animation::linear(Duration::from_millis(1_000)))
             });
-            AnyView::new(collection_transition(
-                collection,
-                Animation::linear(Duration::from_millis(1_000)),
-            ))
+            AnyView::new(collection)
         })
     };
     let mut runtime = HeadlessRuntime::new_for_tests(
@@ -1291,7 +1302,10 @@ fn a_scope_enter_completion_keeps_one_direct_owner() {
     }
     let mid_member = material_layers(&runtime);
     assert_eq!(mid_member.len(), 1);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
     let mid_member = mid_member[0];
     let mid_anchor = mounts(&runtime)
         .backdrop_anchor(mid_member)
@@ -1302,12 +1316,15 @@ fn a_scope_enter_completion_keeps_one_direct_owner() {
     let final_members = material_layers(&runtime);
     assert_eq!(final_members.len(), 1);
     assert_eq!(final_members[0], mid_member);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
     let final_anchor = mounts(&runtime)
         .backdrop_anchor(final_members[0])
         .expect("the settled member has an anchor");
     assert_ne!(final_anchor, mid_anchor);
-    let registrations = mounts(&runtime).anchor_registrations();
+    let registrations = window_mount(&runtime).scope_anchors().registrations();
     assert_eq!(registrations.len(), 1);
     assert_eq!(registrations[0].2, final_anchor);
     assert!(
@@ -1318,18 +1335,18 @@ fn a_scope_enter_completion_keeps_one_direct_owner() {
 
 #[test]
 fn a_scope_reinserted_during_exit_keeps_one_direct_owner() {
-    let rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
+    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
     let builder = {
         let rows = rows.clone();
         AnyViewBuilder::<AnyView>::new(move || {
             let rows = rows.clone();
             let collection = VStack::for_each(rows, move |_| {
-                AnyView::new(member(Material::Regular).material_group())
+                member(Material::Regular)
+                    .material_group()
+                    .transition(PropertyTransition::opacity())
+                    .animation(Animation::linear(Duration::from_millis(1_000)))
             });
-            AnyView::new(collection_transition(
-                collection,
-                Animation::linear(Duration::from_millis(1_000)),
-            ))
+            AnyView::new(collection)
         })
     };
     let mut runtime = HeadlessRuntime::new_for_tests(
@@ -1345,11 +1362,17 @@ fn a_scope_reinserted_during_exit_keeps_one_direct_owner() {
         let _ = runtime.pump_at(false, start + Duration::from_millis(step * 16));
     }
     assert_eq!(material_layers(&runtime).len(), 1);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
 
     let _ = rows.remove(0);
     let _ = runtime.pump_at(false, start + Duration::from_millis(1_300));
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
 
     rows.push(SelfId::new(1));
     for step in 90..=160 {
@@ -1357,11 +1380,14 @@ fn a_scope_reinserted_during_exit_keeps_one_direct_owner() {
     }
     let members = material_layers(&runtime);
     assert_eq!(members.len(), 1);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
     let anchor = mounts(&runtime)
         .backdrop_anchor(members[0])
         .expect("the reinserted row has an anchor");
-    let registrations = mounts(&runtime).anchor_registrations();
+    let registrations = window_mount(&runtime).scope_anchors().registrations();
     assert_eq!(registrations.len(), 1);
     assert_eq!(registrations[0].2, anchor);
     assert!(
@@ -1415,7 +1441,10 @@ fn a_scope_returning_after_unmount_reanchors() {
         Some(first),
         "the group re-keyed onto the remounted scope's fresh anchor layer"
     );
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
 }
 
 /// Members of a scope that mount inside a filtered node's canvas anchor
@@ -1493,8 +1522,9 @@ fn a_scope_enclosing_a_filtered_view_anchors_at_the_filter_start() {
         .expect("the members' group anchors");
     // The anchor item the filtered program pushes at its start registers
     // under the filtered canvas — the one registration naming a canvas.
-    let f_start = mounts(&runtime)
-        .anchor_registrations()
+    let f_start = window_mount(&runtime)
+        .scope_anchors()
+        .registrations()
         .into_iter()
         .find(|(_, canvas, _)| canvas.is_some())
         .map(|(_, _, layer)| layer);
@@ -1560,7 +1590,7 @@ fn a_scope_inside_a_scroll_view_anchors_under_the_inner_layer() {
         )))
     });
     assert!(
-        runtime.pump_at(true, Instant::now()).snapshot.is_some(),
+        runtime.pump_at(true, Instant::now()).snapshot().is_some(),
         "the scrolled member's frame renders a snapshot"
     );
     let layers = material_layers(&runtime);
@@ -1570,8 +1600,9 @@ fn a_scope_inside_a_scroll_view_anchors_under_the_inner_layer() {
         .expect("the scrolled member's group anchors");
     // The spec anchor is a child of the inner layer: it and the member's
     // frame are siblings under the same parent.
-    let (scope, canvas, _) = mounts(&runtime)
-        .anchor_registrations()
+    let (scope, canvas, _) = window_mount(&runtime)
+        .scope_anchors()
+        .registrations()
         .into_iter()
         .find(|(_, _, layer)| *layer == anchor)
         .expect("the scrolled anchor has a registration");
@@ -1627,10 +1658,7 @@ fn a_partial_descent_replays_the_enclosing_material_group_scope() {
     inner.cell.set_parent(&group.core().cell);
     let mut retained = RetainedSubview::new(member(Material::Regular));
     let rect = SceneRect::new(0.0, 0.0, 160.0, 60.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let proposal = ProposalSize::new(Some(160.0), Some(60.0));
     let root = renderer.core.root_core.clone();
     renderer
@@ -1672,7 +1700,9 @@ fn a_partial_descent_replays_the_enclosing_material_group_scope() {
         .scope;
     assert_eq!(
         scope,
-        Some(Rc::as_ptr(&group.core().cell) as usize),
+        Some(crate::renderer::mount::backdrop::scope_id(
+            &group.core().cell
+        )),
         "the member keys into the enclosing `.material_group()` scope — \
          the shared group, not a solo fallback"
     );

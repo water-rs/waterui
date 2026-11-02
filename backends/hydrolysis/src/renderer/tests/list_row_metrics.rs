@@ -29,9 +29,11 @@ const WINDOW_HEIGHT: u32 = 700;
 /// metrics unset.
 const ROW_HEIGHT: f64 = 56.0;
 /// Its symmetric row insets: 10pt vertical each edge, 16pt horizontal.
-const THEME_VERTICAL_INSETS: f64 = 20.0;
+const THEME_VERTICAL_INSET: f64 = 10.0;
 const THEME_HORIZONTAL_INSET: f64 = 16.0;
-/// One-line label text size.
+/// One-line label text size. The label's height is its font's line box at
+/// this size, which the platform's default font decides, so the tests read it
+/// from the label's own bounds instead of assuming it.
 const LABEL_SIZE: f64 = 20.0;
 
 fn runtime(builder: AnyViewBuilder<AnyView>) -> HeadlessRuntime {
@@ -159,8 +161,8 @@ fn row_insets_position_the_content() {
 
 /// The configured floor bounds every row while a row's insets stay its own:
 /// under `.list_min_row_height(64.0)` the two plain rows measure 64 and only
-/// the inset row's 30pt insets push it past the floor (water-rs/hydrolysis
-/// #201).
+/// the inset row's 30pt insets push it past the floor, to its label plus 60
+/// (water-rs/hydrolysis#201).
 #[test]
 fn min_row_height_floors_every_row_while_insets_stay_per_row() {
     let mut runtime = runtime(metrics_list(
@@ -174,6 +176,8 @@ fn min_row_height_floors_every_row_while_insets_stay_per_row() {
     let first = node_bounds(&updates, Role::ListItem, "Row 0").expect("row 0 must publish bounds");
     let inset = node_bounds(&updates, Role::ListItem, "Row 1").expect("row 1 must publish bounds");
     let last = node_bounds(&updates, Role::ListItem, "Row 2").expect("row 2 must publish bounds");
+    let inset_label =
+        node_bounds(&updates, Role::Label, "Row 1").expect("row 1's label must publish bounds");
     assert!(
         (first.height() - 64.0).abs() < 1.0,
         "a plain row must sit on the configured floor (got {:.1})",
@@ -184,10 +188,10 @@ fn min_row_height_floors_every_row_while_insets_stay_per_row() {
         "the floor must cover every row, not just the first (got {:.1})",
         last.height()
     );
-    let expected_inset_height = (LABEL_SIZE + 60.0).max(64.0);
+    let expected_inset_height = (inset_label.height() + 60.0).max(64.0);
     assert!(
-        (inset.height() - expected_inset_height).abs() < 4.0,
-        "only the inset row may pay for its insets (got {:.1}, want ~{expected_inset_height})",
+        (inset.height() - expected_inset_height).abs() < 1.0,
+        "only the inset row may pay for its insets (got {:.1}, want ~{expected_inset_height:.1})",
         inset.height()
     );
     // Rows still stack contiguously on their measured extents.
@@ -226,11 +230,11 @@ fn unset_metrics_keep_the_theme_row_geometry() {
             "row {index} must keep the theme's horizontal inset (got {:.1})",
             label.x0 - row.x0
         );
+        let (top, bottom) = (label.y0 - row.y0, row.y1 - label.y1);
         assert!(
-            (row.height() - label.height() - THEME_VERTICAL_INSETS) > 10.0,
-            "row {index} must keep the theme's vertical insets (row {:.1}, label {:.1})",
-            row.height(),
-            label.height()
+            top >= THEME_VERTICAL_INSET - 0.5 && bottom >= THEME_VERTICAL_INSET - 0.5,
+            "row {index} must keep the theme's vertical insets around its label (top {top:.1}, \
+             bottom {bottom:.1})"
         );
     }
 }

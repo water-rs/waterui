@@ -145,20 +145,25 @@ fn start_character_stream(
     .detach();
 }
 
+/// The presets the picker cycles through, with the label it shows for each.
+const PRESETS: [(FlowAnimationPreset, &str); 3] = [
+    (FlowAnimationPreset::AssistantDefault, "assistant"),
+    (FlowAnimationPreset::Minimal, "minimal"),
+    (FlowAnimationPreset::None, "none"),
+];
+
+fn preset_entry(index: i32) -> (FlowAnimationPreset, &'static str) {
+    let len = i32::try_from(PRESETS.len()).expect("the preset table is tiny");
+    let slot = usize::try_from(index.rem_euclid(len)).expect("rem_euclid is non-negative");
+    PRESETS[slot]
+}
+
 fn preset_from_index(index: i32) -> FlowAnimationPreset {
-    match index.rem_euclid(3) {
-        0 => FlowAnimationPreset::AssistantDefault,
-        1 => FlowAnimationPreset::Minimal,
-        _ => FlowAnimationPreset::None,
-    }
+    preset_entry(index).0
 }
 
 fn preset_label(index: i32) -> &'static str {
-    match preset_from_index(index) {
-        FlowAnimationPreset::AssistantDefault => "assistant",
-        FlowAnimationPreset::Minimal => "minimal",
-        FlowAnimationPreset::None => "none",
-    }
+    preset_entry(index).1
 }
 
 fn configured_flow_config(

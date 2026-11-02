@@ -118,7 +118,7 @@ pub fn main() {
                     // Dock at the top of the resolved monitor's visible
                     // frame: full width, 45% of visible height — the
                     // quick-terminal geometry hydroterm computes.
-                    let vf = &monitor.visible_frame;
+                    let vf = &monitor.visible_frame();
                     Rect::new(
                         Point::new(vf.origin().x, vf.origin().y),
                         Size::new(vf.size().width, vf.size().height * 0.45),
@@ -130,8 +130,10 @@ pub fn main() {
     })
     .activation(Activation::Never);
     run(
-        App::new_with_windows([host], Environment::new())
-            .on_last_window_closed(LastWindowPolicy::StayResident),
-        hydrolysis_m3::Material3::defaults(),
+        |env| {
+            App::new_with_windows([host], env).on_last_window_closed(LastWindowPolicy::StayResident)
+        },
+        Environment::new(),
+        hydrolysis::testing::TestStyle::new(),
     );
 }

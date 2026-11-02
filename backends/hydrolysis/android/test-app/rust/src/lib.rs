@@ -13,17 +13,25 @@
 use std::rc::Rc;
 
 use waterui::app::App;
+#[cfg(not(feature = "filter-probe"))]
 use waterui::component::text_field::{ContentType, KeyboardType};
+#[cfg(not(feature = "filter-probe"))]
 use waterui::form::secure::Secure;
+#[cfg(not(feature = "filter-probe"))]
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::window::{Window, WindowState};
+#[cfg(not(feature = "filter-probe"))]
 use waterui_core::Native;
+
+#[cfg(feature = "filter-probe")]
+mod filter_probe;
 
 /// The bindings arrive owned so the returned view holds no borrow of the
 /// window closure's locals; each is only borrowed in the body, which the
 /// pedantic lint reads as `needless_pass_by_value`.
+#[cfg(not(feature = "filter-probe"))]
 #[allow(clippy::needless_pass_by_value)]
 fn app_view(
     count: Binding<i32>,
@@ -36,9 +44,13 @@ fn app_view(
     scroll(
         vstack((
             text("Hydrolysis on Android").title(),
-            "Cherenkov paints this UI through the Kotlin host's SurfaceView band.",
-            // Keeps the pump visibly pumping: the Material indeterminate
-            // indicator animates on the shared animation clock, so logcat
+            if cfg!(feature = "hwui") {
+                "HWUI draws the retained UI and embedded Android views."
+            } else {
+                "Cherenkov paints this UI through the Kotlin host's SurfaceView band."
+            },
+            // Keeps the pump visibly pumping: the indeterminate indicator
+            // animates on the shared animation clock, so logcat
             // shows `frame presented` lines while the window is visible and
             // none while it is hidden.
             loading(),
@@ -75,22 +87,33 @@ fn app_view(
     )
 }
 
+/// The app the host mounts, in the environment a generated launcher gives
+/// one: `configure_environment!` captures the `ResourceContext` rooted at
+/// the assets the Kotlin host synced, which is where the font collection
+/// reads the application's staged faces from.
 fn build_app() -> App {
     App::new_with_windows(
         [Window::new(
             "Hydrolysis Test App",
             binding(WindowState::Normal),
             move || {
-                let count = binding(0);
-                let enabled = binding(false);
-                let name = binding("");
-                let code = binding("");
-                let password = binding(waterui::form::secure::Secure::new(String::new()));
-                let volume = binding(0.5);
-                app_view(count, enabled, name, code, password, volume)
+                #[cfg(feature = "filter-probe")]
+                {
+                    filter_probe::view()
+                }
+                #[cfg(not(feature = "filter-probe"))]
+                {
+                    let count = binding(0);
+                    let enabled = binding(false);
+                    let name = binding("");
+                    let code = binding("");
+                    let password = binding(waterui::form::secure::Secure::new(String::new()));
+                    let volume = binding(0.5);
+                    app_view(count, enabled, name, code, password, volume)
+                }
             },
         )],
-        Environment::new(),
+        waterui::configure_environment!(Environment::new()),
     )
 }
 
@@ -105,7 +128,7 @@ pub extern "system" fn JNI_OnLoad(
     hydrolysis::android::register_app(|| {
         (
             build_app(),
-            Rc::new(hydrolysis_m3::Material3::defaults()) as Rc<dyn hydrolysis::Style>,
+            Rc::new(hydrolysis::testing::TestStyle::new()) as Rc<dyn hydrolysis::Style>,
         )
     });
     jni::sys::JNI_VERSION_1_6

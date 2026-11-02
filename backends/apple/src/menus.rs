@@ -4,7 +4,8 @@
 //! `installMenuBar`/`menuBarDidChange` ported: the standard App, Edit (the
 //! responder-chain items keyboard shortcuts route through) and Window menus,
 //! with the declared `menu_bar` content appended — macOS rebuilds the whole
-//! bar on every change, iOS rebuilds through `application:buildMenuWith:`.
+//! bar on every change, iOS rebuilds through the main menu system's build
+//! handler.
 //!
 //! The standard Window menu carries Close unless a declared menu places
 //! `MenuItem::CloseWindow` itself — [`CloseWindowPlacement`] decides which,
@@ -39,9 +40,9 @@ fn resolve(
 /// subtitle, symbol name, destructive flag and shortcut.
 fn kit_command(command: &ResolvedCommand) -> cocoa_ui::menu::Command {
     kit_command_fields(
-        command.label.content.snapshot().to_plain().to_string(),
+        command.label.content().snapshot().to_plain().to_string(),
         command.subtitle.as_ref().map(ToString::to_string),
-        command.icon.as_ref().map(|icon| icon.name.to_string()),
+        command.icon.as_ref().map(|icon| icon.name().to_string()),
         command.role,
         command.shortcut.as_ref(),
     )
@@ -50,9 +51,9 @@ fn kit_command(command: &ResolvedCommand) -> cocoa_ui::menu::Command {
 /// A resolved nested menu's header as the kit's shared `Command` payload.
 pub fn kit_command_for_menu(menu: &ResolvedNestedMenu) -> cocoa_ui::menu::Command {
     kit_command_fields(
-        menu.label.content.snapshot().to_plain().to_string(),
+        menu.label.content().snapshot().to_plain().to_string(),
         None,
-        menu.icon.as_ref().map(|icon| icon.name.to_string()),
+        menu.icon.as_ref().map(|icon| icon.name().to_string()),
         CommandRole::Standard,
         None,
     )
@@ -68,17 +69,17 @@ fn kit_command_fields(
     let mut modifiers = cocoa_ui::menu::KeyModifiers::empty();
     let mut key_equivalent = String::new();
     if let Some(shortcut) = shortcut {
-        key_equivalent = key_equivalent_for(&shortcut.key);
-        if shortcut.modifiers.command() {
+        key_equivalent = key_equivalent_for(shortcut.key());
+        if shortcut.modifiers().command() {
             modifiers |= cocoa_ui::menu::KeyModifiers::COMMAND;
         }
-        if shortcut.modifiers.shift() {
+        if shortcut.modifiers().shift() {
             modifiers |= cocoa_ui::menu::KeyModifiers::SHIFT;
         }
-        if shortcut.modifiers.option() {
+        if shortcut.modifiers().option() {
             modifiers |= cocoa_ui::menu::KeyModifiers::OPTION;
         }
-        if shortcut.modifiers.control() {
+        if shortcut.modifiers().control() {
             modifiers |= cocoa_ui::menu::KeyModifiers::CONTROL;
         }
     }
@@ -341,7 +342,7 @@ mod imp {
     /// from `MenuTreeNode`s (context menus): the same title and chord, its
     /// action the same untargeted `terminate:` the application menu's item
     /// sends.
-    #[cfg(feature = "context_menu")]
+    #[cfg(any(feature = "context_menu", feature = "text_field"))]
     pub fn standard_quit_node() -> cocoa_ui::menu::MenuTreeNode {
         cocoa_ui::menu::MenuTreeNode::Standard(
             cocoa_ui::menu::Command {
@@ -556,8 +557,8 @@ mod imp {
     }
 }
 
-/// iOS: the declared content fills the builder `application:buildMenuWith:`
-/// hands the delegate; a watch on the resolved items requests each rebuild.
+/// iOS: the declared content fills the builder the main menu system hands
+/// its build handler; a watch on the resolved items requests each rebuild.
 #[cfg(target_os = "ios")]
 mod imp {
     use alloc::boxed::Box;
@@ -590,10 +591,12 @@ mod imp {
     pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static {
         move |builder| {
             let Some((resolved, env)) = declared.borrow().clone() else {
+                tracing::debug!("main menu built before the application declared its menus");
                 return;
             };
             let mtm = MainThreadMarker::new().expect("build_menus runs on the main thread");
-            for (index, item) in resolved.snapshot().iter().enumerate() {
+            let items = resolved.snapshot();
+            for (index, item) in items.iter().enumerate() {
                 let ResolvedMenuItem::Menu(menu) = item else {
                     panic!("App::menu_bar only accepts top-level Menu values");
                 };
@@ -613,23 +616,27 @@ mod imp {
                     builder.insert_at_root_end(&ui_menu);
                 }
             }
+            tracing::debug!(
+                menus = items.len(),
+                "main menu built with the declared menus"
+            );
         }
     }
 
     /// Fills `declared` and flags each change for rebuild. The returned
     /// guard keeps the watcher alive; hold it for the process.
     pub fn install_declared(
+        mtm: MainThreadMarker,
         menu_bar: &Computed<Vec<DeclaredMenu>>,
         env: &Environment,
         declared: &Declared,
     ) -> Box<dyn Any> {
         let resolved = resolve(menu_bar, env);
-        let guard = resolved.watch(|_| {
-            if let Some(mtm) = MainThreadMarker::new() {
-                cocoa_ui::uikit::request_main_menu_rebuild(mtm);
-            }
-        });
+        let guard = resolved.watch(move |_| cocoa_ui::uikit::request_main_menu_rebuild(mtm));
         *declared.borrow_mut() = Some((resolved, env.clone()));
+        // `UIKit` may have built the main menu before the slot was filled;
+        // the watcher only flags later changes.
+        cocoa_ui::uikit::request_main_menu_rebuild(mtm);
         Box::new(guard)
     }
 }

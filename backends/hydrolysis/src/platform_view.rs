@@ -15,9 +15,10 @@
 //! node build, naming the missing piece — there is no stand-in rendering for
 //! a native child.
 
+#[cfg(target_os = "android")]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use waterui_core::NativeView;
 use waterui_core::layout::StretchAxis;
@@ -50,19 +51,44 @@ impl PlatformView {
     }
 }
 
+/// What a placement asks the host to mount.
+///
+/// A placement either names a *factory* — the `kind` an application
+/// registered a `Context -> View` builder for — or an *instance* — the
+/// registration id of a native view that already exists and the host mounts
+/// where the leaf lays out. The instance form is how a backend-driven
+/// platform widget (the Android system `WebView`) reaches the overlay: the
+/// native side created the view itself, so there is no factory for the host
+/// to call.
+// Serialization exists only on hosts that push placements off-platform as
+// JSON — Android JNI today; serde is a target-scoped dependency — and in
+// tests, which exercise the wire shape on the host. Untagged so a placement
+// serializes flat: `{"kind":"map",…}` or `{"instance":7,…}`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    any(target_os = "android", target_arch = "wasm32", test),
+    derive(serde::Serialize),
+    serde(untagged)
+)]
+#[non_exhaustive]
+pub enum PlatformViewSource {
+    /// Resolve the named factory and mount the view it builds.
+    Factory {
+        /// The registry key from [`PlatformView::new`].
+        kind: Box<str>,
+    },
+    /// Mount the native view the host registered under this id.
+    Instance {
+        /// The host-side registration id of the already-constructed view.
+        instance: u64,
+    },
+}
+
 impl NativeView for PlatformView {
     /// A mounted platform child fills its proposal, like a `GpuSurface`.
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
     }
-}
-
-/// Stable ids for placements — allocated once per retained node, kept across
-/// relayouts so a resize re-places the same mounted view instead of remounting
-/// it. A structural replacement (a `Dynamic` rebuild) mints a fresh id.
-pub fn next_platform_view_id() -> u64 {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Where one embedded platform view sits, in the window's logical coordinate
@@ -74,39 +100,159 @@ pub fn next_platform_view_id() -> u64 {
 // JSON — Android JNI today; serde is a target-scoped dependency.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
-    any(target_os = "android", target_arch = "wasm32"),
+    any(test, target_os = "android", target_arch = "wasm32"),
     derive(serde::Serialize)
 )]
+#[non_exhaustive]
 pub struct PlatformViewPlacement {
     /// The retained node's stable placement id.
-    pub id: u64,
-    /// The factory key from [`PlatformView::new`].
-    pub kind: Box<str>,
+    id: u64,
+    /// What the host mounts for this leaf — a factory `kind` or a registered
+    /// `instance`. Flattened so the JSON reads as before for factories.
+    #[cfg_attr(
+        any(test, target_os = "android", target_arch = "wasm32"),
+        serde(flatten)
+    )]
+    source: PlatformViewSource,
     /// The leaf's laid-out x origin under this frame's transforms.
-    pub x: f32,
+    x: f32,
     /// The leaf's laid-out y origin under this frame's transforms.
-    pub y: f32,
+    y: f32,
     /// The leaf's laid-out width under this frame's transforms.
-    pub width: f32,
+    width: f32,
     /// The leaf's laid-out height under this frame's transforms.
-    pub height: f32,
+    height: f32,
     /// The effective clip the frame's paint layers impose (scroll viewports,
     /// `.clip()`), as `[x, y, width, height]` — present only when it actually
     /// cuts the frame.
     #[cfg_attr(
-        any(target_os = "android", target_arch = "wasm32"),
+        any(test, target_os = "android", target_arch = "wasm32"),
         serde(skip_serializing_if = "Option::is_none")
     )]
-    pub clip: Option<[f32; 4]>,
+    clip: Option<[f32; 4]>,
     /// Paint order among this frame's interactive content: a larger `order`
     /// is later — the host stacks embedded children by it.
-    pub order: u32,
+    order: u32,
     /// Whether any of the frame remains visible inside its clip.
-    pub visible: bool,
+    visible: bool,
+}
+
+impl PlatformViewPlacement {
+    /// Creates a placement for `id` mounting `source`, not yet laid out: a
+    /// zero frame, no clip, order `0`, hidden.
+    #[must_use]
+    pub const fn new(id: u64, source: PlatformViewSource) -> Self {
+        Self {
+            id,
+            source,
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            clip: None,
+            order: 0,
+            visible: false,
+        }
+    }
+
+    /// The retained node's stable placement id.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// What the host mounts for this leaf — a factory `kind` or a registered
+    /// `instance`.
+    #[must_use]
+    pub const fn source(&self) -> &PlatformViewSource {
+        &self.source
+    }
+
+    /// The effective clip the frame's paint layers impose, as
+    /// `[x, y, width, height]` — present only when it actually cuts the frame.
+    #[must_use]
+    pub const fn clip(&self) -> Option<[f32; 4]> {
+        self.clip
+    }
+
+    /// Sets the `clip`.
+    pub const fn set_clip(&mut self, clip: Option<[f32; 4]>) {
+        self.clip = clip;
+    }
+
+    /// The leaf's laid-out x origin under this frame's transforms.
+    #[must_use]
+    pub const fn x(&self) -> f32 {
+        self.x
+    }
+
+    /// Sets the `x`.
+    pub const fn set_x(&mut self, x: f32) {
+        self.x = x;
+    }
+
+    /// The leaf's laid-out y origin under this frame's transforms.
+    #[must_use]
+    pub const fn y(&self) -> f32 {
+        self.y
+    }
+
+    /// Sets the `y`.
+    pub const fn set_y(&mut self, y: f32) {
+        self.y = y;
+    }
+
+    /// The leaf's laid-out width under this frame's transforms.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+
+    /// Sets the `width`.
+    pub const fn set_width(&mut self, width: f32) {
+        self.width = width;
+    }
+
+    /// The leaf's laid-out height under this frame's transforms.
+    #[must_use]
+    pub const fn height(&self) -> f32 {
+        self.height
+    }
+
+    /// Sets the `height`.
+    pub const fn set_height(&mut self, height: f32) {
+        self.height = height;
+    }
+
+    /// Paint order among this frame's interactive content: a larger `order`
+    /// is later — the host stacks embedded children by it.
+    #[must_use]
+    pub const fn order(&self) -> u32 {
+        self.order
+    }
+
+    /// Sets the `order`.
+    pub const fn set_order(&mut self, order: u32) {
+        self.order = order;
+    }
+
+    /// Whether any of the frame remains visible inside its clip.
+    #[must_use]
+    pub const fn visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Sets the `visible`.
+    pub const fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
 }
 
 /// The placements one retained tree produced — the single source of truth a
-/// host's platform-view registry mirrors.
+/// host's platform-view registry mirrors. The table also owns the placement
+/// id space: the host's registry keys mounted views by `id`, so an id is
+/// unique exactly within the table that publishes it, for the table's
+/// lifetime.
 ///
 /// A flush *records* the current frame's set; [`Self::publish`] promotes it as
 /// the authoritative set and marks the table dirty when it differs. Hosts
@@ -119,10 +265,24 @@ pub struct PlatformViewTable {
     current: Vec<PlatformViewPlacement>,
     /// The authoritative set — what the host is showing.
     published: Vec<PlatformViewPlacement>,
+    /// The last id [`Self::next_id`] minted (0 = none yet).
+    next_id: u64,
     dirty: bool,
 }
 
 impl PlatformViewTable {
+    /// Mints a placement id — stable for the retained node's life, kept
+    /// across relayouts so a resize re-places the same mounted view instead
+    /// of remounting it. A structural replacement (a `Dynamic` rebuild)
+    /// mints a fresh one.
+    pub const fn next_id(&mut self) -> u64 {
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .expect("a runtime cannot outlive 2^64 platform-view ids");
+        self.next_id
+    }
+
     /// Writes the frame's complete set wholesale — the retained path's
     /// frame-end record is idempotent: however many frame-end sites run
     /// in one presented frame (build plus refresh-after-build, say), each
@@ -152,9 +312,46 @@ impl PlatformViewTable {
     }
 }
 
-/// The environment value installing a [`PlatformViewTable`] into a window:
+/// Whether a mounted platform-view child currently holds UI focus — the
+/// system `WebView` editing inside the page. While set a mounted child
+/// owns the IME: the runner clears the `WaterUI` text-input focus (a Hydrolysis
+/// field must not claim focus it does not hold) and drives no show/hide of
+/// its own — the child manages the keyboard itself.
+///
+/// One boolean, not a count: the frame reads "focus sits inside the
+/// container" from the Kotlin `PlatformViewRegistry` once per sync and sets
+/// it here — a removed child's focus move reports its own loss, so nothing
+/// can leak the way a per-view count could. Only Android realizes mounted
+/// children today, so the type builds there.
+#[cfg(target_os = "android")]
+#[derive(Clone, Debug, Default)]
+pub struct PlatformViewFocus {
+    holding: Rc<Cell<bool>>,
+}
+
+#[cfg(target_os = "android")]
+impl PlatformViewFocus {
+    /// The frame's "focus is inside a platform-view container" pull —
+    /// idempotent. `true` is returned when the boolean flipped, so the
+    /// frame that pulled it can run the edge work (clearing the `WaterUI`
+    /// claim, refreshing, redrawing).
+    pub fn set(&self, focused: bool) -> bool {
+        self.holding.replace(focused) != focused
+    }
+
+    /// Whether a platform-view child currently holds UI focus.
+    pub fn is_holding(&self) -> bool {
+        self.holding.get()
+    }
+}
+
+/// The environment value installing a `PlatformViewTable` into a window:
 /// a host inserts one at session create and [`PlatformView`] leaves record
 /// their frames into it.
+///
+/// The sink is the runtime's platform-view service — the table it shares
+/// mints the placement ids, so every sink the process holds is an
+/// independent id space.
 ///
 /// A leaf built under an environment without a sink panics at build —
 /// embedding platform views is a host capability, not a renderer default.
@@ -177,10 +374,77 @@ impl PlatformViewSink {
     pub const fn table(&self) -> &Rc<RefCell<PlatformViewTable>> {
         &self.table
     }
+
+    /// Mints a placement id from this sink's table — unique for the
+    /// runtime that installed the sink.
+    pub(crate) fn next_id(&self) -> u64 {
+        self.table.borrow_mut().next_id()
+    }
 }
 
 impl Default for PlatformViewSink {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The placement source's wire shape: a factory placement keeps its
+    /// `{"kind": ...}` JSON, an instance placement carries `{"instance": id}`
+    /// — flattened so the two read as one schema to the Kotlin registry.
+    #[test]
+    fn placement_source_wire_shape() {
+        let factory =
+            serde_json::to_value(PlatformViewSource::Factory { kind: "map".into() }).unwrap();
+        assert_eq!(factory, serde_json::json!({ "kind": "map" }));
+
+        let instance = serde_json::to_value(PlatformViewSource::Instance { instance: 7 }).unwrap();
+        assert_eq!(instance, serde_json::json!({ "instance": 7 }));
+    }
+
+    /// A whole placement on the wire — the object the Kotlin registry's
+    /// `createSlot` parses. Factory and instance leaves must read as the
+    /// same shape except for the flattened source field.
+    #[test]
+    fn placement_wire_shape() {
+        let base = serde_json::json!({
+            "x": 1.0,
+            "y": 2.0,
+            "width": 3.0,
+            "height": 4.0,
+            "order": 5,
+            "visible": true,
+        });
+        let placement = |source| PlatformViewPlacement {
+            id: 9,
+            source,
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+            clip: None,
+            order: 5,
+            visible: true,
+        };
+        let mut factory = base.clone();
+        factory["id"] = serde_json::json!(9);
+        factory["kind"] = serde_json::json!("map");
+        assert_eq!(
+            serde_json::to_value(placement(PlatformViewSource::Factory {
+                kind: "map".into()
+            }))
+            .unwrap(),
+            factory
+        );
+        let mut instance = base;
+        instance["id"] = serde_json::json!(9);
+        instance["instance"] = serde_json::json!(7);
+        assert_eq!(
+            serde_json::to_value(placement(PlatformViewSource::Instance { instance: 7 })).unwrap(),
+            instance
+        );
     }
 }

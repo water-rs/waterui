@@ -2,12 +2,15 @@
 //! instanced-quad passes.
 
 use cherenkov::lowering::Realization;
+use std::hash::{Hash, Hasher};
+use std::num::NonZeroU64;
 use std::ops::Range;
+use std::sync::Arc;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use super::MAX_PASS_INSTANCES;
-use super::prepared::{ClipShape, Op, Outline, PaintData, ResolvedPaint, box_shape};
+use super::prepared::{ClipShape, Op, OutlineRef, PaintData, ResolvedPaint, box_shape};
 use cherenkov::kurbo::{self, Affine, BezPath, PathEl, Point, Rect, Vec2};
 use cherenkov::{FillRule, GlyphRun, ShapeData, WorkingColor};
 
@@ -20,17 +23,20 @@ use crate::render::GpuImage;
 use crate::render::filter::FilterKey;
 
 use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRaster, glyph_key};
+use crate::render::gpu_cov::CoverageLimit;
 use crate::render::instance::{
-    FLAG_BLEND_SRC, FLAG_HAS_CLIP, FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB,
-    FLAG_UNION, Globals, Instance, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SHADOW, KIND_SPAN,
-    KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID,
-    PAINT_TEXTURE, Shape, Stop, affine, blend_code,
+    BLEND_CODE_SHIFT, ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC,
+    FLAG_HAS_CLIP, FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION,
+    Globals, Instance, KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN,
+    KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE,
+    PAINT_RADIAL, PAINT_SOLID, PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
+use crate::render::raster;
 
 /// The target a pass draws into.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
     /// The surface's render texture for engine part `n`: the whole surface
     /// is part 0, and every layer promoted to a system plane starts the
@@ -58,7 +64,7 @@ pub enum Source {
 }
 
 /// The blend pipeline a draw range uses.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum PipelineKind {
     /// Fixed-function source-over compositing.
     #[default]
@@ -66,15 +72,22 @@ pub enum PipelineKind {
     /// Write the fragment result unblended; blended composites do their
     /// compositing in the shader.
     Replace,
-    /// A registered backdrop effect shader's pipeline (its raw id).
-    Effect(u64),
+    /// A registered backdrop effect shader's pipeline: its raw id, and
+    /// `replace` for a member composite that reads the backdrop copy
+    /// and writes its result unblended.
+    Effect {
+        /// The shader's raw id.
+        id: u64,
+        /// Write the fragment result unblended.
+        replace: bool,
+    },
     /// The projective composite (#84): source-over, or `replace` for a
     /// blended composite that reads the backdrop copy itself.
     Projective { replace: bool },
 }
 
 /// The specialised fragment pipeline a range draws with.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ShaderVariant {
     /// Solid fills, spans, and glyphs: coverage + opacity + solid colour.
     #[default]
@@ -86,6 +99,31 @@ pub enum ShaderVariant {
     /// `Full` plus the backdrop union field: the module carries the
     /// member-record fold and its ownership weights.
     Union,
+    /// `Full` with the gradient stop scan compiled to its upper-bound
+    /// binary form: clips, masks and strokes keep every other Full
+    /// behaviour; only the stop lookup differs.
+    LongGradient,
+    /// Everything but the union field — `LongGradient`'s stop search
+    /// included — plus the GPU coverage cell buffer (issue #2543): the
+    /// module reads a GPU-routed path's partial cells from the frame's
+    /// cell-texel buffer. No range is lowered with it —
+    /// [`DrawRange::module`] selects it for GPU-routed ranges, so the
+    /// pipelines every other draw uses carry none of the cell-buffer code.
+    Cell,
+    /// GPU coverage with the ordinary solid-colour program.
+    CellSimple,
+    /// GPU coverage with the sharp-clip solid-cell program.
+    CellGlyph,
+    /// GPU coverage without source-image conversion or long-gradient code.
+    CellFull,
+    /// `Full` plus the per-tap conversion of source image texels: an
+    /// image paint whose texture keeps its source encoding (non-zero
+    /// `image_storage` source flags).
+    Image,
+    /// Solid atlas cells and full spans with sharp rectangular clips and optional masks.
+    Glyph,
+    /// An unclipped source-over span sampling a rendered layer in its stored space.
+    Composite,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -116,11 +154,33 @@ pub struct DrawRange {
     pub variant: ShaderVariant,
     /// Range into the frame's instance buffer.
     pub instances: Range<u32>,
+    /// For a GPU-routed path (issue #2543): its applied compute record
+    /// index. The range carries no CPU-side instances; the coverage
+    /// kernels write its spans and cells into the instance buffer's
+    /// tail and the draw reads its indirect arguments.
+    pub gpu: Option<u32>,
+}
+
+impl DrawRange {
+    /// The engine module the range's pipeline is built from: its
+    /// `variant`, with GPU coverage reads added for a GPU-routed range.
+    /// Ordinary paints retain their specialization; rich paints use `Cell`.
+    pub const fn module(&self) -> ShaderVariant {
+        match (self.gpu, self.variant) {
+            (Some(_), ShaderVariant::Union) | (None, _) => self.variant,
+            (Some(_), ShaderVariant::Simple) => ShaderVariant::CellSimple,
+            (Some(_), ShaderVariant::Glyph) => ShaderVariant::CellGlyph,
+            (Some(_), ShaderVariant::Full) => ShaderVariant::CellFull,
+            (Some(_), _) => ShaderVariant::Cell,
+        }
+    }
 }
 
 /// One render pass.
 #[derive(Clone, Debug)]
 pub struct Pass {
+    /// Range of directly drawn content; sampled images are resolved by the planner.
+    pub color_range: super::present::ColorRange,
     /// What it draws into.
     pub target: Target,
     /// Clear colour; `None` loads the previous contents.
@@ -143,6 +203,12 @@ pub struct Pass {
     /// capture texture before this pass draws — only on
     /// [`Target::Backdrop`] passes.
     pub capture: Option<Capture>,
+    /// Instance spans appended after `ranges` holding [`KIND_POLYGON`]
+    /// interiors: an ellipse's opaque interior at 16 or 32 sides instead
+    /// of the inscribed octagon. Filled only when the pass qualifies for
+    /// coverage order; the opaque phase draws them at the tier's vertex
+    /// count after the painter ranges.
+    pub tier_ranges: [Range<u32>; 2],
 }
 
 /// A backdrop capture's copy source, on a [`Target::Backdrop`] pass.
@@ -182,6 +248,10 @@ pub struct Resolve {
 /// A lowered frame.
 #[derive(Default)]
 pub struct Frame {
+    /// Command identities and spans, retained separately from geometry caches.
+    pub commands: Vec<super::damage::Command>,
+    pub command_sources: Vec<super::damage::CommandSource>,
+    revision: u64,
     /// Instance data.
     pub instances: Vec<Instance>,
     /// Gradient stops.
@@ -204,11 +274,18 @@ pub struct Frame {
     /// group's level count `n`: the pass at the index reduces its region
     /// into `n − 1` pyramid levels, one globals slot each.
     pub reduces: Vec<(usize, u32)>,
+    /// `index | tier << 30` of live painter-order instances whose opaque
+    /// interior is promoted to a wider polygon, in increasing index.
+    /// Appended as [`KIND_POLYGON`] slots when their pass closes in
+    /// coverage order. One buffer for the frame: passes close in
+    /// emission order, so an entry always belongs to the open pass.
+    tier_scratch: Vec<u32>,
     open: Option<OpenPass>,
 }
 
 #[derive(Clone)]
 struct OpenPass {
+    color_range: super::present::ColorRange,
     target: Target,
     clear: Option<[f32; 4]>,
     /// The target's storage space, resolved when the pass opened.
@@ -223,11 +300,18 @@ struct OpenPass {
     capture: Option<Capture>,
     ranges: Vec<DrawRange>,
     seg_start: u32,
+    /// Whether the pass can still draw in coverage order: a `Part`
+    /// target whose every pushed range is the simple src-over pipeline
+    /// with no bound source, image or mask. Only such a pass scans its
+    /// instances for interior tiers at close.
+    maybe_coverage: bool,
 }
 
 /// A rollback point for [`Frame::restore`] (used by speculative
 /// pass-through layers).
 struct FrameSnapshot {
+    commands: usize,
+    command_sources: usize,
     instances: usize,
     stops: usize,
     passes: usize,
@@ -240,6 +324,8 @@ impl Frame {
     /// Captures the frame's emission state.
     fn snapshot(&self) -> FrameSnapshot {
         FrameSnapshot {
+            commands: self.commands.len(),
+            command_sources: self.command_sources.len(),
             instances: self.instances.len(),
             stops: self.stops.len(),
             passes: self.passes.len(),
@@ -251,6 +337,8 @@ impl Frame {
 
     /// Reverts every emission since `snap`.
     fn restore(&mut self, snap: FrameSnapshot) {
+        self.commands.truncate(snap.commands);
+        self.command_sources.truncate(snap.command_sources);
         self.instances.truncate(snap.instances);
         self.stops.truncate(snap.stops);
         self.passes.truncate(snap.passes);
@@ -258,6 +346,14 @@ impl Frame {
         self.filters.truncate(snap.filters);
         self.shadows.truncate(snap.shadows);
         self.open = snap.open;
+        // Entries recorded since the snapshot index reverting instances;
+        // the ones kept precede it and belong to the restored open pass.
+        let keep = self
+            .tier_scratch
+            .iter()
+            .position(|&entry| (entry & 0x3fff_ffff) as usize >= snap.instances)
+            .unwrap_or(self.tier_scratch.len());
+        self.tier_scratch.truncate(keep);
     }
 
     /// Removes pass `i` and shifts the pass indexes recorded in `shadows`
@@ -291,6 +387,9 @@ impl Frame {
 impl Frame {
     /// Reuses this frame's allocations for the next lowering.
     pub fn reset(&mut self) {
+        self.revision += 1;
+        self.commands.clear();
+        self.command_sources.clear();
         self.instances.clear();
         self.stops.clear();
         self.passes.clear();
@@ -300,6 +399,7 @@ impl Frame {
         self.shadows.clear();
         self.mips.clear();
         self.reduces.clear();
+        self.tier_scratch.clear();
         self.open = None;
     }
 }
@@ -380,26 +480,144 @@ fn aa_margin(transform: Affine) -> f64 {
     if lmin <= 1e-9 { 0.0 } else { 2.0 / lmin }
 }
 
+/// The opaque-interior tier `inst` earns: nonzero when it is a fully
+/// opaque solid fill of a whole ellipse (exponent 2, corner radii all
+/// `half.x`) large enough on screen that a wider inscribed polygon pays
+/// — 1 for 16 sides at [`ELLIPSE_TIER16_MIN_AREA`], 2 for 32 at
+/// [`ELLIPSE_TIER32_MIN_AREA`] — else 0 for the inscribed octagon.
+#[expect(
+    clippy::float_cmp,
+    reason = "exact gates mirroring the shader's alpha and ellipse tests"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "one early-out chain on the per-instance push path; the kind and paint tests must fold into the caller"
+)]
+#[inline(always)]
+fn interior_tier(inst: &Instance) -> u32 {
+    let s = &inst.shape;
+    // The ellipse is inside its device bounds: under the lowest tier
+    // threshold the projected ellipse area (pi/4 of it at most) cannot
+    // qualify — a cheap first filter. A degenerate bound fails it too.
+    if inst.meta[0] != KIND_FILL
+        || inst.meta[1] != PAINT_SOLID
+        || s.exponent != 2.0
+        || f64::from(inst.bounds[2] - inst.bounds[0]) * f64::from(inst.bounds[3] - inst.bounds[1])
+            < ELLIPSE_TIER16_MIN_AREA
+        || s.radii != [s.half[0]; 4]
+        || inst.color[3] * inst.params[1] != 1.0
+    {
+        return 0;
+    }
+    let det =
+        f64::from(inst.affine[0].mul_add(inst.affine[3], -(inst.affine[1] * inst.affine[2]))).abs();
+    let area = std::f64::consts::PI
+        * f64::from(s.half[0])
+        * f64::from(s.half[0])
+        * f64::from(s.aspect)
+        * det;
+    u32::from(area >= ELLIPSE_TIER16_MIN_AREA) + u32::from(area >= ELLIPSE_TIER32_MIN_AREA)
+}
+
+/// Maximum stop count handled by the original linear-search module.
+const GRADIENT_LINEAR_STOPS: u32 = 8;
+
 /// The specialised fragment pipeline `inst` requires: the union variant
 /// for a backdrop member drawing against the group's shared field, the
+/// long-gradient module for a gradient past `GRADIENT_LINEAR_STOPS`, the
+/// image variant for an image paint sampling source-encoded texels, the
 /// uber-shader when it reads rare fields (clip, mask, inner, strokes,
-/// non-solid paint), the shadow kernel otherwise for shadows, and the
-/// trivial coverage path for solid fills, spans, and glyphs.
-const fn variant_of(inst: &Instance) -> ShaderVariant {
+/// other non-solid paint), the shadow kernel otherwise for shadows, and
+/// the trivial coverage path for solid fills, spans, and glyphs.
+#[expect(
+    clippy::float_cmp,
+    reason = "zero radii identify sharp geometry; a nonzero corner needs the general shader"
+)]
+fn variant_of(inst: &Instance) -> ShaderVariant {
     let flags = inst.meta[3] >> 24;
     if (flags & FLAG_UNION) != 0 {
         return ShaderVariant::Union;
+    }
+    if is_gradient(inst) && inst.meta[3] & 0xffff > GRADIENT_LINEAR_STOPS {
+        return ShaderVariant::LongGradient;
     }
     if (flags & (FLAG_HAS_CLIP | FLAG_HAS_MASK | FLAG_HAS_INNER)) != 0
         || inst.meta[1] != PAINT_SOLID
         || matches!(inst.meta[0], KIND_STROKE_OFFSET | KIND_STROKE_DIST)
     {
+        // An image paint is never solid, so every image instance reaches
+        // this branch; testing it here keeps the solid path free of it.
+        // `SOURCE` first: in that order the common path compiles to the
+        // same instructions as without the image variant.
+        if (inst.meta[3] & super::image_storage::SOURCE) != 0 && inst.meta[1] == PAINT_IMAGE {
+            return ShaderVariant::Image;
+        }
+        if matches!(inst.meta[0], KIND_GLYPH | KIND_SPAN)
+            && inst.meta[1] == PAINT_SOLID
+            && inst.clip.radii == [0.0; 4]
+        {
+            return ShaderVariant::Glyph;
+        }
+        if inst.meta[0] == KIND_SPAN
+            && inst.meta[1] == PAINT_TEXTURE
+            && (inst.meta[3] & !(FLAG_TEX_SRGB << 24)) == 0
+        {
+            return ShaderVariant::Composite;
+        }
         return ShaderVariant::Full;
     }
     if inst.meta[0] == KIND_SHADOW {
         return ShaderVariant::Shadow;
     }
     ShaderVariant::Simple
+}
+
+/// Whether `inst` paints a linear, radial or sweep gradient.
+const fn is_gradient(inst: &Instance) -> bool {
+    matches!(
+        inst.meta[1] & 0xffff,
+        PAINT_LINEAR | PAINT_RADIAL | PAINT_SWEEP
+    )
+}
+
+/// The variant `inst` draws with when the open range draws with `open`:
+/// a gradient the uber-shader would draw joins an open long-gradient
+/// range instead. That module evaluates every linear, radial and sweep
+/// paint the uber-shader does, and its upper-bound search selects the
+/// same stop interval as the linear scan, so interleaved short and long
+/// gradients share one draw instead of switching pipelines per instance.
+fn variant_after(open: ShaderVariant, inst: &Instance) -> ShaderVariant {
+    let variant = variant_of(inst);
+    if matches!(open, ShaderVariant::LongGradient)
+        && matches!(variant, ShaderVariant::Full)
+        && is_gradient(inst)
+    {
+        return ShaderVariant::LongGradient;
+    }
+    variant
+}
+
+/// One shaped instance's geometry, whatever its paint resolves from.
+#[derive(Clone, Copy)]
+struct ShapedGeometry {
+    /// `KIND_*`.
+    kind: u32,
+    /// Content -> instance-local, including the box's centring.
+    local: Affine,
+    /// Content transform without the centring (for the AA margin).
+    ambient: Affine,
+    /// The centred shape.
+    shape: super::instance::Shape,
+    /// The inner shape of an offset stroke.
+    inner: Option<super::instance::Shape>,
+    /// Uninflated local bounds.
+    bounds: Rect,
+    /// The margin that is not antialiasing.
+    extra_margin: f64,
+    /// `params[0]`.
+    param_x: f32,
+    /// `meta[3]` flag bits.
+    flags: u32,
 }
 
 /// The part of a shadow its following opaque fill hides, in shadow-local
@@ -465,6 +683,7 @@ fn cover_strips(b: Rect, c: Cover) -> impl Iterator<Item = Rect> {
 pub struct ContentData {
     pub(crate) retained: cherenkov::lowering::Content<Op, Emission>,
     pub(crate) storage: EmissionStorage,
+    pub(crate) range: Option<super::present::ColorRange>,
 }
 
 impl ContentData {
@@ -472,11 +691,13 @@ impl ContentData {
         Self {
             retained: cherenkov::lowering::Content::new(list),
             storage: EmissionStorage::default(),
+            range: None,
         }
     }
 
     pub fn replace(&mut self, list: cherenkov::Picture) -> cherenkov::Picture {
         let previous = self.retained.replace(list);
+        self.range = None;
         self.storage.instances.clear();
         self.storage.stops.clear();
         self.storage.templates.clear();
@@ -485,7 +706,24 @@ impl ContentData {
         // clear them too or orphaned entries outlive every compaction
         // check (#119).
         self.storage.refs.clear();
+        self.storage.geometry.flag_reconcile();
         previous
+    }
+
+    pub fn gpu_input_bytes(&self) -> u64 {
+        (self.storage.templates.capacity() * size_of::<InstanceTemplate>()
+            + self.storage.covers.capacity() * size_of::<Cover>()
+            + self.storage.instances.capacity() * size_of::<RetainedInstance>()
+            + self.storage.stops.capacity() * size_of::<Stop>()
+            + self.storage.refs.capacity() * size_of::<(u32, u64)>()
+            + self.storage.gpu_paths.capacity() * std::mem::size_of::<(usize, PreparedGpu)>()
+            + self
+                .storage
+                .gpu_paths
+                .values()
+                .map(|entry| entry.path.elements.len() * std::mem::size_of::<path::GpuElement>())
+                .sum::<usize>()) as u64
+            + self.storage.geometry.heap_bytes()
     }
 
     pub fn into_picture(self) -> cherenkov::Picture {
@@ -496,15 +734,23 @@ impl ContentData {
         Self {
             retained: cherenkov::lowering::Content::picture(list),
             storage: EmissionStorage::default(),
+            range: None,
         }
     }
 
     pub fn update(&mut self, updates: Vec<cherenkov::SlotUpdate>) {
+        if !updates.is_empty() {
+            // A patch can retire realizations — and their geometry
+            // digests — without `ops` reporting a changed leaf.
+            self.storage.geometry.flag_reconcile();
+        }
         self.retained.update(updates);
+        self.range = None;
     }
 
     pub fn invalidate(&mut self) {
         self.retained.invalidate();
+        self.range = None;
         self.storage = EmissionStorage::default();
     }
 
@@ -517,12 +763,14 @@ impl ContentData {
     /// dimensions changed behind the same id.
     pub fn invalidate_image(&mut self, id: cherenkov::ImageId) {
         if self.retained.invalidate_image(id) {
+            self.range = None;
             self.storage = EmissionStorage::default();
         }
     }
 
     pub fn trim(&mut self) {
         self.retained.trim();
+        self.range = None;
         self.storage = EmissionStorage::default();
     }
 }
@@ -530,6 +778,10 @@ impl ContentData {
 /// A layer's device data. Leaf ranges remain independent for dirty updates.
 #[derive(Default)]
 pub struct EmissionStorage {
+    gpu_paths: FxHashMap<usize, PreparedGpu>,
+    /// CPU-route path geometry retained across content replacements by
+    /// semantic key; bounded to the latest walk's marks.
+    pub(crate) geometry: GeometryCache,
     templates: Vec<InstanceTemplate>,
     covers: Vec<Cover>,
     pub(crate) instances: Vec<RetainedInstance>,
@@ -539,7 +791,294 @@ pub struct EmissionStorage {
     pub(crate) refs: Vec<(u32, u64)>,
 }
 
+struct PreparedGpu {
+    content: u64,
+    linear: [u64; 4],
+    /// The outline's local bounding box, which a shader paint's frame
+    /// reads. `None` for a compute stroke, which has no outline on the CPU.
+    local_bounds: Option<Rect>,
+    path: path::GpuPath,
+}
+
+/// A retained geometry entry's identity: the draw's semantic content
+/// hash — elements and fill rule for a fill, plus stroke style and
+/// tolerance for a stroke — its fill rule, and the raster's exact
+/// linear part. Translation, surface size and clip move a placement
+/// without changing the geometry, so they are not identity.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct GeometryKey {
+    content: u64,
+    rule: FillRule,
+    /// The raster's 2x2, bit for bit.
+    linear: [u64; 4],
+}
+
+impl GeometryKey {
+    fn new(content: u64, rule: FillRule, raster: Affine) -> Self {
+        let [a, b, c, d, ..] = raster.as_coeffs();
+        Self {
+            content,
+            rule,
+            linear: [a, b, c, d].map(f64::to_bits),
+        }
+    }
+
+    /// The map slot: a compact nonzero word the emission carries. A
+    /// lookup still compares the whole key before reusing an entry
+    /// under this digest, so folding zero away cannot alias a key.
+    fn digest(&self) -> NonZeroU64 {
+        let mut hasher = FxHasher::default();
+        self.hash(&mut hasher);
+        NonZeroU64::new(hasher.finish() | 1).expect("geometry digest has its low bit set")
+    }
+}
+
+/// The retained form's lazy states: flattened first, winding-resolved
+/// once a placement's surface grid is nonempty.
+enum GeometryState {
+    /// `path::flatten_segments` output under the draw's own rule.
+    Flattened {
+        segments: Vec<(f32, f32, f32, f32)>,
+        rule: FillRule,
+    },
+    /// `resolve_winding` ran once: its replacement boundary rasterizes
+    /// under `NonZero` in place of the flattened segments, or the
+    /// unchanged input stands under its own rule.
+    Resolved {
+        segments: Vec<(f32, f32, f32, f32)>,
+        rule: FillRule,
+    },
+}
+
+impl GeometryState {
+    /// The segments to rasterize and their fill rule.
+    fn segments(&self) -> (&[(f32, f32, f32, f32)], FillRule) {
+        match self {
+            Self::Flattened { segments, rule } | Self::Resolved { segments, rule } => {
+                (segments, *rule)
+            }
+        }
+    }
+
+    /// Run `resolve_winding` once: a replacement boundary supersedes the
+    /// flattened segments — their storage is dropped, not kept beside —
+    /// while an unchanged input keeps its allocation and its rule.
+    fn resolve(&mut self) {
+        let Self::Flattened { segments, rule } = self else {
+            return;
+        };
+        *self = cherenkov::lowering::resolve_winding(segments, *rule)
+            .into_resolved()
+            .map_or_else(
+                || Self::Resolved {
+                    segments: std::mem::take(segments),
+                    rule: *rule,
+                },
+                |segments| Self::Resolved {
+                    segments,
+                    rule: FillRule::NonZero,
+                },
+            );
+    }
+}
+
+/// A path's flattened segments in its translation-normalized frame:
+/// the outline anchored at its control-box corner, remapped by the
+/// raster's linear part — sequential f64 affines, never one
+/// cancellation-prone product — shifted onto positive coordinates and
+/// flattened to f32. `base + raster translation` places the frame in
+/// device space, so no placement's coordinates round the retained form.
+struct RetainedGeometry {
+    /// `linear * corner - shift`: the frame origin's device position at
+    /// zero raster translation; device space is `frame + base + t`.
+    base: Vec2,
+    /// Frame-space bounds of the flattened segments.
+    bbox: Rect,
+    state: GeometryState,
+}
+
+impl RetainedGeometry {
+    /// Flatten `local` — the draw's outline in its own space — into the
+    /// normalized frame under `raster`'s linear part at `path::FLATTEN`.
+    fn new(mut local: BezPath, raster: Affine, rule: FillRule) -> Self {
+        let [a, b, c, d, ..] = raster.as_coeffs();
+        let linear = Affine::new([a, b, c, d, 0.0, 0.0]);
+        let control = local.control_box();
+        let corner = control.origin().to_vec2();
+        // The mapped box's lowest corner relative to the anchored path:
+        // `shift` lands it in [1, 2) so frame coordinates stay positive.
+        let size = control.size();
+        let low = [
+            Point::new(size.width, 0.0),
+            Point::new(0.0, size.height),
+            Point::new(size.width, size.height),
+        ]
+        .into_iter()
+        .map(|p| linear * p)
+        .fold(Point::ORIGIN, |m, p| Point::new(m.x.min(p.x), m.y.min(p.y)));
+        let shift = Vec2::new(1.0 - low.x.floor(), 1.0 - low.y.floor());
+        local.apply_affine(Affine::translate(-corner));
+        local.apply_affine(Affine::translate(shift) * linear);
+        let (segments, bbox) = path::flatten_segments(&local, path::FLATTEN);
+        Self {
+            base: (linear * corner.to_point()).to_vec2() - shift,
+            bbox,
+            state: GeometryState::Flattened { segments, rule },
+        }
+    }
+
+    /// The frame→device offset at raster translation `t` and the frame
+    /// bounds under it: `frame + base + t` is the device point.
+    fn placed(&self, t: Vec2) -> (Vec2, Rect) {
+        let to_device = self.base + t;
+        (to_device, self.bbox + to_device)
+    }
+
+    /// Heap bytes of the retained segment allocation.
+    const fn segment_bytes(&self) -> usize {
+        let capacity = match &self.state {
+            GeometryState::Flattened { segments, .. }
+            | GeometryState::Resolved { segments, .. } => segments.capacity(),
+        };
+        capacity * std::mem::size_of::<(f32, f32, f32, f32)>()
+    }
+}
+
+/// One retained geometry: its full key — compared before reuse,
+/// replaced on a digest mismatch — its normalized segments, and the
+/// epoch that last used them.
+struct GeometryEntry {
+    key: GeometryKey,
+    geometry: RetainedGeometry,
+    /// The `GeometryCache::epoch` that last touched this entry.
+    used: u64,
+}
+
+/// One joined batch, kept as a symbol so Callgrind can include worker work.
+#[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+#[inline(never)]
+fn prepare_geometry_batch(
+    jobs: FxHashMap<GeometryKey, (NonZeroU64, OutlineRef<'_>, Affine, f64)>,
+    surface: (f64, f64),
+) -> Vec<(NonZeroU64, GeometryEntry)> {
+    use rayon::prelude::*;
+    jobs.into_par_iter()
+        .map(|(key, (digest, outline, raster, tolerance))| {
+            let mut geometry = RetainedGeometry::new(outline.build(tolerance), raster, key.rule);
+            let [.., x, y] = raster.as_coeffs();
+            if path::grid(geometry.placed(Vec2::new(x, y)).1, surface).is_some() {
+                geometry.state.resolve();
+            }
+            (
+                digest,
+                GeometryEntry {
+                    key,
+                    geometry,
+                    used: 0,
+                },
+            )
+        })
+        .collect()
+}
+
+/// A content's retained CPU-route path geometry
+/// (water-rs/waterui#3306), keyed by [`GeometryKey::digest`]: a
+/// re-recorded or re-placed path reuses its flattened,
+/// winding-resolved segments. Liveness reconciles only after a walk
+/// that flagged or changed realizations — the entries the current
+/// retained emissions' digests mark stay, the rest drop — so the live
+/// set tracks current emissions, never historical placements. The
+/// cache lives and dies with the content's storage.
+#[derive(Default)]
+pub struct GeometryCache {
+    entries: FxHashMap<NonZeroU64, GeometryEntry>,
+    epoch: u64,
+    /// A replace or slot update dirtied the emissions behind the walk's
+    /// back: reconcile after the next successful one even when it
+    /// reports no change (an emptied content realizes nothing).
+    reconcile: bool,
+}
+
+impl GeometryCache {
+    /// Flag a reconciliation against the next successful walk's
+    /// emissions.
+    const fn flag_reconcile(&mut self) {
+        self.reconcile = true;
+    }
+
+    /// `key`'s geometry under `digest`: an entry whose stored key
+    /// matches bit for bit is reused; a miss or a digest-collision
+    /// mismatch builds the normalized form. Lookup does not mark liveness.
+    fn entry(
+        &mut self,
+        digest: NonZeroU64,
+        key: GeometryKey,
+        build: impl FnOnce() -> Option<RetainedGeometry>,
+    ) -> Option<&mut RetainedGeometry> {
+        let entry = match self.entries.entry(digest) {
+            std::collections::hash_map::Entry::Occupied(slot) => {
+                let entry = slot.into_mut();
+                if entry.key != key {
+                    *entry = GeometryEntry {
+                        key,
+                        geometry: build()?,
+                        used: 0,
+                    };
+                }
+                entry
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(GeometryEntry {
+                key,
+                geometry: build()?,
+                used: 0,
+            }),
+        };
+        Some(&mut entry.geometry)
+    }
+
+    /// Reconcile liveness after a successful walk that flagged or
+    /// changed a realization: a new epoch marks the digests `emissions`
+    /// carry and drops unmarked entries — marking a colliding digest
+    /// retains the entry, never reuses its geometry. An unflagged
+    /// all-hit walk and an empty table both return without scanning.
+    fn reconcile(&mut self, emissions: &[Realization<Emission>], changed: bool) {
+        if !std::mem::take(&mut self.reconcile) && !changed {
+            return;
+        }
+        if self.entries.is_empty() {
+            return;
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        let epoch = self.epoch;
+        for digest in emissions
+            .iter()
+            .filter_map(|e| e.data.as_ref().and_then(|e| e.geometry))
+        {
+            if let Some(entry) = self.entries.get_mut(&digest) {
+                entry.used = epoch;
+            }
+        }
+        self.entries.retain(|_, entry| entry.used == epoch);
+    }
+
+    /// Heap bytes: the table plus each entry's retained segments.
+    fn heap_bytes(&self) -> u64 {
+        (self.entries.capacity()
+            * (std::mem::size_of::<(NonZeroU64, GeometryEntry)>() + size_of::<u8>())
+            + self
+                .entries
+                .values()
+                .map(|entry| entry.geometry.segment_bytes())
+                .sum::<usize>()) as u64
+    }
+}
+
 impl EmissionStorage {
+    fn retain_gpu_paths(&mut self, ops: &[Op]) {
+        self.gpu_paths
+            .retain(|index, _| matches!(ops.get(*index), Some(Op::Path { .. })));
+    }
+
     /// Reclaim obsolete ranges after patches without rebuilding valid leaves.
     fn compact(&mut self, emissions: &mut [Realization<Emission>]) {
         if self.templates.is_empty() {
@@ -566,6 +1105,8 @@ impl EmissionStorage {
             return;
         }
         let mut storage = Self {
+            gpu_paths: std::mem::take(&mut self.gpu_paths),
+            geometry: std::mem::take(&mut self.geometry),
             templates: Vec::with_capacity(templates),
             covers: Vec::with_capacity(covers),
             instances: Vec::with_capacity(instances),
@@ -606,6 +1147,8 @@ impl EmissionStorage {
 /// mask coordinates and per-quad fields are reconstructed when composed.
 #[derive(Clone, Copy)]
 struct InstanceTemplate {
+    /// The non-span geometry shared by this leaf's boundary quads.
+    kind: u32,
     affine: [f32; 6],
     shape: Shape,
     inner: Shape,
@@ -620,6 +1163,7 @@ struct InstanceTemplate {
 impl InstanceTemplate {
     fn new(inst: &Instance) -> Self {
         Self {
+            kind: inst.meta[0],
             affine: inst.affine[..6]
                 .try_into()
                 .expect("six affine coefficients"),
@@ -632,20 +1176,6 @@ impl InstanceTemplate {
             paint: inst.meta[1],
             packed: inst.meta[3],
         }
-    }
-
-    fn restore(&self) -> Instance {
-        let mut inst = Instance::new(0);
-        inst.affine[..6].copy_from_slice(&self.affine);
-        inst.shape = self.shape;
-        inst.inner = self.inner;
-        inst.color = self.color;
-        inst.grad = self.grad;
-        inst.grad2 = self.grad2;
-        inst.params[..2].copy_from_slice(&self.params);
-        inst.meta[1] = self.paint;
-        inst.meta[3] = self.packed;
-        inst
     }
 }
 
@@ -660,18 +1190,36 @@ pub struct RetainedInstance {
 }
 
 impl RetainedInstance {
-    fn restore(self, template: &InstanceTemplate, stop_base: u32) -> Instance {
-        let mut inst = template.restore();
-        inst.bounds = self.bounds;
-        inst.uv[..2].copy_from_slice(&self.uv);
-        inst.meta[0] = self.kind;
-        inst.meta[2] = self.first_stop
+    /// The instance `template` and this quad's fields describe; every
+    /// field the template does not keep takes `Instance::new`'s value.
+    /// Built as one literal from whole arrays: this runs once per retained
+    /// quad per frame, and a slice-range copy here costs an outlined
+    /// bounds-checked call plus a `memcpy` whenever the optimizer declines
+    /// to inline the range indexing.
+    const fn restore(self, template: &InstanceTemplate, stop_base: u32) -> Instance {
+        const BLANK: Instance = Instance::new(0);
+        let [a0, a1, a2, a3, a4, a5] = template.affine;
+        let [u0, u1] = self.uv;
+        let [p0, p1] = template.params;
+        let first_stop = self.first_stop
             + if self.kind == KIND_REGION {
                 0
             } else {
                 stop_base
             };
-        inst
+        Instance {
+            affine: [a0, a1, a2, a3, a4, a5, BLANK.affine[6], BLANK.affine[7]],
+            bounds: self.bounds,
+            shape: template.shape,
+            inner: template.inner,
+            color: template.color,
+            grad: template.grad,
+            grad2: template.grad2,
+            uv: [u0, u1, BLANK.uv[2], BLANK.uv[3]],
+            params: [p0, p1, BLANK.params[2], BLANK.params[3]],
+            meta: [self.kind, template.paint, first_stop, template.packed],
+            ..BLANK
+        }
     }
 }
 
@@ -683,19 +1231,24 @@ impl RetainedInstance {
 /// always misses (#119).
 pub const DEFERRED_REFS: u64 = 1 << 62;
 
+/// Whether `a` and `b` differ at most in their translation.
+#[expect(
+    clippy::float_cmp,
+    reason = "the leaf hit check's exact transform equality, less the translation"
+)]
+fn same_linear(a: Affine, b: Affine) -> bool {
+    let ([a0, a1, a2, a3, ..], [b0, b1, b2, b3, ..]) = (a.as_coeffs(), b.as_coeffs());
+    [a0, a1, a2, a3] == [b0, b1, b2, b3]
+}
+
 /// Per-operation device output under its sampled placement.
 pub struct Emission {
-    /// `(instance, pending raster, cell)` patch range in the producing
-    /// frame's `Lowering::emission_patches` — `inst_base << 32 | start
-    /// << 11 | len`, verbatim frame indices resolved at apply and never
-    /// carried past it, where `inst_base` is the first frame instance
-    /// slot the leaf occupied so apply and a same-frame recompose can
-    /// recover storage-local indices without copying the patch list.
-    /// The range indexes `emission_patches`, not `cell_patches`: frame
-    /// rollbacks truncate the latter but never the former, so a leaf
-    /// produced inside a rolled-back speculation keeps a valid range
-    /// (#119).
-    pub(crate) pending_cells: u64,
+    /// The lowering revision that changed this geometry or paint, including
+    /// results replayed after a speculative frame rollback.
+    revision: u64,
+    /// The leaf's `(instance, pending raster, cell)` patches in the
+    /// producing frame's `Lowering::emission_patches` (#119).
+    pub(crate) pending_cells: PendingCells,
     /// `(start << 32 | len)` range into `EmissionStorage::refs`
     /// holding the `(shelf slot, band epoch)` of every atlas band the
     /// retained instances sample. `DEFERRED_REFS` marks an emission
@@ -714,6 +1267,48 @@ pub struct Emission {
     pub(crate) instances: Range<usize>,
     stops: Range<usize>,
     image: Option<ImageSource>,
+    /// A GPU-routed leaf's coverage draw record — the placement key and
+    /// everything a coverage-entry miss regenerates from — shared with
+    /// the pending list of each frame that draws it. `Some` makes the
+    /// emission's single retained instance the draw's anchor
+    /// (water-rs/waterui#3081).
+    gpu: Option<Arc<glyph::GpuDraw>>,
+    /// The automatic route's decisions for a GPU leaf re-placed under it,
+    /// built at its first re-placement (`Lowering::replace_gpu_leaf`).
+    gpu_route: Option<RouteWindow>,
+    /// A CPU-route path leaf's retained-geometry digest, kept compact so
+    /// the niche shares the discriminant's word: the next reconciliation
+    /// marks the entry under it. Marking never compares keys — a
+    /// colliding entry is retained, not reused.
+    geometry: Option<NonZeroU64>,
+}
+
+/// The automatic route's decision (`Lowering::automatic_gpu`) for a
+/// retained GPU leaf's geometry on each grid size within one row or
+/// column of `anchor`. The predicate reads a placed bound's grid size and
+/// what [`path::GpuPath::grid_bound`] derives from it, never where the
+/// grid lies, so a re-placement onto one of these sizes takes the stored
+/// decision. A pure translation moves an unclipped grid's size by at most
+/// one either way, so an animated leaf decides each frame without
+/// re-running the capacity check.
+#[derive(Clone, Copy)]
+struct RouteWindow {
+    anchor: [usize; 2],
+    /// Bit `3 * dy + dx` holds the decision for `anchor + (dx, dy) - 1`.
+    gpu: u16,
+}
+
+impl RouteWindow {
+    /// The decision for a `grid` of this window, `None` outside it.
+    fn decision(self, grid: [usize; 2]) -> Option<bool> {
+        let offset = |axis: usize| {
+            (grid[axis] + 1)
+                .checked_sub(self.anchor[axis])
+                .filter(|&d| d < 3)
+        };
+        let (dx, dy) = (offset(0)?, offset(1)?);
+        Some((self.gpu >> (3 * dy + dx)) & 1 != 0)
+    }
 }
 
 impl Emission {
@@ -728,7 +1323,7 @@ impl Emission {
         }
         if refs
             .iter()
-            .all(|&(slot, epoch)| atlas.shelf_epoch(slot) == epoch)
+            .all(|&(slot, epoch)| atlas.shelf_matches(slot, epoch))
         {
             self.live_stamp = stamp;
             return true;
@@ -773,35 +1368,69 @@ impl Emission {
     }
 
     /// The emission's patch range in the producing frame's
-    /// `Lowering::emission_patches`, unpacked from `pending_cells`
-    /// (#119).
+    /// `Lowering::emission_patches` (#119).
     pub(crate) const fn pending_cells(&self) -> Range<usize> {
-        let start = ((self.pending_cells >> 11) & 0x1F_FFFF) as usize;
-        start..start + (self.pending_cells & 0x7FF) as usize
+        self.pending_cells.range()
     }
 
     /// Whether the emission carries no pending cell patches.
     pub(crate) const fn pending_cells_empty(&self) -> bool {
-        self.pending_cells.trailing_zeros() >= 11
+        self.pending_cells.start == self.pending_cells.end
     }
 
     /// Frame instance index the pending-cell entries are relative to
     /// (#119).
     pub(crate) const fn cell_inst_base(&self) -> u32 {
-        (self.pending_cells >> 32) as u32
-    }
-
-    /// Pack `pending_cells` from the producing leaf's cell range and
-    /// its frame instance base (#119).
-    pub(crate) const fn pack_pending_cells(inst_base: u32, start: usize, len: usize) -> u64 {
-        debug_assert!(start < (1 << 21), "cell patch count fits 21 bits");
-        debug_assert!(len <= 0x7FF, "cells per leaf fit 11 bits");
-        ((inst_base as u64) << 32) | ((start as u64) << 11) | len as u64
+        self.pending_cells.inst_base
     }
 
     /// Clear the pending-cell extent after the commit applied it (#119).
     pub(crate) const fn clear_pending_cells(&mut self) {
-        self.pending_cells = 0;
+        self.pending_cells = PendingCells::NONE;
+    }
+}
+
+/// A leaf's cell patches: the range of the producing frame's
+/// `Lowering::emission_patches` its cells occupy, verbatim frame
+/// indices resolved at apply and never carried past it, and
+/// `inst_base`, the first frame instance slot the leaf occupied, so
+/// apply and a same-frame recompose recover storage-local indices
+/// without copying the patch list. The range indexes
+/// `emission_patches`, not `cell_patches`: frame rollbacks truncate the
+/// latter but never the former, so a leaf produced inside a
+/// rolled-back speculation keeps a valid range (#119).
+///
+/// Every bound is a full `u32`, the width of the instance indices the
+/// patches carry, so no leaf's cell count or position in the frame can
+/// overflow it (water-rs/waterui#2778).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingCells {
+    start: u32,
+    end: u32,
+    inst_base: u32,
+}
+
+impl PendingCells {
+    /// No pending patches.
+    pub const NONE: Self = Self {
+        start: 0,
+        end: 0,
+        inst_base: 0,
+    };
+
+    /// The leaf whose first frame instance is `inst_base` and whose
+    /// cells occupy `patches` of the frame's `emission_patches`.
+    pub fn new(inst_base: u32, patches: Range<usize>) -> Self {
+        Self {
+            start: u32::try_from(patches.start).expect("emission patch index fits u32"),
+            end: u32::try_from(patches.end).expect("emission patch index fits u32"),
+            inst_base,
+        }
+    }
+
+    /// The patch range, as indices into `emission_patches`.
+    pub const fn range(self) -> Range<usize> {
+        self.start as usize..self.end as usize
     }
 }
 
@@ -842,6 +1471,8 @@ pub struct Lowered {
     pub paths: u32,
     /// Deferred rasters, in lowering order.
     pub pending: Vec<PendingRaster>,
+    /// Path cell texels the `PendingRaster::Path` byte ranges index.
+    pub path_arena: Vec<u8>,
     /// `uv.xy` patches: `(instance, pending index, cell index)`.
     pub cell_patches: Vec<(u32, u32, u32)>,
     /// The producing emission's view of the same triples, indexed by
@@ -1000,6 +1631,9 @@ struct MemberEntry {
     /// The member's device-space clip bounds — its `size` input and the
     /// draw bound's base.
     bounds: Rect,
+    /// The member layer's local-to-device transform: the space its clip
+    /// is declared in, which an effect shader's `px.local` reads back.
+    transform: Affine,
     /// The composite's draw bound: `bounds` inflated by `r(n) + outer +
     /// 1` for a union-field member, `bounds` unchanged otherwise.
     draw: Rect,
@@ -1058,10 +1692,65 @@ impl AnchorScratch {
     }
 }
 
+/// One open isolation's record on [`Lowering::isolations`]: the scope's
+/// declared composite inputs (enough to reopen it identically), the
+/// scratch depth it draws into, and the enclosing state its tail
+/// restores.
+struct Isolation {
+    /// The clip the scope's body draws under.
+    inner_clip: Option<DeviceClip>,
+    filter: Option<cherenkov::FilterId>,
+    opacity: f32,
+    blend: cherenkov::BlendMode,
+    /// The scope's declared space; `storage` resolves it at open.
+    space: cherenkov::BlendSpace,
+    /// The scratch depth index this scope draws into.
+    scratch: usize,
+    /// The scratch's resolved storage space: the declared `space` for a
+    /// semantic or translucent level, the enclosing level's otherwise.
+    storage: cherenkov::BlendSpace,
+    /// The clip in force outside the scope, restored before the
+    /// composite emits.
+    outer_clip: Option<DeviceClip>,
+    /// `member_outer_clip` in force outside the scope.
+    outer_member_clip: Option<DeviceClip>,
+    /// `frame.passes.len()` when the scope's segment opened.
+    passes_start: usize,
+    /// `frame.instances.len()` when the scope's segment opened: the
+    /// tight region is measured over these.
+    inst_start: usize,
+    /// `capture_isolation` in force outside the scope.
+    saved_capture: bool,
+    /// `semantic_target` in force outside the scope.
+    saved_target: Target,
+    /// `looked_through_scratches` in force outside the scope.
+    saved_scratches: Vec<(usize, usize)>,
+}
+
+impl Isolation {
+    /// Whether the scope composites identically to drawing its items
+    /// under the intersected coverage — opacity 1, `Normal` blend,
+    /// linear storage, no filter: the scopes `run_clipped` opens, whose
+    /// segments a part boundary may split across engine parts.
+    fn clip_only(&self) -> bool {
+        self.filter.is_none()
+            && self.opacity >= 1.0
+            && self.blend == cherenkov::BlendMode::Normal
+            && self.storage == cherenkov::BlendSpace::Linear
+    }
+}
+
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a> {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    pub(super) preparation: Option<&'a rayon::ThreadPool>,
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    geometry_miss: bool,
     frame: &'a mut Frame,
     anchor_scratch: &'a mut AnchorScratch,
+    /// Path emission buffers, owned by the surface so their capacity
+    /// carries across frames.
+    raster_scratch: &'a mut path::EmitScratch,
     width: f32,
     height: f32,
     transform: Affine,
@@ -1108,6 +1797,9 @@ pub struct Lowering<'a> {
     member_outer_clip: Option<DeviceClip>,
     /// Atlas writes and cache updates to commit, in lowering order.
     pub(crate) pending: Vec<PendingRaster>,
+    /// The texel arena `pending`'s path cells index — per batch, so per
+    /// worker when lowering runs in parallel.
+    pub(crate) path_arena: Vec<u8>,
     /// Path identities admitted during this lowering, before atlas commit.
     /// A second use must replay the admitted layout as well as its texels.
     pending_paths: FxHashMap<u64, u32>,
@@ -1138,6 +1830,11 @@ pub struct Lowering<'a> {
     /// The storage space of the enclosing level, innermost last; the
     /// surface renders in `Linear` (the implicit base).
     space_stack: Vec<cherenkov::BlendSpace>,
+    /// The open isolations, outermost first: each entry carries the
+    /// scope's declared composite and the walk state its tail restores,
+    /// so a part boundary can close and reopen them
+    /// (`Lowering::next_part`).
+    isolations: Vec<Isolation>,
     /// The engine part surface-level passes draw into.
     part: u32,
     /// The layers promoted to system planes this frame: their content is
@@ -1168,6 +1865,12 @@ pub struct Lowering<'a> {
     /// The surface size: a local walk lowers onto its image's size, the
     /// surface walk onto this.
     surface: (u32, u32),
+    /// The device's coverage binding limit when it can run the GPU
+    /// coverage route's compute passes, `None` when it cannot — the route
+    /// consults it at [`Self::path`] (issue #2543) and the automatic
+    /// predicate sizes paths against it (water-rs/waterui#2544).
+    compute: Option<CoverageLimit>,
+    pub(crate) coverage_route: path::CoverageRoute,
 }
 
 impl<'a> Lowering<'a> {
@@ -1177,11 +1880,18 @@ impl<'a> Lowering<'a> {
         frame: &'a mut Frame,
         size: (u32, u32),
         anchor_scratch: &'a mut AnchorScratch,
+        raster_scratch: &'a mut path::EmitScratch,
+        compute: Option<CoverageLimit>,
     ) -> Self {
         anchor_scratch.clear();
         Self {
             frame,
             anchor_scratch,
+            raster_scratch,
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            preparation: None,
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            geometry_miss: false,
             width: size.0 as f32,
             height: size.1 as f32,
             transform: Affine::IDENTITY,
@@ -1198,6 +1908,7 @@ impl<'a> Lowering<'a> {
             emission_patches: Vec::new(),
             mask_patches: Vec::new(),
             pending: Vec::new(),
+            path_arena: Vec::new(),
             pending_paths: FxHashMap::default(),
             commands_lowered: 0,
             layers_composed: 0,
@@ -1212,6 +1923,7 @@ impl<'a> Lowering<'a> {
             promoted: Vec::new(),
             opens: Vec::new(),
             space_stack: Vec::new(),
+            isolations: Vec::new(),
             scratch_space: Vec::new(),
             capture_space: FxHashMap::default(),
             local: None,
@@ -1219,6 +1931,8 @@ impl<'a> Lowering<'a> {
             projected: FxHashMap::default(),
             projective_draws: 0,
             surface: size,
+            compute,
+            coverage_route: path::CoverageRoute::Automatic,
         }
     }
 
@@ -1545,6 +2259,7 @@ impl<'a> Lowering<'a> {
                 id,
                 MemberEntry {
                     bounds: member,
+                    transform,
                     draw: member,
                     region: 0,
                     ord,
@@ -1582,11 +2297,12 @@ impl<'a> Lowering<'a> {
         glyphs: &GlyphContext<'_>,
     ) -> Result<(), RenderError> {
         for content in caches.values_mut() {
-            self.commands_lowered += content.retained.prepare(&mut super::prepared::Lowerer {
+            let changed = content.retained.prepare(&mut super::prepared::Lowerer {
                 fonts: glyphs.fonts,
                 images: glyphs.images,
                 pending: &mut self.pending,
             })?;
+            self.commands_lowered += changed;
         }
         Ok(())
     }
@@ -1796,7 +2512,13 @@ impl<'a> Lowering<'a> {
                 pipeline: open.pipeline,
                 variant: open.variant,
                 instances: open.seg_start..end,
+                gpu: None,
             });
+            open.maybe_coverage &= open.pipeline == PipelineKind::SrcOver
+                && open.variant == ShaderVariant::Simple
+                && open.source.is_none()
+                && open.image.is_none()
+                && open.mask.is_none();
             open.seg_start = end;
         }
     }
@@ -1840,18 +2562,57 @@ impl<'a> Lowering<'a> {
     /// Ends the current engine part at a promoted layer's paint position and
     /// starts the next one, transparent, for everything painted above it.
     ///
+    /// A part boundary inside clip-only isolations splits each enclosing
+    /// scope: its already-drawn segment composites into the current part,
+    /// and the scope reopens over the new part with a fresh scratch pass,
+    /// so its tail composites the second segment there. A clip-only
+    /// composite is identical to drawing each item under the intersected
+    /// coverage, so the split is exact.
+    ///
     /// # Panics
-    /// When lowering is inside an isolation or a projective local image:
-    /// eligibility keeps every promoted layer at the surface level, so this
-    /// is an engine defect.
+    /// When lowering is inside an isolation that is not clip-only or a
+    /// projective local image: eligibility keeps every promoted layer at
+    /// the surface level, so this is an engine defect.
     fn next_part(&mut self) {
+        // The clip state the body draws under at the boundary: clips the
+        // body merged in place since the innermost scope opened are not on
+        // the stack, and the walk unwinds them itself after the boundary.
+        let (clip, member_outer_clip) = (self.clip, self.member_outer_clip);
+        let mut split = Vec::new();
+        while self.depth > 0 {
+            let innermost = self
+                .isolations
+                .last()
+                .filter(|entry| entry.scratch == self.depth - 1 && entry.clip_only());
+            assert!(
+                innermost.is_some(),
+                "a promoted layer must composite at the surface level"
+            );
+            split.push(self.close_isolation());
+        }
         assert!(
-            self.depth == 0 && matches!(self.semantic_target, Target::Part(_)),
+            matches!(self.semantic_target, Target::Part(_)),
             "a promoted layer must composite at the surface level"
         );
         self.part += 1;
         self.semantic_target = Target::Part(self.part);
         self.begin_pass(Target::Part(self.part), Some([0.0; 4]));
+        // Each scope reopens under the clip state it first opened under,
+        // which a clip merged in place between two scopes narrows past the
+        // enclosing scope's own clip.
+        for entry in split.into_iter().rev() {
+            self.set_clip(entry.outer_clip);
+            self.member_outer_clip = entry.outer_member_clip;
+            self.open_isolation(
+                entry.inner_clip,
+                entry.filter,
+                entry.opacity,
+                entry.blend,
+                entry.space,
+            );
+        }
+        self.set_clip(clip);
+        self.member_outer_clip = member_outer_clip;
     }
 
     /// The storage space of the level currently being drawn into.
@@ -1866,6 +2627,16 @@ impl<'a> Lowering<'a> {
         self.finish_pass();
         let space = self.target_space(target);
         self.frame.open = Some(OpenPass {
+            // Only scratch images choose storage from their drawn colors.
+            // Output parts are classified separately and projected images
+            // keep their explicit format. Their reads retain float precision.
+            color_range: if matches!(target, Target::Scratch(_)) {
+                clear.map_or(super::present::ColorRange::Standard, |color| {
+                    super::content_range::working(color, 1.0)
+                })
+            } else {
+                super::present::ColorRange::HighDynamicRange
+            },
             target,
             clear,
             space,
@@ -1878,7 +2649,10 @@ impl<'a> Lowering<'a> {
             capture: None,
             ranges: Vec::new(),
             seg_start: instance_index(self.frame.instances.len()),
+            maybe_coverage: matches!(target, Target::Part(_)),
         });
+        // Any replaced pass ended without its entries; drop them.
+        self.frame.tier_scratch.clear();
         // A masked clip can span passes; the new pass binds its texture.
         self.set_mask(self.mask_key);
     }
@@ -1900,6 +2674,47 @@ impl<'a> Lowering<'a> {
     fn finish_pass_at(&mut self, end: usize) {
         self.end_segment_at(end);
         if let Some(open) = self.frame.open.take() {
+            let mut tier_ranges = [Range::default(), Range::default()];
+            // Entries at or past `end` belong to a speculative batch's
+            // inner pass (promote_isolation), finalized separately on a
+            // scratch target that never draws in coverage order.
+            let end_index = instance_index(end);
+            let mut entries = std::mem::take(&mut self.frame.tier_scratch);
+            let cut = entries
+                .iter()
+                .position(|&entry| (entry & 0x3fff_ffff) >= end_index)
+                .unwrap_or(entries.len());
+            if cut != 0 && open.maybe_coverage {
+                for tier in 0u32..2 {
+                    let start = instance_index(self.frame.instances.len());
+                    for &entry in &entries[..cut] {
+                        if entry >> 30 != tier + 1 {
+                            continue;
+                        }
+                        let src_index = (entry & 0x3fff_ffff) as usize;
+                        let index = self.frame.instances.len();
+                        self.frame.instances.push(Instance::new(KIND_POLYGON));
+                        let (head, tail) = self.frame.instances.split_at_mut(index);
+                        let (src, dst) = (&mut head[src_index], &mut tail[0]);
+                        dst.affine = src.affine;
+                        dst.bounds = src.bounds;
+                        dst.shape = src.shape;
+                        dst.color = src.color;
+                        dst.params = src.params;
+                        dst.grad[0] = f32::from_bits(u32::try_from(src_index).unwrap_or(u32::MAX));
+                        dst.meta = [KIND_POLYGON, PAINT_SOLID, 0, tier + 1];
+                        // The polygon covers the octagon this fill would
+                        // have drawn; the low bits tell vs_opaque to
+                        // skip it.
+                        src.meta[3] |= tier + 1;
+                    }
+                    tier_ranges[usize::try_from(tier).unwrap_or(usize::MAX)] =
+                        start..instance_index(self.frame.instances.len());
+                }
+                check_instance_bound(self.frame.instances.len());
+            }
+            entries.clear();
+            self.frame.tier_scratch = entries;
             let region = match open.target {
                 Target::Part(_) | Target::Projected(_) | Target::Plane(_) => {
                     [0, 0, self.width as u32, self.height as u32]
@@ -1926,6 +2741,7 @@ impl<'a> Lowering<'a> {
                     .push((self.frame.passes.len(), capture.levels));
             }
             self.frame.passes.push(Pass {
+                color_range: open.color_range,
                 target: open.target,
                 clear: open.clear,
                 ranges: open.ranges,
@@ -1933,6 +2749,7 @@ impl<'a> Lowering<'a> {
                 space: open.space,
                 backdrop_copy: open.backdrop_copy,
                 capture: open.capture,
+                tier_ranges,
             });
         }
     }
@@ -2009,14 +2826,14 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Starts a new draw range when the shader variant changes.
-    fn set_variant(&mut self, variant: ShaderVariant) {
-        if self
-            .frame
-            .open
-            .as_ref()
-            .is_some_and(|o| o.variant != variant)
-        {
+    /// Starts a new draw range when `inst` needs a different shader
+    /// variant from the open range's.
+    fn set_variant(&mut self, inst: &Instance) {
+        let Some(open) = &self.frame.open else {
+            return;
+        };
+        let variant = variant_after(open.variant, inst);
+        if open.variant != variant {
             self.end_segment();
             if let Some(open) = &mut self.frame.open {
                 open.variant = variant;
@@ -2028,11 +2845,22 @@ impl<'a> Lowering<'a> {
     /// specialised fragment variant. Under a pending clip mask the
     /// instance's `uv.zw` is patched after the mask is stored.
     fn push_instance(&mut self, inst: &Instance) {
-        self.set_variant(variant_of(inst));
-        let index = instance_index(self.frame.instances.len());
+        self.set_variant(inst);
+        if inst.meta[0] == KIND_FILL
+            && let Some(open) = &self.frame.open
+            && open.maybe_coverage
+        {
+            let tier = interior_tier(inst);
+            if tier != 0 {
+                self.frame
+                    .tier_scratch
+                    .push(instance_index(self.frame.instances.len()) | (tier << 30));
+            }
+        }
         self.frame.instances.push(*inst);
         if let Some(pending) = self.mask_pending {
-            self.mask_patches.push((index, pending));
+            self.mask_patches
+                .push((instance_index(self.frame.instances.len() - 1), pending));
         }
     }
 
@@ -2074,14 +2902,11 @@ impl<'a> Lowering<'a> {
     /// for a body that can never fold into the parent pass — the member
     /// scope of a filtered member always opens its nested filter scope.
     #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
         clippy::too_many_arguments,
-        reason = "surface size is a small positive float; an isolate carries the
-        clip, style and pixel-space state of one scope"
+        reason = "an isolate carries the clip, style and pixel-space state of one scope"
     )]
-    // Keep isolation's saved state, live across the recursive body, off
-    // the ordinary drawing walk's stack.
+    // Keep the recursive body call off the ordinary drawing walk's
+    // stack; the scope's saved state lives on `isolations`.
     #[inline(never)]
     fn isolate_direct(
         &mut self,
@@ -2093,6 +2918,23 @@ impl<'a> Lowering<'a> {
         mut body: impl FnMut(&mut Self, &GlyphContext<'_>) -> Result<(), RenderError>,
         glyphs: &GlyphContext<'_>,
     ) -> Result<(), RenderError> {
+        self.open_isolation(inner_clip, filter, opacity, blend, space);
+        body(self, glyphs)?;
+        self.close_isolation();
+        Ok(())
+    }
+
+    /// Opens an isolation scope: `body` draws into the scratch at the new
+    /// depth, and [`close_isolation`](Self::close_isolation) composites it
+    /// back at `opacity` under the saved outer clip.
+    fn open_isolation(
+        &mut self,
+        inner_clip: Option<DeviceClip>,
+        filter: Option<cherenkov::FilterId>,
+        opacity: f32,
+        blend: cherenkov::BlendMode,
+        space: cherenkov::BlendSpace,
+    ) {
         self.depth += 1;
         let scratch = self.depth - 1;
         let (outer_clip, outer_member_clip) = (self.clip, self.member_outer_clip.take());
@@ -2126,7 +2968,8 @@ impl<'a> Lowering<'a> {
         self.scratch_space[scratch] = storage;
         self.begin_pass(Target::Scratch(scratch), Some([0.0; 4]));
         let inst_start = self.frame.instances.len();
-        let (saved_capture, saved_target) = (self.capture_isolation, self.semantic_target);
+        let saved_capture = self.capture_isolation;
+        let saved_target = self.semantic_target;
         let saved_scratches = std::mem::take(&mut self.looked_through_scratches);
         self.capture_isolation = false;
         if semantic {
@@ -2136,18 +2979,52 @@ impl<'a> Lowering<'a> {
             self.looked_through_scratches.push((scratch, passes_start));
         }
         self.space_stack.push(storage);
-        body(self, glyphs)?;
+        self.isolations.push(Isolation {
+            inner_clip,
+            filter,
+            opacity,
+            blend,
+            space,
+            scratch,
+            storage,
+            outer_clip,
+            outer_member_clip,
+            passes_start,
+            inst_start,
+            saved_capture,
+            saved_target,
+            saved_scratches,
+        });
+    }
+
+    /// Closes the innermost open isolation: finishes its scratch segment,
+    /// sizes it to the drawn content, and emits the composite into the
+    /// enclosing target under the saved outer clip. Returns the scope's
+    /// record so a part boundary can reopen it
+    /// ([`Lowering::next_part`]).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "surface size is a small positive float"
+    )]
+    fn close_isolation(&mut self) -> Isolation {
+        let mut entry = self
+            .isolations
+            .pop()
+            .expect("close_isolation requires an open isolation");
+        let scratch = entry.scratch;
+        debug_assert_eq!(scratch, self.depth - 1, "scopes close in LIFO order");
         self.space_stack.pop();
         self.finish_pass();
         self.depth -= 1;
-        self.set_clip(outer_clip);
-        self.member_outer_clip = outer_member_clip;
+        self.set_clip(entry.outer_clip);
+        self.member_outer_clip = entry.outer_member_clip;
         let inner_capture = self.capture_isolation;
-        self.capture_isolation |= saved_capture;
-        self.semantic_target = saved_target;
-        self.looked_through_scratches = saved_scratches;
+        self.capture_isolation |= entry.saved_capture;
+        self.semantic_target = entry.saved_target;
+        self.looked_through_scratches = std::mem::take(&mut entry.saved_scratches);
         let outer_target = self.current_target();
-        let region = if let Some(filter) = filter {
+        let region = if let Some(filter) = entry.filter {
             self.frame
                 .filters
                 .push((self.frame.passes.len() - 1, FilterKey::Layer(filter.raw())));
@@ -2156,15 +3033,15 @@ impl<'a> Lowering<'a> {
             // A capture inside reads this scratch at texel origin (0, 0):
             // its region must cover the whole surface.
             [0, 0, self.width as u32, self.height as u32]
-        } else if is_destructive(blend) {
+        } else if is_destructive(entry.blend) {
             clip_region(
-                inner_clip.or(outer_clip),
+                entry.inner_clip.or(entry.outer_clip),
                 self.width as u32,
                 self.height as u32,
             )
         } else {
             tight_region(
-                &self.frame.instances[inst_start..],
+                &self.frame.instances[entry.inst_start..],
                 self.width as u32,
                 self.height as u32,
             )
@@ -2175,22 +3052,22 @@ impl<'a> Lowering<'a> {
             debug_assert!(!inner_capture);
             // Nothing visible in the scratch: drop this depth's segment
             // passes and the composite entirely.
-            for i in (passes_start..self.frame.passes.len()).rev() {
+            for i in (entry.passes_start..self.frame.passes.len()).rev() {
                 if self.frame.passes[i].target == Target::Scratch(scratch) {
                     self.frame.remove_pass(i);
                 }
             }
             self.begin_pass(outer_target, None);
-            return Ok(());
+            return entry;
         }
-        for pass in &mut self.frame.passes[passes_start..] {
+        for pass in &mut self.frame.passes[entry.passes_start..] {
             if pass.target == Target::Scratch(scratch) {
                 pass.region = region;
             }
         }
         self.begin_pass(outer_target, None);
         let dst_space = self.current_space();
-        if blend != cherenkov::BlendMode::Normal || storage != dst_space {
+        if entry.blend != cherenkov::BlendMode::Normal || entry.storage != dst_space {
             // A blended or cross-space composite samples the backdrop
             // explicitly: the target's current contents are copied aside
             // before this pass.
@@ -2202,23 +3079,23 @@ impl<'a> Lowering<'a> {
         // sampling it with `grad.xy` as the texel origin. A destructive
         // composite carries the effective clip itself: its coverage decides
         // where the operator applies across the whole region.
-        if is_destructive(blend) {
-            self.set_clip(inner_clip.or(outer_clip));
+        if is_destructive(entry.blend) {
+            self.set_clip(entry.inner_clip.or(entry.outer_clip));
         }
         #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
         let origin = [region[0] as f32, region[1] as f32];
         self.emit_composite(
             Source::Scratch(scratch),
             origin,
-            opacity,
+            entry.opacity,
             region,
-            blend,
-            storage,
+            entry.blend,
+            entry.storage,
         );
-        if is_destructive(blend) {
-            self.set_clip(outer_clip);
+        if is_destructive(entry.blend) {
+            self.set_clip(entry.outer_clip);
         }
-        Ok(())
+        entry
     }
 
     /// Capture a silhouette in padded device coordinates, convolve it, then
@@ -2227,6 +3104,7 @@ impl<'a> Lowering<'a> {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
         reason = "finite nonnegative capture extents checked before conversion"
     )]
     fn silhouette_scope(
@@ -2262,6 +3140,7 @@ impl<'a> Lowering<'a> {
         let saved = (self.transform, self.width, self.height, self.clip);
         let saved_member_outer = self.member_outer_clip.take();
         self.finish_pass();
+        let passes_start = self.frame.passes.len();
         self.depth += 1;
         let scratch = self.depth - 1;
         self.transform = Affine::translate((px, py)) * self.transform;
@@ -2280,6 +3159,24 @@ impl<'a> Lowering<'a> {
         self.finish_pass();
         let pass = self.frame.passes.len() - 1;
         self.frame.passes[pass].region = [0, 0, width as u32, height as u32];
+        let region = shadow_region(self.frame, pass, [px as u32, py as u32]);
+        (self.transform, self.width, self.height, self.clip) = saved;
+        self.member_outer_clip = saved_member_outer;
+        self.depth -= 1;
+        if region[2] == 0 || region[3] == 0 {
+            for i in (passes_start..self.frame.passes.len()).rev() {
+                if self.frame.passes[i].target == Target::Scratch(scratch) {
+                    self.frame.remove_pass(i);
+                }
+            }
+            self.begin_pass(self.current_target(), None);
+            return Ok(());
+        }
+        for pass in &mut self.frame.passes[passes_start..] {
+            if pass.target == Target::Scratch(scratch) {
+                pass.region = region;
+            }
+        }
         self.frame.shadows.push((
             pass,
             super::shadow::Parameters {
@@ -2287,15 +3184,18 @@ impl<'a> Lowering<'a> {
                 ..parameters
             },
         ));
-        (self.transform, self.width, self.height, self.clip) = saved;
-        self.member_outer_clip = saved_member_outer;
-        self.depth -= 1;
         self.begin_pass(self.current_target(), None);
         let mut instance = Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip);
-        instance.bounds = [0.0, 0.0, self.width, self.height];
+        let origin = [region[0] as f32 - px as f32, region[1] as f32 - py as f32];
+        instance.bounds = [
+            origin[0].max(0.0),
+            origin[1].max(0.0),
+            (origin[0] + region[2] as f32).min(self.width),
+            (origin[1] + region[3] as f32).min(self.height),
+        ];
         instance.meta[1] = PAINT_TEXTURE;
-        instance.grad[0] = -(px as f32);
-        instance.grad[1] = -(py as f32);
+        instance.grad[0] = origin[0];
+        instance.grad[1] = origin[1];
         if self.scratch_space[scratch] == cherenkov::BlendSpace::SrgbEncoded {
             instance.meta[3] |= FLAG_TEX_SRGB << 24;
         }
@@ -2326,12 +3226,28 @@ impl<'a> Lowering<'a> {
         let transform = self.transform;
         let capture = self.capture_isolation;
         let draws = self.projective_draws;
+        let part = self.part;
+        // This batch can become a scratch image even while drawing into
+        // an output part. Classify the batch independently of its parent.
+        if let Some(open) = &mut self.frame.open {
+            open.color_range = super::present::ColorRange::Standard;
+        }
         let result = body(self, glyphs);
+        // The speculated level is translucent, and eligibility keeps every
+        // ancestor of a promoted layer opaque: its body never crosses a
+        // part boundary.
+        assert!(
+            self.part == part,
+            "a promoted layer must composite at the surface level"
+        );
         // A projective composite never takes the pass-through: the layer
         // above it isolates for real.
         let folds = result.is_ok() && self.projective_draws == draws;
         let new = &self.frame.instances[snap.instances..];
         if folds && self.frame.passes.len() == snap.passes && bboxes_disjoint(new) {
+            if let (Some(open), Some(parent)) = (&mut self.frame.open, &snap.open) {
+                open.color_range = open.color_range.max(parent.color_range);
+            }
             for inst in &mut self.frame.instances[snap.instances..] {
                 inst.params[1] *= opacity;
             }
@@ -2395,6 +3311,7 @@ impl<'a> Lowering<'a> {
             }
             self.scratch_space[self.depth] = open.space;
             self.frame.passes.push(Pass {
+                color_range: open.color_range,
                 target: Target::Scratch(self.depth),
                 clear: Some([0.0; 4]),
                 ranges: open.ranges,
@@ -2402,6 +3319,7 @@ impl<'a> Lowering<'a> {
                 space: open.space,
                 backdrop_copy: None,
                 capture: None,
+                tier_ranges: [Range::default(), Range::default()],
             });
         }
         self.begin_pass(outer_target, None);
@@ -2553,10 +3471,11 @@ impl<'a> Lowering<'a> {
     #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
     fn emit_backdrop_sample(
         &mut self,
-        gid: u64,
+        sample: &cherenkov::BackdropSample,
         member: LayerId,
-        effect: Option<&cherenkov::BackdropEffect>,
     ) -> Result<(), RenderError> {
+        let gid = sample.group().raw();
+        let effect = sample.effect();
         let Some(plan) = self.backdrops.get(&gid) else {
             return Ok(());
         };
@@ -2610,13 +3529,23 @@ impl<'a> Lowering<'a> {
         // `grad.xy` carries the capture region's texel origin.
         inst.grad[0] = rx;
         inst.grad[1] = ry;
+        // A member blending in a space unlike the pass's storage reads
+        // the canvas from a copy of its draw rect and writes the result
+        // unblended.
+        let explicit = spec.member_blend_space() != self.current_space();
         let mut pipeline = PipelineKind::SrcOver;
-        if effect.is_some() || !scale.is_full() || entry.union.is_some() {
+        if effect.is_some() || !scale.is_full() || entry.union.is_some() || explicit {
             inst.meta[1] = super::instance::PAINT_BACKDROP;
             // `grad.z` maps device points onto the capture grid.
             inst.grad[2] = scale.get();
             // `grad.w` is the group's level count for `backdrop_sample_level`.
             inst.grad[3] = spec.levels().get() as f32;
+            // `color.x` is the member's recording scale, `px.scale`.
+            inst.color[0] = sample.recording_scale().get();
+            // The span's bounds are device space, so its affine is free:
+            // it carries the member layer's transform, `px.local`'s
+            // inverse.
+            inst.affine = affine(entry.transform);
             // `grad2.xy` is the region's size in texels; `grad2.zw` the
             // member's device size for effect shaders: the unclipped
             // bounds, not the visible intersection.
@@ -2640,28 +3569,17 @@ impl<'a> Lowering<'a> {
             inst.uv[1] = f32::from_bits(entry.ord);
             inst.params[0] = entry.outer;
         }
-        if let Some(effect) = effect {
-            // Refraction and shader effects evaluate the member clip's
-            // SDF; a path/mask clip has no analytic shape to read. A
-            // union-field member reads its own clip from its record, so
-            // a mask on the *ancestors'* merged clip stays legal.
-            if !matches!(effect, cherenkov::BackdropEffect::Color(_))
-                && entry.union.is_none()
-                && self.clip.is_none_or(|c| c.mask.is_some())
-            {
-                return Err(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH));
-            }
-            #[expect(clippy::cast_possible_truncation, reason = "stop counts fit u32")]
-            let first = self.frame.stops.len() as u32;
-            let (kind, count) = push_effect_stops(&mut self.frame.stops, effect);
-            inst.meta[2] = first;
-            inst.meta[3] |= kind | (count << 8);
-            if let cherenkov::BackdropEffect::Shader(s) = effect {
-                pipeline = PipelineKind::Effect(s.shader.raw());
-            }
+        if let Some(effect) = effect
+            && let Some(effect_pipeline) =
+                self.pack_member_effect(&mut inst, effect, entry.union.is_some(), explicit)?
+        {
+            pipeline = effect_pipeline;
         }
         if self.capture_space.get(&gid).copied() == Some(cherenkov::BlendSpace::SrgbEncoded) {
             inst.meta[3] |= FLAG_TEX_SRGB << 24;
+        }
+        if explicit {
+            self.open_member_blend_pass(&mut inst, &mut pipeline);
         }
         self.set_source(Some(Source::Backdrop {
             group: gid,
@@ -2672,6 +3590,62 @@ impl<'a> Lowering<'a> {
         self.set_pipeline(PipelineKind::SrcOver);
         self.set_source(None);
         Ok(())
+    }
+
+    /// Packs a member's backdrop effect into `inst`: its parameter stops
+    /// go to the frame's stop buffer, `meta[2]` names the first and
+    /// `meta[3]` carries the kind and count. A shader effect returns the
+    /// pipeline that runs it, replacing the canvas when the member blends
+    /// in an explicit space.
+    fn pack_member_effect(
+        &mut self,
+        inst: &mut Instance,
+        effect: &cherenkov::BackdropEffect,
+        union_field: bool,
+        explicit: bool,
+    ) -> Result<Option<PipelineKind>, RenderError> {
+        // Refraction and shader effects evaluate the member clip's SDF; a
+        // path/mask clip has no analytic shape to read. A union-field
+        // member reads its own clip from its record, so a mask on the
+        // *ancestors'* merged clip stays legal.
+        if !matches!(effect, cherenkov::BackdropEffect::Color(_))
+            && !union_field
+            && self.clip.is_none_or(|c| c.mask.is_some())
+        {
+            return Err(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH));
+        }
+        #[expect(clippy::cast_possible_truncation, reason = "stop counts fit u32")]
+        let first = self.frame.stops.len() as u32;
+        let (kind, count) = push_effect_stops(&mut self.frame.stops, effect);
+        inst.meta[2] = first;
+        inst.meta[3] |= kind | (count << 8);
+        Ok(match effect {
+            cherenkov::BackdropEffect::Shader(s) => Some(PipelineKind::Effect {
+                id: s.shader.raw(),
+                replace: explicit,
+            }),
+            _ => None,
+        })
+    }
+
+    /// Opens the pass a member blending in a space unlike the pass's
+    /// storage composites in: its backdrop copy covers the instance,
+    /// `color.yz` carries the copy's device origin, and `FLAG_BLEND_SRC`
+    /// marks the member's space. The result is written unblended, so a
+    /// source-over composite becomes `Replace`.
+    #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
+    fn open_member_blend_pass(&mut self, inst: &mut Instance, pipeline: &mut PipelineKind) {
+        let copy = covering_region(inst.bounds, self.width, self.height);
+        self.begin_pass(self.current_target(), None);
+        if let Some(open) = &mut self.frame.open {
+            open.backdrop_copy = Some(copy);
+        }
+        inst.color[1] = copy[0] as f32;
+        inst.color[2] = copy[1] as f32;
+        inst.meta[3] |= FLAG_BLEND_SRC << 24;
+        if *pipeline == PipelineKind::SrcOver {
+            *pipeline = PipelineKind::Replace;
+        }
     }
 
     /// Emits the composite quad sampling `source` at texel origin
@@ -2725,7 +3699,7 @@ impl<'a> Lowering<'a> {
         }
         let code = blend_code(blend);
         if code != 0 || cross {
-            inst.meta[3] |= code << 16;
+            inst.meta[3] |= code << BLEND_CODE_SHIFT;
             self.set_pipeline(PipelineKind::Replace);
         }
         self.set_source(Some(source));
@@ -3039,10 +4013,6 @@ impl<'a> Lowering<'a> {
         clippy::too_many_arguments,
         reason = "the layer walk's fixed context, not real complexity"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the union-member scope cases each need their own few lines"
-    )]
     fn layer_body(
         &mut self,
         id: LayerId,
@@ -3103,7 +4073,7 @@ impl<'a> Lowering<'a> {
                             .as_ref()
                             .is_some_and(|sample| s.union_member(sample.group().raw(), id));
                         if union_member && let Some(sample) = &node.backdrop {
-                            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+                            s.emit_backdrop_sample(sample, id)?;
                         }
                         s.with_clip(
                             clip,
@@ -3112,11 +4082,7 @@ impl<'a> Lowering<'a> {
                                 if let Some(sample) = &node.backdrop
                                     && !union_member
                                 {
-                                    s.emit_backdrop_sample(
-                                        sample.group().raw(),
-                                        id,
-                                        sample.effect(),
-                                    )?;
+                                    s.emit_backdrop_sample(sample, id)?;
                                 }
                                 s.layer_items(id, node, tree, caches, glyphs)
                             },
@@ -3141,7 +4107,7 @@ impl<'a> Lowering<'a> {
                     .is_some_and(|sample| self.union_member(sample.group().raw(), id))
                     && !is_destructive(blend);
                 if outside && let Some(sample) = &node.backdrop {
-                    self.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+                    self.emit_backdrop_sample(sample, id)?;
                 }
                 self.with_clip(
                     clip,
@@ -3155,7 +4121,7 @@ impl<'a> Lowering<'a> {
                             // sample — or one nothing isolates — lands in
                             // the enclosing target at full strength: the
                             // member's filter never covers it.
-                            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+                            s.emit_backdrop_sample(sample, id)?;
                         }
                         if isolates {
                             let inner = s.clip;
@@ -3172,11 +4138,7 @@ impl<'a> Lowering<'a> {
                                     {
                                         // An unfiltered member's sample is
                                         // its canvas's bottom-most content.
-                                        s.emit_backdrop_sample(
-                                            sample.group().raw(),
-                                            id,
-                                            sample.effect(),
-                                        )?;
+                                        s.emit_backdrop_sample(sample, id)?;
                                     }
                                     s.layer_items(id, node, tree, caches, glyphs)
                                 },
@@ -3224,7 +4186,7 @@ impl<'a> Lowering<'a> {
         // outside the filter — beside a nested filter scope over the
         // member's items at opacity 1, `Normal` blend.
         let mut body = |s: &mut Self, glyphs: &GlyphContext<'_>| {
-            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+            s.emit_backdrop_sample(sample, id)?;
             let inner = s.clip;
             s.isolate(
                 inner,
@@ -3354,7 +4316,7 @@ impl<'a> Lowering<'a> {
         inst.grad[1] = y0 as f32;
         inst.meta[2] = self.frame.stops.len() as u32;
         self.frame.stops.extend(placement.record());
-        inst.meta[3] |= code << 16;
+        inst.meta[3] |= code << BLEND_CODE_SHIFT;
         self.set_pipeline(PipelineKind::Projective { replace: code != 0 });
         self.set_source(Some(Source::Projected(placement.key)));
         self.push_instance(&inst);
@@ -3386,15 +4348,17 @@ impl<'a> Lowering<'a> {
         }
         if let Some(content) = caches.get_mut(&id) {
             let (ops, emissions, source) = content.retained.prepared_source();
+            content.storage.retain_gpu_paths(ops);
             content.storage.compact(emissions);
             let changed = self.ops(
                 source,
                 ops,
                 emissions,
                 &mut content.storage,
-                0..ops.len(),
+                (id, 0..ops.len()),
                 glyphs,
             )?;
+            content.storage.geometry.reconcile(emissions, changed);
             self.layers_composed += u32::from(changed);
         }
         if let Some(binding) = binding {
@@ -3451,11 +4415,10 @@ impl<'a> Lowering<'a> {
         ops: &[Op],
         emissions: &mut [Realization<Emission>],
         storage: &mut EmissionStorage,
-        range: Range<usize>,
+        (layer, range): (LayerId, Range<usize>),
         glyphs: &GlyphContext<'_>,
     ) -> Result<bool, RenderError> {
-        let mut changed = false;
-        let mut i = range.start;
+        let (mut changed, mut i) = (false, range.start);
         while i < range.end {
             match &ops[i] {
                 Op::BeginClip { local, shape, end } => {
@@ -3463,27 +4426,17 @@ impl<'a> Lowering<'a> {
                     self.transform = saved * *local;
                     let body = |s: &mut Self, g: &GlyphContext<'_>| {
                         s.transform = saved;
-                        changed |=
-                            s.ops(source, ops, emissions, storage, i + 1..*end as usize, g)?;
+                        changed |= s.ops(
+                            source,
+                            ops,
+                            emissions,
+                            storage,
+                            (layer, i + 1..*end as usize),
+                            g,
+                        )?;
                         Ok(())
                     };
-                    match shape {
-                        ClipShape::Empty => {}
-                        ClipShape::Boxed { extra, shape, rect } => {
-                            let clip = DeviceClip {
-                                inv: (self.transform * *extra).inverse(),
-                                shape: *shape,
-                                aligned_rect: rect
-                                    .filter(|_| axis_aligned(self.transform))
-                                    .map(|r| device_rect(self.transform, r)),
-                                mask: None,
-                            };
-                            self.run_clipped(clip, body, glyphs)?;
-                        }
-                        ClipShape::Path { elements, rule, .. } => {
-                            self.with_path_clip(elements, *rule, body, glyphs)?;
-                        }
-                    }
+                    self.clip_scope(shape, body, glyphs)?;
                     self.transform = saved;
                     i = *end as usize;
                 }
@@ -3501,8 +4454,14 @@ impl<'a> Lowering<'a> {
                         *blend,
                         *space,
                         |s, g| {
-                            changed |=
-                                s.ops(source, ops, emissions, storage, i + 1..*end as usize, g)?;
+                            changed |= s.ops(
+                                source,
+                                ops,
+                                emissions,
+                                storage,
+                                (layer, i + 1..*end as usize),
+                                g,
+                            )?;
                             Ok(())
                         },
                         glyphs,
@@ -3513,8 +4472,14 @@ impl<'a> Lowering<'a> {
                     self.silhouette_scope(
                         *parameters,
                         |s, g| {
-                            changed |=
-                                s.ops(source, ops, emissions, storage, i + 1..*end as usize, g)?;
+                            changed |= s.ops(
+                                source,
+                                ops,
+                                emissions,
+                                storage,
+                                (layer, i + 1..*end as usize),
+                                g,
+                            )?;
                             Ok(())
                         },
                         glyphs,
@@ -3522,20 +4487,202 @@ impl<'a> Lowering<'a> {
                     i = *end as usize;
                 }
                 Op::End => unreachable!("paired scopes consume their ends"),
-                op => {
-                    changed |= self.leaf(
-                        op,
-                        ops.get(i + 1),
-                        &mut emissions[i],
-                        storage,
-                        glyphs,
+                _ => {
+                    let (end, run_changed) = self.command_run(
                         source,
+                        ops,
+                        emissions,
+                        storage,
+                        (layer, i..range.end),
+                        glyphs,
                     )?;
+                    changed |= run_changed;
+                    i = end;
+                    continue;
                 }
             }
             i += 1;
         }
         Ok(changed)
+    }
+
+    fn clip_scope(
+        &mut self,
+        shape: &ClipShape,
+        body: impl FnMut(&mut Self, &GlyphContext<'_>) -> Result<(), RenderError>,
+        glyphs: &GlyphContext<'_>,
+    ) -> Result<(), RenderError> {
+        match shape {
+            ClipShape::Empty => {}
+            ClipShape::Boxed { extra, shape, rect } => {
+                let clip = DeviceClip {
+                    inv: (self.transform * *extra).inverse(),
+                    shape: *shape,
+                    aligned_rect: rect
+                        .filter(|_| axis_aligned(self.transform))
+                        .map(|r| device_rect(self.transform, r)),
+                    mask: None,
+                };
+                self.run_clipped(clip, body, glyphs)?;
+            }
+            ClipShape::Path { elements, rule, .. } => {
+                self.with_path_clip(elements, *rule, body, glyphs)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Prepare independent CPU-route geometry before ordered leaf emission.
+    /// The pool owns only geometry work; atlas updates and painting stay here.
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    fn prepare_paths(
+        &self,
+        source: &cherenkov::DisplayList,
+        ops: &[Op],
+        emissions: &[Realization<Emission>],
+        storage: &mut EmissionStorage,
+        glyphs: &GlyphContext<'_>,
+    ) {
+        let Some(pool) = self.preparation else {
+            return;
+        };
+        if self.coverage_route == path::CoverageRoute::Gpu {
+            return;
+        }
+        let mut jobs = FxHashMap::default();
+        for (op, emission) in ops.iter().zip(emissions) {
+            if matches!(
+                op,
+                Op::BeginClip { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. } | Op::End
+            ) {
+                break;
+            }
+            let Op::Path {
+                local,
+                rule,
+                outline,
+                paint,
+                complexity,
+                ..
+            } = op
+            else {
+                continue;
+            };
+            if emission.valid
+                && emission
+                    .data
+                    .as_ref()
+                    .is_some_and(|e| e.transform == self.transform)
+                || matches!(paint, ResolvedPaint::Shader(_))
+            {
+                continue;
+            }
+            let raster = self.transform * *local;
+            let outline = outline.get(source);
+            if self.compute.is_some()
+                && self.coverage_route == path::CoverageRoute::Automatic
+                && outline.gpu_candidate(*complexity, raster)
+            {
+                continue;
+            }
+            let tolerance = path::FLATTEN / raster.spectral_norm().max(1e-12);
+            let content = outline.content(tolerance);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "surface extents fit u32"
+            )]
+            let placement =
+                path::placement(content, raster, (self.width as u32, self.height as u32));
+            if glyphs.atlas.path(placement.key).is_some()
+                || glyphs.atlas.path(placement.key_exact()).is_some()
+                || self.pending_paths.contains_key(&placement.key)
+                || self.pending_paths.contains_key(&placement.key_exact())
+            {
+                continue;
+            }
+            let key = GeometryKey::new(content, *rule, placement.raster);
+            let digest = key.digest();
+            if storage
+                .geometry
+                .entries
+                .get(&digest)
+                .is_some_and(|entry| entry.key == key)
+                || !self.path_visible(outline.bounds(), raster)
+            {
+                continue;
+            }
+            jobs.entry(key)
+                .or_insert((digest, outline, placement.raster, tolerance));
+        }
+        // One path has no independent peer: its existing lazy builder avoids
+        // dispatch and temporary result storage.
+        if jobs.len() < 2 {
+            return;
+        }
+        let surface = (f64::from(self.width), f64::from(self.height));
+        let prepared = pool.install(|| prepare_geometry_batch(jobs, surface));
+        storage.geometry.entries.extend(prepared);
+    }
+
+    /// Consecutive leaves share provenance; their operation indices follow
+    /// from the run's first index instead of being copied into every record.
+    fn command_run(
+        &mut self,
+        source: &cherenkov::DisplayList,
+        ops: &[Op],
+        emissions: &mut [Realization<Emission>],
+        storage: &mut EmissionStorage,
+        (layer, range): (LayerId, Range<usize>),
+        glyphs: &GlyphContext<'_>,
+    ) -> Result<(usize, bool), RenderError> {
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        let mut prepared = false;
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        {
+            self.geometry_miss = false;
+        }
+        let first_command = self.frame.commands.len();
+        let first_instance = self.frame.instances.len();
+        let mut i = range.start;
+        let mut changed = false;
+        while i < range.end {
+            let op = &ops[i];
+            let cache = &mut emissions[i];
+            if matches!(
+                op,
+                Op::BeginClip { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. } | Op::End
+            ) {
+                break;
+            }
+            changed |= self.leaf((i, op), ops.get(i + 1), cache, storage, glyphs, source)?;
+            i += 1;
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            if !prepared && self.geometry_miss {
+                self.prepare_paths(
+                    source,
+                    &ops[i..range.end],
+                    &emissions[i..range.end],
+                    storage,
+                    glyphs,
+                );
+                prepared = true;
+            }
+        }
+        self.frame
+            .command_sources
+            .push(super::damage::CommandSource {
+                commands: first_command..self.frame.commands.len(),
+                instances: first_instance..self.frame.instances.len(),
+                first_op: range.start,
+                root: self.root_target,
+                layer,
+                mask_epoch: self
+                    .clip
+                    .and_then(|clip| clip.mask)
+                    .map(|_| glyphs.live_stamp),
+            });
+        Ok((i, changed))
     }
 
     /// Retain each leaf's instances and gradient stops independently. A dirty
@@ -3550,13 +4697,20 @@ impl<'a> Lowering<'a> {
     /// clipped instances' shader variant.
     fn leaf(
         &mut self,
-        op: &Op,
+        indexed: (usize, &Op),
         next: Option<&Op>,
         cache: &mut Realization<Emission>,
         storage: &mut EmissionStorage,
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
     ) -> Result<bool, RenderError> {
+        let (_, op) = indexed;
+        if let Some(open) = &mut self.frame.open
+            && open.color_range != super::present::ColorRange::HighDynamicRange
+        {
+            let range = super::content_range::of_op(op, glyphs.images);
+            open.color_range = open.color_range.max(range);
+        }
         let cover = self.shadow_cover(op, next);
         let hit = cache.valid
             && cache.data.as_mut().is_some_and(|e| {
@@ -3565,20 +4719,200 @@ impl<'a> Lowering<'a> {
                     && e.size.map(f32::to_bits) == [self.width, self.height].map(f32::to_bits)
                     && (e.live_stamp == glyphs.live_stamp || e.stale_live(glyphs.atlas, storage))
             });
+        // A GPU leaf whose layer only translated keeps its emission: the
+        // draw is re-placed in place (water-rs/waterui#3081).
+        let replaced = !hit
+            && cache.valid
+            && cache.data.as_mut().is_some_and(|e| {
+                e.gpu.is_some()
+                    && e.cover.map(|index| storage.covers[index]) == cover
+                    && same_linear(e.transform, self.transform)
+                    && e.size.map(f32::to_bits) == [self.width, self.height].map(f32::to_bits)
+                    && (e.live_stamp == glyphs.live_stamp || e.stale_live(glyphs.atlas, storage))
+                    && self.replace_gpu_leaf(op, e, storage)
+            });
         cache.valid = true;
-        if hit {
-            self.compose(
-                cache.data.as_ref().expect("a hit has data"),
-                storage,
-                self.clip,
-            );
+        let (changed, revision) = if hit || replaced {
+            let emission = cache.data.as_mut().expect("a retained leaf has data");
+            if replaced {
+                emission.revision = self.frame.revision;
+            }
+            self.compose(emission, storage);
+            (replaced, emission.revision)
+        } else {
+            // An unchanged retained emission has already passed visibility testing.
+            let visibility = match op {
+                Op::Glyphs { local, bounds, .. } => Some((*local, *bounds)),
+                _ => None,
+            };
+            if let Some((local, bounds)) = visibility {
+                // Include the atlas apron and integer rounding. The active
+                // target includes filter/silhouette capture expansion.
+                let placed = (self.transform * local).transform_rect_bbox(bounds);
+                let visible = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
+                if placed.inflate(2.0, 2.0).intersect(visible).is_zero_area() {
+                    *cache = Realization::default();
+                    self.frame.commands.push(super::damage::Command {
+                        instances_end: self.frame.instances.len(),
+                        revision: self.frame.revision,
+                    });
+                    return Ok(false);
+                }
+            }
+            // GPU leaves retain like CPU leaves (water-rs/waterui#3081): the
+            // anchor instance and its coverage draw record live on the
+            // emission; the coverage entry itself survives by placement key.
+            if self.clip.is_some() {
+                self.realize_clipped_leaf(indexed, cover, cache, storage, glyphs, source)?;
+            } else {
+                self.realize_leaf(indexed, cover, cache, storage, glyphs, source)?;
+            }
+            (true, self.frame.revision)
+        };
+        self.frame.commands.push(super::damage::Command {
+            instances_end: self.frame.instances.len(),
+            revision,
+        });
+        Ok(changed)
+    }
+
+    fn path_visible(&self, bounds: Rect, raster: Affine) -> bool {
+        let placed = raster.transform_rect_bbox(bounds).inflate(2.0, 2.0);
+        !placed
+            .intersect(Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.width),
+                f64::from(self.height),
+            ))
+            .is_zero_area()
+    }
+
+    /// The automatic route's predicate (decisions R1 and R2): a path
+    /// takes the GPU route when it is large and crossing-dense enough to
+    /// amortize the dispatch and its own bound, `path`'s rows at `bound`,
+    /// fits the device's binding limit and the per-frame cap. Otherwise
+    /// the CPU sweep renders it. Both sites that route an automatic path,
+    /// a fresh leaf and a re-placed retained one, decide here. It reads
+    /// neither `bound.rect` nor `bound.clipped`, which [`RouteWindow`]
+    /// relies on.
+    fn automatic_gpu(&self, path: &path::GpuPath, bound: &path::GpuBound) -> bool {
+        bound.prefers_gpu() && self.compute.is_some_and(|limit| limit.admits(path, bound))
+    }
+
+    /// Select and emit frame-local coverage before CPU realization retention.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "surface sizes fit u32"
+    )]
+    #[inline(never)]
+    fn automatic_gpu_leaf(
+        &mut self,
+        op: &Op,
+        source: &cherenkov::DisplayList,
+        cached: &mut FxHashMap<usize, PreparedGpu>,
+        index: usize,
+    ) -> Result<bool, RenderError> {
+        let Op::Path {
+            local,
+            rule,
+            outline,
+            paint,
+            complexity,
+            ..
+        } = op
+        else {
+            return Ok(false);
+        };
+        let outline = outline.get(source);
+        let raster = self.transform * *local;
+        if !outline.gpu_candidate(*complexity, raster) {
             return Ok(false);
         }
-        if self.clip.is_some() {
-            self.realize_clipped_leaf(op, cover, cache, storage, glyphs, source)?;
-        } else {
-            self.realize_leaf(op, cover, cache, storage, glyphs, source)?;
+        let tolerance = path::FLATTEN / raster.spectral_norm().max(1e-12);
+        let content = outline.content(tolerance);
+        let [a, b, c, d, tx, ty] = raster.as_coeffs();
+        let linear = [a, b, c, d];
+        let linear_bits = linear.map(f64::to_bits);
+        if cached
+            .get(&index)
+            .is_none_or(|entry| entry.content != content || entry.linear != linear_bits)
+        {
+            if !self.path_visible(outline.bounds(), raster) {
+                return Ok(true);
+            }
+            let surface = (f64::from(self.width), f64::from(self.height));
+            let linear_affine = Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]);
+            let prepared = match outline {
+                OutlineRef::Stroke { shape, stroke }
+                    if !matches!(paint, ResolvedPaint::Shader(_)) =>
+                {
+                    PreparedGpu {
+                        content,
+                        linear: linear_bits,
+                        local_bounds: None,
+                        path: path::stroke::prepare(
+                            shape,
+                            stroke,
+                            linear_affine,
+                            tolerance,
+                            surface,
+                        )?,
+                    }
+                }
+                _ => {
+                    let local_path = outline.build(tolerance);
+                    PreparedGpu {
+                        content,
+                        linear: linear_bits,
+                        local_bounds: Some(kurbo::Shape::bounding_box(&local_path)),
+                        path: path::prepare_gpu(local_path.elements(), linear_affine, surface),
+                    }
+                }
+            };
+            cached.insert(index, prepared);
         }
+        let geometry = &cached.get(&index).expect("prepared GPU geometry").path;
+        if geometry.bound.segments < path::GPU_ROUTE_MIN_ELEMENTS {
+            return Ok(false);
+        }
+        let prepared = geometry.placed(
+            Vec2::new(tx, ty),
+            (f64::from(self.width), f64::from(self.height)),
+        );
+        if prepared.bound.empty {
+            return Ok(true);
+        }
+        if !self.automatic_gpu(&prepared, &prepared.bound) {
+            return Ok(false);
+        }
+        let shader_data = match paint {
+            ResolvedPaint::Shader(shader) => Some(
+                self.shader_paint(
+                    shader,
+                    cached
+                        .get(&index)
+                        .expect("prepared GPU geometry")
+                        .local_bounds
+                        .expect("a shader-painted stroke keeps its kurbo outline"),
+                    raster,
+                )?,
+            ),
+            _ => None,
+        };
+        self.set_image(None);
+        let transform = self.transform;
+        self.transform = raster;
+        self.emit_gpu_path(
+            *rule,
+            content,
+            prepared,
+            paint,
+            shader_data.as_ref(),
+            (self.width as u32, self.height as u32),
+        );
+        self.transform = transform;
         Ok(true)
     }
 
@@ -3586,7 +4920,7 @@ impl<'a> Lowering<'a> {
     /// Keep their large clip/snapshot values off the ordinary miss path.
     fn realize_clipped_leaf(
         &mut self,
-        op: &Op,
+        indexed: (usize, &Op),
         cover: Option<Cover>,
         cache: &mut Realization<Emission>,
         storage: &mut EmissionStorage,
@@ -3596,50 +4930,70 @@ impl<'a> Lowering<'a> {
         self.set_image(None);
         let snapshot = self.frame.snapshot();
         let first_patch = self.cell_patches.len();
+        let first_pending = self.pending.len();
         let clip = self.clip;
         self.set_clip(None);
-        let result = self.realize_leaf(op, cover, cache, storage, glyphs, source);
+        let result = self.realize_leaf(indexed, cover, cache, storage, glyphs, source);
         self.set_clip(clip);
         result?;
         self.frame.restore(snapshot);
         self.cell_patches.truncate(first_patch);
+        // A GPU draw's pending record is only meaningful with the draw
+        // range that rolled back with it; every other pending raster is
+        // content the CPU route still needs placed (#3081).
+        if Self::leaf_gpu_draw(&self.pending[first_pending..]).is_some() {
+            self.pending.pop();
+        }
         self.compose(
             cache.data.as_ref().expect("realized leaf has data"),
             storage,
-            clip,
         );
         Ok(())
     }
 
     fn realize_leaf(
         &mut self,
-        op: &Op,
+        indexed: (usize, &Op),
         cover: Option<Cover>,
         cache: &mut Realization<Emission>,
         storage: &mut EmissionStorage,
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
     ) -> Result<(), RenderError> {
+        let (index, op) = indexed;
         debug_assert!(self.clip.is_none());
         self.set_image(None);
         let first_instance = self.frame.instances.len();
         let first_stop = self.frame.stops.len();
         let first_epatch = self.emission_patches.len();
+        let first_pending = self.pending.len();
         // `realize` composes path and glyph ops' local transforms into
         // `self.transform`; the leaf's placement is restored with the clip.
         let transform = self.transform;
-        let realized = self.realize(op, cover, glyphs, source);
+        // An automatic-route GPU candidate emits through the coverage
+        // path instead of CPU realization; the anchor it leaves behind
+        // retains like any other leaf's instances (#3081).
+        let emitted_gpu = self.compute.is_some()
+            && self.coverage_route == path::CoverageRoute::Automatic
+            && matches!(op, Op::Path { .. })
+            && self.automatic_gpu_leaf(op, source, &mut storage.gpu_paths, index)?;
+        let realized = if emitted_gpu {
+            Ok(None)
+        } else {
+            self.realize(op, cover, glyphs, source, &mut storage.geometry)
+        };
         self.transform = transform;
-        realized?;
+        let geometry = realized?;
         let stop_base = u32::try_from(first_stop).expect("stop count fits u32");
         let instance_base = u32::try_from(first_instance).expect("instance count fits u32");
         let retained_instance = storage.instances.len();
         let retained_stop = storage.stops.len();
         let template = storage.templates.len();
         storage.templates.push(InstanceTemplate::new(
-            self.frame
-                .instances
-                .get(first_instance)
+            self.frame.instances[first_instance..]
+                .iter()
+                .find(|inst| !matches!(inst.meta[0], KIND_SPAN | KIND_REGION))
+                .or_else(|| self.frame.instances.get(first_instance))
                 .unwrap_or(&Instance::new(0)),
         ));
         storage
@@ -3667,16 +5021,17 @@ impl<'a> Lowering<'a> {
         storage
             .stops
             .extend_from_slice(&self.frame.stops[first_stop..]);
+        // A GPU leaf's retained draw record re-joins — or regenerates —
+        // its coverage entry on every recompose (#3081).
+        let gpu = Self::leaf_gpu_draw(&self.pending[first_pending..]).map(Arc::clone);
         cache.data = Some(Emission {
-            pending_cells: if first_epatch == self.emission_patches.len() {
-                0
-            } else {
-                Emission::pack_pending_cells(
-                    instance_base,
-                    first_epatch,
-                    self.emission_patches.len() - first_epatch,
-                )
-            },
+            revision: self.frame.revision,
+            gpu,
+            gpu_route: None,
+            pending_cells: PendingCells::new(
+                instance_base,
+                first_epatch..self.emission_patches.len(),
+            ),
             // `refs` pairs are derived at apply — deferred, so the
             // leaf check's stamp compare needs nothing extra for a
             // pending emission to hit inside its own frame, and a
@@ -3690,6 +5045,7 @@ impl<'a> Lowering<'a> {
             }),
             transform,
             size: [self.width, self.height],
+            geometry,
             instances: retained_instance..storage.instances.len(),
             stops: retained_stop..storage.stops.len(),
             image: self
@@ -3703,14 +5059,28 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
+    /// A leaf's GPU draw record among the pending rasters it pushed.
+    /// Only a path leaf draws on the GPU, through `push_gpu_draw`, which
+    /// pushes its one record as the path's final pending raster — so it
+    /// is the last one, and a leaf's lowering costs one tail check, not
+    /// a scan of everything it queued (#3081).
+    fn leaf_gpu_draw(pushed: &[PendingRaster]) -> Option<&Arc<glyph::GpuDraw>> {
+        let (last, earlier) = pushed.split_last()?;
+        debug_assert!(
+            !earlier
+                .iter()
+                .any(|pending| matches!(pending, PendingRaster::GpuPath(_))),
+            "a leaf's GPU draw is the last pending raster it pushes"
+        );
+        match last {
+            PendingRaster::GpuPath(draw) => Some(draw),
+            _ => None,
+        }
+    }
+
     /// Emits a retained leaf's instances and stops into this frame under
-    /// `clip`, rebasing its stop and pending-cell indices.
-    fn compose(
-        &mut self,
-        emission: &Emission,
-        storage: &EmissionStorage,
-        clip: Option<DeviceClip>,
-    ) {
+    /// the current clip, rebasing its stop and pending-cell indices.
+    fn compose(&mut self, emission: &Emission, storage: &EmissionStorage) {
         let offset = u32::try_from(self.frame.stops.len()).expect("stop count fits u32");
         self.frame
             .stops
@@ -3719,33 +5089,46 @@ impl<'a> Lowering<'a> {
         let instance_base = instance_index(self.frame.instances.len());
         let retained = &storage.instances[emission.instances.clone()];
         if let Some(first) = retained.first() {
-            // A realized leaf shares paint and clip fields. Its varying
-            // kinds (fill/span/cell) all use the same shader specialization.
-            let mut template = first.restore(&storage.templates[emission.template], offset);
-            Self::apply_clip(&mut template, clip);
-            self.set_variant(variant_of(&template));
-            let first = self.frame.instances.len();
-            check_instance_bound(first + retained.len());
-            self.frame
-                .instances
-                .resize(first + retained.len(), template);
-            for (inst, source) in self.frame.instances[first..].iter_mut().zip(retained) {
-                inst.bounds = source.bounds;
-                inst.uv[..2].copy_from_slice(&source.uv);
-                inst.meta[0] = source.kind;
-                inst.meta[2] = source.first_stop
-                    + if source.kind == KIND_REGION {
-                        0
-                    } else {
-                        offset
-                    };
-                debug_assert_eq!(variant_of(inst), variant_of(&template));
-            }
-            if let Some(pending) = self.mask_pending {
-                self.mask_patches.extend(
-                    (first..self.frame.instances.len())
-                        .map(|i| (u32::try_from(i).expect("instance count fits u32"), pending)),
-                );
+            // The boundary geometry selects the batch's shader: its full
+            // interior spans use that same module, never the reverse.
+            let stored_template = &storage.templates[emission.template];
+            let mut template = first.restore(stored_template, offset);
+            template.meta[0] = stored_template.kind;
+            Self::apply_clip(&mut template, self.clip);
+            self.set_variant(&template);
+            if let Some(gpu) = &emission.gpu {
+                // The retained anchor re-enters the frame under the
+                // current clip and the draw re-joins its coverage entry
+                // — or regenerates it after an eviction (#3081).
+                self.push_gpu_draw(&template, Arc::clone(gpu));
+            } else {
+                let first = self.frame.instances.len();
+                check_instance_bound(first + retained.len());
+                self.frame
+                    .instances
+                    .resize(first + retained.len(), template);
+                for (inst, source) in self.frame.instances[first..].iter_mut().zip(retained) {
+                    inst.bounds = source.bounds;
+                    inst.uv[..2].copy_from_slice(&source.uv);
+                    inst.meta[0] = source.kind;
+                    inst.meta[2] = source.first_stop
+                        + if source.kind == KIND_REGION {
+                            0
+                        } else {
+                            offset
+                        };
+                    debug_assert!(
+                        source.kind == stored_template.kind
+                            || matches!(source.kind, KIND_SPAN | KIND_REGION),
+                        "a retained leaf has one boundary geometry and optional interior spans or regions"
+                    );
+                }
+                if let Some(pending) = self.mask_pending {
+                    self.mask_patches
+                        .extend((first..self.frame.instances.len()).map(|i| {
+                            (u32::try_from(i).expect("instance count fits u32"), pending)
+                        }));
+                }
             }
         }
         // The producing leaf's frame patches may be gone — rollbacks
@@ -3889,17 +5272,18 @@ impl<'a> Lowering<'a> {
         reason = "preserve dev inlining of common leaf realization as capabilities grow"
     )]
     #[inline(always)]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the existing realization match handles all retained operation variants"
-    )]
+    /// Realize `op` into the frame. Returns the leaf's retained-geometry
+    /// digest for a CPU-route path draw — the emission carries it for
+    /// the next reconciliation to mark; other leaves and GPU-route
+    /// paths return `None`.
     fn realize(
         &mut self,
         op: &Op,
         cover: Option<Cover>,
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
-    ) -> Result<(), RenderError> {
+        geometry: &mut GeometryCache,
+    ) -> Result<Option<NonZeroU64>, RenderError> {
         match op {
             Op::Shaped {
                 kind,
@@ -3912,28 +5296,20 @@ impl<'a> Lowering<'a> {
                 paint,
                 param_x,
                 flags,
-            } => {
-                let margin = extra_margin + self.margin(self.transform * *ambient);
-                let b = bounds.inflate(margin, margin);
-                if b.width() <= 0.0 || b.height() <= 0.0 {
-                    return Ok(());
-                }
-                let mut inst = Self::base(*kind, affine(self.transform * *local), self.clip);
-                inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
-                inst.shape = *shape;
-                if let Some(inner) = inner {
-                    inst.inner = *inner;
-                }
-                inst.params[0] = *param_x;
-                let paint = self.shaped_paint(paint, *bounds, *local, *extra_margin)?;
-                inst.color = paint.color;
-                inst.grad = paint.grad;
-                inst.grad2 = paint.grad2;
-                inst.meta[1] = paint.kind;
-                inst.meta[2] = paint.first_stop;
-                inst.meta[3] |= (paint.packed & 0x00ff_ffff) | (flags << 24);
-                self.push_shaped(inst, self.transform * *local, *bounds, margin);
-            }
+            } => self.shaped(
+                &ShapedGeometry {
+                    kind: *kind,
+                    local: *local,
+                    ambient: *ambient,
+                    shape: *shape,
+                    inner: *inner,
+                    bounds: *bounds,
+                    extra_margin: *extra_margin,
+                    param_x: *param_x,
+                    flags: *flags,
+                },
+                |this| this.shaped_paint(paint, *bounds, *local, *extra_margin),
+            )?,
             Op::Shadow {
                 local,
                 ambient,
@@ -3957,38 +5333,45 @@ impl<'a> Lowering<'a> {
                 rule,
                 outline,
                 paint,
+                ..
             } => {
                 self.transform *= *local;
-                match outline {
-                    Outline::Fill { elements, content } => self.path(
-                        *content,
+                return match outline.get(source) {
+                    OutlineRef::Fill { elements, content } => self.path(
+                        content,
                         *rule,
-                        || BezPath::from_vec(elements.to_vec()),
+                        (
+                            || BezPath::from_vec(elements.to_vec()),
+                            || OutlineRef::Fill { elements, content }.bounds(),
+                        ),
                         paint,
                         glyphs,
-                    )?,
-                    Outline::Stroke { shape, stroke } => {
-                        self.stroke_path(shape, stroke, *rule, paint, glyphs)?;
-                    }
-                    Outline::Source { command, content } => match &source.commands()[*command] {
-                        cherenkov::Command::Fill {
-                            shape: ShapeData::Path { elements, .. },
-                            ..
-                        } => self.path(
-                            content.expect("prepared fill has a hash"),
+                        geometry,
+                    ),
+                    outline @ OutlineRef::Stroke { shape, stroke } => {
+                        let tolerance = path::FLATTEN / self.transform.spectral_norm().max(1e-12);
+                        if self.compute.is_some()
+                            && self.coverage_route == path::CoverageRoute::Gpu
+                            && !matches!(paint, ResolvedPaint::Shader(_))
+                        {
+                            return self
+                                .stroke_gpu(*rule, shape, stroke, paint, tolerance)
+                                .map(|()| None);
+                        }
+                        self.path(
+                            outline.content(tolerance),
                             *rule,
-                            || BezPath::from_vec(elements.to_vec()),
+                            (|| outline.build(tolerance), || outline.bounds()),
                             paint,
                             glyphs,
-                        )?,
-                        cherenkov::Command::Stroke { shape, stroke, .. } => {
-                            self.stroke_path(shape, stroke, *rule, paint, glyphs)?;
-                        }
-                        _ => unreachable!("prepared outline keeps its source kind"),
-                    },
-                }
+                            geometry,
+                        )
+                    }
+                };
             }
-            Op::Glyphs { local, run, paint } => {
+            Op::Glyphs {
+                local, run, paint, ..
+            } => {
                 self.transform *= *local;
                 self.glyph_run(run.get(source), paint, glyphs)?;
             }
@@ -3996,47 +5379,50 @@ impl<'a> Lowering<'a> {
                 local,
                 font,
                 glyph,
-                origin,
                 size,
-            } => self.bitmap_glyph(*local, *font, *glyph, *origin, *size, glyphs)?,
+            } => self.bitmap_glyph(*local, *font, *glyph, *size, glyphs)?,
             _ => unreachable!("scope is composed, never realized as a leaf"),
         }
-        Ok(())
+        Ok(None)
     }
 
-    fn stroke_path(
+    /// The forced GPU route of a stroke: the compute stroker consumes the
+    /// centerline under the full transform (water-rs/waterui#2544).
+    #[cold]
+    #[inline(never)]
+    fn stroke_gpu(
         &mut self,
-        shape: &ShapeData,
-        stroke: &cherenkov::kurbo::Stroke,
         rule: FillRule,
+        shape: &ShapeData,
+        stroke: &kurbo::Stroke,
         paint: &ResolvedPaint,
-        glyphs: &GlyphContext<'_>,
+        tolerance: f64,
     ) -> Result<(), RenderError> {
-        let tol = path::FLATTEN / path::sigma_max(self.transform).max(1e-12);
-        self.path(
-            path::hash_stroke(shape, stroke, tol),
-            rule,
-            || {
-                let path = path::shape_path(shape, tol);
-                kurbo::stroke(path, stroke, &kurbo::StrokeOpts::default(), tol)
-            },
-            paint,
-            glyphs,
-        )
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "surface sizes fit u32"
+        )]
+        let surface = (self.width as u32, self.height as u32);
+        let prepared = path::stroke::prepare(
+            shape,
+            stroke,
+            self.transform,
+            tolerance,
+            (f64::from(surface.0), f64::from(surface.1)),
+        )?;
+        let content = path::hash_stroke(shape, stroke, tolerance);
+        self.emit_gpu_path(rule, content, prepared, paint, None, surface);
+        Ok(())
     }
 
     #[cold]
     #[inline(never)]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "bitmap glyph decoding and image-instance emission form one cold path"
-    )]
     fn bitmap_glyph(
         &mut self,
         local: Affine,
         font_id: u64,
         glyph_id: u32,
-        origin: [f32; 2],
         size: f32,
         glyphs: &GlyphContext<'_>,
     ) -> Result<(), RenderError> {
@@ -4053,29 +5439,30 @@ impl<'a> Lowering<'a> {
             clippy::cast_possible_truncation,
             reason = "bitmap strike metadata uses f32 ppem"
         )]
-        let device_ppem = (f64::from(size) * path::sigma_max(transform)) as f32;
+        let device_ppem = (f64::from(size) * transform.spectral_norm()) as f32;
         let strike = bitmap_font.select(device_ppem);
         let key = super::bitmap::BitmapKey {
             font: font_id,
             strike,
             glyph: glyph_id,
         };
-        let (em, width, height) = if let Some(bitmap) = glyphs.bitmaps.get(&key) {
-            (bitmap.em, bitmap.image.width, bitmap.image.height)
-        } else if let Some((em, width, height)) = self.pending.iter().find_map(|raster| {
+        let (em, width, height, sampling_flags) = if let Some(bitmap) = glyphs.bitmaps.get(&key) {
+            let image = &bitmap.image;
+            (bitmap.em, image.width, image.height, image.sampling_flags)
+        } else if let Some(found) = self.pending.iter().find_map(|raster| {
             let PendingRaster::Bitmap {
                 key: pending_key,
                 em,
                 width,
                 height,
-                ..
+                upload,
             } = raster
             else {
                 return None;
             };
-            (*pending_key == key).then_some((*em, *width, *height))
+            (*pending_key == key).then_some((*em, *width, *height, upload.flags))
         }) {
-            (em, width, height)
+            found
         } else {
             let Some(decoded) =
                 super::bitmap::decode(&font.data, font.index, bitmap_font, strike, glyph_id)?
@@ -4084,69 +5471,97 @@ impl<'a> Lowering<'a> {
             };
             let em = decoded.em;
             let (width, height) = (decoded.width, decoded.height);
-            let texels = super::image_texels(
-                &decoded.rgba,
+            let upload = super::image_storage::Upload::rgba8(
+                decoded.rgba,
                 cherenkov::ImageColorSpace::Srgb,
                 decoded.premultiplied,
             );
+            let sampling_flags = upload.flags;
             self.pending.push(PendingRaster::Bitmap {
                 key,
                 em,
                 width,
                 height,
-                texels,
+                upload,
             });
             self.glyphs += 1;
-            (em, width, height)
+            (em, width, height, sampling_flags)
         };
-        let rect = Rect::new(
-            f64::from(size).mul_add(em.x0, f64::from(origin[0])),
-            f64::from(size).mul_add(em.y0, f64::from(origin[1])),
-            f64::from(size).mul_add(em.x1, f64::from(origin[0])),
-            f64::from(size).mul_add(em.y1, f64::from(origin[1])),
-        );
+        // The glyph realizes as `Command::Image` of its bitmap over the
+        // placed em box would: the same fill, placement and image paint.
+        let size = f64::from(size);
+        let rect = Rect::new(size * em.x0, size * em.y0, size * em.x1, size * em.y1);
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return Ok(());
         }
         let Some(boxed) = box_shape(&ShapeData::Rect(rect))? else {
             return Ok(());
         };
-        let to_device = transform * boxed.extra;
-        let margin = self.margin(transform);
-        let bounds = boxed.bounds.inflate(margin, margin);
-        let mut inst = Self::base(KIND_FILL, affine(to_device), self.clip);
-        inst.bounds = [
-            f32_f64(bounds.x0),
-            f32_f64(bounds.y0),
-            f32_f64(bounds.x1),
-            f32_f64(bounds.y1),
-        ];
-        inst.shape = boxed.shape;
-        inst.meta[1] = PAINT_IMAGE;
-        let bitmap_transform = Affine::translate((rect.x0, rect.y0))
-            * Affine::scale_non_uniform(
-                rect.width() / f64::from(width),
-                rect.height() / f64::from(height),
-            );
-        let [x_scale, y_skew, x_skew, y_scale, x_translate, y_translate] = (boxed.extra.inverse()
-            * bitmap_transform)
-            .inverse()
-            .as_coeffs();
-        inst.grad = [
-            f32_f64(x_scale),
-            f32_f64(y_skew),
-            f32_f64(x_skew),
-            f32_f64(y_scale),
-        ];
-        inst.grad2 = [
-            f32_f64(x_translate),
-            f32_f64(y_translate),
-            f32_f64(f64::from(width)),
-            f32_f64(f64::from(height)),
-        ];
-        inst.meta[3] |= super::instance::EXTEND_PAD | (super::instance::EXTEND_PAD << 4) | (1 << 8);
-        self.set_image(Some(ImageSource::Bitmap(key)));
-        self.push_shaped(inst, to_device, boxed.bounds, margin);
+        let paint = super::prepared::image_paint(
+            boxed.extra.inverse(),
+            super::prepared::image_placement(&rect, width, height),
+            (width, height),
+            (cherenkov::Extend::Pad, cherenkov::Extend::Pad),
+            cherenkov::Sampling::Linear,
+            sampling_flags,
+        );
+        self.shaped(
+            &ShapedGeometry {
+                kind: KIND_FILL,
+                local: local * boxed.extra,
+                ambient: local,
+                shape: boxed.shape,
+                inner: None,
+                bounds: boxed.bounds,
+                extra_margin: 0.0,
+                param_x: 0.0,
+                flags: 0,
+            },
+            |this| {
+                this.set_image(Some(ImageSource::Bitmap(key)));
+                Ok(paint)
+            },
+        )
+    }
+
+    /// Emits one shaped instance whose paint `paint` resolves once the
+    /// instance is known to cover anything.
+    fn shaped(
+        &mut self,
+        geometry: &ShapedGeometry,
+        paint: impl FnOnce(&mut Self) -> Result<PaintData, RenderError>,
+    ) -> Result<(), RenderError> {
+        let ShapedGeometry {
+            kind,
+            local,
+            ambient,
+            shape,
+            inner,
+            bounds,
+            extra_margin,
+            param_x,
+            flags,
+        } = *geometry;
+        let margin = extra_margin + self.margin(self.transform * ambient);
+        let b = bounds.inflate(margin, margin);
+        if b.width() <= 0.0 || b.height() <= 0.0 {
+            return Ok(());
+        }
+        let mut inst = Self::base(kind, affine(self.transform * local), self.clip);
+        inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
+        inst.shape = shape;
+        if let Some(inner) = inner {
+            inst.inner = inner;
+        }
+        inst.params[0] = param_x;
+        let paint = paint(self)?;
+        inst.color = paint.color;
+        inst.grad = paint.grad;
+        inst.grad2 = paint.grad2;
+        inst.meta[1] = paint.kind;
+        inst.meta[2] = paint.first_stop;
+        inst.meta[3] |= (paint.packed & 0x00ff_ffff) | (flags << 24);
+        self.push_shaped(inst, self.transform * local, bounds, margin);
         Ok(())
     }
 
@@ -4309,17 +5724,25 @@ impl<'a> Lowering<'a> {
     /// A path or stroked outline: rasterize once per
     /// (content, matrix, subpixel, surface) and replay spans plus atlas
     /// cells. `content` hashes the draw's semantics; `make` builds the
-    /// local outline only on a cache miss, so replays cost no `BezPath` or
+    /// local outline only on a geometry miss, so replays cost no `BezPath` or
     /// stroke work. Coverage clipped by the surface is stored under the
     /// offset-specific key: it is only valid at that integer offset.
+    ///
+    /// The geometry — flattened, winding-resolved segments in a
+    /// translation-normalized frame — is retained per content in
+    /// `geometry`: a new placement pays only the coverage integration,
+    /// and a coverage hit costs only the replay.
+    /// Returns the geometry's digest for the emission to carry, `None`
+    /// on the GPU coverage route.
     fn path(
         &mut self,
         content: u64,
         rule: FillRule,
-        make: impl FnOnce() -> BezPath,
+        (make, bounds): (impl FnOnce() -> BezPath, impl FnOnce() -> Rect),
         paint: &ResolvedPaint,
         glyphs: &GlyphContext<'_>,
-    ) -> Result<(), RenderError> {
+        geometry: &mut GeometryCache,
+    ) -> Result<Option<NonZeroU64>, RenderError> {
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -4334,13 +5757,30 @@ impl<'a> Lowering<'a> {
         } else {
             (None, None)
         };
+        // Scope item 7: the GPU route needs the device's compute
+        // capability; without it the CPU sweep runs even under the
+        // #2546 force hook. The forced route cannot serve its emission
+        // from the CPU atlas, so it decides before the hit checks.
+        if self.compute.is_some() && self.coverage_route == path::CoverageRoute::Gpu {
+            self.path_gpu(
+                rule,
+                &shader_path.unwrap_or_else(|| make.take().expect("path factory")()),
+                paint,
+                shader_data.as_ref(),
+                surface,
+                content,
+            );
+            return Ok(None);
+        }
         let hit = glyphs
             .atlas
             .path(pl.key)
             .or_else(|| glyphs.atlas.path(pl.key_exact()));
         if let Some(emit) = hit {
+            // A hit needs no `GeometryKey`: the stored digest the
+            // miss recorded marks ownership the same way.
             self.replay(emit, None, pl.offset, paint, shader_data.as_ref());
-            return Ok(());
+            return Ok(emit.geometry);
         }
         if let Some(&pending) = self
             .pending_paths
@@ -4352,35 +5792,60 @@ impl<'a> Lowering<'a> {
             };
             let emit = emit.clone();
             self.replay(&emit, Some(pending), pl.offset, paint, shader_data.as_ref());
-            return Ok(());
+            return Ok(emit.geometry);
         }
+        let [.., e, f] = pl.raster.as_coeffs();
         let (stored, pending) = 'stored: {
-            let device =
-                pl.raster * shader_path.unwrap_or_else(|| make.take().expect("path factory")());
-            let (segments, bbox) = path::flatten_segments(&device, path::FLATTEN);
-            let Some(coverage) = path::rasterize(
-                &segments,
-                bbox,
-                (f64::from(self.width), f64::from(self.height)),
-                rule,
-            ) else {
+            let key = GeometryKey::new(content, rule, pl.raster);
+            let digest = key.digest();
+            let entry = geometry.entry(digest, key, || {
+                if !self.path_visible(bounds(), self.transform) {
+                    return None;
+                }
+                #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+                {
+                    self.geometry_miss = true;
+                }
+                let local = shader_path.unwrap_or_else(|| make.take().expect("path factory")());
+                Some(RetainedGeometry::new(local, pl.raster, rule))
+            });
+            let Some(entry) = entry else {
+                return Ok(None);
+            };
+            let (to_device, device_bbox) = entry.placed(Vec2::new(e, f));
+            let Some(grid @ (x0, y0, ..)) =
+                path::grid(device_bbox, (f64::from(self.width), f64::from(self.height)))
+            else {
                 // Missing the surface at this offset says nothing about
                 // other offsets — and an empty emission carries no bands,
                 // so it could never be pinned or replayed later either.
                 // Store nothing: an exact-key insert would never hit again
-                // and could not be evicted for want of a slot (#119).
-                break 'stored (PathEmit::default(), None);
+                // and could not be evicted for want of a slot (#119). The
+                // flattened geometry stays retained for other placements.
+                break 'stored (
+                    PathEmit {
+                        geometry: Some(digest),
+                        ..PathEmit::default()
+                    },
+                    None,
+                );
             };
+            entry.state.resolve();
+            let (segments, resolved_rule) = entry.state.segments();
             self.paths += 1;
-            let (emit, cells) = path::emit(&coverage)?;
+            let (emit, cells, clipped) = path::emit_resolved(
+                segments,
+                to_device - Vec2::new(x0, y0),
+                grid,
+                resolved_rule,
+                self.raster_scratch,
+                &mut self.path_arena,
+            )?;
             // Emission rects are relative to the placement offset; the
-            // stored record keeps that frame.
-            let stored = emit.translated(-pl.offset.x, -pl.offset.y);
-            let key = if coverage.clipped {
-                pl.key_exact()
-            } else {
-                pl.key
-            };
+            // stored record keeps that frame and the digest hits return.
+            let mut stored = emit.translated(-pl.offset.x, -pl.offset.y);
+            stored.geometry = Some(digest);
+            let key = if clipped { pl.key_exact() } else { pl.key };
             let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
             self.pending.push(PendingRaster::Path {
                 key,
@@ -4391,7 +5856,7 @@ impl<'a> Lowering<'a> {
             (stored, Some(pending))
         };
         self.replay(&stored, pending, pl.offset, paint, shader_data.as_ref());
-        Ok(())
+        Ok(stored.geometry)
     }
 
     /// Replays a cached path emission: `KIND_SPAN` runs and `KIND_GLYPH`
@@ -4433,16 +5898,213 @@ impl<'a> Lowering<'a> {
             offset,
         );
         if let Some(pending) = pending {
-            for i in 0..emit.cells.len() {
-                let patch = (
+            // Extending from the exact-size range grows each list at most
+            // once per path, where a push per cell can grow it several times.
+            let patches = (0..emit.cells.len()).map(|i| {
+                (
                     u32::try_from(first + i).expect("instance index fits u32"),
                     pending,
                     u32::try_from(i).expect("cell index fits u32"),
-                );
-                self.emission_patches.push(patch);
-                self.cell_patches.push(patch);
+                )
+            });
+            self.emission_patches.extend(patches.clone());
+            self.cell_patches.extend(patches);
+        }
+    }
+
+    /// The GPU coverage route of issue #2543: the path's curve elements
+    /// go into a pending compute record untouched by the CPU — the
+    /// coverage kernels flatten, bin and classify them on device and
+    /// write compact geometry records into the path's coverage-arena
+    /// block, which the draw's anchor joins in the vertex stage
+    /// (water-rs/waterui#3081).
+    fn path_gpu(
+        &mut self,
+        rule: FillRule,
+        local: &BezPath,
+        paint: &ResolvedPaint,
+        shader_data: Option<&PaintData>,
+        surface: (u32, u32),
+        content: u64,
+    ) {
+        let prepared = path::prepare_gpu(
+            local.elements(),
+            self.transform,
+            (f64::from(surface.0), f64::from(surface.1)),
+        );
+        self.emit_gpu_path(rule, content, prepared, paint, shader_data, surface);
+    }
+
+    /// Consume the same encoded path whose bounds the route selector
+    /// inspected. The coverage entry is retained by its
+    /// `path::CoverageKey` (water-rs/waterui#3081): see `GpuDraw::new`.
+    fn emit_gpu_path(
+        &mut self,
+        rule: FillRule,
+        content: u64,
+        prepared: path::GpuPath,
+        paint: &ResolvedPaint,
+        shader_data: Option<&PaintData>,
+        surface: (u32, u32),
+    ) {
+        let bound = prepared.bound;
+        if bound.empty {
+            return;
+        }
+        let mut template = self.gpu_template(paint, shader_data);
+        template.bounds = bound.rect;
+        self.set_variant(&template);
+        let draw = glyph::GpuDraw::new(content, rule as u32, self.transform, prepared, surface);
+        self.push_gpu_draw(&template, Arc::new(draw));
+    }
+
+    /// Re-places a retained GPU leaf whose layer moved by a translation
+    /// alone (water-rs/waterui#3081): its anchor bounds, its template's
+    /// translation and its draw record are rewritten in place from the
+    /// retained geometry, and the caller composes it like a hit. No
+    /// curve is re-encoded, no content is hashed and the retained
+    /// storage does not grow, so an animated translation costs what the
+    /// placement itself costs. Returns `false` — leaving the emission
+    /// untouched for an ordinary realization — when the new placement
+    /// changes what the leaf emits: a shader paint, which reads device
+    /// bounds; an empty grid; or an automatic-route path the route
+    /// predicate no longer admits there.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "surface sizes fit u32"
+    )]
+    fn replace_gpu_leaf(
+        &self,
+        op: &Op,
+        emission: &mut Emission,
+        storage: &mut EmissionStorage,
+    ) -> bool {
+        let Op::Path { local, paint, .. } = op else {
+            unreachable!("only a path leaf emits a GPU draw")
+        };
+        if matches!(paint, ResolvedPaint::Shader(_)) {
+            return false;
+        }
+        let gpu = emission.gpu.as_mut().expect("a GPU emission has a draw");
+        let raster = self.transform * *local;
+        let [.., e, f] = raster.as_coeffs();
+        let bound = gpu.path.bound_at(
+            Vec2::new(e, f),
+            (f64::from(self.width), f64::from(self.height)),
+        );
+        if bound.empty {
+            return false;
+        }
+        if self.coverage_route == path::CoverageRoute::Automatic {
+            let grid = [bound.grid_w, bound.grid_h];
+            let window = *emission
+                .gpu_route
+                .get_or_insert_with(|| self.route_window(&gpu.path, grid));
+            if !window
+                .decision(grid)
+                .unwrap_or_else(|| self.automatic_gpu(&gpu.path, &bound))
+            {
+                return false;
             }
         }
+        debug_assert_eq!(emission.instances.len(), 1, "a GPU emission is its anchor");
+        storage.instances[emission.instances.start].bounds = bound.rect;
+        let [a0, a1, a2, a3, a4, a5, ..] = affine(raster);
+        storage.templates[emission.template].affine = [a0, a1, a2, a3, a4, a5];
+        let surface = (self.width as u32, self.height as u32);
+        // Last frame's pending list released its share at apply, so the
+        // record is rewritten where it lies; a share still held by this
+        // frame's pending list keeps its record and this leaf takes a
+        // new one.
+        match Arc::get_mut(gpu) {
+            Some(record) => record.place(raster, bound, surface),
+            None => {
+                *gpu = Arc::new(glyph::GpuDraw::new(
+                    gpu.key.content(),
+                    gpu.rule,
+                    raster,
+                    gpu.path.clone().with_bound(bound),
+                    surface,
+                ));
+            }
+        }
+        emission.transform = self.transform;
+        true
+    }
+
+    /// The automatic route's decisions for `path` on the grid sizes
+    /// around a non-empty `anchor`.
+    fn route_window(&self, path: &path::GpuPath, anchor: [usize; 2]) -> RouteWindow {
+        let mut gpu = 0;
+        for dy in 0..3 {
+            for dx in 0..3 {
+                let bound = path.grid_bound(anchor[0] + dx - 1, anchor[1] + dy - 1);
+                gpu |= u16::from(self.automatic_gpu(path, &bound)) << (3 * dy + dx);
+            }
+        }
+        RouteWindow { anchor, gpu }
+    }
+
+    /// Push the draw half of a GPU-routed path — shared by
+    /// `emit_gpu_path`'s fresh anchor and a retained emission's
+    /// restored one. Closes the open CPU segment, pushes the anchor,
+    /// then the pending record and its draw range
+    /// (water-rs/waterui#3081).
+    fn push_gpu_draw(&mut self, anchor: &Instance, draw: Arc<glyph::GpuDraw>) {
+        self.end_segment();
+        let index = u32::try_from(self.frame.instances.len()).expect("instance index");
+        self.frame.instances.push(*anchor);
+        if let Some(mask) = self.mask_pending {
+            self.mask_patches.push((index, mask));
+        }
+        if let Some(open) = &mut self.frame.open {
+            open.seg_start = index + 1;
+        }
+        let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
+        self.pending.push(PendingRaster::GpuPath(draw));
+        self.push_gpu_range(pending);
+    }
+
+    /// The instance template a GPU-routed path shares with `replay`:
+    /// every field but the per-instance `bounds`, `uv` and `meta[0]`
+    /// kind the classify kernel stamps.
+    fn gpu_template(&mut self, paint: &ResolvedPaint, shader_data: Option<&PaintData>) -> Instance {
+        let paint = shader_data
+            .copied()
+            .unwrap_or_else(|| self.resolved_paint(paint));
+        let mut template = Self::base(KIND_SPAN, affine(self.transform), self.clip);
+        template.color = paint.color;
+        template.grad = paint.grad;
+        template.grad2 = paint.grad2;
+        template.meta[1] = paint.kind;
+        template.meta[2] = paint.first_stop;
+        template.meta[3] |= paint.packed & 0x00ff_ffff;
+        template
+    }
+
+    /// Appends a GPU-path draw range: no CPU instances — the coverage
+    /// kernels emit them — and the pending record index the apply step
+    /// resolves to a compute record.
+    fn push_gpu_range(&mut self, pending: u32) {
+        let Some(open) = &mut self.frame.open else {
+            return;
+        };
+        open.ranges.push(DrawRange {
+            source: open.source,
+            image: open.image.clone(),
+            mask: open.mask,
+            pipeline: open.pipeline,
+            variant: open.variant,
+            instances: (u32::try_from(self.frame.instances.len()).expect("instance count") - 1)
+                ..u32::try_from(self.frame.instances.len()).expect("instance count"),
+            gpu: Some(pending),
+        });
+        open.maybe_coverage &= open.pipeline == PipelineKind::SrcOver
+            && open.variant == ShaderVariant::Simple
+            && open.source.is_none()
+            && open.image.is_none()
+            && open.mask.is_none();
     }
 
     /// All quads in a path group share paint, clip and shader variant. Reserve
@@ -4456,23 +6118,35 @@ impl<'a> Lowering<'a> {
         if quads.len() == 0 {
             return;
         }
-        self.set_variant(variant_of(template));
+        self.set_variant(template);
         let first = self.frame.instances.len();
         check_instance_bound(first + quads.len());
-        self.frame.instances.resize(first + quads.len(), *template);
-        for (inst, (rect, uv, interior)) in self.frame.instances[first..].iter_mut().zip(quads) {
-            inst.bounds = [
-                f32_f64(f64::from(rect[0]) + offset.x),
-                f32_f64(f64::from(rect[1]) + offset.y),
-                f32_f64(f64::from(rect[2]) + offset.x),
-                f32_f64(f64::from(rect[3]) + offset.y),
-            ];
-            inst.uv[..2].copy_from_slice(&uv);
-            if interior != 0 && inst.meta[1] == PAINT_SOLID {
-                inst.meta[0] = KIND_REGION;
-                inst.meta[2] = interior;
-            }
-        }
+        let solid = template.meta[1] == PAINT_SOLID;
+        self.frame
+            .instances
+            .extend(quads.map(|(rect, [u0, u1], interior)| Instance {
+                affine: template.affine,
+                bounds: [
+                    f32_f64(f64::from(rect[0]) + offset.x),
+                    f32_f64(f64::from(rect[1]) + offset.y),
+                    f32_f64(f64::from(rect[2]) + offset.x),
+                    f32_f64(f64::from(rect[3]) + offset.y),
+                ],
+                shape: template.shape,
+                inner: template.inner,
+                clip_inv: template.clip_inv,
+                clip: template.clip,
+                color: template.color,
+                grad: template.grad,
+                grad2: template.grad2,
+                uv: [u0, u1, template.uv[2], template.uv[3]],
+                params: template.params,
+                meta: if interior != 0 && solid {
+                    [KIND_REGION, template.meta[1], interior, template.meta[3]]
+                } else {
+                    template.meta
+                },
+            }));
         if let Some(pending) = self.mask_pending {
             self.mask_patches.extend(
                 (first..self.frame.instances.len())
@@ -4532,6 +6206,7 @@ impl<'a> Lowering<'a> {
                 bbox,
                 (f64::from(self.width), f64::from(self.height)),
                 rule,
+                self.raster_scratch,
             ) else {
                 // Clipping to nothing at this offset draws nothing.
                 return Ok(());
@@ -4540,11 +6215,7 @@ impl<'a> Lowering<'a> {
             let (Ok(w), Ok(h)) = (u32::try_from(coverage.w), u32::try_from(coverage.h)) else {
                 return Err(RenderError::Unsupported(names::PATH_CLIP_TOO_LARGE));
             };
-            let texels: Vec<u8> = coverage
-                .data
-                .iter()
-                .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-                .collect();
+            let texels: Vec<u8> = coverage.data.iter().copied().map(raster::texel).collect();
             let key = if coverage.clipped {
                 pl.key_exact()
             } else {
@@ -5050,7 +6721,7 @@ pub const fn globals(size: [f32; 2], origin: [f32; 2], space: cherenkov::BlendSp
     clippy::many_single_char_names,
     reason = "a..f are the conventional affine coefficient names"
 )]
-fn device_bbox(inst: &Instance) -> [f32; 4] {
+pub(super) fn device_bbox(inst: &Instance) -> [f32; 4] {
     if matches!(inst.meta[0], KIND_GLYPH | KIND_SPAN | KIND_REGION) {
         return inst.bounds;
     }
@@ -5134,9 +6805,20 @@ fn bboxes_disjoint(instances: &[Instance]) -> bool {
 /// by one pixel and integer-rounded, as `(x, y, w, h)`; `[0, 0, 0, 0]`
 /// when empty.
 fn tight_region(instances: &[Instance], width: u32, height: u32) -> [u32; 4] {
+    union_region(instances.iter().map(device_bbox), width, height)
+}
+
+/// The union device bbox of `bboxes` (non-finite boxes skipped), inflated
+/// by one pixel, integer-rounded and clipped to `width`×`height`, as
+/// `(x, y, w, h)`; `[0, 0, 0, 0]` when empty.
+pub(super) fn union_region(
+    bboxes: impl IntoIterator<Item = [f32; 4]>,
+    width: u32,
+    height: u32,
+) -> [u32; 4] {
     let mut min = [f32::INFINITY; 2];
     let mut max = [f32::NEG_INFINITY; 2];
-    for b in instances.iter().map(device_bbox) {
+    for b in bboxes {
         if b.iter().any(|v| !v.is_finite()) {
             continue;
         }
@@ -5146,6 +6828,99 @@ fn tight_region(instances: &[Instance], width: u32, height: u32) -> [u32; 4] {
         max[1] = max[1].max(b[3]);
     }
     padded_region(min, max, width, height)
+}
+
+/// Capture the body's support plus the convolution reach, retaining the
+/// padded viewport's offscreen contributors.
+fn shadow_region(frame: &Frame, last: usize, padding: [u32; 2]) -> [u32; 4] {
+    let support = shadow_support(frame, last);
+    if support[2] == 0 || support[3] == 0 {
+        return [0; 4];
+    }
+    let [_, _, width, height] = frame.passes[last].region;
+    let x = support[0].saturating_sub(padding[0]);
+    let y = support[1].saturating_sub(padding[1]);
+    let end_x = (support[0] + support[2])
+        .saturating_add(padding[0])
+        .min(width);
+    let end_y = (support[1] + support[3])
+        .saturating_add(padding[1])
+        .min(height);
+    [x, y, end_x - x, end_y - y]
+}
+
+/// The texel region of a shadow capture that can hold nonzero input to
+/// its convolution: the union of everything drawn into its scratch depth
+/// since the depth's last clear — the silhouette scope opens it with a
+/// transparent one — translated to the capture's texel origin, padded and
+/// clipped to the extents of the pass at `last`. Draws into nested scratch
+/// depths are not members of the union; their composites into this depth are, since every pixel
+/// a pass writes comes through a drawn instance. A GPU-routed path's
+/// range contributes its anchor instance's conservative bound, and a
+/// coverage-tier polygon is bounded by the source instance it copies.
+/// A filtered pass can grow content past its draws' bounds, so its
+/// explicit region joins the union; `capture` and `backdrop_copy` never
+/// write the depth (the former is backdrop-only, the latter reads it).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pass region coordinates are small positive integers"
+)]
+pub fn shadow_support(frame: &Frame, last: usize) -> [u32; 4] {
+    let target = frame.passes[last].target;
+    let [x, y, width, height] = frame.passes[last].region;
+    let first = frame.passes[..=last]
+        .iter()
+        .rposition(|pass| pass.target == target && pass.clear.is_some())
+        .expect("a shadow capture opens its depth with a clear");
+    union_region(
+        frame.passes[first..=last]
+            .iter()
+            .enumerate()
+            .filter(|(_, pass)| pass.target == target)
+            .flat_map(|(index, pass)| {
+                let filtered = frame
+                    .filters
+                    .iter()
+                    .any(|&(pass_index, _)| pass_index == first + index)
+                    .then_some(pass.region);
+                pass.ranges
+                    .iter()
+                    .flat_map(|range| {
+                        frame.instances
+                            [range.instances.start as usize..range.instances.end as usize]
+                            .iter()
+                    })
+                    .map(device_bbox)
+                    .chain(filtered.map(|[x, y, w, h]| {
+                        [
+                            x as f32,
+                            y as f32,
+                            x.saturating_add(w) as f32,
+                            y.saturating_add(h) as f32,
+                        ]
+                    }))
+                    .map(move |[x0, y0, x1, y1]| {
+                        [x0 - x as f32, y0 - y as f32, x1 - x as f32, y1 - y as f32]
+                    })
+            }),
+        width,
+        height,
+    )
+}
+
+/// The `[x, y, w, h]` texel region covering the device rect `bounds`
+/// (`x0, y0, x1, y1`): floor / ceil, clamped to the surface.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "region coordinates are finite, non-negative and below the surface size"
+)]
+fn covering_region(bounds: [f32; 4], width: f32, height: f32) -> [u32; 4] {
+    let x0 = bounds[0].floor().max(0.0);
+    let y0 = bounds[1].floor().max(0.0);
+    let x1 = bounds[2].ceil().min(width);
+    let y1 = bounds[3].ceil().min(height);
+    [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32]
 }
 
 /// The `[x, y, w, h]` texel region covering a float bbox: floor−1 / ceil+1,
@@ -5218,10 +6993,468 @@ mod tests {
     use super::*;
 
     #[test]
+    fn command_damage_survives_content_replacement_and_resource_invalidation() {
+        use cherenkov::{Draw as _, Picture};
+
+        let (device, _queue) = device_and_queue().expect("GPU device for lowering test");
+        let atlas = Atlas::new(&device, u64::MAX);
+        let glyphs = GlyphContext {
+            atlas: &atlas,
+            live_stamp: atlas.live_stamp(),
+            fonts: &FxHashMap::default(),
+            images: &FxHashMap::default(),
+            bitmaps: &FxHashMap::default(),
+            content: &FxHashMap::default(),
+        };
+        let tree = SurfaceTree::new();
+        let root = tree.root();
+        let picture = |x: f64| {
+            Picture::record(|r| {
+                r.fill(Rect::new(x, 10.0, x + 8.0, 18.0), WorkingColor::WHITE);
+            })
+        };
+        let mut caches = FxHashMap::from_iter([(root, ContentData::new(picture(10.0)))]);
+        let mut frame = Frame::default();
+        let mut anchors = AnchorScratch::default();
+        let mut rasters = path::EmitScratch::new();
+        let mut history = super::super::damage::Commands::default();
+        let mut draw = |caches: &mut FxHashMap<LayerId, ContentData>| {
+            frame.reset();
+            let mut lowering = Lowering::new(
+                &mut frame,
+                (256, 256),
+                &mut anchors,
+                &mut rasters,
+                Some(test_limit()),
+            );
+            lowering.prepare(caches, &glyphs).expect("prepare content");
+            lowering
+                .run(
+                    &tree,
+                    caches,
+                    WorkingColor::BLACK,
+                    &glyphs,
+                    &FxHashMap::default(),
+                    FxHashMap::default(),
+                    &super::super::planes::Plan::default(),
+                )
+                .expect("lower scene");
+            history.update(&frame);
+            let area = history.pixels();
+            history.submitted();
+            area
+        };
+        assert_eq!(draw(&mut caches), 256 * 256);
+        assert_eq!(draw(&mut caches), 0, "retained command stays clean");
+        caches
+            .get_mut(&root)
+            .expect("root content")
+            .replace(picture(70.0));
+        assert!(caches[&root].retained.realizations().is_empty());
+        let moved = draw(&mut caches);
+        assert!(
+            moved > 0 && moved < 256 * 256 / 20,
+            "small movement remains below five percent"
+        );
+        caches.get_mut(&root).expect("root content").invalidate();
+        assert!(caches[&root].retained.realizations().is_empty());
+        let invalidated = draw(&mut caches);
+        assert!(
+            invalidated > 0 && invalidated < moved,
+            "only the current position is invalidated"
+        );
+        caches
+            .get_mut(&root)
+            .expect("root content")
+            .replace(Picture::record(|_| {}));
+        assert_eq!(
+            draw(&mut caches),
+            invalidated,
+            "removal keeps the old footprint after cache retirement"
+        );
+        assert_eq!(
+            draw(&mut caches),
+            0,
+            "submitted removal retires its footprint"
+        );
+    }
+
+    /// The default device's coverage binding limit, which every engine
+    /// device requests (`render/mod.rs`).
+    fn test_limit() -> CoverageLimit {
+        CoverageLimit::new(&wgpu::Limits::default())
+    }
+
+    /// A retained leaf's stored route decisions agree with the predicate
+    /// at every placement whose grid size they cover, and they cover
+    /// every size a fractional translation of an unclipped grid takes.
+    #[test]
+    fn route_window_matches_the_predicate() {
+        let mut geometry = BezPath::new();
+        for index in 0..1024 {
+            let x = f64::from(index % 32) * 3.0;
+            let y = f64::from(index / 32) * 3.0;
+            geometry.move_to((x, y));
+            geometry.line_to((x + 2.0, y));
+            geometry.line_to((x + 2.0, y + 2.0));
+            geometry.line_to((x, y + 2.0));
+            geometry.close_path();
+        }
+        let surface = (128.0, 128.0);
+        let origin = Vec2::new(16.0, 16.0);
+        let path = path::prepare_gpu(geometry.elements(), Affine::translate(origin), surface);
+        assert!(
+            !path.bound.clipped,
+            "the window anchors on an unclipped grid"
+        );
+        let mut frame = Frame::default();
+        let mut anchors = AnchorScratch::default();
+        let mut raster = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (128, 128),
+            &mut anchors,
+            &mut raster,
+            Some(test_limit()),
+        );
+        // The smallest binding limit that admits the anchor grid refuses
+        // the larger grids around it, so the window holds both decisions.
+        let limit = |bytes| {
+            CoverageLimit::new(&wgpu::Limits {
+                max_storage_buffer_binding_size: bytes,
+                max_buffer_size: bytes,
+                ..wgpu::Limits::default()
+            })
+        };
+        let (mut refused, mut fits) = (0, wgpu::Limits::default().max_buffer_size);
+        assert!(lowering.automatic_gpu(&path, &path.bound));
+        while fits - refused > 1 {
+            let bytes = refused + (fits - refused) / 2;
+            lowering.compute = Some(limit(bytes));
+            if lowering.automatic_gpu(&path, &path.bound) {
+                fits = bytes;
+            } else {
+                refused = bytes;
+            }
+        }
+        lowering.compute = Some(limit(fits));
+        let window = lowering.route_window(&path, [path.bound.grid_w, path.bound.grid_h]);
+        let (mut admitted, mut covered) = (0, 0);
+        for step in -160..=160 {
+            let translation = origin + Vec2::new(f64::from(step) * 0.37, f64::from(step) * 0.21);
+            let bound = path.bound_at(translation, surface);
+            let decision = window.decision([bound.grid_w, bound.grid_h]);
+            if let Some(gpu) = decision {
+                assert_eq!(
+                    gpu,
+                    lowering.automatic_gpu(&path, &bound),
+                    "{translation:?}"
+                );
+                covered += 1;
+                admitted += usize::from(gpu);
+            }
+            if !bound.clipped {
+                assert!(decision.is_some(), "an unclipped placement {translation:?}");
+            }
+        }
+        assert!(
+            admitted > 0 && covered > admitted,
+            "{admitted} of {covered}"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "three coverage-route cases, the GPU one over three frames"
+    )]
+    fn automatic_coverage_retains_gpu_emissions() {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Kind {
+            Fill,
+            Stroke,
+            Dashed,
+            ShaderStroke,
+            RoundedStroke,
+        }
+
+        let (device, _queue) = device_and_queue().expect("coverage test device");
+        let atlas = Atlas::new(&device, u64::MAX);
+        let fonts = FxHashMap::default();
+        let images = FxHashMap::default();
+        let bitmaps = FxHashMap::default();
+        let content = FxHashMap::default();
+        let glyphs = GlyphContext {
+            atlas: &atlas,
+            live_stamp: atlas.live_stamp(),
+            fonts: &fonts,
+            images: &images,
+            bitmaps: &bitmaps,
+            content: &content,
+        };
+        // Fills and strokes of a large path take the GPU route when the
+        // device computes; a stroke ships its centerline as records, and a
+        // shader-painted stroke keeps its kurbo outline on the fill route.
+        // `frames` is 3 where the leaf retains: a hit, then a translation.
+        for (has_compute, kind, large, gpu) in [
+            (true, Kind::Fill, false, false),
+            (true, Kind::Fill, true, true),
+            (false, Kind::Fill, true, false),
+            (true, Kind::Stroke, true, true),
+            (true, Kind::Stroke, false, false),
+            (false, Kind::Stroke, true, false),
+            (true, Kind::Dashed, true, true),
+            (true, Kind::Dashed, false, false),
+            (false, Kind::Dashed, true, false),
+            (true, Kind::ShaderStroke, true, true),
+            (true, Kind::RoundedStroke, true, true),
+        ] {
+            let op = match kind {
+                Kind::Fill => {
+                    let rectangles = if large { 1024 } else { 1 };
+                    let mut geometry = BezPath::new();
+                    for index in 0..rectangles {
+                        let x = f64::from(index % 32) * 3.0;
+                        let y = f64::from(index / 32) * 3.0;
+                        geometry.move_to((x, y));
+                        geometry.line_to((x + 2.0, y));
+                        geometry.line_to((x + 2.0, y + 2.0));
+                        geometry.line_to((x, y + 2.0));
+                        geometry.close_path();
+                    }
+                    let elements = geometry.into_iter().collect::<Vec<_>>();
+                    Op::Path {
+                        local: Affine::IDENTITY,
+                        rule: FillRule::NonZero,
+                        complexity: path::Complexity::of(&elements),
+                        outline: super::super::prepared::Outline::Fill {
+                            content: path::hash_elements(&elements, FillRule::NonZero as u64),
+                            elements: elements.into(),
+                        },
+                        paint: ResolvedPaint::Solid([1.0; 4]),
+                    }
+                }
+                Kind::Stroke | Kind::Dashed | Kind::ShaderStroke | Kind::RoundedStroke => {
+                    let lines = if kind == Kind::RoundedStroke {
+                        400
+                    } else if large {
+                        2100
+                    } else {
+                        8
+                    };
+                    let mut geometry = BezPath::new();
+                    geometry.move_to((0.0, 0.0));
+                    for index in 0..lines {
+                        let x = f64::from(index % 40) * 3.0;
+                        let y = f64::from(index % 2).mul_add(1.5, f64::from(index / 40) * 2.0);
+                        geometry.line_to((x, y));
+                    }
+                    if kind == Kind::RoundedStroke {
+                        geometry.apply_affine(Affine::translate((8.0, 8.0)) * Affine::scale(0.5));
+                    }
+                    let shape = ShapeData::Path {
+                        elements: geometry.into_iter().collect(),
+                        rule: FillRule::NonZero,
+                    };
+                    let mut stroke = if kind == Kind::RoundedStroke {
+                        kurbo::Stroke::new(8.0)
+                            .with_join(kurbo::Join::Round)
+                            .with_caps(kurbo::Cap::Round)
+                    } else {
+                        kurbo::Stroke::new(1.0)
+                    };
+                    if kind == Kind::Dashed {
+                        stroke = stroke.with_dashes(0.5, [3.0, 2.0]);
+                    }
+                    Op::Path {
+                        local: Affine::IDENTITY,
+                        rule: FillRule::NonZero,
+                        complexity: path::Complexity::of_shape(&shape),
+                        outline: super::super::prepared::Outline::Stroke { shape, stroke },
+                        paint: if kind == Kind::ShaderStroke {
+                            ResolvedPaint::Shader(Box::new(
+                                super::super::prepared::ResolvedShader {
+                                    source: cherenkov::ShaderPaint {
+                                        shader: cherenkov::ShaderId::new(1),
+                                        uniforms: Vec::new(),
+                                    },
+                                    sampling: Affine::IDENTITY,
+                                },
+                            ))
+                        } else {
+                            ResolvedPaint::Solid([1.0; 4])
+                        },
+                    }
+                }
+            };
+            // A shader paint reads device bounds, so a translation does not
+            // re-place it: it is checked for its route on one frame.
+            let frames = if gpu && kind != Kind::ShaderStroke {
+                3
+            } else {
+                1
+            };
+            let mut cache = Realization::default();
+            let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
+            let mut previous_geometry = None;
+            let mut previous_draw = std::ptr::null();
+            {
+                // Offscreen paths prepare neither CPU nor GPU geometry, and
+                // become visible normally when moved back into the target.
+                let mut frame = Frame::default();
+                let mut anchors = AnchorScratch::default();
+                let mut raster = path::EmitScratch::new();
+                let mut lowering = Lowering::new(
+                    &mut frame,
+                    (128, 128),
+                    &mut anchors,
+                    &mut raster,
+                    has_compute.then(test_limit),
+                );
+                lowering.begin_pass(Target::Part(0), None);
+                lowering.transform = Affine::translate((1000.25, 1000.25));
+                lowering
+                    .leaf(
+                        (0, &op),
+                        None,
+                        &mut cache,
+                        &mut retained.storage,
+                        &glyphs,
+                        &cherenkov::DisplayList::default(),
+                    )
+                    .expect("offscreen automatic coverage");
+                assert_eq!(lowering.paths_rasterized(), 0);
+                assert!(lowering.pending.is_empty());
+                assert!(lowering.frame.instances.is_empty());
+                assert!(
+                    cache
+                        .data
+                        .as_ref()
+                        .expect("empty emission retained")
+                        .geometry
+                        .is_none()
+                );
+                assert!(retained.storage.geometry.entries.is_empty());
+                assert!(retained.storage.gpu_paths.is_empty());
+            }
+
+            let templates_before = retained.storage.templates.len();
+            // CPU pending atlas patches are applied by the renderer before reuse.
+            // The GPU leaf's second frame hits the retained emission and
+            // re-pushes its draw record — the coverage entry joins at
+            // commit, not here — and its third, translated, re-places
+            // the emission in place (#3081).
+            for iteration in 0..frames {
+                retained.storage.retain_gpu_paths(std::slice::from_ref(&op));
+                let mut frame = Frame::default();
+                let mut anchors = AnchorScratch::default();
+                let mut raster = path::EmitScratch::new();
+                let mut lowering = Lowering::new(
+                    &mut frame,
+                    (128, 128),
+                    &mut anchors,
+                    &mut raster,
+                    has_compute.then(test_limit),
+                );
+                lowering.begin_pass(Target::Part(0), None);
+                let moved = iteration == 2;
+                if moved {
+                    lowering.transform = Affine::translate((5.25, 3.0));
+                }
+                let changed = lowering
+                    .leaf(
+                        (0, &op),
+                        None,
+                        &mut cache,
+                        &mut retained.storage,
+                        &glyphs,
+                        &cherenkov::DisplayList::default(),
+                    )
+                    .expect("automatic coverage");
+                assert_eq!(changed, iteration != 1, "only the unmoved frame hits");
+                let tasks = lowering
+                    .pending
+                    .iter()
+                    .filter(|task| matches!(task, PendingRaster::GpuPath(_)))
+                    .count();
+                assert_eq!(
+                    tasks,
+                    usize::from(gpu),
+                    "compute={has_compute}, kind={kind:?}, large={large}"
+                );
+                assert_eq!(lowering.paths_rasterized(), u32::from(!gpu));
+                assert!(cache.valid, "every leaf's emission retains");
+                let emission = cache.data.as_ref().expect("the leaf retains an emission");
+                assert_eq!(emission.gpu.is_some(), gpu);
+                if gpu {
+                    assert_eq!(
+                        emission.instances.len(),
+                        1,
+                        "the draw's anchor retains like any instance"
+                    );
+                    let prepared = &retained.storage.gpu_paths[&0];
+                    let draw_path = &emission.gpu.as_ref().expect("gpu draw").path;
+                    assert!(
+                        Arc::ptr_eq(&draw_path.elements, &prepared.path.elements)
+                            && Arc::ptr_eq(&draw_path.strokes, &prepared.path.strokes),
+                        "the retained draw shares the prepared geometry"
+                    );
+                    // A compute stroke ships records and no outline; a
+                    // fill, or a shader-painted stroke, ships elements.
+                    let compute_stroke =
+                        matches!(kind, Kind::Stroke | Kind::Dashed | Kind::RoundedStroke);
+                    assert_eq!(prepared.path.strokes.is_empty(), !compute_stroke);
+                    assert_eq!(prepared.path.elements.is_empty(), compute_stroke);
+                    assert_eq!(prepared.path.dash.is_some(), kind == Kind::Dashed);
+                    assert_eq!(prepared.local_bounds.is_some(), !compute_stroke);
+                    let geometry = if compute_stroke {
+                        Arc::as_ptr(&prepared.path.strokes).cast::<u8>()
+                    } else {
+                        Arc::as_ptr(&prepared.path.elements).cast::<u8>()
+                    };
+                    if iteration > 0 {
+                        assert_eq!(
+                            previous_geometry.expect("prepared geometry"),
+                            geometry,
+                            "a leaf hit rebuilds no prepared geometry"
+                        );
+                    }
+                    previous_geometry = Some(geometry);
+                    let draw = emission.gpu.as_ref().expect("gpu draw");
+                    if moved {
+                        assert!(
+                            std::ptr::eq(Arc::as_ptr(draw), previous_draw),
+                            "a translated leaf rewrites its draw record in place"
+                        );
+                        assert_eq!(draw.shift, [5, 3]);
+                        assert_eq!(emission.transform, Affine::translate((5.25, 3.0)));
+                        assert_eq!(
+                            (
+                                retained.storage.instances.len(),
+                                retained.storage.templates.len()
+                            ),
+                            (1, templates_before + 1),
+                            "re-placement does not grow the retained storage"
+                        );
+                    }
+                    previous_draw = Arc::as_ptr(draw);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cached_margin_preserves_exact_transform_results() {
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+            Some(test_limit()),
+        );
         let transforms = [
             Affine::IDENTITY,
             Affine::scale_non_uniform(2.0, 3.0),
@@ -5240,6 +7473,34 @@ mod tests {
             let translated = Affine::new([a, b, c, d, 123.0, -456.0]);
             assert_eq!(lowering.margin(translated).to_bits(), expected);
         }
+    }
+
+    #[test]
+    fn short_gradients_join_an_open_long_gradient_range() {
+        let gradient = |stops: u32| {
+            let mut instance = Instance::new(KIND_FILL);
+            instance.meta[1] = PAINT_LINEAR;
+            instance.meta[3] = stops;
+            instance
+        };
+        let image = {
+            let mut instance = Instance::new(KIND_FILL);
+            instance.meta[1] = PAINT_IMAGE;
+            instance
+        };
+        let mut open = ShaderVariant::Simple;
+        let mut ranges = 0;
+        for instance in [2, 128, 8, 9, 2].map(gradient) {
+            let variant = variant_after(open, &instance);
+            ranges += usize::from(variant != open);
+            open = variant;
+        }
+        assert_eq!((open, ranges), (ShaderVariant::LongGradient, 2));
+        assert_eq!(variant_after(open, &image), ShaderVariant::Full);
+        assert_eq!(
+            variant_after(ShaderVariant::Full, &gradient(2)),
+            ShaderVariant::Full
+        );
     }
 
     #[test]
@@ -5291,8 +7552,15 @@ mod tests {
         };
         let mut ops = Vec::new();
         compiler.draw(command, Affine::IDENTITY, &mut ops)?;
+        let mut geometry = GeometryCache::default();
         for op in ops {
-            lowering.realize(&op, None, glyphs, &cherenkov::DisplayList::default())?;
+            lowering.realize(
+                &op,
+                None,
+                glyphs,
+                &cherenkov::DisplayList::default(),
+                &mut geometry,
+            )?;
         }
         Ok(())
     }
@@ -5311,7 +7579,14 @@ mod tests {
         let bitmaps = FxHashMap::default();
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+            Some(test_limit()),
+        );
         lowering.begin_pass(Target::Part(0), None);
         let glyphs = GlyphContext {
             atlas: &atlas,
@@ -5409,7 +7684,14 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+            Some(test_limit()),
+        );
         lowering.begin_pass(Target::Part(0), None);
         lowering
             .isolate(
@@ -5447,14 +7729,16 @@ mod tests {
             .filter(|i| i.meta[1] == PAINT_TEXTURE)
             .map(|i| i.bounds)
             .collect();
+        // Composite bounds are whole texels: the parent's extent and the
+        // scratch region, both integer-valued.
         assert_eq!(
-            composites[0],
-            [0.0, 0.0, 64.0, 64.0],
+            composites[0].map(f32::to_bits),
+            [0.0_f32, 0.0, 64.0, 64.0].map(f32::to_bits),
             "the destructive composite covers the whole parent"
         );
         assert_eq!(
-            composites[1],
-            [1.0, 1.0, 23.0, 23.0],
+            composites[1].map(f32::to_bits),
+            [1.0_f32, 1.0, 23.0, 23.0].map(f32::to_bits),
             "the multiply composite keeps the tight region"
         );
     }
@@ -5486,7 +7770,14 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+            Some(test_limit()),
+        );
         lowering.begin_pass(Target::Part(0), None);
         lowering
             .isolate(
@@ -5511,7 +7802,11 @@ mod tests {
             .iter()
             .find(|i| i.meta[1] == PAINT_TEXTURE)
             .expect("the composite instance");
-        assert_eq!(composite.bounds, [9.0, 9.0, 31.0, 31.0]);
+        // The clip rect padded by a whole texel: integer-valued.
+        assert_eq!(
+            composite.bounds.map(f32::to_bits),
+            [9.0_f32, 9.0, 31.0, 31.0].map(f32::to_bits)
+        );
         assert_ne!(
             composite.meta[3] & (FLAG_HAS_CLIP << 24),
             0,
@@ -5572,7 +7867,14 @@ mod tests {
     fn a_collapsed_shadow_emits_no_quads() {
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+            Some(test_limit()),
+        );
         let Some((device, _queue)) = device_and_queue() else {
             return;
         };
@@ -5635,6 +7937,8 @@ mod tests {
         );
     }
 
+    /// The strip tests' rects have integer coordinates, so every area and
+    /// every sum of areas is exact and they compare bits.
     fn area(r: Rect) -> f64 {
         r.width() * r.height()
     }
@@ -5665,7 +7969,10 @@ mod tests {
         assert!(disjoint(&strips));
         assert!(inside(&strips, b));
         let total: f64 = strips.iter().map(|r| area(*r)).sum();
-        assert_eq!(total, 1600.0 - (30.0 * 10.0 + 10.0 * 30.0 - 10.0 * 10.0));
+        assert_eq!(
+            total.to_bits(),
+            (1600.0_f64 - (30.0 * 10.0 + 10.0 * 30.0 - 10.0 * 10.0)).to_bits()
+        );
     }
 
     #[test]
@@ -5680,7 +7987,7 @@ mod tests {
         assert!(disjoint(&strips));
         assert!(inside(&strips, b));
         let total: f64 = strips.iter().map(|r| area(*r)).sum();
-        assert_eq!(total, 1600.0 - 300.0);
+        assert_eq!(total.to_bits(), (1600.0_f64 - 300.0).to_bits());
     }
 
     #[test]
@@ -5707,7 +8014,7 @@ mod tests {
         let covered = area(c.wide.intersect(b)) + area(c.tall.intersect(b))
             - area(c.wide.intersect(b).intersect(c.tall.intersect(b)));
         let total: f64 = strips.iter().map(|r| area(*r)).sum();
-        assert_eq!(total, area(b) - covered);
+        assert_eq!(total.to_bits(), (area(b) - covered).to_bits());
     }
 
     fn sorted(clusters: Vec<Cluster>) -> Vec<([u32; 4], Vec<u32>)> {
@@ -5828,6 +8135,10 @@ mod tests {
     /// after it into a transparent part 1, and its own content is left
     /// to its plane.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "verify emitted parts and color ranges against the same promotion matrix"
+    )]
     fn a_promoted_layer_splits_the_surface_into_parts() {
         use cherenkov::testing::LayerOp;
         use cherenkov::{Draw as _, Picture, SurfaceTree};
@@ -5846,7 +8157,10 @@ mod tests {
         }
         let rect = |x: f64| {
             ContentData::new(Picture::record(|c| {
-                c.fill(Rect::new(x, 0.0, x + 8.0, 8.0), WorkingColor::WHITE);
+                c.fill(
+                    Rect::new(x, 0.0, x + 8.0, 8.0),
+                    WorkingColor::new([if x > 0.0 { 2.0 } else { 1.0 }, 1.0, 1.0, 1.0]),
+                );
             }))
         };
         let lower = |plan: &crate::render::planes::Plan| {
@@ -5867,7 +8181,14 @@ mod tests {
             };
             let mut frame = Frame::default();
             let mut anchor_scratch = AnchorScratch::default();
-            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            let mut raster_scratch = path::EmitScratch::new();
+            let mut lowering = Lowering::new(
+                &mut frame,
+                (32, 32),
+                &mut anchor_scratch,
+                &mut raster_scratch,
+                Some(test_limit()),
+            );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
                 .run(
@@ -5880,6 +8201,28 @@ mod tests {
                     plan,
                 )
                 .expect("lowered");
+            let mut ranges = Vec::new();
+            super::super::content_range::parts(
+                &tree,
+                &mut caches,
+                glyphs.images,
+                glyphs.content,
+                plan,
+                WorkingColor::BLACK,
+                &mut ranges,
+            );
+            assert_eq!(ranges.len(), plan.parts());
+            let hdr = super::super::present::ColorRange::HighDynamicRange;
+            assert_eq!(
+                ranges.contains(&hdr),
+                !plan.planes.iter().any(|p| p.layer == above)
+            );
+            if ranges.len() > 1 {
+                assert_ne!(
+                    ranges[0], hdr,
+                    "the HDR layer belongs above the video plane"
+                );
+            }
             frame
                 .passes
                 .iter()
@@ -5973,7 +8316,14 @@ mod tests {
             };
             let mut frame = Frame::default();
             let mut anchor_scratch = AnchorScratch::default();
-            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            let mut raster_scratch = path::EmitScratch::new();
+            let mut lowering = Lowering::new(
+                &mut frame,
+                (32, 32),
+                &mut anchor_scratch,
+                &mut raster_scratch,
+                Some(test_limit()),
+            );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
                 .run(
@@ -5999,6 +8349,364 @@ mod tests {
                     (Target::Part(1), Some([0.0; 4]), 0),
                     (Target::Part(1), None, 1),
                 ]
+            );
+        }
+    }
+
+    /// Lowers `tree` with `contents` under a plan promoting `promoted`,
+    /// or `None` where no GPU exists.
+    fn lower_promoted(
+        tree: &cherenkov::SurfaceTree,
+        contents: impl IntoIterator<Item = (LayerId, ContentData)>,
+        promoted: LayerId,
+    ) -> Option<Frame> {
+        let (device, _queue) = device_and_queue()?;
+        let atlas = Atlas::new(&device, u64::MAX);
+        let mut caches: FxHashMap<LayerId, ContentData> = contents.into_iter().collect();
+        let fonts = FxHashMap::default();
+        let images = FxHashMap::default();
+        let bitmaps = FxHashMap::default();
+        let glyphs = GlyphContext {
+            atlas: &atlas,
+            live_stamp: atlas.live_stamp(),
+            fonts: &fonts,
+            images: &images,
+            bitmaps: &bitmaps,
+            content: &FxHashMap::default(),
+        };
+        let mut frame = Frame::default();
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (32, 32),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+            Some(test_limit()),
+        );
+        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .run(
+                tree,
+                &mut caches,
+                WorkingColor::BLACK,
+                &glyphs,
+                &FxHashMap::default(),
+                FxHashMap::default(),
+                &plan(&[promoted], true),
+            )
+            .expect("lowered");
+        Some(frame)
+    }
+
+    /// An 8×8 white fill at `(x, y)`.
+    fn square(x: f64, y: f64) -> ContentData {
+        use cherenkov::{Draw as _, Picture};
+        ContentData::new(Picture::record(|c| {
+            c.fill(Rect::new(x, y, x + 8.0, y + 8.0), WorkingColor::WHITE);
+        }))
+    }
+
+    /// A tree of `edges` (parent, child) over freshly created `layers`.
+    fn tree_of(layers: &[LayerId], edges: &[(Option<LayerId>, LayerId)]) -> cherenkov::SurfaceTree {
+        use cherenkov::testing::LayerOp;
+        let mut tree = cherenkov::SurfaceTree::new();
+        for &id in layers {
+            tree.apply(LayerOp::Create(id));
+        }
+        for &(parent, child) in edges {
+            let parent = parent.unwrap_or_else(|| tree.root());
+            tree.apply(LayerOp::Push { parent, child });
+        }
+        tree
+    }
+
+    /// A promoted layer under an ancestor clip pair (#2371) splits the
+    /// enclosing clip-only isolation at its part boundary instead of
+    /// panicking: the scope's drawn segment composites into the part
+    /// below the plane, and the reopened scope's tail composites its
+    /// second segment into the part above it. The rounded-over-rect pair
+    /// is the reported case; rect-over-rounded and rounded-over-rounded
+    /// isolate the same way.
+    #[test]
+    fn a_promoted_layer_inside_an_ancestor_clip_pair_splits_the_scope() {
+        use cherenkov::testing::LayerOp;
+        let rect = ShapeData::Rect(Rect::new(0.0, 0.0, 30.0, 30.0));
+        let round = ShapeData::RoundedRect(kurbo::RoundedRect::new(0.0, 0.0, 30.0, 30.0, 4.0));
+        let [gp, holder, video, overlay, above] = [1, 2, 3, 4, 5].map(LayerId::new);
+        for (outer, inner) in [
+            (round.clone(), rect.clone()),
+            (rect, round.clone()),
+            (round.clone(), round),
+        ] {
+            let mut tree = tree_of(
+                &[gp, holder, video, overlay, above],
+                &[
+                    (None, gp),
+                    (Some(gp), holder),
+                    (Some(holder), video),
+                    (Some(video), overlay),
+                    (None, above),
+                ],
+            );
+            tree.apply(LayerOp::Clip(gp, Some(outer)));
+            tree.apply(LayerOp::Clip(holder, Some(inner)));
+            let Some(frame) = lower_promoted(
+                &tree,
+                [
+                    (holder, square(0.0, 0.0)),
+                    (overlay, square(8.0, 0.0)),
+                    (above, square(16.0, 0.0)),
+                ],
+                video,
+            ) else {
+                return;
+            };
+            assert_eq!(
+                frame
+                    .passes
+                    .iter()
+                    .map(|p| (p.target, p.clear, p.ranges.len()))
+                    .collect::<Vec<_>>(),
+                // The holder's fill, painted below the plane, composites
+                // into part 0; the overlay, painted above it, composites
+                // through the reopened scope into part 1, before `above`.
+                [
+                    (Target::Part(0), Some([0.0, 0.0, 0.0, 1.0]), 0),
+                    (Target::Scratch(0), Some([0.0; 4]), 1),
+                    (Target::Part(0), None, 1),
+                    (Target::Part(1), Some([0.0; 4]), 0),
+                    (Target::Scratch(0), Some([0.0; 4]), 1),
+                    (Target::Part(1), None, 2),
+                ]
+            );
+        }
+    }
+
+    /// A clip merged in place between two split scopes narrows the
+    /// clip the inner scope opened under past the outer scope's own
+    /// clip: the reopened inner scope composites under that merged clip,
+    /// and the walk resumes under it once the inner scope closes.
+    #[test]
+    fn a_split_scope_reopens_under_the_clip_merged_before_it() {
+        use cherenkov::testing::LayerOp;
+        let rounded = |inset: f64| {
+            ShapeData::RoundedRect(kurbo::RoundedRect::new(
+                inset,
+                inset,
+                32.0 - inset,
+                32.0 - inset,
+                4.0,
+            ))
+        };
+        let [gp, holder, mid, inner, video, overlay, tail, above] =
+            [1, 2, 3, 4, 5, 6, 7, 8].map(LayerId::new);
+        let mut tree = tree_of(
+            &[gp, holder, mid, inner, video, overlay, tail, above],
+            &[
+                (None, gp),
+                (Some(gp), holder),
+                (Some(holder), mid),
+                (Some(mid), inner),
+                (Some(inner), video),
+                (Some(video), overlay),
+                (Some(mid), tail),
+                (None, above),
+            ],
+        );
+        // `holder` isolates against `gp`; `mid` merges into `holder`'s
+        // rect in place; `inner` isolates against the merged rect.
+        tree.apply(LayerOp::Clip(gp, Some(rounded(0.0))));
+        tree.apply(LayerOp::Clip(
+            holder,
+            Some(ShapeData::Rect(Rect::new(0.0, 0.0, 32.0, 32.0))),
+        ));
+        tree.apply(LayerOp::Clip(
+            mid,
+            Some(ShapeData::Rect(Rect::new(2.0, 2.0, 30.0, 30.0))),
+        ));
+        tree.apply(LayerOp::Clip(inner, Some(rounded(4.0))));
+        let Some(frame) = lower_promoted(
+            &tree,
+            [
+                (mid, square(4.0, 4.0)),
+                (inner, square(12.0, 4.0)),
+                (overlay, square(4.0, 12.0)),
+                (tail, square(12.0, 12.0)),
+                (above, square(20.0, 20.0)),
+            ],
+            video,
+        ) else {
+            return;
+        };
+        // Everything drawn into `holder`'s scratch draws under the merged
+        // rect: `mid`'s fill, `inner`'s composites on either side of the
+        // plane, and `tail`'s fill after it.
+        let clips = frame
+            .passes
+            .iter()
+            .filter(|p| p.target == Target::Scratch(0))
+            .flat_map(|p| &p.ranges)
+            .flat_map(|r| &frame.instances[r.instances.start as usize..r.instances.end as usize])
+            .map(|inst| (inst.clip_inv, bytemuck::bytes_of(&inst.clip).to_vec()))
+            .collect::<Vec<_>>();
+        assert_eq!(clips.len(), 4);
+        assert!(clips.iter().all(|clip| *clip == clips[0]), "{clips:?}");
+        assert_eq!(
+            frame.passes.iter().map(|p| p.target).collect::<Vec<_>>(),
+            [
+                Target::Part(0),
+                Target::Scratch(0),
+                Target::Scratch(1),
+                Target::Scratch(0),
+                Target::Part(0),
+                Target::Part(1),
+                Target::Scratch(0),
+                Target::Scratch(1),
+                Target::Scratch(0),
+                Target::Part(1),
+            ]
+        );
+    }
+
+    /// A layer under an ancestor clip that encloses nothing is invisible
+    /// to the planner as it is to the lowering: a zero-radius circle is a
+    /// clip Core Animation expresses, but `with_clip` skips the holder's
+    /// whole subtree, so the video under it is never promoted and opens
+    /// no part, and the layer painted above it lands in part 0.
+    #[test]
+    fn a_layer_under_an_empty_ancestor_clip_is_not_promoted() {
+        use crate::render::planes::{self, Candidate, Source};
+        use cherenkov::testing::LayerOp;
+        use cherenkov::{Draw as _, Picture, SurfaceTree};
+        let Some((device, _queue)) = device_and_queue() else {
+            return;
+        };
+        let atlas = Atlas::new(&device, u64::MAX);
+        let (holder, video, above) = (LayerId::new(1), LayerId::new(2), LayerId::new(3));
+        let mut tree = SurfaceTree::new();
+        for id in [holder, video, above] {
+            tree.apply(LayerOp::Create(id));
+        }
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: holder,
+        });
+        tree.apply(LayerOp::Push {
+            parent: holder,
+            child: video,
+        });
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: above,
+        });
+        tree.apply(LayerOp::Clip(
+            holder,
+            Some(ShapeData::Circle(kurbo::Circle::new((16.0, 16.0), 0.0))),
+        ));
+        let candidates: FxHashMap<LayerId, Candidate> = std::iter::once((
+            video,
+            Candidate {
+                size: (8, 8),
+                raster: Affine::IDENTITY,
+                source: Source::Frame,
+            },
+        ))
+        .collect();
+        let ready = candidates.keys().copied().collect();
+        let plan = planes::plan::<planes::Platform>(&tree, &candidates, &ready);
+        assert!(plan.planes.is_empty(), "promoted: {:?}", plan.planes);
+        assert_eq!(plan.parts(), 1);
+        let mut caches: FxHashMap<LayerId, ContentData> = std::iter::once((
+            above,
+            ContentData::new(Picture::record(|c| {
+                c.fill(Rect::new(16.0, 0.0, 24.0, 8.0), WorkingColor::WHITE);
+            })),
+        ))
+        .collect();
+        let fonts = FxHashMap::default();
+        let images = FxHashMap::default();
+        let bitmaps = FxHashMap::default();
+        let glyphs = GlyphContext {
+            atlas: &atlas,
+            live_stamp: atlas.live_stamp(),
+            fonts: &fonts,
+            images: &images,
+            bitmaps: &bitmaps,
+            content: &FxHashMap::default(),
+        };
+        let mut frame = Frame::default();
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (32, 32),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+            Some(test_limit()),
+        );
+        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .run(
+                &tree,
+                &mut caches,
+                WorkingColor::BLACK,
+                &glyphs,
+                &FxHashMap::default(),
+                FxHashMap::default(),
+                &plan,
+            )
+            .expect("lowered");
+        assert_eq!(
+            frame
+                .passes
+                .iter()
+                .map(|p| (p.target, p.clear, p.ranges.len()))
+                .collect::<Vec<_>>(),
+            [(Target::Part(0), Some([0.0, 0.0, 0.0, 1.0]), 1)]
+        );
+    }
+
+    /// A promoted layer under an isolation that is not clip-only still
+    /// fails the lowering: neither a translucent ancestor nor a blended
+    /// one can straddle a part boundary.
+    #[test]
+    fn a_promoted_layer_inside_a_non_clip_isolation_still_panics() {
+        use cherenkov::Prop;
+        use cherenkov::testing::LayerOp;
+        let [holder, video, above] = [1, 2, 3].map(LayerId::new);
+        for style in [
+            LayerOp::Opacity(
+                holder,
+                Prop {
+                    target: 0.5,
+                    animation: None,
+                    start: None,
+                },
+            ),
+            LayerOp::Blend(holder, cherenkov::BlendMode::Multiply),
+        ] {
+            let mut tree = tree_of(
+                &[holder, video, above],
+                &[(None, holder), (Some(holder), video), (None, above)],
+            );
+            tree.apply(style);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                lower_promoted(&tree, [(above, square(16.0, 0.0))], video)
+            }));
+            let payload = match result {
+                Ok(None) => return,
+                Ok(Some(_)) => panic!("a part boundary crossed an isolation that is not clip-only"),
+                Err(payload) => payload,
+            };
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&'static str>().copied())
+                .unwrap_or_default();
+            assert_eq!(
+                message,
+                "a promoted layer must composite at the surface level"
             );
         }
     }
@@ -6032,7 +8740,14 @@ mod tests {
         let mut frame = Frame::default();
         let mut scratch = AnchorScratch::default();
         assert_eq!(scratch.heap_bytes(), 0);
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (32, 32),
+            &mut scratch,
+            &mut raster_scratch,
+            Some(test_limit()),
+        );
         lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
         lowering.backdrops.insert(7, plan(anchor_a, member));
         lowering.anchor_scratch.members.push((7, None, 2));
@@ -6093,5 +8808,77 @@ mod tests {
             .plan_anchors(&tree)
             .expect("a plan after an error has no stale links");
         assert_eq!(lowering.anchor_scratch.links, [(anchor_a, 10)]);
+    }
+
+    #[test]
+    fn shadow_support_unions_draws_since_the_depths_last_clear() {
+        let span = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            let mut inst = Instance::new(KIND_SPAN);
+            inst.bounds = [x0, y0, x1, y1];
+            inst
+        };
+        let range = |instances: Range<u32>| DrawRange {
+            source: None,
+            image: None,
+            mask: None,
+            pipeline: PipelineKind::SrcOver,
+            variant: ShaderVariant::Simple,
+            instances,
+            gpu: None,
+        };
+        let pass = |target: Target, clear: Option<[f32; 4]>, ranges: Vec<DrawRange>| Pass {
+            color_range: super::super::present::ColorRange::Standard,
+            target,
+            clear,
+            ranges,
+            space: cherenkov::BlendSpace::Linear,
+            region: [0, 0, 64, 64],
+            backdrop_copy: None,
+            capture: None,
+            tier_ranges: [Range::default(), Range::default()],
+        };
+        let mut frame = Frame {
+            instances: vec![
+                span(0.0, 0.0, 60.0, 60.0),
+                span(20.0, 10.0, 24.0, 18.0),
+                span(2.0, 30.0, 6.0, 34.0),
+                span(50.0, 50.0, 54.0, 54.0),
+            ],
+            passes: vec![
+                // A sibling scope's stale capture at the same depth; the
+                // shadow's own open clears it away below.
+                pass(Target::Scratch(0), Some([0.0; 4]), vec![range(0..1)]),
+                // The shadow capture's transparent open and first draws.
+                pass(Target::Scratch(0), Some([0.0; 4]), vec![range(1..2)]),
+                // A nested scratch's draws are not members of this depth.
+                pass(Target::Scratch(1), Some([0.0; 4]), vec![range(3..4)]),
+                // A continued pass on the capture's depth adds more.
+                pass(Target::Scratch(0), None, vec![range(2..3)]),
+                // A depth whose clear admits no draws has no support.
+                pass(Target::Scratch(2), Some([0.0; 4]), vec![]),
+            ],
+            ..Frame::default()
+        };
+        // Union of (20,10)-(24,18) and (2,30)-(6,34), padded by one.
+        assert_eq!(shadow_support(&frame, 3), [1, 9, 24, 26]);
+        assert_eq!(shadow_region(&frame, 3, [4, 8]), [0, 1, 29, 42]);
+        // At pass 1 only (20,10)-(24,18) has drawn since the clear.
+        assert_eq!(shadow_support(&frame, 1), [19, 9, 6, 10]);
+        // The nested depth's own support sees only its own draw.
+        assert_eq!(shadow_support(&frame, 2), [49, 49, 6, 6]);
+        // Nothing drawn since the clear: the support is empty.
+        assert_eq!(shadow_support(&frame, 4), [0, 0, 0, 0]);
+        assert_eq!(shadow_region(&frame, 4, [4, 8]), [0, 0, 0, 0]);
+        // A cropped capture keeps device-space draws but the convolution
+        // samples local texels, including when bounds cross its edges.
+        frame.passes[3].region = [1, 9, 24, 26];
+        assert_eq!(shadow_support(&frame, 3), [0, 0, 24, 26]);
+        frame.passes[3].region = [10, 12, 10, 10];
+        assert_eq!(shadow_support(&frame, 3), [0, 0, 10, 10]);
+        frame.passes[3].region = [0, 0, 64, 64];
+        // A filter on a pass can grow its content past the draws'
+        // bounds; its explicit region joins the union.
+        frame.filters.push((3, FilterKey::Layer(7)));
+        assert_eq!(shadow_support(&frame, 3), [0, 0, 64, 64]);
     }
 }

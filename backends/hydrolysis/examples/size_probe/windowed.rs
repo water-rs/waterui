@@ -46,14 +46,17 @@ pub fn main() {
     });
 
     run(
-        App::new_with_windows(
-            [Window::new(
-                "size-probe",
-                binding(WindowState::Normal),
-                main_view,
-            )],
-            Environment::new(),
-        ),
-        hydrolysis_m3::Material3::defaults(),
+        |env| {
+            App::new_with_windows(
+                [Window::new(
+                    "size-probe",
+                    binding(WindowState::Normal),
+                    main_view,
+                )],
+                env,
+            )
+        },
+        Environment::new(),
+        hydrolysis::testing::TestStyle::new(),
     );
 }

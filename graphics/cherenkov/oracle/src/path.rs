@@ -1,5 +1,5 @@
 //! Flattening of `kurbo` paths into polylines of `(f64, f64)` points, and
-//! expansion of strokes into outlines with `kurbo::stroke`.
+//! expansion of strokes into outlines with `cherenkov_stroke::stroke`.
 
 use cherenkov_scene::{Shape, StrokeStyle};
 use kurbo::{Affine, BezPath, PathEl, Point};
@@ -11,25 +11,6 @@ use crate::coverage::FLATTEN_TOLERANCE;
 /// [`FLATTEN_TOLERANCE`] so the combined deviation stays below it.
 pub const SEGMENT_TOLERANCE: f64 = FLATTEN_TOLERANCE * 0.5;
 
-/// The largest singular value of `t`'s linear part — the worst-case factor
-/// by which a user-space distance error can grow under the transform.
-///
-/// `σmax²` is the larger eigenvalue of `MᵀM` for `M = [[a, c], [b, d]]`.
-#[must_use]
-#[expect(
-    clippy::many_single_char_names,
-    reason = "a/b/c/d are the conventional affine matrix coefficient names"
-)]
-pub fn sigma_max(t: Affine) -> f64 {
-    let [a, b, c, d, _, _] = t.as_coeffs();
-    // Characteristic polynomial of MᵀM: σmax² = (p + √(p² − 4det²)) / 2
-    // where p = tr(MᵀM) and det² = det(M)² = det(MᵀM).
-    let p = a.mul_add(a, b * b) + c.mul_add(c, d * d);
-    let det = a.mul_add(d, -(b * c));
-    let disc = p.mul_add(p, (-4.0 * det) * det).sqrt();
-    p.midpoint(disc).sqrt()
-}
-
 /// A shape's boundary polylines in *device* space.
 ///
 /// The shape's curves are first approximated at `SEGMENT_TOLERANCE / σmax`
@@ -39,7 +20,7 @@ pub fn sigma_max(t: Affine) -> f64 {
 /// scaling.
 #[must_use]
 pub fn shape_polylines(shape: &Shape, tf: Affine) -> Vec<Polyline> {
-    let sm = sigma_max(tf).max(1e-12);
+    let sm = tf.spectral_norm().max(1e-12);
     let tol_u = SEGMENT_TOLERANCE / sm;
     flatten_at(&(tf * shape.to_path_at(tol_u)), SEGMENT_TOLERANCE)
 }
@@ -48,15 +29,10 @@ pub fn shape_polylines(shape: &Shape, tf: Affine) -> Vec<Polyline> {
 /// split as [`shape_polylines`]).
 #[must_use]
 pub fn stroke_polylines_device(shape: &Shape, style: &StrokeStyle, tf: Affine) -> Vec<Polyline> {
-    let sm = sigma_max(tf).max(1e-12);
+    let sm = tf.spectral_norm().max(1e-12);
     let tol_u = SEGMENT_TOLERANCE / sm;
     let stroke: kurbo::Stroke = style.into();
-    let outline = kurbo::stroke(
-        shape.to_path_at(tol_u),
-        &stroke,
-        &kurbo::StrokeOpts::default(),
-        tol_u,
-    );
+    let outline = cherenkov_stroke::stroke(shape.to_path_at(tol_u), &stroke, tol_u);
     flatten_at(&(tf * outline), SEGMENT_TOLERANCE)
 }
 
@@ -114,15 +90,6 @@ pub fn flatten_at(path: &BezPath, tolerance: f64) -> Vec<Polyline> {
 #[must_use]
 pub fn flatten(path: &BezPath) -> Vec<Polyline> {
     flatten_at(path, FLATTEN_TOLERANCE)
-}
-
-/// Expand a stroked path into its outline polylines.
-#[must_use]
-pub fn stroke_polylines(path: &BezPath, style: &StrokeStyle) -> Vec<Polyline> {
-    let stroke: kurbo::Stroke = style.into();
-    let opts = kurbo::StrokeOpts::default();
-    let outline = kurbo::stroke(path.clone(), &stroke, &opts, FLATTEN_TOLERANCE);
-    flatten(&outline)
 }
 
 /// Transform every point of `polylines` by `affine`.

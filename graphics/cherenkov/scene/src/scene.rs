@@ -60,7 +60,7 @@ pub enum Feature {
     Animation,
     /// Group opacity below `1.0`.
     Opacity,
-    /// A layer filter.
+    /// A layer or group filter.
     Filter,
     /// `Shadow` draw commands.
     Shadow,
@@ -81,6 +81,8 @@ pub enum Feature {
     ExtendNone,
     /// An image resource in `Rgba16F` encoding (half-float texels).
     ImageF16,
+    /// A block-compressed image resource.
+    ImageCompressed(crate::ImageCompression),
     /// An image resource in a non-sRGB colour space (payload is the space).
     ImageColorSpace(crate::ImageColorSpace),
     /// A gradient whose stops are interpolated in the payload space. Engines
@@ -108,6 +110,9 @@ pub enum Feature {
     /// A member layer extends its backdrop composite past its clip edge
     /// (`Layer::backdrop_outer`).
     BackdropOuter,
+    /// A backdrop group's members composite their samples in a
+    /// non-linear space (`BackdropGroup::blend_space`).
+    BackdropBlendSpace,
     /// A layer with a projective pose.
     Projective,
 }
@@ -143,6 +148,10 @@ pub struct Scene {
         skip_serializing_if = "Scene::is_default_present_headroom"
     )]
     pub present_headroom: f64,
+    /// End offset of a root-content scroll sweep in the performance harness.
+    /// Each measured run traverses zero to this offset after its own warmup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_extent: Option<kurbo::Vec2>,
     /// The features this scene uses.
     pub features: BTreeSet<Feature>,
     /// The backdrop groups member layers sample (`Layer::backdrop`).
@@ -162,6 +171,7 @@ impl Scene {
             working_space: WorkingSpace::LinearDisplayP3,
             clear,
             present_headroom: Self::default_present_headroom(),
+            scroll_extent: None,
             features: BTreeSet::new(),
             backdrop_groups: Vec::new(),
             root: Layer::default(),
@@ -209,6 +219,9 @@ impl Scene {
             if group.union.is_some() {
                 f.insert(Feature::BackdropUnion);
             }
+            if group.blend_space != crate::BlendSpace::Linear {
+                f.insert(Feature::BackdropBlendSpace);
+            }
             for filter in &group.filters {
                 match filter {
                     BackdropFilter::GaussianBlur { .. } => {
@@ -255,6 +268,12 @@ impl Scene {
     /// # Errors
     /// [`SceneError`] on the first violated rule.
     pub fn validate(&self) -> Result<(), SceneError> {
+        if self
+            .scroll_extent
+            .is_some_and(|extent| !extent.x.is_finite() || !extent.y.is_finite())
+        {
+            return Err(SceneError::InvalidScrollExtent);
+        }
         self.validate_backdrops()?;
         self.validate_projections()?;
         self.validate_text()?;
@@ -284,7 +303,7 @@ impl Scene {
             Ok(())
         }
         /// A group a synthetic bold isolates its glyph runs in: opaque,
-        /// normally blended, in linear space.
+        /// normally blended, unfiltered, in linear space.
         #[expect(
             clippy::float_cmp,
             reason = "only the exact default opacity leaves the group plain"
@@ -293,6 +312,7 @@ impl Scene {
             group.opacity == 1.0
                 && group.blend == crate::BlendMode::Normal
                 && group.blend_space == crate::BlendSpace::Linear
+                && group.filter.is_none()
                 && group
                     .items
                     .iter()
@@ -593,6 +613,9 @@ fn collect_draw_resource_refs(draw: &Draw, out: &mut Vec<ResourceHash>) {
 }
 
 fn collect_group_resource_refs(group: &crate::Group, out: &mut Vec<ResourceHash>) {
+    if let Some(crate::LayerFilter::BlendImage { image, .. }) = group.filter.as_deref() {
+        out.push(*image);
+    }
     for item in &group.items {
         match item {
             crate::GroupItem::Draw(d) => collect_draw_resource_refs(d, out),
@@ -726,6 +749,16 @@ fn collect_encoding_features(encoding: &ImageEncoding, f: &mut BTreeSet<Feature>
                 f.insert(Feature::ImageColorSpace(*color_space));
             }
         }
+        ImageEncoding::BlockCompressed {
+            format,
+            color_space,
+            ..
+        } => {
+            f.insert(Feature::ImageCompressed(*format));
+            if *color_space != crate::ImageColorSpace::Srgb {
+                f.insert(Feature::ImageColorSpace(*color_space));
+            }
+        }
         ImageEncoding::Rgba16F { color_space, .. } => {
             f.insert(Feature::ImageF16);
             f.insert(Feature::ImageColorSpace(*color_space));
@@ -819,6 +852,9 @@ fn collect_group_features(group: &crate::Group, f: &mut BTreeSet<Feature>) {
     }
     if group.blend_space != crate::BlendSpace::Linear {
         f.insert(Feature::BlendSpace(group.blend_space));
+    }
+    if group.filter.is_some() {
+        f.insert(Feature::Filter);
     }
     for item in &group.items {
         match item {

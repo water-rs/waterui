@@ -30,6 +30,13 @@ pub struct Args {
     /// displays).
     #[arg(long, default_value_t = 2.0)]
     scale: f64,
+
+    /// Serve without accessing the network — the same switch as
+    /// `cargo build --offline`, and `CARGO_NET_OFFLINE` is honoured the same
+    /// way. A declared font missing from the font cache then fails the
+    /// session's builds instead of being fetched.
+    #[arg(long)]
+    offline: bool,
 }
 
 impl Args {
@@ -74,7 +81,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     );
 
     serve_mcp(McpSessionRequest {
-        host: waterui_cli::toolchain::Host::current(),
+        host: waterui_cli::toolchain::Host::current().with_offline(args.offline),
         project_path,
         width,
         height,

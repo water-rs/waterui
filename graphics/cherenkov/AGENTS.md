@@ -15,10 +15,11 @@ belong to water-rs/waterui.
 ## Correctness
 
 - **The oracle is the reference.** The corpus (`scenes/corpus`) is rendered
-  against the independent f64 oracle. Every scene on dev keeps bit-identical
-  metrics and PNG bytes across every change that is not meant to change pixels.
-  A change that intends to change pixels (for example #71) must be no worse
-  than dev against the oracle on every scene, and better overall.
+  against the independent f64 oracle, and a change is judged by what a viewer
+  can see. A difference from dev that no eye can perceive is acceptable
+  whatever its cause; a perceptible one is acceptable only where it brings
+  that scene closer to the oracle. Bit-identical output is never a goal in
+  itself.
 - **The scene tree is generated, not committed.** `scenes/corpus`,
   `scenes/perf` and `scenes/fonts` are produced by
   `uv run --python 3.12 --with-requirements scenes/fonts/tools/requirements.txt python scenes/tools/generate.py`
@@ -37,6 +38,9 @@ belong to water-rs/waterui.
   headroom, extended output), and that pass is measured against the oracle
   too (#100). An engine or target that cannot carry the colours is reported
   as unsupported, never compared on a clipped image.
+- **Blend inputs keep float precision.** An intermediate image a
+  non-`Normal` blend reads is never stored in a compact 8-bit format, and
+  no memory or performance optimisation overrides this (water-rs/waterui#3458).
 - **Visual review is done by eye.** Images are reviewed by looking at them,
   never by pixel-count, brightness or dominant-colour heuristics.
 - **Fail fast.** An unsupported case returns an explicit `Unsupported` error,
@@ -53,11 +57,23 @@ belong to water-rs/waterui.
   same harness, on every scene and on the devices of each stage (#1).
 - **Frames** target 120fps: 8.33 ms at p99. 60fps is accepted only where no
   renderer can fit the budget in theory.
+- **Worker pools size to `std::thread::available_parallelism()` on every
+  platform.** No code discriminates between core classes (big.LITTLE,
+  performance/efficiency); the scheduler and work-stealing place work,
+  not the pool. An explicit count is accepted through the public knob
+  (`RasterConfig::threads`, `RAYON_NUM_THREADS`) only.
 - **CPU-side changes are accepted on deterministic Callgrind instruction
-  counts:** Ir for `lower` and `encode` at the second steady frame of the five
+  counts:** Ir for `lower` and `encode` at the second steady frame of the
   perf scenes, sampled by frame index (`bench/scripts/ir_gate.py`, which runs
-  `measure --pause-at`). The gated Ir excludes the allocator (calls into the
-  Rust allocator shims and the libc malloc family) and the libc memory
+  `measure --pause-at`). Its CPU leg counts the CPU backend's whole frame on
+  the same scenes — the render thread's message handling and every raster job
+  its rayon pools run, at one worker per pool — and also excludes the
+  cross-thread synchronization. CI runs it on every pull request that touches
+  `graphics/cherenkov/`, measured as merged into dev, and by dispatch of
+  `cherenkov-ir.yml` for any revision against its merge base with dev
+  (`-f head=refs/pull/<number>/merge` for a pull request). The gated Ir
+  excludes the allocator (calls into the Rust allocator shims and the libc
+  malloc family) and the libc memory
   primitives (memcpy, memmove, memset, memcmp, bcmp), whose Ir depends on
   buffer addresses: at most +1% per scene against dev, and alloc, realloc,
   dealloc and memory-primitive calls per frame must not rise.
@@ -67,6 +83,22 @@ belong to water-rs/waterui.
   interleaved A/B rounds with per-round results: the Apple M1, the iPad Pro M4
   (Metal) and the Pixel 9 Pro (Vulkan). The iPad's GPU clock is bimodal with
   device state.
+- **Pixel cost comparisons hold the GPU and the measuring CPU at one clock**
+  and check every run's clock residency (`bench/scripts/pixel_compare.py`):
+  the GPU governor's per-process clock moves identical builds by the clock
+  ratio. A scene fails when the change's whole bootstrap interval lies above
+  the limit; otherwise it is decided only when that interval is no wider than
+  the limit. Frame-budget checks run under the default governor.
+  Sub-millisecond scenes are compared by Mali shader-core active cycles
+  (`pixel_compare.py run --gpu-counters`), never by GPU time: their frames
+  are latency-bound, so added work does not add GPU time.
+- **A phone never decides a CPU-side change.** Its big.LITTLE scheduling
+  makes CPU timing unstable, and pinning threads or steering their placement
+  measures a device no user has; a CPU-side change is proven by the Callgrind
+  gate. On a phone the CPU backend is checked only for an obvious regression,
+  with clocks held so thermal throttling stays out of the run and the
+  scheduler left alone. Real devices are for what only they have: the GPU,
+  memory bandwidth, and real memory use, energy and frame time.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five
@@ -84,10 +116,13 @@ belong to water-rs/waterui.
   shaders and `as_hal` on the same device and queue: on-chip blending, tile
   memory, memoryless attachments (#50–#53).
 - **Engine shaders are precompiled at build time** (WGSL through naga to
-  metallib or SPIR-V) and loaded as passthrough shaders (#57). naga still links
+  metallib, SPIR-V or DXIL) and loaded as passthrough shaders (#57). naga still links
   through wgpu, and that is accepted.
 - **The hardware floor** is on-chip programmable blending plus f16 arithmetic
-  on every supported device (#1). There is no low-end tier.
+  on every supported device (#1); there is no low-end tier. Compute is a
+  device capability, never part of the floor: `SharedDevice::has_compute`
+  reports it, and strategies may use it when present — water-rs/waterui#2536's
+  coverage route is designed to select on it.
 - **Upgrading wgpu** moves the whole stack at once, because an application can
   link only one wgpu (#63).
 

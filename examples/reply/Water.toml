@@ -6,3 +6,9 @@ bundle_identifier = "cool.lexo.reply"
 [permissions.internet]
 enable = true
 description = "Avatars and message photos load from the published sample's repository assets"
+
+# A browser has no system fonts, so a web build carries a face for the Han
+# text in the sample threads; the native backends use the platform's own.
+[[assets.font]]
+name = "Noto Sans CJK SC"
+platforms = ["web"]

@@ -168,11 +168,17 @@ fn layout_children(view: &PlatformView, state: &PickerState) {
 
     // The control hugs its content: its own intrinsic width beside the
     // label, never the leaf's leftover — a wider leaf just means slack the
-    // layout already positioned around us.
+    // layout already positioned around us. The segmented row is the
+    // exception on both platforms: it takes the leaf's leftover and divides
+    // it into equal segments.
     let control_w = {
         #[cfg(target_os = "macos")]
         {
-            state.picker.intrinsic_size().width
+            if state.style == PickerStyle::Segmented {
+                (width - control_x).max(0.0)
+            } else {
+                state.picker.intrinsic_size().width
+            }
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -211,10 +217,13 @@ fn layout_children(view: &PlatformView, state: &PickerState) {
 }
 
 /// The container's layout face: the label plus the control across, the
-/// taller of the two high. The `UIKit` wheel is the exception —
-/// `WuiPicker` stretches it to the proposed width.
+/// taller of the two high. The segmented row and the `UIKit` wheel are the
+/// exceptions — they answer the proposed width.
 struct PickerSubView {
     state: Rc<RefCell<PickerState>>,
+    /// The payload's `NativeView::stretch_axis` — `Horizontal` for the
+    /// segmented style; the one statement of the rule, read once at install.
+    stretch: StretchAxis,
 }
 
 impl core::fmt::Debug for PickerSubView {
@@ -241,22 +250,22 @@ impl SubView for PickerSubView {
         let intrinsic_height = f64::from(label_size.height).max(control_size.height);
 
         // A `SwiftUI` `Picker` hugs its content: label plus control at their
-        // intrinsic sizes. The `UIKit` wheel is the exception — `WuiPicker`
-        // stretches it to the proposed width.
+        // intrinsic sizes. The segmented row answers a finite proposed width
+        // (never below its intrinsic width), and so does the `UIKit` wheel —
+        // `WuiPicker` stretches it to the proposed width.
         let wheel = state.style == PickerStyle::Radio && cfg!(target_os = "ios");
-        let width = if wheel {
-            proposal.width.map_or(intrinsic_width, f64::from)
-        } else {
-            intrinsic_width
+        let width = match (self.stretch, proposal.width) {
+            (StretchAxis::Horizontal, Some(proposed)) if proposed.is_finite() => {
+                f64::from(proposed).max(intrinsic_width)
+            }
+            _ if wheel => proposal.width.map_or(intrinsic_width, f64::from),
+            _ => intrinsic_width,
         };
         ViewDimensions::new(Size::new(width as f32, intrinsic_height as f32))
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        let _ = self;
-        // `SwiftUI`'s picker does not stretch — even unlabeled it takes its
-        // intrinsic size; an hstack spacer positions it, not the leaf.
-        StretchAxis::None
+        self.stretch
     }
 
     fn priority(&self) -> i32 {
@@ -300,9 +309,9 @@ fn platform_font(
     mtm: cocoa_ui::MainThreadMarker,
     resolved: &ResolvedFont,
 ) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    match resolved.family.as_deref() {
+    let size = f64::from(resolved.size());
+    let weight = platform_weight(resolved.weight());
+    match resolved.family() {
         Some(family) if !family.is_empty() => {
             let mut resolved_font = None;
             for candidate in family_candidates(family) {
@@ -320,7 +329,7 @@ fn platform_font(
                 )
             })
         }
-        _ => match resolved.design {
+        _ => match resolved.design() {
             FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
             FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
         },
@@ -334,24 +343,25 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<PickerConfig>(|config, ctx| {
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, Rect::ZERO);
-        let picker = Picker::new(mtm, platform_style(config.style));
+        let stretch = waterui_core::NativeView::stretch_axis(&config);
+        let picker = Picker::new(mtm, platform_style(config.style()));
         let host_view: &PlatformView = &host;
         cocoa_ui::view::add_subview(host_view, picker.view());
 
         let state = Rc::new(RefCell::new(PickerState {
             picker,
-            selection: config.selection.clone(),
+            selection: config.selection().clone(),
             tags: Vec::new(),
             titles: Vec::new(),
             item_watchers: Vec::new(),
             label: None,
-            style: platform_style(config.style),
+            style: platform_style(config.style()),
         }));
 
         // Control → binding: a picked index writes its tag back.
         state.borrow().picker.install_action({
             let state = Rc::clone(&state);
-            let selection = config.selection.clone();
+            let selection = config.selection().clone();
             move |index| {
                 if let Some(tag) = state.borrow().tags.get(index).copied() {
                     selection.set(tag);
@@ -364,11 +374,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         #[cfg(target_os = "macos")]
         {
             if !matches!(
-                config.label.display_mode_preference(),
+                config.label().display_mode_preference(),
                 LabelDisplayMode::Hidden
             ) {
                 let label = ctx
-                    .render(waterui_backend_core::AnyView::new(config.label.clone()))
+                    .render(waterui_backend_core::AnyView::new(config.label().clone()))
                     .mount(host_view);
                 cocoa_ui::view::hide_from_accessibility(label.view());
                 state.borrow_mut().label = Some(label);
@@ -384,18 +394,19 @@ pub fn install(dispatcher: &mut Dispatcher) {
             host_view,
             PickerSubView {
                 state: Rc::clone(&state),
+                stretch,
             },
         );
 
         // Items → control: rebuild rows and per-item label watchers on each
         // change (`bind` applies the current list immediately).
-        leaf.bind(&config.items, {
+        leaf.bind(config.items(), {
             let state = Rc::clone(&state);
             move |items| rebuild_items(&state, &items)
         });
 
         // Binding → control: a changed tag selects its index.
-        leaf.watch(&config.selection, {
+        leaf.watch(config.selection(), {
             let state = Rc::clone(&state);
             move |ctx| {
                 let index = state
@@ -419,7 +430,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The label's semantic text is announced on the container — as the
         // accessibility label (and tooltip on `AppKit`), exactly the
         // `WuiControlAccessibility` treatment.
-        let accessibility_label = config.label.accessibility_label();
+        let accessibility_label = config.label().accessibility_label();
         leaf.bind(&accessibility_label, {
             let host_view = cocoa_ui::view::retain_base(host_view);
             move |styled| {

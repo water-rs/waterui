@@ -17,11 +17,26 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Represents the source URLs for a live photo, including the image and video components.
+#[non_exhaustive]
 pub struct LivePhotoSource {
     /// The URL for the still image component of the live photo.
-    pub image: Url,
+    image: Url,
     /// The URL for the video component of the live photo.
-    pub video: Url,
+    video: Url,
+}
+
+impl LivePhotoSource {
+    /// The URL for the still image component of the live photo.
+    #[must_use]
+    pub const fn image(&self) -> &Url {
+        &self.image
+    }
+
+    /// The URL for the video component of the live photo.
+    #[must_use]
+    pub const fn video(&self) -> &Url {
+        &self.video
+    }
 }
 
 /// Events emitted by the `LivePhoto` component.
@@ -32,6 +47,7 @@ pub struct LivePhotoSource {
 /// asserting that the motion played — cannot tell a video that finished from
 /// one that never ran.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Event {
     /// A long press held past the activation duration started motion playback.
     MotionStarted,

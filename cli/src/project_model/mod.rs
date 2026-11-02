@@ -2,7 +2,9 @@
 //! app scaffolding, and the on-disk `.water` directory layout.
 
 pub mod app_mode;
+pub mod apple_targets;
 pub mod assets;
+pub mod facts;
 pub mod framework;
 pub mod gradle_wrapper;
 pub mod patch_tables;

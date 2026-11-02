@@ -20,12 +20,12 @@ use tracing_subscriber::util::SubscriberInitExt;
 use crate::logcat;
 
 /// What the engine has decided about each video layer, by raw `LayerId`.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Decisions {
     inner: Mutex<Inner>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Inner {
     /// `layer` → `None` when the frame's contract holds, `Some(reason)`
     /// when the plane contract rejects it.

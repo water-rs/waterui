@@ -48,17 +48,59 @@ const DEFAULT_BUILD_CACHE_CLEANUP_AFTER_UNUSED_DAYS: u64 = 30;
 pub struct WaterConfig {
     /// Managed build-cache policy.
     #[serde(default)]
-    pub build_cache: BuildCacheConfig,
+    build_cache: BuildCacheConfig,
     /// The device `water run` last used per target, keyed by
     /// `"<backend>/<platform>"` (for example `"apple/ios"`). The value is the
     /// device's stable identifier — a simulator UDID, a physical-device
     /// identifier, an Android serial, or an AVD name.
     #[serde(default)]
-    pub last_used_device: std::collections::BTreeMap<String, String>,
+    last_used_device: std::collections::BTreeMap<String, String>,
     /// Unix seconds of the last passive `water update` check, which runs at
     /// most once per 24 hours.
     #[serde(default)]
-    pub last_update_check_unix_seconds: Option<u64>,
+    last_update_check_unix_seconds: Option<u64>,
+}
+impl WaterConfig {
+    /// A `WaterConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        build_cache: BuildCacheConfig,
+        last_used_device: std::collections::BTreeMap<String, String>,
+        last_update_check_unix_seconds: Option<u64>,
+    ) -> Self {
+        Self {
+            build_cache,
+            last_used_device,
+            last_update_check_unix_seconds,
+        }
+    }
+
+    /// Managed build-cache policy.
+    #[must_use]
+    pub const fn build_cache(&self) -> &BuildCacheConfig {
+        &self.build_cache
+    }
+
+    /// The device `water run` last used per target, keyed by
+    /// `"<backend>/<platform>"` (for example `"apple/ios"`). The value is the
+    /// device's stable identifier — a simulator UDID, a physical-device
+    /// identifier, an Android serial, or an AVD name.
+    #[must_use]
+    pub const fn last_used_device(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.last_used_device
+    }
+
+    /// Unix seconds of the last passive `water update` check, which runs at
+    /// most once per 24 hours.
+    #[must_use]
+    pub const fn last_update_check_unix_seconds(&self) -> Option<u64> {
+        self.last_update_check_unix_seconds
+    }
+
+    /// Record the last passive `water update` check timestamp.
+    pub const fn set_last_update_check_unix_seconds(&mut self, unix_seconds: Option<u64>) {
+        self.last_update_check_unix_seconds = unix_seconds;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -66,7 +108,22 @@ pub struct WaterConfig {
 pub struct BuildCacheConfig {
     /// Remove build-cache entries that have been unused for more than this many days.
     #[serde(default = "default_build_cache_cleanup_after_unused_days")]
-    pub cleanup_after_unused_days: u64,
+    cleanup_after_unused_days: u64,
+}
+impl BuildCacheConfig {
+    /// A `BuildCacheConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(cleanup_after_unused_days: u64) -> Self {
+        Self {
+            cleanup_after_unused_days,
+        }
+    }
+
+    /// Remove build-cache entries that have been unused for more than this many days.
+    #[must_use]
+    pub const fn cleanup_after_unused_days(&self) -> u64 {
+        self.cleanup_after_unused_days
+    }
 }
 
 impl Default for BuildCacheConfig {
@@ -88,13 +145,39 @@ struct CacheMetadata {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuildCacheGcSummary {
     /// Number of managed cache entries inspected, excluding the active project cache.
-    pub scanned_entries: usize,
+    scanned_entries: usize,
     /// Number of stale managed cache entries removed during this pass.
-    pub removed_entries: usize,
+    removed_entries: usize,
+}
+impl BuildCacheGcSummary {
+    /// A `BuildCacheGcSummary` carrying each of its fields.
+    #[must_use]
+    pub const fn new(scanned_entries: usize, removed_entries: usize) -> Self {
+        Self {
+            scanned_entries,
+            removed_entries,
+        }
+    }
+
+    /// Number of managed cache entries inspected, excluding the active project cache.
+    #[must_use]
+    pub const fn scanned_entries(&self) -> usize {
+        self.scanned_entries
+    }
+
+    /// Number of stale managed cache entries removed during this pass.
+    #[must_use]
+    pub const fn removed_entries(&self) -> usize {
+        self.removed_entries
+    }
 }
 
 /// Result of attempting to garbage-collect stale managed build-cache entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each cache collection outcome variant by variant"
+)]
 pub enum BuildCacheGcOutcome {
     /// Cleanup ran to completion and produced a removal summary.
     Ran(BuildCacheGcSummary),
@@ -694,15 +777,16 @@ pub async fn android_preview_project_lock(
 }
 
 /// The lock serializing every Gradle build that `includeBuild`s one
-/// Hydrolysis Android host checkout.
+/// Hydrolysis Android host directory.
 ///
 /// Both the project's Hydrolysis Android app and the preview host
-/// composite `includeBuild` the host checkout the framework selects — for
-/// a local checkout, the one in-tree host every project of that checkout
-/// shares — and Gradle writes the included build's `build/` and `.gradle/`
-/// inside it, so any two such builds, `water run` beside `water preview`
-/// included, would race on the same directories. Keyed by a hash of the
-/// canonical `host_project_dir` under `~/.water/locks/`.
+/// composite `includeBuild` the host directory the framework selects —
+/// the CLI-managed checkout or the `waterui_path` staging mirror
+/// `materialize_android_host` produces — and Gradle writes the included
+/// build's `build/` and `.gradle/` inside it, so any two such builds,
+/// `water run` beside `water preview` included, would race on the same
+/// directories. Keyed by a hash of the canonical `host_project_dir` under
+/// `~/.water/locks/`.
 ///
 /// # Errors
 /// Returns an error if the Water home cannot be resolved, the host
@@ -908,9 +992,9 @@ pub fn spawn_build_cache_cleanup(
     let executable = crate::toolchain::Host::current_exe()
         .wrap_err("Failed to locate the running water executable for build-cache cleanup")?;
     #[cfg(unix)]
-    let mut command = host.command_in_own_process_group(&executable);
+    let mut command = host.command_in_own_process_group(&executable)?;
     #[cfg(not(unix))]
-    let mut command = host.command(&executable);
+    let mut command = host.command(&executable)?;
     let mut child = command
         .arg("gc")
         .arg("build-cache")
@@ -1006,6 +1090,60 @@ pub(crate) async fn write_global_config_in(
     fs::write(&config_path, contents)
         .await
         .wrap_err_with(|| format!("Failed to write Water config {}", config_path.display()))
+}
+
+/// The `last_used_device` slot a `(backend, platform)` pair remembers its
+/// device under — `None` for a pair with no device dimension, where a
+/// device choice could never be made.
+#[must_use]
+pub const fn device_memory_key(
+    backend: crate::platform::TargetBackend,
+    platform: crate::platform::TargetPlatform,
+) -> Option<&'static str> {
+    match (backend, platform) {
+        (
+            crate::platform::TargetBackend::Apple,
+            crate::platform::TargetPlatform::IOS | crate::platform::TargetPlatform::IOSSimulator,
+        ) => Some("apple/ios"),
+        (crate::platform::TargetBackend::Hydrolysis, crate::platform::TargetPlatform::Android) => {
+            Some("hydrolysis/android")
+        }
+        _ => None,
+    }
+}
+
+/// The device `last_used_device` records under `key`, if any. A config
+/// read failure is a warning, not a failure of the selection the memory
+/// serves.
+pub async fn last_used_device(host: &crate::toolchain::Host, key: &str) -> Option<String> {
+    match ensure_global_config(host).await {
+        Ok(config) => config.last_used_device.get(key).cloned(),
+        Err(error) => {
+            tracing::warn!("could not read the Water config for device memory: {error:#}");
+            None
+        }
+    }
+}
+
+/// Record `id` as the last-used device under `key`. Best-effort: a config
+/// write failure must not break the selection the memory serves.
+pub async fn record_last_used_device(host: &crate::toolchain::Host, key: &str, id: &str) {
+    match ensure_global_config(host).await {
+        Ok(mut config) => {
+            if config.last_used_device.get(key).map(String::as_str) == Some(id) {
+                return;
+            }
+            config
+                .last_used_device
+                .insert(key.to_owned(), id.to_owned());
+            if let Err(error) = write_global_config(host, &config).await {
+                tracing::warn!("could not persist the last-used device: {error:#}");
+            }
+        }
+        Err(error) => {
+            tracing::warn!("could not read the Water config for device memory: {error:#}");
+        }
+    }
 }
 
 async fn ensure_project_build_cache_in(
@@ -1107,7 +1245,7 @@ fn normalize_prefix_component(prefix: PrefixComponent<'_>) -> String {
     }
 }
 
-fn sanitize_os_str(value: &OsStr) -> String {
+pub(crate) fn sanitize_os_str(value: &OsStr) -> String {
     let sanitized = value
         .to_string_lossy()
         .chars()
@@ -1198,26 +1336,108 @@ async fn remove_legacy_local_water_dir(project_root: &Path) -> eyre::Result<()> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildCacheEntryUsage {
     /// Project the cache entry belongs to.
-    pub project_root: PathBuf,
+    project_root: PathBuf,
     /// Managed cache directory holding the entry.
-    pub cache_dir: PathBuf,
+    cache_dir: PathBuf,
     /// Disk space the entry occupies, in bytes.
-    pub bytes: u64,
+    bytes: u64,
     /// Whether the entry is currently eligible for removal.
-    pub stale: bool,
+    stale: bool,
     /// Whether the entry belongs to the project the survey was run from.
-    pub active: bool,
+    active: bool,
+}
+impl BuildCacheEntryUsage {
+    /// A `BuildCacheEntryUsage` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        project_root: PathBuf,
+        cache_dir: PathBuf,
+        bytes: u64,
+        stale: bool,
+        active: bool,
+    ) -> Self {
+        Self {
+            project_root,
+            cache_dir,
+            bytes,
+            stale,
+            active,
+        }
+    }
+
+    /// Project the cache entry belongs to.
+    #[must_use]
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
+    /// Managed cache directory holding the entry.
+    #[must_use]
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
+    }
+
+    /// Disk space the entry occupies, in bytes.
+    #[must_use]
+    pub const fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Whether the entry is currently eligible for removal.
+    #[must_use]
+    pub const fn stale(&self) -> bool {
+        self.stale
+    }
+
+    /// Whether the entry belongs to the project the survey was run from.
+    #[must_use]
+    pub const fn active(&self) -> bool {
+        self.active
+    }
 }
 
 /// What the managed build cache is currently spending disk on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildCacheUsageReport {
     /// Entries, largest first.
-    pub entries: Vec<BuildCacheEntryUsage>,
+    entries: Vec<BuildCacheEntryUsage>,
     /// Total disk space across every entry, in bytes.
-    pub total_bytes: u64,
+    total_bytes: u64,
     /// Disk space held by entries eligible for removal, in bytes.
-    pub reclaimable_bytes: u64,
+    reclaimable_bytes: u64,
+}
+impl BuildCacheUsageReport {
+    /// A `BuildCacheUsageReport` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        entries: Vec<BuildCacheEntryUsage>,
+        total_bytes: u64,
+        reclaimable_bytes: u64,
+    ) -> Self {
+        Self {
+            entries,
+            total_bytes,
+            reclaimable_bytes,
+        }
+    }
+
+    /// Entries, largest first.
+    #[must_use]
+    pub fn entries(&self) -> &[BuildCacheEntryUsage] {
+        &self.entries
+    }
+
+    /// Total disk space across every entry, in bytes.
+    #[must_use]
+    pub const fn total_bytes(&self) -> u64 {
+        self.total_bytes
+    }
+
+    /// Disk space held by entries eligible for removal, in bytes.
+    #[must_use]
+    pub const fn reclaimable_bytes(&self) -> u64 {
+        self.reclaimable_bytes
+    }
 }
 
 /// Survey the managed build cache without removing anything.
@@ -1646,17 +1866,17 @@ mod tests {
     fn project_build_cache_dir_uses_absolute_project_path_components() {
         let cache_root = Path::new("/tmp/water-cache-root");
         let project_root = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\lexo\demo")
+            PathBuf::from(r"C:\Users\tester\demo")
         } else {
-            PathBuf::from("/Users/lexo/demo")
+            PathBuf::from("/Users/tester/demo")
         };
 
         let cache_dir = project_build_cache_dir_in(&project_root, cache_root);
 
         let expected = if cfg!(windows) {
-            cache_root.join("drive-C/Users/lexo/demo/managed_backends")
+            cache_root.join("drive-C/Users/tester/demo/managed_backends")
         } else {
-            cache_root.join("Users/lexo/demo/managed_backends")
+            cache_root.join("Users/tester/demo/managed_backends")
         };
         assert_eq!(cache_dir, expected);
     }

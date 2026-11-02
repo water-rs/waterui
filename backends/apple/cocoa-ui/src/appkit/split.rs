@@ -295,7 +295,8 @@ impl SplitViewController {
     }
 
     /// Sets the columns' preferred/minimum/maximum widths. The preferred
-    /// widths land once at the first layout — the user's widths win after.
+    /// widths land once at the first layout with those columns expanded —
+    /// the user's widths win after.
     pub fn set_column_widths(&self, widths: &[ColumnWidth]) {
         self.ivars().widths_applied.set(false);
         self.ivars().preferred_widths.replace(widths.to_vec());
@@ -313,15 +314,29 @@ impl SplitViewController {
         }
     }
 
-    /// Applies each declared preferred width to its divider, once.
+    /// Applies each declared preferred width to its divider, once — at the
+    /// first layout where every preferred column is expanded. A collapsed
+    /// column's pane has no width for the divider to sit against; landing
+    /// there would spend the one-shot on a zero-width pane.
     fn apply_preferred_widths_once(&self) {
-        if self.ivars().widths_applied.replace(true) {
+        if self.ivars().widths_applied.get() {
             return;
         }
         let widths = self.ivars().preferred_widths.borrow().clone();
+        let items = self.splitViewItems();
+        for (index, width) in widths.iter().enumerate() {
+            if width.preferred.is_some()
+                && items
+                    .iter()
+                    .nth(index)
+                    .is_some_and(|item| item.isCollapsed())
+            {
+                return;
+            }
+        }
+        self.ivars().widths_applied.set(true);
         let split_view = self.splitView();
         let arranged = split_view.arrangedSubviews();
-        let items = self.splitViewItems();
         for (index, width) in widths.iter().enumerate() {
             let Some(preferred) = width.preferred else {
                 continue;

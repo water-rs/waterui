@@ -7,14 +7,14 @@
 //! each.
 //!
 //! * **Receivers are owned and live.** Every object messaged is held in a
-//!   `Retained<_>` by this wrapper, or handed to a delegate callback by WebKit
+//!   `Retained<_>` by this wrapper, or handed to a delegate callback by `WebKit`
 //!   itself, which keeps it alive for the duration of that call.
 //! * **Everything runs on the main thread.** `WKWebView` and its collaborators are
-//!   `MainThreadOnly`; the wrapper is built with a `MainThreadMarker` and WebKit
+//!   `MainThreadOnly`; the wrapper is built with a `MainThreadMarker` and `WebKit`
 //!   dispatches its delegate callbacks on the main thread.
 //!
 //! What those two facts do not cover — a raw `msg_send!` whose signature is
-//! asserted by hand, or a nullable pointer WebKit hands back — is spelled out at
+//! asserted by hand, or a nullable pointer `WebKit` hands back — is spelled out at
 //! the site.
 
 use std::cell::{Cell, RefCell};
@@ -23,49 +23,113 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use cookie::time::OffsetDateTime;
 use futures::channel::oneshot;
 use nami::Signal;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{
-    NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger,
-    NSJSONSerialization, NSJSONWritingOptions, NSObject, NSRect, NSString, NSURL,
-    NSURLErrorAppTransportSecurityRequiresSecureConnection, NSURLErrorCancelled,
-    NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost, NSURLErrorClientCertificateRejected,
-    NSURLErrorClientCertificateRequired, NSURLErrorDNSLookupFailed, NSURLErrorDomain,
-    NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet,
-    NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateHasBadDate,
-    NSURLErrorServerCertificateHasUnknownRoot, NSURLErrorServerCertificateNotYetValid,
-    NSURLErrorServerCertificateUntrusted, NSURLErrorTimedOut, NSURLRequest,
+    NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger, NSObject,
+    NSRect, NSString, NSURL, NSURLErrorAppTransportSecurityRequiresSecureConnection,
+    NSURLErrorCancelled, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost,
+    NSURLErrorClientCertificateRejected, NSURLErrorClientCertificateRequired,
+    NSURLErrorDNSLookupFailed, NSURLErrorDomain, NSURLErrorNetworkConnectionLost,
+    NSURLErrorNotConnectedToInternet, NSURLErrorSecureConnectionFailed,
+    NSURLErrorServerCertificateHasBadDate, NSURLErrorServerCertificateHasUnknownRoot,
+    NSURLErrorServerCertificateNotYetValid, NSURLErrorServerCertificateUntrusted,
+    NSURLErrorTimedOut, NSURLRequest,
 };
 use objc2_web_kit::{
     WKContentWorld, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
-    WKNavigationDelegate, WKScriptMessage, WKScriptMessageHandler, WKSecurityOrigin,
+    WKNavigationDelegate, WKScriptMessage, WKScriptMessageHandlerWithReply, WKSecurityOrigin,
     WKURLSchemeHandler, WKURLSchemeTask, WKUserContentController, WKUserScript,
     WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
 };
 use waterui_core::{Computed, Environment, Str};
 use waterui_webview::{
-    ASSET_ORIGIN, ASSET_SCHEME, AssetResponse, AssetServer, BackendEvent, Cookie,
-    CustomWebViewController, OriginPolicy, ScriptInjectionTime, Url, WatcherGuard, WatcherSet,
-    WebViewConfig, WebViewController, WebViewError, WebViewEvent, WebViewHandle,
+    ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, AssetResponse, AssetServer, BackendEvent,
+    Cookie, CustomWebViewController, DocumentScripts, NavigationPolicy, NavigationRequest,
+    OriginPolicy, ScriptInjectionTime, Url, UserScript, WatcherGuard, WatcherSet, WebViewConfig,
+    WebViewController, WebViewError, WebViewEvent, WebViewHandle,
     assets::{asset_target, dispatch},
     bridge,
 };
 
-/// Bridges `waterui.invoke` to WebKit's message-handler transport.
+/// The reply channel `WebKit` hands a `WKScriptMessageHandlerWithReply`
+/// callback.
 ///
-/// The shared script calls one function; WebKit delivers messages through a named
-/// handler object, so this adapts between the two.
-const TRANSPORT_SCRIPT: &str = concat!(
-    "globalThis.__wateruiSend = function (envelope) {",
-    "window.webkit.messageHandlers.__wateruiSend.postMessage(envelope);",
-    "};"
-);
+/// `WebKit` requires the reply handler block to be invoked exactly once, so the
+/// copied block lives here and the consuming [`Self::resolve`]/[`Self::reject`]
+/// are the only answers; `Drop` answers with an error for a handler future
+/// that was dropped because its web view went away. The channel is bound to
+/// the document that sent the message, so `WebKit` itself drops the reply when
+/// that document has already navigated away.
+struct ScriptReply {
+    /// Taken by the one answer, so a second cannot happen.
+    block: Option<RcBlock<dyn Fn(*mut AnyObject, *mut NSString)>>,
+}
+
+impl ScriptReply {
+    /// Copies the reply handler `WebKit` passed the callback, so it can be held
+    /// across an `await`.
+    fn new(reply_handler: &block2::DynBlock<dyn Fn(*mut AnyObject, *mut NSString)>) -> Self {
+        Self {
+            block: Some(reply_handler.copy()),
+        }
+    }
+
+    /// Delivers `json` — a serialized [`bridge::Reply`] — as the value the
+    /// page's `postMessage` promise resolves with.
+    fn resolve(mut self, json: &str) {
+        if let Some(block) = self.block.take() {
+            Self::answer(&block, Some(&NSString::from_str(json)), None);
+        }
+    }
+
+    /// Rejects the page's `postMessage` promise with `message`.
+    fn reject(mut self, message: &str) {
+        if let Some(block) = self.block.take() {
+            Self::answer(&block, None, Some(&NSString::from_str(message)));
+        }
+    }
+
+    /// Invokes the block; the borrows are enough because `WebKit` reads both
+    /// arguments synchronously.
+    fn answer(
+        block: &RcBlock<dyn Fn(*mut AnyObject, *mut NSString)>,
+        reply: Option<&NSString>,
+        error: Option<&NSString>,
+    ) {
+        let reply = reply.map_or(std::ptr::null_mut(), |text| {
+            std::ptr::from_ref(text).cast_mut().cast::<AnyObject>()
+        });
+        let error = error.map_or(std::ptr::null_mut(), |text| {
+            std::ptr::from_ref(text).cast_mut()
+        });
+        block.call((reply, error));
+    }
+}
+
+impl Drop for ScriptReply {
+    fn drop(&mut self) {
+        // WebKit requires the reply handler to run once, so a dropped handler
+        // future still owes the document an answer.
+        if let Some(block) = self.block.take() {
+            Self::answer(
+                &block,
+                None,
+                Some(&NSString::from_str(
+                    "the WaterUI web view was closed before the handler answered",
+                )),
+            );
+        }
+    }
+}
 
 type JavaScriptHandler = Rc<waterui_webview::ScriptMessageHandler>;
+
+#[path = "macos_hosted.rs"]
+mod hosted;
 
 /// `NSURLErrorDomain` codes that mean the TLS handshake or a certificate was
 /// the problem, so the failure is reported as [`WebViewError::Ssl`] rather than
@@ -92,26 +156,17 @@ const TRANSPORT_ERROR_CODES: [NSInteger; 6] = [
     NSURLErrorNotConnectedToInternet,
 ];
 
-#[derive(Clone)]
-struct InjectedScript {
-    /// The key the script was injected under. Re-injecting under a key already
-    /// in use replaces that script instead of stacking another copy in front of
-    /// it, which is what the mirrored-state seed relies on.
-    key: String,
-    source: String,
-    time: ScriptInjectionTime,
-}
-
 struct SharedState {
     watchers: WatcherSet<BackendEvent>,
     redirects_enabled: RefCell<Computed<bool>>,
     handlers: RefCell<HashMap<String, JavaScriptHandler>>,
-    /// Keyed, in injection order. A `Vec` rather than a map because the order
-    /// scripts run in is part of what was asked for.
-    scripts: RefCell<Vec<InjectedScript>>,
+    /// The creation-time scripts, then those injected later, in the order the
+    /// page runs them — which is part of what was asked for.
+    scripts: RefCell<DocumentScripts>,
     last_navigation_url: RefCell<Option<String>>,
-    /// Which documents may reach the bridge; checked on every message.
-    bridge_origins: RefCell<Option<OriginPolicy>>,
+    /// Which documents may reach the bridge, fixed at creation; checked on
+    /// every message and every navigation.
+    bridge_origins: OriginPolicy,
     /// Whether the document being loaded is one the policy admits.
     ///
     /// `WKUserContentController` has no per-origin injection filter, so the
@@ -119,39 +174,68 @@ struct SharedState {
     /// frame navigation and installed only when its destination is admitted.
     bridge_admitted: Cell<bool>,
     transport_registered: Cell<bool>,
+    /// The policy deciding navigations the page initiates; `None` allows
+    /// them all.
+    navigation_policy: Option<NavigationPolicy>,
+    /// Navigations the policy already answered: `go_to`, the history
+    /// commands and `reload` record the `WKNavigation` each one started,
+    /// and every navigation the policy allows joins them — the policy
+    /// never sees a load the application issued nor a redirect a decided
+    /// navigation follows.
+    answered: AnsweredNavigations,
 }
 
-impl Default for SharedState {
-    fn default() -> Self {
+impl SharedState {
+    /// The state of a view created with `bridge_origins` and `scripts`.
+    fn new(
+        bridge_origins: OriginPolicy,
+        scripts: DocumentScripts,
+        navigation_policy: Option<NavigationPolicy>,
+    ) -> Self {
         Self {
             watchers: WatcherSet::new(),
             redirects_enabled: RefCell::new(Computed::new(true)),
             handlers: RefCell::new(HashMap::new()),
-            scripts: RefCell::new(Vec::new()),
+            scripts: RefCell::new(scripts),
             last_navigation_url: RefCell::new(None),
-            bridge_origins: RefCell::new(None),
+            bridge_origins,
             bridge_admitted: Cell::new(false),
             transport_registered: Cell::new(false),
+            navigation_policy,
+            answered: AnsweredNavigations::new(),
         }
     }
-}
 
-impl SharedState {
+    /// A load the application issued is recorded by the `WKNavigation` the
+    /// call returned — the same object its action later reports as
+    /// `mainFrameNavigation`, so the policy never sees it or the redirects
+    /// it follows. `None` starts nothing: a `goBack` with no previous
+    /// entry leaves none.
+    ///
+    /// Recorded only while a policy is installed: without one nothing asks
+    /// whether an action was answered.
+    fn note_app_load(&self, navigation: Option<&WKNavigation>) {
+        if self.navigation_policy.is_none() {
+            return;
+        }
+        if let Some(navigation) = navigation {
+            self.answered.answer(navigation);
+        }
+    }
+
     fn emit(&self, event: impl Into<BackendEvent>) {
         self.watchers.emit(&event.into());
     }
 
     /// Whether a document at `url` may be given the bridge.
     ///
-    /// No policy means no bridge: a handle whose origins were never chosen has
-    /// nothing to authenticate a page against, and the seed script carries the
-    /// live value of every exposed binding.
+    /// The URL is parsed with `FromStr`, not [`Url::parse`]: the policy's own
+    /// `allows` handles `file:` documents and `BridgeOrigins::Any`, which
+    /// `Url::parse`'s web-only filter would refuse before the policy could see
+    /// them.
     fn admits(&self, url: Option<&str>) -> bool {
-        let policy = self.bridge_origins.borrow();
-        let (Some(policy), Some(url)) = (policy.as_ref(), url) else {
-            return false;
-        };
-        Url::parse(url).is_some_and(|url| policy.allows(&url))
+        url.and_then(|url| url.parse::<Url>().ok())
+            .is_some_and(|url| self.bridge_origins.allows(&url))
     }
 
     /// Re-decides whether the document at `url` gets the bridge, and rebuilds
@@ -187,7 +271,7 @@ impl SharedState {
                 url: Self::parse_url(
                     self.last_navigation_url
                         .borrow()
-                        .clone()
+                        .as_deref()
                         .unwrap_or_default(),
                 ),
                 message,
@@ -230,7 +314,7 @@ impl SharedState {
     /// is a contract break worth crashing on, matching the `WebKitGTK` and WPE
     /// bridges; the `Url::from(String)` fallback this replaces used to
     /// manufacture a bogus `Url` and hand it to the application instead.
-    fn parse_url(raw: String) -> Url {
+    fn parse_url(raw: &str) -> Url {
         raw.parse()
             .unwrap_or_else(|error| panic!("WebKit emitted an invalid URL {raw:?}: {error}"))
     }
@@ -270,11 +354,70 @@ define_class!(
             // main frame's bridge.
             // SAFETY: main-thread message sends to objects WebKit retains for
             // this call; see the module safety note.
-            let targets_main_frame = unsafe {
-                navigation_action
-                    .targetFrame()
-                    .is_some_and(|frame| frame.isMainFrame())
-            };
+            let target_frame = unsafe { navigation_action.targetFrame() };
+            // SAFETY: main-thread message send to an object WebKit retains for
+            // this call; see the module safety note.
+            let targets_main_frame = target_frame
+                .as_ref()
+                .is_some_and(|frame| unsafe { frame.isMainFrame() });
+            // A targetless action — `window.open` — would be a main-frame
+            // navigation where a backend reroutes it, so the policy is told
+            // it is one.
+            let is_main_frame = target_frame.as_ref().is_none_or(|frame| unsafe {
+                // SAFETY: same as above.
+                frame.isMainFrame()
+            });
+            let shared = &self.ivars().shared;
+            // The policy is the only reader of `mainFrameNavigation`, so the
+            // property is read only while one is installed. The type gate on
+            // `WebViewOpen::navigation_policy` restricts that to deployment
+            // targets of Apple OS 27 or newer, where the property is public.
+            if let Some(policy) = shared.navigation_policy.as_ref() {
+                // SAFETY: `navigation_action` is a live `WKNavigationAction`;
+                // `mainFrameNavigation` is a read-only property
+                // `objc2-web-kit` does not bind, public API since
+                // macOS/iOS 27 and reachable here only through an installed
+                // policy.
+                let navigation: Option<Retained<WKNavigation>> =
+                    unsafe { msg_send![navigation_action, mainFrameNavigation] };
+                if !shared.answered.is_answered(navigation.as_deref()) {
+                    // SAFETY: main-thread message sends to objects WebKit retains
+                    // for this call; see the module safety note.
+                    let url = unsafe {
+                        navigation_action
+                            .request()
+                            .URL()
+                            .and_then(|url| url.absoluteString())
+                    }
+                    .map(|url| url.to_string());
+                    // SAFETY: main-thread message send to an object WebKit retains
+                    // for this call; see the module safety note.
+                    let user_initiated = unsafe {
+                        navigation_action.navigationType()
+                            == objc2_web_kit::WKNavigationType::LinkActivated
+                    };
+                    if let Some(url) = url.as_deref() {
+                        let request = NavigationRequest::new(
+                            SharedState::parse_url(url),
+                            SharedState::current_url(web_view)
+                                .map(|url| SharedState::parse_url(&url)),
+                            is_main_frame,
+                            user_initiated,
+                        );
+                        if !policy.allows(&request) {
+                            decision_handler.call((WKNavigationActionPolicy::Cancel,));
+                            return;
+                        }
+                    }
+                    // An answer given is an answer kept: `WebKit` asks again
+                    // for every server redirect the navigation follows, and
+                    // each of those actions carries the same
+                    // `mainFrameNavigation`.
+                    if let Some(navigation) = navigation.as_deref() {
+                        shared.answered.answer(navigation);
+                    }
+                }
+            }
             if targets_main_frame {
                 // SAFETY: main-thread message sends to objects WebKit retains
                 // for this call; see the module safety note.
@@ -308,7 +451,7 @@ define_class!(
                     .last_navigation_url
                     .replace(Some(url.clone()));
                 self.ivars().shared.emit(WebViewEvent::WillNavigate {
-                    url: SharedState::parse_url(url),
+                    url: SharedState::parse_url(&url),
                 });
             }
             self.ivars()
@@ -335,8 +478,8 @@ define_class!(
                 .clone()
                 .unwrap_or_else(|| to.clone());
             self.ivars().shared.emit(WebViewEvent::Redirect {
-                from: SharedState::parse_url(from),
-                to: SharedState::parse_url(to.clone()),
+                from: SharedState::parse_url(&from),
+                to: SharedState::parse_url(&to),
             });
             if self.ivars().shared.redirects_enabled.borrow().snapshot() {
                 self.ivars()
@@ -344,7 +487,7 @@ define_class!(
                     .last_navigation_url
                     .replace(Some(to.clone()));
                 self.ivars().shared.emit(WebViewEvent::WillNavigate {
-                    url: SharedState::parse_url(to),
+                    url: SharedState::parse_url(&to),
                 });
             } else {
                 // SAFETY: main-thread message send to an object this wrapper
@@ -365,7 +508,7 @@ define_class!(
             self.ivars().shared.emit(WebViewEvent::Loading {
                 // SAFETY: main-thread message send to an object this wrapper
                 // retains; see the module safety note.
-                progress: unsafe { web_view.estimatedProgress() } as f32,
+                progress: crate::num_cast::f64_as_f32(unsafe { web_view.estimatedProgress() }),
             });
         }
 
@@ -406,26 +549,29 @@ define_class!(
         }
     }
 
-    unsafe impl WKScriptMessageHandler for WebViewDelegate {
-        #[unsafe(method(userContentController:didReceiveScriptMessage:))]
+    unsafe impl WKScriptMessageHandlerWithReply for WebViewDelegate {
+        #[unsafe(method(userContentController:didReceiveScriptMessage:replyHandler:))]
         #[allow(non_snake_case)]
-        unsafe fn userContentController_didReceiveScriptMessage(
+        unsafe fn userContentController_didReceiveScriptMessage_replyHandler(
             &self,
             _user_content_controller: &WKUserContentController,
             message: &WKScriptMessage,
+            reply_handler: &block2::DynBlock<dyn Fn(*mut AnyObject, *mut NSString)>,
         ) {
+            let reply = ScriptReply::new(reply_handler);
             // SAFETY: main-thread message send to an object this wrapper retains;
             // see the module safety note.
             let body = unsafe { message.body() };
             // Page script reaches this transport directly, so nothing here is fatal.
             let Some(body) = body.downcast_ref::<NSString>() else {
-                tracing::warn!("WaterUI bridge received a non-string message body; ignoring");
+                tracing::warn!("WaterUI bridge received a non-string message body");
+                reply.reject("the WaterUI bridge takes a string message body");
                 return;
             };
             // WebKit reports the frame each message came from, so the origin is
             // authenticated by the engine rather than claimed by the page.
             let allowed = {
-                let policy = self.ivars().shared.bridge_origins.borrow().clone();
+                let policy = &self.ivars().shared.bridge_origins;
                 // SAFETY: main-thread message send to an object WebKit retains for
                 // this call; see the module safety note.
                 let frame = unsafe { message.frameInfo() };
@@ -438,12 +584,13 @@ define_class!(
                 // SAFETY: main-thread message sends to an object WebKit retains
                 // for this call; see the module safety note.
                 let origin = unsafe { security_origin_string(&origin) };
-                is_main_frame && policy.is_some_and(|policy| policy.allows_origin(&origin))
+                is_main_frame && policy.allows_origin(&origin)
             };
             if !allowed {
                 tracing::warn!(
                     "a document outside the bridge origin policy tried to call a WaterUI handler"
                 );
+                reply.reject("this document is not allowed to use the WaterUI bridge");
                 return;
             }
 
@@ -451,6 +598,7 @@ define_class!(
                 Ok(request) => request,
                 Err(error) => {
                     tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
+                    reply.reject(&error.to_string());
                     return;
                 }
             };
@@ -461,46 +609,34 @@ define_class!(
                 .shared
                 .handlers
                 .borrow()
-                .get(&request.name)
+                .get(request.name())
                 .map(Rc::clone);
             let Some(handler) = handler else {
                 tracing::warn!(
-                    handler = %request.name,
+                    handler = %request.name(),
                     "page script called a WaterUI handler that is not registered"
                 );
-                let reply =
-                    bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name));
-                // SAFETY: WebKit sets the source web view on every script
-                // message it delivers.
-                let web_view = unsafe { message.webView() }
-                    .expect("a bridge message must have a source web view");
-                let script = NSString::from_str(&reply.resolve_script(request.id));
-                // SAFETY: main-thread message send to a retained object; see the
-                // module safety note.
-                unsafe {
-                    web_view.evaluateJavaScript_completionHandler(&script, None);
-                }
+                reply.resolve(
+                    &bridge::Reply::failure(&format!(
+                        "no WaterUI handler named `{}`",
+                        request.name()
+                    ))
+                    .to_json(),
+                );
                 return;
             };
 
             // Handlers are asynchronous, so the promise settles when the future
-            // completes rather than when this callback returns.
-            let future = handler(&request.payload);
-            // SAFETY: WebKit sets the source web view on every script message it
-            // delivers, and it is retained for the spawned task.
-            let web_view =
-                unsafe { message.webView() }.expect("a bridge message must have a source web view");
+            // completes rather than when this callback returns. The reply needs
+            // no web view: the channel answers the document that asked, and
+            // `ScriptReply`'s `Drop` covers a view that died mid-await.
+            let future = handler(request.payload());
             executor_core::spawn_local(async move {
-                let reply = match future.await {
-                    Ok(reply) => bridge::Reply::from(reply),
+                let answer = match future.await {
+                    Ok(answer) => bridge::Reply::from(answer),
                     Err(message) => bridge::Reply::Failure(message),
                 };
-                let script = NSString::from_str(&reply.resolve_script(request.id));
-                // SAFETY: main-thread message send to a retained object; see the
-                // module safety note.
-                unsafe {
-                    web_view.evaluateJavaScript_completionHandler(&script, None);
-                }
+                reply.resolve(&answer.to_json());
             })
             .detach();
         }
@@ -585,7 +721,7 @@ fn install_user_scripts(controller: &WKUserContentController, shared: &SharedSta
     // the page reaches all of them through `waterui.invoke`.
     add_user_script(
         controller,
-        TRANSPORT_SCRIPT,
+        bridge::WEBKIT_TRANSPORT,
         ScriptInjectionTime::DocumentStart,
     );
     add_user_script(
@@ -594,38 +730,34 @@ fn install_user_scripts(controller: &WKUserContentController, shared: &SharedSta
         ScriptInjectionTime::DocumentStart,
     );
     for script in shared.scripts.borrow().iter() {
-        add_user_script(controller, &script.source, script.time);
+        add_user_script(controller, script.source(), script.time());
     }
 }
 
-/// Turns the value WebKit hands a completion block into the text every backend
-/// returns for it: a string as itself, anything else as JSON.
+/// The string an evaluation produced.
 ///
-/// `-description` used to stand in for this, so an object came back in
-/// Objective-C property-list syntax (`{a = 1;}`) where every other backend
-/// returns JSON (`{"a":1}`).
-fn marshal_javascript_result(value: *mut AnyObject) -> Result<Str, Str> {
+/// Both evaluation paths run scripts that encode their answer in the page —
+/// the raw path through `waterui_webview::raw_evaluation`, the awaited one
+/// through the shared wrapper's envelope — so `WebKit` hands back a string,
+/// returned as it is. Anything else, `nil` for `undefined` included, means the
+/// script broke that contract and is reported rather than re-encoded here.
+fn javascript_string(value: *mut AnyObject) -> Result<Str, Str> {
     // SAFETY: WebKit passes a nullable result to the completion block; `as_ref`
     // is the null check.
     let Some(value) = (unsafe { value.as_ref() }) else {
-        // `undefined`: no value at all, which is not the JSON `null`.
-        return Ok(Str::from_static(""));
+        return Err(Str::from_static(
+            "the script evaluated to `undefined`, not the string it must answer",
+        ));
     };
-    if let Some(string) = value.downcast_ref::<NSString>() {
-        return Ok(Str::from(string.to_string()));
-    }
-    // SAFETY: `value` is the live result object WebKit handed the completion
-    // block, and the serializer only reads it.
-    let data = unsafe {
-        NSJSONSerialization::dataWithJSONObject_options_error(
-            value,
-            NSJSONWritingOptions::FragmentsAllowed,
-        )
-    }
-    .map_err(|error| Str::from(error.localizedDescription().to_string()))?;
-    String::from_utf8(data.to_vec())
-        .map(Str::from)
-        .map_err(|error| Str::from(error.to_string()))
+    value.downcast_ref::<NSString>().map_or_else(
+        || {
+            Err(Str::from(format!(
+                "the script evaluated to a `{}`, not the string it must answer",
+                value.class().name().to_string_lossy()
+            )))
+        },
+        |string| Ok(Str::from(string.to_string())),
+    )
 }
 
 impl WebViewDelegate {
@@ -674,15 +806,14 @@ define_class!(
             let response = url
                 .as_deref()
                 .and_then(|url| asset_target(url, ASSET_ORIGIN))
-                .map(|(path, query)| {
+                .map_or_else(AssetResponse::not_found, |(path, query)| {
                     dispatch(
                         &self.ivars().server,
                         method.as_deref().unwrap_or("GET"),
                         path,
                         query,
                     )
-                })
-                .unwrap_or_else(AssetResponse::not_found);
+                });
             answer_scheme_task(task, url.as_deref(), response);
         }
 
@@ -712,7 +843,7 @@ impl AssetSchemeHandler {
 
 /// Answers a started scheme task with `response` and finishes it.
 ///
-/// `request_url` is the URL WebKit started the task for; an
+/// `request_url` is the URL `WebKit` started the task for; an
 /// `NSHTTPURLResponse` has to be constructed against *some* URL, and the
 /// request's own is the only honest choice.
 fn answer_scheme_task(
@@ -723,13 +854,12 @@ fn answer_scheme_task(
     let url = request_url
         .and_then(|url| NSURL::URLWithString(&NSString::from_str(url)))
         .expect("WebKit only starts scheme tasks for URLs it could parse");
-    let names: Vec<Retained<NSString>> = response
-        .headers
+    let (status, response_headers, body) = response.into_parts();
+    let names: Vec<Retained<NSString>> = response_headers
         .iter()
         .map(|(name, _)| NSString::from_str(name))
         .collect();
-    let values: Vec<Retained<NSString>> = response
-        .headers
+    let values: Vec<Retained<NSString>> = response_headers
         .iter()
         .map(|(_, value)| NSString::from_str(value))
         .collect();
@@ -740,7 +870,7 @@ fn answer_scheme_task(
     let ns_response = NSHTTPURLResponse::initWithURL_statusCode_HTTPVersion_headerFields(
         NSHTTPURLResponse::alloc(),
         &url,
-        response.status as NSInteger,
+        NSInteger::try_from(status).expect("HTTP status fits NSInteger"),
         Some(&NSString::from_str("HTTP/1.1")),
         Some(&headers),
     )
@@ -749,25 +879,24 @@ fn answer_scheme_task(
     // completes, and `stopURLSchemeTask` makes no further callbacks.
     unsafe {
         task.didReceiveResponse(&ns_response);
-        if !response.body.is_empty() {
-            task.didReceiveData(&NSData::from_vec(response.body));
+        if !body.is_empty() {
+            task.didReceiveData(&NSData::from_vec(body));
         }
         task.didFinish();
     }
 }
 
 struct MacSystemWebViewInner {
+    port: RefCell<Option<Retained<hosted::WebPort>>>,
+    focused: nami::Binding<bool>,
     web_view: Retained<WKWebView>,
     delegate: Retained<WebViewDelegate>,
     shared: Rc<SharedState>,
-    /// The bundled-asset origin this view answers, when it was opened with an
-    /// [`AssetServer`].
-    asset_origin: Option<Url>,
 }
 
-/// A main-thread WKWebView handle owned by a Hydrolysis WebView node.
+/// A main-thread `WKWebView` handle owned by a Hydrolysis `WebView` node.
 #[derive(Clone)]
-pub(crate) struct MacSystemWebViewHandle {
+pub struct MacSystemWebViewHandle {
     inner: Rc<MacSystemWebViewInner>,
 }
 
@@ -779,11 +908,63 @@ impl core::fmt::Debug for MacSystemWebViewHandle {
     }
 }
 
+impl crate::HostedContent for MacSystemWebViewHandle {
+    fn mount(&self, occlusion: crate::HostedOcclusion) -> crate::HostedObject {
+        let mut port = self.inner.port.borrow_mut();
+        assert!(
+            port.is_none(),
+            "WKWebView is already mounted in another node"
+        );
+        let view =
+            hosted::WebPort::new(&self.inner.web_view, self.inner.focused.clone(), occlusion);
+        let object = cherenkov_gpu::interop::apple::HostedView::new(
+            Retained::into_super(view.clone()),
+            view.mtm(),
+        );
+        *port = Some(view);
+        object
+    }
+
+    fn unmount(&self) {
+        let port = self
+            .inner
+            .port
+            .borrow_mut()
+            .take()
+            .expect("WKWebView unmounted without a mount");
+        // A page leaving with the window's focus hands it back to the content
+        // view, whose first-responder status Hydrolysis's own focus rides on.
+        if self.inner.focused.snapshot()
+            && let Some(window) = port.window()
+        {
+            window.makeFirstResponder(window.contentView().as_deref().map(|view| &**view));
+        }
+        port.stop_observing();
+        self.inner.web_view.removeFromSuperview();
+        port.removeFromSuperview();
+    }
+
+    fn focused(&self) -> Computed<bool> {
+        self.inner.focused.clone().into()
+    }
+
+    fn request_focus(&self) {
+        self.inner
+            .port
+            .borrow()
+            .as_ref()
+            .expect("cannot focus an unmounted WKWebView")
+            .request_focus();
+    }
+}
+
 impl MacSystemWebViewHandle {
     fn new(config: WebViewConfig) -> Self {
         let mtm = MainThreadMarker::new()
             .expect("Hydrolysis WKWebView must be created on the macOS main thread");
-        let shared = Rc::new(SharedState::default());
+        let scripts = DocumentScripts::new(&config);
+        let (asset_server, bridge_origins, navigation_policy, ..) = config.into_parts();
+        let shared = Rc::new(SharedState::new(bridge_origins, scripts, navigation_policy));
         let delegate = WebViewDelegate::new(mtm, Rc::clone(&shared));
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
@@ -791,7 +972,7 @@ impl MacSystemWebViewHandle {
         // The bundled-asset origin exists only when the view was opened with a
         // server to answer it; the configuration retains the handler it is
         // registered under.
-        let asset_origin = config.asset_server.map(|server| {
+        if let Some(server) = asset_server {
             let handler = AssetSchemeHandler::new(mtm, server);
             // SAFETY: main-thread message send to an object this wrapper
             // retains; see the module safety note.
@@ -801,10 +982,7 @@ impl MacSystemWebViewHandle {
                     &NSString::from_str(ASSET_SCHEME),
                 );
             }
-            ASSET_ORIGIN
-                .parse()
-                .expect("the bundled asset origin is a fixed constant")
-        });
+        }
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
         let web_view = unsafe {
@@ -821,10 +999,11 @@ impl MacSystemWebViewHandle {
         }
         let handle = Self {
             inner: Rc::new(MacSystemWebViewInner {
+                port: RefCell::new(None),
+                focused: nami::Binding::bool(false),
                 web_view,
                 delegate,
                 shared,
-                asset_origin,
             }),
         };
         handle.rebuild_user_scripts();
@@ -837,21 +1016,30 @@ impl MacSystemWebViewHandle {
         unsafe { self.inner.web_view.configuration().userContentController() }
     }
 
-    /// Registers the single WebKit message handler the bridge transports over.
+    /// Registers the single `WebKit` message handler the bridge transports over.
     ///
-    /// One handler serves every WaterUI handler name, so this runs once rather
-    /// than per registration.
+    /// One handler serves every `WaterUI` handler name, so this runs once rather
+    /// than per registration. The registration is the reply-capable
+    /// `WKScriptMessageHandlerWithReply` kind: `WebKit` binds each answer to the
+    /// document that sent the message and drops it when that document is gone,
+    /// so a reply can never land in a successor document the policy never
+    /// admitted.
     fn ensure_transport_registered(&self) {
         if self.inner.shared.transport_registered.replace(true) {
             return;
         }
         let controller = self.user_content_controller();
         let name = NSString::from_str(bridge::SEND_FUNCTION);
-        // SAFETY: main-thread message send to an object this wrapper retains; see
-        // the module safety note.
+        let mtm = MainThreadMarker::new()
+            .expect("Hydrolysis WKWebView handlers must be registered on the macOS main thread");
+        // SAFETY: `mtm` is the main-thread marker `pageWorld` requires.
+        let world = unsafe { WKContentWorld::pageWorld(mtm) };
+        // SAFETY: main-thread message sends to live objects this wrapper
+        // retains; see the module safety note.
         unsafe {
-            controller.addScriptMessageHandler_name(
+            controller.addScriptMessageHandlerWithReply_contentWorld_name(
                 ProtocolObject::from_ref(&*self.inner.delegate),
+                &world,
                 &name,
             );
         }
@@ -889,22 +1077,22 @@ impl MacSystemWebViewHandle {
         cookies.objectAtIndex(0)
     }
 
-    fn cookie_from_native(cookie: &NSHTTPCookie) -> Cookie<'static> {
-        let mut builder = Cookie::build((cookie.name().to_string(), cookie.value().to_string()))
+    fn cookie_from_native(cookie: &NSHTTPCookie) -> Result<Cookie<'static>, waterui_core::Error> {
+        let name = cookie.name().to_string();
+        let mut builder = Cookie::build((name.clone(), cookie.value().to_string()))
             .domain(cookie.domain().to_string())
             .path(cookie.path().to_string())
             .secure(cookie.isSecure())
             .http_only(cookie.isHTTPOnly());
         if let Some(expires) = cookie.expiresDate() {
+            // `expiresDate` is an `NSDate`: `NSTimeInterval` seconds since 1970.
+            // A cookie with no `expiresDate` is a session cookie and keeps the
+            // expiry unset; one whose interval names no representable date
+            // fails the whole query rather than silently dropping the expiry.
             let seconds = expires.timeIntervalSince1970();
-            if seconds.is_finite() {
-                let timestamp = seconds as i64;
-                let expires = OffsetDateTime::from_unix_timestamp(timestamp)
-                    .expect("Hydrolysis WKWebView cookie expiration must fit OffsetDateTime");
-                builder = builder.expires(expires);
-            }
+            builder = builder.expires(waterui_webview::cookie_expiry(&name, seconds)?);
         }
-        builder.build()
+        Ok(builder.build())
     }
 }
 
@@ -912,17 +1100,15 @@ impl WebViewHandle for MacSystemWebViewHandle {
     fn go_back(&self) {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
-        unsafe {
-            self.inner.web_view.goBack();
-        }
+        let navigation = unsafe { self.inner.web_view.goBack() };
+        self.inner.shared.note_app_load(navigation.as_deref());
     }
 
     fn go_forward(&self) {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
-        unsafe {
-            self.inner.web_view.goForward();
-        }
+        let navigation = unsafe { self.inner.web_view.goForward() };
+        self.inner.shared.note_app_load(navigation.as_deref());
     }
 
     fn go_to(&self, url: &Url) {
@@ -931,26 +1117,16 @@ impl WebViewHandle for MacSystemWebViewHandle {
         let request = NSURLRequest::requestWithURL(&url);
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
-        unsafe {
-            self.inner.web_view.loadRequest(&request);
-        }
+        let navigation = unsafe { self.inner.web_view.loadRequest(&request) };
+        self.inner.shared.note_app_load(navigation.as_deref());
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        {
-            let mut scripts = self.inner.shared.scripts.borrow_mut();
-            let entry = InjectedScript {
-                key: key.to_owned(),
-                source: script.to_owned(),
-                time,
-            };
-            // Replacing in place keeps the script's position, so the order the
-            // page runs them in does not change when one is re-rendered.
-            match scripts.iter_mut().find(|script| script.key == key) {
-                Some(existing) => *existing = entry,
-                None => scripts.push(entry),
-            }
-        }
+        self.inner
+            .shared
+            .scripts
+            .borrow_mut()
+            .inject(UserScript::new(key.to_owned(), script.to_owned(), time));
         self.rebuild_user_scripts();
     }
 
@@ -967,16 +1143,6 @@ impl WebViewHandle for MacSystemWebViewHandle {
             .borrow_mut()
             .insert(name.to_owned(), Rc::from(handler));
         self.ensure_transport_registered();
-    }
-
-    fn set_bridge_origins(&self, policy: OriginPolicy) {
-        self.inner.shared.bridge_origins.replace(Some(policy));
-        // The policy decides what is injected as well as what is answered, so
-        // the document already loaded is re-judged against the new one.
-        let url = SharedState::current_url(&self.inner.web_view);
-        self.inner
-            .shared
-            .admit_document(url.as_deref(), &self.user_content_controller());
     }
 
     fn remove_handler(&self, name: &str) {
@@ -996,9 +1162,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
     fn refresh(&self) {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
-        unsafe {
-            self.inner.web_view.reload();
-        }
+        let navigation = unsafe { self.inner.web_view.reload() };
+        self.inner.shared.note_app_load(navigation.as_deref());
     }
 
     fn set_user_agent(&self, user_agent: &str) {
@@ -1035,10 +1200,6 @@ impl WebViewHandle for MacSystemWebViewHandle {
         unsafe { self.inner.web_view.canGoForward() }
     }
 
-    fn asset_origin(&self) -> Option<Url> {
-        self.inner.asset_origin.clone()
-    }
-
     fn set_cookie(&self, cookie: Cookie<'static>) {
         let cookie = Self::native_cookie(&cookie, &self.inner.web_view);
         // SAFETY: main-thread message send to an object this wrapper retains; see
@@ -1057,7 +1218,11 @@ impl WebViewHandle for MacSystemWebViewHandle {
         }
     }
 
-    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
+    #[expect(
+        clippy::future_not_send,
+        reason = "the cookie query runs on the macOS main thread: the future holds the `MainThreadOnly` cookie store and the non-`Send` completion block until WebKit answers"
+    )]
+    async fn get_cookies(&self) -> Result<Vec<Cookie<'static>>, waterui_core::Error> {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
         let store = unsafe {
@@ -1078,7 +1243,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
                     let cookie = cookies.objectAtIndex(index);
                     Self::cookie_from_native(&cookie)
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>();
             let sender = sender
                 .borrow_mut()
                 .take()
@@ -1095,6 +1260,10 @@ impl WebViewHandle for MacSystemWebViewHandle {
             .expect("Hydrolysis WKWebView cookie query was cancelled")
     }
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "the evaluation runs on the macOS main thread: the future holds the `MainThreadOnly` web view's non-`Send` completion block until WebKit answers"
+    )]
     async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
         let (sender, receiver) = oneshot::channel();
         let completion = Self::javascript_completion(sender);
@@ -1102,7 +1271,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         // the module safety note.
         unsafe {
             self.inner.web_view.evaluateJavaScript_completionHandler(
-                &NSString::from_str(script),
+                &NSString::from_str(&waterui_webview::raw_evaluation(script)),
                 Some(&completion),
             );
         }
@@ -1111,6 +1280,10 @@ impl WebViewHandle for MacSystemWebViewHandle {
             .expect("Hydrolysis WKWebView JavaScript evaluation was cancelled")
     }
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "the evaluation runs on the macOS main thread: the future holds the `MainThreadMarker` and the non-`Send` completion block until WebKit answers"
+    )]
     async fn call_async_javascript(&self, body: &str) -> Result<Str, Str> {
         let mtm = MainThreadMarker::new()
             .expect("Hydrolysis WKWebView JavaScript must be evaluated on the macOS main thread");
@@ -1120,7 +1293,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         // once the promise it returns resolves. `evaluateJavaScript` does not
         // await, so it answered the shared wrapper's promise object with
         // `WKErrorJavaScriptResultTypeUnsupported`, which is what made every
-        // `eval`/`exec` and every mirrored-state push fail on this backend.
+        // `eval`/`exec` fail on this backend.
         //
         // The page world is where the injected scripts live, so it is where
         // `__wateruiEval` is defined.
@@ -1145,7 +1318,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
 }
 
 impl MacSystemWebViewHandle {
-    /// The completion block both evaluation paths hand WebKit.
+    /// The completion block both evaluation paths hand `WebKit`.
     fn javascript_completion(
         sender: oneshot::Sender<Result<Str, Str>>,
     ) -> RcBlock<dyn Fn(*mut AnyObject, *mut NSError)> {
@@ -1153,11 +1326,10 @@ impl MacSystemWebViewHandle {
         RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
             // SAFETY: WebKit passes a nullable `NSError` to the completion block;
             // `as_ref` is the null check.
-            let result = if let Some(error) = unsafe { error.as_ref() } {
-                Err(Str::from(error.localizedDescription().to_string()))
-            } else {
-                marshal_javascript_result(value)
-            };
+            let result = unsafe { error.as_ref() }.map_or_else(
+                || javascript_string(value),
+                |error| Err(Str::from(error.localizedDescription().to_string())),
+            );
             let sender = sender
                 .borrow_mut()
                 .take()
@@ -1180,9 +1352,17 @@ impl CustomWebViewController for MacSystemWebViewController {
     fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
         MacSystemWebViewHandle::new(config)
     }
+
+    fn asset_origin(&self) -> Option<Url> {
+        Some(
+            ASSET_ORIGIN
+                .parse()
+                .expect("the bundled asset origin is a fixed constant"),
+        )
+    }
 }
 
-pub(crate) fn install(env: &mut Environment) {
+pub fn install(env: &mut Environment) {
     // The backend supplies the *default* controller, so an application or test
     // that installed its own keeps it. This used to assert instead, which turned
     // a deliberate `WebViewController` in the environment into a crash; the WPE

@@ -3,25 +3,36 @@ name = "cherenkov-gpu"
 version = "0.0.0"
 description = "wgpu backend for the Cherenkov 2D rendering engine"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+readme = "../README.md"
+keywords = ["graphics", "2d", "gpu", "wgpu", "rendering"]
+categories = ["graphics", "rendering"]
 
 [features]
+default = ["parallel"]
+gles = ["wgpu/gles", "filtrate/gles"]
+parallel = ["dep:rayon", "cherenkov/workers"]
 # Harness-only YUV decode uniform and shader. Not part of `interop`.
 bench = []
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = { version = "1.12.0", default-features = false, optional = true }
+
 [dependencies]
-filtrate = { path = "../../filtrate" }
-filtrate-core = { path = "../../filtrate/core" }
-cherenkov = { path = ".." }
-wgpu = "30.0.1"
-pollster = "0.4"
+filtrate = { version = "0.2.1", path = "../../filtrate" }
+filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
+cherenkov = { version = "0.0.0", path = ".." }
+cherenkov-stroke = { version = "0.0.0", path = "../stroke" }
+wgpu.workspace = true
+pollster = "1.0"
 bytemuck = { version = "1", features = ["derive"] }
 kurbo = "0.13"
-skrifa = "0.44"
+skrifa = "0.48"
 png = "0.18"
 half = "2"
+texture2ddecoder = "0.1.2"
 thiserror = "2"
 tracing = "0.1"
 rustc-hash = "2"
@@ -67,21 +78,44 @@ ndk-sys = "0.6"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
-gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-timers = { version = "0.4", features = ["futures"] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "CssStyleDeclaration",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "Node",
+    "Window",
+] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+web-sys = { version = "0.3", features = [
+    "CssStyleDeclaration",
+    "Document",
+    "HtmlCanvasElement",
+    "HtmlIFrameElement",
+    "NodeList",
+    "Window",
+] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 half = "2"
 
 [build-dependencies]
+# The working-space ↔ sRGB WGSL fragment the colour-converting modules are
+# composed with (`filtrate_core::space::WGSL`).
+filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
 # The WGSL engine shaders are compiled once at build time (issue #57), at
 # the naga version wgpu 30 links.
-naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }
-# `UNION_MAX_MEMBERS` comes from `../src/union_cap.rs` via `#[path]` —
+naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
+rspirv = "0.13"
+proc-macro2 = { version = "1", default-features = false }
+quote = { version = "1", default-features = false }
+# `UNION_MAX_MEMBERS` comes from `../record/src/union_cap.rs` via `#[path]` —
 # the same file `cherenkov::BackdropUnion::MAX_MEMBERS` reads — so the
 # build script never depends on the engine crate.
 
@@ -102,13 +136,22 @@ libc = "0.2"
 [dev-dependencies]
 toml.workspace = true
 cherenkov-oracle = { path = "../oracle" }
+# `tests/corner_distance.rs` runs `shared.wgsl` functions on the CPU.
+cherenkov-shader = { path = "../shader", features = ["eval"] }
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
 cherenkov-scene = { path = "../scene" }
 
 cherenkov = { path = "..", features = ["testing"] }
-nami = { version = "0.12", default-features = false, features = ["std", "kurbo"] }
+nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
 # `tests/planes.rs` runs its cases on the process main thread.
 libtest-mimic = "0.8.2"
+# `gpu_cov`'s stroke test logs its bounds through a scoped subscriber; the
+# Windows in-crate parity test layers a capture on the registry.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# The Windows in-crate parity test forwards wgpu-hal's HLSL debug log through tracing.
+tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
 
 [[test]]
 name = "planes"
@@ -116,3 +159,9 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# These are used only by the build script and the files it pulls in as
+# modules (`build_tile_spirv.rs`, `build_dxil.rs`); cargo-machete does not
+# see those uses, so it reports the genuine build dependencies as unused.
+ignored = ["proc-macro2", "quote", "rspirv"]

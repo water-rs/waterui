@@ -4,7 +4,7 @@
 //! and `Window::state` changes land on the app's bindings — #128. A synthetic
 //! default window would orphan all of it.
 
-use super::{MinimalTestTheme, test_environment};
+use super::{MinimalTestTheme, pumped_test_environment, test_environment};
 use nami::Signal as _;
 use waterui::prelude::*;
 use waterui::window::{Window, WindowState};
@@ -118,5 +118,122 @@ fn a_close_request_closes_only_a_closable_window() {
         state.snapshot(),
         WindowState::Closed,
         "a closable window must close on a close request"
+    );
+}
+
+/// `Window::on_close_request` sits on the same one close path: a `Cancel`
+/// reply leaves the window mounted and asking again on the next request,
+/// while a `Close` reply lands `Closed` on the app's binding — both routed
+/// through the close-request machine the mount armed.
+#[test]
+fn an_on_close_request_handler_cancels_then_allows_the_close() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use waterui::window::CloseReply;
+
+    // The pumped environment leaves the local-executor slot open, so the
+    // runtime's own draining executor — the one `pump_offscreen` drives —
+    // runs the close question's answer task like the windowed hosts do.
+    let env = pumped_test_environment();
+    let state = binding(WindowState::Normal);
+    let asked = Rc::new(Cell::new(0u32));
+    // The first question is refused, the second answered `Close`.
+    let reply = Rc::new(Cell::new(CloseReply::Cancel));
+    let content = AnyViewBuilder::<AnyView>::new(move || AnyView::new(vstack(((),))));
+    let window = Window::new("app window", state.clone(), move || content.build())
+        .on_close_request({
+            let asked = Rc::clone(&asked);
+            let reply = Rc::clone(&reply);
+            move || {
+                asked.set(asked.get() + 1);
+                let reply = reply.get();
+                async move { reply }
+            }
+        });
+    let mut rt = crate::HeadlessRuntime::new_for_tests_with_window(
+        env,
+        window,
+        320,
+        240,
+        MinimalTestTheme::default(),
+    );
+
+    rt.pump_offscreen();
+    rt.push_input_event(InputEvent::CloseRequested);
+    rt.pump_offscreen();
+    // The ask may complete within this pump or the next; settle then check.
+    rt.pump_offscreen();
+    assert_eq!(asked.get(), 1, "the close request must reach the handler");
+    assert_eq!(
+        state.snapshot(),
+        WindowState::Normal,
+        "a Cancel reply must leave the window open"
+    );
+
+    reply.set(CloseReply::Close);
+    rt.push_input_event(InputEvent::CloseRequested);
+    rt.pump_offscreen();
+    rt.pump_offscreen();
+    assert_eq!(asked.get(), 2, "a cancelled window must ask again");
+    assert_eq!(
+        state.snapshot(),
+        WindowState::Closed,
+        "a Close reply must close the window"
+    );
+}
+
+/// `WindowHandle::request_close` files the same request the title-bar button
+/// does — through the handler — while `WindowHandle::close` bypasses it, the
+/// way `close()` is documented to.
+#[test]
+fn request_close_routes_through_the_handler_and_close_bypasses_it() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use waterui::window::CloseReply;
+
+    let env = pumped_test_environment();
+    let state = binding(WindowState::Normal);
+    let asked = Rc::new(Cell::new(0u32));
+    let content = AnyViewBuilder::<AnyView>::new(move || AnyView::new(vstack(((),))));
+    let window = Window::new("app window", state.clone(), move || content.build())
+        .on_close_request({
+            let asked = Rc::clone(&asked);
+            move || {
+                asked.set(asked.get() + 1);
+                async { CloseReply::Cancel }
+            }
+        });
+    let handle = window.handle();
+    let mut rt = crate::HeadlessRuntime::new_for_tests_with_window(
+        env,
+        window,
+        320,
+        240,
+        MinimalTestTheme::default(),
+    );
+
+    rt.pump_offscreen();
+    handle.request_close();
+    rt.pump_offscreen();
+    rt.pump_offscreen();
+    assert_eq!(
+        asked.get(),
+        1,
+        "request_close must route through the handler"
+    );
+    assert_eq!(
+        state.snapshot(),
+        WindowState::Normal,
+        "the handler's Cancel must veto the request"
+    );
+
+    handle.close();
+    rt.pump_offscreen();
+    rt.pump_offscreen();
+    assert_eq!(asked.get(), 1, "close() must bypass the handler");
+    assert_eq!(
+        state.snapshot(),
+        WindowState::Closed,
+        "close() must close the window without asking"
     );
 }

@@ -118,6 +118,7 @@ impl Toolchain for SpirvTools {
 
 /// Installation plan for `spirv-opt` — the strategy `check` selected.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum SpirvToolsInstallation {
     /// `brew install spirv-tools`.
     Brew,
@@ -142,6 +143,7 @@ impl SpirvToolsInstallation {
 
 /// Errors that can occur while installing SPIRV-Tools.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallSpirvTools {
     /// Homebrew is required for the selected plan but unavailable.
     #[error("Homebrew not found. Please install Homebrew to proceed.")]

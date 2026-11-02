@@ -88,6 +88,37 @@ impl Panel {
         this.setContentView(Some(view));
     }
 
+    /// The panel's content container — the view a presentation's content
+    /// mounts into. Installs a plain `NSView` when the panel has none,
+    /// so the caller adds subviews rather than replacing the content.
+    #[must_use]
+    pub fn content_view(&self, mtm: MainThreadMarker) -> Retained<NSView> {
+        if let Some(content) = self.panel.contentView() {
+            return content;
+        }
+        let frame: objc2_core_foundation::CGRect = Rect::ZERO.into();
+        // SAFETY: `NSView`'s designated initializer is `initWithFrame:`;
+        // `mtm` proves the main-thread confinement AppKit requires.
+        let content: Retained<NSView> =
+            unsafe { objc2::msg_send![NSView::alloc(mtm), initWithFrame: frame] };
+        self.panel.setContentView(Some(&content));
+        content
+    }
+
+    /// Makes the panel transparent to mouse events — a dismissed
+    /// overlay's exit keeps painting while input passes through to the
+    /// window beneath (§5.6).
+    pub fn set_ignores_mouse_events(&self, ignores: bool) {
+        self.panel.setIgnoresMouseEvents(ignores);
+    }
+
+    /// Whether [`set_ignores_mouse_events`](Self::set_ignores_mouse_events)
+    /// ran — the ghost assertions read it.
+    #[must_use]
+    pub fn ignores_mouse_events(&self) -> bool {
+        self.panel.ignoresMouseEvents()
+    }
+
     /// Whether `window` is this panel — the comparison an outside-event
     /// check makes against the window an event was delivered to.
     #[must_use]

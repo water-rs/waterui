@@ -91,7 +91,7 @@ const fn platform_weight(weight: FontWeight) -> f64 {
 /// with a font-derived configuration on `UIKit`.
 #[cfg(target_os = "ios")]
 fn apply_symbol_font(mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &ResolvedFont) {
-    let font = cocoa_ui::font::system(mtm, f64::from(font.size), platform_weight(font.weight));
+    let font = cocoa_ui::font::system(mtm, f64::from(font.size()), platform_weight(font.weight()));
     assert!(
         view.set_symbol_font(&font),
         "SF Symbol rejected the themed font configuration"
@@ -103,7 +103,7 @@ fn apply_symbol_font(mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &R
 #[cfg(target_os = "macos")]
 fn apply_symbol_font(_mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &ResolvedFont) {
     assert!(
-        view.set_symbol_configuration(f64::from(font.size), platform_weight(font.weight)),
+        view.set_symbol_configuration(f64::from(font.size()), platform_weight(font.weight())),
         "SF Symbol rejected the themed font configuration"
     );
 }
@@ -153,7 +153,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let view = ImageView::new(mtm);
         view.set_scale_mode(cocoa_ui::ScaleMode::Fit);
 
-        let name = config.name.as_str();
+        let name = config.name().as_str();
         assert!(
             view.set_system_symbol(name),
             "Unknown SF Symbol name: {name}"

@@ -115,6 +115,10 @@ nami::impl_constant!(Files);
 
 /// What kind of value a drag carries, or a drop destination accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each transfer kind variant by variant; a new transfer kind must fail their build instead of falling into a wildcard arm"
+)]
 pub enum TransferKind {
     /// Plain text: [`Str`].
     Text,
@@ -171,6 +175,10 @@ impl fmt::Debug for DragPayload {
 
 /// How a [`DragPayload`] is written to the platform pasteboard.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each pasteboard representation variant by variant; a new pasteboard representation must fail their build instead of falling into a wildcard arm"
+)]
 pub enum PlatformRepresentation<'a> {
     /// Plain text.
     Text(&'a Str),

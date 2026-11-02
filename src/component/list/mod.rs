@@ -16,12 +16,11 @@ use nami::watcher::Context;
 use nami::{Binding, Computed, signal::IntoComputed};
 
 use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views, ViewsExt};
-use waterui_core::id::{Id as RawId, Mapping, SelfId};
+use waterui_core::id::{Id as RawId, Mapping};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, View,
     handler::{AnyViewBuilder, Handler, shared_action},
-    id::Identifiable,
     impl_extractor,
     layout::StretchAxis,
 };
@@ -83,10 +82,14 @@ pub type OnMove = Box<dyn Fn(&Environment, Move)>;
 /// set of rows — at most one mode per list.
 ///
 /// The generic `Id` is the row's identity type: `V::Id` while the binding is
-/// stored typed on [`ListBuilder`], `SelfId<RawId>` after `config()` erases
+/// stored typed on [`ListBuilder`], `RawId` after `config()` erases
 /// it through the same generator the collection's `get_id` reports, so the
 /// backends and the FFI read and write exactly the ids the rows answer to.
 #[derive(Clone, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each selection mode variant by variant; a new selection mode must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ListSelection<Id: 'static> {
     /// Rows are not selectable.
     #[default]
@@ -106,10 +109,10 @@ impl<Id: 'static> core::fmt::Debug for ListSelection<Id> {
 
 impl<Id: 'static + Ord + Clone> ListSelection<Id> {
     /// Re-keys the bindings through `ids`, the same generator the erased
-    /// contents feed: reads register each `Id` to the `SelfId<RawId>` the
+    /// contents feed: reads register each `Id` to the `RawId` the
     /// collection reports, and backend writes resolve it back — both
     /// directions the way `Mapping::binding` maps a `Picker` selection.
-    fn erased(self, ids: &Mapping<Id>) -> ListSelection<SelfId<RawId>> {
+    fn erased(self, ids: &Mapping<Id>) -> ListSelection<RawId> {
         match self {
             Self::None => ListSelection::None,
             Self::Single(binding) => {
@@ -117,10 +120,10 @@ impl<Id: 'static + Ord + Clone> ListSelection<Id> {
                 let from = ids.clone();
                 ListSelection::Single(Binding::mapping(
                     &binding,
-                    move |selected| selected.map(|id| SelfId::new(to.to_id(id))),
+                    move |selected| selected.map(|id| to.to_id(id)),
                     move |binding, erased| {
                         binding.set(erased.map(|id| {
-                            from.to_data(id.into_inner()).expect(
+                            from.to_data(id).expect(
                                 "list selection row id is not registered in the list's id mapping",
                             )
                         }));
@@ -132,18 +135,13 @@ impl<Id: 'static + Ord + Clone> ListSelection<Id> {
                 let from = ids.clone();
                 ListSelection::Multiple(Binding::mapping(
                     &binding,
-                    move |selected| {
-                        selected
-                            .iter()
-                            .map(|id| SelfId::new(to.to_id(id.clone())))
-                            .collect()
-                    },
-                    move |binding, erased: BTreeSet<SelfId<RawId>>| {
+                    move |selected| selected.iter().map(|id| to.to_id(id.clone())).collect(),
+                    move |binding, erased: BTreeSet<RawId>| {
                         binding.set(
                             erased
                                 .iter()
                                 .map(|id| {
-                                    from.to_data(id.into_inner()).expect(
+                                    from.to_data(*id).expect(
                                         "list selection row id is not registered in the list's id mapping",
                                     )
                                 })
@@ -157,26 +155,90 @@ impl<Id: 'static + Ord + Clone> ListSelection<Id> {
 }
 
 /// Configuration for a list component.
+#[non_exhaustive]
 pub struct ListConfig {
     /// Content items to be displayed in the list.
-    pub contents: SharedAnyViews<ListItem>,
+    contents: SharedAnyViews<ListItem>,
     /// The list's selection bindings, keyed by the same erased row ids
     /// `contents.get_id` returns. `ListSelection::None` when the list is not
     /// selectable.
-    pub selection: ListSelection<SelfId<RawId>>,
+    selection: ListSelection<RawId>,
     /// Read-only signal for edit mode state.
-    pub editing: Computed<bool>,
+    editing: Computed<bool>,
     /// Optional callback when any item is deleted.
-    pub on_delete: Option<OnDelete>,
+    on_delete: Option<OnDelete>,
     /// Optional callback when items are moved/reordered.
-    pub on_move: Option<OnMove>,
+    on_move: Option<OnMove>,
     /// Optional programmatic item-index scroll controller.
-    pub scroll_controller: Option<ScrollController<usize>>,
+    scroll_controller: Option<ScrollController<usize>>,
     /// Whether rows carry semantic section markers.
-    pub uses_sections: bool,
+    uses_sections: bool,
     /// The minimum height of a row, from [`ListMinRowHeight`] in the list's
     /// environment. `None` uses the theme's one-line row height.
-    pub min_row_height: Option<f32>,
+    min_row_height: Option<f32>,
+}
+
+impl ListConfig {
+    /// Content items to be displayed in the list.
+    #[must_use]
+    pub const fn contents(&self) -> &SharedAnyViews<ListItem> {
+        &self.contents
+    }
+
+    /// The list's selection bindings, keyed by the same erased row ids
+    /// `contents.get_id` returns. `ListSelection::None` when the list is not
+    /// selectable.
+    #[must_use]
+    pub const fn selection(&self) -> &ListSelection<RawId> {
+        &self.selection
+    }
+
+    /// Read-only signal for edit mode state.
+    #[must_use]
+    pub const fn editing(&self) -> &Computed<bool> {
+        &self.editing
+    }
+
+    /// Optional callback when any item is deleted.
+    #[must_use]
+    pub const fn on_delete(&self) -> Option<&OnDelete> {
+        self.on_delete.as_ref()
+    }
+
+    /// Takes the `on_delete` out of the value, leaving none behind.
+    pub const fn take_on_delete(&mut self) -> Option<OnDelete> {
+        self.on_delete.take()
+    }
+
+    /// Optional callback when items are moved/reordered.
+    #[must_use]
+    pub const fn on_move(&self) -> Option<&OnMove> {
+        self.on_move.as_ref()
+    }
+
+    /// Takes the `on_move` out of the value, leaving none behind.
+    pub const fn take_on_move(&mut self) -> Option<OnMove> {
+        self.on_move.take()
+    }
+
+    /// Optional programmatic item-index scroll controller.
+    #[must_use]
+    pub const fn scroll_controller(&self) -> Option<&ScrollController<usize>> {
+        self.scroll_controller.as_ref()
+    }
+
+    /// Whether rows carry semantic section markers.
+    #[must_use]
+    pub const fn uses_sections(&self) -> bool {
+        self.uses_sections
+    }
+
+    /// The minimum height of a row, from [`ListMinRowHeight`] in the list's
+    /// environment. `None` uses the theme's one-line row height.
+    #[must_use]
+    pub const fn min_row_height(&self) -> Option<f32> {
+        self.min_row_height
+    }
 }
 
 impl_debug!(ListConfig);
@@ -189,6 +251,17 @@ impl_debug!(ListConfig);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListMinRowHeight(pub f32);
 
+/// Marks the subtree below it as a navigation container's sidebar column.
+///
+/// The owner of the sidebar — a `NavigationSplitView` backend — installs it
+/// into the sidebar's environment; a list reads it to take the platform's
+/// sidebar presentation: the unemphasised selection chrome rather than the
+/// accent fill, and a selected row keeping its own colors rather than
+/// re-theming onto `SelectionForeground`.
+#[derive(Debug, Clone, Copy)]
+#[doc(hidden)]
+pub struct SidebarContent;
+
 impl NativeView for ListConfig {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
@@ -196,6 +269,13 @@ impl NativeView for ListConfig {
 }
 
 /// A component that displays items in a list format.
+///
+/// A row whose content is under [`.disabled(true)`](crate::ViewExt::disabled)
+/// is inert to selection the way a disabled `Button` cannot be pressed:
+/// pointer, keyboard and accessibility input all leave the selection
+/// unchanged, and the row's accessibility node reports disabled without
+/// offering the click action. The row's content still renders with its label
+/// and disabled state intact.
 #[derive(Debug)]
 pub struct List<V: Views<View = ListItem> = AnyViews<ListItem>> {
     contents: V,
@@ -284,6 +364,9 @@ where
 
     /// Single selection keyed by row identity. The framework and backends
     /// write it on pointer, keyboard and accessibility input.
+    ///
+    /// A row whose content is under `.disabled(true)` cannot be selected:
+    /// input routes around it and the binding stays unchanged.
     #[must_use]
     pub fn selection(self, selection: &Binding<Option<V::Id>>) -> ListBuilder<V> {
         ListBuilder {
@@ -298,6 +381,9 @@ where
     }
 
     /// Multiple selection keyed by row identity.
+    ///
+    /// A row whose content is under `.disabled(true)` cannot be selected:
+    /// input routes around it and the binding stays unchanged.
     #[must_use]
     pub fn multi_selection(self, selection: &Binding<BTreeSet<V::Id>>) -> ListBuilder<V> {
         ListBuilder {
@@ -315,7 +401,7 @@ where
 impl<C, F> List<ForEach<C, F, ListItem>>
 where
     C: Collection + Clone,
-    C::Item: Identifiable + Clone,
+    C::Item: Clone,
     F: 'static + Fn(C::Item) -> ListItem,
 {
     /// Creates a lazy list over an identity-keyed reactive collection.
@@ -406,7 +492,7 @@ impl core::fmt::Debug for BuiltViewsSnapshot {
 }
 
 impl ViewSnapshot for BuiltViewsSnapshot {
-    type Id = SelfId<usize>;
+    type Id = usize;
     type View = ListItem;
 
     fn range(&self) -> Range<usize> {
@@ -414,19 +500,19 @@ impl ViewSnapshot for BuiltViewsSnapshot {
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
-        (index < self.entries.len()).then(|| SelfId::new(index))
+        (index < self.entries.len()).then_some(index)
     }
 
     fn get_view(&self, index: usize) -> Option<Self::View> {
         let (builder, section) = self.entries.get(index)?;
         let mut item = builder.build();
-        item.section = section;
+        item.section.clone_from(section);
         Some(item)
     }
 }
 
 impl Views for BuiltViews {
-    type Id = SelfId<usize>;
+    type Id = usize;
     type Guard = ();
     type View = ListItem;
     type Snapshot = BuiltViewsSnapshot;
@@ -444,7 +530,7 @@ impl Views for BuiltViews {
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        _watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
     }
 }
@@ -603,7 +689,7 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
         let transform = self.transform.clone();
         self.contents.watch(range, move |ctx, change| {
@@ -633,11 +719,7 @@ fn resolve_item_section(mut item: ListItem, env: &Environment) -> ListItem {
 /// color over it. Anything the row resolves through the theme's foreground,
 /// muted-foreground, or accent slots follows the `selected` signal reactively;
 /// the row itself is not rebuilt.
-fn selection_themed(
-    mut item: ListItem,
-    selection: &ListSelection<SelfId<RawId>>,
-    id: SelfId<RawId>,
-) -> ListItem {
+fn selection_themed(mut item: ListItem, selection: &ListSelection<RawId>, id: RawId) -> ListItem {
     use crate::color::WorkingColor;
     use crate::theme::{color, install_color_signal};
     use nami::SignalExt;
@@ -659,6 +741,12 @@ fn selection_themed(
     };
     let content = core::mem::take(&mut item.content);
     item.content = AnyView::new(use_env(move |mut env: Environment| {
+        // A sidebar's selection chrome is the unemphasised pill, not the
+        // accent fill `SelectionForeground` is written for — a selected
+        // sidebar row keeps its own colors (water-rs/waterui#1495).
+        if env.get::<SidebarContent>().is_some() {
+            return AnyView::new(content);
+        }
         let on_selection = color::SelectionForeground.resolve(&env).computed();
         let flip = |normal: Computed<WorkingColor>| {
             selected
@@ -674,7 +762,7 @@ fn selection_themed(
         install_color_signal::<color::Foreground>(&mut env, foreground);
         install_color_signal::<color::MutedForeground>(&mut env, muted);
         install_color_signal::<color::Accent>(&mut env, accent);
-        Metadata::new(content, env)
+        AnyView::new(Metadata::new(content, env))
     }));
     item
 }
@@ -842,11 +930,42 @@ where
 /// typography belongs to the platform, so a header takes the list's own
 /// section style regardless of any styling applied to the text.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ListSection {
     /// Title shown above the section.
-    pub label: Option<Text>,
+    label: Option<Text>,
     /// Footer text shown below the section.
-    pub footer: Option<Text>,
+    footer: Option<Text>,
+}
+
+impl ListSection {
+    /// Title shown above the section.
+    #[must_use]
+    pub const fn label(&self) -> Option<&Text> {
+        self.label.as_ref()
+    }
+
+    /// Footer text shown below the section.
+    #[must_use]
+    pub const fn get_footer(&self) -> Option<&Text> {
+        self.footer.as_ref()
+    }
+
+    /// Sets the title shown above the section.
+    pub fn set_label(&mut self, label: Option<Text>) {
+        self.label = label;
+    }
+
+    /// Sets the footer text shown below the section.
+    pub fn set_footer(&mut self, footer: Option<Text>) {
+        self.footer = footer;
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Option<Text>, Option<Text>) {
+        (self.label, self.footer)
+    }
 }
 
 impl ListSection {
@@ -892,18 +1011,87 @@ impl ListSection {
 }
 
 /// An item in a list that can be configured with various behaviors.
+///
+/// There is no per-item selectable flag: selection follows the content's
+/// own disabled state. Wrap the row's content in
+/// [`.disabled(true)`](crate::ViewExt::disabled) to make the row inert to
+/// selection — the way a disabled `Button` cannot be pressed — while its
+/// label and disabled accessibility state still report.
+#[non_exhaustive]
 pub struct ListItem {
     /// The view content to display for this item.
-    pub content: AnyView,
+    content: AnyView,
     /// Read-only signal indicating whether this item can be deleted.
-    pub deletable: Computed<bool>,
+    deletable: Computed<bool>,
     /// When `Some`, this item starts a new logical section. The backend uses
     /// this marker to group subsequent items into native chrome (iOS inset
     /// grouped sections, macOS group rows, Material section headers).
-    pub section: Option<ListSection>,
+    section: Option<ListSection>,
     /// The insets between the row's edges and its content. `None` uses the
     /// theme's row insets.
-    pub insets: Option<EdgeInsets>,
+    insets: Option<EdgeInsets>,
+}
+
+impl ListItem {
+    /// The view content to display for this item.
+    #[must_use]
+    pub const fn content(&self) -> &AnyView {
+        &self.content
+    }
+
+    /// Takes the `content` out of the value.
+    pub fn into_content(self) -> AnyView {
+        self.content
+    }
+
+    /// Takes the `content` out of the item, leaving an empty view behind.
+    pub fn take_content(&mut self) -> AnyView {
+        core::mem::take(&mut self.content)
+    }
+
+    /// Sets the `content`.
+    pub fn set_content(&mut self, content: AnyView) {
+        self.content = content;
+    }
+
+    /// Read-only signal indicating whether this item can be deleted.
+    #[must_use]
+    pub const fn get_deletable(&self) -> &Computed<bool> {
+        &self.deletable
+    }
+
+    /// When `Some`, this item starts a new logical section. The backend uses
+    /// this marker to group subsequent items into native chrome (iOS inset
+    /// grouped sections, macOS group rows, Material section headers).
+    #[must_use]
+    pub const fn get_section(&self) -> Option<&ListSection> {
+        self.section.as_ref()
+    }
+
+    /// Takes the `section` out of the value.
+    #[must_use]
+    pub fn into_section(self) -> Option<ListSection> {
+        self.section
+    }
+
+    /// The insets between the row's edges and its content. `None` uses the
+    /// theme's row insets.
+    #[must_use]
+    pub const fn get_insets(&self) -> Option<&EdgeInsets> {
+        self.insets.as_ref()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(
+        self,
+    ) -> (
+        AnyView,
+        Computed<bool>,
+        Option<ListSection>,
+        Option<EdgeInsets>,
+    ) {
+        (self.content, self.deletable, self.section, self.insets)
+    }
 }
 
 impl NativeView for ListItem {}
@@ -1021,7 +1209,7 @@ mod tests {
     /// selection transforms `render_list_config` wraps every item in.
     #[test]
     fn row_insets_survive_the_section_and_selection_transform() {
-        let selection = nami::Binding::container(Option::<SelfId<usize>>::None);
+        let selection = nami::Binding::container(Option::<usize>::None);
         let config = render_config(
             ConfigurableView::config(
                 List::content((

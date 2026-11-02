@@ -80,8 +80,8 @@ fn rendered(opacity: f32) -> HeadlessRuntime {
 /// and the member layer id its backdrop membership hangs on.
 fn material_frame(runtime: &HeadlessRuntime) -> (Vec<f32>, LayerId) {
     struct Frames(Vec<(Vec<f32>, LayerId)>);
-    impl LayerVisitor for Frames {
-        fn node(&mut self, layers: &NodeLayers, _world: kurbo::Affine, alphas: &[f32]) {
+    impl<E: crate::text::TextEngine> LayerVisitor<E> for Frames {
+        fn node(&mut self, layers: &NodeLayers<E>, _world: kurbo::Affine, alphas: &[f32]) {
             if let Some(member) = layers.material_member() {
                 self.0.push((alphas.to_vec(), member));
             }
@@ -103,8 +103,8 @@ fn ancestry_alphas(runtime: &HeadlessRuntime) -> Vec<f32> {
 /// material holds none; its last lowered request still names it).
 fn material_frame_alphas(runtime: &HeadlessRuntime) -> Vec<Vec<f32>> {
     struct Alphas(Vec<Vec<f32>>);
-    impl LayerVisitor for Alphas {
-        fn node(&mut self, layers: &NodeLayers, _world: kurbo::Affine, alphas: &[f32]) {
+    impl<E: crate::text::TextEngine> LayerVisitor<E> for Alphas {
+        fn node(&mut self, layers: &NodeLayers<E>, _world: kurbo::Affine, alphas: &[f32]) {
             if layers.material_request().is_some() {
                 self.0.push(alphas.to_vec());
             }
@@ -126,7 +126,7 @@ fn installed(
         .cherenkov_window
         .as_ref()
         .expect("the frame installed into a window");
-    let memory = window.state.engine.memory();
+    let memory = window.host.engine.memory();
     (
         mounts(runtime).backdrop_display_scale(member),
         memory.backdrop_captures.0,
@@ -311,14 +311,14 @@ fn a_behind_window_material_window_clears_transparent_to_its_tint_under_the_cont
 
     let snapshot = runtime
         .pump_snapshot()
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame must carry pixels");
     // Offscreen targets store straight alpha: every pixel the box leaves
     // uncovered reads as the tint's grey at the tint's coverage, and the box
     // draws opaquely over it.
     let level = |value: f32| (value * 255.0).round();
     let (mut tinted, mut content) = (0_u32, 0_u32);
-    for pixel in snapshot.rgba8.as_chunks::<4>().0 {
+    for pixel in snapshot.rgba8().as_chunks::<4>().0 {
         let [r, g, b, a] = *pixel;
         if a == 255 {
             assert!(

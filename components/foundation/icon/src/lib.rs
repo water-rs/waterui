@@ -89,9 +89,18 @@ use waterui_core::{impl_constant, raw_view};
 /// let house = SystemIcon::new("house");
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SystemIcon {
     /// The name of the system icon.
-    pub name: Str,
+    name: Str,
+}
+
+impl SystemIcon {
+    /// The name of the system icon.
+    #[must_use]
+    pub const fn name(&self) -> &Str {
+        &self.name
+    }
 }
 
 impl SystemIcon {

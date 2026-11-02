@@ -17,12 +17,48 @@ pub const LOCAL_DEVICE_ID: &str = "local";
 #[derive(Debug, Clone, Default)]
 pub struct GestureOptions {
     /// Whether to capture before/after screenshots and compute diff.
-    pub diff: bool,
+    diff: bool,
     /// Path to save the diff image (only used if diff is true).
-    pub diff_output: Option<std::path::PathBuf>,
+    diff_output: Option<std::path::PathBuf>,
     /// Delay in milliseconds after gesture before capturing "after" screenshot.
     /// Default is 500ms.
-    pub delay_ms: Option<u32>,
+    delay_ms: Option<u32>,
+}
+
+impl GestureOptions {
+    /// Options writing a before/after diff when `diff`, to `diff_output`
+    /// when given, after waiting `delay_ms`.
+    #[must_use]
+    pub const fn new(
+        diff: bool,
+        diff_output: Option<std::path::PathBuf>,
+        delay_ms: Option<u32>,
+    ) -> Self {
+        Self {
+            diff,
+            diff_output,
+            delay_ms,
+        }
+    }
+
+    /// Whether to capture before/after screenshots and compute diff.
+    #[must_use]
+    pub const fn diff(&self) -> bool {
+        self.diff
+    }
+
+    /// Path to save the diff image, if any.
+    #[must_use]
+    pub fn get_diff_output(&self) -> Option<&std::path::Path> {
+        self.diff_output.as_deref()
+    }
+
+    /// Delay in milliseconds after the gesture before capturing the "after"
+    /// screenshot; `None` means the 500ms default.
+    #[must_use]
+    pub const fn delay_ms(&self) -> Option<u32> {
+        self.delay_ms
+    }
 }
 
 impl GestureOptions {
@@ -54,7 +90,22 @@ impl GestureOptions {
 #[derive(Debug)]
 pub struct GestureResult {
     /// The diff result if diff was enabled.
-    pub diff: Option<DiffResult>,
+    diff: Option<DiffResult>,
+}
+
+impl GestureResult {
+    /// Result of a gesture; `diff` carries the image comparison when diffing
+    /// was enabled.
+    #[must_use]
+    pub const fn new(diff: Option<DiffResult>) -> Self {
+        Self { diff }
+    }
+
+    /// The diff result, if diffing was enabled.
+    #[must_use]
+    pub const fn diff(&self) -> Option<&DiffResult> {
+        self.diff.as_ref()
+    }
 }
 
 /// Capture screenshot bytes for a device.

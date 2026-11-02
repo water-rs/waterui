@@ -20,6 +20,7 @@ const fn stage(
     SpatialStage {
         name,
         source,
+        source_f16: None,
         params,
         space: OperatingSpace::Working,
         shape: None,

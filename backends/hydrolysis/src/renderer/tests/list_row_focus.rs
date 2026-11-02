@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
+use crate::theme::{ButtonMetrics, InteractionStyle};
 use accesskit::{NodeId, Role, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
@@ -22,7 +23,6 @@ use nami::collection::SignalCollection;
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
 use waterui::{AnyView, Color, Environment, ViewExt as _};
-use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_layout::stack::vstack;

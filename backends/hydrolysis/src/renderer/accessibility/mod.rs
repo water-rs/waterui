@@ -6,10 +6,11 @@ mod accessibility_impl;
 #[cfg(feature = "accessibility")]
 mod remap;
 
-/// Why [`SemanticCore::accessibility_activation_point`] could not resolve a
+/// Why `SemanticCore::accessibility_activation_point` could not resolve a
 /// point a pointer can reach (water-rs/hydrolysis#27).
 #[cfg(feature = "accessibility")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AccessibilityActivationPointError {
     /// No node with this id exists in the emitted tree.
     NoNode,

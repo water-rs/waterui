@@ -12,7 +12,7 @@ use crate::animation::AnimationKey;
 use crate::renderer::signals::SubscribedSnapshot;
 use crate::renderer::{Retain, SemanticCore};
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Opens a structural rebuild of the animation slots: from here, a slot
     /// survives the matching [`Self::retire_unbound_animation_slots`] only if
     /// it is bound again.
@@ -36,6 +36,7 @@ impl SemanticCore {
         signal: &S,
         owner: &Rc<T>,
         slot: usize,
+        refresh: cherenkov_record::RefreshRange,
     ) -> f32
     where
         S: Signal<Output = f32> + Clone + 'static,
@@ -45,7 +46,7 @@ impl SemanticCore {
         let (subscription, observed_value) = SubscribedSnapshot::new(signal);
         let handle = self
             .animation_controller
-            .bind_scalar(key, observed_value, now);
+            .bind_scalar(key, observed_value, now, refresh);
         let watcher_handle = handle.clone();
         let signals = self.signals.clone();
         let marked = self.mark_owner_for_animation(key, Dirty::PAINT);
@@ -73,25 +74,25 @@ impl SemanticCore {
         animation: waterui_shape::MorphAnimation,
         owner: &Rc<T>,
     ) -> f32 {
-        if animation.duration.is_zero() {
+        if animation.duration().is_zero() {
             return 1.0;
         }
         let key = AnimationKey::renderer_local_repeating(self.animation_owner_pins.pin(owner));
         let elapsed = self.animation_controller.bind_timeline_phase(
             key,
-            animation.duration,
-            animation.repeat,
+            animation.duration(),
+            animation.repeat(),
             self.frame_instant,
         );
-        let raw = elapsed.as_secs_f32() / animation.duration.as_secs_f32();
-        let cycle = if animation.repeat {
+        let raw = elapsed.as_secs_f32() / animation.duration().as_secs_f32();
+        let cycle = if animation.repeat() {
             let base = raw.fract();
             assert!(
                 raw.is_finite() && raw >= 0.0,
                 "morph animation cycle index must be finite and non-negative"
             );
             let index = crate::num_cast::f32_as_u64(raw.floor());
-            if animation.autoreverse && index % 2 == 1 {
+            if animation.autoreverse() && index % 2 == 1 {
                 1.0 - base
             } else {
                 base
@@ -99,6 +100,6 @@ impl SemanticCore {
         } else {
             raw.clamp(0.0, 1.0)
         };
-        animation.easing.ease(cycle).clamp(0.0, 1.0)
+        animation.easing().ease(cycle).clamp(0.0, 1.0)
     }
 }

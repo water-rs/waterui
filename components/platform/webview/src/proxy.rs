@@ -12,15 +12,21 @@
 //! `State<T>` for [`Button::action`].
 
 use std::any::type_name;
+#[cfg(not(target_arch = "wasm32"))]
 use std::pin::Pin;
 
+#[cfg(not(target_arch = "wasm32"))]
 use suiteki::Str;
 use waterui_core::extract::{ExtractionState, Extractor};
+#[cfg(not(target_arch = "wasm32"))]
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, Error, impl_debug};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::Cookie;
-use crate::handler::{AnyWebViewHandle, ScriptInjectionTime};
+use crate::handler::AnyWebViewHandle;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::handler::ScriptInjectionTime;
 
 /// Imperative command surface for a [`WebView`](crate::WebView), extracted
 /// from the rendering environment via the same `Extractor` machinery used
@@ -67,29 +73,36 @@ impl WebViewProxy {
         self.handle.go_to(&url.into_url());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Refreshes the current page.
     pub fn refresh(&self) {
         self.handle.refresh();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Stops the current loading operation.
     pub fn stop(&self) {
         self.handle.stop();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Navigates back in the web view's history.
     pub fn go_back(&self) {
         self.handle.go_back();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Navigates forward in the web view's history.
     pub fn go_forward(&self) {
         self.handle.go_forward();
     }
 
-    /// Runs the given JavaScript code in the context of the web view.
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Evaluates the JavaScript expression `script` in the web view and answers
+    /// the JSON encoding of its value.
     ///
-    /// The returned future is intentionally thread-local because native
+    /// See [`WebViewHandle::run_javascript`](crate::WebViewHandle::run_javascript)
+    /// for the contract every engine meets. The returned future is intentionally thread-local because native
     /// web views are main-thread-affine.
     #[must_use = "the script only runs once the returned future is awaited"]
     pub fn run_javascript<'a>(
@@ -99,32 +112,47 @@ impl WebViewProxy {
         Box::pin(self.handle.run_javascript(script))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Sets a cookie in the scoped web view.
     pub fn set_cookie(&self, cookie: Cookie<'static>) {
         self.handle.set_cookie(cookie);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Retrieves current cookies without blocking the UI thread.
+    ///
+    /// # Errors
+    ///
+    /// As documented on [`WebViewHandle::get_cookies`](crate::WebViewHandle::get_cookies).
     #[expect(
         clippy::future_not_send,
         reason = "native web views and cookie stores are main-thread-affine"
     )]
-    pub fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> + '_ {
+    pub fn get_cookies(&self) -> impl Future<Output = Result<Vec<Cookie<'static>>, Error>> + '_ {
         self.handle.get_cookies()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Sets the user agent string for the web view.
     pub fn set_user_agent(&self, user_agent: &str) {
         self.handle.set_user_agent(user_agent);
     }
 
-    /// Injects a script that will run on every page load.
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Injects a script that will run on every later page load.
     ///
     /// `key` names the script; injecting again under the same key replaces it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `key` names a script the view was opened with
+    /// ([`WebViewOpen::inject`](crate::WebViewOpen::inject)): those are fixed
+    /// for its life, on every backend alike.
     pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         self.handle.inject_script(key, script, time);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Enables or disables redirect following.
     pub fn set_redirects_enabled(&self, enabled: impl IntoComputed<bool>) {
         self.handle.set_redirects_enabled(enabled);

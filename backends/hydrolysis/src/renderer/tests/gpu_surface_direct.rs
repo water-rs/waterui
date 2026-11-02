@@ -26,8 +26,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use waterui_testing::TestArtifacts;
-
 use waterui::Binding;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
@@ -49,12 +47,12 @@ const WINDOW_HEIGHT: u32 = 120;
 /// window's light theme background.
 const FILL: wgpu::Color = wgpu::Color::BLACK;
 
-/// Where this module's visual evidence is written: `waterui-testing`'s
-/// canonical `<root>/hydrolysis/direct_to_target/<stage>.png` layout, with the
+/// Where this module's visual evidence is written: the canonical
+/// `<root>/hydrolysis/direct_to_target/<stage>.png` layout, with the
 /// root from `WATERUI_TEST_ARTIFACTS_DIR` when CI sets it and the platform temp
 /// directory otherwise.
 fn image_dir() -> std::path::PathBuf {
-    TestArtifacts::new("hydrolysis").case_dir("direct_to_target")
+    crate::testing::artifact_case_dir("hydrolysis", "direct_to_target")
 }
 
 /// What a probe recorded about its own lifetime: how often it was set up, how
@@ -65,6 +63,7 @@ struct ProbeLog {
     setups: Arc<AtomicU32>,
     renders: Arc<AtomicU32>,
     formats: Arc<Mutex<Vec<wgpu::TextureFormat>>>,
+    sizes: Arc<Mutex<Vec<(u32, u32)>>>,
 }
 
 impl ProbeLog {
@@ -81,6 +80,11 @@ impl ProbeLog {
         let mut formats = self.formats.lock().expect("formats log").clone();
         formats.dedup();
         formats
+    }
+
+    /// The last attachment size the view was handed, in device pixels.
+    fn last_size(&self) -> Option<(u32, u32)> {
+        self.sizes.lock().expect("sizes log").last().copied()
     }
 }
 
@@ -103,6 +107,11 @@ impl GpuContent for FillProbe {
             .lock()
             .expect("formats log")
             .push(frame.format);
+        self.log
+            .sizes
+            .lock()
+            .expect("sizes log")
+            .push((frame.width, frame.height));
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -207,9 +216,9 @@ impl Frames {
         let at = self.at();
         let result = runtime.pump_at(true, at);
         RenderedFrame {
-            counters: result.profile.counters,
+            counters: result.profile().counters(),
             snapshot: result
-                .snapshot
+                .into_snapshot()
                 .expect("a capturing pump must produce a snapshot"),
         }
     }
@@ -251,8 +260,12 @@ fn write_png(name: &str, snapshot: &crate::runner::HeadlessSnapshot) -> std::pat
     let directory = image_dir();
     std::fs::create_dir_all(&directory).expect("the image directory must be creatable");
     let path = directory.join(name);
-    let image = image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8.clone())
-        .expect("snapshot dimensions must match the rgba buffer");
+    let image = image::RgbaImage::from_raw(
+        snapshot.width(),
+        snapshot.height(),
+        snapshot.rgba8().to_vec(),
+    )
+    .expect("snapshot dimensions must match the rgba buffer");
     image.save(&path).expect("snapshot png must be writable");
     path
 }
@@ -268,17 +281,20 @@ fn a_full_window_gpu_content_view_mounts_as_one_engine_layer_at_every_scale() {
 
         let counters = frames.render(&mut runtime).counters;
         assert_eq!(
-            counters.gpu_content_layers, 1,
+            counters.gpu_content_layers(),
+            1,
             "a surface covering the whole window mounts as one engine content \
              layer at scale {scale}"
         );
         assert_eq!(
-            counters.scene_segment_layers, 0,
+            counters.scene_segment_layers(),
+            0,
             "and a window holding only that layer draws no scene segments at \
              scale {scale}"
         );
         assert_eq!(
-            counters.scene_layers, 1,
+            counters.scene_layers(),
+            1,
             "the GPU content layer is the window's only composited layer at \
              scale {scale}"
         );
@@ -296,7 +312,8 @@ fn a_non_opaque_full_window_surface_mounts_the_same_way_at_every_scale() {
 
         let counters = frames.render(&mut runtime).counters;
         assert_eq!(
-            counters.gpu_content_layers, 1,
+            counters.gpu_content_layers(),
+            1,
             "`is_opaque` being false mounts the same single content layer — the \
              declaration is advisory, not a different presentation path (scale {scale})"
         );
@@ -312,7 +329,7 @@ fn resizing_a_gpu_content_view_never_re_runs_setup() {
     settled(&mut runtime, &mut frames, &log);
 
     assert_eq!(
-        frames.render(&mut runtime).counters.gpu_content_layers,
+        frames.render(&mut runtime).counters.gpu_content_layers(),
         1,
         "the surface starts out covering the window"
     );
@@ -324,7 +341,7 @@ fn resizing_a_gpu_content_view_never_re_runs_setup() {
     height.set(crate::num_cast::u32_as_f32(WINDOW_HEIGHT) - 20.0);
     frames.pump(&mut runtime, 2);
     let counters = frames.render(&mut runtime).counters;
-    assert_eq!(counters.gpu_content_layers, 1);
+    assert_eq!(counters.gpu_content_layers(), 1);
     assert_eq!(
         log.setups(),
         1,
@@ -335,7 +352,7 @@ fn resizing_a_gpu_content_view_never_re_runs_setup() {
     height.set(crate::num_cast::u32_as_f32(WINDOW_HEIGHT));
     frames.pump(&mut runtime, 2);
     assert_eq!(
-        frames.render(&mut runtime).counters.gpu_content_layers,
+        frames.render(&mut runtime).counters.gpu_content_layers(),
         1,
         "and the layer persists once it covers the window again"
     );
@@ -365,7 +382,7 @@ fn opaque_and_non_opaque_content_present_identically() {
     let mut direct_frames = Frames::new();
     settled(&mut direct_runtime, &mut direct_frames, &direct_log);
     let direct = direct_frames.render(&mut direct_runtime);
-    assert_eq!(direct.counters.gpu_content_layers, 1);
+    assert_eq!(direct.counters.gpu_content_layers(), 1);
     let direct = direct.snapshot;
 
     let composed_log = ProbeLog::default();
@@ -380,7 +397,7 @@ fn opaque_and_non_opaque_content_present_identically() {
     let mut composed_frames = Frames::new();
     settled(&mut composed_runtime, &mut composed_frames, &composed_log);
     let composed = composed_frames.render(&mut composed_runtime);
-    assert_eq!(composed.counters.gpu_content_layers, 1);
+    assert_eq!(composed.counters.gpu_content_layers(), 1);
     let composed = composed.snapshot;
 
     let direct_path = write_png("direct_scale2.png", &direct);
@@ -392,16 +409,17 @@ fn opaque_and_non_opaque_content_present_identically() {
     );
 
     assert_eq!(
-        (direct.width, direct.height),
+        (direct.width(), direct.height()),
         (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2),
         "a 2x window captures at twice its logical size"
     );
     assert_eq!(
-        (composed.width, composed.height),
-        (direct.width, direct.height)
+        (composed.width(), composed.height()),
+        (direct.width(), direct.height())
     );
     assert_eq!(
-        direct.rgba8, composed.rgba8,
+        direct.rgba8(),
+        composed.rgba8(),
         "declaring `is_opaque` does not change what identical content presents"
     );
 
@@ -409,7 +427,7 @@ fn opaque_and_non_opaque_content_present_identically() {
     // thing would pass that. What the surface drew has to actually be there,
     // over the whole window, with none of the window's base colour left
     // anywhere.
-    let (pixels, _) = direct.rgba8.as_chunks::<4>();
+    let (pixels, _) = direct.rgba8().as_chunks::<4>();
     let expected = *pixels.first().expect("the capture must have pixels");
     assert!(
         near_fill(expected),
@@ -419,6 +437,31 @@ fn opaque_and_non_opaque_content_present_identically() {
         pixels.iter().all(|pixel| *pixel == expected),
         "every pixel of the window belongs to the surface, at both ends of the comparison"
     );
+}
+
+/// water-rs/waterui#2935: the install's pixel size is the node's bounds under
+/// its device transform, and the root transform already carries the display
+/// scale — so a scale-2 window hands the surface `bounds * 2` device pixels,
+/// not `bounds * 4`.
+#[test]
+fn a_gpu_content_view_renders_at_one_display_scale() {
+    for (scale, expected) in [
+        (1.0_f64, (WINDOW_WIDTH, WINDOW_HEIGHT)),
+        (2.0, (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2)),
+    ] {
+        let log = ProbeLog::default();
+        let (width, height) = full_window_bindings();
+        let mut runtime = runtime_with(&log, true, &width, &height, scale);
+        let mut frames = Frames::new();
+        settled(&mut runtime, &mut frames, &log);
+
+        assert_eq!(
+            log.last_size(),
+            Some(expected),
+            "a {scale}x window must give the surface {expected:?} device pixels, \
+             not the bounds times the scale twice"
+        );
+    }
 }
 
 /// Whether a captured `Rgba8Unorm` texel is [`FILL`], allowing the slack the

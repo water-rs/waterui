@@ -39,6 +39,10 @@ pub const MAX_CONVERSION_DEPTH: usize = 128;
 /// variants describe the *representation*, not distinct values: a `bigint`
 /// arriving from JavaScript becomes `Signed` whenever it fits an `i64`.
 #[derive(Debug, Clone, Copy, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a bigint crosses as a signed or an unsigned 64-bit integer"
+)]
 pub enum BigInt {
     /// A value in `i64` range.
     Signed(i64),
@@ -101,6 +105,10 @@ impl From<u64> for BigInt {
 ///
 /// [`JsError`]: crate::JsError
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every JavaScript engine converts each value kind variant by variant; a new kind must fail their build instead of falling into a wildcard arm"
+)]
 pub enum JsValue {
     /// JavaScript `undefined`.
     Undefined,

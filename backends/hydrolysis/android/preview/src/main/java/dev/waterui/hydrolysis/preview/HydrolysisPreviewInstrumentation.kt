@@ -8,22 +8,27 @@ import android.util.Log
 import java.io.File
 
 /**
- * The `water preview --platform android` entry point on-device.
+ * The `water preview --platform android` entry point on-device — the
+ * preview host process itself.
  *
- * The CLI pushes the preview-mode launcher cdylib, the staged assets and a
- * JSON run config into one fixed directory under this host's private files,
- * then runs this instrumentation through `am instrument -w -r`. `-w` makes
- * `am` return only when the run finishes, so its exit is the completion
- * signal — there is no polling, and the render's PNG lands where the run
- * config says.
+ * The CLI pushes the preview-mode launcher cdylib and the staged assets
+ * into one fixed directory under this host's private files, then starts
+ * this instrumentation through `am instrument` (no `-w`: the process is
+ * meant to stay). Starting it force-stops the package, so a start is also
+ * the restart the CLI issues when the payload's stamp changes — a loaded
+ * library cannot be swapped, and an unchanged payload reuses the live
+ * process instead.
  *
- * Every path extra arrives relative to `filesDir` and is resolved here, so
- * the wire never carries an absolute private path the caller could be wrong
+ * On start the instrumentation loads the staged libraries, then serves
+ * render requests on a [LocalServerSocket][android.net.LocalServerSocket]
+ * the CLI reaches through `adb forward`; each request re-points the run
+ * config and assets-root environment slots and runs the registered preview
+ * once — the same render a one-shot run produced. The process stays alive
+ * between runs until the package is force-stopped or replaced.
+ *
+ * Every path arrives relative to `filesDir` and is resolved here, so the
+ * wire never carries an absolute private path the caller could be wrong
  * about.
- *
- * Any failure — a missing argument, a library that refuses to load, a panic
- * in the preview — finishes [Activity.RESULT_CANCELED] with the error in the
- * result bundle rather than leaving the `-w` wait hanging.
  */
 class HydrolysisPreviewInstrumentation : Instrumentation() {
     private lateinit var arguments: Bundle
@@ -38,28 +43,24 @@ class HydrolysisPreviewInstrumentation : Instrumentation() {
         super.onStart()
         try {
             val filesDir = targetContext.filesDir
-            // The native preview reads its run config, the staged assets
-            // root, and its scratch directory from the process environment —
-            // set all three before any library loads, so nothing reads an
-            // unset slot.
-            Os.setenv(
-                "WATERUI_PREVIEW_RUN_CONFIG",
-                inFiles(filesDir, arguments.requireString("runConfig")),
-                true,
-            )
-            Os.setenv(
-                "WATERUI_ASSETS_ROOT",
-                inFiles(filesDir, arguments.requireString("assetsRoot")),
-                true,
-            )
             Os.setenv("WATER_CACHE_DIR", targetContext.cacheDir.absolutePath, true)
-            PreviewBridge.run(
-                arguments.requireString("libraries").split(':').map { inFiles(filesDir, it) },
-                targetContext.applicationContext,
+            PreviewBridge.initialize(
+                arguments.requireString("libraries").split(':').map { inFiles(filesDir, it) }
             )
-            finish(Activity.RESULT_OK, Bundle())
+            PreviewHostServer(
+                context = targetContext.applicationContext,
+                filesDir = filesDir,
+                stamp = arguments.requireString("payloadStamp"),
+            ).serve()
         } catch (error: Throwable) {
-            Log.e(TAG, "preview run failed", error)
+            // The host serves until it dies, so reaching this catch means
+            // it never came up: the CLI waiting for the start reads this
+            // line and fails with it.
+            Log.e(
+                PreviewHostServer.TAG,
+                "${PreviewHostServer.START_FAILED}: stamp ${arguments.getString("payloadStamp")}",
+                error,
+            )
             finish(
                 Activity.RESULT_CANCELED,
                 Bundle().apply { putString("error", error.stackTraceToString()) },
@@ -74,8 +75,4 @@ class HydrolysisPreviewInstrumentation : Instrumentation() {
             ?: throw IllegalArgumentException(
                 "hydrolysis preview: missing required instrumentation argument `$name`",
             )
-
-    private companion object {
-        const val TAG = "HydrolysisPreview"
-    }
 }

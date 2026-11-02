@@ -11,40 +11,11 @@ use alloc::fmt::Debug;
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use core::any::type_name;
 use core::fmt;
-use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::{Bound, Range, RangeBounds};
-use nami::collection::{Collection, CollectionChange};
+use nami::collection::{Collection, CollectionChange, clamp_range, resolve_range};
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use nami::{Computed, Signal};
-
-use crate::id::{Identifiable, SelfId};
-
-/// Resolves `bounds` against a captured length, clamping to valid indices.
-///
-/// The result is in collection-wide index space: bounds that extend past the
-/// captured data are clamped to `len`, never expanded. Use this to apply a
-/// watcher-requested range to the immutable data a single notification
-/// carried — never to live data, which may already have moved on.
-#[must_use]
-pub fn resolve_range(bounds: (Bound<usize>, Bound<usize>), len: usize) -> Range<usize> {
-    let mut start = match bounds.0 {
-        Bound::Included(n) => n,
-        Bound::Excluded(n) => n.saturating_add(1),
-        Bound::Unbounded => 0,
-    };
-    let mut end = match bounds.1 {
-        Bound::Included(n) => n.saturating_add(1),
-        Bound::Excluded(n) => n,
-        Bound::Unbounded => len,
-    };
-    start = start.min(len);
-    end = end.min(len);
-    if start > end {
-        start = end;
-    }
-    start..end
-}
 
 /// An immutable snapshot of a view collection's state at one instant.
 ///
@@ -59,7 +30,7 @@ pub fn resolve_range(bounds: (Bound<usize>, Bound<usize>), len: usize) -> Range<
 pub trait ViewSnapshot {
     /// The type of unique identifier for items in the snapshot, matching the
     /// `Id` the source `Views` collection reports.
-    type Id: 'static + Hash + Ord + Clone;
+    type Id: 'static + Ord + Clone;
     /// The view type the snapshot materializes for each element.
     type View: View;
     /// The captured index window, in collection-wide index space.
@@ -88,18 +59,18 @@ pub trait ViewSnapshot {
 ///
 /// Element access goes through snapshots: [`Views::snapshot`] captures the
 /// complete current state, and [`Views::watch`] emissions hand the watcher an
-/// owning snapshot built from the exact data the notification carried, so a
-/// retained snapshot stays coherent with the [`CollectionChange`] it arrived
-/// with even when another observer mutates the source first.
+/// owning snapshot of the collection as it stands when the notification is
+/// delivered. A snapshot's rows and ids always come from one state of the
+/// source, so a retained snapshot never mixes the data of two mutations.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a WaterUI view collection",
     label = "expected a collection of views",
-    note = "`Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `Lazy::for_each` / `List::for_each` — whose items must implement `Identifiable`."
+    note = "`Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `Lazy::for_each` / `List::for_each` — over any `nami` collection: a `List` of `Identifiable` items, or an array or static slice, whose rows are identified by index."
 )]
 pub trait Views {
-    /// The type of unique identifier for items in the collection.
-    /// Must implement `Hash` and `Ord` to ensure uniqueness and ordering.
-    type Id: 'static + Hash + Ord + Clone;
+    /// The type of unique identifier for items in the collection; `Ord` is
+    /// all identity alignment needs.
+    type Id: 'static + Ord + Clone;
     /// The type of guard returned when registering a watcher.
     type Guard: WatcherGuard;
     /// The view type that this collection produces for each element.
@@ -124,16 +95,20 @@ pub trait Views {
     /// Registers a watcher for changes in the specified range of the collection.
     ///
     /// Each emission hands the watcher an owning snapshot covering the
-    /// requested range resolved against that notification's captured data,
-    /// plus a [`CollectionChange`] naming which positions the notification
-    /// touched — both in collection-wide index space. The watcher may retain
-    /// the snapshot beyond the callback.
+    /// requested range of the collection, plus the [`CollectionChange`] —
+    /// insertions, removals, moves and in-place updates, aligned by id — that
+    /// the notification reported, both in collection-wide index space. The
+    /// watcher may retain the snapshot beyond the callback.
+    ///
+    /// Registering delivers nothing: the watcher is called only when the
+    /// collection changes. Read the current contents with
+    /// [`Views::snapshot`] when mounting.
     ///
     /// Returns a guard that will unregister the watcher when dropped.
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard;
 }
 
@@ -207,7 +182,7 @@ impl<V> Debug for SharedAnyViews<V> {
 }
 
 impl<V: View> Views for SharedAnyViews<V> {
-    type Id = SelfId<RawId>;
+    type Id = RawId;
     type Guard = BoxWatcherGuard;
     type View = V;
     type Snapshot = AnyViewsSnapshot<V>;
@@ -223,7 +198,7 @@ impl<V: View> Views for SharedAnyViews<V> {
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
         self.0.watch(
             (range.start_bound().cloned(), range.end_bound().cloned()),
@@ -253,7 +228,7 @@ impl<V> Debug for AnyViewsSnapshot<V> {
 }
 
 impl<V: View> ViewSnapshot for AnyViewsSnapshot<V> {
-    type Id = SelfId<RawId>;
+    type Id = RawId;
     type View = V;
 
     fn range(&self) -> Range<usize> {
@@ -261,7 +236,7 @@ impl<V: View> ViewSnapshot for AnyViewsSnapshot<V> {
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
-        self.0.get_id(index).map(SelfId::new)
+        self.0.get_id(index)
     }
 
     fn get_view(&self, index: usize) -> Option<Self::View> {
@@ -271,7 +246,7 @@ impl<V: View> ViewSnapshot for AnyViewsSnapshot<V> {
 
 /// The boxed watcher callback an erased collection registers — it receives
 /// an owning erased snapshot plus the notification's change report.
-type BoxAnyViewsWatcher<V> = Box<dyn Fn(Context<AnyViewsSnapshot<V>>, CollectionChange) + 'static>;
+type BoxAnyViewsWatcher<V> = Box<dyn Fn(Context<AnyViewsSnapshot<V>>, &CollectionChange) + 'static>;
 
 trait AnyViewsImpl {
     type View: View;
@@ -432,7 +407,7 @@ impl<V> Views for AnyViews<V>
 where
     V: View,
 {
-    type Id = SelfId<RawId>;
+    type Id = RawId;
     type Guard = BoxWatcherGuard;
     type View = V;
     type Snapshot = AnyViewsSnapshot<V>;
@@ -448,7 +423,7 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
         self.0.watch(
             (range.start_bound().cloned(), range.end_bound().cloned()),
@@ -462,11 +437,15 @@ where
 /// `ForEach` applies a transformation function to each element of a source collection,
 /// producing a new collection with the transformed elements. This is useful for
 /// transforming data models into view representations.
+///
+/// Rows take their identity from the source collection's [`Collection::Id`]:
+/// a `List` of [`Identifiable`](crate::id::Identifiable) items identifies a
+/// row by its item's id, and an array or static slice such as `[&str; N]`
+/// identifies a row by its index.
 #[derive(Debug)]
 pub struct ForEach<C, F, V>
 where
     C: Collection,
-    C::Item: Identifiable,
     F: Fn(C::Item) -> V,
     V: View,
 {
@@ -477,7 +456,6 @@ where
 impl<C, F, V> Clone for ForEach<C, F, V>
 where
     C: Collection + Clone,
-    C::Item: Identifiable,
     F: Fn(C::Item) -> V,
     V: View,
 {
@@ -492,7 +470,6 @@ where
 impl<C, F, V> ForEach<C, F, V>
 where
     C: Collection,
-    C::Item: Identifiable,
     F: Fn(C::Item) -> V,
     V: View,
 {
@@ -521,6 +498,8 @@ where
     }
 }
 
+/// The length of a collection as a signal: notifies only when a change
+/// inserts or removes items.
 #[derive(Clone)]
 struct CollectionLenSignal<C>(C);
 
@@ -532,68 +511,107 @@ where
     type Guard = C::Guard;
 
     fn snapshot(&self) -> Self::Output {
-        self.0.len()
+        self.0.count()
     }
 
     fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
-        self.0.watch(.., move |ctx, _change| {
-            let len = ctx.value().len();
-            watcher(ctx.map(move |_| len));
+        self.0.watch(.., move |ctx, change| {
+            if change.insertions().next().is_none() && change.removals().next().is_none() {
+                return;
+            }
+            watcher(ctx.map(<[C::Item]>::len));
         })
     }
 }
 
+/// A `ForEach` is a collection of its source's items, with the source's ids.
 impl<C, F, V> Collection for ForEach<C, F, V>
 where
     C: Collection,
-    C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {
-    type Item = <C::Item as Identifiable>::Id;
+    type Item = C::Item;
+    type Id = C::Id;
     type Guard = C::Guard;
-    fn get(&self, index: usize) -> Option<Self::Item> {
-        self.data.get(index).map(|item| item.id())
+
+    fn get_item(&self, index: usize) -> Option<Self::Item> {
+        self.data.get_item(index)
     }
 
-    fn len(&self) -> usize {
-        self.data.len()
+    fn count(&self) -> usize {
+        self.data.count()
+    }
+
+    fn with_range<R>(
+        &self,
+        range: impl RangeBounds<usize>,
+        f: impl FnOnce(&[Self::Item]) -> R,
+    ) -> R {
+        self.data.with_range(range, f)
+    }
+
+    fn get_id(&self, index: usize) -> Option<Self::Id> {
+        self.data.get_id(index)
     }
 
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl for<'a> Fn(Context<&'a [Self::Item]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        watcher: impl Fn(Context<&[Self::Item]>, &CollectionChange) + 'static,
     ) -> Self::Guard {
-        self.data.watch(range, move |ctx, change| {
-            let ctx = ctx.map(|value| value.iter().map(Identifiable::id).collect::<Vec<_>>());
-
-            watcher(ctx.as_deref(), change);
-        })
+        self.data.watch(range, watcher)
     }
 }
 
-/// The immutable snapshot a [`ForEach`] captures: cloned row data in an
-/// `Rc<[C::Item]>` plus a shared handle to the generator.
+/// The immutable snapshot a [`ForEach`] captures: cloned row data and the
+/// rows' ids, read from one state of the source, plus a shared handle to the
+/// generator.
 ///
-/// Cloning the snapshot is O(1) — the row data and the generator are both
-/// reference-counted. `get_view` invokes the shared generator only for the
-/// requested row.
+/// Cloning the snapshot is O(1) — the row data, the ids and the generator are
+/// all reference-counted. `get_view` invokes the shared generator only for
+/// the requested row.
 pub struct ForEachSnapshot<C, F, V>
 where
     C: Collection,
-    C::Item: Identifiable,
 {
-    data: Rc<[C::Item]>,
+    items: Rc<[C::Item]>,
+    ids: Rc<[C::Id]>,
     start: usize,
     generator: Rc<F>,
     _marker: PhantomData<fn() -> V>,
 }
 
+impl<C, F, V> ForEachSnapshot<C, F, V>
+where
+    C: Collection,
+    C::Item: Clone,
+{
+    /// Captures `bounds`, resolved against the current length, from the
+    /// live collection.
+    fn capture(data: &C, bounds: (Bound<usize>, Bound<usize>), generator: Rc<F>) -> Self {
+        let range = resolve_range(bounds.0, bounds.1, data.count());
+        let items: Rc<[C::Item]> = data.with_range(range.clone(), |items| Rc::from(items));
+        let ids: Rc<[C::Id]> = range
+            .clone()
+            .map(|index| {
+                data.get_id(index)
+                    .expect("a collection must report an id inside its reported length")
+            })
+            .collect();
+        Self {
+            items,
+            ids,
+            start: range.start,
+            generator,
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<C, F, V> Debug for ForEachSnapshot<C, F, V>
 where
     C: Collection,
-    C::Item: Identifiable,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(type_name::<Self>())
@@ -603,11 +621,11 @@ where
 impl<C, F, V> Clone for ForEachSnapshot<C, F, V>
 where
     C: Collection,
-    C::Item: Identifiable,
 {
     fn clone(&self) -> Self {
         Self {
-            data: self.data.clone(),
+            items: self.items.clone(),
+            ids: self.ids.clone(),
             start: self.start,
             generator: self.generator.clone(),
             _marker: PhantomData,
@@ -618,27 +636,24 @@ where
 impl<C, F, V> ViewSnapshot for ForEachSnapshot<C, F, V>
 where
     C: Collection,
-    C::Item: Identifiable + Clone,
+    C::Item: Clone,
+    C::Id: 'static,
     F: Fn(C::Item) -> V,
     V: View,
 {
-    type Id = <C::Item as Identifiable>::Id;
+    type Id = C::Id;
     type View = V;
 
     fn range(&self) -> Range<usize> {
-        self.start..self.start + self.data.len()
+        self.start..self.start + self.items.len()
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
-        self.data
-            .as_ref()
-            .get(index.checked_sub(self.start)?)
-            .map(Identifiable::id)
+        self.ids.get(index.checked_sub(self.start)?).cloned()
     }
 
     fn get_view(&self, index: usize) -> Option<Self::View> {
-        self.data
-            .as_ref()
+        self.items
             .get(index.checked_sub(self.start)?)
             .map(|item| (self.generator)(item.clone()))
     }
@@ -647,11 +662,12 @@ where
 impl<C, F, V> Views for ForEach<C, F, V>
 where
     C: Collection + Clone,
-    C::Item: Identifiable + Clone,
+    C::Item: Clone,
+    C::Id: 'static,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {
-    type Id = <C::Item as Identifiable>::Id;
+    type Id = C::Id;
     type View = V;
     type Guard = C::Guard;
     type Snapshot = ForEachSnapshot<C, F, V>;
@@ -661,42 +677,29 @@ where
     }
 
     fn snapshot(&self) -> Self::Snapshot {
-        let len = self.data.len();
-        let data: Rc<[C::Item]> = (0..len)
-            .map(|index| {
-                self.data
-                    .get(index)
-                    .expect("a collection must honor `get` inside its reported length")
-            })
-            .collect();
-        ForEachSnapshot {
-            data,
-            start: 0,
-            generator: self.generator.clone(),
-            _marker: PhantomData,
-        }
+        ForEachSnapshot::capture(
+            &self.data,
+            (Bound::Unbounded, Bound::Unbounded),
+            self.generator.clone(),
+        )
     }
 
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
         let bounds = (range.start_bound().cloned(), range.end_bound().cloned());
+        let data = self.data.clone();
         let generator = self.generator.clone();
-        // Subscribe to the whole collection and slice each event's immutable
-        // data ourselves: the requested bounds resolve against the length the
-        // notification carried, not the live length — another observer may
-        // already have mutated the source by the time this watcher runs.
+        // Rows and ids are read together from the live collection, so a
+        // snapshot always describes one state of it. The notification's own
+        // slice cannot provide the ids: a `Collection` derives an id from a
+        // position, not from an item. Without a reentrant mutation the live
+        // state is the notified one; with one, the snapshot is the newer
+        // state and the queued notification for it follows.
         self.data.watch(.., move |ctx, change| {
-            let items: &[C::Item] = ctx.value();
-            let range = resolve_range(bounds, items.len());
-            let snapshot = ForEachSnapshot {
-                data: Rc::from(&items[range.clone()]),
-                start: range.start,
-                generator: generator.clone(),
-                _marker: PhantomData,
-            };
+            let snapshot = ForEachSnapshot::capture(&data, bounds, generator.clone());
             watcher(ctx.map(|_| snapshot), change);
         })
     }
@@ -756,30 +759,43 @@ where
     }
 }
 
+/// A `Constant` is a collection of its captured positions: each item is its
+/// own index, and so is its id.
 impl<C> Collection for Constant<C>
 where
     C: Views + 'static,
 {
-    type Item = SelfId<usize>;
+    type Item = usize;
+    type Id = usize;
     type Guard = ();
 
-    fn get(&self, index: usize) -> Option<Self::Item> {
-        if index < self.captured.len() {
-            Some(SelfId::new(index))
-        } else {
-            None
-        }
+    fn get_item(&self, index: usize) -> Option<Self::Item> {
+        (index < self.captured.len()).then_some(index)
     }
 
-    fn len(&self) -> usize {
+    fn count(&self) -> usize {
         self.captured.len()
+    }
+
+    fn with_range<R>(
+        &self,
+        range: impl RangeBounds<usize>,
+        f: impl FnOnce(&[Self::Item]) -> R,
+    ) -> R {
+        let indices: Vec<usize> = clamp_range(&range, self.captured.len()).collect();
+        f(&indices)
+    }
+
+    fn get_id(&self, index: usize) -> Option<Self::Id> {
+        self.get_item(index)
     }
 
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl for<'a> Fn(Context<&'a [Self::Item]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        _watcher: impl Fn(Context<&[Self::Item]>, &CollectionChange) + 'static,
     ) -> Self::Guard {
+        // Captured once: nothing ever changes.
     }
 }
 
@@ -808,7 +824,7 @@ impl<S> ViewSnapshot for ConstantSnapshot<S>
 where
     S: ViewSnapshot,
 {
-    type Id = SelfId<usize>;
+    type Id = usize;
     type View = S::View;
 
     fn range(&self) -> Range<usize> {
@@ -816,10 +832,7 @@ where
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
-        self.source
-            .range()
-            .contains(&index)
-            .then(|| SelfId::new(index))
+        self.source.range().contains(&index).then_some(index)
     }
 
     fn get_view(&self, index: usize) -> Option<Self::View> {
@@ -831,7 +844,7 @@ impl<C> Views for Constant<C>
 where
     C: Views,
 {
-    type Id = SelfId<usize>;
+    type Id = usize;
     type Guard = ();
     type View = C::View;
     type Snapshot = ConstantSnapshot<C::Snapshot>;
@@ -849,7 +862,7 @@ where
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        _watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
         // No-op for Constant
     }
@@ -879,7 +892,7 @@ impl<V> Clone for SliceSnapshot<V> {
 }
 
 impl<V: View + Clone> ViewSnapshot for SliceSnapshot<V> {
-    type Id = SelfId<usize>;
+    type Id = usize;
     type View = V;
 
     fn range(&self) -> Range<usize> {
@@ -887,10 +900,7 @@ impl<V: View + Clone> ViewSnapshot for SliceSnapshot<V> {
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
-        self.data
-            .as_ref()
-            .get(index.checked_sub(self.start)?)
-            .map(|_| SelfId::new(index))
+        self.range().contains(&index).then_some(index)
     }
 
     fn get_view(&self, index: usize) -> Option<Self::View> {
@@ -902,7 +912,7 @@ impl<V: View + Clone> ViewSnapshot for SliceSnapshot<V> {
 }
 
 impl<V: View + Clone> Views for Vec<V> {
-    type Id = SelfId<usize>;
+    type Id = usize;
     type Guard = ();
     type View = V;
     type Snapshot = SliceSnapshot<V>;
@@ -921,14 +931,14 @@ impl<V: View + Clone> Views for Vec<V> {
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        _watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
         // No-op for Vec
     }
 }
 
 impl<V: View + Clone, const N: usize> Views for [V; N] {
-    type Id = SelfId<usize>;
+    type Id = usize;
     type Guard = ();
     type View = V;
     type Snapshot = SliceSnapshot<V>;
@@ -947,7 +957,7 @@ impl<V: View + Clone, const N: usize> Views for [V; N] {
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        _watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
         // No-op for arrays
     }
@@ -1068,7 +1078,7 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
         let f = self.f.clone();
         self.source.watch(range, move |ctx, change| {
@@ -1117,6 +1127,7 @@ impl<T: Views> ViewsExt for T {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::id::Identifiable;
     use alloc::{rc::Rc, vec, vec::Vec};
     use core::cell::{Cell, RefCell};
     use nami::{Binding, Signal, SignalExt, binding, collection::List};
@@ -1158,7 +1169,7 @@ mod tests {
     }
 
     impl Views for ReactiveLenViews {
-        type Id = SelfId<usize>;
+        type Id = usize;
         type Guard = ();
         type View = ();
         type Snapshot = SliceSnapshot<()>;
@@ -1177,7 +1188,7 @@ mod tests {
         fn watch(
             &self,
             _range: impl RangeBounds<usize>,
-            _watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+            _watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
         ) -> Self::Guard {
         }
     }
@@ -1209,7 +1220,7 @@ mod tests {
 
     #[test]
     fn for_each_watch_uses_requested_range() {
-        let list = items(&[1, 2, 3, 4]);
+        let mut list = items(&[1, 2, 3, 4]);
         let views = ForEach::new(list.clone(), |_item| ());
 
         let snapshots: SnapshotLog = Rc::new(RefCell::new(Vec::new()));
@@ -1223,19 +1234,58 @@ mod tests {
                 .push((range.clone(), ids_in(&snapshot, range)));
         });
 
-        // The initial emission covers the requested window; the change report
-        // stays in collection-wide space (`populated` over the whole event).
-        assert_eq!(snapshots.borrow().as_slice(), &[(1..3, vec![2, 3])]);
+        // Registering delivers nothing; the current contents are read with
+        // `snapshot()`.
+        assert!(snapshots.borrow().is_empty());
 
         list.insert(0, TestItem { id: 9 });
-        let borrowed = snapshots.borrow();
-        let latest_snapshot = borrowed.last().expect("watch should emit after insert");
-        assert_eq!(latest_snapshot, &(1..3, vec![1, 2]));
+        assert_eq!(snapshots.borrow().as_slice(), &[(1..3, vec![1, 2])]);
+    }
+
+    #[test]
+    fn for_each_over_an_array_identifies_rows_by_index() {
+        let seen: Rc<RefCell<Vec<&str>>> = Rc::new(RefCell::new(Vec::new()));
+        let views = ForEach::new(["first", "second", "third"], {
+            let seen = seen.clone();
+            move |label: &'static str| seen.borrow_mut().push(label)
+        });
+
+        let snapshot = views.snapshot();
+        assert_eq!(snapshot.range(), 0..3);
+        assert_eq!(
+            (0..3)
+                .filter_map(|index| snapshot.get_id(index))
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        snapshot.get_view(1).expect("row 1 exists");
+        assert_eq!(seen.borrow().as_slice(), &["second"]);
+    }
+
+    #[test]
+    fn watch_reports_a_reorder_as_moves() {
+        let mut list = items(&[1, 2, 3]);
+        let views = ForEach::new(list.clone(), |_item| ());
+        let changes: Rc<RefCell<Vec<CollectionChange>>> = Rc::new(RefCell::new(Vec::new()));
+        let _guard = Views::watch(&views, .., {
+            let changes = changes.clone();
+            move |_ctx, change| changes.borrow_mut().push(change.clone())
+        });
+
+        list.sort_by_key(|item| core::cmp::Reverse(item.id));
+
+        let changes = changes.borrow();
+        let [change] = changes.as_slice() else {
+            panic!("one notification per sort, got {changes:?}");
+        };
+        assert!(change.insertions().next().is_none());
+        assert!(change.removals().next().is_none());
+        assert!(change.moves().next().is_some());
     }
 
     #[test]
     fn snapshot_retains_removed_and_reordered_rows() {
-        let list = items(&[1, 2, 3]);
+        let mut list = items(&[1, 2, 3]);
         let views = ForEach::new(list.clone(), |_item| ());
 
         let snapshot = views.snapshot();
@@ -1250,7 +1300,7 @@ mod tests {
     #[test]
     fn capture_never_runs_the_generator() {
         let calls = Rc::new(Cell::new(0usize));
-        let list = items(&[1, 2, 3]);
+        let mut list = items(&[1, 2, 3]);
         let views = ForEach::new(list.clone(), {
             let calls = calls.clone();
             move |_item| calls.set(calls.get() + 1)
@@ -1307,23 +1357,21 @@ mod tests {
     }
 
     #[test]
-    fn reentrant_producer_mutation_cannot_rewrite_a_delivered_snapshot() {
-        let list = items(&[1, 2]);
+    fn reentrant_mutation_still_delivers_coherent_snapshots() {
+        let mut list = items(&[1, 2]);
         let views = ForEach::new(list.clone(), |_item| ());
 
-        // Watcher A mutates the source once, inside the notification triggered
-        // by the second mutation below. `List` snapshots the event before
-        // dispatching, so watcher B's snapshot must still hold that event's
-        // data, not the reentrant result.
-        let mutations = Rc::new(Cell::new(0usize));
+        // Watcher A mutates the source once, from inside the notification of
+        // the insert below. The list queues that notification behind the one
+        // in progress, so watcher B is still notified once per change, in
+        // order, and every snapshot it receives holds the rows and ids of one
+        // state of the list.
+        let mutated = Rc::new(Cell::new(false));
         let _guard_a = Views::watch(&views, .., {
-            let list = list.clone();
+            let list = RefCell::new(list.clone());
             move |_ctx, _change| {
-                if mutations.get() == 1 {
-                    mutations.set(2);
-                    list.push(TestItem { id: 1000 });
-                } else {
-                    mutations.set(mutations.get() + 1);
+                if !mutated.replace(true) {
+                    list.borrow_mut().push(TestItem { id: 1000 });
                 }
             }
         });
@@ -1338,23 +1386,16 @@ mod tests {
             }
         });
 
-        assert_eq!(seen.borrow().as_slice(), &[vec![1, 2]]);
-
-        // This insert notifies A first; A pushes 1000 reentrantly, which
-        // dispatches the nested notification `[9, 1, 2, 1000]` to B before the
-        // outer notification reaches it. B's snapshot for the outer event is
-        // still the event data `[9, 1, 2]` — the concurrent mutation cannot
-        // rewrite what was already captured.
         list.insert(0, TestItem { id: 9 });
         assert_eq!(
             seen.borrow().as_slice(),
-            &[vec![1, 2], vec![9, 1, 2, 1000], vec![9, 1, 2]]
+            &[vec![9, 1, 2, 1000], vec![9, 1, 2, 1000]]
         );
     }
 
     #[test]
     fn erased_snapshots_share_one_id_mapping() {
-        let list = items(&[1, 2, 3]);
+        let mut list = items(&[1, 2, 3]);
         let views = AnyViews::new(ForEach::new(list.clone(), |_item| ()));
 
         let first = views.snapshot();
@@ -1383,7 +1424,7 @@ mod tests {
 
     #[test]
     fn constant_freezes_membership_at_construction() {
-        let list = items(&[1, 2, 3]);
+        let mut list = items(&[1, 2, 3]);
         let seen: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
         let views = ForEach::new(list.clone(), {
             let seen = seen.clone();
@@ -1406,7 +1447,7 @@ mod tests {
         assert_eq!(snapshot.range(), 0..3);
         assert_eq!(
             (0..3)
-                .filter_map(|index| snapshot.get_id(index).map(SelfId::into_inner))
+                .filter_map(|index| snapshot.get_id(index))
                 .collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
@@ -1425,20 +1466,19 @@ mod tests {
     fn snapshot_survives_guard_and_source_drop() {
         let kept: KeptSnapshot = Rc::new(RefCell::new(None));
         {
-            let list = items(&[1, 2]);
-            let views = ForEach::new(list, |_item| ());
+            let mut list = items(&[1]);
+            let views = ForEach::new(list.clone(), |_item| ());
             let guard = Views::watch(&views, .., {
                 let kept = kept.clone();
                 move |ctx, _change| {
                     *kept.borrow_mut() = Some(Box::new(ctx.into_value()));
                 }
             });
+            list.push(TestItem { id: 2 });
             drop(guard);
         }
         let borrowed = kept.borrow();
-        let snapshot = borrowed
-            .as_ref()
-            .expect("the initial emission delivered a snapshot");
+        let snapshot = borrowed.as_ref().expect("the push delivered a snapshot");
         let range = snapshot.range();
         assert_eq!(ids_in(&**snapshot, range), vec![1, 2]);
     }

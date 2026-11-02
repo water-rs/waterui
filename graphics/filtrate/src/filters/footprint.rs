@@ -98,3 +98,24 @@ fn bounded_extent(radius: f32, scale: f32) -> f32 {
         2.0 * radius.max(0.001)
     }
 }
+
+/// [`OverscrollStretch`](super::OverscrollStretch): inside the frame an
+/// axis of extent `D` and stretch `s` moves a sample by at most
+/// `D·|s| / (1 + |s|)` — the displacement grows monotonically from zero at
+/// the pulled edge to that at the far one — and outside it nothing moves.
+/// The frame's linear part carries that displacement into input pixels, and
+/// the filtered sampler reaches one texel further.
+pub fn overscroll_stretch(params: [f32; 10]) -> Footprint {
+    let [a, b, c, d, _, _, width, height, stretch_x, stretch_y] = params;
+    let reach = |extent: f32, stretch: f32| extent.abs() * stretch.abs() / (1.0 + stretch.abs());
+    let (dx, dy) = (reach(width, stretch_x), reach(height, stretch_y));
+    let pixels = a
+        .abs()
+        .mul_add(dx, c.abs() * dy)
+        .max(b.abs().mul_add(dx, d.abs() * dy));
+    if pixels > 0.0 {
+        Footprint::pixels(pixels.ceil() + 1.0)
+    } else {
+        Footprint::ZERO
+    }
+}

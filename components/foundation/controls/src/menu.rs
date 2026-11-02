@@ -86,6 +86,10 @@ impl ShortcutModifiers {
 /// `Character` control character, names a key no press reports, so build
 /// keys through the `From`/`FromStr` conversions that refuse them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each shortcut key form variant by variant; a new shortcut key form must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ShortcutKey {
     /// A key that produces one character. Letters match regardless of case;
     /// Shift is a separate modifier.
@@ -267,7 +271,7 @@ impl core::str::FromStr for ShortcutKey {
         let mut chars = value.chars();
         if let (Some(character), None) = (chars.next(), chars.next()) {
             if character.is_control() {
-                return Err(InvalidShortcutKey(value.to_string()));
+                return Err(InvalidShortcutKey::new(value.to_string()));
             }
             return Ok(Self::Character(character));
         }
@@ -276,22 +280,52 @@ impl core::str::FromStr for ShortcutKey {
             .ok()
             .filter(|key| named_key_fires(*key))
             .map(Self::Named)
-            .ok_or_else(|| InvalidShortcutKey(value.to_string()))
+            .ok_or_else(|| InvalidShortcutKey::new(value.to_string()))
     }
 }
 
 /// A string that is neither a single character nor a W3C named key.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("`{0}` is neither a single character nor a W3C KeyboardEvent.key name")]
+#[non_exhaustive]
 pub struct InvalidShortcutKey(pub String);
+
+impl InvalidShortcutKey {
+    /// Rejects `key`.
+    #[must_use]
+    pub const fn new(key: String) -> Self {
+        Self(key)
+    }
+
+    /// The rejected string.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.0
+    }
+}
 
 /// Keyboard shortcut metadata attached to a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Shortcut {
     /// The key the shortcut fires on.
-    pub key: ShortcutKey,
+    key: ShortcutKey,
     /// Modifier flags required alongside the key.
-    pub modifiers: ShortcutModifiers,
+    modifiers: ShortcutModifiers,
+}
+
+impl Shortcut {
+    /// The key the shortcut fires on.
+    #[must_use]
+    pub const fn key(&self) -> &ShortcutKey {
+        &self.key
+    }
+
+    /// Modifier flags required alongside the key.
+    #[must_use]
+    pub const fn modifiers(&self) -> ShortcutModifiers {
+        self.modifiers
+    }
 }
 
 impl Shortcut {
@@ -437,6 +471,7 @@ impl View for Menu {
 /// A destructive command is drawn in the platform's destructive style: red
 /// text on iOS, macOS and Android, and the error colour in drawn menus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum CommandRole {
     /// An ordinary command.
     #[default]
@@ -450,22 +485,72 @@ pub enum CommandRole {
 #[non_exhaustive]
 pub struct Command {
     /// The semantic label for the command.
-    pub label: Label,
+    label: Label,
     /// The action to perform when the command is selected.
-    pub action: SharedAction<()>,
+    action: SharedAction<()>,
     /// Whether the command is currently disabled.
-    pub disabled: Computed<bool>,
+    disabled: Computed<bool>,
     /// Whether the command is currently selected or checked.
-    pub selected: Computed<bool>,
+    selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
-    pub shortcut: Option<Shortcut>,
+    shortcut: Option<Shortcut>,
     /// What the command does, which decides its presentation.
-    pub role: CommandRole,
+    role: CommandRole,
     /// An optional secondary line shown under the label.
-    pub subtitle: Option<Str>,
+    subtitle: Option<Str>,
     /// Local state layered onto the environment when the action runs.
-    pub captured_env: Environment,
+    captured_env: Environment,
     identity: Rc<()>,
+}
+
+impl Command {
+    /// The semantic label for the command.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The action to perform when the command is selected.
+    #[must_use]
+    pub const fn action(&self) -> &SharedAction<()> {
+        &self.action
+    }
+
+    /// Whether the command is currently disabled.
+    #[must_use]
+    pub const fn get_disabled(&self) -> &Computed<bool> {
+        &self.disabled
+    }
+
+    /// Whether the command is currently selected or checked.
+    #[must_use]
+    pub const fn get_selected(&self) -> &Computed<bool> {
+        &self.selected
+    }
+
+    /// Optional keyboard shortcut metadata.
+    #[must_use]
+    pub const fn get_shortcut(&self) -> Option<&Shortcut> {
+        self.shortcut.as_ref()
+    }
+
+    /// What the command does, which decides its presentation.
+    #[must_use]
+    pub const fn get_role(&self) -> CommandRole {
+        self.role
+    }
+
+    /// An optional secondary line shown under the label.
+    #[must_use]
+    pub const fn get_subtitle(&self) -> Option<&Str> {
+        self.subtitle.as_ref()
+    }
+
+    /// Local state layered onto the environment when the action runs.
+    #[must_use]
+    pub const fn captured_env(&self) -> &Environment {
+        &self.captured_env
+    }
 }
 
 impl_constant!(Command);
@@ -599,6 +684,7 @@ impl CommandBuilder {
 
 /// A single item inside menu content.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum MenuItem {
     /// A leaf command.
     Command(Command),
@@ -1108,6 +1194,10 @@ impl ResolvedNestedMenu {
 /// Raw menu item config resolved against the environment locale.
 #[doc(hidden)]
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each menu item variant by variant; a new menu item must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ResolvedMenuItem {
     /// A resolved leaf command.
     Command(ResolvedCommand),
@@ -1220,6 +1310,7 @@ impl CloseWindowChord {
 /// [`MenuItem::CloseWindow`] — never both, so it never appears twice.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CloseWindowPlacement {
     /// No declared menu carries `MenuItem::CloseWindow`: the standard
     /// Window menu carries Close, so the close chord works without the
@@ -1276,7 +1367,7 @@ mod tests {
         for rejected in ["", "ab", "Unidentified", "Dead", "\t", "Shift", "CapsLock"] {
             assert_eq!(
                 rejected.parse::<ShortcutKey>(),
-                Err(InvalidShortcutKey(rejected.to_string())),
+                Err(InvalidShortcutKey::new(rejected.to_string())),
                 "`{rejected}` is not a shortcut key"
             );
         }
@@ -1355,7 +1446,7 @@ mod tests {
                 .label
                 .semantic_text()
                 .resolve(&Environment::default())
-                .content
+                .content()
                 .snapshot()
                 .to_plain()
                 .as_str(),
@@ -1423,25 +1514,25 @@ mod tests {
         let ResolvedMenuItem::Command(refresh) = &resolved[0] else {
             panic!("first resolved item should be a command");
         };
-        assert_eq!(refresh.label.content.snapshot().to_plain(), "Refresh");
+        assert_eq!(refresh.label.content().snapshot().to_plain(), "Refresh");
         assert!(!refresh.selected.snapshot());
 
         let ResolvedMenuItem::Command(pinned) = &resolved[1] else {
             panic!("second resolved item should be a command");
         };
-        assert_eq!(pinned.label.content.snapshot().to_plain(), "Pinned");
+        assert_eq!(pinned.label.content().snapshot().to_plain(), "Pinned");
         assert!(pinned.selected.snapshot());
 
         let ResolvedMenuItem::Menu(advanced) = &resolved[2] else {
             panic!("third resolved item should be a nested menu");
         };
-        assert_eq!(advanced.label.content.snapshot().to_plain(), "Advanced");
+        assert_eq!(advanced.label.content().snapshot().to_plain(), "Advanced");
         assert_eq!(advanced.items.snapshot().len(), 1);
 
         let ResolvedMenuItem::Command(archive) = &advanced.items.snapshot()[0] else {
             panic!("nested menu should resolve its child command");
         };
-        assert_eq!(archive.label.content.snapshot().to_plain(), "Archive");
+        assert_eq!(archive.label.content().snapshot().to_plain(), "Archive");
     }
 
     /// A leaf `Computed<Vec<MenuItem>>` that counts how often it is evaluated.

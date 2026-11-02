@@ -340,3 +340,91 @@ fn navigation_back_available_only_above_the_root() {
     assert!(shows(&update, Role::Header, "Root"));
     assert!(!runtime.renderer().has_back_navigation_target());
 }
+
+/// A presented dialog owns system back: an abandoned gesture leaves it up, a
+/// committed one runs its cancel path exactly once — and the published tree
+/// holds the dialog's modal alert alone under the window.
+#[test]
+fn system_back_cancels_a_presented_dialog_only_when_committed() {
+    use waterui::dialog::{Dialog, DialogAction};
+    use waterui::{Signal as _, ViewExt as _};
+
+    let presented = waterui::Binding::bool(false);
+    let cancels = Rc::new(Cell::new(0_u32));
+    let view = {
+        let cancels = Rc::clone(&cancels);
+        AnyView::new(
+            vstack((text("Window content"),)).dialog(
+                Dialog::new(&presented, "Leave the editor?")
+                    .action(DialogAction::cancel("Stay", move || {
+                        cancels.set(cancels.get() + 1);
+                    }))
+                    .action(DialogAction::new("Leave", || {})),
+            ),
+        )
+    };
+    let (mut runtime, mut clock) = mount(view);
+    let _ = pump_until_label(&mut runtime, &mut clock, Role::Label, "Window content");
+
+    presented.set(true);
+    let update = pump_until_label(&mut runtime, &mut clock, Role::Button, "Stay");
+    let root = update
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == update.tree.as_ref().expect("a full tree").root)
+        .map(|(_, node)| node)
+        .expect("the window root is published");
+    let [alert] = root.children() else {
+        panic!("the window root must hold the modal alert alone");
+    };
+    let (_, alert) = update
+        .nodes
+        .iter()
+        .find(|(id, _)| id == alert)
+        .expect("the modal alert is published");
+    assert_eq!(alert.role(), Role::AlertDialog);
+    assert!(alert.is_modal(), "the dialog's alert is not modal");
+    assert!(
+        !shows(&update, Role::Label, "Window content"),
+        "the content beneath the dialog is still published"
+    );
+
+    back(
+        &mut runtime,
+        &mut clock,
+        BackNavigation::Started {
+            edge: BackEdge::Left,
+        },
+    );
+    back(
+        &mut runtime,
+        &mut clock,
+        BackNavigation::Progressed { progress: 0.6 },
+    );
+    back(&mut runtime, &mut clock, BackNavigation::Cancelled);
+    assert_eq!(
+        cancels.get(),
+        0,
+        "an abandoned back gesture cancelled the dialog"
+    );
+    assert!(
+        presented.snapshot(),
+        "an abandoned back gesture closed the dialog"
+    );
+
+    back(
+        &mut runtime,
+        &mut clock,
+        BackNavigation::Started {
+            edge: BackEdge::Left,
+        },
+    );
+    back(&mut runtime, &mut clock, BackNavigation::Invoked);
+    assert_eq!(
+        cancels.get(),
+        1,
+        "a committed back must run the cancel path once"
+    );
+    assert!(!presented.snapshot(), "a committed back left the dialog up");
+    let _ = pump_until_label(&mut runtime, &mut clock, Role::Label, "Window content");
+}

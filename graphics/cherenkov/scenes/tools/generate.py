@@ -8,7 +8,7 @@ in ``scenes/fonts`` is committed. By default this produces all of it:
     2. fonts   ``scenes/fonts/``         OFL subsets and the licence
     3. tools   ``scenes/fonts/*.ttf``    the authored and derived test fonts
     4. corpus  ``scenes/corpus/``        scene.json + resources per scene
-    5. perf    ``scenes/perf/``          the five perf scenes
+    5. perf    ``scenes/perf/``          perf scenes, including a batched road stroke
 
 ``--fonts-only`` stops after the font tools. Compile-time readers
 (``include_bytes!`` of ``scenes/fonts``) need nothing else.
@@ -53,7 +53,7 @@ def run(cmd: list[str]) -> None:
 
 def generate_fonts() -> None:
     run([sys.executable, str(TOOLS / "fetch-fonts.py")])
-    run([*GENERATOR, "prepare-fonts"])
+    run([*GENERATOR, "prepare-fonts", str(ROOT)])
     for tool in FONT_TOOLS:
         run([sys.executable, str(TOOLS / tool)])
 
@@ -62,7 +62,7 @@ def generate_corpus() -> None:
     # The writer does not clean stale scenes; regenerate from scratch.
     for out in ("corpus", "perf"):
         shutil.rmtree(SCENES / out, ignore_errors=True)
-    run([*GENERATOR, "generate-corpus"])
+    run([*GENERATOR, "generate-corpus", str(ROOT)])
 
 
 def main() -> int:

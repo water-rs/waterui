@@ -4,16 +4,20 @@ use super::*;
 
 mod anchored_overlay;
 mod context_menu;
+mod dialog;
+mod edge_stretch;
 mod hit_test;
 mod interaction;
 mod menu_shortcuts;
 mod popup_menu;
+mod scroll_physics;
 mod surface;
 pub mod text_editing;
 mod touch_scroll;
 
 pub use anchored_overlay::*;
 pub use context_menu::*;
+pub use dialog::*;
 pub use hit_test::*;
 pub use interaction::*;
 pub use menu_shortcuts::*;

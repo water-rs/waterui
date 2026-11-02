@@ -2,8 +2,10 @@
 //! fixture — three coloured quadrants and a luma ramp — makes the sample
 //! origin, the P010 bit depth and the transfer curve observable; the
 //! uniform-colour fixtures the suite had before could catch none of the
-//! three. A per-texel f64 reference decode is compared against every
-//! rendered pixel, corners included.
+//! three. The quadrant edges also put different chroma on either side of
+//! a chroma site, which makes the bilinear chroma reconstruction (#1947)
+//! observable. `cherenkov_oracle::yuv::decode`, the f64 reference, is
+//! compared against every rendered YUV pixel, corners included.
 //!
 //! Each render is written as a PNG under `CHERENKOV_EXTERNAL_PNG_DIR`
 //! (default `target/external-frames/`) for visual review.
@@ -11,10 +13,12 @@
 use std::path::PathBuf;
 
 use cherenkov::{Engine, EngineError, FrameTime, Offscreen, OffscreenFormat};
-use cherenkov_gpu::interop::{
-    ChromaOffset, ExternalFrame, FrameColor, RgbAlpha, SharedDevice, Transfer, wgpu,
-};
+use cherenkov_gpu::interop::{ExternalFrame, FrameColor, RgbAlpha, SharedDevice, Transfer, wgpu};
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
+use cherenkov_oracle::yuv::{
+    ChromaSiting, Matrix, Nv12, P010, PlaneLayout, Primaries, Range, YuvColor, YuvFrame,
+};
 
 /// Frame edge in pixels: a 2×2 quadrant grid of 8×8 blocks.
 const SIZE: u32 = 16;
@@ -57,18 +61,6 @@ fn rgbp_to_yuv(rgb: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-/// `R'G'B'` of a normalized `Y'CbCr` triple, chroma centred on zero.
-fn yuv_to_rgbp(yuv: [f64; 3]) -> [f64; 3] {
-    let (kr, kb): (f64, f64) = (0.2126, 0.0722);
-    let kg = 1.0 - kr - kb;
-    let [y, cb, cr] = yuv;
-    [
-        2.0f64.mul_add((1.0 - kr) * cr, y),
-        (-2.0 * kb * (1.0 - kb) / kg).mul_add(cb, (-2.0 * kr * (1.0 - kr) / kg).mul_add(cr, y)),
-        2.0f64.mul_add((1.0 - kb) * cb, y),
-    ]
-}
-
 /// The video-range code of a normalized component at `bits` depth
 /// (luma `16..=235`, chroma `16..=240` at 8 bits, scaled at 10).
 fn video_code(component: f64, bits: u32, chroma: bool) -> u32 {
@@ -82,19 +74,6 @@ fn video_code(component: f64, bits: u32, chroma: bool) -> u32 {
     #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let code = component.mul_add(scale, offset).round().max(0.0) as u32;
     code
-}
-
-/// The normalized component of a video-range code at `bits` depth,
-/// chroma centred on zero.
-fn video_decode(code: u32, bits: u32, chroma: bool) -> f64 {
-    let (scale, offset) = match (bits, chroma) {
-        (8, false) => (219.0, 16.0),
-        (8, true) => (224.0, 128.0),
-        (10, false) => (876.0, 64.0),
-        (10, true) => (896.0, 512.0),
-        _ => unreachable!(),
-    };
-    (f64::from(code) - offset) / scale
 }
 
 /// The encoded transfer back to display light: the BT.1886 reference EOTF
@@ -141,45 +120,31 @@ fn yuv_fixture(bits: u32) -> (Vec<Vec<u32>>, Vec<Vec<[u32; 2]>>) {
     (y, uv)
 }
 
-/// The expected premultiplied linear-P3 pixel for luma texel `(x, y)` of
-/// a YUV fixture at `bits` depth — the fragment stage's own arithmetic:
-/// luma at the frame pixel, chroma texel `j` centred on luma
-/// `2j + 0.5 + s` (so texel space is `p / 2 + 0.25 - s / 2`), nearest
-/// texel (`round(p - 0.5)`), edge-clamped; a P010 word carries its code
-/// in the high bits.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "texel indices are small non-negative values"
-)]
-fn yuv_expected(
-    y: &[Vec<u32>],
-    uv: &[Vec<[u32; 2]>],
-    bits: u32,
-    color: &FrameColor,
-    x: u32,
-    y_px: u32,
-) -> [f64; 4] {
-    let s = |offset: ChromaOffset| match offset {
-        ChromaOffset::Cosited => 0.0,
-        ChromaOffset::Centered => 0.5,
-    };
-    // The shader samples at the pixel centre `x + 0.5`, so chroma texel
-    // space is `(x + 0.5) / 2 + 0.25 - s / 2` and the texel is
-    // `round(pos - 0.5)` — `x / 2 - s / 2`, ties to even like WGSL `round`.
-    let chroma_texel = |p: u32, s: f64, dim: u32| -> u32 {
-        s.mul_add(-0.5, f64::from(p) * 0.5)
-            .round_ties_even()
-            .clamp(0.0, f64::from(dim - 1)) as u32
-    };
-    let ci = chroma_texel(x, s(color.chroma_siting.x), SIZE / 2);
-    let cj = chroma_texel(y_px, s(color.chroma_siting.y), SIZE / 2);
-    let shift = if bits == 10 { 64 } else { 1 };
-    let yn = video_decode(y[y_px as usize][x as usize] / shift, bits, false);
-    let cbn = video_decode(uv[cj as usize][ci as usize][0] / shift, bits, true);
-    let crn = video_decode(uv[cj as usize][ci as usize][1] / shift, bits, true);
-    let rgbp = yuv_to_rgbp([yn, cbn, crn]);
-    to_linear_p3(rgbp.map(|c| transfer_decode(c, color.transfer)))
+/// `FrameColor::BT709_VIDEO` as the oracle spells it.
+const BT709_VIDEO: YuvColor = YuvColor {
+    matrix: Matrix::Bt709,
+    range: Range::Video,
+    siting: ChromaSiting::LEFT,
+    primaries: Primaries::Bt709,
+    transfer: cherenkov_oracle::yuv::Transfer::Bt709,
+};
+
+/// The oracle's f64 decode of a fixture's stored words: the expected
+/// premultiplied linear-P3 pixel of every luma sample.
+fn yuv_reference<L: PlaneLayout>(
+    luma: &[L::Word],
+    chroma: &[[L::Word; 2]],
+    color: &YuvColor,
+) -> Result<cherenkov_oracle::Image, cherenkov_oracle::yuv::YuvError> {
+    cherenkov_oracle::yuv::decode(
+        &YuvFrame::<L> {
+            width: SIZE,
+            height: SIZE,
+            luma,
+            chroma,
+        },
+        color,
+    )
 }
 
 /// The `R'G'B'` code the RGBA8 fixture stores at `(x, y)`.
@@ -207,7 +172,9 @@ fn shared_device()
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
     let required_features = match adapter.get_info().backend {
-        wgpu::Backend::Vulkan | wgpu::Backend::Metal => wgpu::Features::PASSTHROUGH_SHADERS,
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => {
+            wgpu::Features::PASSTHROUGH_SHADERS
+        }
         _ => wgpu::Features::empty(),
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -312,21 +279,22 @@ fn render(
     Ok(rb.pixels)
 }
 
-/// Every pixel must land within the f32-pipeline + f16-storage envelope
-/// of the f64 reference; the defects this catches are an order larger.
-fn compare(pixels: &[[f32; 4]], expected: impl Fn(u32, u32) -> [f64; 4], what: &str) {
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let got = pixels[(y * SIZE + x) as usize];
-            let want = expected(x, y);
-            for (c, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-                assert!(
-                    (f64::from(*g) - w).abs() < 0.01,
-                    "{what} pixel ({x}, {y}) channel {c}: got {got:?}, expected {want:?}"
-                );
-            }
-        }
-    }
+/// The f32 pipeline with f16 storage must look like the f64 reference.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the reference is narrowed to the f32 the engine renders"
+)]
+fn compare(pixels: &[[f32; 4]], expected: impl Fn(u32, u32) -> [f64; 4]) {
+    let image = |pixels: Vec<[f32; 4]>| cherenkov_oracle::F32Image {
+        width: SIZE,
+        height: SIZE,
+        pixels,
+    };
+    let want = (0..SIZE)
+        .flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+        .map(|(x, y)| expected(x, y).map(|c| c as f32))
+        .collect();
+    assert_images_match(&image(want), &image(pixels.to_vec()));
 }
 
 #[test]
@@ -343,7 +311,12 @@ fn nv12_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
         || {},
     )?;
     let (luma, uv) = yuv_fixture(8);
-    let color = FrameColor::BT709_VIDEO;
+    let luma: Vec<u8> = luma.iter().flatten().map(|&c| c as u8).collect();
+    let chroma: Vec<[u8; 2]> = uv
+        .iter()
+        .flatten()
+        .map(|&[cb, cr]| [cb as u8, cr as u8])
+        .collect();
     let y_plane = plane(
         &device,
         &queue,
@@ -351,7 +324,7 @@ fn nv12_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
         SIZE,
         wgpu::TextureFormat::R8Uint,
         1,
-        &luma.iter().flatten().map(|c| *c as u8).collect::<Vec<_>>(),
+        &luma,
     );
     let uv_plane = plane(
         &device,
@@ -360,18 +333,12 @@ fn nv12_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
         SIZE / 2,
         wgpu::TextureFormat::Rg8Uint,
         2,
-        &uv.iter()
-            .flatten()
-            .flat_map(|c| [c[0] as u8, c[1] as u8])
-            .collect::<Vec<_>>(),
+        chroma.as_flattened(),
     );
-    let frame = ExternalFrame::yuv(y_plane, uv_plane, color)?;
+    let frame = ExternalFrame::yuv(y_plane, uv_plane, FrameColor::BT709_VIDEO)?;
     let pixels = render(&engine, &surface, frame, "nv12")?;
-    compare(
-        &pixels,
-        |x, y| yuv_expected(&luma, &uv, 8, &color, x, y),
-        "nv12",
-    );
+    let reference = yuv_reference::<Nv12>(&luma, &chroma, &BT709_VIDEO)?;
+    compare(&pixels, |x, y| reference.pixels[(y * SIZE + x) as usize]);
     Ok(())
 }
 
@@ -389,7 +356,12 @@ fn p010_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
         || {},
     )?;
     let (luma, uv) = yuv_fixture(10);
-    let color = FrameColor::BT709_VIDEO;
+    let luma: Vec<u16> = luma.iter().flatten().map(|&w| w as u16).collect();
+    let chroma: Vec<[u16; 2]> = uv
+        .iter()
+        .flatten()
+        .map(|&[cb, cr]| [cb as u16, cr as u16])
+        .collect();
     let y_plane = plane(
         &device,
         &queue,
@@ -399,8 +371,7 @@ fn p010_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
         2,
         &luma
             .iter()
-            .flatten()
-            .flat_map(|w| (*w as u16).to_le_bytes())
+            .flat_map(|w| w.to_le_bytes())
             .collect::<Vec<_>>(),
     );
     let uv_plane = plane(
@@ -410,19 +381,16 @@ fn p010_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
         SIZE / 2,
         wgpu::TextureFormat::Rg16Uint,
         4,
-        &uv.iter()
-            .flatten()
-            .flat_map(|c| [c[0] as u16, c[1] as u16])
-            .flat_map(u16::to_le_bytes)
+        &chroma
+            .as_flattened()
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
             .collect::<Vec<_>>(),
     );
-    let frame = ExternalFrame::yuv(y_plane, uv_plane, color)?;
+    let frame = ExternalFrame::yuv(y_plane, uv_plane, FrameColor::BT709_VIDEO)?;
     let pixels = render(&engine, &surface, frame, "p010")?;
-    compare(
-        &pixels,
-        |x, y| yuv_expected(&luma, &uv, 10, &color, x, y),
-        "p010",
-    );
+    let reference = yuv_reference::<P010>(&luma, &chroma, &BT709_VIDEO)?;
+    compare(&pixels, |x, y| reference.pixels[(y * SIZE + x) as usize]);
     Ok(())
 }
 
@@ -457,7 +425,7 @@ fn rgba_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
     );
     let frame = ExternalFrame::rgb(rgb_plane, RgbAlpha::Opaque, color)?;
     let pixels = render(&engine, &surface, frame, "rgba")?;
-    compare(&pixels, |x, y| rgb_expected(x, y, color.transfer), "rgba");
+    compare(&pixels, |x, y| rgb_expected(x, y, color.transfer));
     Ok(())
 }
 
@@ -509,8 +477,7 @@ fn hlg_black_and_footroom_decode_to_black() -> Result<(), Box<dyn std::error::Er
         Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16),
         || {},
     )?;
-    // Uniform neutral chroma, where the shader's nearest texel and the
-    // oracle's bilinear reconstruction agree.
+    // Uniform neutral chroma: every column's colour comes from its luma.
     let luma: Vec<Vec<u32>> = (0..SIZE)
         .map(|_| HLG_LUMA.iter().map(|&code| code << 6).collect())
         .collect();
@@ -553,29 +520,21 @@ fn hlg_black_and_footroom_decode_to_black() -> Result<(), Box<dyn std::error::Er
         .flatten()
         .map(|&[cb, cr]| [cb as u16, cr as u16])
         .collect();
-    let oracle = cherenkov_oracle::yuv::decode(
-        &cherenkov_oracle::yuv::YuvFrame::<cherenkov_oracle::yuv::P010> {
-            width: SIZE,
-            height: SIZE,
-            luma: &luma_words,
-            chroma: &chroma_words,
-        },
-        &cherenkov_oracle::yuv::YuvColor {
-            matrix: cherenkov_oracle::yuv::Matrix::Bt2020,
-            range: cherenkov_oracle::yuv::Range::Video,
-            siting: cherenkov_oracle::yuv::ChromaSiting::LEFT,
-            primaries: cherenkov_oracle::yuv::Primaries::Bt2020,
+    let oracle = yuv_reference::<P010>(
+        &luma_words,
+        &chroma_words,
+        &YuvColor {
+            matrix: Matrix::Bt2020,
+            range: Range::Video,
+            siting: ChromaSiting::LEFT,
+            primaries: Primaries::Bt2020,
             transfer: cherenkov_oracle::yuv::Transfer::Hlg {
                 reference_white: 203.0,
                 peak: f64::from(PEAK),
             },
         },
     )?;
-    compare(
-        &pixels,
-        |x, y| oracle.pixels[(y * SIZE + x) as usize],
-        "hlg",
-    );
+    compare(&pixels, |x, y| oracle.pixels[(y * SIZE + x) as usize]);
 
     // A footroom or nominal-black code decodes to exactly black: a
     // negative signal squared into positive light — however small, below
@@ -584,11 +543,8 @@ fn hlg_black_and_footroom_decode_to_black() -> Result<(), Box<dyn std::error::Er
         if code <= 64 {
             for y in 0..SIZE {
                 let got = pixels[(y * SIZE + x as u32) as usize];
-                assert_eq!(
-                    got,
-                    [0.0, 0.0, 0.0, 1.0],
-                    "hlg black or footroom code {code} at ({x}, {y})"
-                );
+                // Footroom and nominal black decode to black (#2107, #2108).
+                assert_close(&got, &[0.0, 0.0, 0.0, 1.0]);
             }
         }
     }
@@ -625,8 +581,8 @@ fn frame_producer_shows_each_submitted_frame_on_two_surfaces()
         engine.render(FrameTime::now())?;
         let [r, g, b, _] = rgba;
         let expected = to_linear_p3([r, g, b].map(|c| f64::from(c) / 255.0));
-        for (name, surface) in [("first", &first), ("second", &second)] {
-            compare(&surface.readback()?.pixels, |_, _| expected, name);
+        for surface in [&first, &second] {
+            compare(&surface.readback()?.pixels, |_, _| expected);
         }
     }
     Ok(())

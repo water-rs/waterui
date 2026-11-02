@@ -12,6 +12,10 @@ use crate::ensure_http_allowed;
 
 /// Outcome of an atomic asset write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a write either stored the bytes or found an identical file already there"
+)]
 pub enum AtomicWriteOutcome {
     /// Bytes were written to a newly created destination file.
     Written,

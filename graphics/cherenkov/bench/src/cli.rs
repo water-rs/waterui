@@ -24,7 +24,7 @@
 //! - `capacity --engine E [--engine E2 ...] --corpus scenes/perf
 //!   --budget-ms 8.333 --out-dir DIR` sweeps each perf scene's load:
 //!   the draw list is repeated `k` times (`transform::repeated`),
-//!   doubling `k` per interleaved engine round until p99 frame time
+//!   doubling `k` per interleaved engine round until p99 completion latency
 //!   exceeds the budget, then binary-searching the largest `k` within
 //!   it. The report records each engine's max sustained `k`, the p99
 //!   at `k` and at `k + 1`.
@@ -78,7 +78,8 @@ pub(crate) enum PresentPattern {
 /// `external-cost --path` choices (#168): `e` is external-frame import,
 /// `c` is copy-and-convert.
 ///
-/// See [`crate::external_cost`].
+/// The measurement lives in the `external_cost` module, built with the
+/// `cherenkov` feature.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum ExternalPath {
     /// Cherenkov external-frame import + composite.
@@ -200,6 +201,10 @@ enum Sub {
         /// Warmup frames discarded before measuring.
         #[arg(long, default_value_t = 5)]
         warmup: u32,
+        /// Wait for each frame to finish and report encode-to-completion latency.
+        /// This serializes frames; omit it to measure asynchronous submission.
+        #[arg(long)]
+        wait_for_completion: bool,
         /// Pause before this zero-based encode frame (warmup included)
         /// until one line is read from stdin.
         #[arg(long, value_name = "FRAME")]
@@ -236,6 +241,22 @@ enum Sub {
         /// 2752x2064 --rate 120` for an iPad Pro).
         #[arg(long, value_name = "WxH")]
         native: Option<String>,
+        /// Record the #2547 composition attribution with every frame
+        /// sample: the epochs the frame kept on chip, the images it
+        /// materialized with the planner's reason for each, the
+        /// attachment bytes split into reserved, committed and backed,
+        /// and the logical intermediate traffic. The collection allocates per
+        /// frame, so a run that compares timings leaves it off.
+        #[arg(long)]
+        composition: bool,
+        /// Record each measured frame's Mali hardware counters — the
+        /// shader cores' active cycles first — from the kbase driver
+        /// (Android, root). After each frame the loop waits for the GPU
+        /// to go idle and samples, so each frame's counters hold exactly
+        /// its own GPU work; the wait changes what the timings measure, so
+        /// a run that compares timings leaves it off.
+        #[arg(long)]
+        gpu_counters: bool,
     },
     /// Record the #169 allocation-event diagnostic for one scene.
     ///
@@ -269,10 +290,10 @@ enum Sub {
         #[arg(long, value_name = "LIST")]
         cpu: Option<String>,
     },
-    /// Sweep scene load to find each engine's sustained capacity.
+    /// Sweep scene load against each engine's synchronous completion latency.
     ///
     /// The draw list is repeated `k` times, doubling `k` until a probe's
-    /// p99 frame time exceeds `--budget-ms`, then binary-searching the
+    /// p99 encode-to-completion latency exceeds `--budget-ms`, then binary-searching the
     /// largest `k` that stays within it. Every probe is one interleaved
     /// round across the given engines, in `--engine` order, with the
     /// same warmup and frame counts as `measure`.
@@ -554,6 +575,7 @@ fn run(cli: Cli) -> Result<(), BenchError> {
             corpus,
             frames,
             warmup,
+            wait_for_completion,
             pause_at,
             out,
             out_dir,
@@ -561,6 +583,8 @@ fn run(cli: Cli) -> Result<(), BenchError> {
             rate,
             energy,
             native,
+            composition,
+            gpu_counters,
         } => measure_cmd(
             &engine,
             MeasureOpts {
@@ -568,6 +592,7 @@ fn run(cli: Cli) -> Result<(), BenchError> {
                 corpus: corpus.as_deref(),
                 frames,
                 warmup,
+                wait_for_completion,
                 pause_at,
                 out: out.as_deref(),
                 out_dir: out_dir.as_deref(),
@@ -575,6 +600,8 @@ fn run(cli: Cli) -> Result<(), BenchError> {
                 rate,
                 energy,
                 native: native.as_deref(),
+                composition,
+                gpu_counters,
             },
         ),
         Sub::AllocDiag {
@@ -801,14 +828,12 @@ fn alloc_diag_cmd(
     let (scene, _native) = load_scene(dir, native)?;
     let blobs = convert::load_blobs(&scene, dir)?;
     let input = EncodeInput {
+        scroll_offset: None,
         scene: &scene,
         blobs: &blobs,
     };
     engine.prepare(&input)?;
-    let (period, window_hint) = match rate {
-        Some(hz) => pacing(hz, frames).map(|(p, w)| (Some(p), w))?,
-        None => (None, Duration::from_secs(30)),
-    };
+    let (period, window_hint) = frame_period(rate, frames)?;
     run_frames(
         &mut engine,
         &input,
@@ -818,8 +843,10 @@ fn alloc_diag_cmd(
             pause_at: None,
             period,
             window_hint,
+            wait_for_completion: false,
             measure_energy: false,
         },
+        None,
     )?;
     engine.alloc_diag_teardown();
     drop(engine);
@@ -891,11 +918,16 @@ fn alloc_diag_cmd(
 
 /// The `measure` subcommand's fields, borrowed to avoid cloning paths.
 #[derive(Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent command-line switches, not mutually exclusive states"
+)]
 struct MeasureOpts<'a> {
     scene: Option<&'a Path>,
     corpus: Option<&'a Path>,
     frames: u32,
     warmup: u32,
+    wait_for_completion: bool,
     pause_at: Option<u32>,
     out: Option<&'a Path>,
     out_dir: Option<&'a Path>,
@@ -903,6 +935,8 @@ struct MeasureOpts<'a> {
     rate: Option<f64>,
     energy: bool,
     native: Option<&'a str>,
+    composition: bool,
+    gpu_counters: bool,
 }
 
 /// Wall-clock seconds a `render` scene (or a whole pass) spent in each
@@ -1153,6 +1187,27 @@ fn parse_native(arg: Option<&str>) -> Result<Option<(u32, u32)>, BenchError> {
     Ok(Some((w, h)))
 }
 
+/// The adapter a `measure` run uses: with `--composition`, the Cherenkov
+/// GPU adapter carrying the #2547 attribution sink.
+///
+/// The attribution is the planner's own, so no other adapter can answer
+/// for it: asking fails rather than reporting an empty section.
+fn measure_engine(engine: &str, composition: bool) -> Result<Box<dyn Engine>, BenchError> {
+    if !composition {
+        return create_engine(engine);
+    }
+    #[cfg(feature = "cherenkov")]
+    if engine == crate::cherenkov_ad::Cherenkov::NAME {
+        return Ok(Box::new(
+            crate::cherenkov_ad::Cherenkov::with_composition_diag()?,
+        ));
+    }
+    Err(BenchError::Engine(format!(
+        "--composition reports the Cherenkov GPU planner's own decisions; \
+         the {engine:?} adapter has none"
+    )))
+}
+
 fn measure_cmd(engine: &str, opts: MeasureOpts<'_>) -> Result<(), BenchError> {
     if let Some(rate) = opts.rate {
         if !(rate.is_finite() && rate > 0.0) {
@@ -1184,7 +1239,11 @@ fn measure_cmd(engine: &str, opts: MeasureOpts<'_>) -> Result<(), BenchError> {
         // inherits the mask.
         affinity::pin_current_thread(cpus)?;
     }
-    let mut engine = create_engine(engine)?;
+    let mut engine = measure_engine(engine, opts.composition)?;
+    let mut gpu_counters = opts
+        .gpu_counters
+        .then(crate::gpu_counters::Session::open)
+        .transpose()?;
     let idle_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
     for dir in scene_dirs(opts.scene, opts.corpus)? {
         let out_path = match (opts.out, opts.out_dir) {
@@ -1202,12 +1261,14 @@ fn measure_cmd(engine: &str, opts: MeasureOpts<'_>) -> Result<(), BenchError> {
             MeasureSceneOptions {
                 frames: opts.frames,
                 warmup: opts.warmup,
+                wait_for_completion: opts.wait_for_completion,
                 pause_at: opts.pause_at,
                 pinned: pinned.as_deref(),
                 rate: opts.rate,
                 measure_energy: opts.energy,
                 idle_memory: idle_memory.clone(),
                 native,
+                gpu_counters: gpu_counters.as_mut(),
             },
         ) {
             Ok(report) => {
@@ -1264,6 +1325,33 @@ fn log_measure_details(dir: &Path, report: &MeasureReport, out_path: &Path) {
             p50 = phase.seconds[0],
             p99 = phase.seconds[2],
             "phase"
+        );
+    }
+    // The last measured frame's composition attribution (#2547): the
+    // steady state, after first-use pipeline creation has settled. Every
+    // frame's own counters stay in the report's samples.
+    if let Some(composition) = report
+        .samples
+        .last()
+        .and_then(|sample| sample.composition.as_ref())
+    {
+        tracing::info!(
+            scene = %dir.display(),
+            epochs = composition.epochs,
+            passes = composition.passes,
+            on_chip_images = composition.on_chip_images,
+            on_chip_logical_bytes = composition.on_chip_logical_bytes,
+            materialized_images = composition.materialized_images,
+            materialized_logical_bytes = composition.materialized_logical_bytes,
+            reasons = ?composition.reasons,
+            reserved_bytes = composition.peak_reserved_bytes,
+            committed_bytes = ?composition.peak_committed_bytes,
+            backed_bytes = composition.peak_backed_bytes,
+            written = composition.logical_bytes_written,
+            read = composition.logical_bytes_read,
+            copied = composition.logical_bytes_copied,
+            barriers = composition.barriers,
+            "composition"
         );
     }
 }
@@ -1395,6 +1483,7 @@ fn render_scene(
     };
     t.reference = at.elapsed().as_secs_f64();
     let input = EncodeInput {
+        scroll_offset: None,
         scene: &scene,
         blobs: &blobs,
     };
@@ -1482,6 +1571,8 @@ struct Window {
     /// Warmup-frame captures only — measured frames sample nothing.
     memory_samples: Vec<MemorySnapshot>,
     meter: Option<energy::Meter>,
+    /// The GPU clock residency table as the window opened.
+    gpu_clock: Option<crate::gpu_clock::Snapshot>,
     start: Instant,
     missed_deadlines: u32,
 }
@@ -1496,6 +1587,69 @@ struct FrameLoopOptions {
     period: Option<Duration>,
     window_hint: Duration,
     measure_energy: bool,
+    wait_for_completion: bool,
+}
+
+fn scroll_frame_input<'a>(
+    input: &EncodeInput<'a>,
+    frame: u32,
+    warmup: u32,
+    frames: u32,
+) -> EncodeInput<'a> {
+    let scroll_offset = input.scene.scroll_extent.map(|extent| {
+        let (index, count) = if frame < warmup {
+            (frame, warmup)
+        } else {
+            (frame - warmup, frames)
+        };
+        extent * (f64::from(index) / f64::from(count.saturating_sub(1).max(1)))
+    });
+    EncodeInput {
+        scene: input.scene,
+        blobs: input.blobs,
+        scroll_offset,
+    }
+}
+
+/// Sleeps until the measured frame `n`'s deadline when pacing is on and
+/// returns how many deadlines that frame missed (0 or 1). The first
+/// measured frame only misses when its wake-up overshoots.
+fn pace_frame(n: u32, period: Option<Duration>, start: Instant) -> u32 {
+    let Some(period) = period else { return 0 };
+    let Some(deadline) = period.checked_mul(n).and_then(|d| start.checked_add(d)) else {
+        return 0;
+    };
+    let now = Instant::now();
+    if now < deadline {
+        std::thread::sleep(deadline - now);
+        // A wake-up past the tolerance still started the frame
+        // late - a missed deadline all the same.
+        u32::from(Instant::now().saturating_duration_since(deadline) > PACING_TOLERANCE)
+    } else {
+        u32::from(n > 0)
+    }
+}
+
+/// Fails when a frame's completion presence disagrees with what the
+/// adapter declared it measures.
+fn check_completion(
+    engine: &dyn Engine,
+    signal: crate::CompletionSignal,
+    frame: u32,
+    has_completion: bool,
+) -> Result<(), BenchError> {
+    match (signal, has_completion) {
+        (crate::CompletionSignal::Measured(_), true)
+        | (crate::CompletionSignal::Unavailable(_), false) => Ok(()),
+        (crate::CompletionSignal::Measured(_), false) => Err(BenchError::Engine(format!(
+            "{}: frame {frame} carries no completion although the adapter measures one",
+            engine.info().name
+        ))),
+        (crate::CompletionSignal::Unavailable(_), true) => Err(BenchError::Engine(format!(
+            "{}: frame {frame} carries a completion although the adapter reports none",
+            engine.info().name
+        ))),
+    }
 }
 
 /// The warmup + measured frame loop.
@@ -1507,62 +1661,82 @@ struct FrameLoopOptions {
 /// GPU-timing attribution and nothing else — on Android a capture
 /// walks `/proc/self/smaps_rollup` and a full snapshot spawns `dumpsys
 /// gpu --gpumem`, which would tax the pacing and energy it brackets (#162).
+///
+/// With `gpu_counters` the loop waits for the GPU to go idle and samples
+/// the hardware counters as the window opens and after every measured
+/// frame's submit, so each frame's sample holds exactly its own GPU work.
 fn run_frames(
     engine: &mut dyn Engine,
     input: &EncodeInput<'_>,
     frames: u32,
     warmup: u32,
     options: FrameLoopOptions,
+    mut gpu_counters: Option<&mut crate::gpu_counters::Session>,
 ) -> Result<Window, BenchError> {
     let FrameLoopOptions {
         pause_at,
         period,
         window_hint,
         measure_energy,
+        wait_for_completion,
     } = options;
     let mut meter = None;
+    let mut gpu_clock = None;
     let mut start = Instant::now();
     let mut missed_deadlines = 0u32;
     let mut samples = Vec::with_capacity(frames as usize);
     let total_frames = warmup + frames;
     let mut memory_samples = Vec::with_capacity(warmup as usize);
+    let signal = engine.completion_signal();
+    let mut completions = Vec::with_capacity(frames as usize);
     for frame in 0..total_frames {
         if frame == warmup {
+            // The measured window opens on an idle GPU: warmup frames
+            // still queued would otherwise complete inside it, so the
+            // completion intervals would time the backlog draining instead
+            // of the sustained frame rate, and the counters' first sample
+            // would hold more than the first measured frame.
+            engine.wait_idle()?;
+            if let Some(counters) = gpu_counters.as_deref_mut() {
+                counters.sample()?;
+            }
             // The energy window and the pacing clock both open
             // immediately before the first measured frame.
             if measure_energy {
                 meter = Some(energy::Meter::begin(window_hint)?);
             }
+            gpu_clock = crate::gpu_clock::Snapshot::read()?;
             start = Instant::now();
         }
-        if frame >= warmup
-            && let Some(period) = period
-            && let Some(deadline) = period
-                .checked_mul(frame - warmup)
-                .and_then(|d| start.checked_add(d))
-        {
-            let now = Instant::now();
-            if now < deadline {
-                std::thread::sleep(deadline - now);
-                // A wake-up past the tolerance still started the frame
-                // late — a missed deadline all the same.
-                if Instant::now().saturating_duration_since(deadline) > PACING_TOLERANCE {
-                    missed_deadlines += 1;
-                }
-            } else if frame > warmup {
-                missed_deadlines += 1;
-            }
+        if frame >= warmup {
+            missed_deadlines += pace_frame(frame - warmup, period, start);
         }
         let cpu_start = affinity::current_cpu();
         let t0 = Instant::now();
         if pause_at == Some(frame) {
             pause_before_frame(frame)?;
         }
-        engine.encode(input)?;
+        engine.encode(&scroll_frame_input(input, frame, warmup, frames))?;
         let t1 = Instant::now();
         let submit = engine.submit(u64::from(frame), false)?;
         let t2 = Instant::now();
+        if wait_for_completion {
+            engine.wait_idle()?;
+        }
+        let latency_seconds = wait_for_completion.then(|| t0.elapsed().as_secs_f64());
         let cpu_end = affinity::current_cpu();
+        // The completion step runs after every timed interval of the frame
+        // has closed - submit's and, under --wait-for-completion, the
+        // latency wait's - so arming the signal times into neither.
+        let completion = engine.completion()?;
+        check_completion(&*engine, signal, frame, completion.is_some())?;
+        let frame_counters = match gpu_counters.as_deref_mut() {
+            Some(counters) if frame >= warmup => {
+                engine.wait_idle()?;
+                Some(counters.sample()?)
+            }
+            _ => None,
+        };
         if frame < warmup {
             memory_samples.push(MemorySnapshot::capture(
                 engine.memory(),
@@ -1572,41 +1746,45 @@ fn run_frames(
         if frame >= warmup {
             samples.push(FrameSample {
                 encode_seconds: t1.duration_since(t0).as_secs_f64(),
-                submit_seconds: t2.duration_since(t1).as_secs_f64(),
+                submit_seconds: t2.duration_since(t1).as_secs_f64() - submit.gpu_wait_seconds,
+                gpu_wait_seconds: submit.gpu_wait_seconds,
                 gpu_seconds: None,
+                latency_seconds,
                 cpu_start,
                 cpu_end,
                 migrated: matches!((cpu_start, cpu_end), (Some(a), Some(b)) if a != b),
                 passes: Vec::new(),
-                phases: submit.phases.map(phase_samples).unwrap_or_default(),
+                phases: submit.phases,
+                composition: submit.composition.clone(),
+                gpu_counters: frame_counters,
+                completed_seconds: None,
+                completion_interval_seconds: None,
             });
+            if let Some(completion) = completion {
+                completions.push((t1, completion));
+            }
         }
         attribute_gpu(&mut samples, warmup, submit.gpu);
+        if wait_for_completion {
+            // Drain instrumentation after this frame's measured interval so it
+            // cannot be carried into the next render's submission or wait.
+            attribute_gpu(&mut samples, warmup, engine.finish_gpu()?);
+        }
     }
     attribute_gpu(&mut samples, warmup, engine.finish_gpu()?);
+    // finish_gpu has waited for every submission, so every in-flight
+    // completion callback has run.
+    if !completions.is_empty() {
+        attribute_completions(&mut samples, start, completions)?;
+    }
     Ok(Window {
         samples,
         memory_samples,
         meter,
+        gpu_clock,
         start,
         missed_deadlines,
     })
-}
-
-/// The render-thread phase timings of one frame as named samples.
-fn phase_samples(phases: crate::Phases) -> Vec<crate::PhaseSample> {
-    [
-        ("lower", phases.lower),
-        ("encode", phases.encode),
-        ("stamp", phases.stamp),
-        ("wait", phases.wait),
-    ]
-    .into_iter()
-    .map(|(name, seconds)| crate::PhaseSample {
-        name: name.to_string(),
-        seconds,
-    })
-    .collect()
 }
 
 fn pause_before_frame(frame: u32) -> Result<(), BenchError> {
@@ -1630,6 +1808,55 @@ fn pause_before_frame(frame: u32) -> Result<(), BenchError> {
             _ if byte[0] == b'\n' => break,
             _ => {}
         }
+    }
+    Ok(())
+}
+
+/// Stores each measured frame's completion instant, relative to the window
+/// start, and the interval since the previous measured frame's completion.
+/// `completions` holds one `(submission start, completion)` per sample.
+///
+/// # Errors
+/// A completion that is missing after the final wait, precedes its own
+/// submission, or precedes the previous frame's completion — the backend
+/// signal would then not describe these frames.
+fn attribute_completions(
+    samples: &mut [FrameSample],
+    start: Instant,
+    completions: Vec<(Instant, crate::Completion)>,
+) -> Result<(), BenchError> {
+    assert_eq!(
+        samples.len(),
+        completions.len(),
+        "one completion per measured frame"
+    );
+    let mut previous: Option<Instant> = None;
+    for (index, (sample, (submitted, completion))) in
+        samples.iter_mut().zip(completions).enumerate()
+    {
+        let at = match completion {
+            crate::Completion::Finished(at) => at,
+            crate::Completion::InFlight(resolve) => {
+                resolve().map_err(|e| BenchError::Engine(format!("measured frame {index}: {e}")))?
+            }
+        };
+        if at < submitted {
+            return Err(BenchError::Engine(format!(
+                "measured frame {index}: completion precedes its submission by {:?}",
+                submitted - at
+            )));
+        }
+        if let Some(previous) = previous {
+            if at < previous {
+                return Err(BenchError::Engine(format!(
+                    "measured frame {index}: completion precedes the previous frame's by {:?}",
+                    previous - at
+                )));
+            }
+            sample.completion_interval_seconds = Some(at.duration_since(previous).as_secs_f64());
+        }
+        sample.completed_seconds = Some(at.duration_since(start).as_secs_f64());
+        previous = Some(at);
     }
     Ok(())
 }
@@ -1668,12 +1895,14 @@ fn pacing(rate: f64, frames: u32) -> Result<(Duration, Duration), BenchError> {
 struct MeasureSceneOptions<'a> {
     frames: u32,
     warmup: u32,
+    wait_for_completion: bool,
     pause_at: Option<u32>,
     pinned: Option<&'a [u32]>,
     rate: Option<f64>,
     measure_energy: bool,
     idle_memory: MemorySnapshot,
     native: Option<(u32, u32)>,
+    gpu_counters: Option<&'a mut crate::gpu_counters::Session>,
 }
 
 /// Loads `dir`'s scene, retargeted to `native` when given. Returns the
@@ -1717,6 +1946,36 @@ fn pacing_report(
     }
 }
 
+fn warn_uncontrolled_placement(pinned: Option<&[u32]>) -> bool {
+    let heterogeneous = affinity::cpu_freqs_differ();
+    if pinned.is_none() && heterogeneous {
+        tracing::warn!(
+            "CPUs report differing max frequencies; this run's placement is uncontrolled — \
+             pass --cpu (e.g. --cpu 7) to pin to one cluster"
+        );
+    }
+    heterogeneous
+}
+
+/// The pacing period and energy-window hint for `--rate`, or the
+/// unpaced defaults.
+fn frame_period(
+    rate: Option<f64>,
+    frames: u32,
+) -> Result<(Option<Duration>, Duration), BenchError> {
+    rate.map_or_else(
+        || Ok((None, Duration::from_secs(30))),
+        |hz| pacing(hz, frames).map(|(p, w)| (Some(p), w)),
+    )
+}
+
+fn scene_name(dir: &Path) -> String {
+    dir.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn measure_scene(
     engine: &mut dyn Engine,
     dir: &Path,
@@ -1725,35 +1984,29 @@ fn measure_scene(
     let MeasureSceneOptions {
         frames,
         warmup,
+        wait_for_completion,
         pause_at,
         pinned,
         rate,
         measure_energy,
         idle_memory,
         native,
+        mut gpu_counters,
     } = options;
     let (scene, native) = load_scene(dir, native)?;
     let blobs = convert::load_blobs(&scene, dir)?;
     let input = EncodeInput {
+        scroll_offset: None,
         scene: &scene,
         blobs: &blobs,
     };
-    let heterogeneous = affinity::cpu_freqs_differ();
-    if pinned.is_none() && heterogeneous {
-        tracing::warn!(
-            "CPUs report differing max frequencies; this run's placement is uncontrolled — \
-             pass --cpu (e.g. --cpu 7) to pin to one cluster"
-        );
-    }
+    let heterogeneous = warn_uncontrolled_placement(pinned);
     let prepare_cpu = affinity::current_cpu();
     let t_prepare = Instant::now();
     engine.prepare(&input)?;
     let prepare_seconds = t_prepare.elapsed().as_secs_f64();
     let prepare_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
-    let (period, window_hint) = match rate {
-        Some(hz) => pacing(hz, frames).map(|(p, w)| (Some(p), w))?,
-        None => (None, Duration::from_secs(30)),
-    };
+    let (period, window_hint) = frame_period(rate, frames)?;
     let window = run_frames(
         &mut *engine,
         &input,
@@ -1764,9 +2017,12 @@ fn measure_scene(
             period,
             window_hint,
             measure_energy,
+            wait_for_completion,
         },
+        gpu_counters.as_deref_mut(),
     )?;
     let window_end = Instant::now();
+    let gpu_clock = window_gpu_clock(window.gpu_clock.as_ref())?;
     let window_seconds = window_end.duration_since(window.start).as_secs_f64();
     let energy_outcome = window
         .meter
@@ -1778,6 +2034,13 @@ fn measure_scene(
     // Counters embed a memory snapshot; take them at steady state,
     // before retirement shrinks what the engine reports.
     let counters = engine.counters();
+    let conditions = conditions::collect(
+        energy_outcome
+            .as_ref()
+            .and_then(|o| o.thermal_pressure.clone()),
+    );
+    let device = engine.device();
+    let stopped = stopped_interval(engine, &scene, window_hint, measure_energy)?;
     // #169 A5: retire, then take the post-retirement observation.
     engine.trim()?;
     let post_retire_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
@@ -1785,24 +2048,25 @@ fn measure_scene(
     let missed_deadlines = window.missed_deadlines;
     let samples = window.samples;
     let pacing = rate.map(|hz| pacing_report(hz, frames, missed_deadlines, window_seconds));
-    let conditions = conditions::collect(
-        energy_outcome
-            .as_ref()
-            .and_then(|o| o.thermal_pressure.clone()),
-    );
     let placement = measure_placement(pinned, heterogeneous, prepare_cpu, &samples);
     let percentiles = frame_percentiles(&samples);
+    let (completion_signal, completion_unavailable) = match engine.completion_signal() {
+        crate::CompletionSignal::Measured(signal) => (Some(signal), None),
+        crate::CompletionSignal::Unavailable(reason) => (None, Some(reason)),
+    };
     Ok(MeasureReport {
         engine: engine.info().name,
         info: engine.info().clone(),
-        scene: dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
+        gpu_timing_unavailable: engine.gpu_timing_unavailable(),
+        completion_signal,
+        completion_unavailable,
+        wait_for_completion,
+        scene: scene_name(dir),
         width: scene.width,
         height: scene.height,
         native,
+        scroll_extent: scene.scroll_extent.map(|extent| [extent.x, extent.y]),
+        stopped,
         prepare_seconds,
         warmup_frames: warmup,
         samples,
@@ -1811,10 +2075,50 @@ fn measure_scene(
         pacing,
         energy: energy_outcome.map(|o| o.report),
         conditions,
+        gpu_clock,
+        gpu_counters: gpu_counters.map(|session| session.info()),
         counters,
         memory: MemoryReport::new(idle_memory, &memory_samples, Some(post_retire_memory)),
-        device: engine.device(),
+        device,
     })
+}
+
+fn stopped_interval(
+    engine: &mut dyn Engine,
+    scene: &Scene,
+    duration: Duration,
+    measure_energy: bool,
+) -> Result<Option<crate::report::StoppedInterval>, BenchError> {
+    if scene.scroll_extent.is_none() {
+        return Ok(None);
+    }
+    engine.finish_gpu()?;
+    let meter = measure_energy
+        .then(|| energy::Meter::begin(duration))
+        .transpose()?;
+    let start = Instant::now();
+    std::thread::sleep(duration);
+    let end = Instant::now();
+    Ok(Some(crate::report::StoppedInterval {
+        seconds: end.duration_since(start).as_secs_f64(),
+        submissions: 0,
+        energy: meter
+            .map(|meter| meter.finish(start, end, 0).map(|outcome| outcome.report))
+            .transpose()?,
+    }))
+}
+
+/// The GPU clock residency from the window's opening read to now.
+fn window_gpu_clock(
+    start: Option<&crate::gpu_clock::Snapshot>,
+) -> Result<Option<crate::report::GpuClockReport>, BenchError> {
+    match (start, crate::gpu_clock::Snapshot::read()?) {
+        (Some(start), Some(end)) => Ok(Some(start.until(&end)?)),
+        (None, None) => Ok(None),
+        _ => Err(BenchError::Engine(
+            "gpu clock: the residency table appeared or vanished during the window".into(),
+        )),
+    }
 }
 
 /// The sample list a report's peak folds over: prepare, the warmup
@@ -1836,10 +2140,15 @@ fn frame_percentiles(samples: &[FrameSample]) -> Percentiles {
     let enc: Vec<f64> = samples.iter().map(|s| s.encode_seconds).collect();
     let sub: Vec<f64> = samples.iter().map(|s| s.submit_seconds).collect();
     let gpu: Vec<f64> = samples.iter().filter_map(|s| s.gpu_seconds).collect();
+    let interval: Vec<f64> = samples
+        .iter()
+        .filter_map(|s| s.completion_interval_seconds)
+        .collect();
     Percentiles {
         encode_seconds: percentiles(&enc).unwrap_or([0.0; 3]),
         submit_seconds: percentiles(&sub).unwrap_or([0.0; 3]),
         gpu_seconds: percentiles(&gpu),
+        completion_interval_seconds: percentiles(&interval),
         passes: pass_percentiles(samples),
         phases: phase_percentiles(samples),
     }
@@ -1993,15 +2302,6 @@ impl Sweep {
     }
 }
 
-/// A sample's frame seconds for the capacity budget: the measuring
-/// thread's wall time (encode + submit), raised to the GPU time where
-/// the backend reports it — a pipelined renderer's sustained rate is
-/// limited by its slowest stage.
-fn frame_seconds(s: &FrameSample) -> f64 {
-    let cpu = s.encode_seconds + s.submit_seconds;
-    s.gpu_seconds.map_or(cpu, |gpu| cpu.max(gpu))
-}
-
 /// One capacity probe: prepare `scene` (already at factor `k`) and run
 /// the same warmup + measured frame loop `measure` runs, flat out.
 /// Returns the p99 frame seconds and the probe's memory snapshots:
@@ -2014,7 +2314,11 @@ fn probe_once(
     frames: u32,
     warmup: u32,
 ) -> Result<(f64, Vec<MemorySnapshot>), BenchError> {
-    let input = EncodeInput { scene, blobs };
+    let input = EncodeInput {
+        scene,
+        blobs,
+        scroll_offset: None,
+    };
     engine.prepare(&input)?;
     let prepare_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
     let window = run_frames(
@@ -2026,12 +2330,22 @@ fn probe_once(
             pause_at: None,
             period: None,
             window_hint: Duration::ZERO,
+            wait_for_completion: true,
             measure_energy: false,
         },
+        None,
     )?;
     let steady_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
     let memory = memory_samples(prepare_memory, &window.memory_samples, steady_memory);
-    let times: Vec<f64> = window.samples.iter().map(frame_seconds).collect();
+    let times: Vec<f64> = window
+        .samples
+        .iter()
+        .map(|sample| {
+            sample
+                .latency_seconds
+                .expect("capacity waits for each frame")
+        })
+        .collect();
     let p99 = percentiles(&times).map(|p| p[2]).ok_or_else(|| {
         BenchError::Engine("capacity: --frames 0 leaves nothing to measure".into())
     })?;
@@ -2197,11 +2511,7 @@ fn sweep_scene(
         })
         .collect();
     Ok(CapacityReport {
-        scene: dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
+        scene: scene_name(dir),
         budget_ms: opts.budget_ms,
         frames: opts.frames,
         warmup: opts.warmup,
@@ -2271,4 +2581,230 @@ fn write_json<T: serde::Serialize>(v: &T, path: &Path) -> Result<(), BenchError>
     text.push('\n');
     std::fs::write(path, text)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    #[test]
+    fn warmup_and_measured_sweeps_restart_independently() {
+        let mut scene = Scene::new(100, 100, cherenkov_scene::Color::srgb(1.0, 1.0, 1.0));
+        scene.scroll_extent = Some(kurbo::Vec2::new(0.0, 200.0));
+        let blobs = std::collections::BTreeMap::default();
+        let input = EncodeInput {
+            scene: &scene,
+            blobs: &blobs,
+            scroll_offset: None,
+        };
+        let offsets: Vec<_> = (0..5)
+            .map(|frame| {
+                scroll_frame_input(&input, frame, 3, 2)
+                    .scroll_offset
+                    .unwrap()
+                    .y
+            })
+            .collect();
+        assert_eq!(offsets, [0.0, 100.0, 200.0, 0.0, 200.0]);
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Probe {
+        events: Vec<&'static str>,
+        pending_frame: Option<u64>,
+        awaiting_completion: bool,
+    }
+
+    impl Engine for Probe {
+        fn info(&self) -> &crate::EngineInfo {
+            unreachable!("frame loop does not request provenance")
+        }
+        fn supported(&self) -> std::collections::BTreeSet<cherenkov_scene::Feature> {
+            std::collections::BTreeSet::new()
+        }
+        fn prepare(&mut self, _: &EncodeInput<'_>) -> Result<(), BenchError> {
+            Ok(())
+        }
+        fn encode(&mut self, _: &EncodeInput<'_>) -> Result<(), BenchError> {
+            self.events.push("encode");
+            Ok(())
+        }
+        fn submit(&mut self, frame: u64, _: bool) -> Result<crate::Submit, BenchError> {
+            self.events.push("submit");
+            self.pending_frame = Some(frame);
+            self.awaiting_completion = true;
+            Ok(crate::Submit {
+                image: None,
+                gpu: Vec::new(),
+                phases: Vec::new(),
+                composition: None,
+                gpu_wait_seconds: 0.0,
+                render_seconds: None,
+                readback_seconds: None,
+            })
+        }
+        fn completion_signal(&self) -> crate::CompletionSignal {
+            crate::CompletionSignal::Measured("test probe")
+        }
+        fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+            assert!(
+                std::mem::take(&mut self.awaiting_completion),
+                "one completion step per submit"
+            );
+            self.events.push("arm completion");
+            Ok(Some(crate::Completion::Finished(Instant::now())))
+        }
+        fn wait_idle(&mut self) -> Result<(), BenchError> {
+            self.events.push("complete");
+            Ok(())
+        }
+        fn finish_gpu(&mut self) -> Result<Vec<crate::GpuSample>, BenchError> {
+            self.events.push("collect timestamps");
+            Ok(self
+                .pending_frame
+                .take()
+                .into_iter()
+                .flat_map(|frame| crate::GpuSample::whole_frame(frame, Some(0.001)))
+                .collect())
+        }
+        fn counters(&self) -> crate::Counters {
+            crate::Counters::default()
+        }
+        fn memory(&self) -> crate::memory::AdapterMemory {
+            unreachable!("test has no warmup memory samples")
+        }
+        fn device(&self) -> crate::DeviceInfo {
+            unreachable!("frame loop does not request device metadata")
+        }
+    }
+
+    fn run_probe(wait_for_completion: bool) -> (Probe, Window) {
+        let scene = Scene::new(1, 1, cherenkov_scene::Color::srgb(0.0, 0.0, 0.0));
+        let blobs = std::collections::BTreeMap::new();
+        let input = EncodeInput {
+            scene: &scene,
+            blobs: &blobs,
+            scroll_offset: None,
+        };
+        let mut engine = Probe::default();
+        let window = run_frames(
+            &mut engine,
+            &input,
+            2,
+            0,
+            FrameLoopOptions {
+                pause_at: None,
+                period: None,
+                window_hint: Duration::ZERO,
+                measure_energy: false,
+                wait_for_completion,
+            },
+            None,
+        )
+        .unwrap();
+        (engine, window)
+    }
+
+    #[test]
+    fn arms_completion_after_submit_returns() {
+        let (engine, window) = run_probe(false);
+        // The measured window opens on an idle GPU even without warmup
+        // frames, since `prepare` may have submitted uploads. The step
+        // follows submit as a separate call, so the submit interval the
+        // loop times excludes it.
+        assert_eq!(
+            engine.events,
+            [
+                "complete",
+                "encode",
+                "submit",
+                "arm completion",
+                "encode",
+                "submit",
+                "arm completion",
+                "collect timestamps"
+            ]
+        );
+        assert!(
+            window.samples.iter().all(
+                |sample| sample.completed_seconds.is_some() && sample.latency_seconds.is_none()
+            )
+        );
+        assert_eq!(window.samples[0].completion_interval_seconds, None);
+        assert!(window.samples[1].completion_interval_seconds.is_some());
+    }
+
+    #[test]
+    fn completes_each_frame_before_draining_its_timestamps() {
+        let (engine, window) = run_probe(true);
+        // The first wait opens the measured window on an idle GPU. The step
+        // follows the latency wait, so latency_seconds excludes it.
+        assert_eq!(
+            engine.events,
+            [
+                "complete",
+                "encode",
+                "submit",
+                "complete",
+                "arm completion",
+                "collect timestamps",
+                "encode",
+                "submit",
+                "complete",
+                "arm completion",
+                "collect timestamps",
+                "collect timestamps"
+            ]
+        );
+        assert_eq!(window.samples.len(), 2);
+        assert!(window.samples.iter().all(|sample| sample.latency_seconds.is_some() && sample.gpu_seconds == Some(0.001)));
+        assert!(
+            window
+                .samples
+                .iter()
+                .all(|sample| sample.completed_seconds.is_some())
+        );
+        assert_eq!(window.samples[0].completion_interval_seconds, None);
+        assert!(window.samples[1].completion_interval_seconds.is_some());
+    }
+
+    #[test]
+    fn completions_out_of_submission_order_fail() {
+        let sample = |_| FrameSample {
+            encode_seconds: 0.0,
+            submit_seconds: 0.0,
+            gpu_wait_seconds: 0.0,
+            gpu_seconds: None,
+            latency_seconds: None,
+            completed_seconds: None,
+            completion_interval_seconds: None,
+            cpu_start: None,
+            cpu_end: None,
+            migrated: false,
+            passes: Vec::new(),
+            phases: Vec::new(),
+            composition: None,
+            gpu_counters: None,
+        };
+        let start = Instant::now();
+        let early = start + Duration::from_millis(1);
+        let late = start + Duration::from_millis(2);
+        let mut samples: Vec<_> = (0..2).map(sample).collect();
+        let reordered = vec![
+            (start, crate::Completion::Finished(late)),
+            (start, crate::Completion::Finished(early)),
+        ];
+        assert!(attribute_completions(&mut samples, start, reordered).is_err());
+        let (_send, never_called) = crate::Completion::callback();
+        let never_ran = vec![
+            (start, crate::Completion::Finished(early)),
+            (start, never_called),
+        ];
+        assert!(attribute_completions(&mut samples, start, never_ran).is_err());
+    }
 }

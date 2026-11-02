@@ -186,6 +186,7 @@ impl Selected {
 /// filter is deliberately a plain choice rather than a boolean algebra: every
 /// value here is honored exactly by the native picker, never approximated.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum MediaFilter {
     /// Filter for live photos.
     #[cfg(feature = "video")]

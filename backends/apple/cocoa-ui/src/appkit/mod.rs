@@ -31,6 +31,7 @@
 //! );
 //! ```
 
+pub mod alert;
 mod animate;
 mod appearance;
 mod application;
@@ -64,8 +65,13 @@ mod toolbar;
 mod view_controller;
 mod window;
 
+#[cfg(feature = "dialog")]
+pub use alert::SheetAlert;
 pub use animate::{run_animation, set_animated_alpha};
-pub use appearance::ColorSchemeObservation;
+pub(crate) use appearance::color_scheme_of;
+pub use appearance::{
+    ColorSchemeObservation, effective_color_scheme, observe_effective_appearance,
+};
 pub use application::{
     ActivationPolicy, Application, ApplicationHandlers, AttentionRequest, AttentionRequestToken,
     TerminateReply,
@@ -90,7 +96,7 @@ pub mod toggle;
 pub use label::Label;
 mod slider;
 pub use crate::menu::{Command, KeyModifiers, MenuTreeNode};
-pub use menu::{Menu, MenuAction, MenuButton, MenuItem};
+pub use menu::{Menu, MenuAction, MenuButton, MenuItem, append_edit_menu};
 pub use panel::{
     Panel, content_bounds, convert_to_screen, did_resize_notification,
     view_frame_did_change_notification, window_of,

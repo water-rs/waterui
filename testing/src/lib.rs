@@ -103,6 +103,21 @@
 //! When `WATERUI_TEST_ARTIFACTS_DIR` is set, snapshots are written beneath that
 //! directory using `WaterUI`'s canonical `<suite>/<case>/<stage>.png` layout. The
 //! repository's GitHub workflows already upload and summarize those snapshot images.
+//!
+//! # TypeScript views
+//!
+//! With the `ts` feature on, a session mounts a view that reaches a `tsx!`
+//! mount: [`ui`] installs the runtime loaded from the bundle
+//! `WATERUI_TS_BUNDLE` names — `water test` builds the crate's bundle and
+//! sets the variable before it runs `cargo nextest` — into the environment
+//! the view is mounted in. An absolute path is used as written; a relative
+//! one is resolved against `CARGO_MANIFEST_DIR`, which cargo and nextest set
+//! for every test binary. When the variable is unset no runtime is installed
+//! and a test that mounts no TypeScript is unaffected; a view that does reach
+//! a mount then fails with the message naming the variable and `water test`.
+//! [`UiBuilder::mount_app`] runs the application's own environment, where the
+//! application's bundle loader installs the runtime, and does not read the
+//! variable.
 
 mod app;
 mod artifacts;
@@ -116,6 +131,8 @@ mod query;
 mod selector;
 mod semantics;
 mod snapshot;
+#[cfg(feature = "ts")]
+mod ts;
 pub(crate) mod wait;
 
 pub use accesskit::Role as AccessKitRole;
@@ -127,6 +144,7 @@ pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 pub use driver::{FrameTiming, RuntimeDriver, VIRTUAL_FRAME};
 pub use executor::drain_parked_local_work;
 pub use executor::{TestLocalExecutor, install_test_executor};
+pub use hydrolysis::testing::TestStyle;
 pub use hydrolysis::{
     AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, PointerKind,
     SemanticRuntime, Style,

@@ -6,10 +6,13 @@
 fn main() {
 {% include "partials/build_script_i18n.rs.tpl" %}
 
-    println!("cargo:rerun-if-changed=app-icon.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    // Watch the icon only where it is embedded: non-Windows builds never
+    // stage it, and a missing `rerun-if-changed` path re-runs this script —
+    // and recompiles the crate — on every build (#2493).
+    println!("cargo:rerun-if-changed=app-icon.ico");
     assert!(
         std::path::Path::new("app-icon.ico").exists(),
         "app-icon.ico is missing; build through the water CLI so the app icon is staged first"

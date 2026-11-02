@@ -2,9 +2,9 @@
 
 pub use crate::render::filter::EffectBox;
 pub use crate::render::present::{
-    DestinationPrimaries, DisplayProbe, OutputAlpha, OutputColor, OutputRequest, OutputSelection,
-    Presenter, SelectionReason, TextureOutput, TransferEncoding, select_output,
-    surface_output_alpha,
+    ColorRange, ColorRangeInterval, ColorSpaceRequest, DestinationPrimaries, DisplayProbe,
+    OutputAlpha, OutputColor, OutputRequest, OutputSelection, Presenter, SelectionReason,
+    TextureOutput, TransferEncoding, select_content_output, select_output, surface_output_alpha,
 };
 pub use crate::render::shaders::{ShaderDelivery, delivery as shader_delivery};
 use std::future::Future;
@@ -181,10 +181,11 @@ impl<C: GpuContent> Content for C {
 /// An existing device shared with a native presentation host.
 /// All four handles must belong to the same device creation chain.
 ///
-/// On Vulkan and Metal adapters the device must be created with
+/// On Vulkan, Metal and DX12 adapters the device must be created with
 /// `wgpu::Features::PASSTHROUGH_SHADERS`: the engine's fixed shaders are
-/// precompiled binaries loaded through the passthrough API (issue #57), so
-/// `Engine::new` fails explicitly on a device created without the feature.
+/// precompiled binaries loaded through the passthrough API (issues #57,
+/// #2726), so `Engine::new` fails explicitly on a device created without
+/// the feature.
 #[derive(Clone, Debug)]
 pub struct SharedDevice {
     /// Instance used to create the adapter and native surfaces.
@@ -192,10 +193,92 @@ pub struct SharedDevice {
     /// Adapter used to create the device.
     pub adapter: wgpu::Adapter,
     /// Device used for both engine composition and native presentation.
-    /// Request `Features::PASSTHROUGH_SHADERS` on Vulkan and Metal.
+    /// Request `Features::PASSTHROUGH_SHADERS` on Vulkan, Metal and DX12.
     pub device: wgpu::Device,
     /// This device's submission queue.
     pub queue: wgpu::Queue,
+}
+
+impl SharedDevice {
+    /// Whether the device can run compute passes.
+    ///
+    /// Compute is a capability, not part of the engine's hardware floor:
+    /// strategies that can use it — the GPU coverage route of #2536 —
+    /// read it here, and every raster path runs without it. The flag is
+    /// read off the adapter of this creation chain, the same source the
+    /// device's own `COMPUTE_SHADERS` support comes from.
+    #[must_use]
+    pub fn has_compute(&self) -> bool {
+        supports_compute(
+            self.adapter.get_downlevel_capabilities().flags,
+            &self.adapter.limits(),
+        )
+    }
+}
+
+/// Opens a Vulkan device for a [`SharedDevice`] the engine composes on.
+///
+/// A host that creates its own Vulkan device with `request_device` gets a
+/// device without the engine's capabilities: the external-frame and YCbCr
+/// extensions of issue #166, and the dynamic-rendering local-read and
+/// rasterization-order attachment access of issue #2191. None of them can
+/// be turned on after `vkCreateDevice`, so a device opened any other way
+/// composes every intermediate through memory for the rest of its life.
+/// This is the engine's own creation path, exported for exactly that
+/// handoff: pass the same descriptor a host would pass to
+/// `Adapter::request_device`, and put the device and queue it answers
+/// with into [`SharedDevice`].
+///
+/// # Errors
+/// [`EngineError`](crate::EngineError) when `adapter` is not a Vulkan
+/// adapter, or when the device cannot be created.
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+pub fn open_vulkan_device(
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+) -> Result<(wgpu::Device, wgpu::Queue), crate::EngineError> {
+    crate::render::create_vulkan_device(adapter, descriptor)
+}
+
+/// Allocator policy for the backend a device is opened on (#170).
+///
+/// `Manual { 4 MiB..16 MiB }` was measured only on Vulkan (Mali-G715,
+/// Pixel 9 Pro): 10.4 MiB idle, where `Performance`'s 64 MiB first block
+/// is most of the ~74 MiB idle reservation. The 16 MiB cap bounds a large
+/// scene (map: five blocks for 53 MiB). Vulkan reads the hint in
+/// `AllocationSizes::from_memory_hints`
+/// (`wgpu-hal/src/vulkan/adapter.rs:2951`, rev `4b35d8bc`).
+///
+/// Every other class keeps [`wgpu::MemoryHints::Performance`], the
+/// default (`wgpu-types/src/device.rs:59`). At that revision Metal
+/// (`wgpu-hal/src/metal/adapter.rs:72`) and GLES
+/// (`wgpu-hal/src/gles/adapter.rs:1083`) take `_memory_hints` and never
+/// read it. The WebGPU backend never reads it: `request_device`
+/// (`wgpu/src/backend/webgpu.rs:1772`) copies limits, features, and the
+/// label, and that module has no `memory_hints` use. DX12 does read the
+/// hint (`wgpu-hal/src/dx12/adapter.rs:1062`, through `device.rs:64` into
+/// `AllocationSizes::from_memory_hints` at `suballocation.rs:78`) but that
+/// class is unmeasured, so it stays on the default.
+#[must_use]
+pub const fn memory_hints(backend: wgpu::Backend) -> wgpu::MemoryHints {
+    const MIB: u64 = 1024 * 1024;
+    match backend {
+        wgpu::Backend::Vulkan => wgpu::MemoryHints::Manual {
+            suballocated_device_memory_block_size: 4 * MIB..16 * MIB,
+        },
+        wgpu::Backend::Noop
+        | wgpu::Backend::Metal
+        | wgpu::Backend::Dx12
+        | wgpu::Backend::Gl
+        | wgpu::Backend::BrowserWebGpu => wgpu::MemoryHints::Performance,
+    }
+}
+
+/// The compute predicate: wgpu reports the stage as a downlevel flag plus
+/// the workgroup limits it dispatches on.
+const fn supports_compute(flags: wgpu::DownlevelFlags, limits: &wgpu::Limits) -> bool {
+    flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+        && limits.max_compute_workgroups_per_dimension > 0
 }
 
 /// A surface whose engine-owned linear P3 texture is handed to a native host.
@@ -210,9 +293,20 @@ pub struct TextureTarget {
     pub(crate) size: (u32, u32),
     pub(crate) refresh: cherenkov::RefreshRange,
     pub(crate) textures: std::sync::mpsc::Sender<wgpu::Texture>,
+    pub(crate) ranges: Option<std::sync::mpsc::Sender<ColorRange>>,
 }
 
 impl TextureTarget {
+    /// Subscribes to the first rendered content range and subsequent changes.
+    /// Drain after a successful `Engine::render`, before choosing the host's
+    /// output format. Stable frames and texture-only resizes send no update.
+    /// A new subscription replaces the previous receiver.
+    pub fn content_ranges(&mut self) -> std::sync::mpsc::Receiver<ColorRange> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.ranges = Some(sender);
+        receiver
+    }
+
     /// Sets the refresh range for animated content.
     ///
     /// # Panics
@@ -236,6 +330,7 @@ impl TextureTarget {
             Self {
                 size,
                 textures,
+                ranges: None,
                 refresh: cherenkov::DEFAULT_REFRESH,
             },
             receiver,
@@ -257,7 +352,11 @@ pub fn shader_module(device: &wgpu::Device, label: &str, source: &str) -> wgpu::
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(
-            format!("{}\n{source}", include_str!("render/color.wgsl")).into(),
+            format!(
+                "{}\n{source}",
+                include_str!(concat!(env!("OUT_DIR"), "/color.wgsl"))
+            )
+            .into(),
         ),
     })
 }
@@ -281,6 +380,10 @@ pub struct ExternalFrame {
     pub color: FrameColor,
     /// An optional GPU-side wait the sampled planes are ordered behind.
     pub wait: Option<FrameSync>,
+    /// HDR attachments copied from the producer's Core Video pixel buffer.
+    /// Preserve these when importing Apple video for native composition.
+    #[cfg(target_vendor = "apple")]
+    pub attachments: Option<metal::VideoAttachments>,
 }
 
 /// The planes an [`ExternalFrame`] samples.
@@ -587,6 +690,10 @@ pub enum InvalidFrame {
     /// `reference_white` or `hlg_peak` is not positive and finite.
     #[error("reference_white and hlg_peak must be positive and finite")]
     ColorLevel,
+    /// A native video HDR attachment has the wrong type or encoded size.
+    #[cfg(target_vendor = "apple")]
+    #[error("invalid Core Video HDR attachment: {0}")]
+    VideoAttachment(&'static str),
 }
 
 fn check_plane(texture: &wgpu::Texture) -> Result<wgpu::Extent3d, InvalidFrame> {
@@ -651,6 +758,8 @@ impl ExternalFrame {
             planes: FramePlanes::Yuv { y, uv },
             color,
             wait: None,
+            #[cfg(target_vendor = "apple")]
+            attachments: None,
         })
     }
 
@@ -678,6 +787,8 @@ impl ExternalFrame {
             planes: FramePlanes::Rgb { plane, alpha },
             color,
             wait: None,
+            #[cfg(target_vendor = "apple")]
+            attachments: None,
         })
     }
 
@@ -721,6 +832,8 @@ impl ExternalFrame {
             color: frame.generation.color,
             planes: FramePlanes::Native(frame),
             wait: None,
+            #[cfg(target_vendor = "apple")]
+            attachments: None,
         })
     }
 
@@ -807,11 +920,44 @@ pub mod dmabuf {
     #[non_exhaustive]
     pub struct DmabufPlane {
         /// The dma-buf descriptor for this plane.
-        pub fd: OwnedFd,
+        fd: OwnedFd,
         /// Byte offset of the plane inside the buffer.
-        pub offset: u32,
+        offset: u32,
         /// Byte stride between rows of the plane.
-        pub stride: u32,
+        stride: u32,
+    }
+
+    impl DmabufPlane {
+        /// A plane of `fd` at byte `offset` with row `stride`.
+        #[must_use]
+        pub const fn new(fd: OwnedFd, offset: u32, stride: u32) -> Self {
+            Self { fd, offset, stride }
+        }
+
+        /// Takes the plane apart into its descriptor, byte offset and row
+        /// stride, handing the host ownership of the descriptor.
+        #[must_use]
+        pub fn into_parts(self) -> (OwnedFd, u32, u32) {
+            (self.fd, self.offset, self.stride)
+        }
+
+        /// The dma-buf descriptor for this plane.
+        #[must_use]
+        pub const fn fd(&self) -> &OwnedFd {
+            &self.fd
+        }
+
+        /// Byte offset of the plane inside the buffer.
+        #[must_use]
+        pub const fn offset(&self) -> u32 {
+            self.offset
+        }
+
+        /// Byte stride between rows of the plane.
+        #[must_use]
+        pub const fn stride(&self) -> u32 {
+            self.stride
+        }
     }
 
     /// One presented frame: a pool image the engine has just rendered.
@@ -878,14 +1024,41 @@ pub mod dmabuf {
     #[non_exhaustive]
     pub struct DmabufFormat {
         /// The DRM fourcc (`DRM_FORMAT_*`) the host imports.
-        pub fourcc: u32,
+        fourcc: u32,
         /// The `DRM_FORMAT_MOD_*` modifiers the host imports, in
         /// preference order.
-        pub modifiers: Vec<u64>,
+        modifiers: Vec<u64>,
         /// The presentation colour encoding the host expects.
-        pub color: OutputColor,
+        color: OutputColor,
         /// The alpha convention the host expects.
-        pub alpha: OutputAlpha,
+        alpha: OutputAlpha,
+    }
+
+    impl DmabufFormat {
+        /// The DRM fourcc (`DRM_FORMAT_*`) the host imports.
+        #[must_use]
+        pub const fn fourcc(&self) -> u32 {
+            self.fourcc
+        }
+
+        /// The `DRM_FORMAT_MOD_*` modifiers the host imports, in
+        /// preference order.
+        #[must_use]
+        pub const fn modifiers(&self) -> &[u64] {
+            self.modifiers.as_slice()
+        }
+
+        /// The presentation colour encoding the host expects.
+        #[must_use]
+        pub const fn color(&self) -> OutputColor {
+            self.color
+        }
+
+        /// The alpha convention the host expects.
+        #[must_use]
+        pub const fn alpha(&self) -> OutputAlpha {
+            self.alpha
+        }
     }
 
     impl DmabufFormat {
@@ -1010,6 +1183,7 @@ pub mod android {
     #[derive(Debug)]
     pub struct SurfaceControlTarget {
         pub(crate) parent: SurfaceControl,
+        pub(crate) looper: ndk::looper::ForeignLooper,
         pub(crate) size: (u32, u32),
         pub(crate) transparent: bool,
         pub(crate) refresh: cherenkov::RefreshRange,
@@ -1017,10 +1191,16 @@ pub mod android {
 
     impl SurfaceControlTarget {
         /// Presents under `parent` at `size` device pixels.
+        /// The host must keep polling `looper` while this target is alive.
         #[must_use]
-        pub const fn new(parent: SurfaceControl, size: (u32, u32)) -> Self {
+        pub const fn new(
+            parent: SurfaceControl,
+            size: (u32, u32),
+            looper: ndk::looper::ForeignLooper,
+        ) -> Self {
             Self {
                 parent,
+                looper,
                 size,
                 transparent: false,
                 refresh: cherenkov::DEFAULT_REFRESH,
@@ -1076,6 +1256,115 @@ pub mod apple {
 /// Apple interop: importing Metal resources onto the shared device.
 #[cfg(target_vendor = "apple")]
 pub mod metal {
+    /// Source HDR metadata preserved through Core Video plane promotion.
+    ///
+    /// The standard SEI payloads remain encoded as supplied by the producer:
+    /// no luminance defaults or floating-point re-quantization are introduced.
+    #[derive(Debug, Clone, Copy)]
+    pub struct VideoAttachments {
+        mastering: Option<[u8; 24]>,
+        light: Option<[u8; 4]>,
+        environment: Option<[u8; 8]>,
+    }
+
+    impl VideoAttachments {
+        /// Copies HDR attachments before the producer releases its pixel buffer.
+        /// Missing source metadata stays absent.
+        ///
+        /// # Errors
+        /// Returns [`super::InvalidFrame::VideoAttachment`] for an attachment
+        /// whose type or length does not match Core Video's SEI payload format.
+        pub fn from_pixel_buffer(
+            buffer: &objc2_core_video::CVPixelBuffer,
+        ) -> Result<Self, super::InvalidFrame> {
+            use objc2_core_foundation::{CFData, CFRange, CFString};
+            use objc2_core_video::{
+                kCVImageBufferAmbientViewingEnvironmentKey, kCVImageBufferContentLightLevelInfoKey,
+                kCVImageBufferMasteringDisplayColorVolumeKey,
+            };
+            fn read<const N: usize>(
+                buffer: &objc2_core_video::CVPixelBuffer,
+                key: &CFString,
+                name: &'static str,
+            ) -> Result<Option<[u8; N]>, super::InvalidFrame> {
+                // SAFETY: the attachment is borrowed only while the source buffer lives.
+                let Some(value) = (unsafe { buffer.attachment(key, std::ptr::null_mut()) }) else {
+                    return Ok(None);
+                };
+                let data = value
+                    .downcast_ref::<CFData>()
+                    .filter(|data| data.len() == N)
+                    .ok_or(super::InvalidFrame::VideoAttachment(name))?;
+                let mut bytes = [0; N];
+                // SAFETY: the checked data length is exactly the destination array length.
+                unsafe {
+                    data.bytes(
+                        CFRange {
+                            location: 0,
+                            length: data.length(),
+                        },
+                        bytes.as_mut_ptr(),
+                    );
+                };
+                Ok(Some(bytes))
+            }
+            // SAFETY: attachment keys are immutable framework constants.
+            unsafe {
+                Ok(Self {
+                    mastering: read(
+                        buffer,
+                        kCVImageBufferMasteringDisplayColorVolumeKey,
+                        "mastering display colour volume",
+                    )?,
+                    light: read(
+                        buffer,
+                        kCVImageBufferContentLightLevelInfoKey,
+                        "content light level",
+                    )?,
+                    environment: read(
+                        buffer,
+                        kCVImageBufferAmbientViewingEnvironmentKey,
+                        "ambient viewing environment",
+                    )?,
+                })
+            }
+        }
+
+        pub(crate) fn apply(&self, buffer: &objc2_core_video::CVPixelBuffer) {
+            use objc2_core_foundation::CFData;
+            use objc2_core_video::{
+                CVAttachmentMode, kCVImageBufferAmbientViewingEnvironmentKey,
+                kCVImageBufferContentLightLevelInfoKey,
+                kCVImageBufferMasteringDisplayColorVolumeKey,
+            };
+            // SAFETY: keys are immutable framework constants; values are retained CFData.
+            unsafe {
+                for (value, key) in [
+                    (
+                        self.mastering.as_ref().map(<[u8; 24]>::as_slice),
+                        kCVImageBufferMasteringDisplayColorVolumeKey,
+                    ),
+                    (
+                        self.light.as_ref().map(<[u8; 4]>::as_slice),
+                        kCVImageBufferContentLightLevelInfoKey,
+                    ),
+                    (
+                        self.environment.as_ref().map(<[u8; 8]>::as_slice),
+                        kCVImageBufferAmbientViewingEnvironmentKey,
+                    ),
+                ] {
+                    if let Some(bytes) = value {
+                        buffer.set_attachment(
+                            key,
+                            &CFData::from_bytes(bytes),
+                            CVAttachmentMode::ShouldPropagate,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Wraps an `MTLTexture` as a `wgpu::Texture` on the engine's device, for
     /// use as an [`ExternalFrame`](super::ExternalFrame) plane.
     ///
@@ -1165,6 +1454,8 @@ pub mod metal {
 /// same thread, and nothing is boxed behind an unsafe `Send`.
 #[cfg(target_arch = "wasm32")]
 pub mod web {
+    pub use crate::render::planes::web::{DomTarget, HostedElement};
+
     use super::{InvalidFrame, wgpu};
     use wasm_bindgen::JsCast;
     use wgpu::webgpu;
@@ -1328,11 +1619,12 @@ pub mod web {
     ///
     /// The provider contract is validated by reflection (format, size,
     /// usage, mip and sample count, owning device token) and by a
-    /// submission probe: an empty pass bound to the wrapper inside a
+    /// submission probe: an empty render pass bound to the wrapper inside a
     /// validation error scope is the only place a destroyed or cross-device
     /// `GPUTexture` provably errors, since JavaScript exposes no liveness
-    /// flag and creation-time calls accept destroyed textures. A rejection
-    /// releases the lease before returning.
+    /// flag and creation-time calls accept destroyed textures. The pass
+    /// stays a render pass so the probe asks nothing of the device's
+    /// compute support. A rejection releases the lease before returning.
     ///
     /// `queue` must be the engine's submission queue, so the probe orders
     /// behind the producer's pending work on the same device.
@@ -1382,7 +1674,7 @@ pub mod web {
                 label: Some("external frame probe"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -1401,10 +1693,43 @@ pub mod web {
                     ),
                 }],
             });
+            // The 1×1 attachment exists only so the pass has one: what the
+            // probe needs is a submitted pass that references the wrapper's
+            // bind group, and a render pass asks nothing of the device's
+            // compute support.
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("external frame probe"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("external frame probe"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target.create_view(&wgpu::TextureViewDescriptor::default()),
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
                 pass.set_bind_group(0, &group, &[]);
             }
             queue.submit([encoder.finish()]);
@@ -1415,5 +1740,42 @@ pub mod web {
             return Err(InvalidWebTexture::Unusable);
         }
         Ok(wrapped)
+    }
+}
+
+impl crate::GpuTarget {
+    pub(crate) const fn take_content_ranges(
+        &mut self,
+    ) -> Option<std::sync::mpsc::Sender<ColorRange>> {
+        match self {
+            Self::Texture(target) => target.ranges.take(),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_needs_the_flag_and_a_workgroup_dimension() {
+        // A WebGPU-capable adapter reports both.
+        assert!(supports_compute(
+            wgpu::DownlevelFlags::COMPUTE_SHADERS,
+            &wgpu::Limits::default()
+        ));
+        // A WebGL2-class adapter has no compute at all: no flag and zero
+        // workgroup dimensions.
+        assert!(!supports_compute(
+            wgpu::DownlevelFlags::empty(),
+            &wgpu::Limits::downlevel_webgl2_defaults()
+        ));
+        // The flag alone is not enough — an adapter can advertise the stage
+        // yet report no workgroup dimension to dispatch on.
+        assert!(!supports_compute(
+            wgpu::DownlevelFlags::COMPUTE_SHADERS,
+            &wgpu::Limits::downlevel_webgl2_defaults()
+        ));
     }
 }

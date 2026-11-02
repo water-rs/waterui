@@ -77,12 +77,16 @@ compile_error!(
 );
 
 mod aux_image;
+#[cfg(feature = "gpu")]
+mod compile;
 mod cpu;
 #[cfg(feature = "gpu")]
 pub mod effect;
 #[cfg(feature = "gpu")]
 mod executor;
 pub mod filters;
+#[cfg(feature = "gpu")]
+mod pipeline_cache;
 #[cfg(feature = "gpu")]
 pub mod shader_effect;
 
@@ -93,7 +97,7 @@ pub use aux_image::{FilterImage, LutImage};
 pub use effect::{
     Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRedrawCallback, EffectRenderError, EffectRenderResult, EffectSetupError,
-    EffectSetupResult, ShapeTextures,
+    EffectSetupResult, RetainedMemory, ShapeTextures,
 };
 #[cfg(feature = "gpu")]
 pub use executor::Executor;
@@ -102,8 +106,10 @@ pub use filtrate_core::{
     Chain, ColorFilter, ColorStage, CpuFilter, CpuFilterError, CpuImage, CpuKernel, Filter,
     FilterExt, FilterLink, FilterParam, Footprint, ImageVisitor, Interpolator, LinkVisitor,
     OperatingSpace, ParamArray, ParamSource, Placed, ShapeInput, SignalVisitor, SpatialFilter,
-    SpatialStage, StageCollector, WatchGuard, WorkingSpace, kind,
+    SpatialStage, StageCollector, WatchGuard, WorkingSpace, kind, space,
 };
+#[cfg(feature = "gpu")]
+pub use pipeline_cache::PipelineCache;
 
 #[cfg(feature = "gpu")]
 pub use shader_effect::{SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError};

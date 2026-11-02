@@ -17,6 +17,10 @@ pub use session::{
     PlaybackError, PlaybackPhase, PlaybackSession, PlayerController, Playlist, RepeatMode,
 };
 
+/// The leaf contract a `Fit` video answers by.
+pub mod layout;
+pub use layout::{DEFAULT_ASPECT, FitVideoLayout, fit_video};
+
 /// Public video view configuration types.
 pub mod video;
 pub use video::{

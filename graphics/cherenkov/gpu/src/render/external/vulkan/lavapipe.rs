@@ -1107,7 +1107,8 @@ fn delayed_timeline_signal_stays_on_gpu() {
     // The wait point is genuinely unsignalled when this render runs:
     // nothing on the host signals it, so a CPU-waiting engine could not
     // return here at all — and any signal would raise the counter below.
-    assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    let next = engine.render(FrameTime::now());
+    assert!(matches!(next, Ok(Next::Idle)), "render returned {next:?}");
     // SAFETY: `semaphore` is a live timeline semaphore created above on
     // `dev` — a pure query.
     let counter = unsafe { dev.get_semaphore_counter_value(semaphore) }.expect("semaphore counter");
@@ -1134,7 +1135,8 @@ fn delayed_timeline_signal_stays_on_gpu() {
     // The frame lives on the producer: the last clone's drop retires it.
     drop(surface);
     drop(video);
-    assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    let next = engine.render(FrameTime::now());
+    assert!(matches!(next, Ok(Next::Idle)), "render returned {next:?}");
     // SAFETY: `semaphore` is live; the call only waits on it with a
     // timeout.
     let released = unsafe {
@@ -1277,6 +1279,9 @@ fn binary_state_machine_acquired_once() {
     };
     let (dev, _, family) = raw(&shared);
     let generation = rgb_generation(&shared, &device, rgb, (8, 8), None, None);
+    // A frame reaches `stage_acquire` only through an installed slot,
+    // which holds an engine lease until it is uninstalled.
+    generation.lease();
     // SAFETY: `dev` is live and `family` is the engine's queue family.
     let pool = unsafe {
         dev.create_command_pool(
@@ -1337,6 +1342,7 @@ fn binary_state_machine_acquired_once() {
     vulkan::cancel_staged(&mut native);
     // SAFETY: `cb` was never submitted and `pool` is destroyed once.
     unsafe { dev.destroy_command_pool(pool, None) };
+    generation.unlease();
 }
 
 #[test]
@@ -1437,6 +1443,9 @@ fn plan_cancellation_restores_the_frame() {
         }),
         None,
     );
+    // A frame reaches `stage_acquire` only through an installed slot,
+    // which holds an engine lease until it is uninstalled.
+    generation.lease();
     // Stage an acquire into a scratch context through the engine's own
     // path: `stage_acquire` is the unit a cancelled encode unwinds. The
     // barrier is recorded into a real buffer the submission never sees.
@@ -1494,4 +1503,136 @@ fn plan_cancellation_restores_the_frame() {
     // SAFETY: the semaphore was never submitted to a queue — no command
     // references it, so destroying it is safe and happens exactly once.
     unsafe { dev.destroy_semaphore(semaphore, None) };
+    generation.unlease();
+}
+
+/// A lease that ends between `stage_acquire` and `mark_submitted` — the
+/// window an Android plane-completion `unlease` opens on the NDK thread
+/// while the render thread is encoding — cannot package the release yet:
+/// whether the acquire barrier runs is undecided, so `acquired` is too.
+/// `mark_submitted` resolves the outcome and retries the retirement, and
+/// the packaged release then carries the acquire to unwind (#2563).
+#[test]
+fn retire_during_planned_acquire_defers_to_submit() {
+    let Some((shared, device)) = setup() else {
+        return;
+    };
+    let Some(rgb) = make_rgb(&shared, &device, (8, 8), [0x50, 0x50, 0x50, 0xff]) else {
+        eprintln!("unavailable: RGB image");
+        return;
+    };
+    let (dev, _, family) = raw(&shared);
+    let generation = rgb_generation(&shared, &device, rgb, (8, 8), None, None);
+    // SAFETY: `dev` is live and `family` is the engine's queue family.
+    let pool = unsafe {
+        dev.create_command_pool(
+            &vk::CommandPoolCreateInfo::default().queue_family_index(family),
+            None,
+        )
+    }
+    .expect("command pool");
+    // SAFETY: `pool` was created above on `dev`.
+    let cb = unsafe {
+        dev.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_pool(pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1),
+        )
+    }
+    .expect("command buffer")[0];
+    // SAFETY: `cb` was allocated from `pool` and is unused.
+    unsafe {
+        dev.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default())
+            .expect("begin");
+    }
+    let mut native = vulkan::Native::new(device.shared).expect("native context");
+    // SAFETY: `cb` is a recording command buffer on the shared device —
+    // `stage_acquire`'s contract — and `generation`'s handles are live.
+    let staged = unsafe { vulkan::stage_acquire(&generation, cb) }.expect("stage");
+    assert!(staged.is_some());
+    if let Some(pending) = staged {
+        native.staged.push(pending);
+    }
+    generation.lease();
+    generation.unlease();
+    assert_eq!(
+        *generation.state.lock().expect("state"),
+        vulkan::State::AcquisitionPlanned,
+        "an unsubmitted stage keeps the acquisition undecided"
+    );
+    assert!(
+        native
+            .shared
+            .vk
+            .pending_release
+            .lock()
+            .expect("pending release")
+            .is_empty(),
+        "retirement cannot package before the outcome resolves"
+    );
+    vulkan::mark_submitted(&mut native);
+    let releases = vulkan::drain_releases(&native);
+    assert_eq!(releases.len(), 1, "the deferred retirement packages once");
+    assert!(
+        releases[0].acquired,
+        "a submitted acquire ships the unwind barrier on release"
+    );
+    // SAFETY: `cb` was never submitted and `pool` is destroyed once.
+    unsafe { dev.destroy_command_pool(pool, None) };
+}
+
+/// The same mid-window retirement under a cancelled plan packages
+/// `acquired = false`: the encoder never submitted, so the release has
+/// no acquire barrier to unwind (#2563).
+#[test]
+fn retire_during_planned_acquire_cancel_reports_unacquired() {
+    let Some((shared, device)) = setup() else {
+        return;
+    };
+    let Some(rgb) = make_rgb(&shared, &device, (8, 8), [0x60, 0x60, 0x60, 0xff]) else {
+        eprintln!("unavailable: RGB image");
+        return;
+    };
+    let (dev, _, family) = raw(&shared);
+    let generation = rgb_generation(&shared, &device, rgb, (8, 8), None, None);
+    // SAFETY: `dev` is live and `family` is the engine's queue family.
+    let pool = unsafe {
+        dev.create_command_pool(
+            &vk::CommandPoolCreateInfo::default().queue_family_index(family),
+            None,
+        )
+    }
+    .expect("command pool");
+    // SAFETY: `pool` was created above on `dev`.
+    let cb = unsafe {
+        dev.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_pool(pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1),
+        )
+    }
+    .expect("command buffer")[0];
+    // SAFETY: `cb` was allocated from `pool` and is unused.
+    unsafe {
+        dev.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default())
+            .expect("begin");
+    }
+    let mut native = vulkan::Native::new(device.shared).expect("native context");
+    // SAFETY: `cb` is a recording command buffer on the shared device —
+    // `stage_acquire`'s contract — and `generation`'s handles are live.
+    let staged = unsafe { vulkan::stage_acquire(&generation, cb) }.expect("stage");
+    assert!(staged.is_some());
+    if let Some(pending) = staged {
+        native.staged.push(pending);
+    }
+    generation.lease();
+    generation.unlease();
+    vulkan::cancel_staged(&mut native);
+    let releases = vulkan::drain_releases(&native);
+    assert_eq!(releases.len(), 1, "the deferred retirement packages once");
+    assert!(!releases[0].acquired, "a cancelled acquire unwinds nothing");
+    // SAFETY: `cb` was never submitted and `pool` is destroyed once.
+    unsafe { dev.destroy_command_pool(pool, None) };
 }

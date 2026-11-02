@@ -41,6 +41,10 @@ use smallvec::SmallVec;
 /// This is a semantic direction: leading and trailing follow it, while physical
 /// coordinates exposed to renderers remain left-to-right.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: layout runs left to right or right to left"
+)]
 pub enum LayoutDirection {
     /// Leading is the physical left edge.
     #[default]
@@ -89,6 +93,10 @@ pub fn layout_direction(environment: &crate::Environment) -> nami::Computed<Layo
 
 /// Specifies which axis (or axes) a view wants to stretch to fill available space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "frozen layout contract (docs/layout-spec.md): containers and backends resolve every stretch axis variant by variant"
+)]
 pub enum StretchAxis {
     /// No stretching - view uses its intrinsic size
     #[default]

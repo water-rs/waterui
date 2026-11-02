@@ -15,52 +15,42 @@ categories = ["gui", "graphics"]
 waterui-core.workspace = true
 thiserror.workspace = true
 waterui-assets.workspace = true
-# Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
-png = "0.18"
-waterui = { workspace = true, features = ["gpu", "inspector"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 nami.workspace = true
-waterui-graphics = { workspace = true, features = ["gpu"] }
-# `font-collection` for the one `parley` collection this runner builds and
-# installs into the environment; the faces come from the resource loader and
-# the system source `parley/system` provides, so `system-fonts` is not needed.
-waterui-text = { workspace = true, features = ["font-collection"] }
 waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-map.workspace = true
 waterui-webview.workspace = true
+# Hosted content follows the occlusion rects through a watcher set.
+waterui-watcher-set.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
-waterui-backend-core = { workspace = true, features = ["widgets", "gestures", "overlay"] }
+waterui-backend-core = { workspace = true, features = ["gestures", "overlay"] }
 waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { workspace = true, features = ["std"] }
-cherenkov.workspace = true
-cherenkov-gpu.workspace = true
+# The Android WebView bridge's per-call result token. Only the
+# `webview-system` protocol uses it; the test build repeats it as a
+# dev-dependency.
+getrandom = { workspace = true, optional = true }
+# The theme contract's drawing vocabulary (`Recorder`, `Paint`,
+# `MaterialRegistry`) and the chrome terms the mount installs per member
+# (`MaterialScope`/`MaterialCapture`/`Live`, water-rs/waterui#1788). Style
+# packages record through it, never through a render engine.
+cherenkov-record.workspace = true
 kurbo.workspace = true
 peniko = "0.6"
 # `imageops::resize` fits a decoded image to the engine's image limits
 # before registration (water-rs/waterui#1806): the decode-quality resample
 # belongs to the ingest path, not the engine. Pixel ops only — no codecs.
 image = { version = "0.25", default-features = false }
-# `complex-scripts` ships the ICU4X segmentation dictionaries (CJ plus the
-# Southeast-Asian scripts) inside the one parley build: this runner owns the
-# `LayoutContext`, and without them its word segmenter logs `No segmentation
-# model for complex script` per CJK run on every layout pass.
-parley = { workspace = true, features = ["system", "complex-scripts"] }
-# Glyph outline bounds for the measured-frame-must-cover-ink contract (#237):
-# parley's advance metrics stop at the pen advance, so the measure path reads
-# the real outline extents through the same font stack version parley uses.
-skrifa = "0.44"
-# `Emoji`/`Emoji_Presentation` sets for the emoji-cluster ranges shaping must
-# route through the `emoji` generic family first.
-icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
-wgpu.workspace = true
+# The HWUI target reads a registered font's bounds and variation axes
+# (`head`, `fvar`, `avar`) without the shaping engine skrifa carries.
+read-fonts = { version = "0.45.1", default-features = false, features = ["std"], optional = true }
 lru.workspace = true
-pollster.workspace = true
 executor-core.workspace = true
 rustc-hash.workspace = true
 unicode-segmentation = "1.13"
@@ -77,10 +67,44 @@ waterui-inspector-protocol.workspace = true
 # only build once an application picks an activity backend — nothing in
 # this library may — so the dependency edge does not exist for the Android
 # target at all. The `winit` feature still exists there and means nothing.
+#
+# The Cherenkov GPU stack lives here unconditionally: off-Android targets
+# have exactly one painter, so the `gpu` feature selects it only on Android
+# (where the entries below are optional) and is a no-op elsewhere.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 winit = { version = "0.30", optional = true }
 ui-events-winit = { workspace = true, optional = true }
-accesskit_winit = { version = "0.34.0", optional = true }
+accesskit_winit = { version = "0.34.1", optional = true }
+# Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG) —
+# only the winit runner reads one.
+png = { version = "0.18", optional = true }
+cherenkov.workspace = true
+cherenkov-gpu.workspace = true
+wgpu.workspace = true
+waterui = { workspace = true, features = ["dialog", "gpu", "inspector"] }
+waterui-graphics = { workspace = true, features = ["gpu"] }
+# `engine` for the `parley` font context this runner builds and installs into
+# the environment; the faces come from the resource loader and the system
+# source `parley/system` provides, so `system-fonts` is not needed.
+waterui-text = { workspace = true, features = ["engine"] }
+# `complex-scripts` ships the ICU4X segmentation dictionaries (CJ plus the
+# Southeast-Asian scripts) inside the one parley build: this runner owns the
+# `LayoutContext`, and without them its word segmenter logs `No segmentation
+# model for complex script` per CJK run on every layout pass.
+parley = { workspace = true, features = ["system", "complex-scripts"] }
+# Glyph outline bounds for the measured-frame-must-cover-ink contract (#237):
+# parley's advance metrics stop at the pen advance, so the measure path reads
+# the real outline extents with this crate's own skrifa over the raw font
+# bytes; no typed value crosses to parley's font stack.
+skrifa = "0.48"
+# `Emoji`/`Emoji_Presentation` sets for the emoji-cluster ranges shaping must
+# route through the `emoji` generic family first.
+icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
+# CLDR likely-subtags (`LocaleExpander`): the script an Android platform
+# face's bare language tag is written in — see
+# `text/parley_engine/android_fonts::fallback_keys`.
+icu_locale = { version = "2.3", default-features = false, features = ["compiled_data"] }
+pollster.workspace = true
 
 [build-dependencies]
 cfg_aliases = "0.2.2"
@@ -117,6 +141,8 @@ futures = { workspace = true, optional = true }
 objc2 = { workspace = true, optional = true }
 objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSAnimation",
+    "NSAppearance",
+    "NSApplication",
     "NSEvent",
     "NSGraphics",
     "NSResponder",
@@ -135,7 +161,7 @@ objc2-foundation = { workspace = true, optional = true, features = [
     "NSError",
     "NSGeometry",
     "NSHTTPCookie",
-    "NSJSONSerialization",
+    "NSKeyValueObserving",
     "NSNotification",
     "NSObject",
     "NSProcessInfo",
@@ -169,7 +195,7 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
     "WKNavigationDelegate",
     "WKNavigationResponse",
     "WKScriptMessage",
-    "WKScriptMessageHandler",
+    "WKScriptMessageHandlerWithReply",
     "WKURLSchemeHandler",
     "WKURLSchemeTask",
     "WKUserContentController",
@@ -195,7 +221,9 @@ futures = { workspace = true, optional = true }
 # module turns the Xlib backend's `Display*` into its `xcb_connection_t`.
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "emscripten", target_os = "redox"))))'.dependencies]
 x11-dl = { version = "2.21", optional = true }
-x11rb = { version = "0.13", optional = true }
+# `allow-unsafe-code` exposes `xcb_ffi`, which 0.14 gates behind it: the
+# runner wraps the `xcb_connection_t` winit already owns.
+x11rb = { version = "0.14", features = ["allow-unsafe-code"], optional = true }
 # `ext-background-effect-v1` blur behind a Wayland window, bound on the
 # `wl_display` winit already owns — borrowed through the raw display handle,
 # never a second connection. `staging` carries the ext-* protocols, and
@@ -207,15 +235,26 @@ x11rb = { version = "0.13", optional = true }
 wayland-client = { version = "0.31", features = ["system"], optional = true }
 wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 
+# The XDG desktop portal's `org.freedesktop.appearance color-scheme` feed for
+# the winit runner (`org.freedesktop.portal.Settings` `ReadOne` plus the
+# `SettingChanged` signal) — winit reports no theme on X11 or Wayland. See
+# src/platform/linux_appearance.rs. The version tracks the one atspi and
+# mpris-server already pull in; `async-io` is the socket driver, and the
+# client polls its futures on the runner's local executor so the event loop
+# never blocks on D-Bus. `futures-core` names the `Stream` trait the signal
+# subscription is consumed through.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.19", default-features = false, features = ["async-io"], optional = true }
+futures-core = { version = "0.3", optional = true }
+
 # `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
 # `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`,
 # `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion,
 # `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE)` and
 # `DwmExtendFrameIntoClientArea` for the behind-window material's acrylic
-# backdrop, `RtlGetVersion` for the build floor that gates it. The version
-# tracks the `windows-sys` release winit 0.30 already builds against.
+# backdrop, `RtlGetVersion` for the build floor that gates it.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", optional = true, features = [
+windows-sys = { version = "0.61", optional = true, features = [
     "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
@@ -244,14 +283,35 @@ windows = { workspace = true, features = [
 # carries the eventfd the main-Looper executor wakes on, and `android_logger`
 # + `tracing-log` route `tracing` into logcat.
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21.1"
+jni.workspace = true
 ndk = { version = "0.9.0", features = ["nativewindow", "api-level-31"] }
 # The application `Context` for service crates that resolve it through
 # `ndk_context::android_context` — waterkit-clipboard's Android backend
 # panics without it; published once in `nativeCreateSession`.
 ndk-context = "0.1"
-raw-window-handle = "0.6"
 libc = "0.2"
+# The Cherenkov GPU stack on Android is optional: a pure-HWUI build
+# (`--no-default-features --features hwui`, water-rs/waterui#1811) selects
+# the platform painter and never links a GPU engine, a wgpu device or the
+# parley text stack — HWUI draws text through the platform's `StaticLayout`.
+# The `gpu` feature turns every entry here on; with `hwui` it composes
+# (the painter is HWUI, the GPU crates stand by for hosted GPU content).
+cherenkov = { workspace = true, optional = true }
+cherenkov-gpu = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
+# `raw-window-handle` is only the GPU attachment's `AndroidDisplay` impl.
+raw-window-handle = { version = "0.6", optional = true }
+waterui = { workspace = true, features = ["dialog", "inspector", "effects"] }
+# `effects`, never `gpu` by itself: the `Filtered`/`filtrate` recipe
+# vocabulary resolves under every painter (the HWUI mount names its
+# refusal); the GPU halves arrive with the `gpu` feature.
+waterui-graphics = { workspace = true, features = ["effects"] }
+waterui-text.workspace = true
+parley = { workspace = true, features = ["system", "complex-scripts"], optional = true }
+skrifa = { version = "0.48", optional = true }
+icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"], optional = true }
+icu_locale = { version = "2.3", default-features = false, features = ["compiled_data"], optional = true }
+pollster = { workspace = true, optional = true }
 android_logger = "0.15"
 tracing-log = "0.2"
 # The accessibility tree publish and the platform-view placement set cross JNI
@@ -261,8 +321,14 @@ serde_json.workspace = true
 # The published payload's `contentTypes` map serializes `ContentType`
 # (camelCase names) — the provider maps each onto `HintConstants`.
 waterui-controls = { workspace = true, features = ["serde"] }
+# The system `WebView` bridge's one-shot completions (`run_javascript`,
+# `call_async_javascript`, `get_cookies`) are `futures::channel::oneshot`.
+futures = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# wasm32 has no stderr: without a hook a panic reaches the page as a bare
+# `RuntimeError: unreachable`, its message and location lost.
+console_error_panic_hook = { version = "0.1", optional = true }
 # The web runner fetches its fonts while the GPU device comes up; `join!` and
 # `join_all` are the whole of what it needs from futures.
 futures = { workspace = true, optional = true }
@@ -271,6 +337,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
+# The `video` feature's realization of the two video leaves.
+waterui-video = { workspace = true, optional = true }
 web-sys = { version = "0.3", optional = true, features = [
     "Response",
     "CompositionEvent",
@@ -282,12 +350,13 @@ web-sys = { version = "0.3", optional = true, features = [
     "Element",
     "Event",
     "EventTarget",
-    "HtmlCanvasElement",
     "HtmlElement",
     "HtmlInputElement",
     "IntersectionObserver",
     "IntersectionObserverEntry",
     "KeyboardEvent",
+    "MediaQueryList",
+    "Navigator",
     "Node",
     "PointerEvent",
     "WheelEvent",
@@ -295,38 +364,50 @@ web-sys = { version = "0.3", optional = true, features = [
 ] }
 
 [dev-dependencies]
+# The recording tests lower through the engine's `testing::Null` backend:
+# its events report every registration and release, and the image-budget
+# test sets the image limits it reports.
+cherenkov = { workspace = true, features = ["testing"] }
+# The crate's own test targets need the `accessibility` and `testing`
+# feature APIs — the headless runtimes' `new_for_tests` constructors, the
+# merged-tree queries and `testing::TestStyle` — and a dev-dependency on the
+# package itself is what turns them on for test builds (water-rs/waterui#1673).
+hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 # The renderer itself knows nothing about `Canvas`: it resolves to a
 # `SceneView` before it reaches layout. The tests still author canvases, which
 # is what keeps that resolution honest.
 waterui-canvas.workspace = true
+# The HWUI target's unit tests read font metrics on the host as well.
+read-fonts = { version = "0.45.1", default-features = false, features = ["std"] }
+# The `hwui::kotlin` test renders the Kotlin wire constants from the Rust
+# definitions.
+askama = { version = "0.16", default-features = false, features = ["derive", "std"] }
 # The tests' `MirrorTarget` implements `Queue`, whose `ChangeSet` the engine
 # crate does not re-export.
 cherenkov-record.workspace = true
-# The wayland examples need a widget theme; m3 is independently maintained.
-hydrolysis-m3.workspace = true
-waterui-testing.workspace = true
 waterui-navigation.workspace = true
-# The presentation tests received from waterui exercise these component crates
-# directly: live photos (media), the MCP session harness (mcp, aither-mcp,
-# futures-lite, serde_json).
-waterui-media.workspace = true
 # The #210 regression test drives a real `ReactiveImage`: its handle's `set`
 # is the same call the decode pipeline makes when an image lands.
 waterui-image.workspace = true
-waterui-mcp.workspace = true
-aither-mcp = { workspace = true, features = ["server"] }
-futures-lite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# The protocol tests compose the async-call script on the host too —
+# repeats the optional `webview-system` edge above.
+getrandom.workspace = true
 toml.workspace = true
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
-waterui = { workspace = true, features = ["flow-markdown", "gpu", "snackbar", "video-gpu"] }
-base64 = "0.22"
+waterui = { workspace = true, features = ["dialog", "flow-markdown", "gpu", "snackbar", "video-gpu"] }
+base64 = "0.23"
+# The font-collection tests stage a resource root of their own — a real
+# directory, since the loader reads one from the filesystem.
+tempfile = "3.27"
 # Tolerance assertions for computed geometry and animation values in tests.
 approx = "0.5"
 executor-core = { workspace = true, features = ["async-executor"] }
 tiny_http = "0.12"
+# The macOS real-engine suite drives the shared mirrored-state case.
+waterui-webview = { workspace = true, features = ["conformance"] }
 # Two crates that only exist to let the segmentation test see what it asserts
 # about: `icu_provider/logging` routes ICU4X data warnings through `log`
 # instead of the `eprintln` shim debug builds get otherwise, and `tracing-log`
@@ -334,14 +415,10 @@ tiny_http = "0.12"
 # `complex-scripts` on the parley dep, no warning may be emitted at all.
 icu_provider = { version = "2.3", features = ["logging"] }
 tracing-log = "0.2"
-# The frame-profile example renders a packaged icon set and a chart through
-# the real pipeline.
-waterui-icons-lucide.workspace = true
-waterui-chart.workspace = true
 # Drives the text-measure bench (`benches/text_measure.rs`).
-criterion = "0.8"
+divan = "0.1"
 # The text-measure bench rides the real layout path; `harness = false` hands
-# the binary's `main` to criterion.
+# the binary's `main` to divan.
 [[bench]]
 name = "text_measure"
 harness = false
@@ -354,14 +431,9 @@ name = "real_engine_macos"
 harness = false
 required-features = ["webview-system", "winit"]
 
-# The headless frame-pipeline profiler: representative scenes rendered
-# offscreen through the real pipeline, one JSON document per scene.
-[[example]]
-name = "frame_profile"
-required-features = ["frame-profile"]
-
 [features]
-default = []
+default = ["gpu"]
+gles = ["gpu", "wgpu/gles", "cherenkov-gpu/gles", "waterui/gles", "waterui-graphics/gles"]
 accessibility = ["dep:accesskit"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
@@ -369,15 +441,50 @@ testing = []
 # pump measures. The `testing` adapter selection is what lets the profiler
 # exercise a software adapter for bring-up on a host without a GPU.
 frame-profile = ["testing"]
+# The Cherenkov GPU painter and its GPU-content surface: the `cherenkov`
+# engine crates, `wgpu`, the parley text engine, and the framework's GPU
+# component vocabulary (`GpuView`, `ExternalFrame`, `waterui_graphics::gpu`).
+# On Android the edges are optional and this feature selects them — a pure
+# HWUI build (`--no-default-features --features hwui`) links none of it,
+# while `hwui` + `gpu` keeps the HWUI painter with the GPU crates present
+# for hosted content (water-rs/waterui#1812). Off Android the GPU stack is
+# unconditional and the feature is a no-op.
+gpu = [
+    "dep:cherenkov",
+    "dep:cherenkov-gpu",
+    "dep:wgpu",
+    "dep:parley",
+    "dep:skrifa",
+    "dep:icu_properties",
+    "dep:icu_locale",
+    "dep:pollster",
+    "dep:raw-window-handle",
+    "waterui/gpu",
+    "waterui-graphics/gpu",
+    "waterui-text/engine",
+]
 inspector-signals = ["waterui/inspector-signals"]
-# The platform's own web engine, bridged as a native subview. Every other engine
-# is a crate the application links and installs; this backend never names one.
+# The HWUI render target (Android only): the retained layer tree recorded
+# into `RenderNode` display lists through one command buffer per frame, and
+# text laid out and drawn by the platform's `StaticLayout`
+# (water-rs/waterui#1811). On other targets the feature selects nothing; the
+# subsystem still compiles for tests.
+hwui = ["dep:read-fonts"]
+# The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
+# each hosted on a compositor plane, and `android.webkit.WebView` on Android,
+# mounted as a platform-view instance. Every other engine is a crate the
+# application links and installs; this backend never names one.
 webview-system = [
     "dep:block2",
     "dep:cookie",
     "dep:futures",
+    "dep:getrandom",
     "dep:objc2-web-kit",
     "dep:serde_json",
+    "web-sys?/HtmlIFrameElement",
+    "web-sys?/MouseEvent",
+    "web-sys?/PointerEventInit",
+    "web-sys?/WheelEventInit",
 ]
 winit = [
     "accessibility",
@@ -385,6 +492,7 @@ winit = [
     "dep:ui-events-winit",
     "dep:accesskit_winit",
     "dep:ctrlc",
+    "dep:png",
     "dep:signal-hook",
     "dep:libc",
     "dep:objc2",
@@ -399,9 +507,30 @@ winit = [
     "dep:wayland-client",
     "dep:wayland-protocols",
     "dep:windows-sys",
+    "dep:futures-core",
+    "dep:zbus",
+]
+# The browser's `<video>` element as the web realization of `Video` and
+# `VideoPlayer`. Only a wasm32 `web` build has it; elsewhere the feature
+# selects nothing. The CLI enables it for an application that uses video.
+video = [
+    "dep:waterui-video",
+    "web-sys?/HtmlMediaElement",
+    "web-sys?/HtmlTrackElement",
+    "web-sys?/HtmlVideoElement",
+    "web-sys?/MediaError",
+    "web-sys?/MouseEvent",
+    "web-sys?/PointerEventInit",
+    "web-sys?/TextTrack",
+    "web-sys?/TextTrackList",
+    "web-sys?/TextTrackMode",
+    "web-sys?/TimeRanges",
+    "web-sys?/VideoPlaybackQuality",
+    "web-sys?/WheelEventInit",
 ]
 web = [
     "accessibility",
+    "dep:console_error_panic_hook",
     "dep:futures",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",

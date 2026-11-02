@@ -6,13 +6,6 @@
 # `Send`-solver `overflow evaluating the requirement` diagnostic fires on
 # nightly and is silent on stable. Without this file, a contributor whose
 # rustup default is nightly gets a green local run and a red CI.
-#
-# One task genuinely needs nightly: FFI header generation, because cbindgen
-# expands the macro-generated exports through `-Zunpretty=expanded`. It names
-# the channel explicitly, and an explicit `+toolchain` always wins over this
-# file:
-#
-#     cargo +nightly run --manifest-path ffi/generator/Cargo.toml
 [toolchain]
 channel = "stable"
 components = ["clippy", "rustfmt"]

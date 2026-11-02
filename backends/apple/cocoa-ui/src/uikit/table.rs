@@ -133,6 +133,14 @@ pub trait TableSource: 'static {
         let _ = (table, from, to);
     }
 
+    /// Whether `index`'s row may become selected — `UIKit` consults it
+    /// through `tableView:willSelectRowAtIndexPath:` before pointer and
+    /// keyboard selection apply. The default allows every row.
+    fn should_select(&self, table: &TableView, index: IndexPath) -> bool {
+        let _ = (table, index);
+        true
+    }
+
     /// `index`'s row became selected by the user.
     fn did_select_row(&self, table: &TableView, index: IndexPath);
 
@@ -146,6 +154,9 @@ impl fmt::Debug for dyn TableSource {
     }
 }
 
+/// A hook slot the [`TableView`] invokes on scroll or layout callbacks.
+type TableHandler = RefCell<Option<Rc<dyn Fn(&TableView)>>>;
+
 /// The per-instance state [`TableView`] stores.
 pub struct TableViewIvars {
     source: RefCell<Option<Rc<dyn TableSource>>>,
@@ -156,6 +167,12 @@ pub struct TableViewIvars {
     /// pass, read from the window's keyboard region; the focus observers
     /// scroll a focused field clear of the keyboard region.
     keyboard: Rc<KeyboardTracking>,
+    /// The hook `scrollViewDidScroll:` fires on every offset change —
+    /// user-, flight- or programmatic-driven alike.
+    scroll: TableHandler,
+    /// The hook `layoutSubviews` fires after the system layout: bounds,
+    /// content-size and inset changes all land here.
+    layout: TableHandler,
 }
 
 impl TableViewIvars {
@@ -166,6 +183,8 @@ impl TableViewIvars {
             source: RefCell::new(None),
             flight: ScrollFlight::new(mtm),
             keyboard: Rc::new(KeyboardTracking::new()),
+            scroll: RefCell::new(None),
+            layout: RefCell::new(None),
         }
     }
 
@@ -238,6 +257,20 @@ define_class!(
         fn scroll_view_will_begin_dragging(&self, _scroll_view: &UIScrollView) {
             guarded("TableView scrollViewWillBeginDragging", || {
                 self.ivars().flight.cancel();
+            });
+        }
+
+        /// Every offset change reaches the scroll hook — drags, the
+        /// flight's own `contentOffset` writes, animated jumps alike.
+        #[unsafe(method(scrollViewDidScroll:))]
+        fn scroll_view_did_scroll(&self, _scroll_view: &UIScrollView) {
+            guarded("TableView scrollViewDidScroll", || {
+                // Clone the handler out of the cell before invoking: the
+                // handler may replace or clear the slot itself.
+                let handler = self.ivars().scroll.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self);
+                }
             });
         }
     }
@@ -428,6 +461,21 @@ define_class!(
             }
         }
 
+        #[unsafe(method_id(tableView:willSelectRowAtIndexPath:))]
+        fn will_select_row(
+            &self,
+            _table_view: &UITableView,
+            path: &NSIndexPath,
+        ) -> Option<Retained<NSIndexPath>> {
+            guarded("uikit::table::source.should_select", || {
+                let index = table_index(path);
+                self.ivars()
+                    .source()
+                    .is_some_and(|source| source.should_select(self, index))
+                    .then(|| index_path(index))
+            })
+        }
+
         #[unsafe(method(tableView:didSelectRowAtIndexPath:))]
         fn did_select_row(&self, _table_view: &UITableView, index_path: &NSIndexPath) {
             guarded("uikit::table::source.did_select_row", || {
@@ -477,6 +525,12 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), layoutSubviews] };
                 self.ivars().keyboard.apply_layout(self);
+                // Clone the handler out of the cell before invoking: the
+                // handler may replace or clear the slot itself.
+                let handler = self.ivars().layout.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self);
+                }
             });
         }
 
@@ -631,9 +685,21 @@ impl TableView {
         self.reloadData();
     }
 
-    /// Applies `deletes` and `inserts` as one animated batch — `.automatic`
-    /// when `animated`, `.none` otherwise.
-    pub fn apply_row_updates(&self, deletes: &[IndexPath], inserts: &[IndexPath], animated: bool) {
+    /// Applies `deletes`, `inserts` and `moves` as one animated batch —
+    /// `.automatic` when `animated`, `.none` otherwise. `claimed_inserts`
+    /// names rows whose own structural transition replaces the row
+    /// animation: they always insert with `.none`. Batch-update indexing:
+    /// `deletes` and each move's source name rows before the batch,
+    /// `inserts`, `claimed_inserts` and each move's destination name rows
+    /// after it.
+    pub fn apply_row_updates(
+        &self,
+        deletes: &[IndexPath],
+        inserts: &[IndexPath],
+        claimed_inserts: &[IndexPath],
+        moves: &[(IndexPath, IndexPath)],
+        animated: bool,
+    ) {
         let animation = if animated {
             UITableViewRowAnimation::Automatic
         } else {
@@ -645,10 +711,27 @@ impl TableView {
         let insert_array = NSArray::from_retained_slice(
             &inserts.iter().map(|i| index_path(*i)).collect::<Vec<_>>(),
         );
+        let claimed_array = NSArray::from_retained_slice(
+            &claimed_inserts
+                .iter()
+                .map(|i| index_path(*i))
+                .collect::<Vec<_>>(),
+        );
+        let move_paths: Vec<_> = moves
+            .iter()
+            .map(|(from, to)| (index_path(*from), index_path(*to)))
+            .collect();
         let table = self.retain();
         let updates = RcBlock::new(move || {
             table.deleteRowsAtIndexPaths_withRowAnimation(&delete_array, animation);
             table.insertRowsAtIndexPaths_withRowAnimation(&insert_array, animation);
+            table.insertRowsAtIndexPaths_withRowAnimation(
+                &claimed_array,
+                UITableViewRowAnimation::None,
+            );
+            for (from, to) in &move_paths {
+                table.moveRowAtIndexPath_toIndexPath(from, to);
+            }
         });
         // `performBatchUpdates` invokes `updates` synchronously, so the
         // captured `NSArray`s stay alive for the whole batch.
@@ -786,6 +869,29 @@ impl TableView {
         self.ivars().flight.in_flight()
     }
 
+    /// Installs a stepped clock on this surface's scroll flights and
+    /// returns it — the native test suite's hand on flight time. Call it
+    /// before the surface's first flight.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn install_manual_scroll_clock(&self) -> Rc<crate::native_test::ManualScrollClock> {
+        self.ivars().flight.install_manual_clock()
+    }
+
+    /// Runs `handler` whenever the scroll position changes, replacing the
+    /// previous handler — `scrollViewDidScroll:` covers drags, flights and
+    /// animated jumps alike.
+    pub fn on_scroll(&self, handler: impl Fn(&Self) + 'static) {
+        self.ivars().scroll.replace(Some(Rc::new(handler)));
+    }
+
+    /// Runs `handler` after every `UIKit` layout pass — where bounds,
+    /// content-size and inset changes land — replacing the previous
+    /// handler.
+    pub fn set_layout_handler(&self, handler: impl Fn(&Self) + 'static) {
+        self.ivars().layout.replace(Some(Rc::new(handler)));
+    }
+
     /// Lays out subviews immediately.
     pub fn layout_if_needed(&self) {
         self.layoutIfNeeded();
@@ -850,6 +956,27 @@ impl TableView {
         };
         let actions = NSArray::from_retained_slice(&[action]);
         UISwipeActionsConfiguration::configurationWithActions(&actions, mtm)
+    }
+}
+
+impl crate::teardown::HandlerSlots for TableView {
+    /// Drops every installed handler — the release boundary of the view's
+    /// owner, which reaches it through a [`crate::HandlerTeardown`] guard
+    /// the owner keeps.
+    ///
+    /// Each slot answers `None` afterwards, so a callback `UIKit` delivers
+    /// to this view does nothing by construction rather than reaching
+    /// state the owner released, and the handlers no longer keep that
+    /// state alive: source, scroll, layout — the flight is cancelled and
+    /// the keyboard observers cleared so the center no longer holds the
+    /// view's entries.
+    fn clear_handlers(&self) {
+        let ivars = self.ivars();
+        ivars.source.replace(None);
+        ivars.scroll.replace(None);
+        ivars.layout.replace(None);
+        ivars.flight.cancel();
+        ivars.keyboard.clear();
     }
 }
 

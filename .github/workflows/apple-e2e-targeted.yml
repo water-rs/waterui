@@ -53,6 +53,9 @@ env:
   RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # e2e lanes build fully cold: some of what they measure is cold compile
+  # time, so no job here restores or saves any Actions cache and none runs
+  # a compile wrapper (sccache, stow). Caching is for the everyday gates.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   # `cargo install --path` otherwise builds in a tempdir; framework builds
@@ -62,7 +65,7 @@ env:
 jobs:
   prepare:
     name: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 30
     outputs:
       waterui_ref: ${{ steps.setup.outputs.waterui_ref }}
@@ -76,6 +79,10 @@ jobs:
       - name: Prepare the e2e workspace
         id: setup
         run: ./.github/scripts/setup-e2e.sh
+
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
 
       # A name discovery does not know is a typo; fail the run here, once,
       # instead of one matrix job per platform.
@@ -104,13 +111,6 @@ jobs:
           toolchain: stable
           cache: "false"
 
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes (source packages are toolchain-independent). No save and no
-      # `target` cache in this lane.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-
       - name: Build the water CLI
         env:
           # The CLI's own target directory lives with its checkout in the
@@ -118,6 +118,16 @@ jobs:
           # nothing with the framework builds the shards perform.
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
         run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
+
+      - name: Build the screenshot comparer
+        timeout-minutes: 10
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
+        run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:${PATH}"
+          cargo install --path "${WATERUI_DIR}/graphics/cherenkov/oracle" --locked \
+            --features apple-screenshots --bin compare-screenshots --debug \
+            --root "${{ github.workspace }}/cli-bin"
 
       - name: Upload the water CLI
         uses: actions/upload-artifact@v4
@@ -127,11 +137,19 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - name: Upload the screenshot comparer
+        uses: actions/upload-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin/compare-screenshots
+          retention-days: 1
+          if-no-files-found: error
+
   e2e-ios:
     name: e2e-ios-${{ matrix.example }}
     if: inputs.platforms == 'ios' || inputs.platforms == 'both'
     needs: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:
@@ -142,7 +160,7 @@ jobs:
       # This job builds under the dated stable pinned below (apple-e2e.yml's
       # header explains why), and rustup ranks this variable above the
       # project's file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
     steps:
       - uses: actions/checkout@v4
 
@@ -154,7 +172,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           # run-ios-device-tests.sh verifies the packaged archive's exports
           # with the llvm-nm shipped by this toolchain.
@@ -163,13 +181,6 @@ jobs:
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache (the old per-leg `target`
-      # writer is gone).
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -180,7 +191,14 @@ jobs:
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
 
-      - name: Boot iOS simulator
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
+
+      - name: Select iOS simulator
         run: |
           set -euo pipefail
           simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
@@ -189,24 +207,10 @@ jobs:
             exit 1
           fi
           echo "SIMULATOR_UDID=${simulator_udid}" >> "${GITHUB_ENV}"
-          xcrun simctl boot "${simulator_udid}" || true
-          xcrun simctl bootstatus "${simulator_udid}" -b
-          # An iOS capture is the whole display (macOS captures the app's own
-          # window), so a SpringBoard notification banner lands in the frame and
-          # reads as a divergence from the app's own baseline and from the
-          # SwiftUI twin. Booting out the delivery daemon stops every banner for
-          # this boot; the device is created fresh per run, so nothing persists.
-          xcrun simctl spawn "${simulator_udid}" \
-            launchctl bootout system/com.apple.usernotificationsd 2>/dev/null || true
-          # The capture is compared pixel-by-pixel; pin the status bar so the
-          # clock and battery do not diff against the baseline.
-          xcrun simctl status_bar "${simulator_udid}" override \
-            --time "9:41" \
-            --batteryState charged \
-            --batteryLevel 100 \
-            --cellularMode active \
-            --cellularBars 4 \
-            --wifiBars 3
+
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
 
       - name: Run iOS e2e examples
         env:
@@ -260,7 +264,7 @@ jobs:
     name: e2e-macos-${{ matrix.example }}
     if: inputs.platforms == 'macos' || inputs.platforms == 'both'
     needs: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:
@@ -271,7 +275,7 @@ jobs:
       # This job builds under the dated stable pinned below (apple-e2e.yml's
       # header explains why), and rustup ranks this variable above the
       # project's file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
     steps:
       - uses: actions/checkout@v4
 
@@ -283,17 +287,11 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -303,6 +301,17 @@ jobs:
       - run: |
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
+
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
 
       - name: Run macOS e2e examples
         env:

@@ -6,7 +6,11 @@ use cherenkov::{
     Picture, Pressure, WorkingColor,
 };
 use cherenkov_cpu::{Raster as Gpu, RasterConfig as GpuConfig};
+use cherenkov_oracle::metrics::assert_images_match;
 use nami::Binding;
+
+#[path = "support/visual.rs"]
+mod visual;
 
 #[test]
 fn live_stroke_changes_match_cold_coverage_without_relowering_static_content() {
@@ -81,13 +85,7 @@ fn live_stroke_changes_match_cold_coverage_without_relowering_static_content() {
         });
         engine.render(FrameTime::now()).expect("cold coverage");
         let cold = surface.readback().expect("cold pixels");
-        for (warm, cold) in warm.pixels.iter().zip(cold.pixels) {
-            assert_eq!(
-                warm.map(f32::to_bits),
-                cold.map(f32::to_bits),
-                "stroke cache alias"
-            );
-        }
+        assert_images_match(&visual::image(&cold), &visual::image(&warm));
         engine.render(FrameTime::now()).expect("idle");
         assert_eq!(engine.stats().commands_lowered, 0);
     }

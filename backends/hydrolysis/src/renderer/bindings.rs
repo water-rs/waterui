@@ -5,7 +5,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(super) const fn target_hit_priority(
         depth: usize,
         order: usize,
@@ -122,24 +122,24 @@ impl SemanticCore {
     #[must_use]
     pub fn focused_text_input_state(&self) -> Option<TextInputState> {
         if let Some(caret) = self.focused_embedded_ime_caret() {
-            return Some(TextInputState {
-                x: caret.x0,
-                y: caret.y0,
-                width: caret.width().max(1.0),
-                height: caret.height().max(1.0),
-                purpose: crate::platform::TextInputPurpose::Normal,
-                activation: self.text_editing.activations(),
-            });
+            return Some(TextInputState::new(
+                caret.x0,
+                caret.y0,
+                caret.width().max(1.0),
+                caret.height().max(1.0),
+                crate::platform::TextInputPurpose::Normal,
+                self.text_editing.activations(),
+            ));
         }
         let target = self.text_editing.focused_target()?;
-        Some(TextInputState {
-            x: target.cursor_area.x0,
-            y: target.cursor_area.y0,
-            width: target.cursor_area.width().max(1.0),
-            height: target.cursor_area.height().max(1.0),
-            purpose: target.purpose,
-            activation: self.text_editing.activations(),
-        })
+        Some(TextInputState::new(
+            target.cursor_area.x0,
+            target.cursor_area.y0,
+            target.cursor_area.width().max(1.0),
+            target.cursor_area.height().max(1.0),
+            target.purpose,
+            self.text_editing.activations(),
+        ))
     }
 
     /// The focused text input's accessibility node — UI focus is the text
@@ -156,6 +156,66 @@ impl SemanticCore {
 
     pub fn clear_ui_focus(&mut self) -> bool {
         self.set_focused_text_input(None)
+    }
+
+    /// Whether hosted content (`AppKit` or DOM) holds platform focus: it then
+    /// receives key and IME delivery itself, so Hydrolysis dispatches none.
+    #[cfg_attr(
+        not(all(hydrolysis_hosted, hydrolysis_gpu)),
+        expect(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            reason = "no hosted content exists on targets without system-compositor planes"
+        )
+    )]
+    fn hosted_has_focus(&self) -> bool {
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
+        return self
+            .hit_test
+            .native_view_occlusions
+            .iter()
+            .any(|target| target.hosted.1.focused.snapshot());
+        #[cfg(not(all(hydrolysis_hosted, hydrolysis_gpu)))]
+        false
+    }
+
+    /// Releases Hydrolysis's own keyboard, text and embedded focus while
+    /// hosted content holds platform focus, so exactly one owner has it.
+    /// Returns whether hosted content holds it.
+    pub(crate) fn sync_hosted_focus(&mut self) -> bool {
+        let hosted = self.hosted_has_focus();
+        if hosted {
+            self.set_focused_text_input(None);
+            self.set_focused_embedded_key(None);
+            self.set_keyboard_focus(None, false);
+        }
+        hosted
+    }
+
+    /// Whether the pointer is over hosted content that no Hydrolysis content
+    /// covers: the hosted view sets the cursor there itself.
+    #[cfg_attr(
+        not(all(hydrolysis_hosted, hydrolysis_gpu)),
+        expect(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            reason = "no hosted content exists on targets without system-compositor planes"
+        )
+    )]
+    pub(crate) fn hosted_owns_cursor(&self, x: f32, y: f32) -> bool {
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
+        {
+            let point = kurbo::Point::new(f64::from(x), f64::from(y));
+            self.hit_test
+                .native_view_occlusions
+                .iter()
+                .any(|target| target.bounds.contains(point) && !target.sink.covers(point))
+        }
+        #[cfg(not(all(hydrolysis_hosted, hydrolysis_gpu)))]
+        {
+            let _ = (x, y);
+            false
+        }
     }
 
     #[must_use]
@@ -228,10 +288,18 @@ impl SemanticCore {
             .hit_test
             .pending_context_menu_hold
             .map(|hold| hold.started_at + CONTEXT_MENU_HOLD_DURATION);
-        [gesture_deadline, caret_deadline, hold_deadline]
-            .into_iter()
-            .flatten()
-            .min()
+        // A released press on an engine-realized chrome wakes the runner
+        // when its minimum press duration ends, not every frame until then.
+        let release_deadline = self.next_live_release_deadline();
+        [
+            gesture_deadline,
+            caret_deadline,
+            hold_deadline,
+            release_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub fn sync_active_interactions_after_layout(&mut self, pointer: Option<(f32, f32)>) {
@@ -247,11 +315,12 @@ impl SemanticCore {
         gesture: Gesture,
         action: BoxedAction<()>,
     ) -> crate::gesture::GestureTarget {
-        // `bounds` is node-local: the recognizer starts with it, and
-        // materialization re-registers every gesture at its resolved
-        // window rect and merged paint rank.
+        // `bounds` is node-local: the recognizer starts with it and an
+        // identity mapping, and materialization re-registers every gesture
+        // at its resolved window rect, window-to-local transform and merged
+        // paint rank.
         let target = self.gesture_engine.register_target(
-            bounds,
+            crate::gesture::GesturePlacement::new(bounds, kurbo::Affine::IDENTITY),
             gesture,
             action,
             self.render_depth,
@@ -274,16 +343,21 @@ impl SemanticCore {
     /// at that row's current node-local bounds. The recognizer state machine is
     /// shared, so a drag that began before this frame keeps running.
     ///
-    /// The retained record resolves the target's window rect and merged paint
-    /// rank at materialization — its birth order is not reused, since a stale
-    /// rank would weigh it against siblings it was never painted with.
+    /// The retained record resolves the target's window rect, window-to-local
+    /// transform and merged paint rank at materialization — its birth order
+    /// is not reused, since a stale rank would weigh it against siblings it
+    /// was never painted with.
     pub(crate) fn register_retained_gesture_target(
         &mut self,
         target: &crate::gesture::GestureTarget,
         bounds: kurbo::Rect,
         group_id: usize,
     ) {
-        let mut target = target.with_bounds_depth_and_group(bounds, self.render_depth, group_id);
+        let mut target = target.with_placement_depth_and_group(
+            crate::gesture::GesturePlacement::new(bounds, kurbo::Affine::IDENTITY),
+            self.render_depth,
+            group_id,
+        );
         target.order = 0;
         self.register_retained(
             mount::RegisteredGesture {
@@ -314,7 +388,7 @@ impl SemanticCore {
         group_id
     }
 
-    pub(crate) fn register_text_input_target(&mut self, target: TextInputTargetRegistration) {
+    pub(crate) fn register_text_input_target(&mut self, target: TextInputTargetRegistration<E>) {
         #[cfg(feature = "accessibility")]
         let accessibility_node_id = self.take_pending_text_input_accessibility_node();
         self.register_text_input_target_data(text_editing::TextInputTargetData {
@@ -328,7 +402,7 @@ impl SemanticCore {
 
     pub(super) fn register_text_input_target_data(
         &mut self,
-        data: text_editing::TextInputTargetData,
+        data: text_editing::TextInputTargetData<E>,
     ) {
         // All four rects stay node-local; materialization resolves them and
         // applies the clip intersect + alpha gate.

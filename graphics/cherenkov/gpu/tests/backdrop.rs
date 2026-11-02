@@ -1,11 +1,17 @@
 //! Backdrop groups: bounded f16 captures sampled by member layers.
 
-use cherenkov::kurbo::{Circle, Ellipse, Rect, RoundedRect};
+use cherenkov::kurbo::{Affine, Circle, Ellipse, Rect, RoundedRect};
 use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
 use cherenkov::{
-    BackdropOuter, Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor,
+    BackdropOuter, Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, Pressure,
+    WorkingColor,
 };
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::{assert_f16_close, assert_images_match};
+
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
 
 fn pixel(readback: &cherenkov::Readback, x: usize, y: usize) -> [f32; 4] {
     let p = &readback.pixels[y * readback.width as usize + x];
@@ -124,6 +130,97 @@ fn blurred_backdrop_keeps_extended_range() -> Result<(), Box<dyn std::error::Err
     // `backdrop_captures` — only the one capture texture does.
     assert_eq!(memory.backdrop_captures, Bytes(64 * 64 * 8));
     assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
+    Ok(())
+}
+}
+
+split_test! {
+/// `filter_targets` counts the capture chain's held targets (#1941): the
+/// registry's input/output pair plus the executor's intermediates, freed
+/// with the group.
+fn filtered_group_reports_its_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(4.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&glass);
+        tx[&glass]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let memory = wait!(engine.memory());
+    // footprint = ceil(4 * 4) = 16 → region (8-16..56+16) ∩ 0..64 = 64×64.
+    // The chain holds an input/output pair at the capture's format plus
+    // the one intermediate the blur's two passes share — three
+    // Rgba16Float targets.
+    assert_eq!(memory.filter_targets, Bytes(3 * 64 * 64 * 8));
+    // The targets go with the chain: removing the group frees them.
+    surface.update(|tx| {
+        tx[&glass].clear_backdrop();
+    });
+    drop(group);
+    wait!(engine.render(FrameTime::now()))?;
+    assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+    Ok(())
+}
+}
+
+split_test! {
+/// Memory pressure frees the chain's retained intermediates together with
+/// the registry's io pair (#2765); the next frame recreates them.
+fn trim_drops_the_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(4.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&glass);
+        tx[&glass]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    // footprint = ceil(4 * 4) = 16 → region (8-16..56+16) ∩ 0..64 = 64×64.
+    // The io pair alone would be two targets; the blur's shared
+    // intermediate puts the chain above it.
+    let held = wait!(engine.memory()).filter_targets;
+    assert!(held > Bytes(2 * 64 * 64 * 8), "held {held:?}");
+    for (pressure, red) in [(Pressure::Critical, 0.5), (Pressure::Moderate, 1.0)] {
+        engine.trim(pressure);
+        assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+        // A frame with nothing to redraw does not run the chain; new
+        // backdrop content does, and the chain recreates its targets.
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 64.0, 64.0),
+                    WorkingColor::new([red, 0.0, 0.0, 1.0]),
+                );
+            }));
+        });
+        wait!(engine.render(FrameTime::now()))?;
+        assert_eq!(wait!(engine.memory()).filter_targets, held);
+    }
     Ok(())
 }
 }
@@ -444,7 +541,7 @@ fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: 
             [0.0, 0.0, 1.0, 1.0]
         }
     };
-    let faded = |full: &cherenkov::Readback, x: usize, y: usize| {
+    let faded = |full: &cherenkov::Readback, x: usize, y: usize| -> [f32; 4] {
         std::array::from_fn(|c| 0.5f32.mul_add(pixel(full, x, y)[c], 0.5 * dst(x)[c]))
     };
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
@@ -454,10 +551,10 @@ fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: 
     // Sample-only over red, content-covered at the step, covered
     // content, and the clip's corner edge.
     for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
-        assert_pixel(pixel(&half, x, y), faded(&full, x, y), 1e-3);
+        assert_f16_close(&pixel(&half, x, y), &faded(&full, x, y), 1.0);
     }
     // Outside the clip the surface is untouched.
-    assert_pixel(pixel(&half, 1, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_f16_close(&pixel(&half, 1, 16), &[1.0, 0.0, 0.0, 1.0], 1.0);
     // A filtered member at the same pixels: the sample is attenuated —
     // never swapped — and fades with the member's content, so the rule
     // holds at covered pixels too; the member scope compositing sample
@@ -466,10 +563,10 @@ fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: 
     let filtered_full = wait!(render(&engine, 1.0, Some(SWAP), normal))?;
     let filtered_half = wait!(render(&engine, 0.5, Some(SWAP), normal))?;
     for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
-        assert_pixel(
-            pixel(&filtered_half, x, y),
-            faded(&filtered_full, x, y),
-            1e-3,
+        assert_f16_close(
+            &pixel(&filtered_half, x, y),
+            &faded(&filtered_full, x, y),
+            1.0,
         );
     }
     // An identity-filtered member equals the unfiltered member: the
@@ -480,8 +577,8 @@ fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: 
     let identity_full = wait!(render(&engine, 1.0, Some(IDENTITY), normal))?;
     let identity_half = wait!(render(&engine, 0.5, Some(IDENTITY), normal))?;
     for &(x, y) in &[(6, 5), (5, 5), (8, 16), (16, 16), (24, 16)] {
-        assert_pixel(pixel(&identity_full, x, y), pixel(&full, x, y), 1e-3);
-        assert_pixel(pixel(&identity_half, x, y), pixel(&half, x, y), 1e-3);
+        assert_f16_close(&pixel(&identity_full, x, y), &pixel(&full, x, y), 1.0);
+        assert_f16_close(&pixel(&identity_half, x, y), &pixel(&half, x, y), 1.0);
     }
     // A member's non-Normal blend applies to its sample, for both member
     // kinds: `Multiply` blends the whole member — sample and content —
@@ -610,6 +707,63 @@ fn shader_effect_lights_the_rim() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 split_test! {
+/// A member bound to a signal of its shader uniforms re-renders with the
+/// new uniforms on the next frame, with no transaction.
+fn a_bound_shader_effect_change_rerenders_the_member()
+-> Result<(), Box<dyn std::error::Error>> {
+    use nami::{SignalExt, binding};
+
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            let rim = clamp(1.0 + px.sdf / 4.0, 0.0, 1.0);
+            return vec4<f32>(backdrop_sample(px.p).rgb * (1.0 + params[0].x * rim), backdrop_sample(px.p).a);
+        }",
+    ))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let member = surface.layer();
+    let gain = binding(3.0_f32);
+    let sample = {
+        let group = group.id();
+        gain.map(move |gain| {
+            cherenkov::BackdropSample::with_effect(group, shader.effect(vec![gain]))
+        })
+    };
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(sample);
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    let lit = pixel(&readback, 10, 32);
+    assert!(lit[0] > 1.5, "rim pixel {lit:?} under gain 3");
+    let captures = wait!(engine.memory()).backdrop_captures;
+
+    gain.set(0.0);
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // Gain 0 leaves the plain sample in the rim too.
+    assert_pixel(pixel(&readback, 10, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_eq!(
+        wait!(engine.memory()).backdrop_captures,
+        captures,
+        "the group keeps its capture"
+    );
+    Ok(())
+}
+}
+
+split_test! {
 fn shader_effect_size_is_the_unclipped_member_size() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
@@ -639,6 +793,90 @@ fn shader_effect_size_is_the_unclipped_member_size() -> Result<(), Box<dyn std::
     // `size` reports the member's 64x16 device bounds, not the 32x16
     // intersection with the capture region.
     assert_pixel(pixel(&readback, 8, 8), [0.25, 0.0625, 0.0, 1.0], 1e-3);
+    Ok(())
+}
+}
+
+split_fn! {
+/// A 4-logical-pixel rim band — red within 4 logical px inside the
+/// member edge, black deeper in — painted through `px.scale` at
+/// recording `scale`: the member clip is 8..40 logical px in a
+/// `scale`-times device surface, behind a parent layer scaling the
+/// recording to device pixels.
+fn logical_rim_band(
+    engine: &Engine<Gpu>,
+    shader: &cherenkov::BackdropShader,
+    scale: u32,
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let side = 64 * scale;
+    let surface =
+        wait!(engine.surface(Offscreen::new((side, side), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let recording = surface.layer();
+    let member = surface.layer();
+    let s = f64::from(scale);
+    #[expect(clippy::cast_precision_loss, reason = "the test scales are tiny")]
+    let recording_scale = cherenkov::RecordingScale::new(scale as f32)?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0 * s, 64.0 * s),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&recording);
+        tx[&recording].transform(Affine::scale(s));
+        tx[&recording].push(&member);
+        tx[&member].clip(Rect::new(8.0, 8.0, 40.0, 40.0)).backdrop(
+            group
+                .sample_with(shader.effect(Vec::new()))
+                .scale(recording_scale),
+        );
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+}
+
+split_test! {
+/// The same logical recipe at recording scale 1 and 2 lands on the same
+/// logical geometry: every device pixel at scale 2 matches the scale-1
+/// pixel whose logical pixel it lies in.
+fn shader_effect_reads_the_recording_scale() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return vec4<f32>(select(0.0, 1.0, px.own_sdf / px.scale > -4.0), 0.0, 0.0, 1.0);
+        }",
+    ))?;
+    let one = wait!(logical_rim_band(&engine, &shader, 1))?;
+    let two = wait!(logical_rim_band(&engine, &shader, 2))?;
+    // The band and the interior are both there at scale 1.
+    assert_pixel(pixel(&one, 11, 20), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_pixel(pixel(&one, 12, 20), [0.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_pixel(pixel(&one, 4, 20), [0.0, 0.0, 1.0, 1.0], 1e-3);
+    // The doubled device pixels must match the logical ones up to one f16
+    // step, not bit-exactly: how `own_sdf / scale` rounds into the LinearF16
+    // store is the adapter's own choice, and the Windows adapters land one
+    // step off the others (#2725): 0.9995117 is 1 - 2^-11, the f16 value
+    // just below 1.0. The 0.001 bound admits two such steps below 1.0 and
+    // one above it, where the spacing is 2^-10.
+    for y in 0..64 {
+        for x in 0..64 {
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let actual = pixel(&two, 2 * x + dx, 2 * y + dy);
+                let expected = pixel(&one, x, y);
+                for (a, e) in actual.iter().zip(expected) {
+                    assert!(
+                        (a - e).abs() <= 0.001,
+                        "device pixel ({}, {}) at scale 2 against logical pixel ({x}, {y}): {actual:?} vs {expected:?}",
+                        2 * x + dx,
+                        2 * y + dy,
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }
 }
@@ -840,16 +1078,13 @@ fn far_members_take_two_regions() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(wait!(engine_a.memory()).backdrop_captures, Bytes(2 * 512 * 96 * 8));
     let (engine_b, _surface_b, readback_b, _group_c, _group_d) = wait!(render_bars(true))?;
     assert_eq!(wait!(engine_b.memory()).backdrop_captures, Bytes(2 * 512 * 96 * 8));
-    // Inside both bars the pixels are byte-identical between the
-    // two-region one-group render and the two single-member groups.
-    for y in (0..96).chain(416..512) {
-        for x in 0..512 {
-            assert_eq!(
-                pixel(&readback_a, x, y),
-                pixel(&readback_b, x, y),
-                "pixel {x},{y} differs"
-            );
-        }
+    // Inside both bars the two-region one-group render looks the same as
+    // the two single-member groups.
+    for y in [0..96, 416..512] {
+        assert_images_match(
+            &crop(&readback_a, 0..512, y.clone()),
+            &crop(&readback_b, 0..512, y),
+        );
     }
     Ok(())
 }
@@ -1773,15 +2008,10 @@ fn render(engine: &Engine<Gpu>, with_plain: bool) -> Result<cherenkov::Readback,
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let alone = wait!(render(&engine, false))?;
     let shared = wait!(render(&engine, true))?;
-    for y in 8..56 {
-        for x in 600..840 {
-            assert_eq!(
-                pixel(&alone, x, y),
-                pixel(&shared, x, y),
-                "member pixel ({x}, {y}) depends on the other member"
-            );
-        }
-    }
+    assert_images_match(
+        &crop(&alone, 600..840, 8..56),
+        &crop(&shared, 600..840, 8..56),
+    );
     Ok(())
 }
 }
@@ -2512,6 +2742,151 @@ fn bridge_pixel_reads_the_union_field() -> Result<(), Box<dyn std::error::Error>
     assert!((sdf - -2.0125).abs() <= 0.05, "px.sdf {sdf}, expected −2.0125");
     assert!((own - 2.5).abs() <= 0.05, "px.own_sdf {own}, expected 2.5");
     assert!((nx - 1.0).abs() <= 0.05, "px.normal.x {nx}, expected +1");
+    Ok(())
+}
+}
+
+split_test! {
+/// `backdrop_field` at a displaced point of a union member: from (16.5,
+/// 16.5), deep inside `a`, the read at (22.75, 16.5) lands in the bridge
+/// — `d_a = 2.75`, `d_b = 3.25`, folded `m = 2.75 − (19.5/20)²·5`, the
+/// gradient `0.5125·∇a + 0.4875·∇b` pointing +x, and `a`'s ownership
+/// `0.75 / (0.75 + 0.25)` from `a_i = clamp(0.5 + f_i / 2, 0, 1)`.
+fn backdrop_field_reads_the_union_at_a_displaced_point() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            let f = backdrop_field(px.p + vec2<f32>(6.25, 0.0));
+            return vec4<f32>(
+                (f.sdf + 10.0) / 20.0,
+                f.normal.x * 0.5 + 0.5,
+                f.normal.y * 0.5 + 0.5,
+                f.weight
+            );
+        }",
+    ))?;
+    let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL
+            .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let a = surface.layer();
+    let b = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 0.0, 0.0]),
+            );
+        }));
+        tx[surface.root()].push(&a);
+        tx[&a]
+            .clip(Rect::new(4.0, 8.0, 20.0, 24.0))
+            .backdrop(group.sample_with(shader.effect(Vec::new())));
+        tx[surface.root()].push(&b);
+        tx[&b]
+            .clip(Rect::new(26.0, 8.0, 42.0, 24.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // `a` owns (16.5, 16.5) outright at coverage 1 over a transparent
+    // canvas, so the encoding lands verbatim.
+    let px = pixel(&readback, 16, 16);
+    let (sdf, nx, ny, weight) = (
+        px[0].mul_add(20.0, -10.0),
+        px[1].mul_add(2.0, -1.0),
+        px[2].mul_add(2.0, -1.0),
+        px[3],
+    );
+    assert!((sdf - -2.003_125).abs() <= 0.01, "field sdf {sdf}, expected −2.003125");
+    assert!((nx - 1.0).abs() <= 0.01, "field normal.x {nx}, expected +1");
+    assert!(ny.abs() <= 0.01, "field normal.y {ny}, expected 0");
+    assert!((weight - 0.75).abs() <= 0.01, "ownership {weight}, expected 0.75");
+    Ok(())
+}
+}
+
+split_fn! {
+/// A solo member under `translate(10, 6) · scale(2)` clipped to the
+/// rounded rect `(0, 0)–(12, 10)` with radius 3 — `(10, 6)–(34, 26)`
+/// with radius 6 in device pixels — painted by `shader` over a
+/// transparent canvas.
+fn transformed_rounded_member(
+    engine: &Engine<Gpu>,
+    shader: &cherenkov::BackdropShader,
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(cherenkov::BackdropSpec::FULL);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 0.0, 0.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .transform(Affine::translate((10.0, 6.0)) * Affine::scale(2.0))
+            .clip(RoundedRect::new(0.0, 0.0, 12.0, 10.0, 3.0))
+            .backdrop(group.sample_with(shader.effect(Vec::new())));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+}
+
+split_test! {
+/// A solo member's `backdrop_field` read at a displaced point is its own
+/// clip field there, exact in a corner where `d(p) − n·shift` is not:
+/// from (28.5, 21.5) the read at (31.5, 24.5) lies `(3.5, 4.5)` from the
+/// bottom-right corner centre (28, 20), so the distance is `√32.5 − 6`,
+/// the normal `(3.5, 4.5) / √32.5`, the ownership 1.
+fn backdrop_field_reads_a_solo_corner_at_a_displaced_point() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            let f = backdrop_field(px.p + vec2<f32>(3.0, 3.0));
+            return vec4<f32>(
+                (f.sdf + 10.0) / 20.0,
+                f.normal.x * 0.5 + 0.5,
+                f.normal.y * 0.5 + 0.5,
+                f.weight
+            );
+        }",
+    ))?;
+    let readback = wait!(transformed_rounded_member(&engine, &shader))?;
+    let px = pixel(&readback, 28, 21);
+    let (sdf, nx, ny, weight) = (
+        px[0].mul_add(20.0, -10.0),
+        px[1].mul_add(2.0, -1.0),
+        px[2].mul_add(2.0, -1.0),
+        px[3],
+    );
+    let len = 32.5f32.sqrt();
+    assert!((sdf - (len - 6.0)).abs() <= 0.01, "field sdf {sdf}, expected {}", len - 6.0);
+    assert!((nx - 3.5 / len).abs() <= 0.01, "field normal.x {nx}, expected {}", 3.5 / len);
+    assert!((ny - 4.5 / len).abs() <= 0.01, "field normal.y {ny}, expected {}", 4.5 / len);
+    assert!((weight - 1.0).abs() <= 1e-6, "ownership {weight}, expected 1");
+    Ok(())
+}
+}
+
+split_test! {
+/// `px.local` is the member pixel in the member layer's own space: under
+/// `translate(10, 6) · scale(2)`, device (28.5, 21.5) is (9.25, 7.75)
+/// and device (12.5, 8.5) is (1.25, 1.25).
+fn shader_effect_reads_the_member_local_position() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return vec4<f32>(px.local / 16.0, 0.0, 1.0);
+        }",
+    ))?;
+    let readback = wait!(transformed_rounded_member(&engine, &shader))?;
+    assert_pixel(pixel(&readback, 28, 21), [9.25 / 16.0, 7.75 / 16.0, 0.0, 1.0], 1e-4);
+    assert_pixel(pixel(&readback, 12, 8), [1.25 / 16.0, 1.25 / 16.0, 0.0, 1.0], 1e-4);
     Ok(())
 }
 }

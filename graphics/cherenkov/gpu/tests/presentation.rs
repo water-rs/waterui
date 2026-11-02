@@ -12,6 +12,7 @@ use cherenkov_gpu::{
         shader_delivery, wgpu,
     },
 };
+use cherenkov_oracle::metrics::assert_unorm8_close;
 
 split_fn! {
 /// An adapter/device pair usable as a `SharedDevice`: passthrough backends
@@ -23,7 +24,9 @@ fn shared_device()
     let adapter =
         block!(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
     let required_features = match adapter.get_info().backend {
-        wgpu::Backend::Vulkan | wgpu::Backend::Metal => wgpu::Features::PASSTHROUGH_SHADERS,
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => {
+            wgpu::Features::PASSTHROUGH_SHADERS
+        }
         _ => wgpu::Features::empty(),
     };
     let (device, queue) = block!(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -48,7 +51,8 @@ fn exported_texture_preserves_hdr_and_updates_after_resize()
         }),
         ..GpuConfig::default()
     }))?;
-    let (target, textures) = TextureTarget::new((16, 16));
+    let (mut target, textures) = TextureTarget::new((16, 16));
+    let ranges = target.content_ranges();
     let source = wait!(engine.surface(target, || {}))?;
     source.clear_color(WorkingColor::new([4.0, 0.5, 0.0, 0.5]));
     let texture = textures.try_recv()?;
@@ -56,6 +60,7 @@ fn exported_texture_preserves_hdr_and_updates_after_resize()
     let destination = wait!(engine.surface(target, || {}))?;
     let output = destinations.try_recv()?;
     wait!(engine.render(FrameTime::now()))?;
+    assert_eq!(ranges.try_recv()?, cherenkov_gpu::interop::ColorRange::HighDynamicRange);
     let delivery = shader_delivery(backend, &device)?;
     let mut presenter = Presenter::new(&device, delivery);
     presenter.texture(
@@ -88,6 +93,7 @@ fn exported_texture_preserves_hdr_and_updates_after_resize()
     assert!(pixel[0] > 1.0, "extended output keeps HDR range: {pixel:?}");
     source.clear_color(WorkingColor::new([1.0, 1.0, 1.0, 0.5]));
     wait!(engine.render(FrameTime::now()))?;
+    assert_eq!(ranges.try_recv()?, cherenkov_gpu::interop::ColorRange::WideGamut);
     presenter.texture(
         &device,
         &queue,
@@ -108,6 +114,9 @@ fn exported_texture_preserves_hdr_and_updates_after_resize()
     }
     source.resize((8, 4))?;
     wait!(engine.render(FrameTime::now()))?;
+    assert!(ranges.try_recv().is_err(), "unchanged range does not notify on resize");
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(ranges.try_recv().is_err(), "stable frame does not notify");
     let resized = textures.try_recv()?;
     assert_eq!((resized.width(), resized.height()), (8, 4));
     assert_eq!(
@@ -154,7 +163,7 @@ fn hardware_and_shader_srgb_store_the_same_premultiplied_bytes()
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    for alpha in [0.0, 0.25, 0.5, 1.0] {
+    for (alpha, stored) in [(0.0, 0_u8), (0.25, 64), (0.5, 128), (1.0, 255)] {
         surface.clear_color(WorkingColor::new([1.0, 1.0, 1.0, alpha]));
         wait!(engine.render(FrameTime::now()))?;
         for output in &outputs {
@@ -205,13 +214,9 @@ fn hardware_and_shader_srgb_store_the_same_premultiplied_bytes()
             .slice(..)
             .get_mapped_range()
             .expect("buffer range is mapped and not overlapping");
-        for (a, b) in bytes[..4].iter().zip(&bytes[256..260]) {
-            assert!(
-                a.abs_diff(*b) <= 1,
-                "hardware transfer differs at alpha {alpha}: {a} vs {b}"
-            );
-            assert!((f32::from(*a) / 255.0 - alpha).abs() < 0.005);
-        }
+        // The hardware transfer matches the shader route, and both store the alpha.
+        assert_unorm8_close(&bytes[..4], &bytes[256..260]);
+        assert_unorm8_close(&bytes[..4], &[stored; 4]);
         drop(bytes);
         buffer.unmap();
     }

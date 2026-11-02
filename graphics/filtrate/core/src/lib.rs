@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(
     test,
     allow(
@@ -14,8 +14,10 @@
 //! reference wgpu executor in `filtrate`, or the Cherenkov engine — compose
 //! the stages and decide how to run them.
 //!
-//! This crate has no dependencies: no GPU, no shader compiler and no reactive
-//! system. Reactive frontends provide their own [`FilterParam`]
+//! This crate does not depend on a GPU, a shader compiler or a reactive
+//! system — `libm` alone, and only when the default `std` feature is off
+//! (`no_std` targets), for the transfer function of the CPU colour
+//! conversion. Reactive frontends provide their own [`FilterParam`]
 //! implementations on top of these abstractions.
 //!
 //! # Filter kinds
@@ -90,7 +92,7 @@ mod kernel;
 pub mod kind;
 mod param;
 mod params;
-mod space;
+pub mod space;
 mod stage;
 mod visitor;
 

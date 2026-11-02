@@ -68,6 +68,9 @@ pub enum DestroyItem {
         /// The set being freed.
         set: vk::DescriptorSet,
     },
+    /// An imported wait semaphore consumed by a submission the owning
+    /// generation could no longer carry to release.
+    Semaphore(vk::Semaphore),
 }
 
 impl DestroyItem {
@@ -86,6 +89,11 @@ impl DestroyItem {
                 // live `pool` on `dev` and is unreferenced.
                 dev.free_descriptor_sets(pool, &[set])
                     .expect("freeing a pooled set cannot fail");
+            },
+            Self::Semaphore(semaphore) => unsafe {
+                // SAFETY: the `destroy` contract — `semaphore` was created
+                // on `dev`, and no pending work references it.
+                dev.destroy_semaphore(semaphore, None);
             },
         }
     }
@@ -646,8 +654,13 @@ impl Generation {
     ) -> Result<Option<PendingWait>, NativeError> {
         let mut state = self.state.lock().expect("generation state");
         match *state {
-            State::OwnedForRead | State::AcquisitionSubmitted => return Ok(None),
-            State::Registered | State::AcquisitionPlanned => {}
+            // `AcquisitionPlanned` is already recorded in the encoder being
+            // built — the barrier and the resolved wait are one-shot, so a
+            // second stage records nothing and returns no wait.
+            State::OwnedForRead | State::AcquisitionSubmitted | State::AcquisitionPlanned => {
+                return Ok(None);
+            }
+            State::Registered => {}
             _ => return Err(NativeError::Invalid("external frame read while retiring")),
         }
         let wait = self.resolve_wait()?;
@@ -720,10 +733,30 @@ impl Generation {
         }
     }
 
+    /// Retires the frame when its last engine lease is gone and its
+    /// release parts are still packaged. A retirement deferred by
+    /// `retire_inner` while an acquisition was staged but unsubmitted is
+    /// retried here — `mark_submitted` and `cancel_staged` call it once
+    /// they have resolved the staged outcome, when `acquired` is decided.
+    fn maybe_retire(&self) {
+        if self.leases.load(std::sync::atomic::Ordering::Acquire) == 0
+            && self.parts.lock().expect("release parts").is_some()
+        {
+            self.retire_inner();
+        }
+    }
+
     /// Packages the destroy-time object set and queues the release
     /// submission. Idempotent: the first call wins; a generation dropped
     /// while `parts` are already out queues nothing.
     fn retire_inner(&self) {
+        // An acquisition staged into an encoder that was never submitted
+        // may still run — `acquired` cannot be decided until
+        // `mark_submitted` or `cancel_staged` resolves the stage, and they
+        // retry the retirement through `maybe_retire` once they do.
+        if *self.state.lock().expect("generation state") == State::AcquisitionPlanned {
+            return;
+        }
         let mut parts = self.parts.lock().expect("release parts").take();
         if let Some(release) = parts.as_mut() {
             // A resolved-but-unconsumed wait semaphore dies with the frame.
@@ -920,17 +953,17 @@ pub fn mark_submitted(native: &mut Native) {
             if let Some(release) = parts.as_mut() {
                 release.semaphores.push(wait.semaphore);
             } else {
-                // SAFETY: `wait.semaphore` was imported for this
-                // generation, is consumed by the submission just made,
-                // and has no release to die with — destroyed exactly
-                // once here.
-                unsafe {
-                    native
-                        .shared
-                        .vk
-                        .device
-                        .destroy_semaphore(wait.semaphore, None);
-                };
+                // The submission just accepted still references the
+                // semaphore — destruction defers to its completion, the
+                // contract `pending_destroy` items are destroyed under.
+                drop(parts);
+                native
+                    .shared
+                    .vk
+                    .pending_destroy
+                    .lock()
+                    .expect("pending destroy")
+                    .push(DestroyItem::Semaphore(wait.semaphore));
             }
         }
         let mut state = pending.generation.state.lock().expect("generation state");
@@ -938,6 +971,7 @@ pub fn mark_submitted(native: &mut Native) {
             *state = State::AcquisitionSubmitted;
         }
         drop(state);
+        pending.generation.maybe_retire();
         native.acquiring.push(Arc::clone(&pending.generation.state));
     }
 }
@@ -978,6 +1012,7 @@ pub fn cancel_staged(native: &mut Native) {
                 .lock()
                 .expect("resolved wait") = Some(wait);
         }
+        pending.generation.maybe_retire();
     }
 }
 

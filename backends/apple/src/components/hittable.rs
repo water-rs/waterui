@@ -116,7 +116,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf.keep(sink_guard);
 
         // `enabled` watcher → `applyHitTesting`.
-        leaf.bind(&metadata.value.enabled, {
+        leaf.bind(metadata.value.enabled(), {
             let state = Rc::clone(&state);
             move |enabled| {
                 let state = state.borrow();

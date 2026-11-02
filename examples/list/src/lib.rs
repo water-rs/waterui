@@ -15,7 +15,7 @@ use waterui::reactive::collection::List as ReactiveList;
 
 const DATASET_SIZE: usize = 100_000;
 
-#[derive(Clone, Copy, Identifiable)]
+#[derive(Clone, Copy, PartialEq, Eq, Identifiable)]
 struct Record {
     #[id]
     id: u64,
@@ -59,12 +59,12 @@ fn record_row(record: Record) -> ListItem {
     )
 }
 
-fn delete_record(ListDelete(index): ListDelete, state: DemoState) {
+fn delete_record(ListDelete(index): ListDelete, mut state: DemoState) {
     let _ = state.records.remove(index);
     *state.remaining.get_mut() -= 1;
 }
 
-fn move_record(ListMove(movement): ListMove, state: DemoState) {
+fn move_record(ListMove(movement): ListMove, mut state: DemoState) {
     let mut records = state.records.snapshot();
     let record = records.remove(movement.from());
     records.insert(movement.to(), record);

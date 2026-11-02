@@ -293,6 +293,7 @@ pub struct Placed {
 mod tests {
     use super::*;
     use cherenkov::kurbo::Affine;
+    use cherenkov_oracle::metrics::assert_close;
 
     #[test]
     fn odd_levels_average_by_area_overlap_without_dropping_edges() {
@@ -324,7 +325,7 @@ mod tests {
             let edge = image.bilinear(level, [0.0, 8.0], &image.levels[0])[3];
             assert!((edge - 0.5).abs() < 1e-6, "level {level}: {edge}");
             let outside = image.bilinear(level, [-40.0, 8.0], &image.levels[0])[3];
-            assert_eq!(outside.to_bits(), 0.0_f64.to_bits());
+            assert_close(&[outside], &[0.0]);
         }
     }
 

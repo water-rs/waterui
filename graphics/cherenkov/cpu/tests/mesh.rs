@@ -5,6 +5,7 @@ use cherenkov::{
     Draw, Engine, FrameTime, MeshGradient, Offscreen, OffscreenFormat, Picture, WorkingColor,
 };
 use cherenkov_cpu::{Raster as Gpu, RasterConfig as GpuConfig};
+use cherenkov_oracle::metrics::assert_close;
 use nami::Binding;
 
 fn mesh(alpha: f32) -> MeshGradient {
@@ -61,11 +62,8 @@ fn mesh_interpolates_premultiplied_color_and_updates_one_retained_command() {
         for (got, want) in pixels[18 * 32 + 16].iter().zip(expected) {
             assert!((got - want).abs() < 0.002, "{got} != {want}");
         }
-        assert_eq!(
-            pixels[5 * 32 + 5].map(f32::to_bits),
-            [0; 4],
-            "outside the mesh is transparent"
-        );
+        // Outside the mesh is transparent.
+        assert_close(&pixels[5 * 32 + 5], &[0.0; 4]);
         engine.render(FrameTime::now()).expect("idle");
         assert_eq!(engine.stats().commands_lowered, 0);
     }

@@ -68,8 +68,8 @@ fn scene(view: impl View) -> impl View {
 }
 
 fn pixel(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {
-    let offset = ((y * snapshot.width + x) * 4) as usize;
-    snapshot.rgba8[offset..offset + 4]
+    let offset = ((y * snapshot.width() + x) * 4) as usize;
+    snapshot.rgba8()[offset..offset + 4]
         .try_into()
         .expect("pixel in bounds")
 }
@@ -85,7 +85,7 @@ fn snapshot<V: View + 'static>(view: impl Fn() -> V + 'static) -> crate::runner:
         HeadlessRuntime::new_for_tests(env, builder, 120, 120, MinimalTestTheme::default());
     runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("frame must produce a snapshot")
 }
 
@@ -165,13 +165,13 @@ fn translated_shadow_moves_with_the_caster() {
         HeadlessRuntime::new_for_tests(env, builder, 120, 120, MinimalTestTheme::default());
     let first = runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("first frame must produce a snapshot");
 
     dx.set(30.0);
     let second = runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("moved frame must produce a snapshot");
 
     // If the frame had not re-rendered or the shadow had not moved, the pixel

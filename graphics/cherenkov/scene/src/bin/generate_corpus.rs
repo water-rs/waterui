@@ -3,35 +3,42 @@
 //! Run `prepare-fonts` first: it produces the OFL subsets in `scenes/fonts/`
 //! that this binary shapes against with parley. Each scene lands in
 //! `scenes/corpus/<name>/` as a `scene.json` plus a `resources/` directory of
-//! BLAKE3-addressed blobs (fonts, images).
+//! BLAKE3-addressed blobs (fonts, images). Takes the cherenkov root — the
+//! directory containing `scenes/` — as its only argument.
 
 #[path = "generate_corpus/authored.rs"]
 mod authored;
+#[path = "generate_corpus/compressed.rs"]
+mod compressed;
+#[path = "generate_corpus/gradient_search.rs"]
+mod gradient_search;
+#[path = "generate_corpus/stroke_gpu.rs"]
+mod stroke_gpu;
 #[path = "generate_corpus/text_layout.rs"]
 mod text_layout;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use cherenkov_scene::corpus;
 use cherenkov_scene::kurbo::{
-    Affine, BezPath, Circle, Ellipse, Line, Point, Rect, RoundedRect, RoundedRectRadii, Vec2,
+    Affine, BezPath, Circle, Ellipse, Line, Point, Rect, RoundedRect, RoundedRectRadii, Shape as _,
+    Vec2,
 };
 use cherenkov_scene::{
-    BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, Color, ColorSpace, Draw, Extend,
-    FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, ImageColorSpace, ImageEncoding,
-    ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live, Motion, MotionAnimation,
-    NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash, Sampling, Scene,
-    SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
+    BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Color, ColorSpace,
+    Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, Group, GroupItem,
+    ImageColorSpace, ImageEncoding, ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live,
+    Motion, MotionAnimation, NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash,
+    Sampling, Scene, SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
 };
 use fontique::FontWeight;
 use parley::{
     FontContext, LayoutContext, PositionedLayoutItem, StyleProperty, fontique::Blob,
     style::FontFamily,
 };
-use read_fonts::types::F2Dot14;
 use skrifa::MetadataProvider;
 
 /// `kurbo::Affine::rotate` evaluated with `libm` so the sine/cosine
@@ -51,6 +58,8 @@ fn rotate_about(th: f64, center: impl Into<Point>) -> Affine {
 const TEXT_PAD: f32 = 12.0;
 /// Maximum line advance for shaped text.
 const TEXT_WRAP: f32 = 280.0;
+/// Width of the phone-sized performance viewport.
+const PERF_WIDTH: u16 = 1024;
 
 const FILTER_COLOR_MATRIX: [f64; 12] =
     [0.2, 0.7, 0.1, 0.0, 0.6, 0.3, 0.1, 0.05, 0.1, 0.1, 0.8, 0.0];
@@ -194,6 +203,12 @@ fn stops8() -> Vec<GradientStop> {
         .collect()
 }
 
+/// A shaped paragraph and the vertical extent allocated by its line layout.
+struct ShapedParagraph {
+    runs: Vec<GlyphRun>,
+    height: f32,
+}
+
 /// Fonts loaded from `scenes/fonts/`, plus a parley context to shape with.
 struct TextContext {
     fcx: FontContext,
@@ -286,6 +301,20 @@ impl TextContext {
         weight: FontWeight,
         paint: &Paint,
     ) -> Vec<GlyphRun> {
+        self.paragraph(file, text, size, weight, paint, TEXT_WRAP)
+            .runs
+    }
+
+    /// Shape a paragraph for its actual content width, retaining line height.
+    fn paragraph(
+        &mut self,
+        file: &str,
+        text: &str,
+        size: f32,
+        weight: FontWeight,
+        paint: &Paint,
+        width: f32,
+    ) -> ShapedParagraph {
         let family = self.families[file].clone();
         let mut builder = self.lcx.ranged_builder(&mut self.fcx, text, 1.0, false);
         builder.push_default(StyleProperty::FontFamily(FontFamily::named(
@@ -294,7 +323,7 @@ impl TextContext {
         builder.push_default(StyleProperty::FontSize(size));
         builder.push_default(StyleProperty::FontWeight(weight));
         let mut layout = builder.build(text);
-        layout.break_all_lines(Some(TEXT_WRAP));
+        layout.break_all_lines(Some(width));
 
         let mut runs = Vec::new();
         for line in layout.lines() {
@@ -311,10 +340,10 @@ impl TextContext {
                     .normalized_coords()
                     .iter()
                     .enumerate()
-                    .filter(|(_, v)| **v != 0)
+                    .filter(|(_, v)| v.to_bits() != 0)
                     .map(|(i, v)| NormalizedCoord {
                         tag: axes.get(i).cloned().unwrap_or_default(),
-                        value: F2Dot14::from_bits(*v).to_f32(),
+                        value: v.to_f32(),
                     })
                     .collect();
                 let glyphs = gr
@@ -337,7 +366,10 @@ impl TextContext {
                 });
             }
         }
-        runs
+        ShapedParagraph {
+            runs,
+            height: layout.height(),
+        }
     }
 }
 
@@ -621,6 +653,68 @@ fn filter_blur_content(l: &mut LayerBuilder<'_>, colors: &FilterColorSet) {
     );
 }
 
+/// A scrolled viewport's content for the overscroll stretch scenes: rows
+/// of bands four pixels tall on an eight-pixel pitch and columns one pixel
+/// wide on a twelve-pixel pitch over `content`, so the stretch shows as
+/// the band pitch growing toward the pulled edge, and a stretched column
+/// as the column pitch doing so.
+fn stretch_grid_content(l: &mut LayerBuilder<'_>, colors: &FilterColorSet, content: Rect) {
+    let bands = [colors.blur_rect, colors.blur_circle, colors.blur_star];
+    let rows = (0_u32..)
+        .map(|row| 8.0_f64.mul_add(f64::from(row), content.y0))
+        .take_while(|&y| y < content.y1);
+    for (y, color) in rows.zip(bands.iter().cycle()) {
+        l.fill(
+            Shape::rect(content.x0, y, content.width(), 4.0),
+            solid(*color),
+        );
+    }
+    let columns = (0_u32..)
+        .map(|column| 12.0_f64.mul_add(f64::from(column), content.x0 + 6.0))
+        .take_while(|&x| x < content.x1);
+    for x in columns {
+        l.fill(
+            Shape::rect(x, content.y0, 1.0, content.height()),
+            solid(colors.blur_stroke),
+        );
+    }
+}
+
+/// A scroll viewport the way a scroll view lowers it: a layer clipped to
+/// `viewport`, scrolled by `offset`, drawn under `transform`, its content
+/// stretched by HWUI's overscroll stretch in the viewport's frame.
+fn stretched_viewport(
+    l: &mut LayerBuilder<'_>,
+    colors: &FilterColorSet,
+    transform: Affine,
+    viewport: Rect,
+    offset: Vec2,
+    stretch: Vec2,
+) {
+    l.layer(|v| {
+        v.transform(transform);
+        v.clip(Shape::rect(
+            viewport.x0,
+            viewport.y0,
+            viewport.width(),
+            viewport.height(),
+        ));
+        v.scroll_offset(offset);
+        v.filter(LayerFilter::OverscrollStretch {
+            frame: transform * Affine::translate(viewport.origin().to_vec2()),
+            size: viewport.size(),
+            stretch,
+        });
+        let content = Rect::new(
+            viewport.x0,
+            viewport.y0,
+            viewport.x1,
+            viewport.y1 + offset.y + 24.0,
+        );
+        stretch_grid_content(v, colors, content);
+    });
+}
+
 fn filter_blend_content(l: &mut LayerBuilder<'_>, colors: &FilterColorSet) {
     l.fill(
         Shape::rounded_rect(24.0, 24.0, 80.0, 80.0, 8.0),
@@ -757,6 +851,364 @@ fn star_path(cx: f64, cy: f64, r0: f64, r1: f64) -> BezPath {
     p
 }
 
+/// A road network in one path: `rows` horizontal and `cols` vertical wavy
+/// polylines spanning `w` × `h` inset by `inset`, each of `per` segments.
+/// Every horizontal crosses every vertical, so the centrelines alone carry
+/// `rows * cols` crossings and the stroke outline carries four self
+/// intersections per crossing. The waves come from `libm::sin` so the
+/// coordinates are the same bytes on every host.
+fn road_network_grid(
+    width: f64,
+    height: f64,
+    inset: f64,
+    rows: u32,
+    cols: u32,
+    per: u32,
+    amp: f64,
+) -> BezPath {
+    let mut p = BezPath::new();
+    let span_x = 2.0f64.mul_add(-inset, width);
+    let span_y = 2.0f64.mul_add(-inset, height);
+    let steps = f64::from(per);
+    for row in 0..rows {
+        let y = (f64::from(row) + 1.0).mul_add(span_y / f64::from(rows + 1), inset);
+        let phase = f64::from(row) * 0.7;
+        p.move_to((inset, amp.mul_add(libm::sin(phase), y)));
+        for k in 1..=per {
+            let t = f64::from(k) / steps;
+            p.line_to((
+                t.mul_add(span_x, inset),
+                amp.mul_add(libm::sin(t.mul_add(std::f64::consts::TAU, phase)), y),
+            ));
+        }
+    }
+    for col in 0..cols {
+        let x = (f64::from(col) + 1.0).mul_add(span_x / f64::from(cols + 1), inset);
+        let phase = f64::from(col) * 1.1;
+        p.move_to((amp.mul_add(libm::sin(phase), x), inset));
+        for k in 1..=per {
+            let t = f64::from(k) / steps;
+            p.line_to((
+                amp.mul_add(libm::sin(t.mul_add(std::f64::consts::TAU, phase)), x),
+                t.mul_add(span_y, inset),
+            ));
+        }
+    }
+    p
+}
+
+/// `count` same-direction circles in one path, radius `r0 + i * step`, their
+/// centres walking a Fermat spiral of extent `spread` about `(cx, cy)`. The
+/// centre of the figure lies inside every circle, so the winding under a
+/// pixel reaches `count`: `NonZero` must still give the union its true area
+/// — the failure `resolve_winding` exists to prevent — and `EvenOdd` folds
+/// the same winding into bands. The spiral offset is larger than `step`, so
+/// consecutive circles cross rather than nest, and the path self-intersects
+/// everywhere.
+fn dense_overlap_rings(cx: f64, cy: f64, count: u32, r0: f64, step: f64, spread: f64) -> BezPath {
+    let mut p = BezPath::new();
+    for i in 0..count {
+        let t = f64::from(i) / f64::from(count);
+        let angle = f64::from(i) * 2.399_963_229_728_653;
+        let d = spread * t.sqrt();
+        let r = f64::from(i).mul_add(step, r0);
+        // κ·r for a four-cubic circle approximation.
+        let kr = 0.5523 * r;
+        let ox = d.mul_add(libm::cos(angle), cx);
+        let oy = d.mul_add(libm::sin(angle), cy);
+        p.move_to((ox + r, oy));
+        p.curve_to((ox + r, oy - kr), (ox + kr, oy - r), (ox, oy - r));
+        p.curve_to((ox - kr, oy - r), (ox - r, oy - kr), (ox - r, oy));
+        p.curve_to((ox - r, oy + kr), (ox - kr, oy + r), (ox, oy + r));
+        p.curve_to((ox + kr, oy + r), (ox + r, oy + kr), (ox + r, oy));
+        p.close_path();
+    }
+    p
+}
+
+/// The `road-network` perf path at an `n` × `n` grid: one path of short
+/// wavy horizontal roads on a 22 × 17 px lattice, every fifth column
+/// carrying a vertical road to the row below, 40 line segments each. The
+/// bends come from one `Rng(7)` walked in grid order, so the `n = 40` path
+/// is the same bytes it was before the size series existed.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "the `n = 40` path must stay byte-identical to the historical perf scene; `mul_add` rounds differently"
+)]
+fn perf_road_network(n: u32) -> BezPath {
+    let mut rng = Rng(7);
+    let mut roads = BezPath::new();
+    for row in 0..n {
+        for col in 0..n {
+            let start = Point::new(64.0 + f64::from(col) * 22.0, 48.0 + f64::from(row) * 17.0);
+            let bend = 1.0 + rng.f64() * 2.0;
+            roads.move_to(start);
+            for k in 1..=40 {
+                let t = f64::from(k) / 40.0;
+                roads.line_to((
+                    start.x + t * 22.0,
+                    start.y + bend * libm::sin(t * std::f64::consts::TAU),
+                ));
+            }
+            if col % 5 == 0 && row < n - 1 {
+                roads.move_to(start);
+                for k in 1..=40 {
+                    let t = f64::from(k) / 40.0;
+                    roads.line_to((
+                        start.x + bend * libm::sin(t * std::f64::consts::TAU),
+                        start.y + t * 17.0,
+                    ));
+                }
+            }
+        }
+    }
+    roads
+}
+
+/// One [`dense_overlap_rings`] cluster's shape: `count` rings of radius
+/// `r0 + i·step` whose centres walk a spiral of extent `spread`.
+#[derive(Clone, Copy)]
+struct RingsSpec {
+    count: u32,
+    r0: f64,
+    step: f64,
+    spread: f64,
+}
+
+/// A `cols` × `rows` grid of [`dense_overlap_rings`] clusters filling
+/// `width` × `height`, all in one path. The cluster pitch is smaller than a
+/// cluster's outer radius, so neighbouring clusters overlap as well and the
+/// crossing count grows with the ring count rather than with the area.
+fn dense_overlap_field(width: f64, height: f64, cols: u32, rows: u32, rings: RingsSpec) -> BezPath {
+    let mut p = BezPath::new();
+    for row in 0..rows {
+        for col in 0..cols {
+            let cx = (f64::from(col) + 0.5) * width / f64::from(cols);
+            let cy = (f64::from(row) + 0.5) * height / f64::from(rows);
+            p.extend(
+                dense_overlap_rings(cx, cy, rings.count, rings.r0, rings.step, rings.spread).iter(),
+            );
+        }
+    }
+    p
+}
+
+/// `count` thin closed slivers, each a chord of `w` × `h` through its
+/// centre ending on the border, `width` px wide at its waist. The path's
+/// device bounds are the whole surface while its coverage is a few
+/// thousand pixels, and every sliver is one long segment whose own
+/// bounding box spans most of the grid — the case where the `O(n)`
+/// per-segment cell bound is loosest.
+fn sparse_bounds_slivers(bound_w: f64, bound_h: f64, count: u32, width: f64) -> BezPath {
+    let mut p = BezPath::new();
+    let (cx, cy) = (bound_w * 0.5, bound_h * 0.5);
+    for i in 0..count {
+        let angle = f64::from(i) * std::f64::consts::PI / f64::from(count);
+        let (s, c) = libm::sincos(angle);
+        // The chord ends on the border: the shorter of the two half-extents
+        // the direction reaches, so nothing leaves the surface.
+        let reach = (cx / c.abs()).min(cy / s.abs()) - width;
+        let (dx, dy) = (c * reach, s * reach);
+        let (nx, ny) = (-s * width * 0.5, c * width * 0.5);
+        p.move_to((cx - dx + nx, cy - dy + ny));
+        p.line_to((cx + dx + nx, cy + dy + ny));
+        p.line_to((cx + dx - nx, cy + dy - ny));
+        p.line_to((cx - dx - nx, cy - dy - ny));
+        p.close_path();
+    }
+    p
+}
+
+/// A lower bound on the chords a compute stroker emits for `stroke` of
+/// `path` at the user tolerance `tol`: one per side for every centreline
+/// element, after dashing, that kurbo's stroker does not skip as
+/// zero-length, plus both caps of every open subpath that draws one —
+/// butt 1, square 3, and round `ceil(π / (2·acos(1 − tol / hw)))`.
+fn encoder_chords_min(path: &BezPath, stroke: &cherenkov_scene::kurbo::Stroke, tol: f64) -> usize {
+    use cherenkov_scene::kurbo::{Cap, PathEl};
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a positive chord count of a half turn"
+    )]
+    let cap = |cap: Cap| match cap {
+        Cap::Butt => 1,
+        Cap::Square => 3,
+        Cap::Round => {
+            let half = stroke.width / 2.0;
+            let step = 2.0 * (1.0 - tol / half).clamp(-1.0, 1.0).acos();
+            (std::f64::consts::PI / step).ceil().max(1.0) as usize
+        }
+    };
+    let caps = cap(stroke.start_cap) + cap(stroke.end_cap);
+    let centreline: Vec<PathEl> = if stroke.dash_pattern.is_empty() {
+        path.iter().collect()
+    } else {
+        cherenkov_scene::kurbo::dash(path.iter(), stroke.dash_offset, &stroke.dash_pattern)
+            .collect()
+    };
+    let (mut start, mut last) = (Point::ORIGIN, Point::ORIGIN);
+    let (mut chords, mut open_drawn) = (0usize, false);
+    for el in centreline {
+        let drawn = match el {
+            PathEl::MoveTo(p) => {
+                chords += if open_drawn { caps } else { 0 };
+                open_drawn = false;
+                (start, last) = (p, p);
+                continue;
+            }
+            PathEl::LineTo(p) => {
+                let drawn = p != last;
+                last = p;
+                drawn
+            }
+            PathEl::QuadTo(p1, p2) => {
+                let drawn = p1 != last || p2 != last;
+                last = p2;
+                drawn
+            }
+            PathEl::CurveTo(p1, p2, p3) => {
+                let drawn = p1 != last || p2 != last || p3 != last;
+                last = p3;
+                drawn
+            }
+            PathEl::ClosePath => {
+                chords += 2 * usize::from(start != last);
+                last = start;
+                open_drawn = false;
+                continue;
+            }
+        };
+        chords += 2 * usize::from(drawn);
+        open_drawn |= drawn;
+    }
+    chords + if open_drawn { caps } else { 0 }
+}
+
+/// Logs the route-selection inputs of a scene's path, as section 6 of
+/// `docs/design/2536-coverage-spec.md` defines them: the source element
+/// count lowering compares against the candidate floors, the curve element
+/// count of the geometry the engine receives (the stroke outline when
+/// `stroke` is `Some`, since expansion happens before coverage), its device
+/// bounds under `transform`, the segment count the engine's
+/// `FLATTEN = 0.02` device-pixel tolerance produces, and the `O(n)` bound on
+/// touched 1-column × 4-row strip cells that decision R2 sizes buffers from
+/// and decision R1 reads as the crossing-density estimate.
+///
+/// It also evaluates `GpuBound::prefers_gpu`'s floors on that outline —
+/// at least 4,096 segments, a bound grid (the device bounds inflated by a
+/// pixel and clipped to `surface`) of at least 4,096 pixels, and at least
+/// 32 strip bins per grid strip, with bins counted per segment as
+/// `2 + ceil(dy / 4)` the way `GpuEncode::push` counts them — and, for a
+/// stroke, a lower bound on the chord count a compute stroker emits
+/// ([`encoder_chords_min`]), which is what `prefers_gpu`'s segment floor
+/// reads once strokes are expanded in compute.
+///
+/// Expansion runs in user space at `FLATTEN / transform.spectral_norm()`, the
+/// engine's user tolerance. Nothing here is written to the scene tree; it
+/// keeps the numbers quoted in the scene comments checkable by rerunning
+/// the generator.
+fn log_route_inputs(
+    name: &str,
+    path: &BezPath,
+    stroke: Option<&cherenkov_scene::kurbo::Stroke>,
+    transform: Affine,
+    surface: (f64, f64),
+) {
+    use cherenkov_scene::kurbo::{PathEl, Shape as _, StrokeOpts};
+
+    /// The engine's device flattening tolerance (`path::FLATTEN`).
+    const FLATTEN: f64 = 0.02;
+    /// The engine's coverage strip height in device rows (`path::STRIP_H`).
+    const STRIP_H: f64 = 4.0;
+    /// `path::GPU_ROUTE_MIN_ELEMENTS`, which `prefers_gpu` also applies to
+    /// segments and to the grid's pixel count.
+    const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
+
+    let tol = FLATTEN / transform.spectral_norm();
+
+    let mut outline = stroke.map_or_else(
+        || path.clone(),
+        |stroke| cherenkov_scene::kurbo::stroke(path.iter(), stroke, &StrokeOpts::default(), tol),
+    );
+    outline.apply_affine(transform);
+    let encoder_chords_min = stroke.map(|stroke| encoder_chords_min(path, stroke, tol));
+    let elements = outline.elements().len();
+    let bbox = outline.bounding_box();
+    let mut segments = 0usize;
+    let mut cells = 0usize;
+    let mut bins = 0usize;
+    let mut last = Point::ORIGIN;
+    let mut start = Point::ORIGIN;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "columns × strips is a non-negative cell count bounded by the path's surface"
+    )]
+    let mut edge = |p0: Point, p1: Point| {
+        if p0 == p1 {
+            return;
+        }
+        segments += 1;
+        let (lo_x, hi_x) = (p0.x.min(p1.x), p0.x.max(p1.x));
+        let (lo_y, hi_y) = (p0.y.min(p1.y), p0.y.max(p1.y));
+        let columns = (hi_x.floor() - lo_x.floor()) + 1.0;
+        let strips = ((hi_y / STRIP_H).floor() - (lo_y / STRIP_H).floor()) + 1.0;
+        cells += (columns * strips) as usize;
+        bins += 2 + ((hi_y - lo_y) / STRIP_H).ceil() as usize;
+    };
+    cherenkov_scene::kurbo::flatten(outline.iter(), FLATTEN, |el| match el {
+        PathEl::MoveTo(p) => {
+            edge(last, start);
+            start = p;
+            last = p;
+        }
+        PathEl::LineTo(p) => {
+            edge(last, p);
+            last = p;
+        }
+        PathEl::ClosePath => {
+            edge(last, start);
+            last = start;
+        }
+        PathEl::QuadTo(..) | PathEl::CurveTo(..) => unreachable!("flatten emits lines"),
+    });
+    edge(last, start);
+    let grid = bbox
+        .inflate(1.0, 1.0)
+        .intersect(Rect::new(0.0, 0.0, surface.0, surface.1));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the grid is clipped to the surface"
+    )]
+    let (grid_w, grid_h) = (
+        (grid.x1.ceil() - grid.x0.floor()).max(0.0) as usize,
+        (grid.y1.ceil() - grid.y0.floor()).max(0.0) as usize,
+    );
+    let strip_bins = grid_h.div_ceil(4) * 32;
+    let floors = segments >= GPU_ROUTE_MIN_ELEMENTS
+        && grid_w * grid_h >= GPU_ROUTE_MIN_ELEMENTS
+        && bins >= strip_bins;
+    tracing::info!(
+        scene = name,
+        source_elements = path.elements().len(),
+        elements,
+        device_w = bbox.width(),
+        device_h = bbox.height(),
+        segments,
+        cell_bound = cells,
+        grid_w,
+        grid_h,
+        bins,
+        strip_bins,
+        floors,
+        encoder_chords_min,
+        "route-selection inputs"
+    );
+}
+
 /// Clone `run` with all glyph positions shifted by `(dx, dy)`.
 #[expect(
     clippy::cast_possible_truncation,
@@ -832,11 +1284,12 @@ fn chevron(x: f64, y: f64) -> BezPath {
 fn silhouette_scene(
     corpus: &mut Corpus,
     name: &str,
+    size: u32,
     shape: Shape,
     transform: Affine,
     color: Color,
 ) {
-    corpus.scene(name, 128, 128, srgb(0.95, 0.95, 0.95), |l| {
+    corpus.scene(name, size, size, srgb(0.95, 0.95, 0.95), |l| {
         l.transform(transform);
         l.shadow(shape.clone(), 3.0, [7.0, 8.0], color);
         l.fill(shape, solid(srgb(1.0, 0.65, 0.15)));
@@ -1332,6 +1785,32 @@ fn projective_scenes(corpus: &mut Corpus, ctx: &mut TextContext) {
         });
     });
 
+    // An affine pose whose inverse Jacobian J = [[1.25, 0.75], [0.75, 1.25]]
+    // has J·Jᵀ with xx == yy exactly and xy != 0 (#3234): the major axis is
+    // at 45 degrees, where the half-angle is taken of `atan2(2xy, 0)`. The
+    // matrix is its own inverse and every entry is a dyadic rational.
+    corpus.scene("projective-diagonal-axis", 192, 192, backdrop, |l| {
+        l.layer(|layer| {
+            let mut matrix = Projection::identity();
+            matrix[0][0] = 1.25;
+            matrix[0][1] = -0.75;
+            matrix[1][0] = -0.75;
+            matrix[1][1] = 1.25;
+            layer.projection(Projection {
+                matrix,
+                pivot: Vec2::new(96.0, 96.0),
+                ..Projection::default()
+            });
+            layer.clip(Shape::rect(32.0, 32.0, 128.0, 128.0));
+            layer.fill(Shape::rect(32.0, 32.0, 128.0, 128.0), solid(sdr.face));
+            for i in 0..16 {
+                let x = f64::from(i).mul_add(8.0, 32.0);
+                layer.fill(Shape::rect(x, 32.0, 2.0, 128.0), solid(sdr.line));
+            }
+            layer.fill(Shape::circle(96.0, 96.0, 24.0), solid(sdr.accent));
+        });
+    });
+
     // Nesting flattens at each projective layer: the child's tilt is baked
     // into the parent's local image, its opacity composites there, and the
     // parent's blur runs over the flattened child before the parent tilts.
@@ -1573,7 +2052,15 @@ fn main() -> ExitCode {
         .without_time()
         .init();
 
-    match run() {
+    let mut args = std::env::args_os();
+    args.next();
+    let (Some(root), None) = (args.next(), args.next()) else {
+        tracing::error!("usage: generate-corpus <cherenkov-root>");
+        return ExitCode::FAILURE;
+    };
+    let root = PathBuf::from(root);
+
+    match run(&root) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!(%e, "corpus generation failed");
@@ -1582,16 +2069,41 @@ fn main() -> ExitCode {
     }
 }
 
-/// The text-page body: 38 lines cycling through the shaped scripts.
-fn text_page_body(l: &mut LayerBuilder, shaped: &[Vec<GlyphRun>]) {
-    let pitch = 54.0;
-    for (i, runs) in (0u8..38).map(|i| (i, &shaped[usize::from(i) % shaped.len()])) {
-        // Exact either way: i < 38 and pitch = 54 are small integers.
-        let y = f64::from(i).mul_add(pitch, 56.0);
-        for run in runs {
-            l.glyphs(offset_run(run, 24.0 - f64::from(TEXT_PAD), y));
+/// Fill the page with whole paragraphs, using their shaped line extents.
+fn text_page_body(l: &mut LayerBuilder, shaped: &[ShapedParagraph], height: u32) {
+    let margin = 24.0;
+    let mut y = margin;
+    for paragraph in shaped.iter().cycle() {
+        if y + f64::from(paragraph.height) > f64::from(height) - margin {
+            break;
         }
+        for run in &paragraph.runs {
+            l.glyphs(offset_run(
+                run,
+                margin - f64::from(TEXT_PAD),
+                y - f64::from(TEXT_PAD),
+            ));
+        }
+        y += f64::from(paragraph.height + TEXT_PAD);
     }
+}
+
+/// Fractional translation changes raster-cache keys in the gated frames.
+fn winding_pan(l: &mut LayerBuilder, draw: impl FnOnce(&mut LayerBuilder)) {
+    l.layer(|pan| {
+        pan.transform(Affine::IDENTITY);
+        pan.motion(Motion::Transform {
+            from: Affine::translate((-31.7, -23.3)),
+            animation: MotionAnimation::Curve {
+                duration_ms: 4000,
+                x1: 0.25,
+                y1: 0.25,
+                x2: 0.75,
+                y2: 0.75,
+            },
+        });
+        draw(pan);
+    });
 }
 
 /// The map-like page: ~2,000 stroked and filled paths — short segments,
@@ -2273,11 +2785,11 @@ fn bars(l: &mut LayerBuilder) {
     clippy::suboptimal_flops,
     reason = "the suggested mul_add/hypot rewrites alter serialized float bytes;               corpus and perf scenes are pinned byte-identical"
 )]
-fn run() -> Result<(), SceneError> {
-    let root = corpus::repo_root();
-    let out = corpus::corpus_dir(&root);
-    let mut ctx = TextContext::new(&corpus::fonts_dir(&root))?;
+fn run(root: &Path) -> Result<(), SceneError> {
+    let out = corpus::corpus_dir(root);
+    let mut ctx = TextContext::new(&corpus::fonts_dir(root))?;
     let mut corpus = Corpus::new();
+    compressed::generate(&mut corpus);
 
     let white = srgb(0.95, 0.95, 0.95);
     let dark = srgb(0.1, 0.1, 0.12);
@@ -2470,6 +2982,161 @@ fn run() -> Result<(), SceneError> {
             p.extend(star_path(64.0, 64.0, 10.0, 24.0));
             l.fill_rule(Shape::Path { path: p }, rule, solid(srgb(0.1, 0.5, 0.6)));
         });
+    }
+
+    // ---- Large and self-intersecting paths (water-rs/waterui#2546) ---------
+    //
+    // These are the scenes section 4.3's thresholds 1-3 measure once a
+    // coverage route exists for them: single paths whose element count,
+    // device bounds and crossing density are one to two orders above the
+    // UI paths the CPU sweep is tuned for. Section 6's predicate does not
+    // exist yet, so every scene's comment states the three inputs it
+    // presents — curve elements of the geometry the engine receives, its
+    // device bounds, and the `O(n)` touched-cell bound of decision R2,
+    // which is also decision R1's crossing-density estimate. The generator
+    // logs the same numbers through `log_route_inputs`, so they stay
+    // checkable rather than quoted from a stale measurement. Each scene is
+    // authored at identity, so device space is the scene's own space.
+    //
+    // Every scene here is P3-only or above SDR white: the working space is
+    // extended linear Display P3, and `AGENTS.md` requires both of a new
+    // feature family.
+
+    // Road network: 40 horizontal and 48 vertical wavy centrelines of 40
+    // segments each in one stroked path, every horizontal crossing every
+    // vertical — 1,920 centreline crossings, each contributing four self
+    // intersections of the stroke outline, which the sweep cannot resolve
+    // without sorting all of them.
+    //   elements 7,480 (stroke outline of 3,608 centreline elements)
+    //   device 494.5 x 366.5 · segments 8,811 · cell bound 65,575
+    {
+        let roads = road_network_grid(512.0, 384.0, 10.0, 40, 48, 40, 3.5);
+        log_route_inputs(
+            "stroke-road-network-p3",
+            &roads,
+            Some(&cherenkov_scene::kurbo::Stroke::new(2.5)),
+            Affine::IDENTITY,
+            (512.0, 384.0),
+        );
+        for (name, ink) in [
+            ("stroke-road-network-p3", p3(0.0, 0.55, 1.0)),
+            ("stroke-road-network-hdr", hdr(6.0, 2.5, 0.4)),
+        ] {
+            let roads = roads.clone();
+            corpus.scene(name, 512, 384, white, |l| {
+                l.stroke(
+                    Shape::Path { path: roads },
+                    StrokeStyle {
+                        width: 2.5,
+                        ..StrokeStyle::default()
+                    },
+                    solid(ink),
+                );
+            });
+        }
+    }
+
+    // Compute-stroker scenes (water-rs/waterui#2544): joins, caps, dashes,
+    // degenerate curves, hairlines and a skewed root transform, each one
+    // stroked path above the stroke candidate floor.
+    stroke_gpu::generate(&mut corpus, white);
+
+    // Dense self-overlap: a 4 x 4 field of ring clusters in one path, 6
+    // same-direction circles per cluster on a spiral tighter than their
+    // radius step, 96 circles in all. Every cluster centre lies inside all
+    // six of its circles and the clusters overlap their neighbours, so the
+    // winding under a pixel runs into the tens: `NonZero` must still give
+    // the union its true area — the failure `resolve_winding` exists to
+    // prevent — and `EvenOdd` folds the same winding into bands. The ring
+    // radii reach past the surface, so the coverage is clipped at the
+    // border as well.
+    //   elements 576 · device 705.6 x 702 · segments 10,087
+    //   cell bound 34,455
+    {
+        let rings = dense_overlap_field(
+            768.0,
+            768.0,
+            4,
+            4,
+            RingsSpec {
+                count: 6,
+                r0: 18.0,
+                step: 9.0,
+                spread: 8.0,
+            },
+        );
+        log_route_inputs(
+            "path-dense-overlap-nonzero-p3",
+            &rings,
+            None,
+            Affine::IDENTITY,
+            (768.0, 768.0),
+        );
+        for (name, rule, ink) in [
+            (
+                "path-dense-overlap-nonzero-p3",
+                FillRule::NonZero,
+                p3(1.0, 0.0, 0.55),
+            ),
+            (
+                "path-dense-overlap-evenodd-p3",
+                FillRule::EvenOdd,
+                p3(0.0, 0.95, 0.35),
+            ),
+            (
+                "path-dense-overlap-nonzero-hdr",
+                FillRule::NonZero,
+                hdr(9.0, 1.0, 3.0),
+            ),
+            (
+                "path-dense-overlap-evenodd-hdr",
+                FillRule::EvenOdd,
+                hdr(0.6, 3.5, 5.0),
+            ),
+        ] {
+            let rings = rings.clone();
+            corpus.scene(name, 768, 768, white, |l| {
+                l.fill_rule(Shape::Path { path: rings }, rule, solid(ink));
+            });
+        }
+    }
+
+    // Huge sparse bounds: 61 slivers in one path, each a 2.6 px wide chord
+    // through the centre of the 1024 x 768 surface, all 61 crossing each
+    // other in the middle. The device bounds are the whole surface and the
+    // covered area is a few per cent of it, and because every sliver edge
+    // is one long diagonal segment, the per-segment cell bound overstates
+    // the touched cells by two orders of magnitude — the case where
+    // decision R2's `O(n)` bound is loosest, and the one a route predicate
+    // reading it as a crossing-density estimate has to survive.
+    //   elements 305 · device 1021.3 x 766.8 · segments 244
+    //   cell bound 10,372,768 (true touched cells are of order 10^5)
+    {
+        let slivers = sparse_bounds_slivers(1024.0, 768.0, 61, 2.6);
+        log_route_inputs(
+            "path-sparse-bounds-nonzero-p3",
+            &slivers,
+            None,
+            Affine::IDENTITY,
+            (1024.0, 768.0),
+        );
+        for (name, rule, ink) in [
+            (
+                "path-sparse-bounds-nonzero-p3",
+                FillRule::NonZero,
+                p3(0.1, 0.0, 1.0),
+            ),
+            (
+                "path-sparse-bounds-evenodd-hdr",
+                FillRule::EvenOdd,
+                hdr(2.0, 8.0, 1.5),
+            ),
+        ] {
+            let slivers = slivers.clone();
+            corpus.scene(name, 1024, 768, white, |l| {
+                l.fill_rule(Shape::Path { path: slivers }, rule, solid(ink));
+            });
+        }
     }
 
     // ---- Strokes -----------------------------------------------------------
@@ -2677,6 +3344,8 @@ fn run() -> Result<(), SceneError> {
 
     // ---- Gradients ---------------------------------------------------------
 
+    gradient_search::add_corpus(&mut corpus);
+
     let gradient_rect = Shape::rect(8.0, 8.0, 112.0, 112.0);
     for extends in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
         let ename = match extends {
@@ -2859,6 +3528,36 @@ fn run() -> Result<(), SceneError> {
     );
 
     // ---- Clips, opacity, transforms ----------------------------------------
+
+    // All four contour-direction pairs must describe the same intersection
+    // (#2933). Rows reverse the draw; columns reverse the clip. Fractional
+    // edges carry the same HDR/P3 coverage in every panel.
+    corpus.scene_headroom("clip-contour-orientations-hdr", 288, 240, white, 2.0, |l| {
+        let directed = |rect: Rect, reversed: bool| {
+            let path = rect.to_path(0.1);
+            if reversed {
+                path.reverse_subpaths()
+            } else {
+                path
+            }
+        };
+        for (draw_reversed, y) in [(false, 20.0), (true, 140.0)] {
+            for (clip_reversed, x) in [(false, 16.0), (true, 160.0)] {
+                l.layer(|a| {
+                    a.transform(Affine::translate((x, y)));
+                    a.clip(Shape::Path {
+                        path: directed(Rect::new(0.0, 0.0, 80.75, 80.0), clip_reversed),
+                    });
+                    a.fill(
+                        Shape::Path {
+                            path: directed(Rect::new(40.25, -40.0, 120.0, 40.75), draw_reversed),
+                        },
+                        solid(hdr(1.5, 0.1, 0.0)),
+                    );
+                });
+            }
+        }
+    });
 
     corpus.scene("clip-nested", 128, 128, white, |l| {
         l.layer(|a| {
@@ -3084,6 +3783,37 @@ fn run() -> Result<(), SceneError> {
                         Shape::rect(24.0, 36.0, 16.0, 24.0),
                         solid(srgb(1.0, 1.0, 1.0)),
                     );
+                });
+            });
+        });
+    });
+
+    // Three isolated groups live at once, each blending into the one
+    // above it: the depth the GPU planner's fourth attachment slot
+    // serves (water-rs/waterui#2549). P3-only, above SDR white.
+    corpus.scene("layer-isolates-triple-nest-blend-p3", 64, 96, white, |l| {
+        l.layer(|a| {
+            a.opacity(0.75);
+            a.fill(Shape::rect(4.0, 4.0, 56.0, 88.0), solid(hdr(1.8, 0.2, 0.5)));
+            a.layer(|b| {
+                b.blend(BlendMode::Multiply);
+                b.fill(
+                    Shape::rect(8.0, 12.0, 48.0, 72.0),
+                    solid(hdr(0.3, 2.4, 0.7)),
+                );
+                b.layer(|c| {
+                    c.blend(BlendMode::Screen);
+                    c.fill(
+                        Shape::rect(14.0, 24.0, 36.0, 56.0),
+                        solid(hdr(0.4, 0.3, 3.1)),
+                    );
+                    c.layer(|d| {
+                        d.blend(BlendMode::DestOut);
+                        d.fill(
+                            Shape::rect(24.0, 40.0, 16.0, 24.0),
+                            solid(p3(1.0, 1.0, 1.0)),
+                        );
+                    });
                 });
             });
         });
@@ -3350,6 +4080,82 @@ fn run() -> Result<(), SceneError> {
             });
         });
     }
+
+    // HWUI's overscroll stretch at Android's largest drawn intensity
+    // (`dampStretchVector` of a full pull, 0.032) on a scrolled viewport.
+    for &(suffix, colors) in &filter_color_variants {
+        corpus.scene(
+            format!("filter-overscroll-stretch-top{suffix}"),
+            128,
+            128,
+            white,
+            |l| {
+                stretched_viewport(
+                    l,
+                    colors,
+                    Affine::IDENTITY,
+                    Rect::new(16.0, 8.0, 112.0, 120.0),
+                    Vec2::new(0.0, 20.0),
+                    Vec2::new(0.0, 0.032),
+                );
+            },
+        );
+    }
+
+    // Exaggerated stretches make the edge weighting visible: the band
+    // pitch grows toward the pulled edge, not uniformly.
+    corpus.scene(
+        "filter-overscroll-stretch-bottom-strong",
+        128,
+        128,
+        white,
+        |l| {
+            stretched_viewport(
+                l,
+                &FILTER_COLORS_P3,
+                Affine::IDENTITY,
+                Rect::new(16.0, 8.0, 112.0, 120.0),
+                Vec2::new(0.0, 20.0),
+                Vec2::new(0.0, -0.4),
+            );
+        },
+    );
+
+    corpus.scene(
+        "filter-overscroll-stretch-both-axes-hdr",
+        128,
+        128,
+        Color::new(ColorSpace::LinearP3, [0.01, 0.012, 0.02, 1.0]),
+        |l| {
+            stretched_viewport(
+                l,
+                &FILTER_COLORS_HDR,
+                Affine::IDENTITY,
+                Rect::new(16.0, 8.0, 112.0, 120.0),
+                Vec2::new(0.0, 20.0),
+                Vec2::new(0.3, -0.2),
+            );
+        },
+    );
+
+    // A rotated, scaled viewport: the warp runs in the viewport's own
+    // frame, along its rotated axes.
+    corpus.scene(
+        "filter-overscroll-stretch-rotated-p3",
+        128,
+        128,
+        white,
+        |l| {
+            stretched_viewport(
+                l,
+                &FILTER_COLORS_P3,
+                rotate_about(0.4, (64.0, 64.0)) * Affine::scale(0.9),
+                Rect::new(24.0, 16.0, 120.0, 128.0),
+                Vec2::new(0.0, 12.0),
+                Vec2::new(0.0, 0.35),
+            );
+        },
+    );
 
     corpus.scene("filter-gaussian-blur-small-sigma", 128, 128, white, |l| {
         l.layer(|group| {
@@ -3679,6 +4485,49 @@ fn run() -> Result<(), SceneError> {
             );
         });
     }
+
+    // A sweep whose centre is a pixel centre (#3234): the column through it
+    // is evaluated at `x == 0`, the row at `y == 0`, and the centre pixel at
+    // both. Every other sweep scene centres on a pixel corner, which no
+    // pixel centre reaches.
+    corpus.scene("grad-sweep-pixel-centre", 129, 129, white, |l| {
+        l.fill(
+            Shape::rect(0.0, 0.0, 129.0, 129.0),
+            Paint::Sweep(SweepGradient {
+                center: Point::new(64.5, 64.5),
+                start_angle: 0.0,
+                end_angle: std::f64::consts::TAU,
+                stops: stops2(),
+                extend: Extend::Pad,
+                interpolation: ColorSpace::Srgb,
+            }),
+        );
+    });
+
+    // A wide-gamut stop interpolated in sRGB: Display P3 (0, 0.85, 0.05)
+    // has a negative sRGB red component, so the interpolated encoded value
+    // goes below zero and its decode must stay sign-preserving (#2825).
+    corpus.scene("grad-linear-srgb-negative", 128, 128, white, |l| {
+        l.fill(
+            gradient_rect.clone(),
+            Paint::Linear(LinearGradient {
+                start: Point::new(16.0, 64.0),
+                end: Point::new(112.0, 64.0),
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::new(ColorSpace::DisplayP3, [0.0, 0.85, 0.05, 1.0]),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::new(ColorSpace::DisplayP3, [0.9, 0.2, 1.0, 1.0]),
+                    },
+                ],
+                extend: Extend::Pad,
+                interpolation: ColorSpace::Srgb,
+            }),
+        );
+    });
 
     // Images in wide-gamut and half-float encodings. The P3 PNG carries
     // Display-P3-encoded bytes; the f16 blobs are linear P3 straight alpha
@@ -4148,6 +4997,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-ellipse",
+        128,
         shadow_ellipse(),
         Affine::IDENTITY,
         blue,
@@ -4155,6 +5005,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-path",
+        128,
         shadow_star(),
         Affine::IDENTITY,
         blue,
@@ -4162,6 +5013,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-affine-path",
+        128,
         shadow_star(),
         Affine::new([0.72, 0.22, -0.15, 0.7, 28.0, 4.0]),
         blue,
@@ -4169,6 +5021,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-affine-ellipse",
+        128,
         shadow_ellipse(),
         Affine::new([0.72, 0.22, -0.15, 0.7, 28.0, 4.0]),
         blue,
@@ -4176,6 +5029,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-affine-continuous",
+        128,
         shadow_uneven(),
         Affine::new([0.72, 0.22, -0.15, 0.7, 28.0, 4.0]),
         blue,
@@ -4183,6 +5037,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-continuous",
+        128,
         shadow_uneven(),
         Affine::IDENTITY,
         blue,
@@ -4190,6 +5045,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-p3",
+        128,
         shadow_star(),
         Affine::IDENTITY,
         Color::new(ColorSpace::LinearP3, [1.0, 0.0, 0.3, 0.9]),
@@ -4197,6 +5053,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-hdr",
+        128,
         shadow_star(),
         Affine::IDENTITY,
         Color::new(ColorSpace::LinearP3, [3.6, 0.0, 0.6, 0.9]),
@@ -5109,71 +5966,98 @@ fn run() -> Result<(), SceneError> {
     // per-primitive correctness sweeps above. Deterministic throughout; the
     // only pseudo-randomness is the seeded xorshift in the map scene.
 
-    let (pw, ph) = (1024u32, 2216u32);
+    let (pw, ph) = (u32::from(PERF_WIDTH), 2216u32);
     let mut perf = Corpus::new();
+    gradient_search::add_perf(&mut perf);
 
-    // Scrolling UI list: 30 rows, each a shadowed rounded card with an
+    for (name, shape) in [
+        ("shadow-silhouette-ellipse", shadow_ellipse()),
+        ("shadow-silhouette-continuous", shadow_uneven()),
+    ] {
+        silhouette_scene(&mut perf, name, 1280, shape, Affine::scale(10.0), blue);
+    }
+
+    // Static UI list: 30 rows, each a shadowed rounded card with an
     // avatar, two text runs and a chevron icon path.
     {
-        let title = ctx.shape(
+        let text_width = f32::from(PERF_WIDTH) - 96.0 - 80.0;
+        let title = ctx.paragraph(
             "NotoSans.ttf",
             "Message from Ada",
             30.0,
             FontWeight::NORMAL,
             &solid(dark),
+            text_width,
         );
-        let sub = ctx.shape(
+        let sub = ctx.paragraph(
             "NotoSans.ttf",
             "See you at the renderer sync-up",
             22.0,
             FontWeight::NORMAL,
             &solid(srgb(0.4, 0.42, 0.45)),
+            text_width,
         );
-        let blobs = font_blobs(&ctx, &[&title, &sub]);
-        perf.scene_with_blobs(
-            "ui-list",
-            pw,
-            ph,
-            srgb(0.96, 0.96, 0.97),
-            |l| {
-                let pitch = 72.0;
-                for i in 0u8..30 {
-                    let y = 24.0 + f64::from(i) * pitch;
-                    let card = RoundedRect::from_rect(
-                        Rect::new(24.0, y, 1000.0, y + 64.0),
-                        RoundedRectRadii::new(14.0, 14.0, 14.0, 14.0),
-                    );
-                    l.shadow(
-                        Shape::RoundedRect(card),
-                        4.0,
-                        [0.0, 3.0],
-                        srgba(0.0, 0.0, 0.0, 0.22),
-                    );
-                    l.fill(Shape::RoundedRect(card), solid(white));
-                    l.fill(
-                        Shape::circle(60.0, y + 32.0, 20.0),
-                        solid(srgb(0.3 + 0.02 * f32::from(i), 0.4, 0.8)),
-                    );
-                    for run in &title {
-                        l.glyphs(offset_run(run, 96.0, y + 28.0));
+        let blobs = font_blobs(&ctx, &[&title.runs, &sub.runs]);
+        let padding = 8.0;
+        let row_height = f64::from(title.height + sub.height) + 2.0 * padding;
+        let pitch = row_height + 8.0;
+        for (name, rows) in [("ui-list", 30u8), ("ui-list-scroll", 120u8)] {
+            let mut builder = Scene::builder(pw, ph).clear(srgb(0.96, 0.96, 0.97));
+            if rows > 30 {
+                builder = builder.scroll_extent(Vec2::new(
+                    0.0,
+                    48.0 + f64::from(rows - 1) * pitch + row_height - f64::from(ph),
+                ));
+            }
+            perf.scene_from(
+                name,
+                builder,
+                |l| {
+                    for i in 0u8..rows {
+                        let y = 24.0 + f64::from(i) * pitch;
+                        let card = RoundedRect::from_rect(
+                            Rect::new(24.0, y, 1000.0, y + row_height),
+                            RoundedRectRadii::new(14.0, 14.0, 14.0, 14.0),
+                        );
+                        l.shadow(
+                            Shape::RoundedRect(card),
+                            4.0,
+                            [0.0, 3.0],
+                            srgba(0.0, 0.0, 0.0, 0.22),
+                        );
+                        l.fill(Shape::RoundedRect(card), solid(white));
+                        l.fill(
+                            Shape::circle(60.0, y + row_height / 2.0, 20.0),
+                            solid(srgb(0.3 + 0.02 * f32::from(i % 30), 0.4, 0.8)),
+                        );
+                        for run in &title.runs {
+                            l.glyphs(offset_run(
+                                run,
+                                96.0 - f64::from(TEXT_PAD),
+                                y + padding - f64::from(TEXT_PAD),
+                            ));
+                        }
+                        for run in &sub.runs {
+                            l.glyphs(offset_run(
+                                run,
+                                96.0 - f64::from(TEXT_PAD),
+                                y + padding + f64::from(title.height) - f64::from(TEXT_PAD),
+                            ));
+                        }
+                        l.fill(
+                            Shape::Path {
+                                path: chevron(960.0, y + row_height / 2.0),
+                            },
+                            solid(srgb(0.6, 0.6, 0.62)),
+                        );
                     }
-                    for run in &sub {
-                        l.glyphs(offset_run(run, 96.0, y + 54.0));
-                    }
-                    l.fill(
-                        Shape::Path {
-                            path: chevron(960.0, y + 32.0),
-                        },
-                        solid(srgb(0.6, 0.6, 0.62)),
-                    );
-                }
-            },
-            blobs,
-        );
+                },
+                blobs.clone(),
+            );
+        }
     }
 
-    // Dense multi-script text page: Latin, CJK, Arabic, Devanagari and emoji
-    // lines cycling down the full page height.
+    // The static page and its panning counterpart share the same paragraphs.
     {
         let scripts = [
             ("NotoSans.ttf", corpus::LATIN, 34.0_f32),
@@ -5182,44 +6066,32 @@ fn run() -> Result<(), SceneError> {
             ("NotoSansDevanagari.ttf", corpus::DEVANAGARI, 34.0),
             ("NotoEmoji.ttf", corpus::EMOJI, 34.0),
         ];
-        let shaped: Vec<Vec<GlyphRun>> = scripts
+        let shaped: Vec<ShapedParagraph> = scripts
             .iter()
             .map(|(file, text, size)| {
-                ctx.shape(file, text, *size, FontWeight::NORMAL, &solid(dark))
+                ctx.paragraph(
+                    file,
+                    text,
+                    *size,
+                    FontWeight::NORMAL,
+                    &solid(dark),
+                    f32::from(PERF_WIDTH) - 48.0,
+                )
             })
             .collect();
-        let blobs = font_blobs(&ctx, &shaped.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        let blobs = font_blobs(
+            &ctx,
+            &shaped.iter().map(|p| p.runs.as_slice()).collect::<Vec<_>>(),
+        );
         perf.scene_with_blobs(
             "text-page",
             pw,
             ph,
             white,
-            |l| {
-                text_page_body(l, &shaped);
-            },
-            blobs,
+            |l| text_page_body(l, &shaped, ph),
+            blobs.clone(),
         );
-    }
-
-    // The text page under a smooth pan: a fractional offset per frame for
-    // 4 s, then at rest at identity (= the text-page scene itself).
-    // Exercises the glyph cache's behaviour when the translation's
-    // fraction changes every frame.
-    {
-        let scripts = [
-            ("NotoSans.ttf", corpus::LATIN, 34.0_f32),
-            ("NotoSansSC.ttf", corpus::CJK, 34.0),
-            ("NotoSansArabic.ttf", corpus::ARABIC, 36.0),
-            ("NotoSansDevanagari.ttf", corpus::DEVANAGARI, 34.0),
-            ("NotoEmoji.ttf", corpus::EMOJI, 34.0),
-        ];
-        let shaped: Vec<Vec<GlyphRun>> = scripts
-            .iter()
-            .map(|(file, text, size)| {
-                ctx.shape(file, text, *size, FontWeight::NORMAL, &solid(dark))
-            })
-            .collect();
-        let blobs = font_blobs(&ctx, &shaped.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        // Fractional motion for four seconds, then the same page at rest.
         perf.scene_with_blobs(
             "text-pan",
             pw,
@@ -5238,7 +6110,7 @@ fn run() -> Result<(), SceneError> {
                             y2: 0.75,
                         },
                     });
-                    text_page_body(pan, &shaped);
+                    text_page_body(pan, &shaped, ph);
                 });
             },
             blobs,
@@ -5254,6 +6126,149 @@ fn run() -> Result<(), SceneError> {
         });
     }
 
+    // A street layer batches short roads and their junctions into one
+    // stroke. Every centerline and its width-3 outline stay inside the
+    // canvas throughout the fractional pan, with room for antialiasing.
+    //
+    // `road-network` is the 40 x 40 point of a series the scaling report of
+    // water-rs/waterui#2546 reads (`bench/scripts/lower_scaling.py`): the
+    // same geometry at four smaller grids, same canvas, same pan, same
+    // stroke, so the only thing that changes between them is the segment
+    // count the coverage sweep has to sort. Line segments per scene, from
+    // `rows * cols * 40` horizontals plus `ceil(cols / 5) * (rows - 1) * 40`
+    // verticals:
+    //
+    //   road-network-n10    4,720
+    //   road-network-n14    9,400
+    //   road-network-n20   19,040
+    //   road-network-n28   37,840
+    //   road-network       76,480
+    {
+        for (name, n) in [
+            ("road-network-n10", 10),
+            ("road-network-n14", 14),
+            ("road-network-n20", 20),
+            ("road-network-n28", 28),
+            ("road-network", 40),
+        ] {
+            let roads = perf_road_network(n);
+            perf.scene(name, 1024, 768, srgb(0.93, 0.95, 0.90), |l| {
+                winding_pan(l, |pan| {
+                    pan.stroke(
+                        Shape::Path { path: roads },
+                        StrokeStyle {
+                            width: 3.0,
+                            ..StrokeStyle::default()
+                        },
+                        solid(srgb(0.35, 0.38, 0.40)),
+                    );
+                });
+            });
+        }
+        // The same series dashed `[4, 2]` at offset 1 (water-rs/waterui#2544),
+        // the second series of `lower_scaling.py`. It is kept out of the Ir
+        // and memory gates, so the gated perf set is unchanged.
+        for (name, n) in [
+            ("road-network-dash-n10", 10),
+            ("road-network-dash-n14", 14),
+            ("road-network-dash-n20", 20),
+            ("road-network-dash-n28", 28),
+            ("road-network-dash", 40),
+        ] {
+            let roads = perf_road_network(n);
+            perf.scene(name, 1024, 768, srgb(0.93, 0.95, 0.90), |l| {
+                winding_pan(l, |pan| {
+                    pan.stroke(
+                        Shape::Path { path: roads },
+                        StrokeStyle {
+                            width: 3.0,
+                            dash_pattern: vec![4.0, 2.0],
+                            dash_offset: 1.0,
+                            ..StrokeStyle::default()
+                        },
+                        solid(srgb(0.35, 0.38, 0.40)),
+                    );
+                });
+            });
+        }
+    }
+
+    // Each road layer fits GPU coverage separately, while their combined
+    // scratch exceeds one binding. Both outputs must survive batch reuse.
+    {
+        let roads = perf_road_network(40);
+        perf.scene(
+            "road-network-batches",
+            1024,
+            768,
+            srgb(0.93, 0.95, 0.90),
+            |l| {
+                winding_pan(l, |pan| {
+                    for (dash_pattern, width, color) in [
+                        (Vec::new(), 3.0, srgb(0.35, 0.38, 0.40)),
+                        (vec![4.0, 2.0], 1.5, srgb(0.9, 0.35, 0.08)),
+                    ] {
+                        pan.stroke(
+                            Shape::Path {
+                                path: roads.clone(),
+                            },
+                            StrokeStyle {
+                                width,
+                                dash_pattern,
+                                dash_offset: 1.0,
+                                ..StrokeStyle::default()
+                            },
+                            solid(color),
+                        );
+                    }
+                });
+            },
+        );
+    }
+
+    // Abutting rows with staggered x positions exercise equal-slope join
+    // lookup. All 16,000 footprints belong to one path, not separate draws.
+    {
+        let mut bricks = BezPath::new();
+        for row in 0..20 {
+            for col in 0..800 {
+                let x = 40.0 + f64::from(col) * 1.2 + f64::from(row % 2) * 0.6;
+                let y = 120.0 + f64::from(row) * 24.0;
+                bricks.move_to((x, y));
+                bricks.line_to((x + 1.0, y));
+                bricks.line_to((x + 1.0, y + 24.0));
+                bricks.line_to((x, y + 24.0));
+                bricks.close_path();
+            }
+        }
+        perf.scene("brick-grid", 1024, 768, srgb(0.93, 0.95, 0.90), |l| {
+            winding_pan(l, |pan| {
+                pan.fill(Shape::Path { path: bricks }, solid(srgb(0.35, 0.38, 0.40)));
+            });
+        });
+    }
+
+    // A long thin diagonal stroke spanning a 2048x2048 frame: the path's
+    // bounding box covers the whole surface while its coverage hugs the
+    // diagonal, so the rasterizer's working set scales with the box's
+    // width rather than its area.
+    {
+        let mut diag = BezPath::new();
+        diag.move_to((32.0, 32.0));
+        diag.line_to((2016.0, 2016.0));
+        perf.scene("sparse-bbox", 2048, 2048, srgb(0.93, 0.95, 0.90), |l| {
+            winding_pan(l, |pan| {
+                pan.stroke(
+                    Shape::Path { path: diag },
+                    StrokeStyle {
+                        width: 8.0,
+                        ..StrokeStyle::default()
+                    },
+                    solid(srgb(0.35, 0.38, 0.40)),
+                );
+            });
+        });
+    }
     // The map under a smooth pan: a fractional offset per frame for 4 s,
     // then at rest at identity (= the map scene itself). Exercises the
     // path cache's behaviour when the translation's fraction changes
@@ -5370,40 +6385,53 @@ fn run() -> Result<(), SceneError> {
         );
     }
 
-    // Effects page: 20 shadowed cards under a group-opacity layer.
+    // Effects page: 20 shadowed cards under a group-opacity group that
+    // composites in sRGB-encoded space — its shadows, card bodies and
+    // translucent insets blend with each other encoded, and the group
+    // composites onto the background encoded (#3346). Encoded sRGB is the
+    // one blend space every compared engine composites in through its
+    // own API: Vello has no linear compositing, so a linear effects page
+    // would compare different images.
     {
         perf.scene("effects", pw, ph, srgb(0.98, 0.97, 0.96), |l| {
-            l.layer(|group| {
-                group.opacity(0.82);
-                for i in 0u8..20 {
-                    let (col, row) = (i % 4, i / 4);
-                    let (x, y) = (32.0 + f64::from(col) * 250.0, 48.0 + f64::from(row) * 420.0);
-                    let card = RoundedRect::from_rect(
-                        Rect::new(x, y, x + 226.0, y + 380.0),
-                        RoundedRectRadii::new(20.0, 20.0, 20.0, 20.0),
-                    );
-                    group.shadow(
-                        Shape::RoundedRect(card),
-                        12.0,
-                        [0.0, 10.0],
-                        srgba(0.15, 0.1, 0.3, 0.35),
-                    );
-                    group.fill(
-                        Shape::RoundedRect(card),
-                        solid(srgb(
-                            0.55 + 0.05 * f32::from(col),
-                            0.35 + 0.03 * f32::from(row),
-                            0.75,
-                        )),
-                    );
-                    group.fill(
-                        Shape::RoundedRect(RoundedRect::from_rect(
-                            Rect::new(x + 20.0, y + 24.0, x + 206.0, y + 120.0),
-                            RoundedRectRadii::new(10.0, 10.0, 10.0, 10.0),
-                        )),
-                        solid(srgba(1.0, 1.0, 1.0, 0.6)),
-                    );
-                }
+            let mut items = Vec::with_capacity(60);
+            for i in 0u8..20 {
+                let (col, row) = (i % 4, i / 4);
+                let (x, y) = (32.0 + f64::from(col) * 250.0, 48.0 + f64::from(row) * 420.0);
+                let card = RoundedRect::from_rect(
+                    Rect::new(x, y, x + 226.0, y + 380.0),
+                    RoundedRectRadii::new(20.0, 20.0, 20.0, 20.0),
+                );
+                items.push(GroupItem::Draw(Draw::Shadow {
+                    shape: Shape::RoundedRect(card),
+                    blur_sigma: 12.0,
+                    offset: [0.0, 10.0],
+                    color: srgba(0.15, 0.1, 0.3, 0.35),
+                }));
+                items.push(GroupItem::Draw(Draw::Fill {
+                    shape: Shape::RoundedRect(card),
+                    rule: FillRule::NonZero,
+                    paint: solid(srgb(
+                        0.55 + 0.05 * f32::from(col),
+                        0.35 + 0.03 * f32::from(row),
+                        0.75,
+                    )),
+                }));
+                items.push(GroupItem::Draw(Draw::Fill {
+                    shape: Shape::RoundedRect(RoundedRect::from_rect(
+                        Rect::new(x + 20.0, y + 24.0, x + 206.0, y + 120.0),
+                        RoundedRectRadii::new(10.0, 10.0, 10.0, 10.0),
+                    )),
+                    rule: FillRule::NonZero,
+                    paint: solid(srgba(1.0, 1.0, 1.0, 0.6)),
+                }));
+            }
+            l.group(Group {
+                items,
+                opacity: 0.82,
+                blend: BlendMode::Normal,
+                blend_space: BlendSpace::SrgbEncoded,
+                filter: None,
             });
         });
     }
@@ -6050,8 +7078,8 @@ fn run() -> Result<(), SceneError> {
     });
 
     // The same backdrop and blur with non-rounded member clips: the
-    // ellipse and the continuous rect run the second-order SDFs (#173),
-    // not the rounded-rect closed form.
+    // ellipse and the continuous rect run the Lamé-corner SDF (#173,
+    // #2355), not the rounded-rect closed form.
     corpus.scene_setup("backdrop-refraction-shapes", 256, 256, white, |b| {
         b.backdrop_group(BackdropGroup::new(
             1,
@@ -6794,6 +7822,211 @@ fn run() -> Result<(), SceneError> {
         });
     });
 
+    // Member blend space (#2430): the left member's group composites its
+    // samples in sRGB-encoded space, the right member's identical group
+    // in linear space, so the darkened 8-px outer band and antialiased
+    // edge differ side by side. The bottom union pair composites encoded
+    // across its bridge, its effect gain lifting the sample above SDR
+    // white. A P3-only disk and an HDR bar sit behind both rows.
+    corpus.scene_setup("backdrop-member-encoded", 256, 256, white, |b| {
+        let gaussian = || vec![BackdropFilter::GaussianBlur { sigma: 6.0 }];
+        b.backdrop_group(BackdropGroup {
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(1, gaussian(), 1.0, 1)
+        });
+        b.backdrop_group(BackdropGroup::new(2, gaussian(), 1.0, 1));
+        b.backdrop_group(BackdropGroup {
+            union: Some(20.0),
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(3, gaussian(), 1.0, 1)
+        });
+        let l = &mut b.root();
+        backdrop_background(l);
+        l.fill(Shape::circle(128.0, 64.0, 36.0), solid(p3(0.0, 0.85, 0.05)));
+        l.fill(
+            Shape::rect(16.0, 176.0, 224.0, 24.0),
+            solid(hdr(2.5, 2.2, 1.8)),
+        );
+        let darken = BackdropEffectSpec::ColorMatrix {
+            matrix: [
+                0.2, 0.0, 0.0, 0.0, //
+                0.0, 0.2, 0.0, 0.0, //
+                0.0, 0.0, 0.2, 0.0,
+            ],
+        };
+        for (x0, group) in [(24.0, 1), (140.0, 2)] {
+            l.layer(|m| {
+                m.clip(Shape::RoundedRect(RoundedRect::new(
+                    x0,
+                    32.0,
+                    x0 + 92.0,
+                    112.0,
+                    16.0,
+                )));
+                m.backdrop(group);
+                m.backdrop_outer(8.0);
+                m.backdrop_effect(darken.clone());
+            });
+        }
+        for (x0, x1) in [(40.0, 122.0), (134.0, 216.0)] {
+            l.layer(|m| {
+                m.clip(Shape::RoundedRect(RoundedRect::new(
+                    x0, 140.0, x1, 232.0, 16.0,
+                )));
+                m.backdrop(3);
+                m.backdrop_outer(6.0);
+                m.backdrop_effect(BackdropEffectSpec::ColorMatrix {
+                    matrix: [
+                        1.6, 0.0, 0.0, 0.0, //
+                        0.0, 1.6, 0.0, 0.0, //
+                        0.0, 0.0, 1.6, 0.0,
+                    ],
+                });
+            });
+        }
+    });
+
+    // Filters inside a group blend space (#1979): each cell isolates a
+    // hard black|white edge, crossed by a P3-only bar and an HDR bar, in
+    // a filtered group. The top row's groups composite in sRGB-encoded
+    // space, the bottom row's identical groups in linear space; the left
+    // column blurs, the right column applies a colour matrix. A filter
+    // works in the working space whatever space its group stores, so the
+    // two rows render alike.
+    corpus.scene("filter-group-encoded", 256, 256, srgb(0.5, 0.5, 0.5), |l| {
+        let cell = |x0: f64, y0: f64| {
+            let fill = |shape: Shape, color: Color| {
+                GroupItem::Draw(Draw::Fill {
+                    shape,
+                    rule: FillRule::NonZero,
+                    paint: solid(color),
+                })
+            };
+            vec![
+                fill(
+                    Shape::rect(x0 + 8.0, y0 + 8.0, 56.0, 112.0),
+                    srgb(0.0, 0.0, 0.0),
+                ),
+                fill(
+                    Shape::rect(x0 + 64.0, y0 + 8.0, 56.0, 112.0),
+                    srgb(1.0, 1.0, 1.0),
+                ),
+                fill(
+                    Shape::rect(x0 + 16.0, y0 + 32.0, 96.0, 20.0),
+                    p3(0.0, 0.85, 0.05),
+                ),
+                fill(
+                    Shape::rect(x0 + 16.0, y0 + 76.0, 96.0, 20.0),
+                    hdr(2.5, 2.2, 1.8),
+                ),
+            ]
+        };
+        let tint = LayerFilter::ColorMatrix {
+            matrix: [
+                0.6, 0.3, 0.1, 0.05, //
+                0.1, 0.5, 0.2, 0.0, //
+                0.2, 0.1, 0.9, 0.1,
+            ],
+        };
+        for (y0, blend_space) in [(0.0, BlendSpace::SrgbEncoded), (128.0, BlendSpace::Linear)] {
+            for (x0, filter) in [
+                (0.0, LayerFilter::GaussianBlur { sigma: 4.0 }),
+                (128.0, tint.clone()),
+            ] {
+                l.group(Group {
+                    items: cell(x0, y0),
+                    opacity: 1.0,
+                    blend: BlendMode::Normal,
+                    blend_space,
+                    filter: Some(Box::new(filter)),
+                });
+            }
+        }
+    });
+
+    // sRGB-encoded composites below the root (#2853): a pass-through
+    // level — an opaque child layer or a pass-through linear group —
+    // opens no isolation, so an encoded group inside it blends against
+    // the content beneath, exactly as at the root (top left: inside a
+    // child layer; top right: inside a pass-through group). Bottom left:
+    // an encoded backdrop member nested in a pass-through layer blends
+    // its darkened sample, edge and outer band against the backdrop.
+    // Bottom right: a translucent layer isolates, so its encoded group
+    // composites against the layer's own transparent canvas. A P3-only
+    // bar and an HDR bar cross every cell.
+    corpus.scene_setup("blend-space-nested", 256, 256, white, |b| {
+        b.backdrop_group(BackdropGroup {
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0, 1)
+        });
+        let encoded = |x0: f64, y0: f64| {
+            let fill = |shape: Shape, color: Color| {
+                GroupItem::Draw(Draw::Fill {
+                    shape,
+                    rule: FillRule::NonZero,
+                    paint: solid(color),
+                })
+            };
+            Group {
+                items: vec![
+                    fill(
+                        Shape::rect(x0 + 16.0, y0 + 16.0, 72.0, 72.0),
+                        srgba(0.15, 0.3, 0.85, 0.6),
+                    ),
+                    fill(
+                        Shape::circle(x0 + 80.0, y0 + 80.0, 34.0),
+                        p3(0.0, 0.85, 0.05).with_alpha(0.5),
+                    ),
+                ],
+                opacity: 1.0,
+                blend: BlendMode::Normal,
+                blend_space: BlendSpace::SrgbEncoded,
+                filter: None,
+            }
+        };
+        let l = &mut b.root();
+        backdrop_background(l);
+        l.fill(
+            Shape::rect(0.0, 56.0, 256.0, 16.0),
+            solid(p3(0.0, 0.85, 0.05)),
+        );
+        l.fill(
+            Shape::rect(0.0, 184.0, 256.0, 16.0),
+            solid(hdr(2.5, 2.2, 1.8)),
+        );
+        l.layer(|m| {
+            m.clip(Shape::rect(4.0, 4.0, 120.0, 120.0));
+            m.group(encoded(0.0, 0.0));
+        });
+        l.group(Group {
+            items: vec![GroupItem::Group(encoded(128.0, 0.0))],
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+            blend_space: BlendSpace::Linear,
+            filter: None,
+        });
+        l.layer(|outer| {
+            outer.layer(|m| {
+                m.clip(Shape::RoundedRect(RoundedRect::new(
+                    20.0, 148.0, 108.0, 236.0, 16.0,
+                )));
+                m.backdrop(1);
+                m.backdrop_outer(6.0);
+                m.backdrop_effect(BackdropEffectSpec::ColorMatrix {
+                    matrix: [
+                        0.2, 0.0, 0.0, 0.0, //
+                        0.0, 0.2, 0.0, 0.0, //
+                        0.0, 0.0, 0.2, 0.0,
+                    ],
+                });
+            });
+        });
+        l.layer(|m| {
+            m.opacity(0.85);
+            m.group(encoded(128.0, 128.0));
+        });
+    });
+
     // The #211 dense city map: a 1600×1200 frame whose live coverage
     // exceeds one atlas page. Its output is generated — never committed.
     {
@@ -6848,7 +8081,7 @@ fn run() -> Result<(), SceneError> {
 
     // ---- Write out ---------------------------------------------------------
 
-    let perf_out = corpus::perf_dir(&root);
+    let perf_out = corpus::perf_dir(root);
     write_corpus(&out, &corpus)?;
     write_corpus(&perf_out, &perf)?;
     tracing::info!(count = corpus.entries.len(), dir = %out.display(), "corpus written");

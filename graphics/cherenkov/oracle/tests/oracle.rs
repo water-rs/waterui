@@ -2,13 +2,16 @@
 
 /// The shared union member cap — the same definition the oracle's
 /// renderer reads, pulled in without depending on the engine crate.
-#[path = "../../src/union_cap.rs"]
+#[path = "../../record/src/union_cap.rs"]
 mod union_cap;
 
-use cherenkov_oracle::color::{linear_srgb_to_linear_p3, to_working};
+use cherenkov_oracle::color::{
+    linear_p3_to_linear_srgb, linear_srgb_to_linear_p3, srgb_decode, srgb_encode, to_working,
+};
 use cherenkov_oracle::{Renderer, metrics};
 use cherenkov_scene::{
-    BackdropGroup, BlendMode, Color, Extend, GradientStop, LinearGradient, Paint, Scene, Shape,
+    BackdropGroup, BlendMode, BlendSpace, Color, Draw, Extend, FillRule, GradientStop, Group,
+    GroupItem, LinearGradient, Paint, Scene, Shape,
 };
 use kurbo::Rect;
 
@@ -35,9 +38,10 @@ fn self_comparison_is_perfect() {
     let scene = b.build();
     let img = render(&scene, &tmp());
     let (m, _heat) = metrics::compare(&img, &img);
-    assert_eq!(m.flip_mean, 0.0);
-    assert_eq!(m.flip_max, 0.0);
-    assert_eq!(m.max_local_error, 0.0);
+    // An image compared with itself has a zero difference everywhere.
+    assert_eq!(m.flip_mean.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(m.flip_max.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(m.max_local_error.to_bits(), 0.0_f64.to_bits());
 }
 
 #[expect(
@@ -55,13 +59,15 @@ fn solid_rect_fills_pixel_centres() {
     let img = render(&scene, &tmp());
     // Pixel (8,8): fully covered by opaque red.
     let [r, g, bl, a] = img.pixels[8 * W as usize + 8];
-    assert_eq!(a, 1.0);
+    // The pixel is fully covered: coverage is exactly one.
+    metrics::assert_close(&[a], &[1.0]);
     let want = to_working(&Color::srgb(1.0, 0.0, 0.0));
     assert!((r - want[0] as f32).abs() < 1e-5);
     assert!((g - want[1] as f32).abs() < 1e-5);
     assert!((bl - want[2] as f32).abs() < 1e-5);
     // Pixel (0,0): default clear colour (opaque black), untouched.
-    assert_eq!(img.pixels[0], [0.0, 0.0, 0.0, 1.0]);
+    // Untouched pixels keep the clear colour exactly.
+    metrics::assert_close(&img.pixels[0], &[0.0, 0.0, 0.0, 1.0]);
 }
 
 /// Clipping is geometric — the exact area of shape∩clip per pixel — not a
@@ -94,8 +100,9 @@ fn clip_is_geometric_intersection() {
     // The intersection is the sliver [9.25, 9.75): no pixel is fully
     // covered. Column 8 is inside the clip but outside the shape; column 10
     // is inside the shape but outside the clip.
-    assert_eq!(img.pixels[8][3], 0.0);
-    assert_eq!(img.pixels[10][3], 0.0);
+    // Outside the intersection the coverage is exactly zero.
+    metrics::assert_close(&[img.pixels[8][3]], &[0.0]);
+    metrics::assert_close(&[img.pixels[10][3]], &[0.0]);
 }
 
 /// A member clipped by an ellipse never writes outside the clip: the
@@ -132,15 +139,12 @@ fn ellipse_clip_writes_nothing_outside_the_tip() {
         .render(&scene, &tmp())
         .expect("oracle render");
     // The tip is at x = 24: every pixel left of it is outside the clip.
-    for y in 64..80usize {
-        for x in 0..24usize {
-            assert_eq!(
-                img.pixels[y * W + x][3],
-                0.0,
-                "pixel ({x},{y}) written outside the ellipse clip"
-            );
-        }
-    }
+    // Outside the clip there is no visible coverage.
+    let pixels = &img.pixels;
+    let alphas: Vec<f32> = (64..80usize)
+        .flat_map(|y| (0..24usize).map(move |x| pixels[y * W + x][3]))
+        .collect();
+    metrics::assert_close(&alphas, &vec![0.0; alphas.len()]);
     // The interior is painted.
     assert!(img.pixels[72 * W + 72][3] > 0.99);
 }
@@ -212,7 +216,8 @@ fn metrics_detect_error() {
     assert_eq!(heat.len(), (W * H * 3) as usize);
     img.pixels[8 * W as usize + 8] = [1.0, 1.0, 1.0, 1.0];
     let (m2, _) = metrics::compare(&img, &perturbed);
-    assert_eq!(m2.flip_mean, 0.0);
+    // Restoring the pixel makes the images identical again: a zero difference.
+    assert_eq!(m2.flip_mean.to_bits(), 0.0_f64.to_bits());
 }
 
 /// The metric pipeline runs in Display P3 primaries: two linear-P3 colours
@@ -616,30 +621,19 @@ fn bilinear_clamps_at_edges() {
     // row 0's centre, so the sample is texel (0,0) exactly).
     for u in [-0.25, 0.0, 0.2, 0.49] {
         let px = sample_image(&img, u, 0.5, Sampling::Bilinear);
-        assert_eq!(
-            px,
-            [1.0, 0.0, 0.0, 1.0],
-            "left edge u={u}: got {px:?}, want pure edge texel"
-        );
+        // Both weights toward the neighbours are zero here, so the sample is the texel.
+        metrics::assert_close(&px, &[1.0, 0.0, 0.0, 1.0]);
     }
     // Top edge: v in [0, 0.5) must sample row 0 only.
     for v in [-0.25, 0.0, 0.49] {
         let px = sample_image(&img, 1.5, v, Sampling::Bilinear);
-        assert_eq!(
-            px,
-            [0.0, 1.0, 0.0, 1.0],
-            "top edge v={v}: got {px:?}, want pure edge texel"
-        );
+        // Both weights toward the neighbours are zero here, so the sample is the texel.
+        metrics::assert_close(&px, &[0.0, 1.0, 0.0, 1.0]);
     }
     // Interior point stays a true blend.
     let px = sample_image(&img, 1.0, 1.0, Sampling::Bilinear);
     let want = [0.5, 0.5, 0.5, 1.0];
-    for i in 0..4 {
-        assert!(
-            (px[i] - want[i]).abs() < 1e-12,
-            "centre sample: got {px:?}, want {want:?}"
-        );
-    }
+    metrics::assert_close(&px, &want);
 }
 
 /// Device-space flattening: a circle drawn under a 4× scale must keep
@@ -700,6 +694,45 @@ fn gaussian_tail_matches_erf() {
     assert!(g[34] > 1e-5);
 }
 
+/// A backdrop group's Gaussian blur is the same true Gaussian as a layer
+/// filter's: a captured vertical step edge, blurred with `σ = 3`, reads
+/// the analytic `½·erfc(d/(σ√2))` at every pixel centre. A tap-sampled
+/// kernel cut off at `⌈3σ⌉` is off by up to `1.7·10⁻³` and reports `0`
+/// past `3σ`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pixel indices are far below 2^53"
+)]
+#[test]
+fn backdrop_blur_is_the_true_gaussian() {
+    let sigma = 3.0;
+    let (w, h) = (96usize, 8usize);
+    let mut b = Scene::builder(96, 8).clear(Color::srgb(0.0, 0.0, 0.0));
+    b.backdrop_group(BackdropGroup::new(
+        1,
+        vec![cherenkov_scene::BackdropFilter::GaussianBlur { sigma }],
+        1.0,
+        1,
+    ));
+    b.root().fill(
+        Shape::Rect(Rect::new(48.0, 0.0, 96.0, 8.0)),
+        Paint::Solid(Color::srgb(1.0, 1.0, 1.0)),
+    );
+    b.root().layer(|m| {
+        m.clip(Shape::Rect(Rect::new(0.0, 0.0, 96.0, 8.0)));
+        m.backdrop(1);
+    });
+    let img = Renderer::new(w, h)
+        .render(&b.build(), &tmp())
+        .expect("oracle render");
+    let inv = 1.0 / (sigma * std::f64::consts::SQRT_2);
+    for x in 24..72usize {
+        let want = 0.5 * libm::erfc((48.0 - (x as f64 + 0.5)) * inv);
+        let got = f64::from(img.pixels[4 * w + x][0]);
+        assert!((got - want).abs() < 1e-6, "x={x}: got {got}, want {want}");
+    }
+}
+
 /// HDR-FLIP runs a fixed exposure ladder — 0 EV (SDR white = 1.0) to
 /// +4 EV (16× white) in five steps — recorded on every metrics JSON so
 /// reports are self-describing and comparable across scenes.
@@ -744,10 +777,6 @@ fn max_local_error_filters_then_diffs() {
 /// A destructive layer operator is bounded by the effective clip: inside
 /// `rect(4,4,8,8)` the clear erases the opaque backdrop; outside it the
 /// backdrop is untouched. Unclipped, the same clear covers the whole parent.
-#[expect(
-    clippy::float_cmp,
-    reason = "cleared and opaque-white pixels are exact"
-)]
 #[test]
 fn destructive_layer_blend_is_bounded_by_the_clip() {
     use cherenkov_scene::BlendMode;
@@ -759,11 +788,11 @@ fn destructive_layer_blend_is_bounded_by_the_clip() {
     let scene = b.build();
     let img = render(&scene, &tmp());
     // (6,6) is inside the clip: cleared to transparent.
-    assert_eq!(img.pixels[6 * W as usize + 6], [0.0; 4]);
+    metrics::assert_close(&img.pixels[6 * W as usize + 6], &[0.0; 4]);
     // (0,0) is outside: the opaque white backdrop survives.
-    assert_eq!(img.pixels[0], [1.0, 1.0, 1.0, 1.0]);
+    metrics::assert_close(&img.pixels[0], &[1.0, 1.0, 1.0, 1.0]);
     // (12,12) is outside the clip too.
-    assert_eq!(img.pixels[12 * W as usize + 12], [1.0, 1.0, 1.0, 1.0]);
+    metrics::assert_close(&img.pixels[12 * W as usize + 12], &[1.0, 1.0, 1.0, 1.0]);
 
     let mut b = Scene::builder(W, H).clear(Color::srgb(1.0, 1.0, 1.0));
     b.root().layer(|a| {
@@ -771,9 +800,10 @@ fn destructive_layer_blend_is_bounded_by_the_clip() {
     });
     let scene = b.build();
     let img = render(&scene, &tmp());
-    assert!(
-        img.pixels.iter().all(|p| *p == [0.0; 4]),
-        "unclipped clear covers the whole parent"
+    // Unclipped clear covers the whole parent.
+    metrics::assert_close(
+        &img.pixels.iter().flatten().copied().collect::<Vec<_>>(),
+        &vec![0.0; img.pixels.len() * 4],
     );
 }
 
@@ -1044,12 +1074,137 @@ fn a_mixed_group_without_a_union_draws_the_band() {
         px(40, 16)
     );
     for col in [44usize, 46] {
-        assert_eq!(
-            px(col, 16),
-            red,
-            "plain member inflated at ({col}, 16): {:?}",
-            px(col, 16)
+        // The plain member's clip excludes the band: the background red, untouched.
+        metrics::assert_close(&px(col, 16), &red);
+    }
+}
+
+/// A member's sample at its coverage blends source-over in its group's
+/// space against the content beneath the member. Two empty members sample
+/// an opaque backdrop through an all-zero colour matrix, so each sample
+/// is opaque black; their clips cover half of column 4. The
+/// `SrgbEncoded` member's edge pixel is `decode(½·encode(dst))`, the
+/// linear member's `½·dst`. Blending the encoded sample against the
+/// member's own transparent canvas gives the linear edge for both.
+#[test]
+fn an_encoded_member_edge_blends_with_the_content_beneath() {
+    let mut b = Scene::builder(W, H);
+    let black = || cherenkov_scene::BackdropEffectSpec::ColorMatrix { matrix: [0.0; 12] };
+    b.backdrop_group(BackdropGroup {
+        blend_space: BlendSpace::SrgbEncoded,
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.backdrop_group(BackdropGroup::new(2, vec![], 1.0, 1));
+    let backdrop = Color::srgb(0.6, 0.3, 0.8);
+    b.root().fill(
+        Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+        Paint::Solid(backdrop),
+    );
+    for (group, y0) in [(1, 1.0), (2, 9.0)] {
+        b.root().layer(|m| {
+            m.clip(Shape::Rect(Rect::new(4.5, y0, 12.0, y0 + 6.0)));
+            m.backdrop(group);
+            m.backdrop_effect(black());
+        });
+    }
+    let img = render(&b.build(), &tmp());
+    let dst = to_working(&backdrop);
+    let encoded = linear_srgb_to_linear_p3(
+        linear_p3_to_linear_srgb([dst[0], dst[1], dst[2]])
+            .map(|c| srgb_decode(0.5 * srgb_encode(c))),
+    );
+    let linear = [0.5 * dst[0], 0.5 * dst[1], 0.5 * dst[2]];
+    for (row, want) in [(4usize, encoded), (12, linear)] {
+        let got = img.pixels[row * W as usize + 4];
+        for ch in 0..3 {
+            assert!(
+                (f64::from(got[ch]) - want[ch]).abs() < 1e-6,
+                "edge pixel (4, {row}): got {got:?}, want {want:?}"
+            );
+        }
+        assert!((f64::from(got[3]) - 1.0).abs() < 1e-6, "{got:?}");
+        // Past the edge the sample is opaque black.
+        metrics::assert_close(&img.pixels[row * W as usize + 8][..3], &[0.0; 3]);
+    }
+}
+
+/// A pass-through level opens no canvas: an opaque `Normal` child layer
+/// and a pass-through linear group leave an sRGB-encoded group, and an
+/// encoded backdrop member, compositing against the content beneath them
+/// exactly as at the root. A fresh canvas would blend the encoded
+/// composite against transparent black, which is the linear result.
+#[test]
+fn encoded_content_in_a_pass_through_level_renders_as_at_the_root() {
+    #[derive(Clone, Copy)]
+    enum Wrap {
+        Root,
+        Layer,
+        Group,
+    }
+    let encoded = || Group {
+        items: vec![GroupItem::Draw(Draw::Fill {
+            shape: Shape::Rect(Rect::new(2.5, 2.5, 13.5, 13.5)),
+            rule: FillRule::NonZero,
+            paint: Paint::Solid(Color::srgb(0.15, 0.3, 0.85).with_alpha(0.5)),
+        })],
+        opacity: 1.0,
+        blend: BlendMode::Normal,
+        blend_space: BlendSpace::SrgbEncoded,
+        filter: None,
+    };
+    let scene = |group: Wrap, member: bool| {
+        let mut b = Scene::builder(W, H);
+        b.backdrop_group(BackdropGroup {
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(1, vec![], 1.0, 1)
+        });
+        b.root().fill(
+            Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+            Paint::Solid(Color::srgb(0.6, 0.3, 0.8)),
         );
+        match group {
+            Wrap::Root => {
+                b.root().group(encoded());
+            }
+            Wrap::Layer => {
+                b.root().layer(|l| {
+                    l.group(encoded());
+                });
+            }
+            Wrap::Group => {
+                b.root().group(Group {
+                    items: vec![GroupItem::Group(encoded())],
+                    opacity: 1.0,
+                    blend: BlendMode::Normal,
+                    blend_space: BlendSpace::Linear,
+                    filter: None,
+                });
+            }
+        }
+        let sample = |m: &mut cherenkov_scene::LayerBuilder| {
+            m.clip(Shape::Rect(Rect::new(4.5, 4.5, 11.5, 11.5)));
+            m.backdrop(1);
+            m.backdrop_effect(cherenkov_scene::BackdropEffectSpec::ColorMatrix {
+                matrix: [0.0; 12],
+            });
+        };
+        if member {
+            b.root().layer(|outer| {
+                outer.layer(sample);
+            });
+        } else {
+            b.root().layer(sample);
+        }
+        render(&b.build(), &tmp())
+    };
+    let root = scene(Wrap::Root, false);
+    for (wrap, member) in [
+        (Wrap::Layer, false),
+        (Wrap::Group, false),
+        (Wrap::Root, true),
+        (Wrap::Layer, true),
+    ] {
+        metrics::assert_images_match(&root, &scene(wrap, member));
     }
 }
 

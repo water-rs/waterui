@@ -158,6 +158,10 @@ pub enum RichTextElement {
 
 /// Column alignment metadata for Markdown tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the Markdown table column alignments (none, left, center, right)"
+)]
 pub enum MarkdownTableAlignment {
     /// No explicit alignment.
     None,
@@ -1622,11 +1626,15 @@ fn main() {
 
         fn find_code_chunk(elements: &[RichTextElement]) -> bool {
             elements.iter().any(|el| match el {
-                RichTextElement::Text(styled) => styled
-                    .clone()
-                    .into_chunks()
-                    .into_iter()
-                    .any(|(txt, style)| txt.as_str() == "cargo run" && style.background.is_some()),
+                RichTextElement::Text(styled) => {
+                    styled
+                        .clone()
+                        .into_chunks()
+                        .into_iter()
+                        .any(|(txt, style)| {
+                            txt.as_str() == "cargo run" && style.get_background().is_some()
+                        })
+                }
                 RichTextElement::Group { elements, .. } => find_code_chunk(elements),
                 _ => false,
             })

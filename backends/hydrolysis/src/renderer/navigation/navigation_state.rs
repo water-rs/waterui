@@ -1,12 +1,12 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::{ModalInteraction, NavigationMotion};
 use std::collections::BTreeSet;
 use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
     NavigationTransitionDirection,
 };
-use waterui_backend_core::widget::NavigationMotion;
 use waterui_core::id::Id;
 
 pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
@@ -19,8 +19,7 @@ pub struct NavigationPage {
 }
 
 /// A matched-geometry element as its page recorded it this frame.
-#[derive(Clone)]
-pub struct NavigationMatchedElement {
+pub struct NavigationMatchedElement<E: crate::text::TextEngine> {
     /// The element's bounds in its page's space.
     pub(crate) bounds: kurbo::Rect,
     /// The element's record space into its page's space.
@@ -28,18 +27,17 @@ pub struct NavigationMatchedElement {
     /// The element's own placement transform, which its frame keeps under
     /// a matched scope.
     pub(crate) frame: kurbo::Affine,
-    pub(crate) cell: Rc<crate::renderer::mount::NodeCell>,
+    pub(crate) cell: Rc<crate::renderer::mount::NodeCell<E>>,
 }
 
 /// The matched elements one page record declared.
-#[derive(Default)]
-pub struct NavigationRecordedPage {
-    pub(crate) sources: BTreeMap<Id, NavigationMatchedElement>,
-    pub(crate) destinations: BTreeMap<Id, NavigationMatchedElement>,
+pub struct NavigationRecordedPage<E: crate::text::TextEngine> {
+    pub(crate) sources: BTreeMap<Id, NavigationMatchedElement<E>>,
+    pub(crate) destinations: BTreeMap<Id, NavigationMatchedElement<E>>,
 }
 
-impl NavigationRecordedPage {
-    pub(crate) fn element(&self, source: bool, id: Id) -> Option<&NavigationMatchedElement> {
+impl<E: crate::text::TextEngine> NavigationRecordedPage<E> {
+    pub(crate) fn element(&self, source: bool, id: Id) -> Option<&NavigationMatchedElement<E>> {
         if source {
             self.sources.get(&id)
         } else {
@@ -50,15 +48,77 @@ impl NavigationRecordedPage {
 
 /// A page being recorded: its scope's placement and the elements a matched
 /// transition lists outside it.
-pub struct NavigationPageRecord {
+pub struct NavigationPageRecord<E: crate::text::TextEngine> {
     base: Rc<crate::renderer::mount::Placement>,
     matched: Vec<(bool, Id)>,
-    page: NavigationRecordedPage,
+    page: NavigationRecordedPage<E>,
 }
 
-pub struct HydroNavigationEntry {
+/// One page of a navigation stack: its retained content and the
+/// transition its root declares. The stack owns its page roots
+/// (layout-spec.md §4.5): the declaration is claimed when the page is first
+/// built, before anything can walk it.
+pub struct StackPage<E: crate::text::TextEngine> {
+    content: RetainedSubview<E>,
+    transition: Option<waterui_core::transition::TransitionSpec>,
+}
+
+impl<E: crate::text::TextEngine> StackPage<E> {
+    pub(crate) const fn new(view: AnyView) -> Self {
+        Self {
+            content: RetainedSubview::new(view),
+            transition: None,
+        }
+    }
+
+    /// Builds the page once, claiming its root declaration.
+    pub(crate) fn ensure_built(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
+        if self.content.node().is_some() {
+            return;
+        }
+        self.content.ensure_built(renderer, env);
+        self.transition = crate::renderer::tree::transition::claim_page_transition(
+            self.content
+                .node()
+                .expect("Hydrolysis navigation page was just built"),
+        );
+    }
+
+    /// The transition the page's root declares — its insertion on a push and
+    /// its removal on a pop. Read after [`Self::ensure_built`].
+    pub(crate) const fn transition(&self) -> Option<&waterui_core::transition::TransitionSpec> {
+        self.transition.as_ref()
+    }
+
+    pub(crate) fn record_built_page(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        size: waterui_core::layout::Size,
+        safe_area: Option<crate::renderer::tree::safe_area::SafeAreaLayout>,
+    ) {
+        self.ensure_built(renderer, env);
+        self.content
+            .record_built_page(renderer, env, size, safe_area);
+    }
+
+    /// Consume the page content's layout-dirty marks for an enclosing
+    /// retained sub-view's layout decision — an unbuilt page has none
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty_if_built(&mut self) -> bool {
+        self.content.take_layout_dirty_if_built()
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn emit_accessibility(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
+        self.ensure_built(renderer, env);
+        self.content.emit_accessibility(renderer, env);
+    }
+}
+
+pub struct HydroNavigationEntry<E: crate::text::TextEngine> {
     pub(crate) identity: u64,
-    pub(crate) content: RetainedSubview,
+    pub(crate) content: StackPage<E>,
     pub(crate) state: NavigationDestinationState,
     /// What this destination asked to arrive with, if it asked for anything.
     ///
@@ -68,7 +128,7 @@ pub struct HydroNavigationEntry {
     pub(crate) transition: Option<AnyNavigationTransition>,
 }
 
-impl HydroNavigationEntry {
+impl<E: crate::text::TextEngine> HydroNavigationEntry<E> {
     fn new(identity: u64, view: NavigationView) -> Self {
         let NavigationView {
             bar,
@@ -78,7 +138,7 @@ impl HydroNavigationEntry {
         } = view;
         Self {
             identity,
-            content: RetainedSubview::new(AnyView::new(NavigationView {
+            content: StackPage::new(AnyView::new(NavigationView {
                 bar,
                 content,
                 state: NavigationDestinationState::default(),
@@ -90,20 +150,19 @@ impl HydroNavigationEntry {
     }
 }
 
-pub struct HydroNavigationEvent {
+pub struct HydroNavigationEvent<E: crate::text::TextEngine> {
     pub(crate) transaction_id: NavigationTransactionId,
     pub(crate) previous_identity: u64,
     pub(crate) current_identity: u64,
-    pub removed: Vec<HydroNavigationEntry>,
+    pub removed: Vec<HydroNavigationEntry<E>>,
 }
 
-pub type NavigationEntries = Rc<RefCell<Vec<HydroNavigationEntry>>>;
-pub type NavigationEvents = Rc<RefCell<Vec<HydroNavigationEvent>>>;
+pub type NavigationEntries<E> = Rc<RefCell<Vec<HydroNavigationEntry<E>>>>;
+pub type NavigationEvents<E> = Rc<RefCell<Vec<HydroNavigationEvent<E>>>>;
 
-#[derive(Default)]
-pub struct NavigationState {
-    pub slots: BTreeMap<NavigationKey, NavigationSlot>,
-    pub(crate) page_records: Vec<NavigationPageRecord>,
+pub struct NavigationState<E: crate::text::TextEngine> {
+    pub slots: BTreeMap<NavigationKey, NavigationSlot<E>>,
+    pub(crate) page_records: Vec<NavigationPageRecord<E>>,
     /// Addresses bound this frame. Held as plain addresses rather than keys so
     /// the slot map holds the only strong lease on each retained stack, which
     /// is what [`NavigationKey::is_retained_elsewhere`] measures.
@@ -130,51 +189,174 @@ impl NavigationKey {
     }
 }
 
-pub struct NavigationSlot {
-    pub entries: NavigationEntries,
-    pub(crate) events: NavigationEvents,
+pub struct NavigationSlot<E: crate::text::TextEngine> {
+    pub entries: NavigationEntries<E>,
+    pub(crate) events: NavigationEvents<E>,
     pub(crate) controller: NavigationController,
     /// The cell controller-side mutations mark — the owning stack widget's
     /// cell, bound at each `bind_navigation_entries`; shared with the
     /// controller's `HydroNavigationController::target`.
-    pub(crate) target: Rc<RefCell<Weak<NodeCell>>>,
+    pub(crate) target: Rc<RefCell<Weak<NodeCell<E>>>>,
     pub(crate) last_depth: usize,
     pub(crate) active_identity: u64,
     pub(crate) root_state: Option<NavigationDestinationState>,
     pub(crate) root_is_active: bool,
     pub(crate) last_page: Option<NavigationPage>,
-    pub(crate) transition: Option<NavigationTransitionState>,
+    pub(crate) transition: Option<NavigationTransitionState<E>>,
     /// Entries that left the stack this transaction. Held behind the same
     /// `Rc<RefCell>` lease as `entries` because a departing page stays
     /// renderable until its transition completes — a stale cached scene is
     /// re-recorded from it even though it is no longer in `entries`.
-    pub(crate) pending_removed: NavigationEntries,
+    pub(crate) pending_removed: NavigationEntries<E>,
     pub(crate) pending_appearance: bool,
     pub(crate) pending_transaction_id: Option<NavigationTransactionId>,
     pub(crate) skip_next_pop_transition: bool,
-    pub(crate) interactive_pop: Option<NavigationInteractivePop>,
+    pub(crate) interactive_pop: Option<NavigationInteractivePop<E>>,
 }
 
-#[derive(Clone)]
-pub struct NavigationTransitionState {
+pub struct NavigationTransitionState<E: crate::text::TextEngine> {
     pub style: AnyNavigationTransition,
     pub(crate) direction: NavigationTransitionDirection,
     pub(crate) from_page: NavigationPage,
     pub(crate) to_page: NavigationPage,
     pub(crate) started_at: Instant,
     pub(crate) duration: Duration,
+    /// The moving page's own transition, when its root declares one: it
+    /// replaces `style` for this push or pop, and the transaction lasts as
+    /// long as its clock.
+    pub(crate) page: Option<Rc<RefCell<PageTransition<E>>>>,
 }
 
-pub struct HydroNavigationController {
-    pub entries: NavigationEntries,
-    pub(crate) events: NavigationEvents,
+/// A page-root declaration running for one push (its insertion) or pop (its
+/// removal): the moving page animates under it above the stationary page,
+/// which stays put.
+pub struct PageTransition<E: crate::text::TextEngine> {
+    /// The page that moves — arriving on a push, leaving on a pop.
+    pub(crate) identity: u64,
+    pub(crate) run: crate::renderer::tree::transition::TransitionRun<E>,
+    /// Whether the run still needs frames.
+    running: bool,
+    /// Logical-edge resolution for the sampled properties.
+    pub(crate) direction: waterui_core::layout::LayoutDirection,
+}
+
+impl<E: crate::text::TextEngine> PageTransition<E> {
+    pub(crate) fn start(
+        identity: u64,
+        spec: &waterui_core::transition::TransitionSpec,
+        navigation: NavigationTransitionDirection,
+        env: &Environment,
+        now: Instant,
+    ) -> Self {
+        let reduce_motion = env
+            .get::<waterui_core::transition::ReduceMotion>()
+            .is_some_and(|flag| flag.0);
+        let run = match navigation {
+            NavigationTransitionDirection::Push => {
+                crate::renderer::tree::transition::TransitionRun::insertion(
+                    spec,
+                    reduce_motion,
+                    now,
+                )
+            }
+            NavigationTransitionDirection::Pop => {
+                crate::renderer::tree::transition::TransitionRun::removal(spec, reduce_motion, now)
+            }
+        };
+        Self {
+            identity,
+            run,
+            running: true,
+            direction: waterui_layout::layout_direction(env).snapshot(),
+        }
+    }
+
+    /// Advances the run's clock to `now`.
+    pub(crate) fn advance(&mut self, now: Instant) {
+        self.running = self.run.advance(now);
+    }
+}
+
+/// The moving page of a navigation transition its root's declaration drives:
+/// on its clock for a push or programmatic pop ([`PageTransition`]), or by
+/// gesture progress for an interactive pop ([`InteractivePageTransition`]).
+pub trait PageMotion<E: crate::text::TextEngine> {
+    /// The page that moves.
+    fn identity(&self) -> u64;
+
+    /// Samples the moving page for a page of `size`.
+    fn paint<'a>(
+        &'a self,
+        size: waterui_core::layout::Size,
+        hit: bool,
+        owner: &'a Rc<crate::renderer::mount::NodeCell<E>>,
+    ) -> crate::renderer::TransitionPaint<'a, E>;
+}
+
+impl<E: crate::text::TextEngine> PageMotion<E> for PageTransition<E> {
+    fn identity(&self) -> u64 {
+        self.identity
+    }
+
+    fn paint<'a>(
+        &'a self,
+        size: waterui_core::layout::Size,
+        hit: bool,
+        owner: &'a Rc<crate::renderer::mount::NodeCell<E>>,
+    ) -> crate::renderer::TransitionPaint<'a, E> {
+        crate::renderer::TransitionPaint::sample(
+            &self.run.state,
+            size,
+            self.direction,
+            hit,
+            &self.run.runtime,
+            owner,
+        )
+    }
+}
+
+/// The departing page's root declaration under an interactive pop: its
+/// removal, sampled at the pop's progress — forward while the gesture drags
+/// or commits, back toward presence when it is cancelled.
+pub struct InteractivePageTransition<E: crate::text::TextEngine> {
+    identity: u64,
+    removal: crate::renderer::tree::transition::ScrubbedRemoval<E>,
+    /// The pop's progress as of its last sample: the removal's absence.
+    progress: f32,
+    /// Logical-edge resolution for the sampled properties.
+    direction: waterui_core::layout::LayoutDirection,
+}
+
+impl<E: crate::text::TextEngine> PageMotion<E> for InteractivePageTransition<E> {
+    fn identity(&self) -> u64 {
+        self.identity
+    }
+
+    fn paint<'a>(
+        &'a self,
+        size: waterui_core::layout::Size,
+        hit: bool,
+        owner: &'a Rc<crate::renderer::mount::NodeCell<E>>,
+    ) -> crate::renderer::TransitionPaint<'a, E> {
+        self.removal.paint(
+            self.progress,
+            waterui_core::transition::TransitionGeometry::new(size, self.direction),
+            hit,
+            owner,
+        )
+    }
+}
+
+pub struct HydroNavigationController<E: crate::text::TextEngine> {
+    pub entries: NavigationEntries<E>,
+    pub(crate) events: NavigationEvents<E>,
     pub(crate) next_entry_identity: u64,
     /// The cell a controller-side mutation marks — the owning stack widget's
     /// cell once the slot is bound (see `NavigationSlot::target`).
-    pub(crate) target: Rc<RefCell<Weak<NodeCell>>>,
+    pub(crate) target: Rc<RefCell<Weak<NodeCell<E>>>>,
 }
 
-impl HydroNavigationController {
+impl<E: crate::text::TextEngine> HydroNavigationController<E> {
     /// An entries mutation is layout-affecting: mark the stack's cell.
     fn mark_layout(&self) {
         if let Some(cell) = self.target.borrow().upgrade() {
@@ -212,10 +394,9 @@ pub enum NavigationInteractivePopOutcome {
 /// Registered while the stack renders at depth greater than zero, in the
 /// same place as the edge-drag target. The last registration of the frame is
 /// the frontmost stack.
-#[derive(Clone)]
-pub struct NavigationBackTarget {
+pub struct NavigationBackTarget<E: crate::text::TextEngine> {
     /// The node cell that registered the target.
-    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
     pub(crate) slot_key: NavigationKey,
     pub(crate) width: f64,
     pub(crate) from_page: NavigationPage,
@@ -240,16 +421,19 @@ pub enum SystemBackGesture {
     Active(NavigationKey),
 }
 
-pub struct NavigationInteractivePop {
+pub struct NavigationInteractivePop<E: crate::text::TextEngine> {
     pub(crate) start_x: f64,
     pub width: f64,
     pub(crate) progress: f64,
     pub(crate) phase: NavigationInteractivePopPhase,
     pub(crate) from_page: NavigationPage,
     pub(crate) to_page: NavigationPage,
+    /// The departing page's root declaration, started on the first frame
+    /// that presents the pop.
+    page: Option<Rc<RefCell<InteractivePageTransition<E>>>>,
 }
 
-impl NavigationState {
+impl<E: crate::text::TextEngine> NavigationState<E> {
     pub(crate) fn begin_rebuild_frame(&mut self) {
         self.active.clear();
     }
@@ -267,7 +451,7 @@ impl NavigationState {
     }
 }
 
-impl NavigationSlot {
+impl<E: crate::text::TextEngine> NavigationSlot<E> {
     pub(crate) fn new() -> Self {
         let entries = Rc::new(RefCell::new(Vec::new()));
         let events = Rc::new(RefCell::new(Vec::new()));
@@ -299,7 +483,7 @@ impl NavigationSlot {
     }
 }
 
-impl NavigationInteractivePop {
+impl<E: crate::text::TextEngine> NavigationInteractivePop<E> {
     pub(crate) fn new(
         start_x: f64,
         width: f64,
@@ -314,7 +498,37 @@ impl NavigationInteractivePop {
             phase: NavigationInteractivePopPhase::Dragging,
             from_page,
             to_page,
+            page: None,
         }
+    }
+
+    /// The departing page's root declaration `spec` at the progress of the
+    /// last [`Self::sample`]. The page owns the pop's motion in place of the
+    /// stack style (layout-spec.md §4.5), as it does on a programmatic pop.
+    pub(crate) fn page_motion(
+        &mut self,
+        spec: &waterui_core::transition::TransitionSpec,
+        env: &Environment,
+        now: Instant,
+    ) -> Rc<RefCell<InteractivePageTransition<E>>> {
+        let identity = self.from_page.identity;
+        let page = self.page.get_or_insert_with(|| {
+            let reduce_motion = env
+                .get::<waterui_core::transition::ReduceMotion>()
+                .is_some_and(|flag| flag.0);
+            Rc::new(RefCell::new(InteractivePageTransition {
+                identity,
+                removal: crate::renderer::tree::transition::ScrubbedRemoval::new(
+                    spec,
+                    reduce_motion,
+                    now,
+                ),
+                progress: 0.0,
+                direction: waterui_layout::layout_direction(env).snapshot(),
+            }))
+        });
+        page.borrow_mut().progress = crate::num_cast::f64_as_f32(self.progress);
+        Rc::clone(page)
     }
 
     pub(crate) fn update(&mut self, x: f64) -> bool {
@@ -403,7 +617,7 @@ impl NavigationInteractivePop {
     }
 }
 
-impl NavigationTransitionState {
+impl<E: crate::text::TextEngine> NavigationTransitionState<E> {
     pub(crate) const fn new(
         style: AnyNavigationTransition,
         direction: NavigationTransitionDirection,
@@ -419,7 +633,14 @@ impl NavigationTransitionState {
             to_page,
             started_at,
             duration,
+            page: None,
         }
+    }
+
+    /// Runs the moving page's own declaration in place of the stack style.
+    pub(crate) fn with_page(mut self, page: PageTransition<E>) -> Self {
+        self.page = Some(Rc::new(RefCell::new(page)));
+        self
     }
 
     pub(crate) fn progress(&self, now: Instant) -> f64 {
@@ -432,7 +653,9 @@ impl NavigationTransitionState {
     }
 
     pub(crate) fn is_active(&self, now: Instant) -> bool {
-        self.progress(now) < 1.0
+        self.page
+            .as_ref()
+            .map_or_else(|| self.progress(now) < 1.0, |page| page.borrow().running)
     }
 }
 
@@ -446,7 +669,7 @@ fn eased_progress(progress: f64, motion: NavigationMotion) -> f64 {
     )
 }
 
-impl CustomNavigationController for HydroNavigationController {
+impl<E: crate::text::TextEngine> CustomNavigationController for HydroNavigationController<E> {
     fn apply(&mut self, transaction: NavigationTransaction) {
         let NavigationTransaction {
             id: transaction_id,
@@ -486,8 +709,8 @@ impl CustomNavigationController for HydroNavigationController {
     }
 }
 
-fn take_destination_state(
-    slot: &mut NavigationSlot,
+fn take_destination_state<E: crate::text::TextEngine>(
+    slot: &mut NavigationSlot<E>,
     identity: u64,
 ) -> Option<NavigationDestinationState> {
     if identity == ROOT_NAVIGATION_IDENTITY {
@@ -521,8 +744,8 @@ fn take_destination_state(
     panic!("Hydrolysis navigation destination identity {identity} is not retained");
 }
 
-fn put_destination_state(
-    slot: &mut NavigationSlot,
+fn put_destination_state<E: crate::text::TextEngine>(
+    slot: &mut NavigationSlot<E>,
     identity: u64,
     state: NavigationDestinationState,
 ) {
@@ -565,7 +788,7 @@ fn put_destination_state(
     panic!("Hydrolysis navigation destination identity {identity} was lost during its callback");
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn install_navigation_root_state(
         &mut self,
         slot_key: &NavigationKey,
@@ -615,7 +838,7 @@ impl SemanticCore {
         slot.root_is_active = true;
     }
 
-    pub(crate) fn bind_navigation_entries(&mut self, key: &NavigationKey) -> NavigationEntries {
+    pub(crate) fn bind_navigation_entries(&mut self, key: &NavigationKey) -> NavigationEntries<E> {
         self.navigation.active.insert(key.address());
         // A navigation controller marks the stack widget's cell (the spec's
         // 77-site mapping); the reading cell is it, or the root before a
@@ -665,7 +888,7 @@ impl SemanticCore {
     ///
     /// The last materialized entry is the frontmost one — the retained list
     /// keeps paint order, the same sequence the per-frame pushes gave.
-    pub(crate) fn register_back_target(&mut self, target: NavigationBackTarget) {
+    pub(crate) fn register_back_target(&mut self, target: NavigationBackTarget<E>) {
         self.register_retained(target, kurbo::Rect::ZERO, |regs| &mut regs.back_targets);
     }
 
@@ -678,8 +901,13 @@ impl SemanticCore {
         )
     )]
     #[must_use]
-    pub(crate) const fn has_back_navigation_target(&self) -> bool {
+    pub(crate) fn has_back_navigation_target(&self) -> bool {
         !self.hit_test.back_targets.is_empty()
+            || self
+                .hit_test
+                .modal_interaction
+                .as_ref()
+                .is_some_and(ModalInteraction::is_active)
     }
 
     /// Drives one system-back phase against the frontmost target.
@@ -693,6 +921,23 @@ impl SemanticCore {
         event: crate::BackNavigation,
         env: &Environment,
     ) -> bool {
+        // A modal scope owns system back while it is up: the gesture never
+        // reaches a navigation stack beneath it, and only a committed back
+        // runs the scope's escape action — the presented dialog's cancel path,
+        // shared with Escape (water-rs/waterui#1210). A started, progressing
+        // or cancelled gesture answers nothing, so a back swipe the user
+        // abandons leaves the dialog up.
+        if let Some(modal) = self
+            .hit_test
+            .modal_interaction
+            .clone()
+            .filter(|modal| modal.is_active() && modal.close_on_escape())
+        {
+            if matches!(event, crate::BackNavigation::Invoked) {
+                modal.handle_escape(env);
+            }
+            return true;
+        }
         match event {
             crate::BackNavigation::Started { .. } => self.begin_system_back(env),
             crate::BackNavigation::Progressed { progress } => self.progress_system_back(progress),
@@ -725,7 +970,7 @@ impl SemanticCore {
             .get_mut(&target.slot_key)
             .expect("Hydrolysis navigation slot missing");
         slot.transition = None;
-        slot.interactive_pop = Some(NavigationInteractivePop::new(
+        slot.interactive_pop = Some(NavigationInteractivePop::<E>::new(
             0.0,
             target.width,
             target.from_page,
@@ -998,7 +1243,7 @@ impl SemanticCore {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Starts recording a page inside its open `("page", identity)` scope.
     /// `matched` names the elements a matched transition lists in its own
     /// scopes instead of in their page.
@@ -1011,7 +1256,7 @@ impl HydrolysisRenderer {
         });
     }
 
-    pub(crate) fn finish_navigation_page(&mut self) -> NavigationRecordedPage {
+    pub(crate) fn finish_navigation_page(&mut self) -> NavigationRecordedPage<E> {
         self.navigation
             .page_records
             .pop()
@@ -1056,14 +1301,71 @@ impl HydrolysisRenderer {
     }
 }
 
+impl<E: crate::text::TextEngine> Clone for NavigationBackTarget<E> {
+    fn clone(&self) -> Self {
+        Self {
+            owner: self.owner.clone(),
+            slot_key: self.slot_key.clone(),
+            width: self.width,
+            from_page: self.from_page.clone(),
+            to_page: self.to_page.clone(),
+            controller: self.controller.clone(),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for NavigationTransitionState<E> {
+    fn clone(&self) -> Self {
+        Self {
+            style: self.style.clone(),
+            direction: self.direction,
+            from_page: self.from_page.clone(),
+            to_page: self.to_page.clone(),
+            started_at: self.started_at,
+            duration: self.duration,
+            page: self.page.clone(),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Default for NavigationState<E> {
+    fn default() -> Self {
+        Self {
+            slots: BTreeMap::default(),
+            page_records: Vec::default(),
+            active: BTreeSet::default(),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Default for NavigationRecordedPage<E> {
+    fn default() -> Self {
+        Self {
+            sources: BTreeMap::default(),
+            destinations: BTreeMap::default(),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for NavigationMatchedElement<E> {
+    fn clone(&self) -> Self {
+        Self {
+            bounds: self.bounds,
+            to_page: self.to_page,
+            frame: self.frame,
+            cell: self.cell.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         NavigationInteractivePop, NavigationInteractivePopOutcome, NavigationInteractivePopPhase,
         NavigationPage,
     };
+    use crate::theme::NavigationMotion;
     use std::time::{Duration, Instant};
-    use waterui_backend_core::widget::NavigationMotion;
     use waterui_core::EasingCurve;
 
     fn material_navigation_motion() -> NavigationMotion {
@@ -1078,7 +1380,7 @@ mod tests {
     #[test]
     fn interactive_completion_uses_emphasized_easing_after_direct_manipulation() {
         let started_at = Instant::now();
-        let mut pop = NavigationInteractivePop::new(
+        let mut pop = NavigationInteractivePop::<crate::text::ParleyEngine>::new(
             0.0,
             100.0,
             NavigationPage::default(),
@@ -1103,7 +1405,7 @@ mod tests {
     #[test]
     fn interactive_cancellation_uses_emphasized_easing_toward_origin() {
         let started_at = Instant::now();
-        let mut pop = NavigationInteractivePop::new(
+        let mut pop = NavigationInteractivePop::<crate::text::ParleyEngine>::new(
             0.0,
             100.0,
             NavigationPage::default(),
@@ -1128,7 +1430,7 @@ mod tests {
     #[test]
     fn explicit_commit_completes_below_the_drag_threshold() {
         let started_at = Instant::now();
-        let mut pop = NavigationInteractivePop::new(
+        let mut pop = NavigationInteractivePop::<crate::text::ParleyEngine>::new(
             0.0,
             100.0,
             NavigationPage::default(),
@@ -1145,7 +1447,7 @@ mod tests {
     #[test]
     fn explicit_cancel_retreats_above_the_drag_threshold() {
         let started_at = Instant::now();
-        let mut pop = NavigationInteractivePop::new(
+        let mut pop = NavigationInteractivePop::<crate::text::ParleyEngine>::new(
             0.0,
             100.0,
             NavigationPage::default(),

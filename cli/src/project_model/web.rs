@@ -17,7 +17,7 @@ use waterui_assets_planner::{BUNDLE_META_PREFIX, BundleMountMeta};
 
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::project_model::templates::embedded;
-use crate::toolchain::Host;
+use crate::toolchain::{Host, process_tree::ProcessTree};
 
 /// The JavaScript package manager a project declares in
 /// `[web] package_manager`.
@@ -26,6 +26,7 @@ use crate::toolchain::Host;
 /// a project that declares `pnpm` is never built with `bun`.
 #[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Debug, Default, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum PackageManager {
     /// Bun (`bun`).
     #[default]
@@ -52,11 +53,14 @@ impl PackageManager {
 
     /// `<pm> install` — installs the dependencies of the current directory.
     /// Interactive: installers prompt on the terminal, so it inherits stdio.
-    #[must_use]
-    pub fn install(self, host: &Host) -> Command {
-        let mut command = Command::from(host.interactive_command(self.binary()));
+    ///
+    /// # Errors
+    /// - [`std::io::ErrorKind::NotFound`] when the manager's binary is not on
+    ///   the host's `PATH`.
+    pub fn install(self, host: &Host) -> std::io::Result<Command> {
+        let mut command = Command::from(host.interactive_command(self.binary())?);
         command.arg("install");
-        command
+        Ok(command)
     }
 
     /// `<pm> create vite <dir>`; npm names its initializer `vite@latest`.
@@ -66,9 +70,17 @@ impl PackageManager {
     /// which skips Vite's interactive framework picker. The command is
     /// interactive either way — the picker reads the user's terminal when it
     /// runs.
-    #[must_use]
-    pub fn create_vite(self, host: &Host, dir: &str, template: Option<&str>) -> Command {
-        let mut command = Command::from(host.interactive_command(self.binary()));
+    ///
+    /// # Errors
+    /// - [`std::io::ErrorKind::NotFound`] when the manager's binary is not on
+    ///   the host's `PATH`.
+    pub fn create_vite(
+        self,
+        host: &Host,
+        dir: &str,
+        template: Option<&str>,
+    ) -> std::io::Result<Command> {
+        let mut command = Command::from(host.interactive_command(self.binary())?);
         command.arg("create");
         match self {
             Self::Npm => command.arg("vite@latest"),
@@ -83,7 +95,7 @@ impl PackageManager {
             }
             command.args(["--template", template]);
         }
-        command
+        Ok(command)
     }
 
     /// Whether the manager's binary resolves on `host`'s `PATH`.
@@ -115,7 +127,21 @@ pub struct WebConfig {
     /// The package manager used for `run build`, `run dev`, `create vite`,
     /// and `install` in the frontend project.
     #[serde(default)]
-    pub package_manager: PackageManager,
+    package_manager: PackageManager,
+}
+impl WebConfig {
+    /// A `WebConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(package_manager: PackageManager) -> Self {
+        Self { package_manager }
+    }
+
+    /// The package manager used for `run build`, `run dev`, `create vite`,
+    /// and `install` in the frontend project.
+    #[must_use]
+    pub const fn package_manager(&self) -> PackageManager {
+        self.package_manager
+    }
 }
 
 /// The `include_web!` mount declared by the project's compiled library.
@@ -142,7 +168,7 @@ pub fn decode_web_mount(symbols: &ArtifactSymbols) -> eyre::Result<Option<Bundle
     let mut frontend = None;
     for leaf in symbols.leaves_with_prefix(BUNDLE_META_PREFIX) {
         let meta = symbols.bundle_mount_meta(&leaf)?;
-        if meta.project.is_none() {
+        if meta.project().is_none() {
             continue;
         }
         if frontend.replace(meta).is_some() {
@@ -171,8 +197,7 @@ pub async fn build_frontend(
     meta: &BundleMountMeta,
 ) -> eyre::Result<()> {
     let root = meta
-        .project
-        .as_ref()
+        .project()
         .expect("build_frontend is only called for mounts that declare a project");
     let pm = package_manager.binary();
     // Not interactive: a bundler never reads the terminal. Under `water
@@ -193,10 +218,10 @@ pub async fn build_frontend(
             crate::utils::format_failure_stream("stdout", &output.stdout),
         );
     }
-    if !meta.path.is_dir() {
+    if !meta.path().is_dir() {
         bail!(
             "`{pm} run build` did not produce `{}`; set `out_dir` on `include_web!` to the bundler's output directory",
-            meta.path.display()
+            meta.path().display()
         );
     }
     Ok(())
@@ -210,14 +235,16 @@ pub async fn build_frontend(
 ///
 /// Every launch channel reduces to this name: desktop spawns it directly,
 /// `simctl launch` forwards it as `SIMCTL_CHILD_WATERUI_DEV_URL`,
-/// `devicectl device process launch` carries it in the `-e` environment
-/// dictionary, and Android ships it as the `waterui.env.WATERUI_DEV_URL`
-/// intent extra that the generated `MainActivity` turns back into an
-/// environment variable before the runtime initializes.
+/// `devicectl device process launch` forwards it through the
+/// `DEVICECTL_CHILD_*` caller environment, and Android ships it inside
+/// the launch-environment handoff the generated `MainActivity` claims
+/// and turns back into an environment variable before the runtime
+/// initializes.
 pub const DEV_URL_ENV: &str = "WATERUI_DEV_URL";
 
 /// A target `water run` can hand a dev-server URL to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DevTarget {
     /// A desktop process the CLI spawns (macOS, GTK, Hydrolysis).
     Desktop,
@@ -233,8 +260,9 @@ pub enum DevTarget {
 /// this machine's loopback.
 ///
 /// `WATERUI_DEV_URL` travels in the launch environment on every target —
-/// `devicectl device process launch -e` carries it to a physical iOS device
-/// exactly as `SIMCTL_CHILD_*` carries it to a simulator.
+/// `DEVICECTL_CHILD_*` carries it to a physical iOS device through
+/// `devicectl device process launch` exactly as `SIMCTL_CHILD_*` carries
+/// it to a simulator.
 ///
 /// On a physical iOS device `localhost` is the phone itself, so the URL's
 /// loopback host is replaced with the Mac's LAN address — the address the
@@ -380,7 +408,7 @@ pub fn dev_url_from_line(line: &str) -> Option<url::Url> {
 #[derive(Debug)]
 pub struct WebDevServer {
     url: url::Url,
-    child: Option<(std::process::Child, dev_server_tree::DevServerTree)>,
+    child: Option<(std::process::Child, ProcessTree)>,
     _drain: smol::Task<()>,
 }
 
@@ -442,7 +470,7 @@ impl WebDevServer {
         let pm = package_manager.binary();
         // `std::process::Command`, not `smol`'s: the child must lead its own
         // process group so the guard's drop can signal the whole tree.
-        let mut command = host.std_command(pm);
+        let mut command = host.std_command(pm)?;
         command.arg("run").arg(script).current_dir(root);
         if expose_on_lan {
             // npm needs `--` to forward args to the script; bun, pnpm and
@@ -454,16 +482,10 @@ impl WebDevServer {
             command.args(["--host", "0.0.0.0"]);
         }
         command.stdout(Stdio::piped()).stderr(Stdio::inherit());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt as _;
-            command.process_group(0);
-        }
-        let mut child = command.spawn().wrap_err_with(|| {
-            format!("failed to spawn `{pm} run {script}` in {}", root.display())
-        })?;
-        let tree = dev_server_tree::DevServerTree::adopt(&child)
-            .wrap_err_with(|| format!("failed to group the `{pm} run {script}` process tree"))?;
+        let (mut child, tree) = ProcessTree::spawn(command, |mut command| command.spawn())
+            .wrap_err_with(|| {
+                format!("failed to spawn `{pm} run {script}` in {}", root.display())
+            })?;
         let stdout = child.stdout.take().expect("stdout is piped");
         let mut lines = BufReader::new(smol::Unblock::new(stdout)).lines();
 
@@ -519,140 +541,6 @@ impl WebDevServer {
     }
 }
 
-/// The handle on the dev server's whole process tree, whichever the platform
-/// offers: the process group the child was spawned to lead on Unix, a job
-/// object the child is assigned to on Windows.
-mod dev_server_tree {
-    use std::io;
-
-    /// The dev server and every process it re-execs, addressable as one.
-    #[cfg(unix)]
-    #[derive(Debug)]
-    pub struct DevServerTree {
-        group: nix::unistd::Pid,
-    }
-
-    #[cfg(unix)]
-    impl DevServerTree {
-        /// The process group `child` leads. It was spawned with
-        /// `process_group(0)`; a child that did not end up leading its own
-        /// group is refused rather than signalled, because a group signal
-        /// would then reach whatever group it shares — `water` included.
-        pub fn adopt(child: &std::process::Child) -> io::Result<Self> {
-            let pid = nix::unistd::Pid::from_raw(
-                i32::try_from(child.id()).expect("process identifiers fit in i32"),
-            );
-            let group = nix::unistd::getpgid(Some(pid))?;
-            if group != pid {
-                return Err(io::Error::other(format!(
-                    "process {pid} belongs to group {group} instead of leading its own"
-                )));
-            }
-            Ok(Self { group })
-        }
-
-        /// Signal every process in the group: SIGTERM when `graceful`, else
-        /// SIGKILL.
-        pub fn signal(&self, graceful: bool) {
-            let signal = if graceful {
-                nix::sys::signal::Signal::SIGTERM
-            } else {
-                nix::sys::signal::Signal::SIGKILL
-            };
-            let _ = nix::sys::signal::killpg(self.group, signal);
-        }
-    }
-
-    /// The dev server and every process it re-execs, addressable as one: a
-    /// job object that kills its members when the last handle closes, so the
-    /// tree cannot outlive `water` even when it exits without dropping the
-    /// guard.
-    #[cfg(windows)]
-    #[derive(Debug)]
-    pub struct DevServerTree {
-        job: windows_sys::Win32::Foundation::HANDLE,
-    }
-
-    // SAFETY: a job handle is a process-wide kernel object with no thread
-    // affinity; the guard's drop hands it to a waiting thread.
-    #[cfg(windows)]
-    unsafe impl Send for DevServerTree {}
-
-    #[cfg(windows)]
-    impl DevServerTree {
-        /// A new job that kills its members on close, with `child` assigned to
-        /// it — the processes `child` spawns from now on join automatically.
-        pub fn adopt(child: &std::process::Child) -> io::Result<Self> {
-            use std::os::windows::io::AsRawHandle as _;
-
-            use windows_sys::Win32::System::JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-                SetInformationJobObject,
-            };
-
-            // SAFETY: an unnamed job with default security; the null pointers
-            // are the documented arguments for that.
-            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-            if job.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            let tree = Self { job };
-            // SAFETY: an all-zero limit block is the documented starting
-            // point; only the kill-on-close flag is set below.
-            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            let size = u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
-                .expect("the limit block is far smaller than u32::MAX bytes");
-            // SAFETY: `job` is the live handle created above and `limits` is
-            // a fully initialised block of the size passed.
-            let configured = unsafe {
-                SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    (&raw const limits).cast(),
-                    size,
-                )
-            };
-            if configured == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: both handles are live; the child's comes from the
-            // standard library's `Child` and stays open while `child` is.
-            let assigned = unsafe { AssignProcessToJobObject(job, child.as_raw_handle().cast()) };
-            if assigned == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(tree)
-        }
-
-        /// Terminate every process in the job. Windows has no graceful
-        /// signal a console process observes, so `graceful` selects nothing
-        /// here; the guard's drop escalates to this call after its grace
-        /// period regardless.
-        pub fn signal(&self, graceful: bool) {
-            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
-
-            if graceful {
-                return;
-            }
-            // SAFETY: `self.job` is a live job handle owned by this value.
-            let _ = unsafe { TerminateJobObject(self.job, 1) };
-        }
-    }
-
-    #[cfg(windows)]
-    impl Drop for DevServerTree {
-        fn drop(&mut self) {
-            use windows_sys::Win32::Foundation::CloseHandle;
-
-            // SAFETY: the handle was created by `adopt` and is closed exactly
-            // once, here; closing the last handle kills the job's members.
-            let _ = unsafe { CloseHandle(self.job) };
-        }
-    }
-}
-
 /// Echo one line of dev-server output on the CLI's terminal channel — the
 /// same stderr stream the shell's human output uses.
 fn echo_dev_server_line(line: &str) {
@@ -665,6 +553,7 @@ fn echo_dev_server_line(line: &str) {
 
 /// Where the frontend of an initialized project comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WebSource {
     /// Scaffold a new Vite project into `web/`.
     New,
@@ -674,6 +563,7 @@ pub enum WebSource {
 
 /// What to do with a frontend found outside `web/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExistingFrontendMode {
     /// Copy it into `web/` (excluding `node_modules` and `.git`), then install.
     Copy,
@@ -685,17 +575,58 @@ pub enum ExistingFrontendMode {
 #[derive(Debug, Clone, Default)]
 pub struct InitAnswers {
     /// `--web new|<path>`: the frontend source, if the flag settled it.
-    pub web: Option<WebSource>,
+    web: Option<WebSource>,
     /// `--web-mode copy|reference`: how an existing frontend joins, if the
     /// flag settled it.
-    pub web_mode: Option<ExistingFrontendMode>,
+    web_mode: Option<ExistingFrontendMode>,
     /// `--package-manager`: the declared manager, if the flag settled it.
-    pub package_manager: Option<PackageManager>,
+    package_manager: Option<PackageManager>,
+}
+impl InitAnswers {
+    /// `--web new|<path>`: the frontend source, if the flag settled it.
+    #[must_use]
+    pub const fn web(&self) -> Option<&WebSource> {
+        self.web.as_ref()
+    }
+
+    /// `--web-mode copy|reference`: how an existing frontend joins, if the
+    /// flag settled it.
+    #[must_use]
+    pub const fn web_mode(&self) -> Option<&ExistingFrontendMode> {
+        self.web_mode.as_ref()
+    }
+
+    /// `--package-manager`: the declared manager, if the flag settled it.
+    #[must_use]
+    pub const fn package_manager(&self) -> Option<PackageManager> {
+        self.package_manager
+    }
+}
+
+impl InitAnswers {
+    /// Answers choosing `web` as the frontend source, adopting an existing
+    /// frontend in `web_mode`, managed by `package_manager`.
+    #[must_use]
+    pub const fn new(
+        web: Option<WebSource>,
+        web_mode: Option<ExistingFrontendMode>,
+        package_manager: Option<PackageManager>,
+    ) -> Self {
+        Self {
+            web,
+            web_mode,
+            package_manager,
+        }
+    }
 }
 
 /// One step of `water init`. The command executes these in order; the plan is
 /// pure so the decision tree is testable without touching disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal performs each init action variant by variant"
+)]
 pub enum InitAction {
     /// Move the listed top-level entries into `web/`.
     MoveFrontendToWeb {
@@ -855,6 +786,7 @@ fn relative_path_arg(project_root: &Path, source: &Path) -> eyre::Result<String>
 /// Read from `web/package.json` dependencies — the dependencies the template
 /// ships are the one ground truth `create vite` gives us.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WebFramework {
     /// `vanilla`/`vanilla-ts`: no framework dependency.
     Vanilla,
@@ -901,9 +833,31 @@ impl WebFramework {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WebFrontend {
     /// The framework the starter's dependencies declare.
-    pub framework: WebFramework,
+    framework: WebFramework,
     /// Whether `typescript` is a devDependency (else JavaScript).
-    pub typescript: bool,
+    typescript: bool,
+}
+impl WebFrontend {
+    /// A `WebFrontend` carrying each of its fields.
+    #[must_use]
+    pub const fn new(framework: WebFramework, typescript: bool) -> Self {
+        Self {
+            framework,
+            typescript,
+        }
+    }
+
+    /// The framework the starter's dependencies declare.
+    #[must_use]
+    pub const fn framework(&self) -> &WebFramework {
+        &self.framework
+    }
+
+    /// Whether `typescript` is a devDependency (else JavaScript).
+    #[must_use]
+    pub const fn typescript(&self) -> bool {
+        self.typescript
+    }
 }
 
 /// The dependency names that identify each framework, checked in order.
@@ -962,12 +916,42 @@ pub fn detect_web_frontend(package_json: &str) -> Option<WebFrontend> {
 #[derive(Debug, Default)]
 pub struct WebOverlayReport {
     /// The detected frontend (`None` when `package.json` did not parse).
-    pub frontend: Option<WebFrontend>,
+    frontend: Option<WebFrontend>,
     /// Whether the starter's visible page was replaced with the branded one —
     /// `false` means the framework's own starter page remains.
-    pub branded: bool,
+    branded: bool,
     /// Non-fatal misses: expected files the layout did not ship.
-    pub warnings: Vec<String>,
+    warnings: Vec<String>,
+}
+impl WebOverlayReport {
+    /// A `WebOverlayReport` carrying each of its fields.
+    #[must_use]
+    pub const fn new(frontend: Option<WebFrontend>, branded: bool, warnings: Vec<String>) -> Self {
+        Self {
+            frontend,
+            branded,
+            warnings,
+        }
+    }
+
+    /// The detected frontend (`None` when `package.json` did not parse).
+    #[must_use]
+    pub const fn frontend(&self) -> Option<&WebFrontend> {
+        self.frontend.as_ref()
+    }
+
+    /// Whether the starter's visible page was replaced with the branded one —
+    /// `false` means the framework's own starter page remains.
+    #[must_use]
+    pub const fn branded(&self) -> bool {
+        self.branded
+    }
+
+    /// Non-fatal misses: expected files the layout did not ship.
+    #[must_use]
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
 }
 
 /// Values the branded starter templates interpolate.
@@ -1410,11 +1394,11 @@ mod tests {
         machine.install("bun");
         machine.respond("bun_run_build", "the bundler's complaint");
         let host = machine.host([("WATERUI_FAKE_PM_EXIT", "1")]);
-        let meta = BundleMountMeta {
-            mount: "web".to_string(),
-            path: machine.dir("app/dist"),
-            project: Some(machine.dir("app")),
-        };
+        let meta = BundleMountMeta::new(
+            "web".to_string(),
+            machine.dir("app/dist"),
+            Some(machine.dir("app")),
+        );
         let error = smol::block_on(build_frontend(&host, PackageManager::Bun, &meta)).unwrap_err();
         assert!(
             error.to_string().contains("the bundler's complaint"),
@@ -1423,7 +1407,7 @@ mod tests {
     }
 
     #[test]
-    fn command_arg_vectors() {
+    fn command_arg_vectors() -> std::io::Result<()> {
         let args = |command: &Command| -> Vec<String> {
             std::iter::once(command.get_program().to_string_lossy().into_owned())
                 .chain(
@@ -1433,32 +1417,51 @@ mod tests {
                 )
                 .collect()
         };
-        let host =
-            crate::toolchain::testing::TestMachine::new().host(Vec::<(String, String)>::new());
+        let machine = crate::toolchain::testing::TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        // The constructed command names the binary the host's `PATH`
+        // resolved — the fake tools the machine installs.
+        let pnpm = machine.install("pnpm").display().to_string();
+        let yarn = machine.install("yarn").display().to_string();
+        let bun = machine.install("bun").display().to_string();
+        let npm = machine.install("npm").display().to_string();
         assert_eq!(
-            args(&PackageManager::Pnpm.install(&host)),
-            ["pnpm", "install"]
+            args(&PackageManager::Pnpm.install(&host)?),
+            [pnpm, "install".to_owned()]
         );
         assert_eq!(
-            args(&PackageManager::Yarn.create_vite(&host, "web", None)),
-            ["yarn", "create", "vite", "web"]
-        );
-        assert_eq!(
-            args(&PackageManager::Bun.create_vite(&host, "web", Some("react-ts"))),
-            ["bun", "create", "vite", "web", "--template", "react-ts"]
-        );
-        assert_eq!(
-            args(&PackageManager::Npm.create_vite(&host, "web", Some("vanilla-ts"))),
+            args(&PackageManager::Yarn.create_vite(&host, "web", None)?),
             [
-                "npm",
-                "create",
-                "vite@latest",
-                "web",
-                "--",
-                "--template",
-                "vanilla-ts"
+                yarn,
+                "create".to_owned(),
+                "vite".to_owned(),
+                "web".to_owned()
             ]
         );
+        assert_eq!(
+            args(&PackageManager::Bun.create_vite(&host, "web", Some("react-ts"))?),
+            [
+                bun,
+                "create".to_owned(),
+                "vite".to_owned(),
+                "web".to_owned(),
+                "--template".to_owned(),
+                "react-ts".to_owned()
+            ]
+        );
+        assert_eq!(
+            args(&PackageManager::Npm.create_vite(&host, "web", Some("vanilla-ts"))?),
+            [
+                npm,
+                "create".to_owned(),
+                "vite@latest".to_owned(),
+                "web".to_owned(),
+                "--".to_owned(),
+                "--template".to_owned(),
+                "vanilla-ts".to_owned()
+            ]
+        );
+        Ok(())
     }
 
     #[test]
@@ -1724,41 +1727,23 @@ mod tests {
     }
 
     /// The tree handle reaches the grandchild the direct child re-execs —
-    /// the shape `bun run dev` → `node vite` has — and refuses a child that
-    /// does not lead its own group, since signalling that group would hit
-    /// `water` itself.
+    /// the shape `bun run dev` → `node vite` has.
     #[test]
     #[cfg(unix)]
-    fn dev_server_tree_signals_the_grandchild_and_refuses_a_shared_group() {
-        use std::os::unix::process::CommandExt as _;
-
-        let mut leader = crate::toolchain::Host::current()
-            .std_command("sh")
+    fn process_tree_signals_the_grandchild() -> std::io::Result<()> {
+        let mut command = crate::toolchain::Host::current().std_command("sh")?;
+        command
             .args(["-c", "sleep 30 & wait"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .expect("sh spawns");
-        let tree =
-            dev_server_tree::DevServerTree::adopt(&leader).expect("the child leads its group");
+            .stderr(Stdio::null());
+        let (mut leader, tree) = ProcessTree::spawn(command, |mut command| command.spawn())?;
         tree.signal(false);
         let status = leader.wait().expect("the leader is reaped");
         assert!(
             !status.success(),
             "SIGKILL to the group ends the leader: {status}"
         );
-
-        let mut shared = crate::toolchain::Host::current()
-            .std_command("sh")
-            .args(["-c", "exit 0"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("sh spawns");
-        let refused = dev_server_tree::DevServerTree::adopt(&shared);
-        let _ = shared.wait();
-        assert!(refused.is_err(), "a child in our own group must be refused");
+        Ok(())
     }
 
     #[test]

@@ -4,10 +4,9 @@
 //! parent–child structure, while `perform_accessibility_action` is asserted to
 //! mutate the bound state each action targets.
 //!
-//! These cannot run until `waterui-testing` (a dev-dependency every test
-//! target links) carries the `waterui#1130` driver side; they are written
-//! against the pinned waterui API so they compile and run unchanged after the
-//! repin.
+//! They run on [`SemanticRuntime`] directly — no `waterui-testing` driver —
+//! which keeps this crate's own coverage free of a testing-harness
+//! dependency (water-rs/waterui#1673).
 
 use accesskit::{
     Action, ActionData, ActionRequest, Node, NodeId, Role, Toggled, TreeId, TreeUpdate,
@@ -758,7 +757,7 @@ fn a_clean_pump_publishes_no_tree_update() {
 
     let update = pumped(&mut runtime);
     assert!(
-        runtime.pump().tree_update.is_none(),
+        runtime.pump().tree_update().is_none(),
         "a settled pump with no popup must publish nothing"
     );
 
@@ -774,7 +773,7 @@ fn a_clean_pump_publishes_no_tree_update() {
         "the swatch panel must be merged before the clean-pump check"
     );
     assert!(
-        runtime.pump().tree_update.is_none(),
+        runtime.pump().tree_update().is_none(),
         "a settled pump with an open popup must publish nothing"
     );
 }
@@ -1083,14 +1082,14 @@ fn table_emits_headers_cells_and_scrolls() {
 
 #[test]
 fn tabs_emit_tab_list_and_click_selects() {
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     let selection_for_view = selection.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(Tabs::new(
             &selection_for_view,
             vec![
-                Tab::new(0, "First", || NavigationView::new("One", text("one"))),
-                Tab::new(1, "Second", || NavigationView::new("Two", text("two"))),
+                Tab::new("First", || NavigationView::new("One", text("one"))),
+                Tab::new("Second", || NavigationView::new("Two", text("two"))),
             ],
         ))
     }));

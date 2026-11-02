@@ -1,10 +1,16 @@
 //! `external-cost` correctness (#168): the external-frame path and the
 //! copy-and-convert path must agree on the composited output. Renders
-//! one 1080p SDR frame through each and asserts the oracle pair
-//! tolerance (`flip_mean <= 0.05`, `max_local_error <= 0.25`) — the same
-//! check a scene render vs the oracle passes.
+//! one 1080p frame through each and asserts the oracle pair tolerance
+//! (`flip_mean <= 0.05`, `max_local_error <= 0.25`) — the same check a
+//! scene render vs the oracle passes. On Apple both paths run
+//! `ext_frame_yuv`; on Android path `e` may import as an external format
+//! that the driver's YCbCr conversion decodes, so the pair also holds the
+//! conversion to the shader's bilinear chroma reconstruction (#1947).
 
-#![cfg(all(feature = "cherenkov", target_vendor = "apple"))]
+#![cfg(all(
+    feature = "cherenkov",
+    any(target_vendor = "apple", target_os = "android")
+))]
 
 use cherenkov_bench::cli::{ExternalPath, ExternalSize, ExternalTransfer};
 use cherenkov_bench::external_cost;

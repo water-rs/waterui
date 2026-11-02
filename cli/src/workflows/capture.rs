@@ -13,6 +13,10 @@ use crate::{android, apple};
 
 /// The platform type of a device based on its identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal handles each capture platform variant by variant"
+)]
 pub enum DevicePlatform {
     /// iOS simulator (UDID format)
     Ios,
@@ -74,7 +78,7 @@ pub async fn verify_device(host: &Host, device_id: &str) -> eyre::Result<DeviceP
     match platform {
         DevicePlatform::Ios => {
             let simulators = apple::device::AppleSimulator::scan(host).await?;
-            if simulators.iter().any(|s| s.udid == device_id) {
+            if simulators.iter().any(|s| s.udid() == device_id) {
                 Ok(DevicePlatform::Ios)
             } else {
                 Err(eyre!("iOS simulator with UDID '{}' not found", device_id))

@@ -8,7 +8,7 @@
 //! therefore carries its respelled spans, and no effective-input plumbing
 //! survives.
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 mod android_fonts;
 pub mod fonts;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
@@ -24,7 +24,7 @@ use lru::LruCache;
 use skrifa::instance::{LocationRef, NormalizedCoord, Size};
 use skrifa::metrics::GlyphMetrics;
 use skrifa::{GlyphId, MetadataProvider};
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::FontCollection;
 use waterui_text::font::FontWeight as TextFontWeight;
@@ -37,11 +37,11 @@ use super::engine::{
 };
 use super::input::{ResolvedTextLayoutInput, ResolvedTextStyleSpec};
 
-/// The [`TextEngine`] built on the parley stack.
+/// The `TextEngine` built on the parley stack.
 ///
 /// `fonts` is the collection the engine was born with — the session's
-/// installed fonts via [`Self::from_collection`], or the enumerated system
-/// collection via [`Self::system`]. An engine's fonts never change after
+/// installed fonts via `Self::from_collection`, or the enumerated system
+/// collection via `Self::system`. An engine's fonts never change after
 /// construction, so no shape cache keyed on its inputs can go stale.
 pub struct ParleyEngine {
     /// Fonts registered at construction; the clone source for shaping scratch.
@@ -83,15 +83,20 @@ struct TextShapingScratch {
     layout_cx: parley::LayoutContext<[u8; 4]>,
 }
 
-/// The laid-out text this engine hands around: a shared parley layout plus the
-/// `(byte range, colour)` pairs of the spans the input painted a background
-/// on. The ranges already belong to the text the layout carries — a truncated
-/// layout keeps the respelled ranges of the respelled input.
+/// The laid-out text this engine hands around: a shared parley layout, the
+/// text it was shaped from, and the `(byte range, colour)` pairs of the spans
+/// the input painted a background on. The ranges already belong to the text
+/// the layout carries — a truncated layout keeps the respelled ranges of the
+/// respelled input.
 #[derive(Clone)]
 pub struct ParleyLayout(Arc<ParleyLayoutData>);
 
 struct ParleyLayoutData {
     layout: parley::Layout<[u8; 4]>,
+    /// The shaped text. Parley's clusters follow the shaper's segmentation, so
+    /// a combining mark can be a cluster of its own; caret positions are
+    /// extended grapheme boundaries (UAX #29) of this text instead.
+    text: Box<str>,
     backgrounds: Box<[(Range<usize>, [u8; 4])]>,
 }
 
@@ -102,7 +107,7 @@ impl ParleyEngine {
         fonts: &FontCollection,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        Self::new(fonts.use_fonts(|fonts| fonts.clone()), family_resolution)
+        Self::new(fonts.with_parley(|fonts| fonts.clone()), family_resolution)
     }
 
     /// An engine shaping against the enumerated system collection — exactly
@@ -149,9 +154,31 @@ impl ParleyEngine {
 impl TextEngine for ParleyEngine {
     type Layout = ParleyLayout;
 
+    /// The shaping scratch's context is dropped, so the next shape copies
+    /// the engine's context afresh: the collection is shared, so the copy
+    /// reads the new faces, and no fallback it cached for the old set
+    /// survives. The ink caches hold measurements of layouts shaped against
+    /// the old set.
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    fn fonts_changed(&self) {
+        self.scratch
+            .lock()
+            .expect("text shaping scratch mutex must not be poisoned")
+            .take();
+        self.ink_extents
+            .lock()
+            .expect("layout ink extent cache mutex must not be poisoned")
+            .clear();
+        self.ink_bounds
+            .lock()
+            .expect("glyph ink bounds cache mutex must not be poisoned")
+            .clear();
+    }
+
     fn empty_layout(&self) -> Self::Layout {
         ParleyLayout(Arc::new(ParleyLayoutData {
             layout: parley::Layout::new(),
+            text: Box::default(),
             backgrounds: Box::default(),
         }))
     }
@@ -162,20 +189,20 @@ impl TextEngine for ParleyEngine {
         self.return_scratch(scratch);
         ParleyLayout(Arc::new(ParleyLayoutData {
             layout,
+            text: input.plain.as_str().into(),
             backgrounds: input.background_spans(),
         }))
     }
 
-    fn truncate_tail(
+    fn shape_limited(
         &self,
-        layout: Self::Layout,
         input: &ResolvedTextLayoutInput,
         max_width: Option<f32>,
         max_lines: NonZeroUsize,
         mut shape: impl FnMut(&ResolvedTextLayoutInput, Option<f32>) -> Self::Layout,
     ) -> Self::Layout {
         let limit = max_lines.get();
-        let mut layout = layout;
+        let mut layout = shape(input, max_width);
         if !needs_tail_truncation(&layout.0.layout, limit) {
             return layout;
         }
@@ -254,13 +281,17 @@ impl ParleyEngine {
                 // (gvar, CFF/CFF2); built once per run so that choice — and the
                 // scaled, instance-aware metrics it wraps — is shared by every
                 // glyph on the run.
-                let coords: Vec<NormalizedCoord> = run
+                let coords: Vec<i16> = run
                     .normalized_coords()
+                    .iter()
+                    .map(|coord| coord.to_bits())
+                    .collect();
+                let location: Vec<NormalizedCoord> = coords
                     .iter()
                     .map(|coord| NormalizedCoord::from_bits(*coord))
                     .collect();
                 let metrics =
-                    font_ref.glyph_metrics(Size::new(run.font_size()), LocationRef::new(&coords));
+                    font_ref.glyph_metrics(Size::new(run.font_size()), LocationRef::new(&location));
                 let mut ink_bounds = self
                     .ink_bounds
                     .lock()
@@ -277,7 +308,7 @@ impl ParleyEngine {
                         &metrics,
                         font,
                         run.font_size(),
-                        run.normalized_coords(),
+                        &coords,
                         glyph.id,
                     ) {
                         ink_min = ink_min.min(x + x_min);
@@ -524,12 +555,22 @@ fn push_text_style(
         parley::StyleProperty::FontWeight(parley_font_weight(style.font.weight)),
         range.clone(),
     );
-    if let Some(line_height) = style.font.line_height {
-        builder.push(
-            parley::StyleProperty::LineHeight(parley::LineHeight::Absolute(line_height)),
-            range.clone(),
-        );
-    }
+    // `line_height: None` on a resolved font means the selected face's
+    // preferred metrics (`ResolvedFont` documents it), which parley spells
+    // `MetricsRelative(1.0)`. Leaving the span unset would inherit the
+    // paragraph default instead — the theme slot's absolute pitch — so a
+    // resized run (whose `Font::size` drops the slot's metrics) would space
+    // on the *unresized* face's line height: a 40 pt run inside a 16/24
+    // pitch draws its glyph tops above the laid-out frame
+    // (water-rs/waterui#2719).
+    let line_height = style.font.line_height.map_or(
+        parley::LineHeight::MetricsRelative(1.0),
+        parley::LineHeight::Absolute,
+    );
+    builder.push(
+        parley::StyleProperty::LineHeight(line_height),
+        range.clone(),
+    );
     builder.push(
         parley::StyleProperty::LetterSpacing(style.font.letter_spacing),
         range.clone(),
@@ -682,17 +723,21 @@ fn encode_text_layout(
                 let run = glyph_run.run();
                 let style = glyph_run.style();
                 let brush = rgba8_to_peniko(style.brush);
-                let normalized_coords = run.normalized_coords();
+                let normalized_coords: Vec<i16> = run
+                    .normalized_coords()
+                    .iter()
+                    .map(|coord| coord.to_bits())
+                    .collect();
 
-                let mut run_x = glyph_run.offset() + x_shift;
-                let run_y = glyph_run.baseline();
+                // `positioned_glyphs` already folds each cluster advance into
+                // `x` and the run baseline into `y`; only the fragment shift
+                // is ours.
                 let glyphs: Vec<crate::renderer::Glyph> = glyph_run
-                    .glyphs()
-                    .map(move |glyph| {
-                        let x = run_x + glyph.x;
-                        let y = run_y - glyph.y;
-                        run_x += glyph.advance;
-                        Glyph { id: glyph.id, x, y }
+                    .positioned_glyphs()
+                    .map(|glyph| Glyph {
+                        id: glyph.id,
+                        x: glyph.x + x_shift,
+                        y: glyph.y,
                     })
                     .collect();
 
@@ -700,7 +745,7 @@ fn encode_text_layout(
                 scene.glyphs(&GlyphRun {
                     font: run.font(),
                     font_size: run.font_size(),
-                    normalized_coords,
+                    normalized_coords: &normalized_coords,
                     transform: kurbo::Affine::IDENTITY,
                     brush: &peniko::Brush::Solid(brush),
                     brush_alpha: 1.0,
@@ -863,8 +908,99 @@ const fn from_parley(affinity: parley::Affinity) -> Affinity {
     }
 }
 
-fn cursor(layout: &parley::Layout<[u8; 4]>, at: TextPosition) -> parley::Cursor {
-    parley::Cursor::from_byte_index(layout, at.index, to_parley(at.affinity))
+/// The extended grapheme boundary at or before `index` in `text`.
+fn grapheme_floor(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    let mut cursor = GraphemeCursor::new(index, text.len(), true);
+    if cursor
+        .is_boundary(text, 0)
+        .expect("the whole text is one chunk")
+    {
+        return index;
+    }
+    cursor
+        .prev_boundary(text, 0)
+        .expect("the whole text is one chunk")
+        .unwrap_or(0)
+}
+
+/// The extended grapheme boundary at or after `index` in `text`.
+fn grapheme_ceil(text: &str, index: usize) -> usize {
+    let floor = grapheme_floor(text, index);
+    if floor == index {
+        return index;
+    }
+    GraphemeCursor::new(floor, text.len(), true)
+        .next_boundary(text, 0)
+        .expect("the whole text is one chunk")
+        .unwrap_or(text.len())
+}
+
+impl ParleyLayoutData {
+    fn is_grapheme_boundary(&self, index: usize) -> bool {
+        grapheme_floor(&self.text, index) == index
+    }
+
+    /// The parley cursor at `at`, its index moved back to the start of the
+    /// grapheme it falls inside.
+    fn cursor(&self, at: TextPosition) -> parley::Cursor {
+        parley::Cursor::from_byte_index(
+            &self.layout,
+            grapheme_floor(&self.text, at.index),
+            to_parley(at.affinity),
+        )
+    }
+
+    fn selection(&self, selection: TextSelection) -> parley::Selection {
+        parley::Selection::new(self.cursor(selection.anchor), self.cursor(selection.focus))
+    }
+
+    /// The grapheme boundary nearest `x` around `hit`. A line never breaks
+    /// inside a grapheme, so both boundaries of a mid-grapheme hit sit on the
+    /// hit's line and only their horizontal caret distance decides.
+    fn snap_hit(&self, hit: parley::Cursor, x: f32) -> parley::Cursor {
+        if self.is_grapheme_boundary(hit.index()) {
+            return hit;
+        }
+        let affinity = hit.affinity();
+        let distance = |cursor: &parley::Cursor| {
+            let rect = cursor.geometry(&self.layout, CARET_WIDTH);
+            (f64::from(x) - f64::midpoint(rect.x0, rect.x1)).abs()
+        };
+        let before = parley::Cursor::from_byte_index(
+            &self.layout,
+            grapheme_floor(&self.text, hit.index()),
+            affinity,
+        );
+        let after = parley::Cursor::from_byte_index(
+            &self.layout,
+            grapheme_ceil(&self.text, hit.index()),
+            affinity,
+        );
+        if distance(&after) < distance(&before) {
+            after
+        } else {
+            before
+        }
+    }
+
+    /// Repeats a visual move until its focus leaves the inside of a grapheme:
+    /// the shaper's clusters can split one grapheme, and a caret never stops
+    /// between its scalars.
+    fn visual_move(
+        &self,
+        selection: TextSelection,
+        step: impl Fn(parley::Selection) -> parley::Selection,
+    ) -> TextSelection {
+        let mut moved = step(self.selection(selection));
+        while !self.is_grapheme_boundary(moved.focus().index()) {
+            moved = step(moved);
+        }
+        from_parley_selection(moved)
+    }
 }
 
 fn position(at: parley::Cursor) -> TextPosition {
@@ -872,16 +1008,6 @@ fn position(at: parley::Cursor) -> TextPosition {
         index: at.index(),
         affinity: from_parley(at.affinity()),
     }
-}
-
-fn to_parley_selection(
-    layout: &parley::Layout<[u8; 4]>,
-    selection: TextSelection,
-) -> parley::Selection {
-    parley::Selection::new(
-        cursor(layout, selection.anchor),
-        cursor(layout, selection.focus),
-    )
 }
 
 fn from_parley_selection(selection: parley::Selection) -> TextSelection {
@@ -917,17 +1043,17 @@ impl TextLayout for ParleyLayout {
 
     fn selection(&self, anchor: TextPosition, focus: TextPosition) -> TextSelection {
         from_parley_selection(
-            to_parley_selection(&self.0.layout, TextSelection { anchor, focus })
+            self.0
+                .selection(TextSelection { anchor, focus })
                 .refresh(&self.0.layout),
         )
     }
 
     fn hit_test(&self, x: f32, y: f32) -> TextPosition {
-        position(
-            parley::Selection::from_point(&self.0.layout, x, y)
-                .refresh(&self.0.layout)
-                .focus(),
-        )
+        let hit = parley::Selection::from_point(&self.0.layout, x, y)
+            .refresh(&self.0.layout)
+            .focus();
+        position(self.0.snap_hit(hit, x))
     }
 
     fn word_at(&self, x: f32, y: f32) -> TextSelection {
@@ -943,26 +1069,28 @@ impl TextLayout for ParleyLayout {
     }
 
     fn caret_rect(&self, at: TextPosition) -> kurbo::Rect {
-        let rect = cursor(&self.0.layout, at).geometry(&self.0.layout, CARET_WIDTH);
+        let rect = self.0.cursor(at).geometry(&self.0.layout, CARET_WIDTH);
         kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1)
     }
 
     fn selection_rects(&self, selection: TextSelection, mut each: impl FnMut(kurbo::Rect)) {
-        to_parley_selection(&self.0.layout, selection).geometry_with(&self.0.layout, |rect, _| {
-            each(kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1));
-        });
+        self.0
+            .selection(selection)
+            .geometry_with(&self.0.layout, |rect, _| {
+                each(kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1));
+            });
     }
 
     fn previous_visual(&self, selection: TextSelection, extend: bool) -> TextSelection {
-        from_parley_selection(
-            to_parley_selection(&self.0.layout, selection).previous_visual(&self.0.layout, extend),
-        )
+        self.0.visual_move(selection, |selection| {
+            selection.previous_visual(&self.0.layout, extend)
+        })
     }
 
     fn next_visual(&self, selection: TextSelection, extend: bool) -> TextSelection {
-        from_parley_selection(
-            to_parley_selection(&self.0.layout, selection).next_visual(&self.0.layout, extend),
-        )
+        self.0.visual_move(selection, |selection| {
+            selection.next_visual(&self.0.layout, extend)
+        })
     }
 }
 
@@ -997,3 +1125,20 @@ fn parley_alignment(alignment: HorizontalAlignment, right_to_left: bool) -> parl
 
 #[cfg(test)]
 mod tests;
+
+impl core::fmt::Debug for ParleyEngine {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParleyEngine")
+            .field("family_resolution", &self.family_resolution)
+            .finish_non_exhaustive()
+    }
+}
+
+impl core::fmt::Debug for ParleyLayout {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParleyLayout")
+            .field("lines", &self.line_count())
+            .field("height", &self.height())
+            .finish_non_exhaustive()
+    }
+}

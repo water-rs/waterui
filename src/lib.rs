@@ -9,6 +9,8 @@ pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
+#[cfg(feature = "dialog")]
+pub use runtime::dialog;
 #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
 pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
@@ -21,6 +23,15 @@ pub mod widget;
 #[doc(inline)]
 pub use view::View;
 pub use waterui_core::accessibility;
+
+/// The shared `waterui_meta_*` record emitters — `dir_static!` lands its
+/// section and retention cfg at the invoking crate's profile — re-exported
+/// for the asset macros that emit into user code. Gated on `assets`:
+/// generated expansions only reference `__meta` when that feature's code
+/// exists.
+#[cfg(feature = "assets")]
+#[doc(hidden)]
+pub use waterui_meta as __meta;
 
 pub mod theme;
 pub mod prelude {
@@ -60,9 +71,13 @@ pub mod prelude {
     pub use crate::include_markdown;
 
     pub use super::color::*;
+    #[cfg(feature = "dialog")]
+    pub use super::dialog::{Dialog, DialogAction, DialogRole};
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
-    pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition, SnackbarTheme};
+    pub use super::snackbar::{
+        Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition, SnackbarTheme,
+    };
 
     pub use super::gesture::GestureObserver;
 
@@ -172,50 +187,17 @@ pub use waterui_navigation as navigation;
 #[cfg(feature = "gpu")]
 pub use waterui_svg as svg;
 pub use waterui_text as text;
-/// TypeScript-facing surface.
 #[cfg(feature = "ts")]
-pub mod ts {
-    /// The props contract schema a mounted TypeScript view module is typed
-    /// against.
-    ///
-    /// This is `waterui-ts-schema` re-exported, so a `TsType`/`TsProps` derive
-    /// on a crate that consumes the facade can name `waterui::ts::schema` and
-    /// find every item the expansion uses.
-    pub mod schema {
-        pub use waterui_ts_schema::*;
-    }
-
-    /// `crate::ts::schema` is the path `ts_schema_path` emits for expansions
-    /// inside `waterui-internal`; deriving here exercises that arm, so a typo
-    /// in it fails this crate's own tests.
-    #[cfg(all(test, feature = "ts"))]
-    mod tests {
-        use super::schema::{TsProps, contract_hash};
-        use crate::Binding;
-
-        /// Props crossing to a mounted TypeScript view.
-        #[derive(TsProps)]
-        #[expect(
-            dead_code,
-            reason = "the schema is derived from the declaration; nothing constructs the fixture"
-        )]
-        struct SidebarProps {
-            unread: Binding<u32>,
-        }
-
-        #[test]
-        fn ts_props_derives_through_the_internal_crate_path() {
-            assert_eq!(
-                SidebarProps::CONTRACT_HASH,
-                contract_hash(SidebarProps::ENCODED)
-            );
-        }
-    }
-}
+pub mod ts;
 #[cfg(feature = "video")]
 pub use waterui_video as video;
 #[cfg(feature = "webview")]
 pub use waterui_webview as webview;
+/// The `WidgetKit` widget authoring surface: the closed snapshot schema a
+/// `#[waterui::widget]` function produces, dated per timeline entry, and the
+/// restricted constructors that build it.
+#[cfg(feature = "widgets")]
+pub use waterui_widgets as widgets;
 
 // Asset types re-exported for convenience
 #[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
@@ -243,7 +225,7 @@ pub use waterui_url::Url;
 
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, Error, Str, animation,
+    AnyView, ContentLedger, Error, Str, animation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     event,
@@ -253,6 +235,12 @@ pub use waterui_core::{
     impl_extractor, key, raw_view,
     resolve::{self, AnyResolvable, Resolvable},
     views,
+};
+
+// Selective re-exports only: `waterui::transition` stays free for the
+// `waterui-transition` pixel-effects crate re-export (#1389).
+pub use waterui_core::transition::{
+    AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition,
 };
 
 /// Haptic feedback intensity for the `on_*_haptic` modifiers.
@@ -302,6 +290,5 @@ macro_rules! __export_preview {
 pub use pastey;
 
 // `configure_environment!` lives in `waterui-core` so generated backend crates
-// that do not depend on the facade (the ESP32 harness names `waterui-core`,
-// `waterui-dew` and `waterui-locale` only) can still install the app catalog.
+// that do not depend on the facade can still install the app catalog.
 pub use waterui_core::configure_environment;

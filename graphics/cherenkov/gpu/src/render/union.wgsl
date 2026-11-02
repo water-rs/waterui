@@ -131,7 +131,7 @@ fn union_field(base: u32, ord: u32, pixel: vec2<f32>) -> UnionField {
 // The union field at the fragment, evaluated once under FLAG_UNION: the
 // coverage block's `w_own · AA(field < outer)` term and
 // `paint_backdrop`'s `px.sdf`/`px.normal`/`px.own_sdf` share it.
-var<private> backdrop_field: UnionField;
+var<private> member_field: UnionField;
 
 // The coverage a union member's composite gets from the shared field:
 // `w_own` times the antialiased coverage of `field < outer`, `outer` in

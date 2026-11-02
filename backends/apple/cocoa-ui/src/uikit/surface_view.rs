@@ -32,9 +32,12 @@ use objc2_ui_kit::{
     UITapGestureRecognizer, UITouch, UITraitDisplayScale, UIView,
 };
 
+use objc2_core_foundation::CGRect;
+
 use super::trait_change::{TraitChangeObservation, register_trait_change};
 use crate::callback::{emit, forward, guarded};
 use crate::input::{EventPhase, GesturePhase, PointerInteraction};
+use crate::visibility::VisibilityEmitter;
 
 /// Receives lifecycle events of the view — layout, attachment.
 type LifecycleHandler = Rc<dyn Fn()>;
@@ -55,6 +58,9 @@ pub struct SurfaceViewIvars {
     presentation_layer: RefCell<Option<Retained<CAMetalLayer>>>,
     gesture_target: RefCell<Option<Retained<GestureTarget>>>,
     recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
+    /// The instance-owned visibility event: fires when this view's hidden,
+    /// alpha, frame, bounds or superview state changes.
+    emitter: VisibilityEmitter,
     /// The capturable surface the mounted leaf stored on this view.
     capturable: crate::capture::CapturableSlot,
 }
@@ -279,6 +285,63 @@ define_class!(
                 || {
                     // SAFETY: see the module safety note.
                     let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
+                    self.ivars().emitter.emit();
+                },
+                &self.ivars().on_visibility_changed,
+            );
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setHidden:))]
+        fn set_hidden_override(&self, hidden: bool) {
+            forward(
+                "SurfaceView setHidden:",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), setHidden: hidden] };
+                    self.ivars().emitter.emit();
+                },
+                &self.ivars().on_visibility_changed,
+            );
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlpha:))]
+        fn set_alpha_override(&self, alpha: f64) {
+            forward(
+                "SurfaceView setAlpha:",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), setAlpha: alpha] };
+                    self.ivars().emitter.emit();
+                },
+                &self.ivars().on_visibility_changed,
+            );
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrame:))]
+        fn set_frame_override(&self, frame: CGRect) {
+            forward(
+                "SurfaceView setFrame:",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), setFrame: frame] };
+                    self.ivars().emitter.emit();
+                },
+                &self.ivars().on_visibility_changed,
+            );
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setBounds:))]
+        fn set_bounds_override(&self, bounds: CGRect) {
+            forward(
+                "SurfaceView setBounds:",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), setBounds: bounds] };
+                    self.ivars().emitter.emit();
                 },
                 &self.ivars().on_visibility_changed,
             );
@@ -501,6 +564,12 @@ impl SurfaceView {
         self.ivars()
             .on_visibility_changed
             .replace(Some(Rc::new(handler)));
+    }
+
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
     }
 
     /// Calls `handler` when the view's display scale changes — the

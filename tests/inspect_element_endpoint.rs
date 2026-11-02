@@ -16,15 +16,15 @@ use waterui::inspector::protocol::{
 use waterui::inspector::{InspectorServerConfig, init_with_config};
 
 fn config() -> InspectorServerConfig {
-    InspectorServerConfig {
-        host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+    InspectorServerConfig::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
         // An ephemeral port keeps concurrent tests from colliding.
-        port: 0,
-        token: String::from("test-token"),
-        task_window: Duration::from_millis(100),
-        stall_ratio: 0.9,
-        app_name: String::from("test"),
-    }
+        0,
+        String::from("test-token"),
+        Duration::from_millis(100),
+        0.9,
+        String::from("test"),
+    )
 }
 
 /// Connects and completes the handshake, returning the stream to read from.
@@ -67,7 +67,7 @@ fn next_select(socket: &mut TcpStream) -> NodeId {
 #[test]
 fn an_attached_inspector_is_told_which_node_to_reveal() {
     let inspector = init_with_config(config(), "test").expect("the endpoint binds");
-    let mut socket = attach(inspector.endpoint().expect("the endpoint listens").addr);
+    let mut socket = attach(inspector.endpoint().expect("the endpoint listens").addr());
 
     inspector.inspect_node(NodeId(42));
 
@@ -82,6 +82,6 @@ fn a_node_asked_for_before_anyone_attached_is_delivered_on_arrival() {
 
     inspector.inspect_node(NodeId(7));
 
-    let mut socket = attach(inspector.endpoint().expect("the endpoint listens").addr);
+    let mut socket = attach(inspector.endpoint().expect("the endpoint listens").addr());
     assert_eq!(next_select(&mut socket), NodeId(7));
 }

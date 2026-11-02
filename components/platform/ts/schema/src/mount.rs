@@ -40,7 +40,7 @@ use crate::tree::TypeSchema;
 #[must_use]
 pub const fn struct_name(schema: &TypeSchema) -> &'static str {
     match schema {
-        TypeSchema::Struct(schema) => schema.name,
+        TypeSchema::Struct(schema) => schema.name(),
         _ => panic!("a props contract is declared as a struct with named fields"),
     }
 }
@@ -71,8 +71,8 @@ pub const fn mount_encoded_len(module: &str, props: &str, contract_hash: u64) ->
 ///
 /// `N` must be `mount_encoded_len(module, props, contract_hash) + 1`, for the
 /// same reason [`encode`](crate::encode) requires it of a props contract: the
-/// CLI finds a static's end at its first NUL, because a Mach-O symbol carries
-/// no size.
+/// array is the payload of a metadata directory record, whose reader cuts it
+/// at the first NUL.
 ///
 /// # Panics
 /// Fails const evaluation when `N` is not
@@ -95,14 +95,46 @@ pub const fn encode_mount<const N: usize>(
 
 /// One mount point, recovered from an artifact.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct MountPoint {
     /// The module id: the `.tsx` path relative to the crate's manifest
     /// directory, forward-slashed, extension kept.
-    pub module: String,
+    module: String,
     /// The name of the props struct the module is typed against.
-    pub props: String,
+    props: String,
     /// The props contract hash, which the bundle's manifest must match.
-    pub contract_hash: u64,
+    contract_hash: u64,
+}
+
+impl MountPoint {
+    /// Creates a `MountPoint` from its parts.
+    #[must_use]
+    pub const fn new(module: String, props: String, contract_hash: u64) -> Self {
+        Self {
+            module,
+            props,
+            contract_hash,
+        }
+    }
+
+    /// The module id: the `.tsx` path relative to the crate's manifest
+    /// directory, forward-slashed, extension kept.
+    #[must_use]
+    pub const fn module(&self) -> &str {
+        self.module.as_str()
+    }
+
+    /// The name of the props struct the module is typed against.
+    #[must_use]
+    pub const fn props(&self) -> &str {
+        self.props.as_str()
+    }
+
+    /// The props contract hash, which the bundle's manifest must match.
+    #[must_use]
+    pub const fn contract_hash(&self) -> u64 {
+        self.contract_hash
+    }
 }
 
 /// Decode a mount-point payload.
@@ -130,12 +162,14 @@ pub fn decode_mount(payload: &[u8]) -> Result<MountPoint, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
-    if payload.get(reader.pos) != Some(&kind::MOUNT) {
+    // Read rather than peeked: a payload that ends after the version byte is
+    // truncated, not a payload of another kind.
+    let found = reader.byte()?;
+    if found != kind::MOUNT {
         return Err(DecodeError::NotAMountPoint {
-            found: payload_kind(payload.get(reader.pos).copied()),
+            found: payload_kind(found),
         });
     }
-    reader.pos += 1;
 
     let module = named(&mut reader, "module")?;
     let props = named(&mut reader, "props")?;

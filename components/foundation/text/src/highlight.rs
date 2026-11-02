@@ -156,6 +156,7 @@ impl_constant!(Language);
 
 /// Error returned when a language token cannot be parsed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ParseLanguageError;
 
 impl Display for ParseLanguageError {
@@ -280,11 +281,26 @@ impl Highlighter for DefaultHighlighter {
 
 /// A chunk of highlighted text with an associated color.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct HighlightChunk<'a> {
     /// The text content.
-    pub text: &'a str,
+    text: &'a str,
     /// The color for this chunk.
-    pub color: Srgb,
+    color: Srgb,
+}
+
+impl<'a> HighlightChunk<'a> {
+    /// The text content.
+    #[must_use]
+    pub const fn text(&self) -> &'a str {
+        self.text
+    }
+
+    /// The color for this chunk.
+    #[must_use]
+    pub const fn color(&self) -> Srgb {
+        self.color
+    }
 }
 
 impl HighlightChunk<'_> {

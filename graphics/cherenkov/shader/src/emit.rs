@@ -68,6 +68,7 @@ pub fn spirv(
 ) -> Result<Vec<u32>, EmitError> {
     let options = naga::back::spv::Options {
         lang_version,
+        flags: crate::SPIRV_WRITER_FLAGS,
         ..naga::back::spv::Options::default()
     };
     Ok(naga::back::spv::write_vec(module, info, &options, None)?)

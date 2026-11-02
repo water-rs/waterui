@@ -45,7 +45,7 @@ use crate::{
 /// failed build. One client of our own beforehand is the serialization point:
 /// once it returns, the socket is bound and every client Cargo spawns
 /// connects to it instead of trying to create it. Across `water` processes
-/// the per-user start lock in [`start_server`] serializes the same step.
+/// the per-user start lock in `start_server` serializes the same step.
 ///
 /// # Errors
 /// Returns an error when the socket directory under the user's Water home
@@ -70,9 +70,11 @@ pub async fn configure_compilation_cache(
 
 /// Connect to the per-user server, starting it when it is not listening.
 ///
-/// `--show-stats` is sccache's connect-or-start path, and it runs under the
-/// same address environment the build is about to use — a server reached on
-/// any other address is not the one Cargo would find.
+/// A server already listening on the per-user socket is the readiness
+/// every compile needs, so the build goes straight on. Otherwise
+/// `--show-stats` is sccache's connect-or-start path, and it runs under
+/// the same address environment the build is about to use — a server
+/// reached on any other address is not the one Cargo would find.
 ///
 /// # Errors
 /// Returns an error when the client cannot be spawned, or when it reports
@@ -85,9 +87,12 @@ async fn start_server(
     use eyre::WrapErr as _;
 
     #[cfg(unix)]
-    let _server_start = begin_serialized_server_start(host, env).await?;
+    let _server_start = match begin_serialized_server_start(host, env).await? {
+        ServerStart::Listening => return Ok(()),
+        ServerStart::Start(lock) => lock,
+    };
 
-    let mut client = host.command(sccache_path);
+    let mut client = host.command(sccache_path)?;
     client
         .arg("--show-stats")
         .stdout(std::process::Stdio::null())
@@ -108,8 +113,19 @@ async fn start_server(
     Ok(())
 }
 
-/// Take the per-user start lock and clear a socket whose server is gone,
-/// before the client's connect-or-start runs.
+/// What [`begin_serialized_server_start`] found on the per-user socket.
+#[cfg(unix)]
+enum ServerStart {
+    /// A server answers on the socket; no client needs to start one.
+    Listening,
+    /// No server answers: the client's connect-or-start runs while the
+    /// lock is held (`None` when no socket was configured).
+    Start(Option<std::fs::File>),
+}
+
+/// Find the server listening on the per-user socket, or take the per-user
+/// start lock and clear a socket whose server is gone, before the client's
+/// connect-or-start runs.
 ///
 /// `SCCACHE_SERVER_UDS` points every build of one user at one socket path,
 /// and an sccache client that finds no listener spawns a server itself.
@@ -126,20 +142,28 @@ async fn start_server(
 async fn begin_serialized_server_start(
     host: &Host,
     env: &[(&'static str, OsString)],
-) -> eyre::Result<Option<std::fs::File>> {
+) -> eyre::Result<ServerStart> {
     let Some(socket) = env
         .iter()
         .find(|(key, _)| *key == "SCCACHE_SERVER_UDS")
         .map(|(_, value)| Path::new(value))
     else {
-        return Ok(None);
+        return Ok(ServerStart::Start(None));
     };
+    if smol::net::unix::UnixStream::connect(socket).await.is_ok() {
+        return Ok(ServerStart::Listening);
+    }
     let lock = crate::project_model::water_dir::sccache_server_lock(host).await?;
-    remove_dead_server_socket(socket).await?;
-    Ok(Some(lock))
+    // Another `water` process may have started the server while this one
+    // waited for the lock.
+    if remove_dead_server_socket(socket).await? {
+        return Ok(ServerStart::Listening);
+    }
+    Ok(ServerStart::Start(Some(lock)))
 }
 
-/// Unlink `socket` once a connect proves no server answers on it.
+/// Unlink `socket` once a connect proves no server answers on it; `true`
+/// when a server answers.
 ///
 /// An sccache server never unlinks its socket on exit — an idle shutdown,
 /// a crash, or a suspended VM leaves a socket nothing listens on — and
@@ -150,15 +174,15 @@ async fn begin_serialized_server_start(
 /// remove; a listener answering, or an error that is not refusal, leaves
 /// it for the client to report.
 #[cfg(unix)]
-async fn remove_dead_server_socket(socket: &Path) -> eyre::Result<()> {
+async fn remove_dead_server_socket(socket: &Path) -> eyre::Result<bool> {
     use eyre::WrapErr as _;
 
     match smol::net::unix::UnixStream::connect(socket).await {
-        Ok(_server) => Ok(()),
-        Err(error) if error.kind() != std::io::ErrorKind::ConnectionRefused => Ok(()),
+        Ok(_server) => Ok(true),
+        Err(error) if error.kind() != std::io::ErrorKind::ConnectionRefused => Ok(false),
         Err(_) => match smol::fs::remove_file(socket).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(()) => Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error).wrap_err_with(|| {
                 format!(
                     "Failed to remove the stale sccache socket {}",
@@ -554,6 +578,7 @@ impl Toolchain for Sccache {
 /// Installation plan for `sccache` — the strategy `check` selected for this
 /// host.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum SccacheInstallation {
     /// `brew install sccache`.
     Brew,
@@ -568,6 +593,7 @@ pub enum SccacheInstallation {
 
 /// Errors that can occur during `sccache` installation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallSccache {
     /// Homebrew not found error.
     #[error("Homebrew not found. Please install Homebrew to proceed.")]
@@ -843,9 +869,10 @@ mod host_tests {
     /// succeeds if the dead file is cleared first.
     #[cfg(unix)]
     #[test]
-    fn a_dead_server_socket_is_cleared_before_connect_or_start() {
+    fn a_dead_server_socket_is_cleared_before_connect_or_start() -> std::io::Result<()> {
         let machine = TestMachine::new();
         let sccache = machine.install("sccache");
+        machine.install("cargo");
         let host = machine.host(Vec::<(String, String)>::new());
         let water_home = crate::project_model::water_dir::water_home_dir(&host)
             .expect("the fake host declares a home");
@@ -856,7 +883,7 @@ mod host_tests {
             .expect("bind the socket a dead server leaves behind");
         drop(dead_socket);
 
-        let mut cargo = host.command("cargo");
+        let mut cargo = host.command("cargo")?;
         smol::block_on(super::configure_compilation_cache(
             &host, &mut cargo, &sccache,
         ))
@@ -866,6 +893,7 @@ mod host_tests {
             "the dead socket was removed before connect-or-start: {}",
             socket.display()
         );
+        Ok(())
     }
 
     /// The socket a live server owns is never taken over — unlinking it
@@ -873,9 +901,10 @@ mod host_tests {
     /// still be there when connect-or-start finishes.
     #[cfg(unix)]
     #[test]
-    fn a_live_server_socket_is_never_taken_over() {
+    fn a_live_server_socket_is_never_taken_over() -> std::io::Result<()> {
         let machine = TestMachine::new();
         let sccache = machine.install("sccache");
+        machine.install("cargo");
         let host = machine.host([("WATERUI_FAKE_SCCACHE_LIVE", "1")]);
         let water_home = crate::project_model::water_dir::water_home_dir(&host)
             .expect("the fake host declares a home");
@@ -885,7 +914,7 @@ mod host_tests {
         let _live_server =
             std::os::unix::net::UnixListener::bind(&socket).expect("bind the live server");
 
-        let mut cargo = host.command("cargo");
+        let mut cargo = host.command("cargo")?;
         smol::block_on(super::configure_compilation_cache(
             &host, &mut cargo, &sccache,
         ))
@@ -895,6 +924,7 @@ mod host_tests {
             "a live server's socket was left alone: {}",
             socket.display()
         );
+        Ok(())
     }
 
     #[test]
@@ -979,7 +1009,7 @@ mod host_tests {
         let install_dir = tool.install_dir(&host).unwrap();
         machine.file(
             install_dir
-                .join(&tool.binary)
+                .join(tool.binary())
                 .strip_prefix(machine.root())
                 .unwrap(),
             "",
@@ -1005,7 +1035,7 @@ mod host_tests {
         let install_dir = tool.install_dir(&host).unwrap();
         machine.file(
             install_dir
-                .join(&tool.binary)
+                .join(tool.binary())
                 .strip_prefix(machine.root())
                 .unwrap(),
             "",

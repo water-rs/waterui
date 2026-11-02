@@ -1,5 +1,5 @@
 use crate::renderer::bounded_proposal;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
@@ -8,16 +8,18 @@ use crate::renderer::{
     Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
     tabs_button_rect, tabs_content_proposal,
 };
+use crate::theme::{TabItemGeometry, TabItemLayout};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal};
-use waterui::navigation::tab::{NativeTabStyle, TabIcon, TabsLayout};
-use waterui_backend_core::widget::TabItemLayout;
+use waterui::navigation::tab::{NativeTabStyle, Tab, TabIcon, TabsLayout};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_core::id::Id;
-use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_core::{AnyView, Environment, Native};
 
 #[cfg(feature = "accessibility")]
@@ -27,54 +29,168 @@ use crate::widgets::util::widget_disabled;
 /// it is held as a [`RetainedSubview`] built once and re-flushed each frame; its
 /// `content` is a cloneable `Rc`-backed builder rebuilt fresh each frame; `tag`
 /// drives selection.
-struct TabRenderState {
+struct TabRenderState<E: crate::text::TextEngine> {
     tag: Id,
-    label: RetainedSubview,
+    label: RetainedSubview<E>,
     /// The label's icon, lifted out so the tab item can place it above the
     /// label (vertical) or beside it (horizontal).
-    icon: Option<RetainedSubview>,
-    content: RetainedSubview,
+    icon: Option<RetainedSubview<E>>,
+    content: RetainedSubview<E>,
     enabled: nami::Computed<bool>,
+    /// The reactive badge count drawn on the item; zero draws nothing.
+    badge: Option<nami::Computed<i32>>,
+}
+
+impl<E: crate::text::TextEngine> TabRenderState<E> {
+    fn from_tab(tag: Id, tab: Tab) -> Self {
+        let (label, icon, content, badge, enabled, _) = tab.into_parts();
+        Self {
+            tag,
+            label: RetainedSubview::new(label.build()),
+            icon: icon.map(|icon| {
+                RetainedSubview::new(match icon {
+                    TabIcon::System(icon) => AnyView::new(icon),
+                    TabIcon::View(builder) => builder.build(),
+                })
+            }),
+            content: RetainedSubview::new(AnyView::new(content.build())),
+            enabled,
+            badge,
+        }
+    }
 }
 
 /// The retained render state of a `TabsLayout` container. The selection `Binding` and tab
 /// native style are kept by value; each tab is a [`TabRenderState`].
-pub struct TabsRenderState {
+///
+/// `tabs` mirrors the layout's collection: a membership change the watcher
+/// reports sets `tabs_dirty` and stores the event's snapshot; `reconcile`
+/// then applies it, so a tab whose id survives keeps its retained sub-views —
+/// navigation state, focus, in-flight gestures — while only inserted or
+/// removed tabs materialize or drop theirs.
+pub struct TabsRenderState<E: crate::text::TextEngine> {
     selection: Binding<Id>,
     style: NativeTabStyle,
-    tabs: Vec<TabRenderState>,
+    tabs: Vec<TabRenderState<E>>,
+    /// The collection snapshot the last applied change reported — every
+    /// reconcile works this membership, never the live collection.
+    snapshot: Rc<RefCell<AnyViewsSnapshot<Tab>>>,
+    /// A relocation [`reconcile`] decided but has not published: callers run
+    /// it under a `borrow_mut` of the whole state, and writing `selection`
+    /// there would let a user watcher re-enter the borrowed state. The id
+    /// resolves reads immediately; the binding write is flushed after the
+    /// borrow drops.
+    pending_selection: Cell<Option<Id>>,
+    tabs_dirty: Rc<Cell<bool>>,
+    _watch: BoxWatcherGuard,
 }
 
-impl TabsRenderState {
-    pub(crate) fn from_tabs(tabs: TabsLayout) -> Self {
-        assert!(
-            !(tabs.tabs.is_empty()),
-            "hydrolysis Tabs requires at least one tab"
+impl<E: crate::text::TextEngine> TabsRenderState<E> {
+    pub(crate) fn from_tabs(tabs: TabsLayout, renderer: &crate::renderer::SemanticCore<E>) -> Self {
+        let (selection, tabs, style, ..) = tabs.into_parts();
+        let snapshot = Rc::new(RefCell::new(tabs.snapshot()));
+        // Membership changes mark the owning widget's cell — the node whose
+        // read built this state, or the window root when built unowned.
+        let tabs_dirty = Rc::new(Cell::new(true));
+        let cell = Rc::downgrade(
+            &renderer
+                .reader_cell()
+                .unwrap_or_else(|| Rc::clone(renderer.root_cell())),
         );
-        // `TabsLayout` is `#[non_exhaustive]`, so access fields rather than destructuring.
-        let selection = tabs.selection;
-        let style = tabs.style;
-        let tabs = tabs
-            .tabs
-            .into_iter()
-            .map(|tab| TabRenderState {
-                tag: tab.id,
-                label: RetainedSubview::new(tab.label),
-                icon: tab.icon.map(|icon| {
-                    RetainedSubview::new(match icon {
-                        TabIcon::System(icon) => AnyView::new(icon),
-                        TabIcon::View(builder) => builder.build(),
-                    })
-                }),
-                content: RetainedSubview::new(AnyView::new(tab.content.build())),
-                enabled: tab.enabled,
+        let watch = {
+            let snapshot = Rc::clone(&snapshot);
+            let tabs_dirty = Rc::clone(&tabs_dirty);
+            tabs.watch(.., move |ctx, _change| {
+                tabs_dirty.set(true);
+                *snapshot.borrow_mut() = ctx.into_value();
+                if let Some(cell) = cell.upgrade() {
+                    cell.mark(crate::renderer::Dirty::STRUCTURE);
+                }
             })
-            .collect();
-        Self {
+        };
+        let mut state = Self {
             selection,
             style,
-            tabs,
+            tabs: Vec::new(),
+            snapshot,
+            pending_selection: Cell::new(None),
+            tabs_dirty,
+            _watch: watch,
+        };
+        state.reconcile();
+        state.flush_pending_selection();
+        state
+    }
+
+    /// Applies the membership change the watcher reported, when there is
+    /// one: states are re-keyed by tab id into the snapshot's order — a
+    /// surviving id keeps its [`RetainedSubview`]s untouched, an inserted id
+    /// materializes, a removed one drops — and the selection relocates when
+    /// the selected tab left the set.
+    fn reconcile(&mut self) {
+        if !self.tabs_dirty.replace(false) {
+            return;
         }
+        let snapshot = self.snapshot.borrow().clone();
+        // A relocation a previous reconcile queued counts as selected until
+        // the binding write is flushed — reads must not see the stale value.
+        let selected = self
+            .pending_selection
+            .get()
+            .unwrap_or_else(|| self.selection.snapshot());
+        let old_index = self.tabs.iter().position(|tab| tab.tag == selected);
+        let mut old: std::collections::BTreeMap<Id, TabRenderState<E>> =
+            self.tabs.drain(..).map(|tab| (tab.tag, tab)).collect();
+        let mut tabs = Vec::with_capacity(snapshot.len());
+        for index in 0..snapshot.len() {
+            let tag = snapshot
+                .get_id(index)
+                .expect("a collection snapshot reports an id for every index");
+            let tab = old.remove(&tag).unwrap_or_else(|| {
+                TabRenderState::from_tab(
+                    tag,
+                    snapshot
+                        .get_view(index)
+                        .expect("a collection snapshot reports a view for every index"),
+                )
+            });
+            tabs.push(tab);
+        }
+        self.tabs = tabs;
+        // The selected tab left the set: queue the tab now at its index —
+        // the new last tab when it was trailing — for the post-borrow flush
+        // to publish. An empty set leaves the binding untouched; a selection
+        // that never named a tab keeps its existing read-time failure.
+        if let Some(old_index) = old_index
+            && !self.tabs.is_empty()
+            && !self.tabs.iter().any(|tab| tab.tag == selected)
+        {
+            let index = old_index.min(self.tabs.len() - 1);
+            self.pending_selection.set(Some(self.tabs[index].tag));
+        }
+    }
+
+    /// Publishes a queued relocation to the selection binding. Call only
+    /// while no `RefCell<TabsRenderState>` borrow is held — the write runs
+    /// watchers synchronously, and a watcher mutating the collection must
+    /// be free to re-enter the membership watch.
+    pub(crate) fn flush_pending_selection(&self) {
+        if let Some(id) = self.pending_selection.take() {
+            self.selection.set(id);
+        }
+    }
+
+    /// The `impl_widget_behavior` `prepare` hook: reconciles a pending
+    /// membership change before measure and render touch `self.tabs`, and
+    /// builds the inserted tabs' sub-views — the measure pass that follows
+    /// has no renderer to build on.
+    pub(crate) fn prepare_tabs(
+        &mut self,
+        renderer: &mut crate::renderer::HydrolysisRenderer<E>,
+        env: &Environment,
+    ) {
+        self.reconcile();
+        self.prebuild_labels(renderer, env);
     }
 
     /// Eagerly build the tab-label and icon sub-views (the measure path has
@@ -82,9 +198,10 @@ impl TabsRenderState {
     /// the icon itself, so the label must not draw it a second time.
     pub(crate) fn prebuild_labels(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
+        self.reconcile();
         let label_env = tab_label_env(env);
         for tab in &mut self.tabs {
             tab.label.ensure_built(renderer, &label_env);
@@ -95,20 +212,60 @@ impl TabsRenderState {
         }
     }
 
-    fn selected_index(&self, selected_id: Id) -> usize {
+    /// The selected tab's index, or `None` when the set is empty. A
+    /// selection naming no tab of a non-empty set fails as it always has.
+    fn selected_index(&self, selected_id: Id) -> Option<usize> {
+        if self.tabs.is_empty() {
+            return None;
+        }
+        let selected_id = self.pending_selection.get().unwrap_or(selected_id);
+        Some(
+            self.tabs
+                .iter()
+                .position(|tab| tab.tag == selected_id)
+                .unwrap_or_else(|| panic!("hydrolysis Tabs selection is not present in tabs")),
+        )
+    }
+
+    /// Each tab's live badge count, read through `renderer` so a change
+    /// schedules a frame. A tab without a badge reads zero.
+    #[cfg(feature = "accessibility")]
+    fn badge_counts(&self, renderer: &mut crate::renderer::SemanticCore<E>) -> Vec<i32> {
         self.tabs
             .iter()
-            .position(|tab| tab.tag == selected_id)
-            .unwrap_or_else(|| panic!("hydrolysis Tabs selection is not present in tabs"))
+            .map(|tab| {
+                tab.badge
+                    .as_ref()
+                    .map_or(0, |badge| renderer.read_signal(badge))
+            })
+            .collect()
+    }
+
+    /// Consume every tab's label/icon/content layout-dirty marks: their
+    /// measured sizes feed the bar's, so an enclosing retained sub-view
+    /// must see them (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        // No reconcile here: membership changes materialize sub-views, which
+        // only `prepare_tabs` can build — this hook has no renderer. The
+        // prepare pass applies the change before measure ever reads it.
+        self.tabs.iter_mut().fold(false, |dirty, tab| {
+            dirty
+                | tab.label.take_layout_dirty_if_built()
+                | tab
+                    .icon
+                    .as_mut()
+                    .is_some_and(RetainedSubview::take_layout_dirty_if_built)
+                | tab.content.take_layout_dirty_if_built()
+        })
     }
 }
 
-impl HydroNativeView for Native<TabsLayout> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TabsLayout> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_tabs_layout(
             view.as_inner(),
@@ -120,10 +277,10 @@ impl HydroNativeView for Native<TabsLayout> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         ViewDimensions::new(measure_tabs_layout(
@@ -136,27 +293,39 @@ impl HydroNativeView for Native<TabsLayout> {
     }
 }
 
-/// Emits a tab list's accessibility tree from per-tab `(tag, interaction_key,
-/// default_label, is_selected)` tuples. Shared by the dispatch path and the
+/// One tab's accessibility inputs: `(tag, interaction_key, default_label,
+/// is_selected, badge_count)`; a zero badge count is not announced.
+#[cfg(feature = "accessibility")]
+type TabAccessibilityEntry = (
+    Id,
+    crate::renderer::InteractionKey,
+    Option<String>,
+    bool,
+    i32,
+);
+
+/// Emits a tab list's accessibility tree from per-tab [`TabAccessibilityEntry`]
+/// tuples. Shared by the dispatch path and the
 /// retained `Widget`-node path (which extracts each default label from its
 /// tab's [`RetainedSubview`]). `bar_rect` carries the bar's bounds-space
 /// rect — the docked band [`WidgetRenderContext::chrome_splits`] carves out;
 /// the semantic walk has no bounds and passes `None`.
 #[cfg(feature = "accessibility")]
-pub fn tabs_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn tabs_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     bar_rect: Option<kurbo::Rect>,
     selection: &Binding<Id>,
     style: NativeTabStyle,
-    labels: &[(Id, crate::renderer::InteractionKey, Option<String>, bool)],
+    labels: &[TabAccessibilityEntry],
     env: &Environment,
 ) {
     let disabled = renderer.read_signal(&widget_disabled(env));
-    let mut tab_list =
-        AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+    let mut tab_list = AccessibilityNode::new(
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
             env,
             AccessibilityNodeRole::TabList,
-        ));
+        ),
+    );
     let tab_list_label = renderer.resolve_accessibility_label(env, None);
     if let Some(label) = tab_list_label {
         tab_list.set_label(label);
@@ -164,17 +333,23 @@ pub fn tabs_accessibility(
     if let Some(value) = renderer.resolve_accessibility_value(env, None) {
         tab_list.set_value(value);
     }
-    for (index, (tag, interaction_key, default_label, is_selected)) in labels.iter().enumerate() {
-        let mut tab_node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+    for (index, (tag, interaction_key, default_label, is_selected, badge)) in
+        labels.iter().enumerate()
+    {
+        let mut tab_node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::Tab,
-            ));
+            ),
+        );
         let label = renderer.resolve_accessibility_label(env, default_label.clone());
         if let Some(label) = label {
             tab_node.set_label(label);
         }
         tab_node.set_selected(*is_selected);
+        if *badge != 0 {
+            tab_node.set_value(badge.to_string());
+        }
         tab_node.add_action(AccessibilityAction::Focus);
         if disabled {
             tab_node.set_disabled();
@@ -221,12 +396,12 @@ pub fn tabs_accessibility(
 /// content rect: the rendered content keeps the whole frame only once the
 /// keyboard covers the band outright (keyboard deeper than container inset
 /// plus bar height). Mirrors `measure_tabs_layout`.
-pub fn measure_tabs_node(
-    state: &TabsRenderState,
+pub fn measure_tabs_node<E: crate::text::TextEngine>(
+    state: &TabsRenderState<E>,
     proposal: ProposalSize,
-    hydro: &mut HydroState,
+    hydro: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_env = tab_label_env(env);
     let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = state
@@ -287,22 +462,23 @@ pub fn measure_tabs_node(
 /// hidden) then the bar + selected content, reading the selection signal live.
 /// The docked split is derived once per flush — the a11y tree's bar node and
 /// the painted bar land on the same band (§7.1).
-pub fn render_tabs_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TabsRenderState>>,
+pub fn render_tabs_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TabsRenderState<E>>>,
     env: &Environment,
 ) {
     let style = state.borrow().style;
     // The bar's layout and metrics are decided once with the chrome
     // split: `render_tabs_parts` draws the bar the split carved, so the
     // layout it places items under is the one the band was derived from.
+    let dock_edge = tabs_dock_edge(style, waterui_layout::layout_direction(env).snapshot());
     let (chrome, layout, theme_metrics) = {
         let theme = ctx.theme();
         let extent = tabs_bar_item_extent(ctx.bounds.width(), style, &theme);
         let layout = theme.tabs_item_layout(extent, state.borrow().tabs.len());
         let metrics = theme.tabs_metrics(layout);
         (
-            ctx.chrome_splits([(tabs_dock_edge(style), metrics.bar_height)]),
+            ctx.chrome_splits([(dock_edge, metrics.bar_height)]),
             layout,
             metrics,
         )
@@ -315,10 +491,13 @@ pub fn render_tabs_node(
             .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
         if !hidden {
             let selected_id = ctx.renderer_mut().read_signal(&state.borrow().selection);
-            let (selection, labels) = {
-                let st = state.borrow();
+            let (selection, labels, relocation) = {
+                let mut st = state.borrow_mut();
+                st.reconcile();
+                st.prebuild_labels(ctx.renderer_mut(), env);
                 let selected_index = st.selected_index(selected_id);
-                let labels: Vec<(Id, crate::renderer::InteractionKey, Option<String>, bool)> = st
+                let badges = st.badge_counts(ctx.renderer_mut());
+                let labels: Vec<TabAccessibilityEntry> = st
                     .tabs
                     .iter()
                     .enumerate()
@@ -330,12 +509,18 @@ pub fn render_tabs_node(
                                 crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                             ),
                             tab.label.default_a11y_label(),
-                            index == selected_index,
+                            Some(index) == selected_index,
+                            badges[index],
                         )
                     })
                     .collect();
-                (st.selection.clone(), labels)
+                (st.selection.clone(), labels, st.pending_selection.take())
             };
+            // The relocation publishes after the borrow drops — a watcher
+            // mutating the collection re-enters the membership watch freely.
+            if let Some(id) = relocation {
+                selection.set(id);
+            }
             tabs_accessibility(
                 ctx.renderer_mut(),
                 Some(bar.band),
@@ -346,29 +531,38 @@ pub fn render_tabs_node(
             );
         }
     }
-    render_tabs_parts(ctx, state, env, chrome, layout, theme_metrics);
+    render_tabs_parts(ctx, state, env, chrome, layout, theme_metrics, dock_edge);
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-fn render_tabs_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TabsRenderState>>,
+fn render_tabs_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TabsRenderState<E>>>,
     env: &Environment,
     chrome: crate::renderer::ChromeGroup<1>,
     layout: TabItemLayout,
-    theme_metrics: waterui_backend_core::widget::TabsMetrics,
+    theme_metrics: crate::theme::TabsMetrics,
+    dock_edge: Edge,
 ) {
-    let (selection, style, tab_count) = {
-        let st = state.borrow();
-        assert!(
-            !st.tabs.is_empty(),
-            "hydrolysis Tabs requires at least one tab"
-        );
-        (st.selection.clone(), st.style, st.tabs.len())
+    let (selection, style, tab_count, relocation) = {
+        let mut st = state.borrow_mut();
+        st.reconcile();
+        st.prebuild_labels(ctx.renderer_mut(), env);
+        (
+            st.selection.clone(),
+            st.style,
+            st.tabs.len(),
+            st.pending_selection.take(),
+        )
     };
+    // Publish the relocation outside the borrow — a selection watcher may
+    // mutate the collection synchronously.
+    if let Some(id) = relocation {
+        selection.set(id);
+    }
     let selected_id = ctx.renderer_mut().read_signal(&selection);
     let selected_index = state.borrow().selected_index(selected_id);
 
@@ -388,21 +582,32 @@ fn render_tabs_parts(
     // top row of a bottom bar, the trailing column of a sidebar strip —
     // spanning the surface's reach, so a strip's divider runs from the
     // window's top edge to its bottom one.
-    let bar_surface = match style {
-        NativeTabStyle::Sidebar => bar.surface(Edge::Leading),
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => bar.surface(Edge::Bottom),
-    };
+    let bar_surface = bar.surface(dock_edge);
     {
         let theme = ctx.theme();
         ctx.draw_context(|draw| {
             theme.draw_tabs_bar(&mut *draw, bar_surface);
             let divider = match style {
-                NativeTabStyle::Sidebar => kurbo::Rect::new(
-                    (bar_rect.x1 - 1.0).max(bar_rect.x0),
-                    bar_surface.y0,
-                    bar_rect.x1,
-                    bar_surface.y1,
-                ),
+                NativeTabStyle::Sidebar => {
+                    // One pixel on the band's inner edge — the right edge
+                    // of a left-docked strip, the left edge of a
+                    // right-docked one under right-to-left.
+                    let inner = dock_edge.inner_edge(bar_rect);
+                    match dock_edge {
+                        Edge::Leading => kurbo::Rect::new(
+                            (inner - 1.0).max(bar_rect.x0),
+                            bar_surface.y0,
+                            inner,
+                            bar_surface.y1,
+                        ),
+                        _ => kurbo::Rect::new(
+                            inner,
+                            bar_surface.y0,
+                            (inner + 1.0).min(bar_rect.x1),
+                            bar_surface.y1,
+                        ),
+                    }
+                }
                 NativeTabStyle::Automatic | NativeTabStyle::TabBar => kurbo::Rect::new(
                     bar_surface.x0,
                     bar_rect.y0,
@@ -446,7 +651,7 @@ fn render_tabs_parts(
                 ctx.renderer_mut()
                     .bind_interaction_target(interaction_key, hit_bounds, env);
             let interaction = crate::renderer::local_interaction_state(interaction, hit_transform);
-            let is_selected = index == selected_index;
+            let is_selected = Some(index) == selected_index;
             // A horizontal item's indicator and state layer hug the icon+label
             // content grown by the button inset, not the whole button share;
             // vertical items keep the button-wide bounds. The hit target stays
@@ -469,28 +674,18 @@ fn render_tabs_parts(
             };
             {
                 let theme = ctx.theme();
+                let item = TabItemGeometry {
+                    bounds: chrome_bounds,
+                    icon: icon_rect,
+                    title: label_rect,
+                    layout,
+                    placement: style,
+                };
                 ctx.draw_context(|draw| {
                     if is_selected {
-                        let highlight = tabs_highlight_rect(
-                            chrome_bounds,
-                            style,
-                            theme_metrics.active_indicator_height,
-                            if matches!(style, NativeTabStyle::Sidebar) {
-                                f64::from(label_size.height)
-                            } else {
-                                f64::from(label_size.width)
-                            },
-                            layout,
-                        );
-                        theme.draw_tabs_highlight(&mut *draw, highlight, layout);
+                        theme.draw_tabs_highlight(&mut *draw, item);
                     }
-                    theme.draw_tabs_button_state_layer(
-                        &mut *draw,
-                        chrome_bounds,
-                        is_selected,
-                        interaction,
-                        layout,
-                    );
+                    theme.draw_tabs_button_state_layer(&mut *draw, item, is_selected, interaction);
                 });
             }
             let selection_binding = selection.clone();
@@ -512,6 +707,10 @@ fn render_tabs_parts(
             }
         }
         let has_label = label_rect.width() > 0.0 && label_rect.height() > 0.0;
+        let badge = {
+            let badge = state.borrow().tabs[index].badge.clone();
+            badge.map_or(0, |badge| ctx.renderer_mut().read_signal(&badge))
+        };
         if icon_rect.is_some() || has_label {
             // The tab item's a11y is emitted by `tabs_accessibility`, so suppress
             // the sub-views' own a11y (matching the dispatch path's
@@ -555,6 +754,13 @@ fn render_tabs_parts(
                         );
                     }
                     drop(st);
+                    // The count anchors on the icon, on the title without one.
+                    if badge != 0 {
+                        let anchor = icon_rect.unwrap_or(label_rect);
+                        crate::widgets::layout::badge::draw_badge_indicator(
+                            ctx, anchor, badge, env,
+                        );
+                    }
                 },
             );
             #[cfg(feature = "accessibility")]
@@ -562,7 +768,10 @@ fn render_tabs_parts(
         }
     }
 
-    if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
+    if let Some(selected_index) = selected_index
+        && content_rect.width() > 0.0
+        && content_rect.height() > 0.0
+    {
         let mut st = state.borrow_mut();
         let render_ctx = ctx.render_context();
         // §7.1: tab content is chrome-hosted — it inherits the widget's
@@ -587,11 +796,20 @@ fn tab_label_env(env: &Environment) -> Environment {
 }
 
 /// The edge a style's tab bar docks to — the bottom edge for
-/// `Automatic`/`TabBar`, the leading edge for a `Sidebar` strip (§7.1's
-/// chrome split docks a bar to the edge it touches).
-const fn tabs_dock_edge(style: NativeTabStyle) -> Edge {
+/// `Automatic`/`TabBar`, the *leading* edge for a `Sidebar` strip (§7.1's
+/// chrome split docks a bar to the edge it touches). `Edge`'s variants
+/// are physical, so the leading dock resolves under `direction` — a
+/// sidebar lands on the right edge under right-to-left
+/// (water-rs/waterui#1827).
+const fn tabs_dock_edge(style: NativeTabStyle, direction: LayoutDirection) -> Edge {
     match style {
-        NativeTabStyle::Sidebar => Edge::Leading,
+        NativeTabStyle::Sidebar => {
+            if direction.is_right_to_left() {
+                Edge::Trailing
+            } else {
+                Edge::Leading
+            }
+        }
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => Edge::Bottom,
     }
 }
@@ -603,7 +821,7 @@ const fn tabs_dock_edge(style: NativeTabStyle) -> Edge {
 pub fn tabs_bar_item_extent(
     container_width: f64,
     style: NativeTabStyle,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> f64 {
     match style {
         NativeTabStyle::Sidebar => theme.tabs_metrics(TabItemLayout::Vertical).bar_height,
@@ -620,11 +838,11 @@ pub fn tabs_bar_item_extent(
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
 pub fn tabs_decide_layout(
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: NativeTabStyle,
     proposed_width: Option<f64>,
     item_sizes: &[(LayoutSize, Option<LayoutSize>)],
-) -> (TabItemLayout, waterui_backend_core::widget::TabsMetrics) {
+) -> (TabItemLayout, crate::theme::TabsMetrics) {
     let extent = match proposed_width {
         Some(width) => tabs_bar_item_extent(width, style, theme),
         None => {
@@ -655,7 +873,7 @@ pub fn tabs_decide_layout(
 pub fn tabs_item_natural_width(
     label_size: LayoutSize,
     icon_size: Option<LayoutSize>,
-    metrics: &waterui_backend_core::widget::TabsMetrics,
+    metrics: &crate::theme::TabsMetrics,
     layout: TabItemLayout,
 ) -> f64 {
     let content_width = match (layout, icon_size) {
@@ -677,7 +895,7 @@ fn tabs_item_content_rects(
     button_rect: kurbo::Rect,
     icon_size: Option<LayoutSize>,
     label_size: LayoutSize,
-    metrics: &waterui_backend_core::widget::TabsMetrics,
+    metrics: &crate::theme::TabsMetrics,
     layout: TabItemLayout,
 ) -> (Option<kurbo::Rect>, kurbo::Rect) {
     let Some(icon_size) = icon_size else {
@@ -744,7 +962,7 @@ fn tabs_item_content_rects(
 fn tabs_label_rect(
     button_rect: kurbo::Rect,
     label_size: waterui_core::layout::Size,
-    metrics: &waterui_backend_core::widget::TabsMetrics,
+    metrics: &crate::theme::TabsMetrics,
 ) -> kurbo::Rect {
     let max_width = metrics
         .button_horizontal_inset
@@ -757,62 +975,36 @@ fn tabs_label_rect(
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
-fn tabs_highlight_rect(
-    button_rect: kurbo::Rect,
-    style: NativeTabStyle,
-    thickness: f64,
-    label_extent: f64,
-    layout: TabItemLayout,
-) -> kurbo::Rect {
-    // Horizontal items highlight the whole item; the theme's metric supplies
-    // the indicator's thickness centered on the item.
-    if matches!(layout, TabItemLayout::Horizontal) {
-        let height = thickness.min(button_rect.height());
-        let y0 = (button_rect.height() - height).mul_add(0.5, button_rect.y0);
-        return kurbo::Rect::new(button_rect.x0, y0, button_rect.x1, y0 + height);
-    }
-    match style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
-            let width = label_extent.clamp(0.0, button_rect.width());
-            let x0 = (button_rect.width() - width).mul_add(0.5, button_rect.x0);
-            let x1 = x0 + width;
-            kurbo::Rect::new(
-                x0,
-                button_rect.y0,
-                x1,
-                (button_rect.y0 + thickness).min(button_rect.y1),
-            )
-        }
-        NativeTabStyle::Sidebar => {
-            let height = label_extent.clamp(0.0, button_rect.height());
-            let y0 = (button_rect.height() - height).mul_add(0.5, button_rect.y0);
-            kurbo::Rect::new(
-                (button_rect.x1 - thickness).max(button_rect.x0),
-                y0,
-                button_rect.x1,
-                y0 + height,
-            )
-        }
-    }
-}
-
 /// Emits a retained tabs layout's accessibility tree for the semantic walk:
 /// the tab bar and tab nodes `tabs_accessibility` registers (labels are
 /// suppressed in the sub-view flush, so they emit nothing themselves), then
 /// the selected tab's content subtree — it flushes unsuppressed in the
 /// rendered path, so it emits its own nodes here too.
 #[cfg(feature = "accessibility")]
-pub fn emit_tabs_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<TabsRenderState>>,
+pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<TabsRenderState<E>>>,
     env: &Environment,
 ) {
     let owner = state;
+    let relocation = {
+        let mut st = state.borrow_mut();
+        st.reconcile();
+        st.prebuild_labels(renderer, env);
+        st.pending_selection.take()
+    };
+    // Publish outside the borrow so a watcher mutating the collection can
+    // re-enter the membership watch.
+    if let Some(id) = relocation {
+        let selection = state.borrow().selection.clone();
+        selection.set(id);
+    }
     let mut state = state.borrow_mut();
     let selected_id = renderer.read_signal(&state.selection);
     let (selection, style, labels) = {
         let selected_index = state.selected_index(selected_id);
-        let labels: Vec<(Id, crate::renderer::InteractionKey, Option<String>, bool)> = state
+        let badges = state.badge_counts(renderer);
+        let labels: Vec<TabAccessibilityEntry> = state
             .tabs
             .iter()
             .enumerate()
@@ -824,15 +1016,17 @@ pub fn emit_tabs_accessibility(
                         crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                     ),
                     tab.label.default_a11y_label(),
-                    index == selected_index,
+                    Some(index) == selected_index,
+                    badges[index],
                 )
             })
             .collect();
         (state.selection.clone(), state.style, labels)
     };
     tabs_accessibility(renderer, None, &selection, style, &labels, env);
-    let selected_index = state.selected_index(selected_id);
-    state.tabs[selected_index]
-        .content
-        .emit_accessibility(renderer, env);
+    if let Some(selected_index) = state.selected_index(selected_id) {
+        state.tabs[selected_index]
+            .content
+            .emit_accessibility(renderer, env);
+    }
 }

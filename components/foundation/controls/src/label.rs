@@ -51,6 +51,10 @@ use waterui_text::{IntoText, Text, font::Font, styled::StyledStr};
 
 /// Position of the icon relative to the text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: an icon sits before or after its text"
+)]
 pub enum IconPosition {
     /// Icon appears before the text (left in LTR).
     #[default]
@@ -83,6 +87,7 @@ nami::impl_constant!(IconPosition);
 /// # }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LabelDisplayMode {
     /// Use the label's own preferred presentation.
     #[default]
@@ -148,7 +153,7 @@ macro_rules! impl_label_style_methods {
             /// technology regardless of the chosen visual mode.
             #[must_use]
             pub const fn label_style(mut self, mode: $crate::label::LabelDisplayMode) -> Self {
-                self.0.label.set_display_mode(mode);
+                self.0.label_mut().set_display_mode(mode);
                 self
             }
 
@@ -335,7 +340,7 @@ impl Label {
                 text: text.into_text(),
                 icon: None,
                 icon_position: IconPosition::Leading,
-                spacing: Computed::constant(6.0),
+                spacing: Computed::constant(8.0),
                 font: None,
             },
             display_mode: LabelDisplayMode::Automatic,
@@ -674,13 +679,19 @@ impl Label {
     /// a native backend payload.
     #[must_use]
     pub fn resolve(mut self, env: &Environment) -> Self {
+        self.resolve_in_place(env);
+        self
+    }
+
+    /// Resolves environment-dependent label presentation in place. See
+    /// [`Label::resolve`] for the owning variant.
+    pub fn resolve_in_place(&mut self, env: &Environment) {
         self.display_mode = self.effective_display_mode(env);
         let accessibility_text = self
             .accessibility_text
             .as_ref()
             .unwrap_or_else(|| self.semantic_text());
-        self.accessibility_label = Some(accessibility_text.resolve(env).content);
-        self
+        self.accessibility_label = Some(accessibility_text.resolve(env).into_content());
     }
 }
 
@@ -824,7 +835,7 @@ mod tests {
         label
             .semantic_text()
             .resolve(env)
-            .content
+            .content()
             .snapshot()
             .to_plain()
             .into_string()

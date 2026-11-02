@@ -123,11 +123,14 @@ wrapped at the proposal the column was measured with.
   they are realised, so it reports its layout's axis over an empty child set:
   `None` for a lazy stack. A lazy stack that must fill is placed by a parent
   that stretches it (`ScrollView`, `Absolute`, a `Frame` with `max = INFINITY`).
-- `ScrollView` is `Both`; `Spacer` is `MainAxis`; `Divider` is `CrossAxis`;
+- A `ScrollView` stretches on its scrolling axis, and on the non-scrolling
+  axis only when its content stretches there (`Axis::All` is `Both`);
+  `Spacer` is `MainAxis`; `Divider` is `CrossAxis`;
   `Color` and shapes are `Both`; text, buttons and other content controls
   are `None`; a text field is `Horizontal`; a toggle is `Horizontal` when it
   draws the switch style with a visible label, and `None` otherwise; a stepper
-  is `Horizontal` when its label is visible, and `None` otherwise.
+  is `Horizontal` when its label is visible, and `None` otherwise; a picker
+  is `Horizontal` in the segmented style, and `None` otherwise.
 
 ## 4. Stacks (`HStack`, `VStack`)
 
@@ -250,6 +253,41 @@ question, not a size answer, since a zero-size `Color` or `Spacer` is still a
 member — and a conditional switching between rendering nothing and rendering
 a view is a membership change, so it invalidates the stack the same way a
 view swap does.
+
+### 4.5 Structural transition retention
+
+A view with a removal transition leaves semantic membership immediately: it
+is absent from accessibility, testing, hit testing, and focus traversal. Its
+outgoing realization becomes a non-interactive ghost. A row leaving a
+collection's membership (`ForEach`, `List`, a lazy stack) keeps a layout-only
+slot in that collection. The slot is a fixed-size leaf: every proposal
+returns the dimensions and alignment guides recorded at removal, its stretch
+axis is `None`, and its layout priority is preserved. It remains a layout
+member, including spacing, until the transition completes. At completion the
+slot is removed and siblings move using the container's animation. Without a
+removal transition, removal releases the slot immediately as in §4.4.
+
+Insertion allocates the new slot immediately at its normal layout size and
+animates only the content. Re-insertion during an exit creates a new semantic
+instance and a new slot; the old ghost completes independently. An exiting
+slot is still placed every frame, so its global frame follows scrolling and
+ancestor movement. A pixel transition is drawn in a window-filling overlay
+anchored to that frame; ancestor clipping does not clip the effect. Retention
+does not preserve removed descendants as semantic members.
+
+The semantic rules apply at every structural site: dynamic replacement,
+collection membership, navigation, and overlays. Scalar property updates do
+not create transition instances or affect membership.
+
+A conditional (`when`, `watch`) owns the ghosts of the content it replaces,
+whatever layout encloses it, and so does a scroll, page, or overlay root:
+none of them holds a slot for a ghost. The enclosing layout sees one child,
+sized by the live content alone. The ghost paints at its last placed frame,
+overlapping that slot beneath the live content, and follows scrolling and
+ancestor movement; it takes no part in layout and, as above, no part in
+input or accessibility. A navigation page root's declared transition is that
+page's insertion transition on push and its removal transition on pop, in
+place of the stack's own transition for that page.
 
 ## 5. Other containers
 
@@ -377,16 +415,25 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   before this rule applies. A stepper with a visible label answers the
   proposal width (`Horizontal`) and its intrinsic height, placing the label at
   the leading edge and the buttons at the trailing edge with the free space
-  between; a stepper with a hidden label answers its intrinsic size.
-- **ScrollView**: a scroll claims the whole offer — a finite proposal on
-  either axis is answered with that proposal; only a `0` proposal measures the
-  content, answering its intrinsic extent on the non-scrolling axis and `0` on
-  the scrolling axis. The content is measured with the viewport extent on the
-  non-scrolling axis and `None` on the scrolling axis; its frame is its own
-  answer on the non-scrolling axis, and it is **centred** there whether it is
-  narrower or wider than the viewport (a wider content crosses both edges by
-  the same amount). A scroll surface that touches window chrome extends under
-  it (safe-area extension rule).
+  between; a stepper with a hidden label answers its intrinsic size. A picker
+  in the segmented style answers the proposal width (`Horizontal`) and its
+  intrinsic height, dividing the width into equal segments; an unbounded
+  width proposal answers the intrinsic width. Every other picker style
+  answers the control's intrinsic size.
+- **ScrollView**: on the scrolling axis a scroll claims the whole offer — a
+  finite proposal is answered with the proposal, `None` with the content's
+  intrinsic extent, `0` with `0`. On the non-scrolling axis it answers the
+  content's own answer to the content proposal — that axis gets the scroll's
+  offer, the scrolling axis `None` — clamped to a finite offer, so a scroll
+  hugs non-filling content instead of claiming the slot; `0` and `None` keep
+  their existing behaviour (the content's minimum and intrinsic extent).
+  Content that itself fills the non-scrolling axis still fills it.
+  `Axis::All` fills both axes. The content is measured with the viewport
+  extent on the non-scrolling axis and `None` on the scrolling axis; its
+  frame is its own answer on the non-scrolling axis, and it is **centred**
+  there whether it is narrower or wider than the viewport (a wider content
+  crosses both edges by the same amount). A scroll surface that touches
+  window chrome extends under it (safe-area extension rule).
 - **Spacer** hosted natively answers its minimum length on the stack's main
   axis and zero on the cross axis, whatever the proposal (§5).
 - **GPU surfaces, shapes, colours**: `Both`.
@@ -394,6 +441,15 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   unspecified proposal. Under a smaller finite proposal it scales down,
   preserving its aspect ratio, and never scales up. It claims no leftover space
   (`None`). `.resizable()` fills the proposal per `content_mode`.
+- **Video**: a `Fit` video answers a finite width proposal — `0` included —
+  with that width and the height its source's aspect ratio gives at it,
+  whatever height is offered; until the source reports its size the ratio is
+  16:9. To an unspecified width it answers its natural size, as an image does:
+  the source's pixel dimensions taken as points, 320 × 180 until the source
+  reports them. A maximum probe (`INFINITY`) is answered with an unbounded
+  width at the natural height. It stretches horizontally (`Horizontal`).
+  `Fill` and `Stretch` answer the proposal on both axes (`Both`), 320 × 180 on
+  an unspecified axis.
 
 A leaf that answers a probe with the proposal instead of its content on an
 axis it does not stretch is a backend bug: it makes every container above it
@@ -448,7 +504,12 @@ transforms, ends on that boundary.
   view. A bar stays docked to its edge: it is laid out clear of that edge's
   container region only, so the keyboard region covers it instead of
   lifting it, while the content the chrome container hosts is laid out
-  clear of both regions.
+  clear of both regions. A navigation page is not the chrome container
+  when its bar is drawn by the window or by the platform's navigation
+  controller: the page touches the edge the bar sits on, with the bar's
+  area as container region, so a scroll surface in it extends under the
+  bar and insets its content by it, while non-scrolling content is laid
+  out clear of the bar.
 - **Keyboard motion.** A change of the keyboard inset follows the platform's
   keyboard animation frame by frame. A backend never avoids the keyboard by
   resizing the window or its rendering surface.
@@ -467,7 +528,7 @@ gap; changing one is a contract change.
 | A finite-width Grid divides the proposal into equal columns and answers the proposal width. | `Grid` columns are intrinsic-sized; only flexible columns share the remainder. | Equal columns keep every backend's grid identical and the answer predictable. |
 | `AspectRatio` reports the resolved ratio box and hands it to the child as its frame. | `aspectRatio` transforms the proposal but reports the child's answer. | The ratio box is the contract; the child receives it resolved, not re-negotiated. |
 | `Background` places the secondary view over the whole bounds and proposes them. | The secondary view may keep a smaller rigid answer inside the base's size. | Whole-bounds allocation keeps a background flush with what it backs. |
-| `ScrollView` fills the finite cross-axis offer. | A scroll view hugs non-filling content on the cross axis. | One fill rule keeps scroll surfaces flush with their slots on every backend. |
+| A window or navigation page root is proposed the window's content size and fills it. | On macOS, a page whose ideal width is below the window's is placed in a centred column of that width. | One root rule on every backend: content-sized pages are already centred by the scroll's own centring rule, and filling pages keep the whole window. |
 | `overlay(alignment:)` anchors a decoration on the envelope its own guide forms inside the bounds. | A decoration's guides offset it against the base's alignment lines. | Anchoring the decoration's own envelope keeps a badge inside the bounds that a base-anchored offset would cross. |
 
 ## 9. Invariants a change must preserve

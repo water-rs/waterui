@@ -40,8 +40,8 @@ async fn launcher_dir(project: &Project) -> eyre::Result<PathBuf> {
 async fn template_context(project: &Project, dir: &Path) -> eyre::Result<TemplateContext> {
     let manifest = project.manifest();
     let app_name = manifest
-        .package
-        .name
+        .package()
+        .name()
         .chars()
         .filter(|c| c.is_alphanumeric())
         .collect::<String>();
@@ -153,7 +153,7 @@ pub fn exec(host: &crate::toolchain::Host, built: BuiltTarget) -> eyre::Result<(
     // before handing over the terminal.
     let _ = std::io::stdout().flush();
     let binary = built.executable()?.to_path_buf();
-    let mut command = host.interactive_command(&binary);
+    let mut command = host.interactive_command(&binary)?;
     #[cfg(unix)]
     {
         use eyre::WrapErr as _;

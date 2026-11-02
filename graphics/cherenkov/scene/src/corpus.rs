@@ -35,7 +35,7 @@ pub struct FontSpec {
 /// Latin sample text (Noto Sans).
 pub const LATIN: &str = "The quick brown fox jumps over the lazy dog 0123456789!?";
 /// Simplified Chinese sample text (Noto Sans SC).
-pub const CJK: &str = "。，0123456789";
+pub const CJK: &str = "天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。0123456789";
 /// Arabic sample text (Noto Sans Arabic, RTL with joining).
 pub const ARABIC: &str = "مرحبا بالعالم! أهلا وسهلا ١٢٣";
 /// Hebrew sample text (Noto Sans Hebrew, RTL).
@@ -233,14 +233,4 @@ pub fn corpus_dir(root: &Path) -> PathBuf {
 #[must_use]
 pub fn perf_dir(root: &Path) -> PathBuf {
     root.join("scenes/perf")
-}
-
-/// The repository root, resolved from `CARGO_MANIFEST_DIR` (the `scene`
-/// crate's directory).
-#[must_use]
-pub fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace layout")
-        .to_path_buf()
 }

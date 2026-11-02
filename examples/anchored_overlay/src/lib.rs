@@ -36,21 +36,22 @@ fn tall_card(note: &'static str) -> impl View {
 /// A button that presents an `AnchoredOverlay` against `edge`.
 fn edge_anchor(title: &'static str, note: &'static str, edge: AnchorEdge, tall: bool) -> impl View {
     let open = binding(false);
-    let card = if tall {
-        AnyView::new(tall_card(note))
-    } else {
-        AnyView::new(overlay_card(note))
-    };
     button(title)
         .action({
             let open = open.clone();
             move || open.toggle()
         })
         .anchored_overlay(
-            AnchoredOverlay::new(&open, card)
-                .edge(edge)
-                .gap(6.0)
-                .clamp(Clamp::Window { margin: 8.0 }),
+            AnchoredOverlay::new(&open, move || {
+                if tall {
+                    AnyView::new(tall_card(note))
+                } else {
+                    AnyView::new(overlay_card(note))
+                }
+            })
+            .edge(edge)
+            .gap(6.0)
+            .clamp(Clamp::Window { margin: 8.0 }),
         )
 }
 
@@ -70,7 +71,7 @@ fn aligned_anchor(title: &'static str, edge: AnchorEdge, alignment: EdgeAlignmen
             move || open.toggle()
         })
         .anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_card(note))
+            AnchoredOverlay::new(&open, move || overlay_card(note))
                 .edge(edge)
                 .alignment(alignment)
                 .gap(6.0)
@@ -88,7 +89,7 @@ fn manual_anchor() -> impl View {
             move || open.toggle()
         })
         .anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_card("Trailing edge, manual"))
+            AnchoredOverlay::new(&open, move || overlay_card("Trailing edge, manual"))
                 .edge(AnchorEdge::Trailing)
                 .gap(6.0)
                 .clamp(Clamp::Window { margin: 8.0 })

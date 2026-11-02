@@ -12,7 +12,15 @@ use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
 
+/// `pump_main_until` for the `AppKit` harnesses.
+#[cfg(target_os = "macos")]
 pub use cocoa_ui::native_test::pump_main_until;
+/// The pump a case inside the harness application waits on: on iOS it is
+/// `uikit::native_test`'s — under Catalyst that is a real `AppKit`
+/// `nextEvent:`/`sendEvent:` turn, the only dispatch route `UIKit` has
+/// (water-rs/waterui#3358) — while `AppKit` keeps the bare run-loop turn.
+#[cfg(target_os = "ios")]
+pub use cocoa_ui::uikit::native_test::pump_main_until;
 
 /// The bound a case gives deferred main-queue work before it fails.
 ///
@@ -178,15 +186,35 @@ pub struct UIKitMount {
     pub host: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
     pub content: alloc::rc::Rc<crate::contract::Mounted>,
     pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
-    _controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
+    controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
     _keepalive: crate::contract::KeepAlive,
 }
 
 #[cfg(target_os = "ios")]
 impl Drop for UIKitMount {
     fn drop(&mut self) {
+        self.host.clear_handlers();
+        // Whether the window shows in a window scene — the same read
+        // `mount_uikit_window` gated its appearance wait on, taken before
+        // the window hides. A scene-less window releases its root at once,
+        // as it always has.
+        let scene_bound = self.window.windowScene().is_some();
         self.window.setHidden(true);
+        // Hiding alone delivers no disappearance; releasing the root does,
+        // ending on a later run-loop turn. The mount still owns the
+        // controller, so it lives until that disappearance has ended.
         self.window.setRootViewController(None);
+        if scene_bound {
+            assert!(
+                pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                    let counts = self.controller.appearance_counts();
+                    counts.did_disappear >= counts.did_appear
+                }),
+                "the root controller's viewDidDisappear: did not run within \
+                 {MAIN_QUEUE_DEADLINE}s of releasing it: {:?}",
+                self.controller.appearance_counts()
+            );
+        }
     }
 }
 
@@ -244,13 +272,126 @@ pub fn mount_uikit_window(
     let content = crate::embedding::mount_content(&host, view, &env, &mut keepalive);
     window.makeKeyAndVisible();
     window.layoutIfNeeded();
+    // A scene window opens an appearance transition only the run loop
+    // closes: `viewWillAppear:` lands inside `makeKeyAndVisible`, but
+    // `viewDidAppear:` waits for a later turn. Returning before it runs
+    // hands the case a mid-transition controller whose drop would cut
+    // the transition short. A scene-less window — the bare harness's
+    // spawned window — keeps the immediate return.
+    if window.windowScene().is_some() {
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                controller.appearance_counts().did_appear >= 1
+            }),
+            "the root controller's viewDidAppear: did not run within \
+             {MAIN_QUEUE_DEADLINE}s of showing its scene window"
+        );
+    }
     UIKitMount {
         host,
         content,
         window,
-        _controller: controller,
+        controller,
         _keepalive: keepalive,
     }
+}
+
+/// Performs the application entry's once-per-process `startup::initialize`.
+///
+/// It installs the executors a realized window's tasks run on. Called once
+/// from the `Tests/native_app.rs` harness's main thread before any trial
+/// runs.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+pub fn initialize_process() {
+    let _ = crate::startup::initialize();
+}
+
+/// A scene window filled by the production `windows::realize`.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+pub struct RealizedScene {
+    /// The scene's root host, which places the window content.
+    pub root: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
+    /// The scene window.
+    pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+    _host: crate::windows::WindowHost,
+}
+
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+impl core::fmt::Debug for RealizedScene {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RealizedScene")
+            .field("root", &self.root)
+            .field("window", &self.window)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Fills an already shown scene window through the production `windows::realize`.
+///
+/// The window has appeared before `declaration`'s content arrives, and the
+/// theme is installed from the root controller's scheme as
+/// `windows::connect` installs it.
+///
+/// This is the order a launch takes when the declaration lands after the
+/// scene's window displayed: the window is key and visible with the empty
+/// root `windows::connect` gives it, and `realize` then adds the content.
+/// The wait is on the root controller's `viewDidAppear:`, the signal the
+/// window displayed.
+///
+/// # Panics
+/// Panics when the root controller does not appear within
+/// [`MAIN_QUEUE_DEADLINE`].
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+#[must_use]
+pub fn realize_into_shown_scene(
+    mtm: MainThreadMarker,
+    declaration: &waterui::window::Window,
+    env: &Environment,
+    window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+) -> RealizedScene {
+    let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
+    window.setRootViewController(Some(&controller));
+    window.makeKeyAndVisible();
+    assert!(
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            controller.appearance_counts().did_appear >= 1
+        }),
+        "the root controller's viewDidAppear: did not run within \
+         {MAIN_QUEUE_DEADLINE}s of showing its scene window"
+    );
+    let root = objc2::Message::retain(controller.host_view());
+    let mut env = env.clone();
+    env.insert(crate::first_paint::FirstPaint::default());
+    let theme = alloc::rc::Rc::new(crate::theme::install(&mut env, controller.color_scheme()));
+    let observation =
+        controller.observe_color_scheme(move |scheme| crate::theme::refresh(&theme, scheme));
+    let host = crate::windows::realize(
+        declaration,
+        crate::windows::Pending {
+            session_id: String::new(),
+            window: window.clone(),
+            controller,
+            observation,
+        },
+        &env,
+        mtm,
+    );
+    RealizedScene {
+        root,
+        window,
+        _host: host,
+    }
+}
+
+/// The frame `root` resolves for `content` — what its placement handler
+/// gives the content.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+#[must_use]
+pub fn content_frame(
+    root: &cocoa_ui::uikit::HostView,
+    content: &cocoa_ui::PlatformView,
+) -> cocoa_ui::Rect {
+    crate::native_layout::LayoutContext::of(root).content_frame(content)
 }
 
 /// `mount_uikit` at a fixed window frame — trials that assert geometry
@@ -350,17 +491,13 @@ pub fn mount_uikit_embedded(
 }
 
 #[cfg(target_os = "macos")]
-use cocoa_ui::Retained;
-#[cfg(target_os = "macos")]
 use waterui::Signal;
-#[cfg(target_os = "macos")]
-use waterui::Str;
 #[cfg(target_os = "macos")]
 use waterui::color::Color;
 #[cfg(target_os = "macos")]
-use waterui::reactive::{Binding, Computed, SignalExt, binding};
+use waterui::reactive::{Binding, binding};
 #[cfg(target_os = "macos")]
-use waterui::window::{UserAttention, WindowBackground, WindowLevel, WindowState, WindowStyle};
+use waterui::window::{WindowBackground, WindowState, WindowStyle};
 #[cfg(target_os = "macos")]
 use waterui_core::layout::{Point, Rect, Size};
 
@@ -399,69 +536,80 @@ pub fn window_environment(mtm: MainThreadMarker) -> (Environment, crate::theme::
     (env, theme)
 }
 
+/// Re-reads every theme slot for `scheme`, as an appearance change does.
+#[cfg(target_os = "macos")]
+pub fn refresh_theme(theme: &crate::theme::ThemeSignals, scheme: cocoa_ui::ColorScheme) {
+    crate::theme::refresh(theme, scheme);
+}
+
+/// Binds a window background without a window.
+///
+/// `container` stands for the window's content view and `content` for its
+/// content, as `windows::realize` wires them. Returns the keepalive holding
+/// the binding and the colour most recently painted behind the content.
+#[cfg(target_os = "macos")]
+pub fn bind_window_background(
+    container: &cocoa_ui::PlatformView,
+    content: &cocoa_ui::PlatformView,
+    resolved: &waterui::reactive::Computed<waterui::window::ResolvedWindowBackground>,
+    env: &Environment,
+    mtm: MainThreadMarker,
+) -> (
+    crate::contract::KeepAlive,
+    std::rc::Rc<core::cell::Cell<Option<waterui::graphics::color::WorkingColor>>>,
+) {
+    let painted = std::rc::Rc::new(core::cell::Cell::new(None));
+    let mut keepalive = crate::contract::KeepAlive::default();
+    crate::window_background::bind(&mut keepalive, container, content, resolved, env, mtm, {
+        let painted = painted.clone();
+        move |color| painted.set(Some(color))
+    });
+    (keepalive, painted)
+}
+
 /// Checks two-way bindings on a real native root window.
 ///
-/// `bind_root_window` adopts a window the host already created: the
-/// declared style and title land on it, the real frame publishes into
-/// the binding, a declared frame drives the window back, and platform
-/// close publishes `Closed`. The window is never ordered in — the whole
-/// lifecycle stays offscreen.
+/// `windows::realize` turns a declaration into a live window: the
+/// declared style and title land on it, the declared frame seeds the
+/// window's content rect, platform close publishes `Closed` through the
+/// state binding, and the armed `on_close_request` gate fires.
+///
+/// `realize` orders the window in — this trial opens and closes a real
+/// window, so it runs only on a host where a window may appear on a
+/// display.
 ///
 /// # Panics
-/// Panics if the native window cannot be retained or a binding assertion fails.
+/// Panics if the window cannot be realized or an assertion fails.
 #[cfg(target_os = "macos")]
-pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
-    let window = cocoa_ui::appkit::Window::new(
-        mtm,
-        cocoa_ui::Rect::new(100.0, 100.0, 640.0, 480.0),
-        cocoa_ui::appkit::WindowStyle::TITLED,
-    );
-
-    let (env, _theme) = window_environment(mtm);
-    let title: Computed<Str> = binding(Str::from("Bind Root")).computed();
-    let frame: Binding<Rect> = binding(Rect::new(Point::new(0.0, 0.0), Size::new(0.0, 0.0)));
+pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
+    let (mut env, _theme) = window_environment(mtm);
+    env.insert(crate::first_paint::FirstPaint::default());
     let state: Binding<WindowState> = binding(WindowState::Normal);
-    let style: Computed<WindowStyle> = binding(WindowStyle::Titled).computed();
-    let level: Computed<WindowLevel> = binding(WindowLevel::Normal).computed();
-    let attention: Binding<Option<UserAttention>> = binding(None);
-    let background: Computed<WindowBackground> =
-        binding(WindowBackground::Color(Color::srgb(255, 255, 255))).computed();
+    let closed = alloc::rc::Rc::new(core::cell::RefCell::new(false));
+    let declaration = waterui::window::Window::new("Bind Root", state.clone(), || {
+        waterui::component::text::Text::new("x")
+    })
+    .style(WindowStyle::Titled)
+    .background(WindowBackground::Color(Color::srgb(255, 255, 255)))
+    .on_close_request({
+        let closed = alloc::rc::Rc::clone(&closed);
+        move || {
+            let closed = alloc::rc::Rc::clone(&closed);
+            async move {
+                *closed.borrow_mut() = true;
+                waterui::window::CloseReply::Close
+            }
+        }
+    });
 
-    // SAFETY: `window.native()` is a live +0 object; the binding retains it
-    // for the declaration's lifetime on the main thread.
-    let native = unsafe {
-        Retained::retain(std::ptr::from_ref(window.native()).cast_mut())
-            .expect("a live NSWindow retains")
-    };
-    // The embedding's WaterUI-owned root inside the host's content view —
-    // the view a material background fills.
-    let root = cocoa_ui::appkit::HostView::new(mtm, window.content_rect());
-    cocoa_ui::view::add_subview(
-        &window
-            .native()
-            .contentView()
-            .expect("a new window has a content view"),
-        &root,
-    );
-    let binding = crate::windows::bind_root_window(
-        native,
-        &root,
-        &env,
-        &title,
-        &frame,
-        &state,
-        None,
-        &style,
-        &level,
-        &attention,
-        None,
-        &background,
-        true,
-        true,
-        mtm,
-    );
+    declaration
+        .frame
+        .set(Rect::new(Point::new(0.0, 0.0), Size::new(640.0, 480.0)));
+    let host = crate::windows::realize(declaration, &env, mtm);
+    let window = host.window();
+    let native = window.native();
 
-    // The declared style was adopted on top of the kit window's mask.
+    // The declared style lands on the window's mask.
     let mask = window.style_mask();
     assert!(mask.contains(
         cocoa_ui::appkit::WindowStyle::TITLED
@@ -470,37 +618,449 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
             | cocoa_ui::appkit::WindowStyle::RESIZABLE
     ));
 
-    // The declared title landed on the window.
-    assert_eq!(window.native().title().to_string(), "Bind Root");
+    // The declared title lands on the window.
+    assert_eq!(native.title().to_string(), "Bind Root");
 
-    // The window's real frame seeded the frame binding (outer-frame
-    // convention — the host's position on screen wins over the declared
-    // origin).
-    let snapshot = frame.snapshot();
-    let current = window.frame();
-    let expected = cocoa_ui::Rect::new(
-        f64::from(snapshot.origin().x),
-        f64::from(snapshot.origin().y),
-        f64::from(snapshot.size().width),
-        f64::from(snapshot.size().height),
+    // The declared frame seeds the window's content size — the platform
+    // positions the chrome around it.
+    let content = native.contentRectForFrameRect(native.frame());
+    assert_eq!(
+        cocoa_ui::Size::new(content.size.width, content.size.height),
+        cocoa_ui::Size::new(640.0, 480.0)
     );
-    assert_eq!(current, expected);
 
-    // A declared frame write drives the real window.
-    frame.set(Rect::new(Point::new(20.0, 30.0), Size::new(320.0, 240.0)));
-    let moved = window.frame();
-    assert_eq!(moved, cocoa_ui::Rect::new(20.0, 30.0, 320.0, 240.0));
-
-    // Platform close publishes `Closed` through the binding — the
-    // window's own lifecycle event driving the declared state.
-    window.close();
-    assert_eq!(state.snapshot(), WindowState::Closed);
-    window.close();
+    // The armed close gate intercepts the platform close — `AppKit` does
+    // not close outright — and the handler's `Close` reply publishes
+    // `Closed` through the state binding.
+    window.native().performClose(None);
+    assert!(drain_main_queue(mtm));
+    assert!(*closed.borrow());
     assert_eq!(state.snapshot(), WindowState::Closed);
 
-    // Dropping the binding releases the window's declaration — the
-    // owned-ABI replacement for a free function over a raw handle.
-    drop(binding);
+    drop(host);
+}
+
+/// §7.1 on a real window root: a navigation page's scroll surface runs
+/// under the window toolbar, its other content stays below the titlebar.
+///
+/// A navigation page touches the edge the window-drawn bar sits on, so on
+/// a titled window — unified toolbar, full-size content view — a scroll
+/// surface on it reaches the window's top edge, while non-scrolling
+/// content in the same position stays clear of the titlebar.
+///
+/// Every case realizes its content through `windows::realize`, the
+/// production window root, so each link the safe-area answer passes —
+/// the root's `content_frame`, the tab host, the tab's `NavigationView`
+/// pane, the stack, the page — is the one an application gets. Each case
+/// orders a window in.
+#[cfg(target_os = "macos")]
+pub mod toolbar_reach {
+    use cocoa_ui::objc2_app_kit::{
+        NSScrollView, NSTextField, NSView, NSWindowStyleMask, NSWindowToolbarStyle,
+    };
+    use cocoa_ui::{MainThreadMarker, Retained};
+    use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::list::{List, ListItem};
+    use waterui::id::SelfId;
+    use waterui::navigation::{
+        NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, Tabs, tab_style,
+    };
+    use waterui::prelude::{scroll, text, vstack, zstack};
+    use waterui::reactive::binding;
+    use waterui::window::{WindowState, WindowStyle};
+    use waterui_core::layout::{Point, Rect, Size};
+
+    use super::{
+        ListSurface, MAIN_QUEUE_DEADLINE, ScrollSurface, pump_main_until, row_item,
+        window_environment,
+    };
+
+    /// The text the non-scrolling fixtures show — the label the case
+    /// finds in the window.
+    const MARKER: &str = "toolbar-reach-marker";
+
+    /// Half a point: the distance at which an edge counts as reaching a
+    /// boundary at any backing scale.
+    const TOLERANCE: f64 = 0.5;
+
+    /// The gap `SwiftUI` leaves between the safe-area top and a list's
+    /// first row.
+    const LIST_GAP: f64 = 10.0;
+
+    /// How far the first row may stray from [`LIST_GAP`] below the
+    /// titlebar.
+    const LIST_GAP_TOLERANCE: f64 = 2.0;
+
+    /// The window-coordinate tops a case measures against.
+    struct Edges {
+        /// The top of the window, which a full-size content view reaches.
+        window: f64,
+        /// The top of the content view's safe-area rect — the bottom of
+        /// the titlebar, its toolbar and any accessory row.
+        safe: f64,
+    }
+
+    /// The top edge of `rect`, a rect in `view`'s coordinates, in window
+    /// coordinates.
+    fn top_in_window(view: &NSView, rect: cocoa_ui::objc2_foundation::NSRect) -> f64 {
+        let frame = view.convertRect_toView(rect, None);
+        frame.origin.y + frame.size.height
+    }
+
+    /// The first view under `root`, depth-first, that `matches` accepts.
+    fn find<T: objc2::DowncastTarget>(
+        root: &NSView,
+        matches: &impl Fn(&T) -> bool,
+    ) -> Option<Retained<T>> {
+        for sub in root.subviews() {
+            if let Ok(found) = sub.clone().downcast::<T>()
+                && matches(&found)
+            {
+                return Some(found);
+            }
+            if let Some(found) = find(&sub, matches) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Realizes `content` as a titled window through the production root,
+    /// waits until the window carries its unified toolbar over a full-size
+    /// content view — and the search row when `searchable` — then lays the
+    /// tree out and hands `check` the content view and its edges.
+    fn realized<V: waterui::View>(
+        mtm: MainThreadMarker,
+        content: impl Fn() -> V + 'static,
+        searchable: bool,
+        check: impl FnOnce(&NSView, &Edges),
+    ) {
+        let (mut env, _theme) = window_environment(mtm);
+        env.insert(crate::first_paint::FirstPaint::default());
+        let declaration =
+            waterui::window::Window::new("Toolbar Reach", binding(WindowState::Normal), content)
+                .style(WindowStyle::Titled);
+        declaration
+            .frame
+            .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
+        let host = crate::windows::realize(declaration, &env, mtm);
+        let native = host.window().native();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                native.toolbar().is_some()
+                    && native.toolbarStyle() == NSWindowToolbarStyle::Unified
+                    && native.styleMask().contains(
+                        NSWindowStyleMask::Titled | NSWindowStyleMask::FullSizeContentView,
+                    )
+                    && (!searchable || native.titlebarAccessoryViewControllers().count() == 1)
+            }),
+            "the window must carry a unified toolbar over a full-size content view{}",
+            if searchable {
+                " and the search row"
+            } else {
+                ""
+            }
+        );
+        let root = native
+            .contentView()
+            .expect("the realized window has a content view");
+        root.layoutSubtreeIfNeeded();
+        let edges = Edges {
+            window: native.frame().size.height,
+            safe: top_in_window(&root, root.safeAreaRect()),
+        };
+        let root_top = top_in_window(&root, root.bounds());
+        assert!(
+            (root_top - edges.window).abs() <= TOLERANCE,
+            "a full-size content view reaches the window top {}, got {root_top}",
+            edges.window
+        );
+        assert!(
+            edges.safe < edges.window - 1.0,
+            "the titlebar must cover a band of the content view: safe-area top {}, window top {}",
+            edges.safe,
+            edges.window
+        );
+        check(&root, &edges);
+        native.close();
+        drop(host);
+    }
+
+    /// Asserts the list's scroll view runs under the toolbar to the
+    /// window's top edge, and its first row rests [`LIST_GAP`] below the
+    /// titlebar's bottom.
+    fn assert_list_reaches_the_top(root: &NSView, edges: &Edges) {
+        let list = find::<ListSurface>(root, &|_| true).expect("the window hosts the list");
+        let top = top_in_window(&list, list.bounds());
+        assert!(
+            top >= edges.window - TOLERANCE,
+            "the list's scroll view must reach the window top {} under the toolbar \
+             (safe-area top {}), but its top is {top}",
+            edges.window,
+            edges.safe
+        );
+        let first_row = top_in_window(&list.table_view(), list.rect_of_row(0));
+        assert!(
+            first_row <= edges.safe + TOLERANCE,
+            "the list's first row must sit below the titlebar's bottom {}, but its top is \
+             {first_row}",
+            edges.safe
+        );
+        let expected = edges.safe - LIST_GAP;
+        assert!(
+            (first_row - expected).abs() <= LIST_GAP_TOLERANCE,
+            "the list's first row must rest {LIST_GAP}pt below the titlebar's bottom {}, at \
+             {expected}, but its top is {first_row}",
+            edges.safe
+        );
+    }
+
+    /// Asserts the marker text stays below the titlebar.
+    fn assert_text_stays_clear(root: &NSView, edges: &Edges) {
+        let label = find::<NSTextField>(root, &|field| field.stringValue().to_string() == MARKER)
+            .expect("the window hosts the marker text");
+        let top = top_in_window(&label, label.bounds());
+        assert!(
+            top <= edges.safe + TOLERANCE,
+            "non-scrolling content must stay below the titlebar at {}, but its top is {top}",
+            edges.safe
+        );
+    }
+
+    /// Asserts `scroll`'s vertical scroller starts at the titlebar's
+    /// bottom: it follows the toolbar band, as `SwiftUI`'s does, rather
+    /// than running under the toolbar or moving down with a list's gap.
+    fn assert_scroller_starts_below_the_titlebar(scroll: &NSScrollView, edges: &Edges) {
+        let scroller = scroll
+            .verticalScroller()
+            .expect("the scroll surface has a vertical scroller");
+        let top = top_in_window(&scroller, scroller.bounds());
+        assert!(
+            (top - edges.safe).abs() <= TOLERANCE,
+            "the vertical scroller must start at the titlebar's bottom {}, but its top is {top}",
+            edges.safe
+        );
+    }
+
+    /// Asserts the scroll view runs under the toolbar to the window's top
+    /// edge, its first content row rests at the titlebar's bottom, and its
+    /// scroller starts there.
+    fn assert_scroll_reaches_the_top(root: &NSView, edges: &Edges) {
+        let surface = find::<ScrollSurface>(root, &|_| true).expect("the window hosts the scroll");
+        let top = top_in_window(&surface, surface.bounds());
+        assert!(
+            top >= edges.window - TOLERANCE,
+            "the scroll view must reach the window top {} under the toolbar (safe-area top {}), \
+             but its top is {top}",
+            edges.window,
+            edges.safe
+        );
+        let first_row =
+            find::<NSTextField>(&surface, &|field| field.stringValue().to_string() == MARKER)
+                .expect("the scroll hosts the marker text");
+        let first_row = top_in_window(&first_row, first_row.bounds());
+        assert!(
+            (first_row - edges.safe).abs() <= TOLERANCE,
+            "the scroll's first row must rest at the titlebar's bottom {}, but its top is \
+             {first_row}",
+            edges.safe
+        );
+        assert_scroller_starts_below_the_titlebar(&surface, edges);
+    }
+
+    /// The fixtures' scrolling content: the marker over a column tall
+    /// enough to overflow the window, so the scroller is tiled.
+    fn tall_scroll() -> impl waterui::View {
+        scroll(vstack((text(MARKER), text("rest").height(2000.0))))
+    }
+
+    /// `liquid_glass`'s page shape: a backdrop behind the scroll.
+    fn backdrop_scroll() -> impl waterui::View {
+        zstack((text("backdrop"), tall_scroll()))
+    }
+
+    /// The fixtures' list: three plain rows.
+    fn rows() -> impl waterui::View {
+        List::content(vec![row_item as fn() -> ListItem; 3])
+    }
+
+    /// Window → `NavigationStack` → page whose content is a `List`.
+    pub fn a_stack_page_list_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationStack::new(NavigationView::new("Inbox", rows())),
+            false,
+            assert_list_reaches_the_top,
+        );
+    }
+
+    /// A row scrolled to the top sits below the titlebar.
+    ///
+    /// Window → `NavigationStack` → page whose content is a `List` taller
+    /// than the window: the row lands at the inset content edge — where
+    /// the first row rests — instead of under the toolbar.
+    pub fn a_row_scrolled_to_the_top_sits_below_the_titlebar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || {
+                NavigationStack::new(NavigationView::new(
+                    "Inbox",
+                    List::content(vec![row_item as fn() -> ListItem; 60]),
+                ))
+            },
+            false,
+            |root, edges| {
+                let list = find::<ListSurface>(root, &|_| true).expect("the window hosts the list");
+                list.scroll_row_to_top(20);
+                let row = top_in_window(&list.table_view(), list.rect_of_row(20));
+                assert!(
+                    row <= edges.safe + TOLERANCE,
+                    "a row scrolled to the top must sit below the titlebar's bottom {}, but its \
+                     top is {row}",
+                    edges.safe
+                );
+                let expected = edges.safe - LIST_GAP;
+                assert!(
+                    (row - expected).abs() <= LIST_GAP_TOLERANCE,
+                    "a row scrolled to the top must rest at the inset content edge {expected}, \
+                     but its top is {row}"
+                );
+                assert_scroller_starts_below_the_titlebar(&list, edges);
+            },
+        );
+    }
+
+    /// Window → `NavigationStack` → page whose content is text.
+    pub fn a_stack_page_text_stays_clear_of_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationStack::new(NavigationView::new("Inbox", text(MARKER))),
+            false,
+            assert_text_stays_clear,
+        );
+    }
+
+    /// Window → `NavigationStack` → page whose content is a `ScrollView`.
+    pub fn a_stack_page_scroll_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationStack::new(NavigationView::new("Surfaces", tall_scroll())),
+            false,
+            assert_scroll_reaches_the_top,
+        );
+    }
+
+    /// `Tabs` whose first tab is a `NavigationStack` over `inbox`, each tab
+    /// a `Tab::container` — the picker sits in the window toolbar.
+    fn tabbed(inbox: impl Fn() -> NavigationView + 'static) -> impl waterui::View {
+        let inbox = std::rc::Rc::new(inbox);
+        Tabs::new(
+            &binding(0usize),
+            vec![
+                Tab::container("Inbox", move || NavigationStack::new(inbox())),
+                Tab::container("Settings", || {
+                    NavigationStack::new(NavigationView::new("Settings", text("settings")))
+                }),
+            ],
+        )
+    }
+
+    /// Window → `Tabs` (its picker in the toolbar) → `NavigationStack` →
+    /// page whose content is a `List`.
+    pub fn a_tabbed_stack_page_list_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || tabbed(|| NavigationView::new("Inbox", rows())),
+            false,
+            assert_list_reaches_the_top,
+        );
+    }
+
+    /// `liquid_glass`'s Surfaces structure: Window → `Tabs` (its picker in
+    /// the toolbar) → `NavigationStack` → page whose content is a
+    /// `ScrollView` over a backdrop.
+    pub fn a_tabbed_stack_page_scroll_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || tabbed(|| NavigationView::new("Surfaces", backdrop_scroll())),
+            false,
+            assert_scroll_reaches_the_top,
+        );
+    }
+
+    /// Window → `Tabs` (its picker in the toolbar) → `NavigationStack` →
+    /// page whose content is text.
+    pub fn a_tabbed_stack_page_text_stays_clear_of_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || tabbed(|| NavigationView::new("Inbox", text(MARKER))),
+            false,
+            assert_text_stays_clear,
+        );
+    }
+
+    /// The navigation example's structure: automatic-style `Tabs` of
+    /// `Tab::container`s, the Inbox tab a path-backed `NavigationStack`
+    /// whose root page carries a large title, a subtitle and a search
+    /// field in the bar around `content`.
+    fn inbox_tabs<V: waterui::View>(content: impl Fn() -> V + 'static) -> impl waterui::View {
+        let content = std::rc::Rc::new(content);
+        Tabs::new(
+            &binding(0usize),
+            vec![
+                Tab::container("Inbox", move || {
+                    NavigationStack::with_path(
+                        NavigationPath::<u64>::new(),
+                        content()
+                            .title("Inbox")
+                            .large_title()
+                            .navigation_subtitle("3 unread")
+                            .searchable(&binding(Str::from("")), "Search mail"),
+                    )
+                    .destination(|id: u64| {
+                        NavigationView::new("Message", text(format!("message {id}")))
+                    })
+                }),
+                Tab::container("Settings", || {
+                    NavigationStack::new(NavigationView::new("Settings", text("settings")))
+                }),
+            ],
+        )
+        .style(tab_style::Automatic)
+    }
+
+    /// The navigation example's Inbox: its `List` of navigation-link rows
+    /// runs under the toolbar and the search row.
+    pub fn the_example_inbox_list_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || {
+                inbox_tabs(|| {
+                    List::for_each(
+                        vec![SelfId::new(1_u64), SelfId::new(2), SelfId::new(3)],
+                        |id: SelfId<u64>| {
+                            ListItem::new(NavigationLink::value(text("message"), id.into_inner()))
+                        },
+                    )
+                    .editing(binding::<bool>(false))
+                })
+            },
+            true,
+            assert_list_reaches_the_top,
+        );
+    }
+
+    /// The same structure with text for content: it stays below the
+    /// titlebar and the search row.
+    pub fn the_example_inbox_text_stays_clear_of_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || inbox_tabs(|| text(MARKER)),
+            true,
+            assert_text_stays_clear,
+        );
+    }
 }
 
 /// Re-exports the GPU-surface mounted-scene fixtures.
@@ -544,6 +1104,41 @@ pub mod view_renderer {
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod filtered {
     pub use crate::components::filtered::native_test::{MountedFilteredSurface, WakeProbe};
+}
+
+/// The web view leaf's harness reach.
+///
+/// Opens a real `WKWebView` through the same late install an application
+/// gets — `install_service` fills the environment's `WebViewController`
+/// slot exactly the way `embedding::mount` does — so a case can drive the
+/// engine without mounting a view tree.
+#[cfg(feature = "webview")]
+pub mod webview {
+    use cocoa_ui::MainThreadMarker;
+    use waterui_backend_core::Environment;
+
+    /// The `WebViewController` the leaf's `install_service` installs.
+    ///
+    /// This is the same construction `open` drives, so a case that opens
+    /// several views shares the one service install. `mtm` is the proof
+    /// the call happened on the real main thread, which `WKWebView`
+    /// requires.
+    #[must_use]
+    pub fn controller(_mtm: MainThreadMarker) -> waterui_webview::WebViewController {
+        let mut env = Environment::new();
+        crate::components::webview::install_service(&mut env);
+        env.get::<waterui_webview::WebViewController>()
+            .expect("the webview leaf installs its WebViewController")
+            .clone()
+    }
+
+    /// A fresh `WebView` backed by the backend's own `WKWebView`, never
+    /// mounted. `mtm` is the proof the call happened on the real main
+    /// thread, which `WKWebView` requires.
+    #[must_use]
+    pub fn open(mtm: MainThreadMarker) -> waterui_webview::WebView {
+        controller(mtm).open()
+    }
 }
 
 /// Counts `tracing` ERROR events one module emits — a settle contract
@@ -628,13 +1223,112 @@ pub fn render_environment() -> Environment {
         black(),
     );
     waterui::theme::install_color_signal::<waterui::theme::color::Accent>(&mut env, black());
+    // A selectable list's rows re-theme onto the selection role.
+    waterui::theme::install_color_signal::<waterui::theme::color::SelectionForeground>(
+        &mut env,
+        black(),
+    );
     waterui::theme::install_font_signal::<Body>(&mut env, binding(Body::DEFAULT).computed());
     waterui::theme::install_font_signal::<Caption>(&mut env, binding(Caption::DEFAULT).computed());
     waterui::theme::install_font_signal::<Subheadline>(
         &mut env,
         binding(Subheadline::DEFAULT).computed(),
     );
+    // Text resolves its colour against the label slots the Apple theme
+    // installs beside the colour slots.
+    #[cfg(target_os = "macos")]
+    env.insert(crate::theme::SystemLabelSlots::installed(&env));
     env
+}
+/// The view's current pixels through the production
+/// [`capture_rgba`](crate::capture_image::capture_rgba) path — the same
+/// capture every visual-review export drives.
+#[cfg(feature = "gpu_surface")]
+pub fn capture_view_rgba(view: &cocoa_ui::PlatformView) -> crate::capture_image::CapturedRgba {
+    let mut env = render_environment();
+    let runtime = block_on_main(30.0, waterui_graphics::gpu::GpuRuntime::new())
+        .expect("the harness provides a GPU runtime");
+    install_gpu(&mut env, runtime);
+    let mtm = MainThreadMarker::new().expect("captures run on the main thread");
+    block_on_main(30.0, crate::capture_image::capture_rgba(view, &env, mtm))
+        .expect("the window capture completes")
+}
+
+/// The view rasterized through the production
+/// [`template_image`](crate::capture_image::template_image) path, capped at
+/// `max_side` points.
+#[cfg(all(feature = "gpu_surface", target_os = "ios"))]
+pub fn capture_template_image(
+    view: &cocoa_ui::PlatformView,
+    max_side: f64,
+) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIImage> {
+    let mut env = render_environment();
+    let runtime = block_on_main(30.0, waterui_graphics::gpu::GpuRuntime::new())
+        .expect("the harness provides a GPU runtime");
+    install_gpu(&mut env, runtime);
+    block_on_main(
+        30.0,
+        crate::capture_image::template_image(view, &env, max_side),
+    )
+}
+
+/// Installs the GPU owners onto an existing environment.
+///
+/// Runtime, scene engine, filter-pipeline cache and the
+/// `PresentationTime` anchor — the set a `captures_content` transition
+/// and the filtered handler resolve. `gpu_runtime::prepare` installs
+/// the same beside the runtime in production; trials that render
+/// `FilteredView` through the dispatcher need it on the env they hand
+/// `dispatch::render`.
+#[cfg(feature = "gpu_surface")]
+pub fn install_gpu(
+    env: &mut waterui_backend_core::Environment,
+    runtime: waterui_graphics::gpu::GpuRuntime,
+) {
+    use std::rc::Rc;
+    env.insert(runtime);
+    env.insert(Rc::new(crate::gpu_runtime::SceneEngine::new()));
+    env.insert(Rc::new(crate::gpu_runtime::FilterPipelines::new()));
+    crate::presentation_time::PresentationTime::install(env);
+    crate::components::view_renderer::install_service(env);
+    // The dispatcher captures the environment at install time — re-run
+    // the install so its root env sees the GPU services just inserted
+    // (`handler.set`-driven remounts render through it).
+    crate::dispatch::install(env);
+}
+
+/// Rehosts the detached `view` the way `capture_rgba` does.
+///
+/// The view goes into the offscreen capture window and is laid out
+/// immediately; `inspect` then runs with the rect
+/// `LayoutContext::of(view).safe_rect()` answers, while the view is still
+/// rehosted. The view is restored afterwards.
+///
+/// `device_band` is added to the capture root's safe area before the
+/// layout pass. Whether `UIKit` propagates the scene's device bands into a
+/// capture window depends on the runtime, so the band is supplied
+/// explicitly and every runtime lays the view out under it.
+///
+/// # Panics
+///
+/// When no window scene can host the capture window, or `view` already
+/// has a window.
+#[cfg(target_os = "ios")]
+pub fn with_capture_rehost<R>(
+    mtm: MainThreadMarker,
+    view: &cocoa_ui::Retained<cocoa_ui::PlatformView>,
+    device_band: cocoa_ui::objc2_ui_kit::UIEdgeInsets,
+    inspect: impl FnOnce(cocoa_ui::Rect) -> R,
+) -> R {
+    let _host = crate::capture_image::WindowHost::attach_if_windowless(view, mtm)
+        .expect("the harness application owns a window scene")
+        .expect("a detached view has no window to begin with");
+    cocoa_ui::view::window(view)
+        .and_then(|window| window.rootViewController())
+        .expect("a capture window is mounted through its root controller")
+        .setAdditionalSafeAreaInsets(device_band);
+    cocoa_ui::view::layout_immediately(view);
+    inspect(crate::native_layout::LayoutContext::of(view).safe_rect())
 }
 
 /// Renders `view` against [`render_environment`] through the typed
@@ -662,15 +1356,18 @@ pub type ListSurface = cocoa_ui::uikit::TableView;
 
 /// The offset that puts `row`'s top edge at the viewport's top.
 ///
-/// Read before any clamp: `rectOfRow`'s origin on `AppKit`;
-/// `rectForRowAtIndexPath`'s origin in section 0 minus the adjusted top
-/// inset on `UIKit`, read as the table stands now, since `UIKit` sizes
-/// unseen rows by estimate.
+/// Read before any clamp: `rectOfRow`'s origin minus the top content inset
+/// on `AppKit`; `rectForRowAtIndexPath`'s origin in section 0 minus the
+/// adjusted top inset on `UIKit`, read as the table stands now, since
+/// `UIKit` sizes unseen rows by estimate.
 #[must_use]
 pub fn list_row_top(table: &ListSurface, row: usize) -> cocoa_ui::Point {
     #[cfg(target_os = "macos")]
     {
-        cocoa_ui::Point::new(0.0, table.rect_of_row(row).origin.y)
+        cocoa_ui::Point::new(
+            0.0,
+            table.rect_of_row(row).origin.y - table.contentInsets().top,
+        )
     }
     #[cfg(target_os = "ios")]
     {
@@ -754,20 +1451,60 @@ pub mod menus {
     /// One row of a built menu — what a case asserts without touching
     /// `NSMenuItem`.
     #[derive(Debug)]
+    #[non_exhaustive]
     pub struct MenuRow {
         /// The row's title.
-        pub title: String,
+        title: String,
         /// Its key equivalent — `""` for none.
-        pub key_equivalent: String,
+        key_equivalent: String,
         /// The modifiers its key equivalent takes.
-        pub modifiers: NSEventModifierFlags,
+        modifiers: NSEventModifierFlags,
         /// The name of the selector the row sends, when it sends one —
         /// `performClose:` on the standard Close item.
-        pub action: Option<String>,
+        action: Option<String>,
         /// Whether the row reports enabled after a validation pass.
-        pub enabled: bool,
+        enabled: bool,
         /// Whether the row is a separator.
-        pub separator: bool,
+        separator: bool,
+    }
+
+    impl MenuRow {
+        /// The row's title.
+        #[must_use]
+        pub const fn title(&self) -> &str {
+            self.title.as_str()
+        }
+
+        /// Its key equivalent — `""` for none.
+        #[must_use]
+        pub const fn key_equivalent(&self) -> &str {
+            self.key_equivalent.as_str()
+        }
+
+        /// The modifiers its key equivalent takes.
+        #[must_use]
+        pub const fn modifiers(&self) -> NSEventModifierFlags {
+            self.modifiers
+        }
+
+        /// The name of the selector the row sends, when it sends one —
+        /// `performClose:` on the standard Close item.
+        #[must_use]
+        pub fn action(&self) -> Option<&str> {
+            self.action.as_deref()
+        }
+
+        /// Whether the row reports enabled after a validation pass.
+        #[must_use]
+        pub const fn enabled(&self) -> bool {
+            self.enabled
+        }
+
+        /// Whether the row is a separator.
+        #[must_use]
+        pub const fn separator(&self) -> bool {
+            self.separator
+        }
     }
 
     /// The Window menu's rows in the standard bar `menus::install` builds.
@@ -809,5 +1546,176 @@ pub mod menus {
                 separator: item.isSeparatorItem(),
             })
             .collect()
+    }
+}
+
+/// The inspector tree `walk` produces over `root` — a trial's read of
+/// the published hierarchy without driving the inspect gesture.
+pub fn inspector_tree(
+    root: &cocoa_ui::PlatformView,
+) -> Vec<waterui::inspector::protocol::TreeNode> {
+    crate::inspector::recordable_tree(root)
+}
+
+/// Navigation chrome drawn in content sits at the top of its host.
+///
+/// A borderless window has no toolbar to take the chrome, so a page's
+/// header and a tab host's strip are drawn in content. `HostView` is
+/// flipped, so both must dock at the smallest y of the host, the top, with
+/// the content below them.
+#[cfg(target_os = "macos")]
+pub mod chrome_top {
+    use cocoa_ui::objc2_app_kit::{NSSegmentedControl, NSTextField, NSView};
+    use cocoa_ui::{MainThreadMarker, Retained};
+    use waterui::navigation::{NavigationView, Tab, Tabs, tab_style};
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui::window::{WindowState, WindowStyle};
+    use waterui_core::layout::{Point, Rect, Size};
+
+    use super::{MAIN_QUEUE_DEADLINE, pump_main_until, window_environment};
+
+    /// The text the fixtures show as their content.
+    const MARKER: &str = "chrome-top-marker";
+
+    /// The gap the tab host leaves between the page top and its strip.
+    const STRIP_INSET: f64 = 8.0;
+
+    /// The title the page's in-content header shows.
+    const TITLE: &str = "chrome-top-title";
+
+    /// Half a point: the distance at which an edge counts as reaching a
+    /// boundary at any backing scale.
+    const TOLERANCE: f64 = 0.5;
+
+    /// `rect`, a rect in `view`'s coordinates, in window coordinates —
+    /// where y grows upward whatever the view's own orientation.
+    fn in_window(view: &NSView, rect: cocoa_ui::objc2_foundation::NSRect) -> (f64, f64) {
+        let frame = view.convertRect_toView(rect, None);
+        (frame.origin.y, frame.origin.y + frame.size.height)
+    }
+
+    /// The first text field under `root` showing `string`.
+    fn label(root: &NSView, string: &str) -> Option<Retained<NSTextField>> {
+        for sub in root.subviews() {
+            if let Ok(field) = sub.clone().downcast::<NSTextField>()
+                && field.stringValue().to_string() == string
+            {
+                return Some(field);
+            }
+            if let Some(found) = label(&sub, string) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The first segmented control under `root`.
+    fn strip(root: &NSView) -> Option<Retained<NSSegmentedControl>> {
+        for sub in root.subviews() {
+            if let Ok(control) = sub.clone().downcast::<NSSegmentedControl>() {
+                return Some(control);
+            }
+            if let Some(found) = strip(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Realizes `content` as a borderless window through the production
+    /// root, lays it out and hands `check` the content view.
+    fn realized<V: waterui::View>(
+        mtm: MainThreadMarker,
+        content: impl Fn() -> V + 'static,
+        check: impl FnOnce(&NSView),
+    ) {
+        let (mut env, _theme) = window_environment(mtm);
+        env.insert(crate::first_paint::FirstPaint::default());
+        let declaration =
+            waterui::window::Window::new("Chrome Top", binding(WindowState::Normal), content)
+                .style(WindowStyle::Borderless);
+        declaration
+            .frame
+            .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
+        let host = crate::windows::realize(declaration, &env, mtm);
+        let native = host.window().native();
+        let root = native
+            .contentView()
+            .expect("the realized window has a content view");
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                root.layoutSubtreeIfNeeded();
+                label(&root, MARKER).is_some()
+            }),
+            "the window must realize the fixture"
+        );
+        root.layoutSubtreeIfNeeded();
+        check(&root);
+        native.close();
+        drop(host);
+    }
+
+    /// Window → standalone `NavigationView`: its in-content header sits at
+    /// the top of the page and the content below it.
+    pub fn a_standalone_page_header_sits_above_its_content(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationView::new(TITLE, text(MARKER)),
+            |root| {
+                let (_, window_top) = in_window(root, root.bounds());
+                let title = label(root, TITLE).expect("the in-content header shows the title");
+                let header =
+                    cocoa_ui::view::superview(&title).expect("the title sits in the header");
+                let (header_bottom, header_top) = in_window(&header, header.bounds());
+                let content = label(root, MARKER).expect("the page shows its content");
+                let (_, content_top) = in_window(&content, content.bounds());
+                assert!(
+                    (header_top - window_top).abs() <= TOLERANCE,
+                    "the header must dock at the page top {window_top}, but its top is \
+                     {header_top}"
+                );
+                assert!(
+                    content_top <= header_bottom + TOLERANCE,
+                    "the content must start below the header's bottom {header_bottom}, but \
+                     its top is {content_top}"
+                );
+            },
+        );
+    }
+
+    /// Window → `Tabs` with the segmented strip: the strip sits at the top
+    /// of the page and the selected pane below it.
+    pub fn a_tab_strip_sits_above_its_panes(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || {
+                Tabs::new(
+                    &binding(0usize),
+                    vec![
+                        Tab::container("First", || text(MARKER)),
+                        Tab::container("Second", || text("second")),
+                    ],
+                )
+                .style(tab_style::Automatic)
+            },
+            |root| {
+                let (_, window_top) = in_window(root, root.bounds());
+                let strip = strip(root).expect("the host draws the segmented strip");
+                let (strip_bottom, strip_top) = in_window(&strip, strip.bounds());
+                let content = label(root, MARKER).expect("the selected pane shows its content");
+                let (_, content_top) = in_window(&content, content.bounds());
+                assert!(
+                    (window_top - strip_top - STRIP_INSET).abs() <= TOLERANCE,
+                    "the strip must sit {STRIP_INSET}pt below the page top {window_top}, but \
+                     its top is {strip_top}"
+                );
+                assert!(
+                    content_top <= strip_bottom + TOLERANCE,
+                    "the pane must start below the strip's bottom {strip_bottom}, but its top \
+                     is {content_top}"
+                );
+            },
+        );
     }
 }

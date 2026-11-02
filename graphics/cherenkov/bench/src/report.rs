@@ -50,13 +50,34 @@ pub struct PresentInfo {
 pub struct FrameSample {
     /// Wall-clock seconds of the CPU encode phase.
     pub encode_seconds: f64,
-    /// Wall-clock seconds of submit + device wait. For CPU engines this is
-    /// the rasterization cost; for GPU engines it brackets queue submission
-    /// and device poll (host-side wall time, not GPU time).
+    /// Submission wall time excluding explicitly measured GPU waits. For CPU
+    /// engines this includes rasterization. This is not process CPU time.
     pub submit_seconds: f64,
+    /// Explicit GPU completion waits inside submission, excluded above.
+    pub gpu_wait_seconds: f64,
     /// GPU seconds from real GPU timestamps where the backend provides
     /// them; `null` otherwise. Never estimated.
     pub gpu_seconds: Option<f64>,
+    /// Encode-to-completion wall time, only when this run waits for each frame.
+    /// This is synchronous latency, not inferred pipelined throughput.
+    pub latency_seconds: Option<f64>,
+    /// When this frame's rendering completed, in host seconds since the
+    /// measured window opened, from the adapter's completion signal
+    /// ([`MeasureReport::completion_signal`] says which, and how
+    /// precisely); `null` where the adapter has none. The signal is armed
+    /// after every timed interval of the frame, so no stage time and no
+    /// `latency_seconds` includes it. Under `wait_for_completion` it is
+    /// armed only after the frame's latency wait returned: a signal that
+    /// fires on a later callback (wgpu, the Skia Metal marker) then
+    /// reports an instant after that wait, as does a Skia Vulkan sync file
+    /// the driver exports already signaled; a signal observed inside
+    /// submit (CPU engines, Vello classic) or a recorded fence time (Skia
+    /// Vulkan) keeps its own instant.
+    pub completed_seconds: Option<f64>,
+    /// Host seconds from the previous measured frame's completion to this
+    /// one's: the measured pipelined frame time. `null` for the first
+    /// measured frame and where the adapter has no completion signal.
+    pub completion_interval_seconds: Option<f64>,
     /// CPU the measuring thread ran on when the timed phases started
     /// (`sched_getcpu`); `null` where the kernel does not report it.
     pub cpu_start: Option<u32>,
@@ -72,6 +93,52 @@ pub struct FrameSample {
     /// order; omitted when the backend provides none.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub phases: Vec<PhaseSample>,
+    /// What this frame's composition kept on chip and why the rest was
+    /// materialized (`measure --composition`, issue #2547); omitted when
+    /// the run collected no attribution.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub composition: Option<crate::Composition>,
+    /// The Mali hardware counters this frame's GPU work added
+    /// (`measure --gpu-counters`, [`crate::gpu_counters`]); omitted when
+    /// the run read none.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub gpu_counters: Option<GpuCounterSample>,
+}
+
+/// One frame's Mali hardware counters: what accumulated between a sample
+/// taken with the GPU idle before the frame and one taken with the GPU
+/// idle after it. Cycles are counted at each block's own clock.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct GpuCounterSample {
+    /// External memory read beats, summed over L2 slices; not bytes.
+    pub external_read_beats: u64,
+    /// External memory write beats, summed over L2 slices; not bytes.
+    pub external_write_beats: u64,
+    /// Cycles the shader cores were executing work, summed over cores —
+    /// the frame's cost.
+    pub shader_core_active_cycles: u64,
+    /// Shader-core cycles running fragment work, summed over cores.
+    pub fragment_active_cycles: u64,
+    /// Shader-core cycles running compute and vertex work, summed over
+    /// cores.
+    pub non_fragment_active_cycles: u64,
+    /// Fragment warps the shader cores ran.
+    pub fragment_warps: u64,
+    /// Cycles the GPU front end was active.
+    pub gpu_active_cycles: u64,
+    /// Cycles the tiler was active.
+    pub tiler_active_cycles: u64,
+}
+
+/// The GPU a `measure --gpu-counters` run read its counters from.
+#[derive(Clone, Debug, Serialize)]
+pub struct GpuCountersInfo {
+    /// The GPU product whose counter layout was read.
+    pub gpu: &'static str,
+    /// Shader cores the counters are summed over.
+    pub shader_cores: u32,
+    /// L2 slices included in the external-memory counters.
+    pub l2_slices: u32,
 }
 
 /// CPU placement of a `measure` run.
@@ -157,8 +224,8 @@ pub struct RailEnergy {
     pub subsystem: Option<String>,
     /// Joules over the window.
     pub joules: f64,
-    /// Joules per measured frame.
-    pub joules_per_frame: f64,
+    /// Joules per measured frame; absent for a zero-submission stopped interval.
+    pub joules_per_frame: Option<f64>,
     /// Average watts over the window.
     pub watts: f64,
 }
@@ -183,8 +250,8 @@ pub struct EnergyReport {
     pub rails: BTreeMap<String, RailEnergy>,
     /// Sum of all rails, in joules.
     pub total_joules: f64,
-    /// `total_joules` per measured frame.
-    pub joules_per_frame: f64,
+    /// `total_joules` per measured frame; absent for a zero-submission stopped interval.
+    pub joules_per_frame: Option<f64>,
     /// `total_joules` per second (average power).
     pub watts: f64,
 }
@@ -225,6 +292,34 @@ pub struct NativeResolution {
     pub scale: f64,
 }
 
+/// Time the GPU spent powered at each clock over a measured window.
+#[derive(Clone, Debug, Serialize)]
+pub struct GpuClockReport {
+    /// One entry per clock the driver lists, in its order.
+    pub residency: Vec<ClockResidency>,
+}
+
+/// Time at one GPU clock.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct ClockResidency {
+    /// The clock in kHz.
+    pub khz: u64,
+    /// Powered milliseconds at this clock within the window.
+    pub milliseconds: u64,
+}
+
+/// A headless engine retained without submitting frames after a scroll sweep.
+/// This excludes application scheduling and system display-compositor work.
+#[derive(Debug, Serialize)]
+pub struct StoppedInterval {
+    /// Wall time after the final GPU completion.
+    pub seconds: f64,
+    /// Rendering submissions made during the interval.
+    pub submissions: u32,
+    /// Energy over this interval, without a per-frame normalization.
+    pub energy: Option<EnergyReport>,
+}
+
 /// `measure` output.
 #[derive(Debug, Serialize)]
 pub struct MeasureReport {
@@ -232,6 +327,19 @@ pub struct MeasureReport {
     pub engine: &'static str,
     /// The adapter's pinned provenance.
     pub info: EngineInfo,
+    /// Why GPU execution time is unavailable for this adapter, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_timing_unavailable: Option<&'static str>,
+    /// The backend signal each sample's `completed_seconds` comes from and
+    /// its precision; omitted where the adapter has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_signal: Option<&'static str>,
+    /// Why this adapter cannot report frame completion; completion fields
+    /// are then `null`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_unavailable: Option<&'static str>,
+    /// Whether every frame was explicitly completed before the next encode.
+    pub wait_for_completion: bool,
     /// Scene directory name.
     pub scene: String,
     /// Scene pixel size — the native surface size under `--native`.
@@ -241,6 +349,12 @@ pub struct MeasureReport {
     /// The `--native` retarget of this run; `null` when the run rendered
     /// at the scene's own size.
     pub native: Option<NativeResolution>,
+    /// Root-content scroll endpoint in logical scene coordinates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll_extent: Option<[f64; 2]>,
+    /// The no-submission interval following a scroll sweep.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<StoppedInterval>,
     /// One-time scene preparation in seconds — resource creation and
     /// scene conversion done once outside the timed loop (fonts,
     /// images, GPU uploads, immutable shaders). Not a per-frame cost.
@@ -261,6 +375,14 @@ pub struct MeasureReport {
     /// Conditions that contextualise the numbers — thermal status,
     /// screen state and brightness, alongside [`Placement`].
     pub conditions: Conditions,
+    /// The GPU's clock residency over the measured window
+    /// ([`crate::gpu_clock`]); `null` where the platform keeps no
+    /// residency table.
+    pub gpu_clock: Option<GpuClockReport>,
+    /// The GPU the per-frame hardware counters came from
+    /// (`--gpu-counters`); omitted when the run read none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_counters: Option<GpuCountersInfo>,
     /// What the adapter issued per frame.
     pub counters: Counters,
     /// Idle, steady-state and peak memory readings for this scene.
@@ -279,6 +401,10 @@ pub struct Percentiles {
     /// `gpu_seconds` percentiles `[p50, p90, p99]`; `null` when the backend
     /// provides no GPU timestamps.
     pub gpu_seconds: Option<[f64; 3]>,
+    /// `completion_interval_seconds` percentiles `[p50, p90, p99]`; `null`
+    /// when the adapter has no completion signal or fewer than two frames
+    /// were measured.
+    pub completion_interval_seconds: Option<[f64; 3]>,
     /// Per-pass GPU percentiles, grouped by pass index within the frame;
     /// omitted when the backend provides no per-pass timings.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -314,21 +440,20 @@ pub struct PhasePercentiles {
     pub seconds: [f64; 3],
 }
 
-/// One load-level probe of a `capacity` sweep: the p99 frame time the
-/// engine sustained at repetition factor `k`.
+/// One load-level probe of a `capacity` sweep: p99 synchronous completion
+/// latency at repetition factor `k`.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct CapacityProbe {
     /// The draw-list repetition factor probed.
     pub k: u32,
-    /// p99 frame seconds at `k`. A frame's seconds are
-    /// `encode_seconds + submit_seconds`, raised to the frame's
-    /// `gpu_seconds` where the backend reports them — the throughput
-    /// limit of a pipelined renderer is its slowest stage.
+    /// p99 synchronous encode-to-completion seconds at `k`.
+    /// Each probe waits for the frame to finish; this is not an estimate
+    /// of pipelined throughput from CPU/GPU stage times.
     pub p99_seconds: f64,
 }
 
 /// One engine's `capacity` result on one scene: the largest repetition
-/// factor whose p99 frame time stayed within the budget.
+/// factor whose p99 synchronous completion latency stayed within the budget.
 #[derive(Debug, Serialize)]
 pub struct CapacityResult {
     /// Adapter key.

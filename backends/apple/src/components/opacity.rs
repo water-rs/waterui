@@ -119,9 +119,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         );
         leaf.keep(sink_guard);
 
-        let value = metadata.value.value;
+        let value = metadata.value.value();
         apply_opacity(value.snapshot(), &host);
-        leaf.watch(&value, {
+        leaf.watch(value, {
             move |wctx| {
                 let next = *wctx.value();
                 crate::animation::with_platform_animation(wctx.metadata(), {

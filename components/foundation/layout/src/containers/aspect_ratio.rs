@@ -11,6 +11,10 @@ use crate::{
 
 /// How a view fills a ratio-constrained box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: content fits inside or fills the ratio box"
+)]
 pub enum ContentMode {
     /// Shrink to fit entirely inside the offer, leaving space on the long axis.
     #[default]

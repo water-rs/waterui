@@ -10,6 +10,7 @@ edition = "2024"
 [package.metadata.waterui]
 minimum-cli-version = "0.1.0"
 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
+web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
 android-min-api-level = 31
 # The Gradle release every project this framework assembles runs — the
 # scaffolded `gradle-wrapper.properties` renders it and the in-tree
@@ -22,8 +23,6 @@ apple-backend-path = "backends/apple"
 # The self-drawn Hydrolysis backend resolves the same way through
 # `hydrolysis-path` (#1635): an in-tree member, never a scaffold package.
 hydrolysis-path = "backends/hydrolysis"
-android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "cccccccccccccccccccccccccccccccccccccccc"
 # The Kotlin Android host lives in the same tree as the `hydrolysis` crate —
 # `subdirectory` names the Gradle composite root inside the framework
 # checkout the selected revision materializes.
@@ -31,7 +30,7 @@ hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
 scaffold-packages = ["hydrolysis-m3", "waterui-gtk", "waterui-winui"]
 
 [workspace]
-members = ["ffi", "backends/apple", "backends/hydrolysis"]
+members = ["backends/apple", "backends/hydrolysis"]
 
 [workspace.dependencies]
 hydrolysis = { version = "0.2.1", path = "backends/hydrolysis", default-features = false }

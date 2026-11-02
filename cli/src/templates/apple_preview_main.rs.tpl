@@ -2,6 +2,10 @@
 
 mod preview_target;
 
+// The Mac Catalyst build's `Info.plist`: `UIKit` draws the iOS look only
+// under the iPad idiom it declares. Expands to nothing on macOS.
+waterui_apple::preview_info_plist!();
+
 fn main() -> Result<(), waterui_apple::preview::PreviewError> {
     let resources = waterui::ResourceContext::new(
         concat!(env!("CARGO_MANIFEST_DIR"), "/resources/waterui_assets"),

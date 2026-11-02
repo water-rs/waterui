@@ -11,7 +11,7 @@ use walkdir::WalkDir;
 
 use crate::shell::Shell;
 use crate::{note, success, warn};
-use waterui_cli::toolchain::Host;
+use waterui_cli::toolchain::{Host, git};
 use waterui_cli::web::{self, PackageManager};
 
 /// The `create`/`init` package-manager prompt, asked once; `initial` is the
@@ -60,7 +60,7 @@ pub async fn create_vite(
 ) -> Result<()> {
     let spinner = shell.spinner("Scaffolding the Vite frontend...");
     let status = package_manager
-        .create_vite(host, dir, template)
+        .create_vite(host, dir, template)?
         .current_dir(parent)
         .status()
         .await?;
@@ -83,16 +83,16 @@ pub async fn create_vite(
 /// page — reported as a note, never an error.
 pub fn brand_overlay(shell: &Shell, web_dir: &Path, display_name: &str) -> Result<()> {
     let report = web::apply_brand_overlay(web_dir, display_name)?;
-    for warning in &report.warnings {
+    for warning in report.warnings() {
         warn!(shell, "{warning}");
     }
-    if report.branded {
+    if report.branded() {
         success!(shell, "Applied the WaterUI starter page");
-    } else if let Some(frontend) = report.frontend {
+    } else if let Some(frontend) = report.frontend() {
         note!(
             shell,
             "The starter page is the {} default — only the title and favicon were branded",
-            frontend.framework.display_name()
+            frontend.framework().display_name()
         );
     }
     Ok(())
@@ -107,7 +107,7 @@ pub async fn install_dependencies(
 ) -> Result<()> {
     let spinner = shell.spinner("Installing frontend dependencies...");
     let status = package_manager
-        .install(host)
+        .install(host)?
         .current_dir(dir)
         .status()
         .await?;
@@ -135,9 +135,8 @@ pub async fn move_entries_to_web(
     for entry in entries {
         let source = root.join(entry);
         let dest = root.join("web").join(entry);
-        if git_tracked(host, root, entry).await {
-            let status = host
-                .command("git")
+        if git_tracked(host, root, entry).await? {
+            let status = git::command(host)?
                 .args(["mv"])
                 .arg(entry)
                 .arg(Path::new("web").join(entry))
@@ -155,8 +154,11 @@ pub async fn move_entries_to_web(
 }
 
 /// Whether `entry` is tracked in the git work tree at `root`.
-async fn git_tracked(host: &Host, root: &Path, entry: &Path) -> bool {
-    host.command("git")
+///
+/// # Errors
+/// - [`std::io::ErrorKind::NotFound`] when `git` is not on the host's `PATH`.
+async fn git_tracked(host: &Host, root: &Path, entry: &Path) -> std::io::Result<bool> {
+    Ok(git::command(host)?
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(entry)
         .current_dir(root)
@@ -164,7 +166,7 @@ async fn git_tracked(host: &Host, root: &Path, entry: &Path) -> bool {
         .stderr(Stdio::null())
         .status()
         .await
-        .is_ok_and(|status| status.success())
+        .is_ok_and(|status| status.success()))
 }
 
 /// Copy a frontend project into `dest`, skipping `node_modules` and `.git`.

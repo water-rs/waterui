@@ -126,6 +126,7 @@ pub fn format_percent(locale: &Locale, n: f64) -> String {
 
 /// A currency [`format_currency`] knows how to render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Currency {
     /// US Dollar
     USD,

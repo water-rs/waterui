@@ -44,7 +44,13 @@ impl Buffer {
     fn new(device: &wgpu::Device, size: (u32, u32), generation: u64) -> Result<Self, RenderError> {
         // Headroom 1.0: display headroom belongs to the static-capture
         // path, not to a producer frame.
-        let raster = raster::Buffer::new(device, size, generation, 1.0)?;
+        let raster = raster::Buffer::new(
+            device,
+            size,
+            generation,
+            1.0,
+            crate::render::present::ColorRange::HighDynamicRange,
+        )?;
         let view = raster
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());

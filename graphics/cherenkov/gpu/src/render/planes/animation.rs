@@ -201,7 +201,11 @@ mod tests {
         tree.sample(start, Display::default().scale);
         let description = motion(&tree, root).expect("translation is expressible");
         let [x, y] = description.position.expect("position lanes");
-        assert_eq!([x.target, y.target], [40., -70.]);
+        // The lanes copy the target's translation coefficients unchanged.
+        assert_eq!(
+            [x.target, y.target].map(f64::to_bits),
+            [40_f64, -70.].map(f64::to_bits)
+        );
         assert_eq!(x.start, start);
         tree.apply(LayerOp::Transform(
             root,
@@ -260,7 +264,8 @@ mod tests {
             },
         ));
         tree.sample(Instant::now(), Display::default().scale);
-        assert_eq!(tree.layer(moving).opacity, 1.0);
+        // Sampled at its own start, the fade is `from + Δ·0`: exactly one.
+        assert_eq!(tree.layer(moving).opacity.to_bits(), 1_f32.to_bits());
         assert!(!safe_path(&tree, moving, [below, moving].into_iter()));
     }
 }

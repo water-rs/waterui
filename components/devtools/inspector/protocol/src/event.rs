@@ -10,6 +10,10 @@ use crate::channel::Channel;
 
 /// One event from the target application.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum InspectorEvent {
     /// A rendered (or deliberately skipped) frame.
     Frame(FrameSample),
@@ -89,6 +93,10 @@ impl FrameSample {
 
 /// How much of the render pipeline a frame ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum FrameKind {
     /// Nothing to show; no work was done.
     Idle,
@@ -260,6 +268,10 @@ pub struct LogRecord {
 
 /// Severity of a log record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum LogLevel {
     /// Verbose tracing.
     Trace,
@@ -299,6 +311,10 @@ pub struct SignalId(pub u64);
 /// and reference the node by id, so a busy graph does not re-send its own
 /// source locations thousands of times per second.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum SignalEvent {
     /// A state-owning node entered the graph.
     Created(SignalNodeInfo),

@@ -1,6 +1,6 @@
 //! Build-time metadata embedded into the `water` CLI binary.
 
-/// Exact Android Kotlin compiler version required by the embedded Android backend/runtime.
+/// Exact Kotlin compiler version the Android Gradle builds require.
 pub const ANDROID_KOTLIN_VERSION: &str = env!("WATERUI_CLI_ANDROID_KOTLIN_VERSION");
 
 /// JDK major version the Android scaffold's `compileOptions` pins

@@ -1,11 +1,11 @@
 //! The first responder for a view that takes its own input.
 //!
 //! An [`InputView`] sits on top of the view whose pixels host interactive
-//! content — a GPU surface — claims touch and keyboard input, and speaks
-//! `UITextInput` so an input method composes against the content's caret.
-//! The view draws nothing; every event is translated into the
-//! platform-neutral [`SurfaceEvent`] vocabulary and handed to the installed
-//! handler.
+//! content — a GPU surface — claims touch, keyboard and indirect-scroll
+//! input, and speaks `UITextInput` so an input method composes against the
+//! content's caret. The view draws nothing; every event is translated into
+//! the platform-neutral [`SurfaceEvent`] vocabulary and handed to the
+//! installed handler.
 //!
 //! # Safety
 //!
@@ -19,21 +19,23 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_foundation::{
-    NSArray, NSAttributedStringKey, NSComparisonResult, NSDictionary, NSRange, NSSet, NSString,
+    NSArray, NSAttributedStringKey, NSComparisonResult, NSDictionary, NSObject, NSRange, NSSet,
+    NSString,
 };
 use objc2_ui_kit::{
-    UIEvent, UIKeyInput, UIPress, UIPressesEvent, UITextInput, UITextInputDelegate,
+    UIEvent, UIGestureRecognizer, UIGestureRecognizerState, UIKeyInput, UIPanGestureRecognizer,
+    UIPress, UIPressesEvent, UIScrollTypeMask, UITextInput, UITextInputDelegate,
     UITextInputStringTokenizer, UITextInputTokenizer, UITextInputTraits, UITextLayoutDirection,
     UITextPosition, UITextRange, UITextSelectionRect, UITextStorageDirection, UITouch, UIView,
 };
 
 use crate::callback::guarded;
 use crate::geometry::Rect;
-use crate::input::{PointerButton, SurfaceEvent};
+use crate::input::{PointerButton, ScrollUnit, SurfaceEvent};
 use crate::keys;
 
 /// Delivers one surface event to the content.
@@ -51,6 +53,12 @@ pub struct InputViewIvars {
     marked_text: RefCell<String>,
     /// The selection the input method last reported, in UTF-16 units.
     marked_selection: std::cell::Cell<usize>,
+    /// The target the scroll recognizers talk to — the view owns it.
+    scroll_target: RefCell<Option<Retained<ScrollTarget>>>,
+    /// The indirect-scroll recognizers — continuous (trackpad) and
+    /// discrete (wheel) so each callback knows its gesture's source and
+    /// completion behavior. Both report logical points.
+    scroll_recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
 }
 
 impl fmt::Debug for InputViewIvars {
@@ -165,6 +173,71 @@ impl TextRange {
         (self.ivars().start.get(), self.ivars().end.get())
     }
 }
+
+/// The ivars of a [`ScrollTarget`].
+#[derive(Default)]
+struct ScrollTargetIvars {
+    /// The view the scroll recognizers forward to — weak, since the view
+    /// owns both the recognizers and the target.
+    view: RefCell<Option<Weak<InputView>>>,
+}
+
+impl fmt::Debug for ScrollTargetIvars {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScrollTargetIvars").finish_non_exhaustive()
+    }
+}
+
+define_class!(
+    // SAFETY: `NSObject` has no subclassing requirements; the class holds
+    // a weak view reference and does not implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[name = "CocoaUiInputScrollTarget"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ScrollTargetIvars]
+    #[derive(Debug)]
+    /// Receives the indirect-scroll recognizers' actions for an
+    /// [`InputView`]. `UIKit` delivers trackpad and wheel scrolling to a
+    /// view as `UIPanGestureRecognizer`s whose `allowedScrollTypesMask`
+    /// admits the scroll types — one recognizer per type, so each
+    /// callback knows its gesture's source and completion behavior. Both
+    /// report logical points, never a mask-selected unit.
+    struct ScrollTarget;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject` subclass.
+    unsafe impl NSObjectProtocol for ScrollTarget {}
+
+    impl ScrollTarget {
+        // SAFETY: `scrollContinuous:` is the `UIGestureRecognizer` action
+        // signature.
+        #[unsafe(method(scrollContinuous:))]
+        fn scroll_continuous(&self, gesture: &UIPanGestureRecognizer) {
+            guarded("CocoaUiInputScrollTarget scrollContinuous:", || {
+                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
+                    let finished = matches!(
+                        gesture.state(),
+                        UIGestureRecognizerState::Ended
+                            | UIGestureRecognizerState::Cancelled
+                            | UIGestureRecognizerState::Failed
+                    );
+                    view.handle_scroll(gesture, finished);
+                }
+            });
+        }
+
+        // SAFETY: `scrollDiscrete:` is the `UIGestureRecognizer` action
+        // signature.
+        #[unsafe(method(scrollDiscrete:))]
+        fn scroll_discrete(&self, gesture: &UIPanGestureRecognizer) {
+            guarded("CocoaUiInputScrollTarget scrollDiscrete:", || {
+                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
+                    // A wheel notch is a complete scroll on its own.
+                    view.handle_scroll(gesture, true);
+                }
+            });
+        }
+    }
+);
 
 define_class!(
     // SAFETY: `UIView` asks a subclass to initialize through its designated
@@ -740,7 +813,53 @@ impl InputView {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(InputViewIvars::default());
         // SAFETY: `initWithFrame:` is `UIView`'s designated initializer.
-        unsafe { msg_send![super(this), initWithFrame: objc2_core_foundation::CGRect::ZERO] }
+        let view: Retained<Self> =
+            unsafe { msg_send![super(this), initWithFrame: objc2_core_foundation::CGRect::ZERO] };
+
+        // Indirect scrolling reaches a view as pan gestures: a trackpad
+        // glide arrives through the `Continuous` scroll type, a wheel
+        // notch through `Discrete` — one recognizer each, so the action
+        // knows the gesture's source and completion behavior. The reported
+        // translation is always a logical-point displacement; the mask
+        // never selects a unit. `maximumNumberOfTouches = 0` keeps a
+        // finger drag out of the scroll channel: a touch pan is pointer
+        // input, not a scroll.
+        let target: Retained<ScrollTarget> = {
+            let this = ScrollTarget::alloc(mtm).set_ivars(ScrollTargetIvars::default());
+            // SAFETY: `init` is `NSObject`'s designated initializer.
+            unsafe { msg_send![super(this), init] }
+        };
+        target.ivars().view.replace(Some(Weak::new(&*view)));
+        // SAFETY: `initWithTarget:action:` retains the recognizer↔target
+        // pair; `setAllowedScrollTypesMask:` is `UIPanGestureRecognizer`'s
+        // declared scroll-type setter.
+        unsafe {
+            let continuous = UIPanGestureRecognizer::initWithTarget_action(
+                UIPanGestureRecognizer::alloc(mtm),
+                Some(&*target),
+                Some(sel!(scrollContinuous:)),
+            );
+            continuous.setAllowedScrollTypesMask(UIScrollTypeMask::Continuous);
+            continuous.setMaximumNumberOfTouches(0);
+            continuous.setCancelsTouchesInView(false);
+            view.addGestureRecognizer(&continuous);
+
+            let discrete = UIPanGestureRecognizer::initWithTarget_action(
+                UIPanGestureRecognizer::alloc(mtm),
+                Some(&*target),
+                Some(sel!(scrollDiscrete:)),
+            );
+            discrete.setAllowedScrollTypesMask(UIScrollTypeMask::Discrete);
+            discrete.setMaximumNumberOfTouches(0);
+            discrete.setCancelsTouchesInView(false);
+            view.addGestureRecognizer(&discrete);
+
+            view.ivars()
+                .scroll_recognizers
+                .replace(vec![continuous.into_super(), discrete.into_super()]);
+        }
+        view.ivars().scroll_target.replace(Some(target));
+        view
     }
 
     /// Installs `handler` as the receiver of every surface event.
@@ -811,6 +930,68 @@ impl InputView {
     fn clear_marked_text(&self) {
         self.ivars().marked_text.borrow_mut().clear();
         self.ivars().marked_selection.set(0);
+    }
+
+    /// Sends `gesture` through the indirect-scroll path the recognizer
+    /// `source` selects — `Continuous` dispatches the registered
+    /// `scrollContinuous:` selector on the owned scroll target,
+    /// `Discrete` `scrollDiscrete:` — so a native test drives the actual
+    /// action implementation with a seeded sender. It does not synthesize
+    /// hardware scroll input or inspect `UIKit`'s private target
+    /// registry; a headless process cannot make `UIKit` report scroll
+    /// input to a recognizer.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `source` is neither `Continuous` nor `Discrete`.
+    #[cfg(feature = "native-test")]
+    pub fn scroll_probe_for_test(
+        &self,
+        gesture: &UIPanGestureRecognizer,
+        source: UIScrollTypeMask,
+    ) {
+        let target = self.ivars().scroll_target.borrow();
+        let target = target
+            .as_ref()
+            .expect("InputView always owns a scroll target");
+        match source {
+            // SAFETY: the ivars own `target`; the action takes one
+            // `UIPanGestureRecognizer`.
+            UIScrollTypeMask::Continuous => unsafe {
+                let _: () = msg_send![&**target, scrollContinuous: gesture];
+            },
+            // SAFETY: the ivars own `target`; the action takes one
+            // `UIPanGestureRecognizer`.
+            UIScrollTypeMask::Discrete => unsafe {
+                let _: () = msg_send![&**target, scrollDiscrete: gesture];
+            },
+            _ => panic!("unsupported scroll source mask {source:?}"),
+        }
+    }
+
+    /// An indirect-scroll recognizer's report as a scroll event: the
+    /// translation since the last callback is the delta — `setTranslation`
+    /// zeroed it — negated into the W3C sign `SurfaceEvent` uses (a pan's
+    /// translation counts the pointer's own motion, positive right and
+    /// down, while `delta_x`/`delta_y` count content movement, positive
+    /// left and up). `translationInView:` is always a view-coordinate
+    /// displacement in logical points — `Pixel` — for both scroll type
+    /// masks; the masks select the gesture's source and completion
+    /// behavior, never a unit. `finished` says whether this callback ends
+    /// the scroll: a wheel notch is complete on its own; a trackpad glide
+    /// finishes when the gesture ends or is cancelled.
+    fn handle_scroll(&self, gesture: &UIPanGestureRecognizer, finished: bool) {
+        let this: &UIView = self;
+        let point = gesture.locationInView(Some(this));
+        let translation = gesture.translationInView(Some(this));
+        gesture.setTranslation_inView(objc2_core_foundation::CGPoint::ZERO, Some(this));
+        self.emit(SurfaceEvent::Scroll {
+            position: kurbo::Point::new(point.x, point.y),
+            delta_x: -translation.x,
+            delta_y: -translation.y,
+            unit: ScrollUnit::Pixel,
+            finished,
+        });
     }
 
     /// `UIKit`'s first touch as a pointer event: every touch is primary.

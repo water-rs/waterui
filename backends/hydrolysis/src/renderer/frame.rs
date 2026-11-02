@@ -6,11 +6,12 @@
 use super::*;
 use kurbo::Shape as _;
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Whether the persistent render tree has been built. The view tree's `body()`
     /// is dispatched recursively exactly once — on the first frame, when this is
     /// `false`. Afterwards every change (reactive value, structural patch, scroll,
@@ -23,11 +24,11 @@ impl SemanticCore {
     }
 
     #[must_use]
-    pub const fn state(&self) -> &HydroState {
+    pub const fn state(&self) -> &HydroState<E> {
         &self.state
     }
 
-    pub const fn state_mut(&mut self) -> &mut HydroState {
+    pub const fn state_mut(&mut self) -> &mut HydroState<E> {
         &mut self.state
     }
 
@@ -184,20 +185,34 @@ impl SemanticCore {
     /// would make an app with a focused field never count as settled.
     #[must_use]
     pub fn has_scheduled_semantic_work(&self) -> bool {
+        self.scheduled_semantic_work(PerpetualAnimation::Counts)
+    }
+
+    /// [`Self::has_scheduled_semantic_work`] without repeat-forever
+    /// animations: whether any scheduled work remains that will finish on
+    /// its own. A scene whose only activity is a perpetual animation has
+    /// none.
+    #[must_use]
+    pub fn has_finite_semantic_work(&self) -> bool {
+        self.scheduled_semantic_work(PerpetualAnimation::Ignored)
+    }
+
+    fn scheduled_semantic_work(&self, perpetual: PerpetualAnimation) -> bool {
         self.has_pending_semantic_update()
             || self.os_file_drop_pending()
-            || self.animations_active()
+            || self.animations_active_with(perpetual)
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()
     }
 
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn measurement_cache_stats(&self) -> (u32, u32) {
         self.state.measurement.stats()
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Records the window's logical bounds and the root transform that maps
     /// them onto the target's physical pixel grid.
     ///
@@ -218,29 +233,23 @@ impl HydrolysisRenderer {
         self.hit_test.window_bounds = bounds;
     }
 
-    /// The renderer state and the recording node's trailing run, split so
-    /// text shaping can read the one while drawing into the other.
-    pub(crate) fn state_and_run_mut(&mut self) -> (&mut HydroState, &mut Recording) {
-        let run = self
-            .program
-            .last_mut()
-            .expect("hydrolysis renderer: drawing with no recording node")
-            .run();
-        (&mut self.core.state, run)
-    }
-
-    /// The per-frame work counters of the last rendered pump.
-    /// `HydroState::counters` is private to `crate::renderer`, so callers
-    /// outside the renderer reach it through here.
-    #[must_use]
-    pub const fn frame_work_counters(&self) -> FrameWorkCounters {
-        self.core.state.counters
-    }
-
     /// Mutable access for the runner's host-side wakeup and submission
     /// sites (the ones that happen outside a renderer method).
     pub const fn frame_work_counters_mut(&mut self) -> &mut FrameWorkCounters {
         &mut self.core.state.counters
+    }
+
+    /// Reads this frame's work counters and opens the next frame's count.
+    /// The frame pump snapshots its own work when the frame's profile is
+    /// finalized; everything counted afterwards — the next frame's input
+    /// handling, scheduling drains and host wakes included — accumulates
+    /// toward the frame it produces, so an idle or operand-only frame
+    /// reports its own work rather than the last scene build's leftovers
+    /// (water-rs/waterui#2907).
+    pub fn take_frame_work_counters(&mut self) -> FrameWorkCounters {
+        let counters = self.core.state.counters;
+        self.core.state.counters.reset_frame();
+        counters
     }
 
     /// Drops the recorded scene and the hit-test state derived from it.
@@ -248,11 +257,16 @@ impl HydrolysisRenderer {
     /// The hit registries are retained: clearing them would lose what the
     /// kept nodes own — materialization rebuilds the flat lists, so only
     /// the gesture engine's per-frame target list drains here.
+    ///
+    /// The frame-work counters are deliberately untouched: they roll at
+    /// every presented frame's boundary
+    /// ([`Self::take_frame_work_counters`]), not per scene reset — a
+    /// refresh flush resets the scene mid-frame while the counters are
+    /// still collecting that frame's work.
     pub fn reset_scene(&mut self) {
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
         self.state.measurement.reset_counters();
-        self.state.counters.reset_frame();
         #[cfg(feature = "accessibility")]
         self.accessibility.reset_scene();
     }
@@ -356,7 +370,7 @@ impl HydrolysisRenderer {
     }
 
     /// The recording node's program builder.
-    pub(crate) fn program(&mut self) -> &mut mount::ProgramBuilder {
+    pub(crate) fn program(&mut self) -> &mut mount::ProgramBuilder<E> {
         self.program
             .last_mut()
             .expect("hydrolysis renderer: drawing with no recording node")
@@ -381,12 +395,59 @@ impl HydrolysisRenderer {
         program.cell().placement().resolved_transform(true) * local
     }
 
+    /// Records `body` layered (water-rs/waterui#1788): the recording splits
+    /// at each `Recorder::backdrop_material` the widget theme draws, the
+    /// segment below the first material lands in the node's run, and each
+    /// material becomes a `ChromeMaterial` member layer between the
+    /// segments that follow — so the material samples the content behind
+    /// it rather than drawing in place of it. The scope the record opens
+    /// under is the flush's material-scope stack's top: the node's
+    /// enclosing `.material_group()`, or `SOLO` outside every group.
     pub(crate) fn draw_context(
         &mut self,
         ctx: RenderContext,
         body: impl FnOnce(&mut waterui_graphics::draw::Recorder),
     ) {
-        self.scene_mut().record_picture(ctx.local, body);
+        let scope = self
+            .material_group_scopes
+            .last()
+            .map_or(cherenkov_record::MaterialScope::SOLO, |cell| {
+                cherenkov_record::MaterialScope::new(mount::backdrop::scope_id(cell))
+            });
+        let layered = cherenkov_record::Content::record_layered(
+            &cherenkov_record::LayoutSize::new(),
+            scope,
+            body,
+        );
+        // A member whose ancestry is fully transparent holds no membership:
+        // the group belongs to its visible members.
+        let visible = self.record_alpha() > 0.0;
+        let below = layered.below.into_picture();
+        if !below.display_list().is_empty() {
+            self.scene_mut().draw_picture(ctx.local(), below);
+        }
+        for run in layered.runs {
+            self.program()
+                .push_chrome(run.material, ctx.local(), visible);
+            let above = run.above.into_picture();
+            if !above.display_list().is_empty() {
+                self.scene_mut().draw_picture(ctx.local(), above);
+            }
+        }
+    }
+
+    /// Lists `source` at this point of the recording node's program as a
+    /// live item drawn in `ctx`'s record space (water-rs/waterui#1433). The
+    /// mount records the source into its own layer the first time a commit
+    /// lists it and keeps that recording while later records list the same
+    /// source, so what changes afterwards reaches the engine only through
+    /// the source's live operands.
+    pub(crate) fn push_live(
+        &mut self,
+        ctx: RenderContext,
+        source: &Rc<dyn crate::renderer::chrome::LiveSource>,
+    ) {
+        self.program().push_live(Rc::clone(source), ctx.local());
     }
 
     /// Records `core`'s node into its own program (§C): the parent's list
@@ -395,7 +456,7 @@ impl HydrolysisRenderer {
     /// node draws from its frame origin with `local = IDENTITY`.
     pub(crate) fn record_layer_node(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         bounds: kurbo::Rect,
         record: impl FnOnce(&mut Self, RenderContext),
     ) {
@@ -406,7 +467,7 @@ impl HydrolysisRenderer {
     /// program, for a caller that lists it elsewhere and sets its anchor.
     pub(crate) fn record_layer_node_in(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         bounds: kurbo::Rect,
         listed: bool,
         record: impl FnOnce(&mut Self, RenderContext),
@@ -429,10 +490,7 @@ impl HydrolysisRenderer {
                 .push(mount::ProgramBuilder::new(Rc::clone(&cell)));
             record(
                 renderer,
-                RenderContext {
-                    local: kurbo::Affine::IDENTITY,
-                    bounds,
-                },
+                RenderContext::new(kurbo::Affine::IDENTITY, bounds),
             );
             let program = renderer
                 .program
@@ -446,7 +504,7 @@ impl HydrolysisRenderer {
 
     /// Records a presentation host's program (§D): the host's reader and
     /// its own program, anchored on the window.
-    pub(crate) fn record_host(&mut self, host: &NodeCore, record: impl FnOnce(&mut Self)) {
+    pub(crate) fn record_host(&mut self, host: &NodeCore<E>, record: impl FnOnce(&mut Self)) {
         let anchor = host
             .cell
             .placement()
@@ -487,7 +545,7 @@ impl HydrolysisRenderer {
     /// scope membership never depends on where a flush starts (#2268).
     pub(crate) fn with_enclosing_material_group_scopes(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         record: impl FnOnce(&mut Self),
     ) {
         let base = self.material_group_scopes.len();
@@ -560,34 +618,20 @@ impl HydrolysisRenderer {
         self.pop_placement_scope();
     }
 
-    /// Runs `f` inside the named scope `key` — the lexical pairing of
-    /// [`Self::open_scope`] and [`Self::close_scope`].
-    pub(crate) fn with_scope(
-        &mut self,
-        key: mount::ScopeKey,
-        alpha: f32,
-        paint: kurbo::Affine,
-        clip: &ScopeClip,
-        scope: crate::renderer::ScopeDelta,
-        f: impl FnOnce(&mut Self),
-    ) {
-        self.open_scope(key, alpha, paint, clip, scope);
-        f(self);
-        self.close_scope();
-    }
-
-    pub(crate) fn set_host_redraw_handle(&mut self, handle: RedrawHandle) {
+    pub(crate) fn set_host_redraw_handle(&mut self, handle: HostRedraw) {
         self.host_redraw_handle = Some(handle);
     }
 
     /// The engine's scheduling answer from the last presented frame, drained
     /// once so one pump consumes it: `Next::At` asks the host for the frame
     /// an in-flight animation needs, `Next::Idle` parks the display link.
-    pub(crate) const fn take_engine_next(&mut self) -> Option<cherenkov::Next> {
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) const fn take_engine_next(&mut self) -> Option<Next> {
         self.engine_next.take()
     }
 
     /// The engine work the last commit did.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) const fn mount_stats(&self) -> mount::MountStats {
         self.last_mount_stats
     }

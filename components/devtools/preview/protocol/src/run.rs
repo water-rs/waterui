@@ -6,6 +6,7 @@
 //! the same PNG writer.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -13,19 +14,68 @@ use serde::{Deserialize, Serialize};
 /// [`PreviewRunConfig`] for the generated preview binary.
 pub const PREVIEW_RUN_CONFIG_ENV: &str = "WATERUI_PREVIEW_RUN_CONFIG";
 
+/// How long a capture waits for owed content when the caller names no bound.
+///
+/// Owed content is what a view still loads after mount — a decoding image,
+/// a `Suspense` still loading. The bound is long enough for a local decode
+/// or a fetch on a slow link, short enough that a load that never lands
+/// fails the run instead of hanging it.
+pub const DEFAULT_CONTENT_DEADLINE: Duration = Duration::from_secs(10);
+
 /// One offscreen preview invocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct PreviewRunConfig {
     /// Viewport width in logical units.
-    pub width: f32,
+    width: f32,
     /// Viewport height in logical units.
-    pub height: f32,
+    height: f32,
     /// What the run produces.
-    pub mode: PreviewRunMode,
+    mode: PreviewRunMode,
+    /// How long, in milliseconds, an image or scenario capture waits for
+    /// content its views owe after mount before the run fails naming them.
+    content_deadline_ms: u64,
+}
+
+impl PreviewRunConfig {
+    /// Viewport width in logical units.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+
+    /// Viewport height in logical units.
+    #[must_use]
+    pub const fn height(&self) -> f32 {
+        self.height
+    }
+
+    /// What the run produces.
+    #[must_use]
+    pub const fn mode(&self) -> &PreviewRunMode {
+        &self.mode
+    }
+
+    /// Takes what the run produces.
+    #[must_use]
+    pub fn into_mode(self) -> PreviewRunMode {
+        self.mode
+    }
+
+    /// How long, in milliseconds, an image or scenario capture waits for
+    /// content its views owe after mount before the run fails naming them.
+    #[must_use]
+    pub const fn content_deadline_ms(&self) -> u64 {
+        self.content_deadline_ms
+    }
 }
 
 /// What a preview run produces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every preview host and the CLI realize each run mode variant by variant; a new mode must fail their build instead of falling into a wildcard arm"
+)]
 pub enum PreviewRunMode {
     /// A single PNG capture after the view tree has mounted.
     Image {
@@ -48,27 +98,114 @@ pub enum PreviewRunMode {
 
 /// One input event in a preview scenario timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ScenarioEvent {
     /// Event timestamp in milliseconds from scenario start.
-    pub at_ms: u64,
+    at_ms: u64,
     /// Event kind.
-    pub kind: ScenarioEventKind,
+    kind: ScenarioEventKind,
     /// Pointer x coordinate in logical units.
-    pub x: f32,
+    x: f32,
     /// Pointer y coordinate in logical units.
-    pub y: f32,
+    y: f32,
     /// Pointer button for down/up events.
-    pub button: ScenarioPointerButton,
+    button: ScenarioPointerButton,
     /// Scroll delta along the x axis for scroll events.
-    pub dx: f32,
+    dx: f32,
     /// Scroll delta along the y axis for scroll events.
-    pub dy: f32,
+    dy: f32,
     /// Whether scroll delta values are line units instead of logical units.
-    pub is_line_delta: bool,
+    is_line_delta: bool,
+}
+
+impl ScenarioEvent {
+    /// Event timestamp in milliseconds from scenario start.
+    #[must_use]
+    pub const fn at_ms(&self) -> u64 {
+        self.at_ms
+    }
+
+    /// Event kind.
+    #[must_use]
+    pub const fn kind(&self) -> ScenarioEventKind {
+        self.kind
+    }
+
+    /// Pointer x coordinate in logical units.
+    #[must_use]
+    pub const fn x(&self) -> f32 {
+        self.x
+    }
+
+    /// Pointer y coordinate in logical units.
+    #[must_use]
+    pub const fn y(&self) -> f32 {
+        self.y
+    }
+
+    /// Pointer button for down/up events.
+    #[must_use]
+    pub const fn button(&self) -> ScenarioPointerButton {
+        self.button
+    }
+
+    /// Scroll delta along the x axis for scroll events.
+    #[must_use]
+    pub const fn dx(&self) -> f32 {
+        self.dx
+    }
+
+    /// Scroll delta along the y axis for scroll events.
+    #[must_use]
+    pub const fn dy(&self) -> f32 {
+        self.dy
+    }
+
+    /// Whether scroll delta values are line units instead of logical units.
+    #[must_use]
+    pub const fn is_line_delta(&self) -> bool {
+        self.is_line_delta
+    }
+}
+
+impl ScenarioEvent {
+    /// A `kind` event at `x`, `y` and `at_ms` from scenario start, with the
+    /// primary button and no scroll delta.
+    #[must_use]
+    pub const fn new(at_ms: u64, kind: ScenarioEventKind, x: f32, y: f32) -> Self {
+        Self {
+            at_ms,
+            kind,
+            x,
+            y,
+            button: ScenarioPointerButton::Primary,
+            dx: 0.0,
+            dy: 0.0,
+            is_line_delta: false,
+        }
+    }
+
+    /// Presses or releases `button`.
+    #[must_use]
+    pub const fn with_button(mut self, button: ScenarioPointerButton) -> Self {
+        self.button = button;
+        self
+    }
+
+    /// Scrolls by `dx`, `dy`, in lines when `is_line_delta` and in logical
+    /// units otherwise.
+    #[must_use]
+    pub const fn with_scroll_delta(mut self, dx: f32, dy: f32, is_line_delta: bool) -> Self {
+        self.dx = dx;
+        self.dy = dy;
+        self.is_line_delta = is_line_delta;
+        self
+    }
 }
 
 /// Event kind in a preview scenario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ScenarioEventKind {
     /// Move the pointer without pressing.
     PointerMove,
@@ -84,6 +221,7 @@ pub enum ScenarioEventKind {
 
 /// Pointer button identifier for scenario events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ScenarioPointerButton {
     /// The primary button.
     #[default]
@@ -95,6 +233,29 @@ pub enum ScenarioPointerButton {
 }
 
 impl PreviewRunConfig {
+    /// A configuration for a `width`×`height` viewport producing `mode`,
+    /// whose captures wait up to `content_deadline` for owed content.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `content_deadline` does not fit `u64` milliseconds.
+    #[must_use]
+    pub fn new(width: f32, height: f32, mode: PreviewRunMode, content_deadline: Duration) -> Self {
+        Self {
+            width,
+            height,
+            mode,
+            content_deadline_ms: u64::try_from(content_deadline.as_millis())
+                .expect("a preview content deadline fits u64 milliseconds"),
+        }
+    }
+
+    /// How long a capture waits for owed content.
+    #[must_use]
+    pub const fn content_deadline(&self) -> Duration {
+        Duration::from_millis(self.content_deadline_ms)
+    }
+
     /// Reads the JSON configuration file [`PREVIEW_RUN_CONFIG_ENV`] names.
     ///
     /// A relative `output`/`output_dir` resolves against the configuration
@@ -136,6 +297,7 @@ impl PreviewRunConfig {
 
 /// Why [`PreviewRunConfig::load_from_env`] failed.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RunConfigError {
     /// The environment variable naming the configuration file is unset.
     #[error("{PREVIEW_RUN_CONFIG_ENV} is not set")]
@@ -161,6 +323,7 @@ pub enum RunConfigError {
 /// Why a capture could not be encoded or written — [`encode_png`],
 /// [`write_png`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PngError {
     /// The capture has no pixels — a zero-sized render is an error, not an
     /// empty file.
@@ -213,6 +376,7 @@ pub enum PngError {
 /// reports its surface's `OutputAlpha` — `Straight` on the offscreen
 /// path today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Alpha {
     /// Colour channels carry colour premultiplied by alpha.
     Premultiplied,

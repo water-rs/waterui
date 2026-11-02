@@ -30,7 +30,7 @@ pub(crate) fn load_preview_view() -> waterui::AnyView {
 {% endif %}
 {% if let Some(style) = preview_theme_style %}
 /// The style the preview runtimes are constructed with — the value `main`
-/// hands to `hydrolysis::run(app, style)`.
+/// hands to `hydrolysis::run(app, env, style)`.
 pub(crate) fn preview_style() -> impl hydrolysis::Style {
     {{ style }}
 }

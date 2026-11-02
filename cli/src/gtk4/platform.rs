@@ -45,6 +45,7 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
         );
     }
 
+    let options = options.with_supported_linkage(&TargetPlatform::Linux.triple());
     let mut build = RustBuild::for_project(project, &backend_path, TargetPlatform::Linux.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_linkage(
@@ -89,8 +90,8 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
     // The target directories are shared with every other generated backend, so only
     // this backend's own package is cleaned — its dependency artifacts stay for
     // the other backends that resolve them identically.
-    for linkage in [RustLinkage::SharedRuntime, RustLinkage::Static] {
-        let backend_target_dir = project.water_target_dir(linkage).await?;
+    for linkage in RustLinkage::supported_on(&TargetPlatform::Linux.triple()) {
+        let backend_target_dir = project.water_target_dir(*linkage).await?;
         if !backend_target_dir.exists() {
             continue;
         }
@@ -132,7 +133,7 @@ pub async fn package_gtk4(
     copy_assets_and_fonts(
         project,
         &backend_path,
-        &built.app_symbols()?,
+        &built.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;
@@ -170,7 +171,7 @@ pub async fn package_gtk4(
     )
     .await?;
 
-    if options.uses_shared_rust_runtime() {
+    if options.uses_shared_rust_runtime(&TargetPlatform::Linux.triple()) {
         RustDynamicLibraries::resolve(built, &TargetPlatform::Linux.triple(), project)
             .await?
             .stage(&runtime_dir)
@@ -235,7 +236,12 @@ async fn copy_assets_and_fonts(
     assets::stage_hicolor_icons(project, &resources_dir.join("icons")).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations = assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &[waterui_assets_planner::FontPlatform::Linux],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

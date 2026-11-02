@@ -44,6 +44,13 @@ impl core::error::Error for CpuFilterError {}
 
 /// Applies a filter to a CPU image window.
 ///
+/// The image's pixels are premultiplied RGBA in `space`, the working
+/// space. A filter whose stage declares [`crate::OperatingSpace::Srgb`]
+/// converts them into sRGB before its kernel and back after it — with
+/// [`to_srgb`](crate::space::to_srgb)/[`from_srgb`](crate::space::from_srgb), exactly
+/// as a GPU executor brackets such a stage with conversion passes — so
+/// the kernel itself runs on its stage's operating space.
+///
 /// Spatial filters receive an apron around the output window. They must
 /// clamp samples to the window boundaries; rows at least the resolved
 /// [`Footprint`](crate::Footprint) from non-image-edge boundaries must match
@@ -54,7 +61,9 @@ pub trait CpuFilter: Filter {
     /// for spatial ones.
     fn cpu_footprint(params: &Self::Params) -> Footprint;
 
-    /// Apply the filter in place.
+    /// Apply the filter in place. `image` holds premultiplied RGBA in the
+    /// working space, and it stays in it across the call: a filter that
+    /// declares an sRGB stage converts around its kernel.
     ///
     /// # Errors
     /// Returns [`CpuFilterError::GpuImage`] when an auxiliary image has no
@@ -73,8 +82,13 @@ pub trait CpuFilter: Filter {
 /// A kernel must compute what the filter's stages compute: executors and the
 /// correctness oracle cross-check the two.
 pub trait CpuKernel: ColorFilter {
-    /// Applies the filter to `pixels` in place. Pixels are premultiplied
-    /// RGBA in the filter's operating space.
+    /// Applies the filter to `pixels` in place. `pixels` are premultiplied
+    /// RGBA in `space`, the working space; a filter whose stage declares
+    /// [`crate::OperatingSpace::Srgb`] converts them into sRGB before its
+    /// kernel and back after it — with [`to_srgb`](crate::space::to_srgb)/
+    /// [`from_srgb`](crate::space::from_srgb) — so the kernel itself runs on its
+    /// stage's operating space: the bracket the `#[derive(Filter)]`-generated
+    /// implementation emits.
     fn apply_cpu(params: &Self::Params, space: &WorkingSpace, pixels: &mut [[f32; 4]]);
 
     /// Applies the filter with its current parameters.

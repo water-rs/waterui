@@ -70,10 +70,8 @@ pub fn scaffold_template_digest() -> String {
     for dir in [
         &embedded::ROOT,
         &embedded::HYDROLYSIS,
-        &embedded::PREVIEW,
-        &embedded::PREVIEW_FFI,
         &embedded::INSPECTOR,
-        &embedded::FFI,
+        &embedded::APPLE_COMPANION,
         &embedded::TUI,
     ] {
         hash_dir(&mut hasher, dir);
@@ -90,12 +88,10 @@ pub mod embedded {
     use super::{Dir, include_dir};
 
     pub static APPLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple");
-    pub static ANDROID: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/android");
-    pub static ANDROID_EMBEDDED: Dir<'_> =
-        include_dir!("$CARGO_MANIFEST_DIR/src/templates/android_embedded");
     pub static ANDROID_SHARED: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/android_shared");
-    pub static FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/ffi");
+    pub static APPLE_COMPANION: Dir<'_> =
+        include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple_companion");
     pub static GTK4: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk4");
     pub static HYDROLYSIS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis");
     pub static HYDROLYSIS_ANDROID: Dir<'_> =
@@ -104,8 +100,8 @@ pub mod embedded {
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_preview");
     pub static HYDROLYSIS_ANDROID_SHARED: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_shared");
-    pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
-    pub static PREVIEW_FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview_ffi");
+    pub static HYDROLYSIS_ANDROID_EMBEDDED: Dir<'_> =
+        include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_embedded");
     pub static INSPECTOR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/inspector");
     pub static TUI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/tui");
     pub static WINUI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/winui");
@@ -216,7 +212,7 @@ pub struct HydrolysisAndroidPreviewTemplateEntry {
 pub enum BrowserTemplateContext {
     /// The shared native manifest's `cfg` sections — one per desktop OS.
     Desktop(DesktopBrowserContext),
-    /// The managed Apple crates — the FFI companion and the Apple preview
+    /// The managed Apple crates — the Apple companion and the Apple preview
     /// package. Their tables read only the macOS engine, so no other
     /// answer is representable.
     AppleManaged {
@@ -225,6 +221,33 @@ pub enum BrowserTemplateContext {
     },
     /// The GTK4 manifest — one Linux `[dependencies]` table.
     Linux(BrowserAnswers),
+}
+
+/// What the application's wasm32 graph uses of the platform primitives
+/// Hydrolysis bridges on the web, so the generated web build compiles
+/// exactly those bridges and no other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WebAnswers {
+    /// Whether the application enables `video`: the browser's `<video>`
+    /// element realizes it (the `video` Hydrolysis feature).
+    pub video: bool,
+    /// Whether the application enables the standard `WebView`: an `<iframe>`
+    /// realizes it (the `webview-system` Hydrolysis feature).
+    pub webview: bool,
+}
+
+impl WebAnswers {
+    /// The Hydrolysis features the generated wasm32 table enables.
+    fn hydrolysis_features(self) -> Vec<&'static str> {
+        let mut features = vec!["web"];
+        if self.video {
+            features.push("video");
+        }
+        if self.webview {
+            features.push("webview-system");
+        }
+        features
+    }
 }
 
 /// The `BrowserAnswers` for each desktop OS — the serving set the shared
@@ -237,6 +260,11 @@ pub struct DesktopBrowserContext {
     pub linux: BrowserAnswers,
     /// Windows's `cfg` section.
     pub windows: BrowserAnswers,
+    /// The Android `cfg` section — the shared native manifest's fourth
+    /// table. Android is not a `NativeOs` — its serving set is ABI
+    /// triples, not host OSes — so its answers stay a field instead of a
+    /// `for_os` arm.
+    pub android: BrowserAnswers,
 }
 
 impl DesktopBrowserContext {
@@ -280,17 +308,20 @@ impl Default for BrowserTemplateContext {
 
 impl BrowserTemplateContext {
     /// A context for the shared native manifest — every desktop OS's
-    /// section renders its own resolved answers.
+    /// section renders its own resolved answers, and the Android `cfg`
+    /// section renders `android`.
     #[must_use]
     pub(crate) const fn desktop(
         macos: BrowserAnswers,
         linux: BrowserAnswers,
         windows: BrowserAnswers,
+        android: BrowserAnswers,
     ) -> Self {
         Self::Desktop(DesktopBrowserContext {
             macos,
             linux,
             windows,
+            android,
         })
     }
 
@@ -331,6 +362,20 @@ impl BrowserTemplateContext {
                 io::ErrorKind::InvalidInput,
                 "the GTK4 manifest renders a Linux section, so its context \
                  must carry Linux's answers",
+            )),
+        }
+    }
+
+    /// Android's answers — the shared native manifest's
+    /// `cfg(target_os = "android")` table requires them; a context that
+    /// serves no Android section is an error.
+    fn android_answers(&self) -> io::Result<BrowserAnswers> {
+        match self {
+            Self::Desktop(context) => Ok(context.android),
+            Self::AppleManaged { .. } | Self::Linux(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the shared native manifest renders an Android section, so \
+                 its context must carry Android's answers",
             )),
         }
     }
@@ -457,7 +502,7 @@ pub struct TemplateContext {
     pub author: String,
     /// Whether the Apple pieces render — the `waterui-apple` pin and the
     /// entry-owning bin. This is a host fact, not a backend selection:
-    /// every FFI render on a macOS host carries them whatever backend the
+    /// every companion render on a macOS host carries them whatever backend the
     /// invocation selected, because macOS is the only host an Apple build
     /// can run from; a host that cannot produce an Apple build must not
     /// resolve the backend crate.
@@ -473,6 +518,8 @@ pub struct TemplateContext {
     pub framework: ResolvedFramework,
     /// Browser engine and component selections for generated backend manifests.
     pub browser: BrowserTemplateContext,
+    /// The platform primitives the generated web build bridges.
+    pub web: WebAnswers,
     /// Path to the backend project being scaffolded.
     ///
     /// This may be relative to the project root or an absolute cache path.
@@ -486,12 +533,6 @@ pub struct TemplateContext {
     pub ios_permissions: Vec<IosPermissionTemplateEntry>,
     /// Whether to build as an accessory (headless) app on macOS.
     pub accessory: bool,
-    /// Preview runtime fingerprint inserted into preview support app templates.
-    pub preview_runtime_fingerprint: Option<String>,
-    /// Exact `WaterUI` feature set linked into a preview support runtime.
-    pub preview_runtime_features: Vec<String>,
-    /// User crate whose dependency graph defines the preview runtime ABI.
-    pub preview_app_dependency: Option<(CrateName, PathBuf)>,
     /// The project's own packages — the set `generated_profiles` writes
     /// `[profile.dev.package.<name>]` overrides for, so the user's own crates
     /// build at `opt-level = 0` with line tables while every other dependency
@@ -521,6 +562,37 @@ pub struct TemplateContext {
     /// Hydrolysis Android preview host parameters — set only while the
     /// `hydrolysis_android_preview` templates render.
     pub hydrolysis_android_preview: Option<HydrolysisAndroidPreviewTemplateEntry>,
+
+    /// Hydrolysis Android embedded-library parameters — set only while the
+    /// `hydrolysis_android_embedded` templates render. Its `app` entry
+    /// carries the same painter/host values the app scaffold's entry does.
+    pub hydrolysis_android_embedded: Option<HydrolysisAndroidEmbeddedTemplateEntry>,
+
+    /// `package.embedded` in `Water.toml` — the host links the backend's
+    /// published artifact rather than the companion's sources, so the
+    /// Apple companion's Cargo manifest enables `swiftui` only then.
+    pub embedded: bool,
+}
+
+/// The `hydrolysis_android_embedded` scaffold's parameters: the app entry the
+/// shared accessors read plus the Maven version this build publishes the
+/// host modules under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HydrolysisAndroidEmbeddedTemplateEntry {
+    /// The shared host/painter parameters, rendered relative to the
+    /// generated `android-embedded/` Gradle root.
+    pub app: HydrolysisAndroidTemplateEntry,
+    /// The `dev.waterui.hydrolysis` version the host modules publish as for
+    /// this build.
+    pub host_version: String,
+    /// The host checkout's Gradle module names the embedded build
+    /// substitutes, fingerprints, and publishes — `host`, the painter
+    /// module, and any further host modules that join through
+    /// `embedded::publish_modules`.
+    pub host_modules: Vec<String>,
+    /// The `compileSdk` the host modules build against, which the library
+    /// module compiles against too and declares as its consumers' minimum.
+    pub compile_sdk: u32,
 }
 
 impl TemplateContext {
@@ -539,34 +611,34 @@ impl TemplateContext {
         framework: &ResolvedFramework,
         local_sources: &LocalBackendSources,
     ) -> Self {
-        let waterui_path = options.waterui_path.clone();
+        let waterui_path = options.waterui_path().map(std::path::Path::to_path_buf);
         Self {
-            app_display_name: options.name.clone(),
-            app_name: options.name.replace(' ', ""),
+            app_display_name: options.name().to_owned(),
+            app_name: options.name().replace(' ', ""),
             crate_name,
             crate_version: String::new(),
-            bundle_identifier: options.bundle_identifier.clone(),
-            author: options.author.clone(),
+            bundle_identifier: options.bundle_identifier().clone(),
+            author: options.author().to_owned(),
             apple_pieces: false,
             waterui_path,
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
+            web: WebAnswers::default(),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory: false,
-            preview_runtime_fingerprint: None,
-            preview_runtime_features: Vec::new(),
-            preview_app_dependency: None,
             project_packages: None,
-            web_frontend_arg: options.web.as_ref().map(|web| web.include_arg.clone()),
+            web_frontend_arg: options.web().map(|web| web.include_arg().to_owned()),
             android_signing: None,
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
+            hydrolysis_android_embedded: None,
+            embedded: false,
         }
     }
 
@@ -584,37 +656,36 @@ impl TemplateContext {
         local_sources: &LocalBackendSources,
     ) -> Self {
         Self {
-            app_display_name: manifest.package.name.clone(),
+            app_display_name: manifest.package().name().to_owned(),
             app_name: app_name.into(),
             crate_name,
             crate_version: String::new(),
-            bundle_identifier: manifest.package.bundle_identifier.clone(),
+            bundle_identifier: manifest.package().bundle_identifier().clone(),
             author: String::new(),
             // Selected at invocation, never from declared config.
             apple_pieces: false,
-            waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            waterui_path: manifest.waterui_path().map(PathBuf::from),
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
+            web: WebAnswers::default(),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
-            accessory: manifest.package.accessory,
-            preview_runtime_fingerprint: None,
-            preview_runtime_features: Vec::new(),
-            preview_app_dependency: None,
+            accessory: manifest.package().accessory(),
             project_packages: None,
-            web_frontend_arg: manifest.web.as_ref().map(|_| "web".to_string()),
+            web_frontend_arg: manifest.web().map(|_| "web".to_string()),
+            embedded: manifest.package().embedded(),
             android_signing: manifest
-                .signing
-                .android
-                .as_ref()
+                .signing()
+                .android()
                 .map(AndroidSigningTemplateEntry::from),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
+            hydrolysis_android_embedded: None,
         }
     }
 
@@ -626,7 +697,6 @@ impl TemplateContext {
         waterui_path: Option<PathBuf>,
         framework: &ResolvedFramework,
         accessory: bool,
-        preview_runtime_fingerprint: Option<String>,
         local_sources: &LocalBackendSources,
     ) -> Self {
         // A support app exists to host one specific WaterUI runtime, so it has
@@ -656,20 +726,20 @@ impl TemplateContext {
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
+            web: WebAnswers::default(),
             backend_project_path: None,
             project_root_path,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory,
-            preview_runtime_fingerprint,
-            preview_runtime_features: Vec::new(),
-            preview_app_dependency: None,
             project_packages: None,
             web_frontend_arg: None,
             android_signing: None,
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
+            hydrolysis_android_embedded: None,
+            embedded: false,
         }
     }
 
@@ -678,6 +748,16 @@ impl TemplateContext {
     #[must_use]
     pub fn with_crate_version(mut self, version: impl Into<String>) -> Self {
         self.crate_version = version.into();
+        self
+    }
+
+    /// Set the Hydrolysis Android embedded-library scaffold parameters.
+    #[must_use]
+    pub fn with_hydrolysis_android_embedded(
+        mut self,
+        entry: HydrolysisAndroidEmbeddedTemplateEntry,
+    ) -> Self {
+        self.hydrolysis_android_embedded = Some(entry);
         self
     }
 
@@ -695,7 +775,7 @@ impl TemplateContext {
         self
     }
 
-    /// Set whether the Apple pieces render — the ffi companion only emits
+    /// Set whether the Apple pieces render — the Apple companion only emits
     /// its `waterui-apple` dependency and entry-owning bin when this is
     /// set.
     #[must_use]
@@ -709,6 +789,13 @@ impl TemplateContext {
     #[must_use]
     pub(crate) const fn with_browser(mut self, browser: BrowserTemplateContext) -> Self {
         self.browser = browser;
+        self
+    }
+
+    /// Records the answers the generated web build's backend features follow.
+    #[must_use]
+    pub(crate) const fn with_web(mut self, web: WebAnswers) -> Self {
+        self.web = web;
         self
     }
 
@@ -727,6 +814,14 @@ impl TemplateContext {
         self.browser.declares_cef_helper()
     }
 
+    /// The backend feature the launcher's Android section selects —
+    /// `webview-system` when the application enables the standard
+    /// `WebView` and the Android serving set links no engine crate of
+    /// its own.
+    pub(crate) fn webview_backend_feature(&self) -> io::Result<Option<&'static str>> {
+        Ok(webview_backend_feature(self.browser.android_answers()?))
+    }
+
     /// The `cfg` predicate matching the OSes whose tables link the CEF
     /// engine. The subprocess helper's source compiles its dispatch only
     /// where an OS's table provides `waterui-browser-cef` — on every other
@@ -742,20 +837,6 @@ impl TemplateContext {
             .map(|(os, _)| os.cfg_predicate())
             .collect();
         format!("any({})", oses.join(", "))
-    }
-
-    /// Set the exact `WaterUI` feature set used by a preview support runtime.
-    #[must_use]
-    pub fn with_preview_runtime_features(mut self, features: Vec<String>) -> Self {
-        self.preview_runtime_features = features;
-        self
-    }
-
-    /// Set the user crate used to reproduce the preview module's dependency graph.
-    #[must_use]
-    pub fn with_preview_app_dependency(mut self, crate_name: CrateName, path: PathBuf) -> Self {
-        self.preview_app_dependency = Some((crate_name, path));
-        self
     }
 
     /// Set the project's own packages — the set `generated_profiles` writes
@@ -840,9 +921,24 @@ impl TemplateContext {
     }
 
     const fn hydrolysis_android_entry(&self) -> &HydrolysisAndroidTemplateEntry {
-        self.hydrolysis_android
+        if let Some(entry) = self.hydrolysis_android.as_ref() {
+            entry
+        } else {
+            &self
+                .hydrolysis_android_embedded
+                .as_ref()
+                .expect("TemplateContext missing the Hydrolysis Android entry")
+                .app
+        }
+    }
+
+    /// The embedded-library scaffold's parameters; only valid while the
+    /// `hydrolysis_android_embedded` templates render.
+    #[must_use]
+    pub const fn hydrolysis_android_embedded(&self) -> &HydrolysisAndroidEmbeddedTemplateEntry {
+        self.hydrolysis_android_embedded
             .as_ref()
-            .expect("TemplateContext missing the Hydrolysis Android entry")
+            .expect("TemplateContext missing the Hydrolysis Android embedded entry")
     }
 
     /// The cdylib name the generated `MainActivity` loads.
@@ -877,6 +973,12 @@ impl TemplateContext {
         &self.hydrolysis_android_entry().painter_module
     }
 
+    /// Whether the selected host uses the retained HWUI session painter.
+    #[must_use]
+    pub fn hydrolysis_android_is_hwui(&self) -> bool {
+        self.hydrolysis_android_entry().painter_module == "hwui"
+    }
+
     /// The generated app's `minSdk`.
     #[must_use]
     pub const fn hydrolysis_android_min_api_level(&self) -> u32 {
@@ -909,21 +1011,38 @@ impl TemplateContext {
             .expect("Hydrolysis Android entry has no painter band")
     }
 
+    /// Whether the app bridges the system `WebView` — the pinned host's
+    /// `webview/` module substitutes and joins the classpath.
+    ///
+    /// A context without the Hydrolysis Android entry scaffolds no Android
+    /// host and so bridges nothing.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the context carries the Android entry but was built
+    /// without Android's browser answers.
+    pub fn hydrolysis_android_has_system_webview(&self) -> io::Result<bool> {
+        if self.hydrolysis_android.is_none() {
+            return Ok(false);
+        }
+        Ok(self.webview_backend_feature()?.is_some())
+    }
+
     #[must_use]
     pub fn crate_name_ident(&self) -> RustIdent {
         self.crate_name.rust_ident()
     }
 
-    /// The generated ffi companion crate's Rust identifier — the crate the
+    /// The generated Apple companion crate's Rust identifier — the crate the
     /// Apple entry binary imports `waterui_apple_main` from.
     #[must_use]
-    pub fn ffi_crate_ident(&self) -> RustIdent {
+    pub fn apple_companion_ident(&self) -> RustIdent {
         crate::project_model::project_types::generated_crate_name(
             &self.crate_name,
-            "ffi",
+            "apple",
             self.project_root_path
                 .as_deref()
-                .expect("ffi crate ident is rendered for a project"),
+                .expect("apple companion ident is rendered for a project"),
         )
         .rust_ident()
     }
@@ -971,27 +1090,9 @@ impl TemplateContext {
         crate::build_info::ANDROID_JDK_VERSION
     }
 
-    /// The Kotlin runtime coordinate the generated Android project and the
-    /// embedded module's POM declare — the `JitPack` coordinate of the
-    /// revision `android-backend-revision` pins.
-    #[must_use]
-    pub fn android_runtime_dependency(&self) -> String {
-        jitpack_dependency_coordinate(
-            self.framework.scaffold_value("android-backend-url"),
-            self.framework.scaffold_value("android-backend-revision"),
-        )
-    }
-
     #[must_use]
     pub const fn macos_lsuielement(&self) -> &'static str {
         if self.accessory { "YES" } else { "NO" }
-    }
-
-    #[must_use]
-    pub fn preview_runtime_fingerprint(&self) -> &str {
-        self.preview_runtime_fingerprint
-            .as_deref()
-            .unwrap_or_default()
     }
 
     /// Transform a path by replacing "`AppName`" with the actual app name.
@@ -1157,7 +1258,7 @@ impl TemplateContext {
         })
     }
 
-    /// The `waterui-apple` dependency the generated FFI crate declares —
+    /// The `waterui-apple` dependency the generated companion crate declares —
     /// the `apple-backend-path` member of the selected framework.
     fn waterui_apple_dependency(&self) -> io::Result<GeneratedDependencyDetail> {
         self.member_dependency(APPLE_BACKEND)
@@ -1167,18 +1268,15 @@ impl TemplateContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TemplateNamespace {
     Apple,
-    Android,
-    AndroidEmbedded,
     AndroidShared,
-    Ffi,
+    AppleCompanion,
     Gtk4,
     Hydrolysis,
     HydrolysisAndroid,
     HydrolysisAndroidPreview,
     HydrolysisAndroidShared,
+    HydrolysisAndroidEmbedded,
     Inspector,
-    Preview,
-    PreviewFfi,
     Tui,
     WinUi,
     Root,
@@ -1188,18 +1286,15 @@ impl TemplateNamespace {
     const fn scaffold_template_prefix(self) -> &'static str {
         match self {
             Self::Apple => "src/templates/apple",
-            Self::Android => "src/templates/android",
-            Self::AndroidEmbedded => "src/templates/android_embedded",
             Self::AndroidShared => "src/templates/android_shared",
-            Self::Ffi => "src/templates/ffi",
+            Self::AppleCompanion => "src/templates/apple_companion",
             Self::Gtk4 => "src/templates/gtk4",
             Self::Hydrolysis => "src/templates/hydrolysis",
             Self::HydrolysisAndroid => "src/templates/hydrolysis_android",
             Self::HydrolysisAndroidPreview => "src/templates/hydrolysis_android_preview",
             Self::HydrolysisAndroidShared => "src/templates/hydrolysis_android_shared",
+            Self::HydrolysisAndroidEmbedded => "src/templates/hydrolysis_android_embedded",
             Self::Inspector => "src/templates/inspector",
-            Self::Preview => "src/templates/preview",
-            Self::PreviewFfi => "src/templates/preview_ffi",
             Self::Tui => "src/templates/tui",
             Self::WinUi => "src/templates/winui",
             Self::Root => "src/templates",
@@ -1219,9 +1314,17 @@ impl TemplateNamespace {
 #[derive(Debug, Clone, Default)]
 pub struct LocalBackendSources {
     members: BTreeMap<&'static str, PathBuf>,
+    workspace_members: Vec<crate::framework::CheckoutMember>,
 }
 
 impl LocalBackendSources {
+    /// The member packages of the checkout's workspace — the crates a
+    /// generated crate pins into the checkout beside the ones its `[patch]`
+    /// tables name. Empty without a checkout.
+    pub(crate) fn workspace_members(&self) -> &[crate::framework::CheckoutMember] {
+        &self.workspace_members
+    }
+
     /// The validated checkout `member`'s canonical slot supplies, when
     /// present.
     pub(crate) fn member(&self, member: FrameworkMember) -> Option<&Path> {
@@ -1235,8 +1338,8 @@ impl LocalBackendSources {
     }
 }
 
-/// The identity a CLI-owned support application (the preview host, the
-/// inspector) declares — everything else about it derives from the
+/// The identity a CLI-owned support application (the inspector) declares —
+/// everything else about it derives from the
 /// `WaterUI` runtime it exists to host.
 #[derive(Debug, Clone)]
 pub struct SupportAppIdentity {
@@ -1258,7 +1361,10 @@ pub struct SupportAppIdentity {
 /// Returns an error when a slot's entry exists but does not resolve to a
 /// directory containing the required manifest — a dangling symlink, a
 /// non-directory, an unreadable path, or a checkout missing `Cargo.toml`.
-pub async fn local_backend_sources(waterui_root: &Path) -> eyre::Result<LocalBackendSources> {
+pub async fn local_backend_sources(
+    waterui_root: &Path,
+    workspace_members: Vec<crate::framework::CheckoutMember>,
+) -> eyre::Result<LocalBackendSources> {
     let mut members = BTreeMap::new();
     for member in FRAMEWORK_MEMBERS {
         if let Some(path) =
@@ -1267,12 +1373,16 @@ pub async fn local_backend_sources(waterui_root: &Path) -> eyre::Result<LocalBac
             members.insert(member.subdirectory, path);
         }
     }
-    Ok(LocalBackendSources { members })
+    Ok(LocalBackendSources {
+        members,
+        workspace_members,
+    })
 }
 
 /// Resolve the canonical local backend sources a project's `waterui_path`
 /// names — `None` (and an empty [`LocalBackendSources`]) means remote
-/// sources. A relative `waterui_path` resolves against `project_root`.
+/// sources. A relative `waterui_path` resolves against `project_root`;
+/// `workspace_members` are that checkout's member packages.
 ///
 /// # Errors
 /// Returns an error when a present slot is malformed; see
@@ -1280,6 +1390,7 @@ pub async fn local_backend_sources(waterui_root: &Path) -> eyre::Result<LocalBac
 pub async fn project_local_backend_sources(
     waterui_path: Option<&Path>,
     project_root: &Path,
+    workspace_members: Vec<crate::framework::CheckoutMember>,
 ) -> eyre::Result<LocalBackendSources> {
     let Some(waterui_path) = waterui_path else {
         return Ok(LocalBackendSources::default());
@@ -1289,7 +1400,7 @@ pub async fn project_local_backend_sources(
     } else {
         project_root.join(waterui_path)
     };
-    local_backend_sources(&root).await
+    local_backend_sources(&root, workspace_members).await
 }
 
 /// One canonical `backends/<name>` slot under a checkout root: `Ok(None)`
@@ -1348,35 +1459,6 @@ fn scaffold_template_dispatch_path(namespace: TemplateNamespace, relative_path: 
     format!("{}/{relative_path}", namespace.scaffold_template_prefix())
 }
 
-fn github_repository_owner_and_name(repository_url: &str) -> (&str, &str) {
-    let path = repository_url
-        .strip_prefix("https://github.com/")
-        .or_else(|| repository_url.strip_prefix("git@github.com:"))
-        .unwrap_or_else(|| panic!("unsupported GitHub repository URL: {repository_url}"));
-    let path = path.strip_suffix(".git").unwrap_or(path);
-    let mut segments = path.split('/');
-    let owner = segments
-        .next()
-        .filter(|segment| !segment.is_empty())
-        .unwrap_or_else(|| panic!("missing GitHub owner in repository URL: {repository_url}"));
-    let repo = segments
-        .next()
-        .filter(|segment| !segment.is_empty())
-        .unwrap_or_else(|| {
-            panic!("missing GitHub repository name in repository URL: {repository_url}")
-        });
-    assert!(
-        segments.next().is_none(),
-        "unsupported GitHub repository URL path: {repository_url}"
-    );
-    (owner, repo)
-}
-
-fn jitpack_dependency_coordinate(repository_url: &str, revision: &str) -> String {
-    let (owner, repo) = github_repository_owner_and_name(repository_url);
-    format!("com.github.{owner}:{repo}:{revision}")
-}
-
 macro_rules! define_scaffold_templates {
     ($($name:ident => ($namespace:ident, $path:literal)),* $(,)?) => {
         $(
@@ -1414,20 +1496,11 @@ macro_rules! define_scaffold_templates {
 
 define_scaffold_templates! {
     AssetsReadmeTemplate => (Root, "src/templates/assets_readme.md.tpl"),
-    AndroidGradleAppTemplate => (Android, "src/templates/android/app/build.gradle.kts.tpl"),
-    AndroidManifestTemplate => (Android, "src/templates/android/app/src/main/AndroidManifest.xml.tpl"),
-    AndroidMainActivityTemplate => (Android, "src/templates/android/app/src/main/java/MainActivity.kt.tpl"),
-    AndroidApplicationTemplate => (Android, "src/templates/android/app/src/main/java/WaterUiApplication.kt.tpl"),
-    AndroidStringsTemplate => (Android, "src/templates/android/app/src/main/res/values/strings.xml.tpl"),
-    AndroidSettingsTemplate => (Android, "src/templates/android/settings.gradle.kts.tpl"),
     AndroidSharedGradleWrapperTemplate => (AndroidShared, "src/templates/android_shared/gradle/wrapper/gradle-wrapper.properties.tpl"),
-    AndroidEmbeddedSettingsTemplate => (AndroidEmbedded, "src/templates/android_embedded/settings.gradle.kts.tpl"),
-    AndroidEmbeddedModuleTemplate => (AndroidEmbedded, "src/templates/android_embedded/waterui/build.gradle.kts.tpl"),
-    AndroidEmbeddedManifestTemplate => (AndroidEmbedded, "src/templates/android_embedded/waterui/src/main/AndroidManifest.xml.tpl"),
-    FfiBuildScriptTemplate => (Ffi, "src/templates/ffi/build.rs.tpl"),
-    FfiLibTemplate => (Ffi, "src/templates/ffi/src/lib.rs.tpl"),
-    FfiAppleMainTemplate => (Ffi, "src/templates/ffi/src/bin/waterui-apple-main.rs.tpl"),
-    FfiCefHelperTemplate => (Ffi, "src/templates/ffi/src/bin/waterui-cef-helper.rs.tpl"),
+    AppleCompanionBuildScriptTemplate => (AppleCompanion, "src/templates/apple_companion/build.rs.tpl"),
+    AppleCompanionLibTemplate => (AppleCompanion, "src/templates/apple_companion/src/lib.rs.tpl"),
+    AppleCompanionMainTemplate => (AppleCompanion, "src/templates/apple_companion/src/bin/waterui-apple-main.rs.tpl"),
+    AppleCompanionCefHelperTemplate => (AppleCompanion, "src/templates/apple_companion/src/bin/waterui-cef-helper.rs.tpl"),
     Gtk4BuildScriptTemplate => (Gtk4, "src/templates/gtk4/build.rs.tpl"),
     Gtk4MainTemplate => (Gtk4, "src/templates/gtk4/src/main.rs.tpl"),
     HydrolysisBuildScriptTemplate => (Hydrolysis, "src/templates/hydrolysis/build.rs.tpl"),
@@ -1438,6 +1511,10 @@ define_scaffold_templates! {
     HydrolysisAndroidMainActivityTemplate => (HydrolysisAndroid, "src/templates/hydrolysis_android/app/src/main/java/MainActivity.kt.tpl"),
     HydrolysisAndroidPreviewSettingsTemplate => (HydrolysisAndroidPreview, "src/templates/hydrolysis_android_preview/settings.gradle.kts.tpl"),
     HydrolysisAndroidPreviewBuildGradleTemplate => (HydrolysisAndroidPreview, "src/templates/hydrolysis_android_preview/app/build.gradle.kts.tpl"),
+    HydrolysisAndroidEmbeddedSettingsTemplate => (HydrolysisAndroidEmbedded, "src/templates/hydrolysis_android_embedded/settings.gradle.kts.tpl"),
+    HydrolysisAndroidEmbeddedModuleTemplate => (HydrolysisAndroidEmbedded, "src/templates/hydrolysis_android_embedded/waterui/build.gradle.kts.tpl"),
+    HydrolysisAndroidEmbeddedManifestTemplate => (HydrolysisAndroidEmbedded, "src/templates/hydrolysis_android_embedded/waterui/src/main/AndroidManifest.xml.tpl"),
+    HydrolysisAndroidEmbeddedWaterUiTemplate => (HydrolysisAndroidEmbedded, "src/templates/hydrolysis_android_embedded/waterui/src/main/java/WaterUi.kt.tpl"),
     RootWebLibTemplate => (Root, "src/templates/web_lib.rs.tpl"),
     HydrolysisLibTemplate => (Hydrolysis, "src/templates/hydrolysis/src/lib.rs.tpl"),
     HydrolysisCefHelperTemplate => (Hydrolysis, "src/templates/hydrolysis/src/bin/waterui-cef-helper.rs.tpl"),
@@ -1445,8 +1522,6 @@ define_scaffold_templates! {
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
     HydrolysisPreviewTestRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_test_runtime.rs.tpl"),
     HydrolysisMcpRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/mcp_runtime.rs.tpl"),
-    PreviewLibTemplate => (Preview, "src/templates/preview/src/lib.rs.tpl"),
-    PreviewFfiLibTemplate => (PreviewFfi, "src/templates/preview_ffi/src/lib.rs.tpl"),
     TuiBuildScriptTemplate => (Tui, "src/templates/tui/build.rs.tpl"),
     TuiMainTemplate => (Tui, "src/templates/tui/src/main.rs.tpl"),
     WinUiBuildScriptTemplate => (WinUi, "src/templates/winui/build.rs.tpl"),
@@ -1456,11 +1531,11 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserTemplateContext, HydrolysisAndroidPreviewTemplateEntry, LaunchTemplateEntry,
-        LocalBackendSources, ResolvedFramework, ResolvedWebViewBackend, SupportAppIdentity,
-        TemplateContext, TemplateNamespace, embedded, generated_profiles, gtk4,
-        jitpack_dependency_coordinate, local_backend_sources, normalize_path_for_config,
-        preview_ffi, render_scaffold_template,
+        BrowserTemplateContext, HydrolysisAndroidEmbeddedTemplateEntry,
+        HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry, LaunchTemplateEntry,
+        ResolvedFramework, ResolvedWebViewBackend, TemplateContext, TemplateNamespace, embedded,
+        generated_profiles, gtk4, local_backend_sources, normalize_path_for_config,
+        render_scaffold_template,
     };
     use crate::framework::{
         framework_repository,
@@ -1477,11 +1552,17 @@ mod tests {
         backend_project_path: Option<PathBuf>,
         project_root_path: Option<PathBuf>,
     ) -> TemplateContext {
+        let project_root = project_root_path
+            .as_deref()
+            .unwrap_or_else(|| Path::new(""));
+        let workspace_members = waterui_path.as_deref().map_or_else(Vec::new, |path| {
+            crate::framework::checkout_member_packages(&project_root.join(path))
+                .expect("fixture checkout members read")
+        });
         let local_sources = smol::block_on(crate::templates::project_local_backend_sources(
             waterui_path.as_deref(),
-            project_root_path
-                .as_deref()
-                .unwrap_or_else(|| Path::new("")),
+            project_root,
+            workspace_members,
         ))
         .expect("fixture checkout resolves canonical backend sources");
         // Fixture contexts answer "no webview, no engine" for every desktop
@@ -1501,19 +1582,19 @@ mod tests {
             local_sources,
             framework: stable_framework(),
             browser,
+            web: super::WebAnswers::default(),
             backend_project_path,
             project_root_path,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory: false,
-            preview_runtime_fingerprint: None,
-            preview_runtime_features: Vec::new(),
-            preview_app_dependency: None,
             project_packages: Some(BTreeSet::from(["waterui_test".to_string()])),
             web_frontend_arg: None,
             android_signing: None,
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
+            hydrolysis_android_embedded: None,
+            embedded: false,
             launch: LaunchTemplateEntry::default(),
         }
     }
@@ -1536,15 +1617,16 @@ mod tests {
             webview_enabled,
             engine,
         };
-        ctx.with_browser(BrowserTemplateContext::desktop(answers, answers, answers))
+        ctx.with_browser(BrowserTemplateContext::desktop(
+            answers, answers, answers, answers,
+        ))
     }
 
     /// A fake local framework checkout the generated crate's feature forwards
-    /// read their destinations from: `ffi/Cargo.toml` declaring
-    /// `ffi_features`, and a Rust Apple backend at `backends/apple` — the
-    /// `Package.swift` marker makes `waterui_path` consume it as the local
-    /// backend — declaring the backend forward destinations `map`, `media`
-    /// and `webview`.
+    /// read their destinations from: a Rust Apple backend at `backends/apple`
+    /// declaring `apple_features` — the `Package.swift` marker makes
+    /// `waterui_path` consume it as the local backend — and the `waterui`
+    /// facade at the root.
     /// A minimal crate manifest: package header plus a `[features]` table.
     fn fixture_manifest(name: &str, version: &str, features: &[&str]) -> String {
         use std::fmt::Write as _;
@@ -1571,7 +1653,7 @@ mod tests {
         std::fs::write(dir.join("src/lib.rs"), "").expect("fixture lib");
     }
 
-    fn write_fake_framework_checkout(root: &Path, ffi_features: &[&str]) {
+    fn write_fake_framework_checkout(root: &Path, apple_features: &[&str]) {
         fn manifest(name: &str, features: &[&str]) -> String {
             fixture_manifest(name, "0.0.0", features)
         }
@@ -1586,254 +1668,29 @@ mod tests {
         std::fs::write(
             root.join("Cargo.toml"),
             format!(
-                "{}\n[workspace]\nmembers = [\"ffi\", \"backends/apple\", \"backends/cef\"]\n\n[workspace.dependencies]\nwaterui-browser-cef = {{ path = \"backends/cef\" }}\n",
+                "{}\n[workspace]\nmembers = [\"backends/apple\", \"backends/cef\"]\n\n[workspace.dependencies]\nwaterui-browser-cef = {{ path = \"backends/cef\" }}\n",
                 manifest("waterui", &["gpu", "video"])
             ),
         )
         .expect("write waterui manifest");
-        std::fs::create_dir_all(root.join("ffi")).expect("ffi manifest dir");
-        std::fs::write(
-            root.join("ffi/Cargo.toml"),
-            manifest("waterui-ffi", ffi_features),
-        )
-        .expect("write waterui-ffi manifest");
+        std::fs::create_dir_all(root.join("src")).expect("waterui src");
+        std::fs::write(root.join("src/lib.rs"), "// fixture\n").expect("waterui lib");
         let apple = root.join("backends/apple");
         std::fs::create_dir_all(&apple).expect("apple backend dir");
         std::fs::write(apple.join("Package.swift"), "// swift-tools-version:6.0\n")
             .expect("Package.swift marker");
         std::fs::write(
             apple.join("Cargo.toml"),
-            manifest("waterui-apple", &["map", "media", "webview"]),
+            manifest("waterui-apple", apple_features),
         )
         .expect("write waterui-apple manifest");
+        std::fs::create_dir_all(apple.join("src")).expect("waterui-apple src");
+        std::fs::write(apple.join("src/lib.rs"), "// fixture\n").expect("waterui-apple lib");
         write_fixture_crate(
             &root.join("backends/cef"),
             "waterui-browser-cef",
             &["chromium", "webview"],
         );
-    }
-
-    /// A local checkout always builds Android against the runtime
-    /// `android-backend-revision` pins — the Kotlin runtime is the only
-    /// Android runtime source.
-    #[test]
-    fn android_checkout_builds_against_the_pinned_runtime() {
-        let workspace = tempdir().expect("tempdir");
-        let waterui = workspace.path().join("waterui");
-        let project = workspace.path().join("app");
-        std::fs::create_dir_all(&waterui).expect("checkout");
-        std::fs::create_dir_all(project.join("android")).expect("project");
-        let context = || {
-            ctx(
-                Some(waterui.clone()),
-                Some(project.join("android")),
-                Some(project.clone()),
-            )
-        };
-
-        let pinned = |ctx: &TemplateContext| {
-            assert!(
-                ctx.android_runtime_dependency().contains(&"c".repeat(40)),
-                "the coordinate names the declared android-backend-revision"
-            );
-        };
-        pinned(&context());
-    }
-
-    /// The generated `settings.gradle.kts` resolves the runtime through
-    /// `JitPack` unconditionally — the pinned remote coordinate is the only
-    /// source, local checkout or not.
-    #[test]
-    fn android_settings_resolves_the_pinned_runtime() {
-        let waterui_root = tempdir().expect("waterui root");
-        let mut document = toml::Table::new();
-        document.insert(
-            "waterui_path".into(),
-            waterui_root.path().display().to_string().into(),
-        );
-        let mut package = toml::Table::new();
-        package.insert("name".into(), "Demo".into());
-        package.insert("bundle_identifier".into(), "dev.waterui.demo".into());
-        document.insert("package".into(), package.into());
-        let document = toml::to_string(&document).expect("manifest serializes");
-        let manifest: crate::project::Manifest =
-            toml::from_str(&document).expect("manifest parses");
-
-        let context = |manifest: &crate::project::Manifest| {
-            let local_sources = smol::block_on(crate::templates::project_local_backend_sources(
-                manifest.waterui_path.as_deref().map(Path::new),
-                waterui_root.path(),
-            ))
-            .expect("fixture checkout resolves canonical backend sources");
-            TemplateContext::for_project_manifest(
-                &crate::toolchain::Host::current(),
-                manifest,
-                CrateName::try_from("demo").expect("crate name"),
-                "Demo",
-                &stable_framework(),
-                &local_sources,
-            )
-            .with_backend_project_path(PathBuf::from("/proj/android"))
-            .with_project_root_path(PathBuf::from("/proj"))
-        };
-
-        let template = embedded::ANDROID
-            .get_file("settings.gradle.kts.tpl")
-            .expect("settings.gradle.kts template must exist")
-            .contents_utf8()
-            .expect("settings.gradle.kts template must be utf-8");
-        let render = |ctx: &TemplateContext| {
-            render_scaffold_template(
-                TemplateNamespace::Android,
-                std::path::Path::new("settings.gradle.kts.tpl"),
-                template,
-                ctx,
-            )
-            .expect("settings.gradle.kts render")
-        };
-
-        for manifest in [
-            &manifest,
-            &toml::from_str::<crate::project::Manifest>(
-                r#"
-                    [package]
-                    name = "Demo"
-                    bundle_identifier = "dev.waterui.demo"
-                "#,
-            )
-            .expect("remote manifest parses"),
-        ] {
-            let rendered = render(&context(manifest));
-            assert!(rendered.contains("https://jitpack.io"), "{rendered}");
-            assert!(!rendered.contains("includeBuild"), "{rendered}");
-            crate::assets::assert_settings_plugin_markers(&rendered);
-        }
-    }
-
-    /// Embedded mode scaffolds a Gradle *library* project (`:waterui`, an
-    /// Android library publishing an AAR), never an application — the host
-    /// keeps its own application module (water-rs/cli#223).
-    #[test]
-    fn android_embedded_renders_a_publishing_library() {
-        let manifest: crate::project::Manifest = toml::from_str(
-            r#"
-                [package]
-                name = "Demo"
-                bundle_identifier = "dev.waterui.demo"
-                embedded = true
-
-                [permissions.internet]
-                enable = true
-                description = "Fetch remote content"
-
-                [permissions.camera]
-                enable = true
-                description = "Scan codes"
-            "#,
-        )
-        .expect("manifest parses");
-
-        // Permissions reach the context the way the Android backend passes
-        // them, through `manifest_permissions`, so the template sees the
-        // fully qualified names a real build hands it.
-        let ctx = TemplateContext::for_project_manifest(
-            &crate::toolchain::Host::current(),
-            &manifest,
-            CrateName::try_from("demo").expect("crate name"),
-            "Demo",
-            &stable_framework(),
-            &LocalBackendSources::default(),
-        )
-        .with_backend_project_path(PathBuf::from("/proj/android"))
-        .with_project_root_path(PathBuf::from("/proj"))
-        .with_android_permissions(crate::android::backend::manifest_permissions(&manifest))
-        .with_crate_version("1.2.3");
-
-        let render = |relative: &str, ctx: &TemplateContext| {
-            let template = embedded::ANDROID_EMBEDDED
-                .get_file(relative)
-                .unwrap_or_else(|| panic!("embedded template {relative} must exist"))
-                .contents_utf8()
-                .expect("embedded template must be utf-8");
-            render_scaffold_template(
-                TemplateNamespace::AndroidEmbedded,
-                std::path::Path::new(relative),
-                template,
-                ctx,
-            )
-            .unwrap_or_else(|error| panic!("embedded template {relative} render: {error}"))
-        };
-
-        // A library module applying `com.android.library` and publishing a
-        // `release` AAR under the crate's Maven coordinate — group is the
-        // bundle identifier, artifact is the crate name, version is the
-        // crate's Cargo version.
-        let module = render("waterui/build.gradle.kts.tpl", &ctx);
-        assert!(module.contains("id(\"com.android.library\")"), "{module}");
-        assert!(
-            module.contains("namespace = \"dev.waterui.demo.waterui\""),
-            "{module}"
-        );
-        assert!(
-            module.contains("groupId = \"dev.waterui.demo\""),
-            "{module}"
-        );
-        assert!(module.contains("artifactId = \"demo\""), "{module}");
-        assert!(module.contains("version = \"1.2.3\""), "{module}");
-        assert!(module.contains("from(components[\"release\"])"), "{module}");
-        // `api`, not `implementation`: the runtime's `WaterUiRootView` must
-        // stay on the host app's compile classpath.
-        assert!(
-            module.contains(&format!("api(\"{}\")", ctx.android_runtime_dependency())),
-            "{module}"
-        );
-
-        // JitPack stays on the repository list for the pinned runtime
-        // coordinate.
-        let settings = render("settings.gradle.kts.tpl", &ctx);
-        assert!(settings.contains("include(\":waterui\")"), "{settings}");
-        assert!(settings.contains("https://jitpack.io"), "{settings}");
-        assert!(!settings.contains("includeBuild"), "{settings}");
-
-        // Declared permissions render into the library's manifest so the AAR
-        // merges them into the host's.
-        let android_manifest = render("waterui/src/main/AndroidManifest.xml.tpl", &ctx);
-        let declared: Vec<&str> = android_manifest
-            .lines()
-            .map(str::trim)
-            .filter(|line| line.starts_with("<uses-permission"))
-            .collect();
-        assert_eq!(
-            declared,
-            [
-                "<uses-permission android:name=\"android.permission.INTERNET\" />",
-                "<uses-permission android:name=\"android.permission.CAMERA\" />",
-            ],
-            "{android_manifest}"
-        );
-        // The library manifest carries the managed components block too: the
-        // host's manifest merger folds its `<application>` children into the
-        // host's own.
-        crate::assets::assert_component_markers_inside_application(&android_manifest);
-    }
-
-    fn support_ctx() -> TemplateContext {
-        TemplateContext::for_support_app(
-            &crate::toolchain::Host::current(),
-            SupportAppIdentity {
-                display_name: "WaterUIApp".to_string(),
-                crate_name: CrateName::try_from("waterui_app")
-                    .expect("test crate name must be valid"),
-                bundle_identifier: BundleIdentifier::try_from("dev.waterui.support")
-                    .expect("test bundle identifier must be valid"),
-            },
-            Some(PathBuf::from("../..")),
-            &stable_framework(),
-            false,
-            None,
-            &LocalBackendSources::default(),
-        )
-        .with_backend_project_path(PathBuf::from("managed_backends/apple"))
     }
 
     /// The `=<version>` requirement the fixture framework pins `key` at.
@@ -1930,7 +1787,10 @@ mod tests {
         // script — `catalog!` then embeds the application's translations.
         for (namespace, embedded_dir) in [
             (TemplateNamespace::Hydrolysis, &embedded::HYDROLYSIS),
-            (TemplateNamespace::Ffi, &embedded::FFI),
+            (
+                TemplateNamespace::AppleCompanion,
+                &embedded::APPLE_COMPANION,
+            ),
             (TemplateNamespace::Gtk4, &embedded::GTK4),
             (TemplateNamespace::Tui, &embedded::TUI),
         ] {
@@ -1967,6 +1827,78 @@ mod tests {
     }
 
     #[test]
+    fn hydrolysis_android_hwui_session_factory_reaches_both_hosts() {
+        use crate::hydrolysis::android::HydrolysisAndroidPainter;
+
+        for painter in [
+            HydrolysisAndroidPainter::Gpu,
+            HydrolysisAndroidPainter::Hwui,
+        ] {
+            let app = HydrolysisAndroidTemplateEntry {
+                native_library_name: "waterui_test_hydrolysis".to_owned(),
+                host_project_dir: "../android-host/rev/android".to_owned(),
+                project_root: "..".to_owned(),
+                painter_dependency: painter.gradle_dependency(),
+                painter_module: painter.host_module().to_owned(),
+                min_api_level: 31,
+                painter_band_import: painter.band_import(),
+                painter_band_class: painter.band_class(),
+            };
+            let standalone = project_ctx().with_hydrolysis_android(app.clone());
+            let embedded_context = project_ctx().with_hydrolysis_android_embedded(
+                HydrolysisAndroidEmbeddedTemplateEntry {
+                    app,
+                    host_version: "test".to_owned(),
+                    host_modules: vec!["host".to_owned(), painter.host_module().to_owned()],
+                    compile_sdk: 37,
+                },
+            );
+            let activity = render_embedded(
+                TemplateNamespace::HydrolysisAndroid,
+                &embedded::HYDROLYSIS_ANDROID,
+                "app/src/main/java/MainActivity.kt.tpl",
+                &standalone,
+            );
+            let waterui = render_embedded(
+                TemplateNamespace::HydrolysisAndroidEmbedded,
+                &embedded::HYDROLYSIS_ANDROID_EMBEDDED,
+                "waterui/src/main/java/WaterUi.kt.tpl",
+                &embedded_context,
+            );
+            let is_hwui = painter == HydrolysisAndroidPainter::Hwui;
+            for (label, rendered) in [("MainActivity", &activity), ("WaterUi", &waterui)] {
+                assert_eq!(
+                    is_hwui,
+                    rendered.contains("import dev.waterui.hydrolysis.hwui.HwuiPainter"),
+                    "{painter} {label} HwuiPainter import: {rendered}"
+                );
+            }
+            // `SessionPainter` names the standalone override's return type;
+            // the embedded path passes `{ HwuiPainter() }` without it.
+            assert_eq!(
+                is_hwui,
+                activity.contains("SessionPainter"),
+                "{painter} standalone SessionPainter surface: {activity}"
+            );
+            assert_eq!(
+                is_hwui,
+                activity.contains("override fun createPainter(): SessionPainter = HwuiPainter()"),
+                "{painter} standalone factory: {activity}"
+            );
+            assert_eq!(
+                is_hwui,
+                waterui.contains("createPainter = { HwuiPainter() },"),
+                "{painter} embedded factory: {waterui}"
+            );
+            assert_eq!(
+                painter == HydrolysisAndroidPainter::Gpu,
+                activity.contains("import dev.waterui.hydrolysis.gpu.HydrolysisGpuBand"),
+                "{painter} standalone band import: {activity}"
+            );
+        }
+    }
+
+    #[test]
     fn local_checkout_patches_are_rebased_onto_the_waterui_path() {
         let tempdir = tempdir().expect("temporary checkout dir");
         let checkout = tempdir.path().join("waterui");
@@ -1979,9 +1911,14 @@ mod tests {
         let project_root = tempdir.path().join("app");
         std::fs::create_dir_all(&project_root).expect("project dir");
 
-        let patches =
-            super::local_framework_patches(&project_root, std::path::Path::new("../waterui"))
-                .expect("patches from the checkout");
+        let members = crate::framework::checkout_member_packages(&project_root.join("../waterui"))
+            .expect("checkout members");
+        let patches = super::local_framework_patches(
+            &project_root,
+            std::path::Path::new("../waterui"),
+            &members,
+        )
+        .expect("patches from the checkout");
         let crates_io = &patches["crates-io"];
         let cargo_toml::Dependency::Detailed(core) = &crates_io["waterui-core"] else {
             panic!("a path patch stays a detailed dependency");
@@ -1992,7 +1929,7 @@ mod tests {
         };
         assert_eq!(
             vello.git.as_deref(),
-            Some("https://github.com/lexoliu/vello")
+            Some("https://github.com/testerliu/vello")
         );
         assert!(vello.path.is_none());
 
@@ -2154,19 +2091,19 @@ mod tests {
     fn malformed_local_backend_sources_fail_at_resolution() {
         let root = tempdir().expect("waterui root");
 
-        let sources = smol::block_on(local_backend_sources(root.path()))
+        let sources = smol::block_on(local_backend_sources(root.path(), Vec::new()))
             .expect("absent slots resolve to the remote source");
         assert!(sources.apple().is_none());
 
         let apple = root.path().join("backends/apple");
         std::fs::create_dir_all(&apple).expect("empty apple slot");
-        let error = smol::block_on(local_backend_sources(root.path()))
+        let error = smol::block_on(local_backend_sources(root.path(), Vec::new()))
             .expect_err("a slot without its manifest is malformed");
         assert!(error.to_string().contains("backends/apple"), "{error}");
 
         std::fs::remove_dir(&apple).expect("remove empty slot");
         std::fs::write(&apple, "not a directory\n").expect("file at slot path");
-        let error = smol::block_on(local_backend_sources(root.path()))
+        let error = smol::block_on(local_backend_sources(root.path(), Vec::new()))
             .expect_err("a non-directory slot is malformed");
         assert!(error.to_string().contains("backends/apple"), "{error}");
 
@@ -2174,7 +2111,7 @@ mod tests {
         {
             std::fs::remove_file(&apple).expect("remove file slot");
             std::os::unix::fs::symlink(root.path().join("gone"), &apple).expect("dangling link");
-            let error = smol::block_on(local_backend_sources(root.path()))
+            let error = smol::block_on(local_backend_sources(root.path(), Vec::new()))
                 .expect_err("a dangling symlink is malformed");
             assert!(error.to_string().contains("backends/apple"), "{error}");
         }
@@ -2207,16 +2144,18 @@ mod tests {
     #[test]
     fn absolute_backend_project_path_uses_real_project_root() {
         let project_root = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\lexo\demo")
+            PathBuf::from(r"C:\Users\tester\demo")
         } else {
-            PathBuf::from("/Users/lexo/demo")
+            PathBuf::from("/Users/tester/demo")
         };
         let backend_project_path = if cfg!(windows) {
             PathBuf::from(
-                r"C:\Users\lexo\.water\build_cache\drive-C\Users\lexo\demo\managed_backends\apple",
+                r"C:\Users\tester\.water\build_cache\drive-C\Users\tester\demo\managed_backends\apple",
             )
         } else {
-            PathBuf::from("/Users/lexo/.water/build_cache/Users/lexo/demo/managed_backends/apple")
+            PathBuf::from(
+                "/Users/tester/.water/build_cache/Users/tester/demo/managed_backends/apple",
+            )
         };
 
         let waterui_root = tempdir().expect("waterui root");
@@ -2244,31 +2183,6 @@ mod tests {
             ctx.project_root_relative_path(),
             normalize_path_for_config(&expected_project_root)
         );
-    }
-
-    #[test]
-    fn android_manifest_enables_picture_in_picture_by_default() {
-        let ctx = project_ctx();
-        let template = embedded::ANDROID
-            .get_file("app/src/main/AndroidManifest.xml.tpl")
-            .expect("android manifest template must exist")
-            .contents_utf8()
-            .expect("android manifest template must be utf-8");
-
-        let rendered = render_scaffold_template(
-            TemplateNamespace::Android,
-            std::path::Path::new("app/src/main/AndroidManifest.xml.tpl"),
-            template,
-            &ctx,
-        )
-        .expect("android manifest render");
-
-        assert!(rendered.contains("android:resizeableActivity=\"true\""));
-        assert!(rendered.contains("android:supportsPictureInPicture=\"true\""));
-        assert!(rendered.contains(
-            "android:configChanges=\"screenSize|smallestScreenSize|screenLayout|orientation\""
-        ));
-        crate::assets::assert_component_markers_inside_application(&rendered);
     }
 
     /// The Apple backend is a framework workspace member: every channel pins
@@ -2323,10 +2237,10 @@ mod tests {
     /// A local checkout declares `apple-backend-path` but has no crate there:
     /// the staged source is missing, and no remote source substitutes for it.
     #[test]
-    fn declared_local_apple_backend_missing_its_crate_is_an_error() {
+    fn declared_local_apple_backend_missing_its_crate_is_an_error() -> std::io::Result<()> {
         let directory = tempdir().unwrap();
         let root = directory.path().join("waterui");
-        write_local_checkout(&root);
+        write_local_checkout(&root)?;
         let mut context = ctx(
             Some(root.clone()),
             Some(PathBuf::from("managed_backends/apple")),
@@ -2344,6 +2258,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(error.contains("backends/apple"), "{error}");
+        Ok(())
     }
 
     /// The scaffolded `gradle-wrapper.properties` renders the framework's
@@ -2383,38 +2298,6 @@ mod tests {
     }
 
     #[test]
-    fn android_build_gradle_uses_embedded_remote_backend_revision() {
-        let mut ctx = project_ctx();
-        // A sentinel floor proves the scaffold renders the resolved
-        // framework's `android-min-api-level`, not a CLI-owned constant.
-        let mut persisted: toml::Value =
-            toml::from_str(&toml::to_string(&ctx.framework).unwrap()).unwrap();
-        persisted["metadata"]["android-min-api-level"] = toml::Value::Integer(30);
-        ctx.framework = persisted.try_into().unwrap();
-
-        let template = embedded::ANDROID
-            .get_file("app/build.gradle.kts.tpl")
-            .expect("android build.gradle template must exist")
-            .contents_utf8()
-            .expect("android build.gradle template must be utf-8");
-
-        let rendered = render_scaffold_template(
-            TemplateNamespace::Android,
-            std::path::Path::new("app/build.gradle.kts.tpl"),
-            template,
-            &ctx,
-        )
-        .expect("android build.gradle render");
-
-        assert!(rendered.contains("minSdk = 30"));
-        crate::assets::assert_module_plugin_markers(&rendered);
-        assert!(rendered.contains(&jitpack_dependency_coordinate(
-            ctx.framework.scaffold_value("android-backend-url"),
-            ctx.framework.scaffold_value("android-backend-revision"),
-        )));
-    }
-
-    #[test]
     fn kotlin_string_literal_escapes_quotes_backslashes_and_dollars() {
         // A `$` is a Kotlin string-template opening — `${...}` evaluates
         // arbitrary build-script code — so it must be escaped like `"` and `\`.
@@ -2426,49 +2309,6 @@ mod tests {
         );
         assert_eq!(entry.keystore, "keys/\\$store.jks");
         assert_eq!(entry.key_alias, "up\\${evil}");
-    }
-
-    #[test]
-    fn android_build_gradle_renders_release_signing_config() {
-        let template = embedded::ANDROID
-            .get_file("app/build.gradle.kts.tpl")
-            .expect("android build.gradle template must exist")
-            .contents_utf8()
-            .expect("android build.gradle template must be utf-8");
-
-        let render = |ctx: &TemplateContext| {
-            render_scaffold_template(
-                TemplateNamespace::Android,
-                std::path::Path::new("app/build.gradle.kts.tpl"),
-                template,
-                ctx,
-            )
-            .expect("android build.gradle render")
-        };
-
-        // No [signing.android] entry: the release build type stays unsigned
-        // (Gradle's own unsigned output), and packaging fails earlier unless
-        // the caller asked for it.
-        let mut ctx = project_ctx();
-        let unsigned = render(&ctx);
-        assert!(!unsigned.contains("signingConfigs"));
-        assert!(!unsigned.contains("signingConfig ="));
-
-        ctx.android_signing = Some(super::AndroidSigningTemplateEntry::from(
-            &crate::android::signing::AndroidSigningConfig::new("release.jks", "upload")
-                .expect("a config without control characters"),
-        ));
-        let signed = render(&ctx);
-        assert!(signed.contains(r#"storeFile = projectRoot.resolve("release.jks")"#));
-        assert!(signed.contains(r#"keyAlias = "upload""#));
-        // Passwords are env reads, never literals.
-        assert!(
-            signed.contains(r#"storePassword = System.getenv("WATERUI_ANDROID_STORE_PASSWORD")"#)
-        );
-        assert!(signed.contains(r#"keyPassword = System.getenv("WATERUI_ANDROID_KEY_PASSWORD")"#));
-        // `--unsigned` suppresses the config through the environment.
-        assert!(signed.contains(r#"System.getenv("WATERUI_ANDROID_UNSIGNED") != "1""#));
-        assert!(signed.contains(r#"signingConfig = signingConfigs.getByName("release")"#));
     }
 
     #[test]
@@ -2520,74 +2360,6 @@ mod tests {
         assert!(signed.contains(r#"keyPassword = System.getenv("WATERUI_ANDROID_KEY_PASSWORD")"#));
         assert!(signed.contains(r#"System.getenv("WATERUI_ANDROID_UNSIGNED") != "1""#));
         assert!(signed.contains(r#"signingConfig = signingConfigs.getByName("release")"#));
-    }
-
-    #[test]
-    fn android_activity_installs_edge_to_edge_and_leases_activity_context() {
-        let ctx = project_ctx();
-        let activity_template = embedded::ANDROID
-            .get_file("app/src/main/java/MainActivity.kt.tpl")
-            .expect("android MainActivity template must exist")
-            .contents_utf8()
-            .expect("android MainActivity template must be utf-8");
-
-        let activity = render_scaffold_template(
-            TemplateNamespace::Android,
-            std::path::Path::new("app/src/main/java/MainActivity.kt.tpl"),
-            activity_template,
-            &ctx,
-        )
-        .expect("android MainActivity render");
-
-        assert!(activity.contains("enableEdgeToEdge()"));
-        // The environment reaches the app through `waterui.env.*` intent
-        // extras applied by `Os.setenv`; nothing reads system properties.
-        assert!(activity.contains("setupEnvironmentFromIntent(intent)"));
-        assert!(!activity.contains("SystemProperties"));
-        // The dev-server URL is forwarded only on debuggable builds.
-        assert!(activity.contains(r#"envVar == "WATERUI_DEV_URL" && !BuildConfig.DEBUG"#));
-        assert!(activity.contains("waterUiApplication.acquireRuntime(this)"));
-        assert!(activity.contains("androidRuntimeLease.close()"));
-
-        let application_template = embedded::ANDROID
-            .get_file("app/src/main/java/WaterUiApplication.kt.tpl")
-            .expect("android WaterUiApplication template must exist")
-            .contents_utf8()
-            .expect("android WaterUiApplication template must be utf-8");
-        let application = render_scaffold_template(
-            TemplateNamespace::Android,
-            std::path::Path::new("app/src/main/java/WaterUiApplication.kt.tpl"),
-            application_template,
-            &ctx,
-        )
-        .expect("android WaterUiApplication render");
-
-        assert!(application.starts_with("package com.example.test"));
-        assert!(application.contains("activeRuntime?.let { previous ->"));
-        assert!(application.contains("releaseWaterUiRuntime(previous.owner)"));
-        assert!(application.contains("bootstrapWaterUiRuntime(activity)"));
-        assert!(application.contains("if (runtime.generation != generation) return false"));
-        assert!(application.contains("return application.releaseRuntime(generation)"));
-        assert!(application.contains("Application(), WaterUiRuntimeOwner"));
-        assert!(application.contains("processEnvironment = WuiEnvironment.create(waterUiFonts)"));
-        assert!(application.contains("createWaterUiEnvironment(): WuiEnvironment"));
-        assert!(application.contains("}.clone()"));
-
-        let manifest_template = embedded::ANDROID
-            .get_file("app/src/main/AndroidManifest.xml.tpl")
-            .expect("android manifest template must exist")
-            .contents_utf8()
-            .expect("android manifest template must be utf-8");
-        let manifest = render_scaffold_template(
-            TemplateNamespace::Android,
-            std::path::Path::new("app/src/main/AndroidManifest.xml.tpl"),
-            manifest_template,
-            &ctx,
-        )
-        .expect("android manifest render");
-
-        assert!(manifest.contains("android:name=\".WaterUiApplication\""));
-        assert!(manifest.contains("android:launchMode=\"singleTask\""));
     }
 
     #[test]
@@ -2820,6 +2592,7 @@ mod tests {
                 webview_enabled: true,
                 engine: None,
             },
+            super::BrowserAnswers::default(),
         ));
         let cargo_toml =
             crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
@@ -2889,6 +2662,56 @@ mod tests {
         assert!(
             helper.contains("any(target_os = \"macos\")"),
             "the helper compiles its dispatch where the CEF dep exists: {helper}"
+        );
+    }
+
+    /// The wasm32 table bridges the browser's `<video>` element and the
+    /// `<iframe>` web view exactly when the application uses them: an
+    /// application without them compiles neither bridge (principle 5).
+    #[test]
+    fn hydrolysis_wasm_table_bridges_only_what_the_app_uses() {
+        let wasm_features = |web: super::WebAnswers| -> Vec<String> {
+            let ctx = all_os_browser(project_ctx(), false, None).with_web(web);
+            let cargo_toml =
+                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
+                    .expect("hydrolysis outputs should render")
+                    .into_iter()
+                    .find_map(|(path, content)| {
+                        (path == std::path::Path::new("Cargo.toml"))
+                            .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+                    })
+                    .expect("hydrolysis Cargo.toml output should exist");
+            let manifest = cargo_toml
+                .parse::<toml::Table>()
+                .expect("hydrolysis Cargo.toml should parse");
+            manifest["target"]["cfg(target_arch = \"wasm32\")"]["dependencies"]["hydrolysis"]
+                ["features"]
+                .as_array()
+                .expect("the wasm32 hydrolysis dependency lists its features")
+                .iter()
+                .filter_map(|feature| feature.as_str().map(str::to_string))
+                .collect()
+        };
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: false,
+                webview: false
+            }),
+            ["web"]
+        );
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: true,
+                webview: false
+            }),
+            ["web", "video"]
+        );
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: true,
+                webview: true
+            }),
+            ["web", "video", "webview-system"]
         );
     }
 
@@ -3011,6 +2834,53 @@ mod tests {
             app_gradle.contains("implementation(\"dev.waterui.hydrolysis:preview\")"),
             "the app must depend on the substituted preview module: {app_gradle}"
         );
+    }
+
+    /// The Android launcher's `hydrolysis` carries `webview-system` exactly
+    /// when the app uses the standard `WebView` with no engine of its own —
+    /// the platform-view instance the system `WebView` mounts through is
+    /// compiled in, and every other build ships no bridge code at all.
+    #[test]
+    fn hydrolysis_android_manifest_carries_webview_system_only_for_the_bridge() {
+        for (webview_enabled, expected) in [
+            (true, vec!["accessibility", "webview-system"]),
+            (false, vec!["accessibility"]),
+        ] {
+            // `webview_backend_feature` is the one decision: the Gradle
+            // flag and the Cargo feature both read it.
+            let ctx = all_os_browser(project_ctx(), webview_enabled, None).with_hydrolysis_android(
+                super::HydrolysisAndroidTemplateEntry {
+                    native_library_name: "waterui_test_hydrolysis".to_string(),
+                    host_project_dir: "../android-host/rev/android".to_string(),
+                    project_root: "..".to_string(),
+                    painter_dependency: "dev.waterui.hydrolysis:gpu".to_string(),
+                    painter_module: "gpu".to_string(),
+                    min_api_level: 31,
+                    painter_band_import: None,
+                    painter_band_class: None,
+                },
+            );
+            let cargo_toml =
+                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
+                    .expect("hydrolysis outputs should render")
+                    .into_iter()
+                    .find_map(|(path, content)| {
+                        (path == std::path::Path::new("Cargo.toml"))
+                            .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+                    })
+                    .expect("hydrolysis Cargo.toml output should exist");
+            let manifest = cargo_toml
+                .parse::<toml::Table>()
+                .expect("hydrolysis Cargo.toml should parse");
+            let features = manifest["target"]["cfg(target_os = \"android\")"]["dependencies"]
+                ["hydrolysis"]["features"]
+                .as_array()
+                .expect("hydrolysis dependency features should be an array")
+                .iter()
+                .map(|feature| feature.as_str().expect("feature should be a string"))
+                .collect::<Vec<_>>();
+            assert_eq!(features, expected, "webview_enabled={webview_enabled}");
+        }
     }
 
     #[test]
@@ -3209,137 +3079,70 @@ mod tests {
     }
 
     #[test]
-    fn preview_scaffold_uses_embedded_workspace_version() {
-        let tempdir = tempdir().expect("temporary preview scaffold dir");
-        let ctx = project_ctx()
-            .with_preview_runtime_features(vec!["dynamic_linking".to_string(), "gpu".to_string()])
-            .with_preview_app_dependency(
-                CrateName::try_from("preview_test_app").expect("test crate name must be valid"),
-                tempdir.path().join("app"),
-            );
-
-        smol::block_on(crate::templates::preview::scaffold(
-            &crate::toolchain::Host::current(),
-            tempdir.path(),
-            &ctx,
-        ))
-        .expect("preview scaffold should succeed");
-
-        let cargo_toml = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
-            .expect("preview Cargo.toml should be written");
-        assert!(cargo_toml.contains("default-features = false"));
-        let manifest = cargo_toml
-            .parse::<toml::Table>()
-            .expect("preview Cargo.toml should parse");
-        assert_eq!(
-            manifest["dependencies"]["waterui-preview"]["version"].as_str(),
-            Some(pinned("waterui-preview-version").as_str())
-        );
-        let dev_features = manifest["features"]["dev"]
-            .as_array()
-            .expect("preview dev feature should be an array")
-            .iter()
-            .map(|feature| feature.as_str().expect("feature should be a string"))
-            .collect::<Vec<_>>();
-        assert_eq!(dev_features, ["waterui/dynamic_linking", "waterui/gpu"]);
-        assert!(cargo_toml.contains("package = \"preview_test_app\""));
-        assert!(cargo_toml.contains("features = [\"dev\"]"));
-
-        let lib_rs = std::fs::read_to_string(tempdir.path().join("src/lib.rs"))
-            .expect("preview lib.rs should be written");
-        assert!(!lib_rs.contains("waterui_ffi::export!()"));
-    }
-
-    #[test]
-    fn ffi_scaffold_resolves_waterui_ffi_from_the_build_cache_path() {
-        let tempdir = tempdir().expect("temporary ffi scaffold dir");
+    fn apple_companion_scaffold_resolves_the_framework_from_the_build_cache_path() {
+        let tempdir = tempdir().expect("temporary Apple companion scaffold dir");
         let project_root = tempdir.path().join("app");
-        let ffi_dir = tempdir
+        let companion_dir = tempdir
             .path()
             .join("cache")
             .join("managed_backends")
-            .join("ffi");
-        write_fake_framework_checkout(
-            &tempdir.path().join("waterui"),
-            super::FORWARDED_FFI_FEATURES,
-        );
+            .join("apple-companion");
+        write_fake_framework_checkout(&tempdir.path().join("waterui"), super::FORWARDED_FEATURES);
         // The relative `waterui_path` resolves through the project root, so
         // it must exist for `project/../waterui` to land on the checkout.
         std::fs::create_dir_all(&project_root).expect("project root dir");
         let ctx = ctx(
             Some(PathBuf::from("../waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(project_root.clone()),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(
+        smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("Apple companion scaffold should succeed");
 
-        let cargo_toml = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written");
-        let expected_ffi_path = pathdiff::diff_paths(project_root.join("../waterui/ffi"), &ffi_dir)
-            .expect("expected waterui ffi dependency diff path");
-        let expected_ffi_path = normalize_path_for_config(&expected_ffi_path);
+        let cargo_toml = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written");
+        let expected_facade_path =
+            pathdiff::diff_paths(project_root.join("../waterui"), &companion_dir)
+                .expect("expected waterui facade dependency diff path");
+        let expected_facade_path = normalize_path_for_config(&expected_facade_path);
 
-        assert!(cargo_toml.contains(&format!("path = \"{expected_ffi_path}\"")));
+        assert!(cargo_toml.contains(&format!("path = \"{expected_facade_path}\"")));
         assert!(cargo_toml.contains("dev = [\"waterui_test/dev\"]"));
-        // This crate roots the workspace preview modules join, so a module and the
-        // runtime it is loaded into share one Cargo resolution. With none on disk
-        // the workspace is empty — never a `modules/*` glob, which Cargo reads as
-        // a literal path and rejects when it matches nothing.
-        assert!(
-            cargo_toml.contains("[workspace]"),
-            "generated FFI crate must root the preview module workspace"
-        );
-        assert!(
-            !cargo_toml.contains(crate::templates::PREVIEW_MODULES_DIR),
-            "an FFI crate with no preview module on disk must declare no members"
-        );
+        assert!(cargo_toml.contains("[workspace]"));
         let manifest = cargo_toml
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
-        assert_eq!(
-            manifest["target"]["cfg(not(target_vendor = \"apple\"))"]["dependencies"]["waterui-ffi"]["default-features"].as_bool(),
-            Some(false)
-        );
-        // The map capability reaches the Rust backend as well as the FFI
-        // surface: the `map` feature also enables `waterui-apple/map`, so the
-        // `MKMapView` leaf compiles only for apps whose graph holds
-        // `waterui-map`.
+            .expect("companion Cargo.toml should parse");
+        // The map capability reaches the Rust backend: the `map` feature
+        // enables `waterui-apple/map`, so the `MKMapView` leaf compiles only
+        // for apps whose graph holds `waterui-map`.
         let map_forwards = manifest["features"]["map"]
             .as_array()
             .expect("map feature is declared")
             .iter()
             .map(|feature| feature.as_str().expect("feature name"))
             .collect::<Vec<_>>();
-        assert_eq!(map_forwards, ["waterui-ffi/map", "waterui-apple/map"]);
-        assert!(manifest["dependencies"].get("waterui-ffi").is_none());
+        assert_eq!(map_forwards, ["waterui-apple/map"]);
         assert!(manifest["dependencies"].get("waterui-apple").is_none());
         assert!(
             manifest["target"]["cfg(target_vendor = \"apple\")"]["dependencies"]
                 .get("waterui-apple")
                 .is_some()
         );
-        assert!(
-            manifest["target"]["cfg(target_vendor = \"apple\")"]["dependencies"]
-                .get("waterui-ffi")
-                .is_none()
-        );
-        let lib = std::fs::read_to_string(ffi_dir.join("src/lib.rs")).unwrap();
-        assert!(lib.contains("#[cfg(not(target_vendor = \"apple\"))]\nwaterui_ffi::export!();"));
+        let lib = std::fs::read_to_string(companion_dir.join("src/lib.rs")).unwrap();
         assert!(
             lib.contains("#[cfg(target_vendor = \"apple\")]\nwaterui_apple::export_app!(app);")
         );
-        syn::parse_file(&lib).expect("mixed-target native companion parses");
+        syn::parse_file(&lib).expect("the Apple companion parses");
         assert_eq!(manifest["package"]["autobins"].as_bool(), Some(false));
         let bins = manifest["bin"]
             .as_array()
-            .expect("the FFI crate declares its entry-owning Apple binary");
+            .expect("the companion declares its entry-owning Apple binary");
         assert_eq!(bins.len(), 1);
         assert_eq!(
             bins[0]["name"].as_str(),
@@ -3349,26 +3152,30 @@ mod tests {
             bins[0]["path"].as_str(),
             Some("src/bin/waterui-apple-main.rs")
         );
-        let main_bin = std::fs::read_to_string(ffi_dir.join("src/bin/waterui-apple-main.rs"))
+        let main_bin = std::fs::read_to_string(companion_dir.join("src/bin/waterui-apple-main.rs"))
             .expect("apple main source should be written");
         assert!(!main_bin.contains("waterui_cef_prepare_macos_application"));
     }
 
-    /// A generated FFI manifest filters each forward by the feature table of
-    /// the package its destination resolves to — a `waterui-ffi` without
-    /// `inspector` drops the `waterui-ffi/inspector` entry only, and a
-    /// feature no destination declares is not emitted at all.
+    /// A generated manifest filters each forward by the feature table of
+    /// the package its destination resolves to — a `waterui-apple` without
+    /// `inspector` drops that entry, and a feature no destination declares
+    /// is not emitted at all.
     #[test]
     fn forwarded_features_follow_each_destination_package() {
         let mut manifest = cargo_toml::Manifest::<()>::default();
+        manifest.dependencies.insert(
+            "waterui".to_string(),
+            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
+        );
         manifest.dependencies.insert(
             "waterui-apple".to_string(),
             cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
         );
         let mut tables = super::FeatureTables::new();
         tables.insert(
-            "waterui-ffi".to_string(),
-            ["c-api", "media"].into_iter().map(str::to_string).collect(),
+            "waterui".to_string(),
+            ["gpu", "media"].into_iter().map(str::to_string).collect(),
         );
         tables.insert(
             "waterui-apple".to_string(),
@@ -3378,86 +3185,84 @@ mod tests {
                 .collect(),
         );
 
-        // `media` reaches both destinations.
+        // `media` reaches both the facade and the Apple backend.
         assert_eq!(
-            super::ffi_feature_forwards("media", &manifest, &tables),
+            super::feature_forwards("media", &manifest, &tables),
             vec![
-                "waterui-ffi/media".to_string(),
+                "waterui/media".to_string(),
                 "waterui-apple/media".to_string()
             ]
         );
-        // `map` is declared only by the Apple package: capability filtering
-        // drops the `waterui-ffi` entry but must not discard the Apple side.
+        // `map` is declared only by the Apple package; the facade carries no
+        // `map` feature at all, so only the backend entry is emitted.
         assert_eq!(
-            super::ffi_feature_forwards("map", &manifest, &tables),
+            super::feature_forwards("map", &manifest, &tables),
             vec!["waterui-apple/map".to_string()]
         );
-        // No destination declares `inspector` or `chromium`.
+        // `gpu` is a facade capability with no backend destination.
         assert_eq!(
-            super::ffi_feature_forwards("inspector", &manifest, &tables),
+            super::feature_forwards("gpu", &manifest, &tables),
+            vec!["waterui/gpu".to_string()]
+        );
+        // No destination declares `inspector` or `chromium` — `chromium`
+        // routes to `waterui-browser-cef`, which this manifest never
+        // declares.
+        assert_eq!(
+            super::feature_forwards("inspector", &manifest, &tables),
             Vec::<String>::new()
         );
         assert_eq!(
-            super::ffi_feature_forwards("chromium", &manifest, &tables),
+            super::feature_forwards("chromium", &manifest, &tables),
             Vec::<String>::new()
         );
 
-        // A companion manifest declares `waterui-ffi`: when the resolved
-        // package lacks the feature, the feature is not emitted — it must
-        // not fall back to the `waterui` facade, which routes only
-        // manifests that declare no `waterui-ffi` dependency at all.
-        let mut companion = cargo_toml::Manifest::<()>::default();
-        companion.dependencies.insert(
-            "waterui-ffi".to_string(),
+        // A destination the manifest declares but whose resolved package
+        // lacks the feature emits nothing: the forward names the feature
+        // verbatim, so an older package would fail the whole resolution.
+        let mut older = cargo_toml::Manifest::<()>::default();
+        older.dependencies.insert(
+            "waterui-apple".to_string(),
             cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
         );
-        companion.dependencies.insert(
-            "waterui".to_string(),
-            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
-        );
-        let mut companion_tables = super::FeatureTables::new();
-        companion_tables.insert(
-            "waterui-ffi".to_string(),
-            std::iter::once("c-api").map(str::to_string).collect(),
-        );
-        companion_tables.insert(
-            "waterui".to_string(),
-            std::iter::once("media").map(str::to_string).collect(),
+        let mut older_tables = super::FeatureTables::new();
+        older_tables.insert(
+            "waterui-apple".to_string(),
+            std::collections::BTreeSet::new(),
         );
         assert_eq!(
-            super::ffi_feature_forwards("media", &companion, &companion_tables),
+            super::feature_forwards("media", &older, &older_tables),
             Vec::<String>::new()
         );
     }
 
     /// A local checkout answers the forward filter itself: the scaffolded
-    /// manifest forwards only what the checkout's `ffi/Cargo.toml` declares —
-    /// the shape an older framework resolves to, where an unconditional
-    /// `inspector` forward failed the whole resolution.
+    /// manifest forwards only what the checkout's `backends/apple/Cargo.toml`
+    /// declares — the shape an older framework resolves to, where an
+    /// unconditional `inspector` forward failed the whole resolution.
     #[test]
-    fn ffi_scaffold_forwards_only_the_features_waterui_ffi_declares() {
+    fn apple_companion_forwards_only_the_features_waterui_apple_declares() {
         let tempdir = tempdir().expect("temporary scaffold dir");
         let waterui = tempdir.path().join("waterui");
-        write_fake_framework_checkout(&waterui, &["c-api", "media"]);
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+        write_fake_framework_checkout(&waterui, &["media"]);
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
         let ctx = ctx(
             Some(waterui),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(tempdir.path().join("app")),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(
+        smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("Apple companion scaffold should succeed");
 
-        let manifest: toml::Table = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest: toml::Table = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let features = manifest["features"].as_table().expect("features table");
         assert_eq!(
             features["media"]
@@ -3466,19 +3271,74 @@ mod tests {
                 .iter()
                 .map(|forward| forward.as_str())
                 .collect::<Vec<_>>(),
-            [Some("waterui-ffi/media"), Some("waterui-apple/media")]
+            [Some("waterui-apple/media")]
+        );
+        assert!(
+            !features.contains_key("map"),
+            "a waterui-apple without `map` gets no `map` forward"
         );
         assert!(
             !features.contains_key("inspector"),
-            "a waterui-ffi without `inspector` gets no `inspector` forward"
+            "a waterui-apple without `inspector` gets no `inspector` forward"
+        );
+        let apple_edge =
+            manifest["target"]["cfg(target_vendor = \"apple\")"]["dependencies"]["waterui-apple"]
+                .as_table()
+                .expect("the apple target's waterui-apple edge");
+        assert!(
+            !apple_edge
+                .get("features")
+                .and_then(toml::Value::as_array)
+                .is_some_and(|features| {
+                    features
+                        .iter()
+                        .any(|feature| feature.as_str() == Some("swiftui"))
+                }),
+            "a non-embedded companion pays no SwiftUI module cost"
+        );
+    }
+
+    #[test]
+    fn embedded_apple_companion_enables_the_swiftui_feature() {
+        let tempdir = tempdir().expect("temporary scaffold dir");
+        let waterui = tempdir.path().join("waterui");
+        write_fake_framework_checkout(&waterui, &["media", "swiftui"]);
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
+        let mut ctx = ctx(
+            Some(waterui),
+            Some(companion_dir.clone()),
+            Some(tempdir.path().join("app")),
+        );
+        ctx.embedded = true;
+
+        smol::block_on(crate::templates::apple_companion::scaffold(
+            &crate::toolchain::Host::current(),
+            &companion_dir,
+            &ctx,
+            "app-apple",
+        ))
+        .expect("Apple companion scaffold should succeed");
+
+        let manifest: toml::Table = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
+            .parse()
+            .expect("companion Cargo.toml should parse");
+        let features = manifest["target"]["cfg(target_vendor = \"apple\")"]["dependencies"]
+            ["waterui-apple"]["features"]
+            .as_array()
+            .expect("the edge's feature list");
+        assert!(
+            features
+                .iter()
+                .any(|feature| feature.as_str() == Some("swiftui")),
+            "an embedded companion's waterui-apple edge selects `swiftui`: {features:?}"
         );
     }
 
     /// Run `git -C dir args` for a fixture checkout and return its trimmed
     /// stdout.
-    fn probe_git(dir: &Path, args: &[&str]) -> String {
-        let output = crate::toolchain::Host::current()
-            .std_command("git")
+    fn probe_git(dir: &Path, args: &[&str]) -> std::io::Result<String> {
+        let output = crate::toolchain::git::std_command(&crate::toolchain::Host::current())?
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -3489,37 +3349,41 @@ mod tests {
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        String::from_utf8(output.stdout)
+        Ok(String::from_utf8(output.stdout)
             .expect("git stdout is utf-8")
             .trim()
-            .to_string()
+            .to_string())
     }
 
     /// The channel path answers through real `cargo metadata`: a
-    /// `waterui-ffi` pinned at a git revision — the dev/nightly channel
+    /// `waterui-apple` pinned at a git revision — the dev/nightly channel
     /// shape — resolves through a local `file://` checkout, so the learned
     /// table is the exact resolved package's, matched on the package's own
-    /// name while the resolved edge spells it `waterui_ffi`. Two distinct
+    /// name while the resolved edge spells it `waterui_apple`. Two distinct
     /// resolved revisions yield their own tables, and an unresolvable probe
     /// fails instead of forwarding the unfiltered set.
     #[test]
-    fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata() {
+    fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata()
+    -> std::io::Result<()> {
         let tempdir = tempdir().expect("temporary probe fixture dir");
 
-        // A committed `waterui-ffi` checkout returns the revision a channel
+        // A committed `waterui-apple` checkout returns the revision a channel
         // manifest pins on.
-        let write_ffi = |dir_name: &str, version: &str, features: &[&str]| {
+        let write_backend = |dir_name: &str,
+                             version: &str,
+                             features: &[&str]|
+         -> std::io::Result<(String, String)> {
             let dir = tempdir.path().join(dir_name);
-            write_fixture_crate(&dir, "waterui-ffi", features);
+            write_fixture_crate(&dir, "waterui-apple", features);
             // The pinned revision must carry the declared version.
             let manifest_path = dir.join("Cargo.toml");
             let manifest = std::fs::read_to_string(&manifest_path)
                 .expect("fixture manifest")
                 .replace("0.0.0", version);
             std::fs::write(&manifest_path, manifest).expect("fixture manifest");
-            probe_git(&dir, &["init", "-b", "fixture"]);
-            let rev = crate::framework::test_fixtures::git_commit_all(&dir, "fixture");
-            (format!("file://{}", dir.display()), rev)
+            probe_git(&dir, &["init", "-b", "fixture"])?;
+            let rev = crate::framework::test_fixtures::git_commit_all(&dir, "fixture")?;
+            Ok((format!("file://{}", dir.display()), rev))
         };
 
         let manifest_for = |git_url: &str, rev: &str| {
@@ -3531,7 +3395,7 @@ mod tests {
                 ..Default::default()
             };
             manifest.dependencies.insert(
-                "waterui-ffi".to_string(),
+                "waterui-apple".to_string(),
                 cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
                     git: Some(git_url.to_string()),
                     rev: Some(rev.to_string()),
@@ -3549,19 +3413,19 @@ mod tests {
         let host = crate::toolchain::Host::current()
             .with_env("CARGO_HOME", tempdir.path().join("cargo-home"));
         for (dir_name, version, features) in [
-            ("ffi-0.5.2", "0.5.2", vec!["c-api", "media"]),
-            ("ffi-0.6.0", "0.6.0", vec!["c-api", "media", "inspector"]),
+            ("apple-0.5.2", "0.5.2", vec!["map", "media"]),
+            ("apple-0.6.0", "0.6.0", vec!["map", "media", "inspector"]),
         ] {
-            let (git_url, rev) = write_ffi(dir_name, version, &features);
+            let (git_url, rev) = write_backend(dir_name, version, &features)?;
             let manifest = manifest_for(&git_url, &rev);
             let tables = smol::block_on(super::resolved_forward_tables(
                 &host,
                 &manifest,
                 tempdir.path(),
-                &["waterui-ffi"],
+                &["waterui-apple"],
             ))
             .expect("the probe resolves the pinned fixture");
-            let table = &tables["waterui-ffi"];
+            let table = &tables["waterui-apple"];
             for feature in &features {
                 assert!(table.contains(*feature), "{version} must declare {feature}");
             }
@@ -3574,7 +3438,7 @@ mod tests {
 
         // Failure direction: the probe cannot resolve → the error propagates
         // with its context instead of the unfiltered set going out.
-        let missing = tempdir.path().join("ffi-missing");
+        let missing = tempdir.path().join("apple-missing");
         let manifest = manifest_for(
             &format!("file://{}", missing.display()),
             "0000000000000000000000000000000000000000",
@@ -3583,63 +3447,374 @@ mod tests {
             &host,
             &manifest,
             tempdir.path(),
-            &["waterui-ffi"],
+            &["waterui-apple"],
         ))
         .expect_err("an unresolvable probe must fail, not fall back");
         assert!(
             error.to_string().contains("resolve"),
             "the error must name the resolution that failed: {error}"
         );
+        Ok(())
+    }
+
+    /// All-features resolution reached the optional dependency and its
+    /// declared feature, plus the target- and build-scoped path deps —
+    /// with no target filter.
+    fn assert_all_features_resolved(metadata: &cargo_metadata::Metadata) {
+        let resolve = metadata.resolve.as_ref().unwrap();
+        let optdep_node = resolve
+            .nodes
+            .iter()
+            .find(|node| {
+                metadata
+                    .packages
+                    .iter()
+                    .any(|package| package.id == node.id && package.name == "optdep")
+            })
+            .expect("optdep is in the resolved graph");
+        assert!(
+            optdep_node.features.iter().any(|f| f.as_str() == "feature"),
+            "all-features enabled the optional dep's feature"
+        );
+        for name in ["targetdep", "builddep"] {
+            assert!(
+                metadata.packages.iter().any(|package| package.name == name),
+                "{name} resolved without a target filter"
+            );
+        }
+    }
+
+    /// The manifest the probe-liveness test resolves — an optional dep
+    /// and its feature, plus target- and build-scoped path deps.
+    fn probe_scoped_manifest() -> cargo_toml::Manifest<()> {
+        let mut manifest = cargo_toml::Manifest::<()> {
+            package: Some(cargo_toml::Package::new(
+                "probe-app".to_string(),
+                super::cargo_semver("0.1.0"),
+            )),
+            ..Default::default()
+        };
+        manifest.features.insert(
+            "all".to_string(),
+            vec!["dep:optdep".to_string(), "optdep/feature".to_string()],
+        );
+        manifest.dependencies.insert(
+            "optdep".to_string(),
+            cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                path: Some("optdep".to_string()),
+                optional: true,
+                ..Default::default()
+            })),
+        );
+        manifest
+            .target
+            .entry("cfg(target_os = \"macos\")".to_string())
+            .or_default()
+            .dependencies
+            .insert(
+                "targetdep".to_string(),
+                cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                    path: Some("targetdep".to_string()),
+                    ..Default::default()
+                })),
+            );
+        manifest.build_dependencies.insert(
+            "builddep".to_string(),
+            cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                path: Some("builddep".to_string()),
+                ..Default::default()
+            })),
+        );
+        manifest
+    }
+
+    /// The probe's owned directory keeps its manifest on disk while its
+    /// `metadata` is consumed — canonicalizing a resolved package's
+    /// manifest path must not find the probe already deleted.
+    #[test]
+    fn apple_source_patches_probe_directory_outlives_metadata() -> std::io::Result<()> {
+        let tempdir = tempdir().expect("temporary probe fixture dir");
+        let host = crate::toolchain::Host::current()
+            .with_env("CARGO_HOME", tempdir.path().join("cargo-home"))
+            .with_env("CARGO_NET_OFFLINE", "true");
+
+        let base_dir = tempdir.path().join("base");
+        std::fs::create_dir_all(&base_dir)?;
+        write_fixture_crate(&base_dir.join("optdep"), "optdep", &["feature"]);
+        write_fixture_crate(&base_dir.join("targetdep"), "targetdep", &[]);
+        write_fixture_crate(&base_dir.join("builddep"), "builddep", &[]);
+
+        let manifest = probe_scoped_manifest();
+
+        let probe = smol::block_on(super::resolve_generated_probe(
+            &host,
+            &manifest,
+            &base_dir,
+            &[],
+            cargo_metadata::CargoOpt::AllFeatures,
+        ))?;
+        let probe_dir = probe.directory().to_path_buf();
+        assert!(
+            probe_dir.join("Cargo.toml").is_file(),
+            "the probe manifest exists while the probe is alive"
+        );
+        assert_all_features_resolved(&probe.metadata);
+        assert!(
+            manifest.features.contains_key("all"),
+            "the input manifest's feature table is untouched"
+        );
+        drop(probe);
+        assert!(
+            !probe_dir.exists(),
+            "the owned probe directory is gone once the probe drops"
+        );
+        Ok(())
+    }
+
+    /// The manifest the probe-preparation test isolates — the same
+    /// dependency shapes as the liveness fixture plus every product and a
+    /// `patch` row.
+    fn probe_isolation_manifest() -> cargo_toml::Manifest<()> {
+        let mut manifest = cargo_toml::Manifest::<()> {
+            package: Some(cargo_toml::Package::new(
+                "probe-app".to_string(),
+                super::cargo_semver("0.1.0"),
+            )),
+            ..Default::default()
+        };
+        manifest.features.insert(
+            "all".to_string(),
+            vec!["dep:optdep".to_string(), "optdep/feature".to_string()],
+        );
+        manifest.dependencies.insert(
+            "optdep".to_string(),
+            cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                path: Some("deps/optdep".to_string()),
+                optional: true,
+                ..Default::default()
+            })),
+        );
+        manifest.build_dependencies.insert(
+            "builddep".to_string(),
+            cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                path: Some("deps/builddep".to_string()),
+                ..Default::default()
+            })),
+        );
+        manifest
+            .target
+            .entry("cfg(target_os = \"macos\")".to_string())
+            .or_default()
+            .dependencies
+            .insert(
+                "targetdep".to_string(),
+                cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                    path: Some("deps/targetdep".to_string()),
+                    ..Default::default()
+                })),
+            );
+        manifest
+            .patch
+            .entry("crates-io".to_string())
+            .or_default()
+            .insert(
+                "patchdep".to_string(),
+                cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                    path: Some("deps/patchdep".to_string()),
+                    ..Default::default()
+                })),
+            );
+        for product in [
+            ("main.rs", &mut manifest.bin),
+            ("tests.rs", &mut manifest.test),
+            ("bench.rs", &mut manifest.bench),
+            ("ex.rs", &mut manifest.example),
+        ] {
+            product.1.push(cargo_toml::Product {
+                name: Some("probe-app".to_string()),
+                path: Some(format!("src/{}", product.0)),
+                ..Default::default()
+            });
+        }
+        manifest
+    }
+
+    /// The probe crate is an isolated copy: the caller's feature table
+    /// survives verbatim, every relative path is absolutized, the stub
+    /// library is the only product, and the managed lock seed is copied —
+    /// all before any `cargo` run. The input manifest is untouched.
+    #[test]
+    fn apple_source_patches_probe_preparation_isolates_the_manifest() -> std::io::Result<()> {
+        fn detail(dependency: &cargo_toml::Dependency) -> &cargo_toml::DependencyDetail {
+            match dependency {
+                cargo_toml::Dependency::Detailed(detail) => detail.as_ref(),
+                _ => panic!("expected a detailed dependency"),
+            }
+        }
+        let tempdir = tempdir().expect("temporary probe fixture dir");
+        let base_dir = tempdir.path().join("base");
+        std::fs::create_dir_all(&base_dir)?;
+
+        // A small valid lockfile seed — the probe must copy it
+        // byte-for-byte.
+        let seed_lock = "version = 4\n\n[[package]]\nname = \"dep\"\nversion = \"0.0.0\"\n";
+        std::fs::write(base_dir.join("Cargo.lock"), seed_lock)?;
+
+        let manifest = probe_isolation_manifest();
+        let original = manifest.clone();
+
+        let probe = smol::block_on(super::prepare_generated_probe(
+            &manifest,
+            &base_dir,
+            &["optdep"],
+        ))?;
+        let probe_manifest: cargo_toml::Manifest<()> =
+            toml::from_str(&std::fs::read_to_string(probe.path().join("Cargo.toml"))?)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+
+        assert_eq!(
+            probe_manifest.features, manifest.features,
+            "feature table verbatim"
+        );
+        let abs = |path: &Option<String>| {
+            assert!(std::path::Path::new(path.as_deref().unwrap()).is_absolute());
+        };
+        abs(&detail(&probe_manifest.dependencies["optdep"]).path);
+        abs(&detail(&probe_manifest.build_dependencies["builddep"]).path);
+        abs(&detail(
+            &probe_manifest.target["cfg(target_os = \"macos\")"].dependencies["targetdep"],
+        )
+        .path);
+        abs(&detail(&probe_manifest.patch["crates-io"]["patchdep"]).path);
+        assert!(
+            !detail(&probe_manifest.dependencies["optdep"]).optional,
+            "the unresolved target is non-optional in the probe"
+        );
+        assert!(probe_manifest.lib.is_some(), "the stub library is declared");
+        assert!(
+            probe_manifest.bin.is_empty()
+                && probe_manifest.test.is_empty()
+                && probe_manifest.bench.is_empty()
+                && probe_manifest.example.is_empty()
+        );
+        assert_eq!(
+            std::fs::read(probe.path().join("Cargo.lock"))?,
+            seed_lock.as_bytes(),
+            "the managed lock seed is copied byte-for-byte"
+        );
+        assert_eq!(manifest, original, "the input manifest is untouched");
+        assert!(
+            !base_dir.join("Cargo.toml").exists(),
+            "no Cargo.toml was written to the real crate dir"
+        );
+        Ok(())
     }
 
     /// A fake checkout patching `waterui-core` to its own `core/`, and a
     /// project beside it at `app/` with the given `Cargo.toml`, returning the
-    /// FFI companion's context and directory.
-    fn patched_project_ffi(directory: &Path, project_manifest: &str) -> (TemplateContext, PathBuf) {
+    /// Apple companion's context and directory.
+    fn patched_project_companion(
+        directory: &Path,
+        project_manifest: &str,
+    ) -> (TemplateContext, PathBuf) {
         let checkout = directory.join("waterui");
-        write_fake_framework_checkout(&checkout, super::FORWARDED_FFI_FEATURES);
+        write_fake_framework_checkout(&checkout, super::FORWARDED_FEATURES);
         let root_manifest = checkout.join("Cargo.toml");
         let mut text = std::fs::read_to_string(&root_manifest).expect("checkout manifest");
         text.push_str("\n[patch.crates-io]\nwaterui-core = { path = \"core\" }\n");
         std::fs::write(&root_manifest, text).expect("checkout patch table");
+        write_fixture_crate(&checkout.join("core"), "waterui-core", &[]);
         let app = directory.join("app");
         std::fs::create_dir_all(&app).expect("project dir");
-        std::fs::write(app.join("Cargo.toml"), project_manifest).expect("project manifest");
-        let ffi_dir = directory.join("managed_backends/ffi");
-        let ctx = ctx(Some(checkout), Some(ffi_dir.clone()), Some(app));
-        (ctx, ffi_dir)
+        // The companion probes with `--all-features`, which enables the
+        // `dev` feature it forwards onto the project dependency — so the
+        // fixture manifest must declare it, merged into whatever the
+        // caller spelled.
+        let mut manifest: cargo_toml::Manifest<()> =
+            toml::from_str::<cargo_toml::Manifest<()>>(project_manifest).expect("project manifest");
+        manifest.features.entry("dev".to_string()).or_default();
+        std::fs::write(
+            app.join("Cargo.toml"),
+            toml::to_string(&manifest).expect("serialize project manifest"),
+        )
+        .expect("project manifest");
+        std::fs::create_dir_all(app.join("src")).expect("project src");
+        std::fs::write(app.join("src/lib.rs"), "// fixture\n").expect("project lib");
+        // `patched_project_*` callers declare patch rows into `vendor/` —
+        // the probe's `cargo metadata` validates each location is a real
+        // crate before the projection decides whether it stays.
+        write_fixture_crate(&app.join("vendor/forked"), "forked", &[]);
+        write_fixture_crate(&app.join("vendor/own-fork"), "own-fork", &[]);
+        write_fixture_crate(&directory.join("elsewhere/core"), "waterui-core", &[]);
+        let companion_dir = directory.join("managed_backends/apple-companion");
+        let ctx = ctx(Some(checkout), Some(companion_dir.clone()), Some(app));
+        (ctx, companion_dir)
     }
 
-    /// The FFI companion roots its own workspace, so the project's `[patch]`
+    /// The Apple companion roots its own workspace, so the project's `[patch]`
     /// entries reach it only by being copied: every source key, `path`
     /// entries made absolute, merged with the checkout's, and an entry the
     /// project spells differently from the checkout but resolving to the same
     /// directory kept once (#1997).
     #[test]
-    fn ffi_scaffold_merges_the_projects_patches_with_the_frameworks() {
-        let tempdir = tempdir().expect("temporary ffi scaffold dir");
-        let (ctx, ffi_dir) = patched_project_ffi(
+    fn apple_companion_scaffold_merges_the_projects_patches_with_the_frameworks() {
+        // A space-bearing tempdir exercises the URL escaping the git
+        // fixture path needs.
+        let tempdir = tempfile::Builder::new()
+            .prefix("source patches ")
+            .tempdir()
+            .expect("temporary companion scaffold dir");
+        // The git-source patch keeps a real local repo: `cargo metadata`
+        // resolves `git` dependencies by cloning the source, so only a
+        // `file://` remote stays offline.
+        let fork_repo = tempdir.path().join("fork-repo");
+        write_fixture_crate(&fork_repo, "forked", &[]);
+        probe_git(&fork_repo, &["init", "-b", "fixture"]).expect("init fork repo");
+        crate::framework::test_fixtures::git_commit_all(&fork_repo, "fixture")
+            .expect("commit fork repo");
+        let fork_url = url::Url::from_directory_path(&fork_repo)
+            .expect("a tempdir path is a valid directory URL")
+            .to_string();
+        let mut manifest = toml::toml! {
+            [package]
+            name = "waterui_test"
+            version = "0.1.0"
+
+            [patch.crates-io]
+            waterui-core = { path = "../waterui/core" }
+            own-fork = { path = "vendor/own-fork" }
+
+            [dependencies]
+            waterui-core = "*"
+            own-fork = "*"
+        };
+        manifest["patch"].as_table_mut().unwrap().insert(
+            fork_url.clone(),
+            toml::Value::Table(toml::toml!(forked = { path = "vendor/forked" })),
+        );
+        let mut forked = toml::Table::new();
+        forked.insert("git".to_string(), toml::Value::String(fork_url.clone()));
+        manifest["dependencies"]
+            .as_table_mut()
+            .unwrap()
+            .insert("forked".to_string(), toml::Value::Table(forked));
+        let (ctx, companion_dir) = patched_project_companion(
             tempdir.path(),
-            "[package]\nname = \"waterui_test\"\nversion = \"0.1.0\"\n\n\
-             [patch.crates-io]\n\
-             waterui-core = { path = \"../waterui/core\" }\n\
-             own-fork = { path = \"vendor/own-fork\" }\n\n\
-             [patch.\"https://github.com/water-rs/fork\"]\n\
-             forked = { path = \"vendor/forked\" }\n",
+            &toml::to_string(&manifest).expect("serialize project manifest"),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(
+        smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the Apple companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let patch = &manifest["patch"];
         let app = tempdir.path().join("app");
         assert_eq!(
@@ -3648,7 +3823,7 @@ mod tests {
             "the project's path patch resolves from outside the project"
         );
         assert_eq!(
-            patch["https://github.com/water-rs/fork"]["forked"]["path"].as_str(),
+            patch[fork_url.as_str()]["forked"]["path"].as_str(),
             Some(normalize_path_for_config(&app.join("vendor/forked")).as_str()),
             "a git-source table of the project is carried too"
         );
@@ -3658,7 +3833,7 @@ mod tests {
             "the entry both name is the framework's"
         );
         assert!(
-            patch["crates-io"].get("waterui-ffi").is_some(),
+            patch["crates-io"].get("waterui-apple").is_some(),
             "the checkout's member entries stay"
         );
     }
@@ -3667,26 +3842,27 @@ mod tests {
     /// source, overrides the framework's entry, as the project's own build
     /// does: Cargo takes `[patch]` from the root manifest.
     #[test]
-    fn ffi_scaffold_takes_the_projects_entry_over_the_frameworks() {
-        let tempdir = tempdir().expect("temporary ffi scaffold dir");
-        let (ctx, ffi_dir) = patched_project_ffi(
+    fn apple_companion_scaffold_takes_the_projects_entry_over_the_frameworks() {
+        let tempdir = tempdir().expect("temporary companion scaffold dir");
+        let (ctx, companion_dir) = patched_project_companion(
             tempdir.path(),
             "[package]\nname = \"waterui_test\"\nversion = \"0.1.0\"\n\n\
-             [patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\n",
+             [patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\n\n\
+             [dependencies]\nwaterui-core = \"*\"\n",
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(
+        smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the Apple companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         assert_eq!(
             manifest["patch"]["crates-io"]["waterui-core"]["path"].as_str(),
             Some(
@@ -3730,58 +3906,55 @@ mod tests {
     }
 
     #[test]
-    fn ffi_scaffold_declares_minimal_cef_helper_for_chromium() {
-        let tempdir = tempdir().expect("temporary ffi scaffold dir");
-        write_fake_framework_checkout(
-            &tempdir.path().join("waterui"),
-            super::FORWARDED_FFI_FEATURES,
-        );
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+    fn apple_companion_declares_minimal_cef_helper_for_chromium() {
+        let tempdir = tempdir().expect("temporary companion scaffold dir");
+        write_fake_framework_checkout(&tempdir.path().join("waterui"), super::FORWARDED_FEATURES);
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
         let ctx = ctx(
             Some(tempdir.path().join("waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(tempdir.path().to_path_buf()),
         )
         .with_browser(BrowserTemplateContext::apple_managed(Some(
             ResolvedWebViewBackend::Cef,
         )));
 
-        smol::block_on(crate::templates::ffi::scaffold(
+        smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "chromium-ffi",
+            "chromium-apple",
         ))
-        .expect("Chromium ffi scaffold should succeed");
+        .expect("the Chromium companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let bins = manifest["bin"]
             .as_array()
-            .expect("CEF FFI companion should declare binaries");
+            .expect("the CEF companion should declare binaries");
         assert_eq!(bins.len(), 2);
         assert_eq!(
             bins[0]["name"].as_str(),
             Some(crate::apple::platform::APPLE_ENTRY_BINARY_NAME)
         );
-        assert_eq!(bins[1]["name"].as_str(), Some("chromium-ffi-cef-helper"));
+        assert_eq!(bins[1]["name"].as_str(), Some("chromium-apple-cef-helper"));
         assert_eq!(
             bins[1]["path"].as_str(),
             Some("src/bin/waterui-cef-helper.rs")
         );
 
-        let helper = std::fs::read_to_string(ffi_dir.join("src/bin/waterui-cef-helper.rs"))
+        let helper = std::fs::read_to_string(companion_dir.join("src/bin/waterui-cef-helper.rs"))
             .expect("CEF helper source should be written");
         assert!(helper.contains("waterui_browser_cef::run_packaged_subprocess"));
-        assert!(!helper.contains("waterui_ffi"));
+
         assert!(helper.contains("#[cfg(target_os = \"macos\")]"));
         assert!(helper.contains(
             "compile_error!(\"The Apple CEF subprocess helper requires a macOS target\")"
         ));
 
-        let main_bin = std::fs::read_to_string(ffi_dir.join("src/bin/waterui-apple-main.rs"))
+        let main_bin = std::fs::read_to_string(companion_dir.join("src/bin/waterui-apple-main.rs"))
             .expect("apple main source should be written");
         assert!(main_bin.contains("waterui_browser_cef::initialize_macos_application"));
         assert!(main_bin.contains("waterui_browser_cef::initialize_sandbox_early"));
@@ -3800,7 +3973,6 @@ mod tests {
                 .any(|feature| feature.as_str() == Some("cef-runtime")),
             "the CEF dependency must enable the cef-runtime feature: {features:?}"
         );
-        assert!(!main_bin.contains("waterui_ffi"));
     }
 
     #[test]
@@ -3857,51 +4029,51 @@ mod tests {
         assert!(!without_cef.contains("waterui_browser_cef::initialize_macos_application"));
     }
 
+    /// The companion is rendered on hosts that cannot build for Apple — the
+    /// font scan reads its manifest everywhere — so a render without the
+    /// Apple pieces names no `waterui-apple` edge and no entry binary.
     #[test]
-    fn ffi_scaffold_without_apple_pieces_emits_no_apple_dependency() {
-        let tempdir = tempdir().expect("temporary ffi scaffold dir");
-        write_fake_framework_checkout(
-            &tempdir.path().join("waterui"),
-            super::FORWARDED_FFI_FEATURES,
-        );
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+    fn apple_companion_without_apple_pieces_emits_no_apple_dependency() {
+        let tempdir = tempdir().expect("temporary companion scaffold dir");
+        write_fake_framework_checkout(&tempdir.path().join("waterui"), super::FORWARDED_FEATURES);
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
         let ctx = ctx(
             Some(tempdir.path().join("waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(tempdir.path().to_path_buf()),
         )
         .with_apple_pieces(false);
 
-        smol::block_on(crate::templates::ffi::scaffold(
+        smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "android-ffi",
+            "app-apple",
         ))
-        .expect("Android-only ffi scaffold should succeed");
+        .expect("a companion render without the Apple pieces should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         assert!(
             manifest["dependencies"].get("waterui-apple").is_none(),
-            "an Android-only ffi companion must not depend on waterui-apple"
+            "a companion without the Apple pieces must not depend on waterui-apple"
         );
         assert!(
             manifest
                 .get("bin")
                 .and_then(toml::Value::as_array)
                 .is_none_or(Vec::is_empty),
-            "an Android-only ffi companion declares no entry-owning binary"
+            "a companion without the Apple pieces declares no entry-owning binary"
         );
 
-        let lib = std::fs::read_to_string(ffi_dir.join("src/lib.rs"))
-            .expect("ffi lib.rs should be written");
+        let lib = std::fs::read_to_string(companion_dir.join("src/lib.rs"))
+            .expect("companion lib.rs should be written");
         // Parse the generated Rust and inspect its items structurally:
         // comments name these macros legitimately, so a text search cannot
         // tell an invocation from prose.
-        let file = syn::parse_file(&lib).expect("the generated ffi lib.rs must parse");
+        let file = syn::parse_file(&lib).expect("the generated companion lib.rs must parse");
         let invoked = |wanted: &[&str]| {
             file.items.iter().any(|item| {
                 matches!(item, syn::Item::Macro(item_macro)
@@ -3916,12 +4088,13 @@ mod tests {
             })
         };
         assert!(
-            !invoked(&["waterui_apple", "export_app"]),
-            "an Android-only ffi companion must not invoke waterui_apple::export_app!"
+            invoked(&["waterui_apple", "export_app"]),
+            "the companion always carries the waterui_apple::export_app! invocation"
         );
         assert!(
-            invoked(&["waterui_ffi", "export"]),
-            "the companion always emits the waterui_ffi::export!() invocation"
+            lib.contains("#[cfg(target_vendor = \"apple\")]\nwaterui_apple::export_app!(app);"),
+            "the export is gated on the Apple target, so a non-Apple build of \
+             the same source names no waterui-apple symbol:\n{lib}"
         );
         let app_shim = file.items.iter().any(|item| {
             let syn::Item::Fn(item_fn) = item else {
@@ -3946,20 +4119,20 @@ mod tests {
         });
         assert!(
             app_shim,
-            "the app(env) -> App shim every backend's export!() expansion calls must exist"
+            "the app(env) -> App shim the export_app!() expansion calls must exist"
         );
     }
 
     #[test]
-    fn ffi_lockfile_seed_follows_the_project_lockfile() {
-        let tempdir = tempdir().expect("temporary ffi seed dir");
+    fn companion_lockfile_seed_follows_the_project_lockfile() {
+        let tempdir = tempdir().expect("temporary companion seed dir");
         let project_lock = tempdir.path().join("Cargo.lock");
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
-        std::fs::create_dir_all(&ffi_dir).expect("ffi dir");
-        let managed_lock = ffi_dir.join("Cargo.lock");
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
+        std::fs::create_dir_all(&companion_dir).expect("companion dir");
+        let managed_lock = companion_dir.join("Cargo.lock");
         let seed = || {
             smol::block_on(crate::templates::seed_lockfile(
-                &ffi_dir,
+                &companion_dir,
                 &project_lock,
                 None,
             ))
@@ -3982,8 +4155,8 @@ mod tests {
         let managed =
             || packages(&std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock"));
         let pins_v1 = lock("pins", "1.0.0");
-        let pins_v1_with_ffi =
-            format!("{pins_v1}\n[[package]]\nname = \"ffi-entries\"\nversion = \"0.1.0\"\n");
+        let pins_v1_with_companion =
+            format!("{pins_v1}\n[[package]]\nname = \"companion-entries\"\nversion = \"0.1.0\"\n");
         let pins_v2 = lock("pins", "2.0.0");
 
         // No project lockfile: nothing to pin, the managed crate resolves on its own.
@@ -3995,12 +4168,13 @@ mod tests {
         assert_eq!(managed(), packages(&pins_v1));
 
         // Cargo rewrote the managed lockfile (pruned the project's unused entries,
-        // added the FFI crate's own); unchanged seed inputs leave that alone.
-        std::fs::write(&managed_lock, &pins_v1_with_ffi).expect("managed lock");
+        // added the companion crate's own); unchanged seed inputs leave that
+        // alone.
+        std::fs::write(&managed_lock, &pins_v1_with_companion).expect("managed lock");
         seed();
         assert_eq!(
             std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock"),
-            pins_v1_with_ffi
+            pins_v1_with_companion
         );
 
         // The project re-resolved: the managed crate follows it — the new
@@ -4012,7 +4186,7 @@ mod tests {
         assert_eq!(
             managed(),
             std::collections::BTreeSet::from([
-                ("ffi-entries".to_owned(), "0.1.0".to_owned()),
+                ("companion-entries".to_owned(), "0.1.0".to_owned()),
                 ("pins".to_owned(), "1.0.0".to_owned()),
                 ("pins".to_owned(), "2.0.0".to_owned()),
             ]),
@@ -4032,14 +4206,14 @@ mod tests {
     /// (#2073).
     #[test]
     fn an_unchanged_seed_input_writes_nothing_over_the_pruned_lock() {
-        let tempdir = tempdir().expect("temporary ffi seed dir");
+        let tempdir = tempdir().expect("temporary companion seed dir");
         let project_lock = tempdir.path().join("Cargo.lock");
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
-        std::fs::create_dir_all(&ffi_dir).expect("ffi dir");
-        let managed_lock = ffi_dir.join("Cargo.lock");
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
+        std::fs::create_dir_all(&companion_dir).expect("companion dir");
+        let managed_lock = companion_dir.join("Cargo.lock");
         let seed = || {
             smol::block_on(crate::templates::seed_lockfile(
-                &ffi_dir,
+                &companion_dir,
                 &project_lock,
                 None,
             ))
@@ -4063,7 +4237,7 @@ mod tests {
         // entries pruned and the managed crate's own package added — a lock
         // no seed-merge equality could recognise.
         let pruned = format!(
-            "version = 4\n\n{}\n[[package]]\nname = \"ffi-entries\"\nversion = \"0.1.0\"\n",
+            "version = 4\n\n{}\n[[package]]\nname = \"companion-entries\"\nversion = \"0.1.0\"\n",
             lock("pins", "1.0.0")
         );
         std::fs::write(&managed_lock, &pruned).expect("pruned managed lock");
@@ -4099,14 +4273,14 @@ mod tests {
     /// over a lock that no longer carries them.
     #[test]
     fn a_failed_post_seed_step_leaves_the_next_seed_to_rerun() {
-        let tempdir = tempdir().expect("temporary ffi seed dir");
+        let tempdir = tempdir().expect("temporary companion seed dir");
         let project_lock = tempdir.path().join("Cargo.lock");
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
-        std::fs::create_dir_all(&ffi_dir).expect("ffi dir");
-        let managed_lock = ffi_dir.join("Cargo.lock");
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
+        std::fs::create_dir_all(&companion_dir).expect("companion dir");
+        let managed_lock = companion_dir.join("Cargo.lock");
         let seed = || {
             smol::block_on(crate::templates::seed_lockfile(
-                &ffi_dir,
+                &companion_dir,
                 &project_lock,
                 None,
             ))
@@ -4120,7 +4294,7 @@ mod tests {
         seed();
         let found_lock = std::fs::read(&managed_lock).expect("managed Cargo.lock");
         let found_stamp =
-            std::fs::read(ffi_dir.join(crate::templates::LOCKFILE_SEED)).expect("seed stamp");
+            std::fs::read(companion_dir.join(crate::templates::LOCKFILE_SEED)).expect("seed stamp");
 
         // The project re-pinned, the seed ran — and the post-seed
         // resolution failed, so the error path restores the pair the run
@@ -4128,7 +4302,7 @@ mod tests {
         std::fs::write(&project_lock, lock("2.0.0")).expect("project lock");
         seed();
         smol::block_on(crate::templates::restore_seeded_lockfile(
-            &ffi_dir,
+            &companion_dir,
             Some(&found_lock),
             Some(&found_stamp),
         ))
@@ -4153,150 +4327,128 @@ mod tests {
         );
     }
 
-    /// A `waterui_path` ctx resolves `waterui-preview` through `cargo
-    /// metadata` on the checkout, so the checkout is a minimal fixture
-    /// workspace carrying that one member.
+    /// A managed crate reached before the project first resolves — the
+    /// create-time font scans build it before the application's own
+    /// `Cargo.lock` exists — still receives the canonical lock's pins: a
+    /// certified registry identity the index no longer offers, like the
+    /// `waterkit-audio` release `waterui-ffi` requires, is a version Cargo
+    /// may only keep when a lock records it (#1240).
     #[test]
-    fn preview_ffi_scaffold_emits_dylib_only_wrapper() {
-        let tempdir = tempdir().expect("temporary preview ffi scaffold dir");
-        let project_root = tempdir.path().join("app");
-        let preview_ffi_dir = tempdir
-            .path()
-            .join("cache")
-            .join("managed_backends")
-            .join("preview_ffi");
-        let workspace_root = tempdir.path().join("waterui");
-        std::fs::create_dir_all(&workspace_root).expect("fixture workspace root");
-        std::fs::write(
-            workspace_root.join("Cargo.toml"),
-            "[workspace]\nmembers = [\"preview\"]\n",
-        )
-        .expect("fixture workspace manifest");
-        write_fixture_crate(&workspace_root.join("preview"), "waterui-preview", &[]);
-        // The forward filter reads the `waterui-ffi` table off the checkout.
-        write_fixture_crate(
-            &workspace_root.join("ffi"),
-            "waterui-ffi",
-            &["c-api", "android-jni"],
+    fn the_canonical_lock_seeds_a_managed_crate_without_a_project_lockfile() {
+        let registry = "registry+https://github.com/rust-lang/crates.io-index";
+        let canonical_bytes = format!(
+            "version = 4\n\n\
+             [[package]]\nname = \"waterui\"\nversion = \"0.5.2\"\n\n\
+             [[package]]\nname = \"waterkit-audio\"\nversion = \"0.1.4\"\nsource = \"{registry}\"\n\n\
+             [[package]]\nname = \"project-only\"\nversion = \"3.0.0\"\nsource = \"{registry}\"\n"
         );
-        let ctx = ctx(
-            Some(workspace_root),
-            Some(preview_ffi_dir.clone()),
-            Some(project_root),
+        let framework = crate::framework::test_fixtures::stable_framework_certifying(
+            canonical_bytes.as_bytes(),
         );
+        let canonical = framework
+            .canonical_lock_of(canonical_bytes.into_bytes())
+            .expect("the certified bytes make the canonical lock");
 
-        smol::block_on(crate::templates::preview_ffi::scaffold(
-            &crate::toolchain::Host::current(),
-            &preview_ffi_dir,
-            &ctx,
-            "app-preview-ffi",
-        ))
-        .expect("preview ffi scaffold should succeed");
+        smol::block_on(async {
+            let dir = tempfile::tempdir().expect("temporary seed dir");
+            let project_lock = dir.path().join("Cargo.lock");
+            let crate_dir = dir.path().join("managed_backends/apple-companion");
+            smol::fs::create_dir_all(&crate_dir)
+                .await
+                .expect("companion dir");
 
-        let cargo_toml = std::fs::read_to_string(preview_ffi_dir.join("Cargo.toml"))
-            .expect("preview ffi Cargo.toml should be written");
-        let manifest = cargo_toml
-            .parse::<toml::Table>()
-            .expect("preview ffi Cargo.toml should parse");
-        let abi_features = manifest["features"][preview_ffi::APPLE_ABI_FEATURE]
-            .as_array()
-            .expect("platform preview ABI feature should be an array")
-            .iter()
-            .map(|feature| feature.as_str().expect("feature should be a string"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            abi_features,
-            [
-                "dep:waterui-ffi",
-                "waterui-ffi/c-api",
-                "dep:waterui-preview"
-            ]
-        );
-        assert_eq!(
-            manifest["target"]["cfg(not(target_vendor = \"apple\"))"]["dependencies"]["waterui-ffi"]["optional"].as_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            manifest["target"]["cfg(not(target_vendor = \"apple\"))"]["dependencies"]["waterui-ffi"]["default-features"].as_bool(),
-            Some(false)
-        );
-        assert!(manifest["dependencies"].get("waterui-ffi").is_none());
-        let targets = manifest["target"].as_table().unwrap();
-        assert_eq!(targets.len(), 1);
-        assert!(targets.contains_key("cfg(not(target_vendor = \"apple\"))"));
-        // The module is a member of the support runtime's workspace, never a
-        // workspace of its own: one Cargo resolution is what makes the module and
-        // the runtime it is loaded into agree on the `-C metadata` hash that ends
-        // up in every symbol. Profiles and `[patch]` belong to that root.
-        assert!(
-            !manifest.contains_key("workspace"),
-            "preview module must not root its own workspace"
-        );
-        assert!(
-            !manifest.contains_key("patch"),
-            "preview module must inherit `[patch]` from the workspace root"
-        );
-        assert!(
-            !manifest.contains_key("profile"),
-            "preview module must inherit profiles from the workspace root"
-        );
-        assert_eq!(
-            manifest["dependencies"]["waterui-preview"]["optional"].as_bool(),
-            Some(true)
-        );
-        // Assert on the parsed manifest, not on substrings of the whole file: the file
-        // embeds absolute dependency paths, so a checkout living in a directory whose
-        // name happens to contain "rlib" or "cdylib" would fail a substring check.
-        let crate_types = manifest["lib"]["crate-type"]
-            .as_array()
-            .expect("crate-type should be an array")
-            .iter()
-            .map(|value| value.as_str().expect("crate type should be a string"))
-            .collect::<Vec<_>>();
-        assert_eq!(crate_types, ["dylib"]);
-        assert_eq!(
-            manifest["dependencies"]["waterui_test"]["features"]
-                .as_array()
-                .expect("app dependency features should be an array")
-                .iter()
-                .map(|value| value.as_str().expect("feature should be a string"))
-                .collect::<Vec<_>>(),
-            ["dev"]
-        );
-        assert!(manifest["dependencies"].get("waterui").is_none());
+            crate::templates::seed_lockfile(&crate_dir, &project_lock, Some(&canonical))
+                .await
+                .expect("seeding the managed lockfile should succeed");
+            let seeded: cargo_lock::Lockfile =
+                smol::fs::read_to_string(crate_dir.join("Cargo.lock"))
+                    .await
+                    .expect("the seeded Cargo.lock")
+                    .parse()
+                    .expect("the seeded lock parses");
+            for pin in &canonical
+                .lock()
+                .expect("the canonical lock parses")
+                .packages
+            {
+                assert!(
+                    seeded.packages.contains(pin),
+                    "the seed must carry the certified identity of {}",
+                    pin.name
+                );
+            }
+
+            // A project lockfile later appearing re-seeds on top of the
+            // canonical pins rather than replacing them.
+            smol::fs::write(
+                &project_lock,
+                format!(
+                    "version = 4\n\n[[package]]\nname = \"application-entry\"\nversion = \"1.0.0\"\nsource = \"{registry}\"\n"
+                ),
+            )
+            .await
+            .expect("project lock");
+            crate::templates::seed_lockfile(&crate_dir, &project_lock, Some(&canonical))
+                .await
+                .expect("re-seeding should succeed");
+            let reseeded: cargo_lock::Lockfile =
+                smol::fs::read_to_string(crate_dir.join("Cargo.lock"))
+                    .await
+                    .expect("the re-seeded Cargo.lock")
+                    .parse()
+                    .expect("the re-seeded lock parses");
+            for pin in &canonical
+                .lock()
+                .expect("the canonical lock parses")
+                .packages
+            {
+                assert!(
+                    reseeded.packages.contains(pin),
+                    "the re-seed keeps the certified identity of {}",
+                    pin.name
+                );
+            }
+            assert!(
+                reseeded
+                    .packages
+                    .iter()
+                    .any(|package| package.name.as_str() == "application-entry"),
+                "the project's own pin joins the seed"
+            );
+        });
     }
 
     #[test]
-    fn generated_ffi_manifest_emits_only_linked_crate_types() {
+    fn generated_companion_manifest_emits_only_linked_crate_types() {
         let temp = tempfile::tempdir().expect("temp dir");
-        write_fake_framework_checkout(&temp.path().join("waterui"), super::FORWARDED_FFI_FEATURES);
+        write_fake_framework_checkout(&temp.path().join("waterui"), super::FORWARDED_FEATURES);
         let project_root = temp.path().join("project");
         // The relative `waterui_path` resolves through the project root, so
         // it must exist for `project/../waterui` to land on the checkout.
         std::fs::create_dir_all(&project_root).expect("project root dir");
-        let ffi_dir = temp
+        let companion_dir = temp
             .path()
             .join("cache")
             .join("managed_backends")
-            .join("ffi");
+            .join("apple-companion");
         let ctx = ctx(
             Some(PathBuf::from("../waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(project_root),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(
+        smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let crate_types = manifest["lib"]["crate-type"]
             .as_array()
             .expect("crate-type should be an array")
@@ -4330,28 +4482,28 @@ mod tests {
     #[test]
     fn generated_native_build_script_has_no_swift_link_contract() {
         let temp = tempfile::tempdir().expect("temp dir");
-        write_fake_framework_checkout(&temp.path().join("waterui"), super::FORWARDED_FFI_FEATURES);
-        let ffi_dir = temp.path().join("managed_backends").join("ffi");
+        write_fake_framework_checkout(&temp.path().join("waterui"), super::FORWARDED_FEATURES);
+        let companion_dir = temp.path().join("managed_backends").join("apple-companion");
         let project_root = temp.path().join("project");
         // The relative `waterui_path` resolves through the project root, so
         // it must exist for `project/../waterui` to land on the checkout.
         std::fs::create_dir_all(&project_root).expect("project root dir");
         let ctx = ctx(
             Some(PathBuf::from("../waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(project_root),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(
+        smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the companion scaffold should succeed");
 
-        let build_script = std::fs::read_to_string(ffi_dir.join("build.rs"))
-            .expect("ffi build.rs should be written");
+        let build_script = std::fs::read_to_string(companion_dir.join("build.rs"))
+            .expect("companion build.rs should be written");
         assert!(!build_script.contains("waterui_swift_"));
         assert!(!build_script.contains("rustc-link-arg-cdylib"));
     }
@@ -4359,34 +4511,34 @@ mod tests {
     #[test]
     fn generated_manifests_keep_debug_info_off_for_dependencies() {
         let temp = tempfile::tempdir().expect("temp dir");
-        write_fake_framework_checkout(&temp.path().join("waterui"), super::FORWARDED_FFI_FEATURES);
+        write_fake_framework_checkout(&temp.path().join("waterui"), super::FORWARDED_FEATURES);
         let project_root = temp.path().join("project");
         // The relative `waterui_path` resolves through the project root, so
         // it must exist for `project/../waterui` to land on the checkout.
         std::fs::create_dir_all(&project_root).expect("project root dir");
-        let ffi_dir = temp
+        let companion_dir = temp
             .path()
             .join("cache")
             .join("managed_backends")
-            .join("ffi");
+            .join("apple-companion");
         let ctx = ctx(
             Some(PathBuf::from("../waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(project_root),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(
+        smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let dev = &manifest["profile"]["dev"];
 
         // Generated crates declare `[workspace]`, so they inherit no profile and have
@@ -4399,34 +4551,34 @@ mod tests {
     #[test]
     fn generated_manifests_carry_the_release_profile() {
         let temp = tempfile::tempdir().expect("temp dir");
-        write_fake_framework_checkout(&temp.path().join("waterui"), super::FORWARDED_FFI_FEATURES);
+        write_fake_framework_checkout(&temp.path().join("waterui"), super::FORWARDED_FEATURES);
         let project_root = temp.path().join("project");
         // The relative `waterui_path` resolves through the project root, so
         // it must exist for `project/../waterui` to land on the checkout.
         std::fs::create_dir_all(&project_root).expect("project root dir");
-        let ffi_dir = temp
+        let companion_dir = temp
             .path()
             .join("cache")
             .join("managed_backends")
-            .join("ffi");
+            .join("apple-companion");
         let ctx = ctx(
             Some(PathBuf::from("../waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(project_root),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(
+        smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let release = &manifest["profile"]["release"];
 
         // Generated crates are their own workspace roots, so a plain
@@ -4435,7 +4587,7 @@ mod tests {
         // the same source built under the workspace release profile.
         assert_eq!(release["lto"].as_bool(), Some(true));
         assert_eq!(release["codegen-units"].as_integer(), Some(1));
-        assert_eq!(release["opt-level"].as_str(), Some("z"));
+        assert_eq!(release["opt-level"].as_integer(), Some(3));
         assert_eq!(release["strip"].as_bool(), Some(true));
         assert_eq!(release["panic"].as_str(), Some("abort"));
     }
@@ -4506,27 +4658,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn support_app_android_manifest_enables_picture_in_picture_by_default() {
-        let ctx = support_ctx();
-        let template = embedded::ANDROID
-            .get_file("app/src/main/AndroidManifest.xml.tpl")
-            .expect("android manifest template must exist")
-            .contents_utf8()
-            .expect("android manifest template must be utf-8");
-
-        let rendered = render_scaffold_template(
-            TemplateNamespace::Android,
-            std::path::Path::new("app/src/main/AndroidManifest.xml.tpl"),
-            template,
-            &ctx,
-        )
-        .expect("android manifest render");
-
-        assert!(rendered.contains("android:resizeableActivity=\"true\""));
-        assert!(rendered.contains("android:supportsPictureInPicture=\"true\""));
-    }
-
     /// The user's own packages escape the `\"*\"` override through per-package
     /// entries at the generated crate's own dev profile — unoptimized, with
     /// line tables — while `\"*\"` keeps every other dependency optimized and
@@ -4582,7 +4713,7 @@ async fn scaffold_dir(
             // The entry-owning Apple binary names a `waterui-apple`
             // dependency only a render carrying the Apple pieces declares;
             // nothing else renders it.
-            if namespace == TemplateNamespace::Ffi
+            if namespace == TemplateNamespace::AppleCompanion
                 && !ctx.apple_pieces
                 && relative_path == Path::new("src/bin/waterui-apple-main.rs.tpl")
             {
@@ -4650,7 +4781,7 @@ fn render_dir_outputs(
     while let Some(current_dir) = dirs_to_process.pop() {
         for file in current_dir.files() {
             let relative_path = file.path();
-            if namespace == TemplateNamespace::Ffi
+            if namespace == TemplateNamespace::AppleCompanion
                 && !ctx.apple_pieces
                 && relative_path == Path::new("src/bin/waterui-apple-main.rs.tpl")
             {
@@ -4818,7 +4949,7 @@ impl From<GeneratedDependencyDetail> for SupportDependencyDetail {
 /// these crates, not the code under debug.
 ///
 /// Dependencies are also compiled with optimizations: the rendering stack
-/// (vello, wgpu, parley) is a dependency of every generated crate and sits on
+/// (cherenkov, wgpu, parley) is a dependency of every generated crate and sits on
 /// every frame's hot path, and at `opt-level` 0 its per-frame encode-and-submit
 /// alone costs several milliseconds — a debug `water run` visibly drops frames
 /// while scrolling. The generated crate itself stays unoptimized and fully
@@ -4865,7 +4996,7 @@ fn generated_profiles_table(project_packages: &BTreeSet<String>) -> cargo_toml::
     let release = cargo_toml::Profile {
         lto: Some(cargo_toml::LtoSetting::Fat),
         codegen_units: Some(1),
-        opt_level: Some(toml::Value::String("z".to_string())),
+        opt_level: Some(toml::Value::Integer(3)),
         strip: Some(cargo_toml::StripSetting::Symbols),
         panic: Some("abort".to_string()),
         ..Default::default()
@@ -4899,32 +5030,33 @@ fn generated_profiles(
 /// Serialized form of [`generated_profiles_table`], hashed into support-app
 /// template fingerprints: the scaffold `Cargo.toml` is generated
 /// programmatically rather than from an embedded template file, so cached
-/// scaffolds (preview/inspector support apps) would otherwise keep a stale
+/// scaffolds (the inspector support app) would otherwise keep a stale
 /// profile when the generated section changes.
 fn generated_profiles_fingerprint(project_packages: &BTreeSet<String>) -> String {
     toml::to_string(&generated_profiles_table(project_packages))
         .expect("generated profiles must serialize to TOML")
 }
 
+/// The support crate's `Cargo.toml` for `ctx`: its patches come from the
+/// runtime checkout `ctx.waterui_path` names, or the resolved framework's
+/// without one.
 async fn write_support_cargo_toml(
     base_dir: &Path,
-    crate_name: &str,
+    ctx: &TemplateContext,
     features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
-    runtime_root: Option<&Path>,
-    framework: &ResolvedFramework,
-    project_packages: Option<&BTreeSet<String>>,
 ) -> io::Result<()> {
-    let patch = match runtime_root {
+    let patch = match &ctx.waterui_path {
         Some(root) => {
-            let root = root.to_path_buf();
-            smol::unblock(move || collect_framework_checkout_patches(&root)).await?
+            let root = root.clone();
+            let members = ctx.local_sources.workspace_members().to_vec();
+            smol::unblock(move || collect_framework_checkout_patches(&root, &members)).await?
         }
-        None => framework.patches(),
+        None => ctx.framework.patches(),
     };
     let manifest = SupportCargoManifest {
         package: SupportPackageSection {
-            name: crate_name.to_string(),
+            name: ctx.crate_name.as_str().to_string(),
             version: "0.1.0".to_string(),
             edition: "2024".to_string(),
         },
@@ -4935,7 +5067,7 @@ async fn write_support_cargo_toml(
             // dependency graph twice more for products nothing ever loads.
             crate_type: vec!["rlib".to_string()],
         },
-        profile: generated_profiles(project_packages)?,
+        profile: generated_profiles(ctx.project_packages.as_ref())?,
         features,
         dependencies,
         workspace: SupportWorkspaceSection {},
@@ -4955,7 +5087,7 @@ async fn write_support_cargo_toml(
 enum NativeBackendDependencySource<'a> {
     /// The checkout root itself — the `waterui` facade crate.
     WateruiRoot,
-    /// A member directory inside the checkout (`core`, `ffi`, …).
+    /// A member directory inside the checkout (`core`, `backends/apple`, …).
     WorkspaceSubdir(&'a str),
     /// The source the checkout's own manifest resolves the crate to: its
     /// `[patch.crates-io]` override when the declared `[workspace.dependencies]`
@@ -5375,15 +5507,13 @@ async fn write_generated_cargo_toml(base_dir: &Path, toml_string: String) -> io:
     write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await
 }
 
-/// Emit each selectable FFI feature's `dep/feat` forwards, filtered by the
+/// Emit each selectable feature's `dep/feat` forwards, filtered by the
 /// feature table of the package its destination actually resolves to.
 ///
-/// `waterui-ffi` is a non-Apple target dependency in the crates that carry
-/// it, so the forwards are the plain `dep/feat` form; see
-/// `FORWARDED_FFI_FEATURES` for why they are manifest-declared at all. An
-/// older `waterui-ffi` without `inspector` gets no `inspector` forward,
-/// while a backend destination keeps its own entry (`map` still reaches
-/// `waterui-apple/map`). This runs last in each manifest's generation: the
+/// Every forward is the plain `dep/feat` form; see `FORWARDED_FEATURES` for
+/// why they are manifest-declared at all. An older framework without
+/// `inspector` gets no `inspector` forward, while a backend destination
+/// keeps its own entry (`map` still reaches `waterui-apple/map`). This runs last in each manifest's generation: the
 /// probe that learns the resolved tables runs on the manifest being
 /// written, so every dependency and patch must already be in place.
 async fn configure_capability_forwards(
@@ -5398,8 +5528,8 @@ async fn configure_capability_forwards(
         &forward_targets(manifest),
     ))
     .await?;
-    for name in FORWARDED_FFI_FEATURES {
-        let forwards = ffi_feature_forwards(name, manifest, &tables);
+    for name in FORWARDED_FEATURES {
+        let forwards = feature_forwards(name, manifest, &tables);
         if !forwards.is_empty() {
             manifest.features.insert((*name).to_string(), forwards);
         }
@@ -5408,7 +5538,7 @@ async fn configure_capability_forwards(
 }
 
 /// The dependency, patch and feature-forward tables the generated
-/// Apple-target crates share. The FFI companion and the Apple preview
+/// Apple-target crates share. The Apple companion and the Apple preview
 /// package read them through this one function, so the `waterui` facade and
 /// `libwaterui_dylib` resolve to the same Cargo units `water run
 /// --platform macos` compiles in the shared target directory: two
@@ -5510,7 +5640,55 @@ async fn configure_apple_target_tables(
         smol::unblock(move || generated_crate_patches(&ctx)).await?
     };
 
-    configure_capability_forwards(host, manifest, base_dir).await
+    configure_capability_forwards(host, manifest, base_dir).await?;
+
+    // The resolved graph decides which source patches Cargo will actually
+    // apply — a row whose target never enters it is the `patch ... was
+    // not used` warning, so the manifest writes only the rows an
+    // all-features resolve of itself selects.
+    project_source_patches(host, manifest, base_dir).await
+}
+
+/// Replaces `manifest`'s patch tables with the rows a full resolve of the
+/// manifest actually selects — the unused `patch` rows Cargo would warn
+/// about. Skipped entirely when the merged set has no `path`/`git` rows
+/// to project.
+///
+/// # Errors
+///
+/// The probe resolve and the selection must succeed.
+async fn project_source_patches(
+    host: &crate::toolchain::Host,
+    manifest: &mut cargo_toml::Manifest<()>,
+    base_dir: &Path,
+) -> io::Result<()> {
+    let has_source_rows = manifest
+        .patch
+        .values()
+        .flat_map(|table| table.values())
+        .any(|dependency| {
+            matches!(
+                dependency,
+                cargo_toml::Dependency::Detailed(detail)
+                    if detail.path.is_some() || detail.git.is_some()
+            )
+        });
+    if !has_source_rows {
+        return Ok(());
+    }
+    let probe = resolve_generated_probe(
+        host,
+        manifest,
+        base_dir,
+        &[],
+        cargo_metadata::CargoOpt::AllFeatures,
+    )
+    .await?;
+    let projected =
+        crate::patch_tables::resolved_source_patches(&manifest.patch, &probe.metadata, base_dir)
+            .await?;
+    manifest.patch = projected;
+    Ok(())
 }
 
 /// Apple backend templates.
@@ -5539,141 +5717,6 @@ pub mod apple {
     /// Returns an error if a template fails to render.
     pub fn rendered_outputs(ctx: &TemplateContext) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
         render_dir_outputs(TemplateNamespace::Apple, &embedded::APPLE, ctx)
-    }
-}
-
-/// Android backend templates.
-pub mod android {
-    use crate::android::toolchain::AndroidSdk;
-
-    use super::{
-        Path, TemplateContext, TemplateNamespace, embedded, fs, io, normalize_path_for_config,
-        scaffold_dir, write_file_if_changed,
-    };
-
-    /// Write all Android templates to the given directory.
-    ///
-    /// # Errors
-    /// Returns an error if file operations fail.
-    pub async fn scaffold(
-        host: &crate::toolchain::Host,
-        base_dir: &Path,
-        ctx: &TemplateContext,
-    ) -> io::Result<()> {
-        scaffold_dir(
-            TemplateNamespace::Android,
-            &embedded::ANDROID,
-            base_dir,
-            ctx,
-        )
-        .await?;
-        scaffold_dir(
-            TemplateNamespace::AndroidShared,
-            &embedded::ANDROID_SHARED,
-            base_dir,
-            ctx,
-        )
-        .await?;
-        // The template carries the wrapper scripts and properties only — the
-        // repository ships no binary files, so the jar the `gradlew` scripts
-        // need is fetched pinned-and-verified the first time a Gradle task
-        // runs (`run_gradle_tasks`), not at scaffold time: scaffolding must
-        // stay offline-capable.
-
-        // Make gradlew executable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let gradlew_path = base_dir.join("gradlew");
-            if gradlew_path.exists() {
-                let mut perms = fs::metadata(&gradlew_path).await?.permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&gradlew_path, perms).await?;
-            }
-        }
-
-        // Create jniLibs directories
-        for abi in ["arm64-v8a", "x86_64", "armeabi-v7a", "x86"] {
-            let jni_dir = base_dir.join(format!("app/src/main/jniLibs/{abi}"));
-            fs::create_dir_all(&jni_dir).await?;
-        }
-
-        // Generate local.properties with Android SDK path
-        if let Some(sdk_path) = AndroidSdk::detect_path(host) {
-            let local_props = base_dir.join("local.properties");
-            let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
-            write_file_if_changed(&local_props, content.as_bytes()).await?;
-        }
-
-        Ok(())
-    }
-}
-
-/// Embedded-mode Android templates: a Gradle *library* project whose
-/// `:waterui` module assembles the AAR a host application consumes. Unlike
-/// the app template it owns no Activity or manifest entry — the host mounts
-/// the root view through the runtime's `WaterUiRootView`.
-pub mod android_embedded {
-    use crate::android::toolchain::AndroidSdk;
-
-    use super::{
-        Path, TemplateContext, TemplateNamespace, embedded, fs, io, normalize_path_for_config,
-        scaffold_dir, write_file_if_changed,
-    };
-
-    /// Write all embedded Android templates to the given directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if file operations fail.
-    pub async fn scaffold(
-        host: &crate::toolchain::Host,
-        base_dir: &Path,
-        ctx: &TemplateContext,
-    ) -> io::Result<()> {
-        scaffold_dir(
-            TemplateNamespace::AndroidEmbedded,
-            &embedded::ANDROID_EMBEDDED,
-            base_dir,
-            ctx,
-        )
-        .await?;
-        scaffold_dir(
-            TemplateNamespace::AndroidShared,
-            &embedded::ANDROID_SHARED,
-            base_dir,
-            ctx,
-        )
-        .await?;
-        // gradle-wrapper.jar materializes at first Gradle run — see the
-        // android scaffold note above.
-
-        // Make gradlew executable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let gradlew_path = base_dir.join("gradlew");
-            if gradlew_path.exists() {
-                let mut perms = fs::metadata(&gradlew_path).await?.permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&gradlew_path, perms).await?;
-            }
-        }
-
-        // Create jniLibs directories under the library module
-        for abi in ["arm64-v8a", "x86_64", "armeabi-v7a", "x86"] {
-            let jni_dir = base_dir.join(format!("waterui/src/main/jniLibs/{abi}"));
-            fs::create_dir_all(&jni_dir).await?;
-        }
-
-        // Generate local.properties with Android SDK path
-        if let Some(sdk_path) = AndroidSdk::detect_path(host) {
-            let local_props = base_dir.join("local.properties");
-            let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
-            write_file_if_changed(&local_props, content.as_bytes()).await?;
-        }
-
-        Ok(())
     }
 }
 
@@ -6058,6 +6101,17 @@ pub mod hydrolysis {
             bins,
             profile: super::generated_profiles(ctx.project_packages.as_ref())?,
             features: BTreeMap::from([
+                // The Android painters: `water build`/`run`/`package` enable
+                // the resolved painter's feature on the launcher, mirroring
+                // the test-app's wiring — `gpu` links the Cherenkov GPU
+                // attachment and the GPU-capable `waterui`, `hwui` the
+                // platform `RenderNode` target and no GPU stack. Off Android
+                // the features select nothing the desktop build lacks.
+                (
+                    "gpu".to_string(),
+                    vec!["hydrolysis/gpu".to_string(), "waterui/gpu".to_string()],
+                ),
+                ("hwui".to_string(), vec!["hydrolysis/hwui".to_string()]),
                 // The preview runtime module compiles under the feature
                 // alone — it no longer consumes the `waterui-preview`
                 // support-app crate.
@@ -6252,9 +6306,7 @@ pub mod hydrolysis {
                         NativeBackendDependencySpec::new(
                             "waterui-browser-cef",
                             &[],
-                            NativeBackendDependencySource::WorkspaceSubdir(
-                                "components/platform/browser-cef",
-                            ),
+                            NativeBackendDependencySource::WorkspaceDependency,
                         ),
                     )?),
                 );
@@ -6279,6 +6331,11 @@ pub mod hydrolysis {
     fn android_target_dependencies(
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
+        let mut hydrolysis_features = vec!["accessibility"];
+        // One predicate drives both surfaces: the Gradle `webview/` module
+        // substitution reads this same `webview_backend_feature` answer
+        // through `hydrolysis_android_has_system_webview`.
+        hydrolysis_features.extend(ctx.webview_backend_feature()?);
         Ok(BTreeMap::from([
             (
                 "hydrolysis".to_string(),
@@ -6287,13 +6344,16 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            &["accessibility"],
+                            &hydrolysis_features,
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?
                     .with_default_features(false),
                 ),
             ),
+            // No `gpu` here: the GPU stack reaches `waterui` through the
+            // launcher's `gpu` feature, so a `hwui` painter build links a
+            // `waterui` without it.
             (
                 "waterui".to_string(),
                 GeneratedDependencyValue::detailed(
@@ -6301,7 +6361,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui",
-                            &["gpu"],
+                            &[],
                             NativeBackendDependencySource::WateruiRoot,
                         ),
                     )?
@@ -6445,7 +6505,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            &["web"],
+                            &ctx.web.hydrolysis_features(),
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?
@@ -6474,11 +6534,6 @@ pub mod hydrolysis {
     }
 }
 
-/// The generated Gradle app that runs a `WaterUI` application through the
-/// Hydrolysis Android host: a Kotlin `HydrolysisActivity` subclass, the
-/// painter band, and the Rust cdylib wiring — rendered under
-/// `<backend>/android` beside the launcher crate `templates::hydrolysis`
-/// scaffolds.
 /// The shared embedded trees every Hydrolysis Android composite writes
 /// alongside its own module tree — the Gradle root files and the generic
 /// Android wrapper set — so `scaffold` and `rendered_outputs` for both the
@@ -6526,6 +6581,11 @@ async fn scaffold_hydrolysis_android_project(
     finish_hydrolysis_android_scaffold(host, base_dir).await
 }
 
+/// The generated Gradle app that runs a `WaterUI` application through the
+/// Hydrolysis Android host: a Kotlin `HydrolysisActivity` subclass, the
+/// painter band, and the Rust cdylib wiring — rendered under
+/// `<backend>/android` beside the launcher crate `templates::hydrolysis`
+/// scaffolds.
 pub mod hydrolysis_android {
     use super::{Path, PathBuf, TemplateContext, TemplateNamespace, embedded, io};
 
@@ -6559,6 +6619,50 @@ pub mod hydrolysis_android {
         super::hydrolysis_android_rendered_outputs(
             TemplateNamespace::HydrolysisAndroid,
             &embedded::HYDROLYSIS_ANDROID,
+            ctx,
+        )
+    }
+}
+
+/// Hydrolysis Android embedded-library (`waterui` AAR) templates.
+pub mod hydrolysis_android_embedded {
+    use super::{Path, TemplateContext, TemplateNamespace, embedded, io};
+
+    #[cfg(test)]
+    use super::PathBuf;
+
+    /// Write the embedded-library Gradle project (the shared root files plus
+    /// the `waterui` AAR module) to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
+        super::scaffold_hydrolysis_android_project(
+            host,
+            base_dir,
+            TemplateNamespace::HydrolysisAndroidEmbedded,
+            &embedded::HYDROLYSIS_ANDROID_EMBEDDED,
+            ctx,
+        )
+        .await
+    }
+
+    /// Every file `scaffold` would write, as backend-relative path and
+    /// content, without touching the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if template rendering fails.
+    #[cfg(test)]
+    pub fn rendered_outputs(ctx: &TemplateContext) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+        super::hydrolysis_android_rendered_outputs(
+            TemplateNamespace::HydrolysisAndroidEmbedded,
+            &embedded::HYDROLYSIS_ANDROID_EMBEDDED,
             ctx,
         )
     }
@@ -6819,6 +6923,15 @@ pub mod tui {
     }
 }
 
+/// The manifest at `path` exactly as written — no workspace inheritance
+/// completed and no targets discovered from the package's sources, the
+/// filesystem walks `cargo_toml::Manifest::from_path` performs. Every
+/// reader here takes tables Cargo never inherits (`[workspace]`,
+/// `[patch]`, `[features]`, `[package] name`).
+fn parse_cargo_manifest(path: &Path) -> Result<cargo_toml::Manifest, cargo_toml::Error> {
+    cargo_toml::Manifest::from_slice(&std::fs::read(path)?)
+}
+
 /// Reads the `[patch]` tables from the workspace root that governs a build
 /// rooted at `project_root`, with path patches made absolute and normalized
 /// for config files the same way every other path the crate renders is.
@@ -6890,77 +7003,19 @@ fn patch_framework_git_source(patches: &mut cargo_toml::PatchSet) {
     }
 }
 
-/// Every directory the workspace at `root` declares a member crate in —
-/// `[workspace] members` patterns expanded one path segment at a time and
-/// `exclude` subtracted the same way — paired with the package name the
-/// member's manifest declares. `components/*`-style member globs carry crates
-/// the patch table never names, so generated manifests that copy only the
-/// checkout's `[patch]` leave them unpinned.
-fn workspace_member_packages(root: &Path) -> io::Result<Vec<(String, PathBuf)>> {
-    // A missing manifest is an empty member set, matching
-    // `collect_workspace_patches`' missing-workspace default: a
-    // `waterui_path` that names nothing augments nothing.
-    if !root.join("Cargo.toml").is_file() {
-        return Ok(Vec::new());
-    }
-    let manifest = cargo_toml::Manifest::from_path(root.join("Cargo.toml"))
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let workspace = manifest.workspace.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "{} declares no [workspace]",
-                root.join("Cargo.toml").display()
-            ),
-        )
-    })?;
-    let expand = |pattern: &str| -> io::Result<Vec<PathBuf>> {
-        let mut dirs = vec![root.to_path_buf()];
-        for component in pattern.split('/') {
-            let mut next = Vec::new();
-            for dir in &dirs {
-                if component == "*" {
-                    for entry in std::fs::read_dir(dir)? {
-                        let path = entry?.path();
-                        if path.is_dir() {
-                            next.push(path);
-                        }
-                    }
-                } else {
-                    let path = dir.join(component);
-                    if path.is_dir() {
-                        next.push(path);
-                    }
-                }
-            }
-            dirs = next;
-        }
-        Ok(dirs)
-    };
-    let mut excluded = std::collections::BTreeSet::new();
-    for pattern in &workspace.exclude {
-        excluded.extend(expand(pattern)?);
-    }
-    let mut packages = Vec::new();
-    for pattern in &workspace.members {
-        for dir in expand(pattern)? {
-            if excluded.contains(&dir) {
-                continue;
-            }
-            let member_manifest = dir.join("Cargo.toml");
-            if let Ok(member) = cargo_toml::Manifest::from_path(&member_manifest)
-                && let Some(package) = member.package
-            {
-                packages.push((package.name, dir));
-            }
-        }
-    }
-    Ok(packages)
+/// Whether a checkout member package is part of the framework a generated
+/// crate pins: a `waterui*` crate or a framework member such as
+/// `hydrolysis`.
+fn is_framework_package(name: &str) -> bool {
+    name.starts_with("waterui")
+        || FRAMEWORK_MEMBERS
+            .iter()
+            .any(|member| member.package == name)
 }
 
 /// [`collect_workspace_patches`] plus a `{ path }` entry for every framework
 /// member package the checkout's own patch table leaves out — the workspace's
-/// glob members (`waterui-ffi`, `waterui-preview`, …) and the `*-path` members
+/// glob members (`waterui-testing`, …) and the `*-path` members
 /// (`hydrolysis`) carry no entry of their own, and without one a generated
 /// crate resolves their registry copies beside the patched siblings (#197,
 /// #1635). The member set is read off the checkout's workspace globs, the
@@ -6969,19 +7024,16 @@ fn workspace_member_packages(root: &Path) -> io::Result<Vec<(String, PathBuf)>> 
 /// and the repository-source mirror alike.
 pub fn collect_framework_checkout_patches(
     workspace_root: &Path,
+    members: &[crate::framework::CheckoutMember],
 ) -> io::Result<cargo_toml::PatchSet> {
     let mut patches = collect_workspace_patches(workspace_root)?;
-    for (name, dir) in workspace_member_packages(workspace_root)? {
-        if !(name.starts_with("waterui")
-            || FRAMEWORK_MEMBERS
-                .iter()
-                .any(|member| member.package == name))
-        {
+    for member in members {
+        if !is_framework_package(&member.name) {
             continue;
         }
-        let path = normalize_path_for_config(&dir);
+        let path = normalize_path_for_config(&workspace_root.join(&member.dir));
         for table in patches.values_mut() {
-            table.entry(name.clone()).or_insert_with(|| {
+            table.entry(member.name.clone()).or_insert_with(|| {
                 cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
                     path: Some(path.clone()),
                     ..cargo_toml::DependencyDetail::default()
@@ -7010,7 +7062,7 @@ fn generated_crate_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::Patc
 fn framework_crate_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
     ctx.waterui_workspace_root().map_or_else(
         || Ok(ctx.framework.patches()),
-        |root| collect_framework_checkout_patches(&root),
+        |root| collect_framework_checkout_patches(&root, ctx.local_sources.workspace_members()),
     )
 }
 
@@ -7053,7 +7105,7 @@ pub const LOCKFILE_SEED: &str = "Cargo.lock.seed";
 /// way the project lock is: a CLI whose rules differ must re-seed once
 /// rather than trust a stamp an older merge wrote. Bump this when the
 /// merge — or the stamp's own layout — changes.
-const LOCKFILE_SEED_FORMAT: u32 = 2;
+const LOCKFILE_SEED_FORMAT: u32 = 3;
 
 /// Seed a managed crate's `Cargo.lock` from the application's lockfile.
 ///
@@ -7078,8 +7130,11 @@ const LOCKFILE_SEED_FORMAT: u32 = 2;
 /// (#2073). The stamp at [`LOCKFILE_SEED`] records the inputs instead, and
 /// the crate is re-seeded only when the project's lockfile or the canonical
 /// lock changed since the last seed, or when the crate has no `Cargo.lock`
-/// at all. A project without a lockfile has nothing to pin yet and is left
-/// to resolve on its own.
+/// at all. A project without a lockfile has nothing of its own to pin yet;
+/// the canonical lock still seeds when the channel carries one — the
+/// create-time font scans reach the managed crate before the project first
+/// resolves, and the certified pins the channel locks — a yanked registry
+/// release among them (#1240) — are the versions Cargo may keep.
 ///
 /// # Errors
 ///
@@ -7087,16 +7142,25 @@ const LOCKFILE_SEED_FORMAT: u32 = 2;
 pub async fn seed_lockfile(
     base_dir: &Path,
     project_lockfile: &Path,
-    canonical: Option<&cargo_lock::Lockfile>,
+    canonical: Option<&crate::framework::CanonicalLock<'_>>,
 ) -> io::Result<()> {
     let seed = match fs::read(project_lockfile).await {
         Ok(seed) => seed,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if canonical.is_none() {
+                tracing::debug!(
+                    lockfile = %project_lockfile.display(),
+                    "project has no lockfile; the managed crate resolves on its own"
+                );
+                return Ok(());
+            }
             tracing::debug!(
                 lockfile = %project_lockfile.display(),
-                "project has no lockfile; the managed crate resolves on its own"
+                "project has no lockfile; the managed crate seeds from the canonical lock alone"
             );
-            return Ok(());
+            // An empty lockfile carries no project pins: the merge below
+            // fills it with the canonical entries alone.
+            b"version = 4\n".to_vec()
         }
         Err(error) => return Err(error),
     };
@@ -7123,8 +7187,13 @@ pub async fn seed_lockfile(
     // the registry holds newest — an `accesskit` generation `Water.lock`
     // contradicts (#203). `previous` fills what neither lock names so
     // packages only the managed crate adds stay put.
+    let canonical = canonical
+        .map(crate::framework::CanonicalLock::lock)
+        .transpose()
+        .map_err(io::Error::other)?;
     let mut merged = parse_lockfile(&seed)?;
-    merged.packages = crate::framework::seed_packages(canonical, &merged, previous.as_ref());
+    merged.packages =
+        crate::framework::seed_packages(canonical.as_ref(), &merged, previous.as_ref());
 
     tracing::debug!(
         lockfile = %project_lockfile.display(),
@@ -7192,18 +7261,18 @@ async fn restore_seeded_file(path: &Path, previous: Option<&[u8]>) -> io::Result
 /// and the canonical lock's checksum, so the stamp still parses as the
 /// lockfile it copies. A changed project lock, canonical checksum or merge
 /// format fails the byte comparison and re-seeds.
-fn seed_stamp(project_lock: &[u8], canonical: Option<&cargo_lock::Lockfile>) -> Vec<u8> {
-    use sha2::Digest as _;
+fn seed_stamp(
+    project_lock: &[u8],
+    canonical: Option<&crate::framework::CanonicalLock<'_>>,
+) -> Vec<u8> {
     let mut stamp = project_lock.to_vec();
     if !stamp.ends_with(b"\n") {
         stamp.push(b'\n');
     }
     stamp.extend_from_slice(format!("# seed-format: {LOCKFILE_SEED_FORMAT}\n").as_bytes());
-    stamp.extend_from_slice(b"# canonical-lock-sha256: ");
+    stamp.extend_from_slice(b"# canonical-lock: ");
     match canonical {
-        Some(canonical) => stamp.extend_from_slice(
-            hex::encode(sha2::Sha256::digest(canonical.to_string().as_bytes())).as_bytes(),
-        ),
+        Some(canonical) => stamp.extend_from_slice(canonical.digest().as_bytes()),
         None => stamp.extend_from_slice(b"none"),
     }
     stamp.push(b'\n');
@@ -7232,10 +7301,10 @@ fn parse_lockfile(contents: &[u8]) -> io::Result<cargo_lock::Lockfile> {
 pub fn local_framework_patches(
     project_root: &Path,
     waterui_path: &Path,
+    members: &[crate::framework::CheckoutMember],
 ) -> io::Result<cargo_toml::PatchSet> {
-    let manifest =
-        cargo_toml::Manifest::from_path(project_root.join(waterui_path).join("Cargo.toml"))
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let manifest = parse_cargo_manifest(&project_root.join(waterui_path).join("Cargo.toml"))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let mut patches = manifest.patch;
     for deps in patches.values_mut() {
         for dependency in deps.values_mut() {
@@ -7251,20 +7320,14 @@ pub fn local_framework_patches(
     // framework member's directory the same relative way (#197) — the `*-path`
     // members included, so an independent dependent's crates.io requirement
     // (`hydrolysis-m3`'s `hydrolysis` edge) resolves into the checkout too.
-    let checkout_root = project_root.join(waterui_path);
-    for (name, dir) in workspace_member_packages(&checkout_root)? {
-        if !(name.starts_with("waterui")
-            || FRAMEWORK_MEMBERS
-                .iter()
-                .any(|member| member.package == name))
-            || !dir.starts_with(&checkout_root)
-        {
+    for member in members {
+        // A member outside the checkout has no path relative to it.
+        if !is_framework_package(&member.name) || member.dir.is_absolute() {
             continue;
         }
-        let path = waterui_path.join(dir.strip_prefix(&checkout_root).unwrap_or(&dir));
-        let path = normalize_path_for_config(&path);
+        let path = normalize_path_for_config(&waterui_path.join(&member.dir));
         for table in patches.values_mut() {
-            table.entry(name.clone()).or_insert_with(|| {
+            table.entry(member.name.clone()).or_insert_with(|| {
                 cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
                     path: Some(path.clone()),
                     ..cargo_toml::DependencyDetail::default()
@@ -7303,7 +7366,7 @@ fn local_checkout_dependency(
         )
     })?;
     let manifest_path = root.join("Cargo.toml");
-    let manifest = cargo_toml::Manifest::from_path(&manifest_path)
+    let manifest = parse_cargo_manifest(&manifest_path)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let declared = manifest
         .workspace
@@ -7404,10 +7467,13 @@ pub fn project_patches(
     project_root: &Path,
     manifest: &crate::project::Manifest,
 ) -> io::Result<cargo_toml::PatchSet> {
-    match (&manifest.framework, &manifest.waterui_path) {
+    match (&manifest.framework(), &manifest.waterui_path()) {
         (Some(framework), _) => Ok(framework.patches()),
         (None, Some(waterui_path)) => {
-            local_framework_patches(project_root, Path::new(waterui_path))
+            let members =
+                crate::framework::checkout_member_packages(&project_root.join(waterui_path))
+                    .map_err(io::Error::other)?;
+            local_framework_patches(project_root, Path::new(waterui_path), &members)
         }
         (None, None) => Ok(cargo_toml::PatchSet::default()),
     }
@@ -7439,7 +7505,7 @@ fn find_workspace_manifest(
         if !manifest_path.is_file() {
             continue;
         }
-        let manifest = cargo_toml::Manifest::from_path(&manifest_path)
+        let manifest = parse_cargo_manifest(&manifest_path)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         if manifest.workspace.is_some() {
             return Ok(Some((dir.to_path_buf(), manifest)));
@@ -7451,20 +7517,18 @@ fn find_workspace_manifest(
     Ok(fallback)
 }
 
-/// The `waterui-ffi` features the generated FFI manifests re-export under their
-/// own names, so builds select them as features of the generated crate.
+/// The features the generated Apple manifests re-export under their own
+/// names, so builds select them as features of the generated crate.
 ///
 /// Cargo only honours the seeded lockfile for dependency subtrees it reaches
 /// through manifest-declared features: `dep/feature` passed to `--features`
 /// resolves outside the lockfile's coverage — the reported resolve is free to
 /// drift off `Water.lock`, and the lockfile Cargo writes back omits that
-/// subtree entirely (#197: `hyper-util` drifted under `waterui-ffi/media` →
+/// subtree entirely (#197: `hyper-util` drifted under `waterui/media` →
 /// `waterkit-audio` → `zenwave` and the generated-build gate then rejected
 /// its own resolution). Declaring each selectable feature in the manifest
 /// keeps every one of them inside the locked graph.
-const FORWARDED_FFI_FEATURES: &[&str] = &[
-    "android-jni",
-    "c-api",
+const FORWARDED_FEATURES: &[&str] = &[
     "chromium",
     "gpu",
     "inspector",
@@ -7475,9 +7539,9 @@ const FORWARDED_FFI_FEATURES: &[&str] = &[
     "webview-cef",
 ];
 
-/// Additional `dep/feature` forwards a selectable FFI feature emits beyond
-/// `waterui-ffi`: (feature name, destination dependency, the feature it turns
-/// on there). `map` also turns on `waterui-apple/map` so the native
+/// Additional `dep/feature` forwards a selectable feature emits beyond the
+/// `waterui` facade: (feature name, destination dependency, the feature it
+/// turns on there). `map` also turns on `waterui-apple/map` so the native
 /// `MKMapView` leaf compiles only when the app's graph opted in; the `media`
 /// and `webview` capabilities forward the same way, so the `AVKit` and
 /// `WebKit` leaves — and the framework links they carry through `cocoa-ui` —
@@ -7492,15 +7556,14 @@ const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
     ("webview-cef", "waterui-browser-cef", "webview"),
 ];
 
-/// The selectable FFI features that also reach the `waterui` facade crate —
-/// the gpu/media/video/webview capability surface the native Apple entry
+/// The selectable features that also reach the `waterui` facade crate — the
+/// gpu/media/video/webview capability surface the native Apple entry
 /// compiles. Emitted only while the Apple backend is selected.
 const APPLE_RUNTIME_FEATURE_FORWARDS: &[&str] = &["gpu", "media", "video", "webview"];
 
 /// The declaration `name` carries in `manifest`, wherever it lives:
 /// `[dependencies]` or a `[target.*.dependencies]` table. A generated
 /// manifest names a package in exactly one table — `waterui` top-level,
-/// `waterui-ffi` behind `cfg(not(target_vendor = "apple"))`,
 /// `waterui-apple` behind `cfg(target_vendor = "apple")`,
 /// `waterui-browser-cef` behind `cfg(target_os = "macos")` — so the first
 /// match is the declaration.
@@ -7525,41 +7588,31 @@ fn declares(tables: &FeatureTables, dep: &str, feature: &str) -> bool {
     tables.get(dep).is_some_and(|table| table.contains(feature))
 }
 
-/// The `dep/feature` entries a selectable feature forwards to: the
-/// `waterui-ffi` entry and each backend destination the manifest declares,
-/// each kept only when that destination's resolved package declares the
-/// feature. Empty when no destination declares it — the feature is not
-/// emitted at all.
+/// The `dep/feature` entries a selectable feature forwards to: the `waterui`
+/// facade and each backend destination the manifest declares, each kept only
+/// when that destination's resolved package declares the feature. Empty when
+/// no destination declares it — the feature is not emitted at all.
 ///
 /// A forward names a feature of the dependency verbatim
-/// (`name = ["waterui-ffi/name"]`), so a package that lacks the feature fails
-/// the whole resolution: every released framework through 0.5.2 carries no
+/// (`name = ["waterui/name"]`), so a package that lacks the feature fails the
+/// whole resolution: every released framework through 0.5.2 carries no
 /// `inspector`, and a manifest that declared it unconditionally could not
 /// resolve against the stable channel at all. Filtering per destination by
-/// the resolved package's own `[features]` table keeps an older `waterui-ffi`
+/// the resolved package's own `[features]` table keeps an older framework
 /// behaving exactly as before — what it enables it enables through its own
 /// dependencies — while a backend destination keeps its own entry even when
-/// the framework side never declared the feature: `map` still reaches
-/// `waterui-apple/map` when an older `waterui-ffi` drops out of the forward.
-fn ffi_feature_forwards(
+/// the facade side never declared the feature: `map` still reaches
+/// `waterui-apple/map` when an older facade drops out of the forward.
+fn feature_forwards(
     name: &str,
     manifest: &cargo_toml::Manifest<()>,
     tables: &FeatureTables,
 ) -> Vec<String> {
     let mut forwards = Vec::new();
-    let ffi_declares = declares(tables, "waterui-ffi", name);
-    if ffi_declares {
-        forwards.push(format!("waterui-ffi/{name}"));
-    }
-    // The `waterui` facade forwards ride with the native Apple runtime: the
-    // manifest declares `waterui-apple` exactly when that backend was
-    // selected. A manifest that declares no `waterui-ffi` dependency at all
-    // — the Apple preview package — routes to the facade instead, so the
-    // feature means the same thing whichever manifest carries it.
-    let facade_route = (APPLE_RUNTIME_FEATURE_FORWARDS.contains(&name)
-        && declared_dependency(manifest, "waterui-apple").is_some())
-        || declared_dependency(manifest, "waterui-ffi").is_none();
-    if facade_route
+    // The `waterui` facade forwards ride with the native Apple runtime —
+    // the only target these generated crates name — and only for the
+    // capability surface the entry compiles.
+    if APPLE_RUNTIME_FEATURE_FORWARDS.contains(&name)
         && declared_dependency(manifest, "waterui").is_some()
         && declares(tables, "waterui", name)
     {
@@ -7579,18 +7632,12 @@ fn ffi_feature_forwards(
     forwards
 }
 
-/// The dependency names a generated manifest's forwards can target:
-/// `waterui-ffi` and the `waterui` facade and each
-/// `BACKEND_FEATURE_FORWARDS` destination the manifest declares — a backend
-/// forward references the backend crate, so it only exists where that
-/// backend is a dependency. The Apple preview package carries no
-/// `waterui-ffi` edge, so the name is a target only where the manifest
-/// declares it.
+/// The dependency names a generated manifest's forwards can target: the
+/// `waterui` facade and each `BACKEND_FEATURE_FORWARDS` destination the
+/// manifest declares — a backend forward references the backend crate, so it
+/// only exists where that backend is a dependency.
 fn forward_targets(manifest: &cargo_toml::Manifest<()>) -> Vec<&'static str> {
     let mut targets = Vec::new();
-    if declared_dependency(manifest, "waterui-ffi").is_some() {
-        targets.push("waterui-ffi");
-    }
     for dep in
         std::iter::once("waterui").chain(BACKEND_FEATURE_FORWARDS.iter().map(|(_, dep, _)| *dep))
     {
@@ -7634,8 +7681,8 @@ pub fn collapse_dotdot(path: &Path) -> PathBuf {
 /// what fails the resolve. The probe is written into a temporary directory —
 /// never into the generated project — with every relative `path` absolutized
 /// against `manifest_dir` and each probed dependency held non-optional, since
-/// an optional edge (the preview crate's `waterui-ffi`) only enters the
-/// resolved graph under a feature that enables it.
+/// an optional edge only enters the resolved graph under a feature that
+/// enables it.
 ///
 /// # Errors
 ///
@@ -7663,18 +7710,17 @@ async fn resolved_forward_tables(
             Some(path) => {
                 let dep_manifest_path =
                     collapse_dotdot(&manifest_dir.join(path)).join("Cargo.toml");
-                let dep_manifest =
-                    cargo_toml::Manifest::from_path(&dep_manifest_path).map_err(|error| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "cannot load the manifest of `{target}` at {} \
+                let dep_manifest = parse_cargo_manifest(&dep_manifest_path).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "cannot load the manifest of `{target}` at {} \
                                  (dependency of {}): {error}",
-                                dep_manifest_path.display(),
-                                generated_manifest.display(),
-                            ),
-                        )
-                    })?;
+                            dep_manifest_path.display(),
+                            generated_manifest.display(),
+                        ),
+                    )
+                })?;
                 tables.insert(
                     target.to_string(),
                     dep_manifest.features.keys().cloned().collect(),
@@ -7714,7 +7760,7 @@ async fn resolved_forward_tables(
 ///
 /// Each target is identified by the resolved package, not the edge name —
 /// `resolve.nodes[].deps[].name` may carry a normalized spelling
-/// (`waterui_ffi`), so the dep edge's `pkg` id is looked up in
+/// (`waterui_apple`), so the dep edge's `pkg` id is looked up in
 /// `metadata.packages` and matched on the package's own name.
 ///
 /// # Errors
@@ -7725,8 +7771,8 @@ async fn resolved_forward_tables(
 /// `probe`'s own copy of `manifest`'s dependency declarations: every
 /// relative `path` absolutized against `manifest_dir` — the probe resolves
 /// from a temporary directory — and each `unresolved` target held
-/// non-optional, since an optional edge (the preview crate's `waterui-ffi`)
-/// only enters the resolved graph under a feature that enables it.
+/// non-optional, since an optional edge only enters the resolved graph under
+/// a feature that enables it.
 fn absolutize_probe_paths(
     probe: &mut cargo_toml::Manifest<()>,
     manifest_dir: &Path,
@@ -7776,6 +7822,119 @@ fn absolutize_probe_paths(
     }
 }
 
+/// Resolves a generated manifest's dependency graph in an owned probe
+/// copy — a temporary crate inside `manifest_dir`'s `target` directory
+/// (never `/tmp`) declaring a stub library, the caller's feature
+/// selection, and a copy of the managed `Cargo.lock` seed when one is
+/// already in place. The input's feature table is used as given — the
+/// forward caller clears its copy first, the patch-projection caller
+/// passes the final manifest verbatim.
+///
+/// # Errors
+///
+/// The probe directory, manifest, stub, or `cargo metadata` run must
+/// succeed.
+async fn resolve_generated_probe(
+    host: &crate::toolchain::Host,
+    manifest: &cargo_toml::Manifest<()>,
+    manifest_dir: &Path,
+    unresolved: &[&str],
+    features: cargo_metadata::CargoOpt,
+) -> io::Result<GeneratedProbe> {
+    let probe_dir = prepare_generated_probe(manifest, manifest_dir, unresolved).await?;
+    let manifest_path = probe_dir.path().join("Cargo.toml");
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(&manifest_path);
+    command.current_dir(manifest_dir);
+    command.features(features);
+    let metadata = host.cargo_metadata(&command).await.map_err(|error| {
+        io::Error::other(format!(
+            "cannot resolve the dependency graph of the generated manifest at {} \
+             (probe {}): {error}",
+            manifest_dir.join("Cargo.toml").display(),
+            manifest_path.display(),
+        ))
+    })?;
+    Ok(GeneratedProbe {
+        metadata,
+        _directory: probe_dir,
+    })
+}
+
+/// Writes the isolated probe crate [`resolve_generated_probe`] resolves —
+/// the manifest clone with its own workspace, a stub library and no other
+/// products, every relative path absolutized — and copies the managed
+/// `Cargo.lock` seed into it when one exists. The returned directory
+/// keeps the probe manifest on disk until the caller drops it.
+///
+/// # Errors
+///
+/// The probe directory, lock copy, manifest write, or stub write must
+/// succeed.
+async fn prepare_generated_probe(
+    manifest: &cargo_toml::Manifest<()>,
+    manifest_dir: &Path,
+    unresolved: &[&str],
+) -> io::Result<tempfile::TempDir> {
+    let mut probe = manifest.clone();
+    probe.workspace = Some(cargo_toml::Workspace::default());
+    // The probe resolves before the template sources land, so it declares
+    // no products — their files are not on disk — and gets the single
+    // target Cargo insists on, a stub `src/lib.rs` written beside it
+    // below.
+    probe.lib = Some(cargo_toml::Product {
+        path: Some("src/lib.rs".to_string()),
+        ..cargo_toml::Product::default()
+    });
+    probe.bin.clear();
+    probe.test.clear();
+    probe.bench.clear();
+    probe.example.clear();
+    absolutize_probe_paths(&mut probe, manifest_dir, unresolved);
+
+    let probe_root = manifest_dir.join("target");
+    fs::create_dir_all(&probe_root).await?;
+    let probe_dir = smol::unblock(move || tempfile::tempdir_in(&probe_root)).await?;
+    let lock = manifest_dir.join("Cargo.lock");
+    // The managed lock seed rides into the probe so it resolves the same
+    // graph the build will, pins and all. A missing seed is valid on a
+    // first resolve; every other copy failure propagates.
+    match fs::copy(&lock, probe_dir.path().join("Cargo.lock")).await {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+        _ => {}
+    }
+    let manifest_path = probe_dir.path().join("Cargo.toml");
+    let toml_string = toml::to_string_pretty(&probe)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    fs::create_dir_all(probe_dir.path().join("src")).await?;
+    let write_manifest = fs::write(&manifest_path, toml_string.as_bytes());
+    let write_stub = fs::write(probe_dir.path().join("src/lib.rs"), "// probe target\n");
+    smol::future::try_zip(write_manifest, write_stub).await?;
+    Ok(probe_dir)
+}
+
+/// A probe's resolved metadata alongside the owned directory that keeps
+/// its manifest alive — canonicalizing the resolved packages' manifest
+/// paths touches it, so the directory outlives every consumer's read.
+struct GeneratedProbe {
+    metadata: cargo_metadata::Metadata,
+    // Held for its `Drop`: the probe's manifest paths stay on disk while
+    // any consumer of `metadata` may canonicalize them.
+    _directory: tempfile::TempDir,
+}
+
+impl GeneratedProbe {
+    /// The probe's owned directory, alive for as long as `self` is. The
+    /// field is underscore-named — held only for `Drop` — and the test
+    /// reads it exactly here.
+    #[cfg(test)]
+    #[allow(clippy::used_underscore_binding)]
+    fn directory(&self) -> &Path {
+        self._directory.path()
+    }
+}
+
 async fn probe_forward_tables(
     host: &crate::toolchain::Host,
     manifest: &cargo_toml::Manifest<()>,
@@ -7783,44 +7942,24 @@ async fn probe_forward_tables(
     unresolved: &[&str],
 ) -> io::Result<FeatureTables> {
     let generated_manifest = manifest_dir.join("Cargo.toml");
-    let mut probe = manifest.clone();
-    probe.features.clear();
-    probe.workspace = Some(cargo_toml::Workspace::default());
-    // The probe resolves before the template sources land, so it declares no
-    // products — their files are not on disk — and gets the single target
-    // Cargo insists on, a stub `src/lib.rs` written beside it below.
-    probe.lib = None;
-    probe.bin.clear();
-    probe.test.clear();
-    probe.bench.clear();
-    probe.example.clear();
-    absolutize_probe_paths(&mut probe, manifest_dir, unresolved);
-
-    let probe_dir = tempfile::tempdir_in(host.temp_dir())?;
-    let manifest_path = probe_dir.path().join("Cargo.toml");
-    let toml_string = toml::to_string_pretty(&probe)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    fs::create_dir_all(probe_dir.path().join("src")).await?;
-    fs::write(probe_dir.path().join("src/lib.rs"), "// probe target\n").await?;
-    fs::write(&manifest_path, toml_string.as_bytes()).await?;
-    let metadata = crate::project_model::assets::crate_metadata(host, &manifest_path, &[])
-        .await
-        .map_err(|error| {
-            io::Error::other(format!(
-                "cannot resolve the dependency graph of the generated manifest at {} \
-                 (probe {}): {error}",
-                generated_manifest.display(),
-                manifest_path.display(),
-            ))
-        })?;
+    let mut probe_manifest = manifest.clone();
+    probe_manifest.features.clear();
+    let probe = resolve_generated_probe(
+        host,
+        &probe_manifest,
+        manifest_dir,
+        unresolved,
+        cargo_metadata::CargoOpt::SomeFeatures(vec![]),
+    )
+    .await?;
+    let metadata = &probe.metadata;
 
     let resolve = metadata.resolve.as_ref().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "the generated manifest at {} resolved no dependency graph (probe {})",
+                "the generated manifest at {} resolved no dependency graph",
                 generated_manifest.display(),
-                manifest_path.display(),
             ),
         )
     })?;
@@ -7832,9 +7971,8 @@ async fn probe_forward_tables(
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "the generated manifest at {} resolved without a root node (probe {})",
+                    "the generated manifest at {} resolved without a root node",
                     generated_manifest.display(),
-                    manifest_path.display(),
                 ),
             )
         })?;
@@ -7854,9 +7992,8 @@ async fn probe_forward_tables(
                     io::ErrorKind::InvalidData,
                     format!(
                         "`{target}` is a dependency of the generated manifest at {} \
-                         but resolved no package named `{target}` (probe {})",
+                         but resolved no package named `{target}`",
                         generated_manifest.display(),
-                        manifest_path.display(),
                     ),
                 )
             })?;
@@ -7868,30 +8005,29 @@ async fn probe_forward_tables(
     Ok(tables)
 }
 
-/// Whether the generated FFI manifest at `manifest_path` declares `feature` —
+/// Whether the generated manifest at `manifest_path` declares `feature` —
 /// and so whether a build may pass it in `--features`. The scaffold filters
-/// the forwarded set by the resolved `waterui-ffi`'s own feature table, so a
+/// the forwarded set by the resolved dependency's own feature table, so a
 /// feature the package does not declare is absent here too.
 ///
 /// # Errors
 /// Returns an error when the manifest cannot be read or parsed.
-pub fn generated_ffi_manifest_declares(manifest_path: &Path, feature: &str) -> io::Result<bool> {
-    let manifest = cargo_toml::Manifest::from_path(manifest_path)
+pub fn generated_manifest_declares(manifest_path: &Path, feature: &str) -> io::Result<bool> {
+    let manifest = parse_cargo_manifest(manifest_path)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     Ok(manifest.features.contains_key(feature))
 }
-/// Native FFI companion crate templates.
-pub mod ffi {
-    use cargo_toml::{Dependency, Manifest, Package, Product, Workspace};
+
+/// Native Apple companion crate templates.
+pub mod apple_companion {
+    use cargo_toml::{Manifest, Package, Product, Workspace};
 
     use super::{
-        BTreeSet, NativeBackendDependencySource, NativeBackendDependencySpec, Path,
-        TemplateContext, TemplateNamespace, cargo_semver, embedded, fs,
-        generated_dependency_from_spec, generated_profiles, io, scaffold_dir,
-        write_file_if_changed,
+        Path, TemplateContext, TemplateNamespace, cargo_semver, embedded, fs, generated_profiles,
+        io, scaffold_dir, write_file_if_changed,
     };
 
-    /// Write all FFI companion templates to the given directory.
+    /// Write all Apple companion templates to the given directory.
     ///
     /// # Errors
     ///
@@ -7903,7 +8039,13 @@ pub mod ffi {
         package_name: &str,
     ) -> io::Result<()> {
         generate_cargo_toml(host, base_dir, ctx, package_name).await?;
-        scaffold_dir(TemplateNamespace::Ffi, &embedded::FFI, base_dir, ctx).await?;
+        scaffold_dir(
+            TemplateNamespace::AppleCompanion,
+            &embedded::APPLE_COMPANION,
+            base_dir,
+            ctx,
+        )
+        .await?;
         // A previous render carrying the Apple pieces leaves the entry
         // binary behind; a render without them must not ship a file naming
         // an undeclared dependency.
@@ -7931,14 +8073,14 @@ pub mod ffi {
         manifest.package = Some(package);
         manifest.profile = generated_profiles(ctx.project_packages.as_ref())?;
 
-        // Apple links `lib<ffi>.a` and Android loads `lib<ffi>.so`, so the manifest
-        // declares only that union plus `rlib` — which Cargo requires for the
+        // A packaged Apple build links `lib<crate>.a` and a shared-runtime
+        // development build loads the `cdylib`; `rlib` is required for the
         // entry-owning binary's dependency emission: the bin must link the
         // crate statically so `_waterui_init`/`_waterui_app` live inside the
         // executable image rather than in a second dylib carrying duplicate
         // ObjC classes.
-        // Each build then narrows further to the single crate type its platform
-        // links, via `RustBuild::with_crate_type_override`.
+        // Each build picks the artifact it links out of Cargo's report, or
+        // narrows to it via `RustBuild::with_crate_type_override`.
         manifest.lib = Some(Product {
             crate_type: vec![
                 "staticlib".to_string(),
@@ -7971,104 +8113,22 @@ pub mod ffi {
             });
         }
 
-        // `waterui-ffi` is this crate's own edge — the Apple preview
-        // package shares every other table through
-        // `configure_apple_target_tables`.
-        insert_waterui_ffi_dependency(&mut manifest, ctx)?;
-
-        super::configure_apple_target_tables(host, &mut manifest, ctx, base_dir, &[]).await?;
-
-        // This crate roots the workspace that also holds preview modules. A preview
-        // module is loaded into the support application and resolves its `WaterUI`
-        // symbols against the runtime that application already has open, so the two
-        // must come out of one Cargo resolution: Cargo derives `-C metadata` — which
-        // it mangles into every symbol — per workspace, and two workspaces produce
-        // runtimes whose symbols cannot resolve against each other even when their
-        // dependency graphs are byte-for-byte identical.
-        //
-        // The members are whichever modules are on disk, listed by name rather than
-        // by a `modules/*` glob: Cargo reads a glob that matches nothing as a
-        // literal path and fails on it, and an ordinary application has no modules
-        // at all.
-        manifest.workspace = Some(Workspace {
-            members: super::preview_module_members(base_dir).await?,
-            ..Workspace::default()
-        });
-
-        let toml_string = toml::to_string_pretty(&manifest)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        fs::create_dir_all(base_dir).await?;
-        write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await?;
-        Ok(())
-    }
-
-    /// Declare the crate's own `waterui-ffi` edge behind the non-Apple
-    /// target cfg. `waterui` resolves it on Apple targets through
-    /// `waterui-apple` instead — the two destinations are mutually
-    /// exclusive so `#[cfg]` paths in generated code agree with Cargo's
-    /// graph.
-    fn insert_waterui_ffi_dependency(
-        manifest: &mut Manifest<()>,
-        ctx: &TemplateContext,
-    ) -> io::Result<()> {
-        let dependency = generated_dependency_from_spec(
+        super::configure_apple_target_tables(
+            host,
+            &mut manifest,
             ctx,
-            NativeBackendDependencySpec::new(
-                "waterui-ffi",
-                &[],
-                NativeBackendDependencySource::WorkspaceSubdir("ffi"),
-            ),
-        )?
-        .with_default_features(false)
-        .into_cargo();
-        manifest
-            .target
-            .entry("cfg(not(target_vendor = \"apple\"))".to_string())
-            .or_default()
-            .dependencies
-            .insert(
-                "waterui-ffi".to_owned(),
-                Dependency::Detailed(Box::new(dependency)),
-            );
-        Ok(())
-    }
+            base_dir,
+            if ctx.embedded { &["swiftui"] } else { &[] },
+        )
+        .await?;
 
-    /// Lay down the workspace root the preview modules resolve under before
-    /// the support project exists to generate the real one.
-    ///
-    /// `scaffold_preview_module` writes a module's manifest before the
-    /// preview support app has been scaffolded, so the first run reaches
-    /// `cargo metadata` on the module with no `[workspace]` root above it:
-    /// Cargo honours `[patch]` only at a workspace root, so the module's own
-    /// table is ignored and the resolution collapses to the registry copies
-    /// (#197). This manifest carries just the workspace — members, the
-    /// channel's or checkout's patch tables, the generated profile — and the
-    /// managed `generate_cargo_toml` run overwrites it once the support
-    /// project exists, member list included.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the modules directory or the manifest cannot be
-    /// written.
-    pub async fn write_workspace_root_manifest(
-        base_dir: &Path,
-        patches: cargo_toml::PatchSet,
-        project_root: Option<&Path>,
-        project_packages: Option<&BTreeSet<String>>,
-    ) -> io::Result<()> {
-        let project_root = project_root.map(Path::to_path_buf);
-        let patch =
-            smol::unblock(move || super::with_project_patches(patches, project_root.as_deref()))
-                .await?;
-        let manifest = Manifest::<()> {
-            profile: generated_profiles(project_packages)?,
-            patch,
-            workspace: Some(Workspace {
-                members: super::preview_module_members(base_dir).await?,
-                ..Workspace::default()
-            }),
-            ..Default::default()
-        };
+        // The companion and the generated preview binary beside it must come
+        // out of one Cargo resolution: Cargo derives `-C metadata` — which it
+        // mangles into every symbol — per workspace, and two workspaces
+        // produce runtimes whose symbols cannot resolve against each other
+        // even when their dependency graphs are byte-for-byte identical.
+        manifest.workspace = Some(Workspace::default());
+
         let toml_string = toml::to_string_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         fs::create_dir_all(base_dir).await?;
@@ -8081,12 +8141,11 @@ pub mod ffi {
 ///
 /// `water preview --platform macos` builds and execs this package: its
 /// dependency, patch and feature-forward tables come from
-/// [`configure_apple_target_tables`], the same function the FFI companion
+/// [`configure_apple_target_tables`], the same function the Apple companion
 /// uses, so the `waterui` facade and `libwaterui_dylib` resolve to the
 /// `water run --platform macos` build in the shared target directory. The
 /// package's only edges beyond the app crate are the framework members
-/// that function names — `waterui-ffi` is absent: this preview path is the
-/// facade and `waterui-apple`, nothing else.
+/// that function names — the facade and `waterui-apple`, nothing else.
 ///
 /// `waterui-apple/preview` — the in-process preview entry — is the one
 /// deliberate feature addition on the `waterui-apple` edge; the companion
@@ -8176,39 +8235,6 @@ pub mod apple_preview {
         Ok(())
     }
 }
-
-/// The preview modules that live under a generated FFI crate, as member paths.
-///
-/// # Errors
-///
-/// Returns an error when the modules directory exists but cannot be read.
-async fn preview_module_members(ffi_crate_dir: &Path) -> io::Result<Vec<String>> {
-    use smol::stream::StreamExt as _;
-
-    let modules_root = ffi_crate_dir.join(PREVIEW_MODULES_DIR);
-    let mut entries = match fs::read_dir(&modules_root).await {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let mut members = Vec::new();
-    while let Some(entry) = entries.next().await {
-        let entry = entry?;
-        if entry.path().join("Cargo.toml").is_file()
-            && let Some(name) = entry.file_name().to_str()
-        {
-            members.push(format!("{PREVIEW_MODULES_DIR}/{name}"));
-        }
-    }
-    members.sort();
-    Ok(members)
-}
-
-/// Directory, relative to the generated FFI crate, that holds preview modules.
-///
-/// The FFI crate roots the workspace these modules join; see the workspace
-/// declaration in `ffi::generate_cargo_toml` for why they must share one.
-pub const PREVIEW_MODULES_DIR: &str = "modules";
 
 /// Root-level templates (Cargo.toml, lib.rs, .gitignore).
 pub mod root {
@@ -8350,8 +8376,9 @@ pub mod root {
                 Some(waterui_path) => {
                     let (project_root, waterui_path) =
                         (base_dir.to_path_buf(), waterui_path.clone());
+                    let members = ctx.local_sources.workspace_members().to_vec();
                     smol::unblock(move || {
-                        super::local_framework_patches(&project_root, &waterui_path)
+                        super::local_framework_patches(&project_root, &waterui_path, &members)
                     })
                     .await?
                 }
@@ -8426,386 +8453,6 @@ pub mod root {
 }
 
 /// Preview app templates.
-pub mod preview {
-    use super::{
-        BTreeSet, Path, SupportDependencyDetail, SupportDependencyValue, TemplateContext,
-        TemplateNamespace, dependency_path, embedded, io, scaffold_dir, write_support_cargo_toml,
-    };
-
-    /// Hash of embedded preview template files and the programmatically
-    /// generated scaffold inputs (the dev profile written into every generated
-    /// `Cargo.toml`), so a change to either regenerates cached support apps.
-    /// `project_packages` is the previewed project's own package set — the
-    /// `[profile.dev.package.<name>]` overrides the support manifests write,
-    /// so a changed set regenerates too.
-    #[must_use]
-    pub fn template_fingerprint(project_packages: &BTreeSet<String>) -> String {
-        use sha2::Digest as _;
-
-        let mut hasher = sha2::Sha256::new();
-        let mut dirs_to_process = vec![&embedded::PREVIEW];
-        while let Some(current_dir) = dirs_to_process.pop() {
-            for file in current_dir.files() {
-                hasher.update(file.path().to_string_lossy().as_bytes());
-                hasher.update(file.contents());
-            }
-            for subdir in current_dir.dirs() {
-                dirs_to_process.push(subdir);
-            }
-        }
-        hasher.update(super::generated_profiles_fingerprint(project_packages).as_bytes());
-        hex::encode(hasher.finalize())
-    }
-
-    /// Write preview app templates to the given directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if file operations fail.
-    pub async fn scaffold(
-        host: &crate::toolchain::Host,
-        base_dir: &Path,
-        ctx: &TemplateContext,
-    ) -> io::Result<()> {
-        // Generate Cargo.toml programmatically
-        generate_cargo_toml(host, base_dir, ctx).await?;
-
-        // Scaffold remaining template files (lib.rs)
-        scaffold_dir(
-            TemplateNamespace::Preview,
-            &embedded::PREVIEW,
-            base_dir,
-            ctx,
-        )
-        .await
-    }
-
-    /// Resolves the on-disk directory of a `waterui` workspace member crate from
-    /// the workspace's own cargo metadata.
-    ///
-    /// The preview-support scaffold depends on internal `waterui` crates by path.
-    /// Those paths must track the real crate location inside the workspace rather
-    /// than a hardcoded relative path, which silently breaks when a crate moves
-    /// (e.g. `waterui-preview` relocating from `components/preview` to
-    /// `components/devtools/preview/runtime`): a stale path makes the scaffold's
-    /// `cargo metadata` fail and aborts the whole preview build.
-    pub(super) async fn resolve_workspace_member_dir(
-        host: &crate::toolchain::Host,
-        workspace_root: &Path,
-        package_name: &str,
-    ) -> io::Result<std::path::PathBuf> {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command
-            .manifest_path(workspace_root.join("Cargo.toml"))
-            .no_deps();
-        let metadata = host
-            .cargo_metadata(&command)
-            .await
-            .map_err(io::Error::other)?;
-        let member = metadata
-            .packages
-            .iter()
-            .find(|package| package.name == package_name)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!(
-                        "`{package_name}` is not a member of the waterui workspace at {}",
-                        workspace_root.display()
-                    ),
-                )
-            })?;
-        member
-            .manifest_path
-            .as_std_path()
-            .parent()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| {
-                io::Error::other(format!(
-                    "failed to derive crate directory for `{package_name}`"
-                ))
-            })
-    }
-
-    /// Generate preview app Cargo.toml programmatically.
-    async fn generate_cargo_toml(
-        host: &crate::toolchain::Host,
-        base_dir: &Path,
-        ctx: &TemplateContext,
-    ) -> io::Result<()> {
-        use std::collections::BTreeMap;
-
-        let mut dependencies = BTreeMap::new();
-
-        if let Some(waterui_path) = &ctx.waterui_path {
-            // Local path dependencies
-            dependencies.insert(
-                "waterui".to_string(),
-                SupportDependencyValue::Detailed(SupportDependencyDetail {
-                    package: None,
-                    version: None,
-                    path: Some(super::normalize_path_for_config(waterui_path)),
-                    git: None,
-                    rev: None,
-                    default_features: Some(false),
-                    features: Vec::new(),
-                }),
-            );
-
-            // Resolve `waterui-preview` from the workspace metadata so the path
-            // tracks the crate if it is moved within the workspace.
-            let preview_path =
-                resolve_workspace_member_dir(host, waterui_path, "waterui-preview").await?;
-            dependencies.insert(
-                "waterui-preview".to_string(),
-                dependency_path(&preview_path),
-            );
-        } else {
-            // Registry dependencies
-            dependencies.insert(
-                "waterui".to_string(),
-                SupportDependencyValue::Detailed(
-                    super::GeneratedDependencyDetail::framework(ctx, "waterui")?
-                        .with_default_features(false)
-                        .into(),
-                ),
-            );
-            dependencies.insert(
-                "waterui-preview".to_string(),
-                SupportDependencyValue::Detailed(
-                    super::GeneratedDependencyDetail::framework(ctx, "waterui-preview")?.into(),
-                ),
-            );
-        }
-        let (app_crate_name, app_path) = ctx.preview_app_dependency.as_ref().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Preview support runtime requires a user crate dependency",
-            )
-        })?;
-        dependencies.insert(
-            "waterui-preview-app".to_string(),
-            SupportDependencyValue::Detailed(SupportDependencyDetail {
-                package: Some(app_crate_name.to_string()),
-                version: None,
-                path: Some(super::normalize_path_for_config(app_path)),
-                git: None,
-                rev: None,
-                default_features: None,
-                features: vec!["dev".to_string()],
-            }),
-        );
-        if !ctx
-            .preview_runtime_features
-            .iter()
-            .any(|feature| feature == "dynamic_linking")
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Preview support runtime features must include waterui/dynamic_linking",
-            ));
-        }
-        let features = BTreeMap::from([(
-            "dev".to_string(),
-            ctx.preview_runtime_features
-                .iter()
-                .map(|feature| format!("waterui/{feature}"))
-                .collect(),
-        )]);
-        write_support_cargo_toml(
-            base_dir,
-            ctx.crate_name.as_str(),
-            features,
-            dependencies,
-            ctx.waterui_path.as_deref(),
-            &ctx.framework,
-            ctx.project_packages.as_ref(),
-        )
-        .await
-    }
-}
-
-/// Preview-only wrapper templates.
-pub mod preview_ffi {
-    use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product};
-
-    use super::{
-        Path, TemplateContext, TemplateNamespace, cargo_semver,
-        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
-        write_file_if_changed,
-    };
-
-    /// Preview ABI exported to Apple support applications — the portable
-    /// loader selects it on non-Apple targets too (its `c-api` forward only
-    /// activates the non-Apple `waterui-ffi` dependency).
-    pub const APPLE_ABI_FEATURE: &str = "apple-preview-abi";
-
-    /// Write preview-only wrapper templates to the given directory.
-    ///
-    /// The crate is always a member of the support runtime's workspace rather
-    /// than a workspace of its own, so the module and the runtime it is loaded
-    /// into come out of a single Cargo resolution and agree on `-C metadata`.
-    /// Profiles, `[patch]` entries and the lockfile therefore belong to that
-    /// root and are deliberately absent here.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if file operations fail.
-    pub async fn scaffold(
-        host: &crate::toolchain::Host,
-        base_dir: &Path,
-        ctx: &TemplateContext,
-        package_name: &str,
-    ) -> io::Result<()> {
-        generate_cargo_toml(host, base_dir, ctx, package_name).await?;
-        scaffold_dir(
-            TemplateNamespace::PreviewFfi,
-            &embedded::PREVIEW_FFI,
-            base_dir,
-            ctx,
-        )
-        .await
-    }
-
-    async fn generate_cargo_toml(
-        host: &crate::toolchain::Host,
-        base_dir: &Path,
-        ctx: &TemplateContext,
-        package_name: &str,
-    ) -> io::Result<()> {
-        let mut manifest = Manifest::<()>::default();
-        let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
-        package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
-        manifest.package = Some(package);
-
-        manifest.lib = Some(Product {
-            crate_type: vec!["dylib".to_string()],
-            ..Default::default()
-        });
-
-        manifest.dependencies.insert(
-            ctx.crate_name.to_string(),
-            Dependency::Detailed(Box::new(DependencyDetail {
-                path: Some(ctx.project_root_relative_path()),
-                features: vec!["dev".to_string()],
-                ..Default::default()
-            })),
-        );
-
-        let ffi_dependency = ctx.waterui_path.as_ref().map_or_else(
-            || {
-                let mut dependency = ctx.framework.dependency("waterui-ffi");
-                dependency.optional = true;
-                dependency.default_features = false;
-                dependency
-            },
-            |waterui_path| DependencyDetail {
-                path: Some(compute_native_backend_dependency_path(
-                    ctx,
-                    waterui_path,
-                    Some("ffi"),
-                )),
-                optional: true,
-                default_features: false,
-                ..Default::default()
-            },
-        );
-        manifest
-            .target
-            .entry("cfg(not(target_vendor = \"apple\"))".to_string())
-            .or_default()
-            .dependencies
-            .insert(
-                "waterui-ffi".to_string(),
-                Dependency::Detailed(Box::new(ffi_dependency)),
-            );
-
-        let preview_dependency = preview_dependency(host, ctx, base_dir).await?;
-        manifest.dependencies.insert(
-            "waterui-preview".to_string(),
-            Dependency::Detailed(Box::new(preview_dependency)),
-        );
-
-        // Every forward names a feature of `waterui-ffi`, so only its table is
-        // learned — the resolved package's, not an assumed spelling.
-        let tables = Box::pin(super::resolved_forward_tables(
-            host,
-            &manifest,
-            base_dir,
-            &["waterui-ffi"],
-        ))
-        .await?;
-        let ffi_declares = |name: &str| super::declares(&tables, "waterui-ffi", name);
-        // The portable non-Apple preview loader also selects APPLE_ABI_FEATURE.
-        // Its c-api forward only activates the non-Apple target dependency;
-        // Apple targets compile no waterui-ffi dependency through this feature.
-        let mut entries = vec!["dep:waterui-ffi".to_string()];
-        if ffi_declares("c-api") {
-            entries.push("waterui-ffi/c-api".to_string());
-        }
-        entries.push("dep:waterui-preview".to_string());
-        manifest
-            .features
-            .insert(APPLE_ABI_FEATURE.to_string(), entries);
-
-        // Same forwards as the workspace root's, weakened: this crate's
-        // `waterui-ffi` dependency is optional and only an ABI feature enables
-        // it, so a capability feature alone must not pull the dep in. A
-        // feature the resolved `waterui-ffi` does not declare is not emitted
-        // at all — the forward would fail the resolution.
-        for name in super::FORWARDED_FFI_FEATURES {
-            if ffi_declares(name) {
-                manifest
-                    .features
-                    .insert((*name).to_string(), vec![format!("waterui-ffi?/{name}")]);
-            }
-        }
-
-        let toml_string = toml::to_string_pretty(&manifest)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        fs::create_dir_all(base_dir).await?;
-        write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await?;
-        Ok(())
-    }
-
-    /// Locate the `waterui-preview` workspace member in the pinned checkout, or
-    /// fall back to the framework registry source when no checkout is pinned.
-    async fn preview_dependency(
-        host: &crate::toolchain::Host,
-        ctx: &TemplateContext,
-        base_dir: &Path,
-    ) -> io::Result<DependencyDetail> {
-        if let Some(waterui_path) = &ctx.waterui_path {
-            let waterui_root = Path::new(&compute_native_backend_dependency_path(
-                ctx,
-                waterui_path,
-                None,
-            ))
-            .to_path_buf();
-            let waterui_root = if waterui_root.is_absolute() {
-                waterui_root
-            } else {
-                base_dir.join(waterui_root)
-            };
-            let preview_path = super::preview::resolve_workspace_member_dir(
-                host,
-                &waterui_root,
-                "waterui-preview",
-            )
-            .await?;
-            Ok(DependencyDetail {
-                path: Some(super::normalize_path_for_config(&preview_path)),
-                optional: true,
-                ..Default::default()
-            })
-        } else {
-            let mut dependency = ctx.framework.dependency("waterui-preview");
-            dependency.optional = true;
-            Ok(dependency)
-        }
-    }
-}
-
 /// Inspector app templates.
 pub mod inspector {
     use super::{
@@ -8887,7 +8534,7 @@ pub mod inspector {
             dependency_path(&inspector_app_path),
         );
 
-        // The FFI scaffold generated alongside this app declares
+        // The companion scaffold generated alongside this app declares
         // `dev = ["<app>/dev"]`, so an app without a `dev` feature cannot be
         // resolved at all: cargo fails the whole metadata query before anything
         // is built. Every generated project carries this feature; the support
@@ -8897,16 +8544,7 @@ pub mod inspector {
             vec!["waterui/dynamic_linking".to_string()],
         )]);
 
-        write_support_cargo_toml(
-            base_dir,
-            ctx.crate_name.as_str(),
-            features,
-            dependencies,
-            ctx.waterui_path.as_deref(),
-            &ctx.framework,
-            ctx.project_packages.as_ref(),
-        )
-        .await
+        write_support_cargo_toml(base_dir, ctx, features, dependencies).await
     }
 
     #[cfg(test)]
@@ -8930,11 +8568,12 @@ pub mod inspector {
         }
 
         /// The support crate is a plain Rust library: the generated backend
-        /// crate is what each platform links, so it carries neither the
-        /// widget-FFI dependency nor its export — under Hydrolysis on Android
-        /// that export would collide with the launcher's `JNI_OnLoad`.
+        /// crate is what each platform links, so the support crate declares
+        /// no backend dependency of its own and exports no entry point —
+        /// under Hydrolysis on Android such an export would collide with the
+        /// launcher's `JNI_OnLoad`.
         #[test]
-        fn the_support_crate_carries_no_widget_ffi() {
+        fn the_support_crate_declares_no_backend_dependency() {
             smol::block_on(async {
                 let temporary = tempfile::tempdir().expect("tempdir");
                 let checkout = temporary.path().join("waterui");
@@ -8955,7 +8594,6 @@ pub mod inspector {
                     Some(checkout),
                     &crate::framework::test_fixtures::stable_framework(),
                     false,
-                    None,
                     &crate::templates::LocalBackendSources::default(),
                 )
                 .with_project_packages(std::collections::BTreeSet::from([
@@ -8977,22 +8615,22 @@ pub mod inspector {
                         .is_some(),
                     "{cargo_toml}"
                 );
-                assert!(!cargo_toml.contains("waterui-ffi"), "{cargo_toml}");
+                assert!(!cargo_toml.contains("waterui-apple"), "{cargo_toml}");
                 assert!(manifest.get("target").is_none(), "{cargo_toml}");
 
                 let lib = std::fs::read_to_string(app.join("src/lib.rs")).expect("lib.rs");
                 assert!(lib.contains("waterui_inspector_app::app(env)"), "{lib}");
-                assert!(!lib.contains("waterui_ffi"), "{lib}");
+                assert!(!lib.contains("export_app!"), "{lib}");
             });
         }
 
-        /// The FFI scaffold generated beside this app declares
+        /// The companion scaffold generated beside this app declares
         /// `dev = ["<app>/dev"]`. An app without that feature cannot be
         /// resolved at all — cargo fails the metadata query and `water
         /// inspector` dies before building anything, which is exactly what it
         /// did until this was noticed.
         #[test]
-        fn the_generated_app_declares_the_feature_its_ffi_scaffold_requires() {
+        fn the_generated_app_declares_the_feature_its_companion_scaffold_requires() {
             let generated = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("src/project_model/templates.rs");
             let source = std::fs::read_to_string(generated).expect("the module is readable");

@@ -6,11 +6,13 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 
 use cherenkov::kurbo::{Affine, Line, PathEl, Rect};
+use cherenkov::lowering::rounded_box::{BoxForm, box_form};
 use cherenkov::{
     BlendMode, BlendSpace, Command, Extend, FillRule, ImageId, ImagePattern, Interpolation, Paint,
     RenderError, ShapeData,
 };
 use cherenkov::{GlyphRun, GlyphStyle};
+use filtrate_core::space::{P3_TO_SRGB, srgb_encode, transform};
 
 use super::instance::{
     EXTEND_NONE, EXTEND_PAD, EXTEND_REFLECT, EXTEND_REPEAT, FLAG_HAS_INNER, INTERP_SRGB,
@@ -24,14 +26,6 @@ use crate::render::glyph::FontData;
 use skrifa::MetadataProvider as _;
 use skrifa::raw::TableProvider as _;
 use skrifa::raw::types::F2Dot14;
-
-/// Linear Display P3 to linear sRGB (the inverse of the shader's
-/// `SRGB_TO_P3`), used to store `SrgbEncoded` gradient stops.
-const P3_TO_SRGB: [[f32; 3]; 3] = [
-    [1.224_940_1, -0.224_940_4, 0.0],
-    [-0.042_056_9, 1.042_057_1, 0.0],
-    [-0.019_637_6, -0.078_636_1, 1.098_273_5],
-];
 
 /// f64 to f32; instance data is f32 by design.
 #[expect(clippy::cast_possible_truncation)]
@@ -51,90 +45,20 @@ pub struct Boxed {
 }
 
 /// Converts a semantic shape into a centred rounded box plus the local
-/// transform that centres it.
+/// transform that centres it: the shared [`box_form`] mapping, packed as
+/// instance data.
 ///
-/// A `Line` has no area and draws nothing, so it returns `None`.
+/// A shape without area draws nothing, so it returns `None`.
 pub fn box_shape(shape: &ShapeData) -> Result<Option<Boxed>, RenderError> {
-    let boxed = match shape {
-        ShapeData::Rect(r) => {
-            let half = [f32_f64(r.width() / 2.0), f32_f64(r.height() / 2.0)];
-            Boxed {
-                extra: Affine::translate(r.center().to_vec2()),
-                shape: Shape::rect(half),
-                bounds: rect_around_origin(half),
-            }
-        }
-        ShapeData::RoundedRect(rr) => {
-            let r = rr.rect();
-            let half = [f32_f64(r.width() / 2.0), f32_f64(r.height() / 2.0)];
-            let radii = clamped_radii(rr.radii(), half);
-            Boxed {
-                extra: Affine::translate(r.center().to_vec2()),
-                shape: Shape {
-                    half,
-                    aspect: 1.0,
-                    exponent: 2.0,
-                    radii,
-                },
-                bounds: rect_around_origin(half),
-            }
-        }
-        ShapeData::Continuous(c) => {
-            let r = c.rect;
-            let half = [f32_f64(r.width() / 2.0), f32_f64(r.height() / 2.0)];
-            let radii = clamped_radii(c.radii, half);
-            Boxed {
-                extra: Affine::translate(r.center().to_vec2()),
-                shape: Shape {
-                    half,
-                    aspect: 1.0,
-                    exponent: f32_f64(c.smoothing).clamp(0.0, 1.0).mul_add(2.0, 2.0),
-                    radii,
-                },
-                bounds: rect_around_origin(half),
-            }
-        }
-        ShapeData::Circle(c) => {
-            let r = c.radius;
-            if r <= 0.0 {
-                return Ok(None);
-            }
-            let half = [f32_f64(r), f32_f64(r)];
-            Boxed {
-                extra: Affine::translate(c.center.to_vec2()),
-                shape: Shape {
-                    half,
-                    aspect: 1.0,
-                    exponent: 2.0,
-                    radii: [f32_f64(r); 4],
-                },
-                bounds: rect_around_origin(half),
-            }
-        }
-        ShapeData::Ellipse(e) => {
-            let radii_v = e.radii();
-            let (a, b) = (radii_v.x, radii_v.y);
-            if a <= 0.0 || b <= 0.0 {
-                return Ok(None);
-            }
-            let half = [f32_f64(a), f32_f64(b)];
-            Boxed {
-                extra: Affine::translate(e.center().to_vec2()) * Affine::rotate(e.rotation()),
-                shape: Shape {
-                    half,
-                    aspect: f32_f64(b / a),
-                    exponent: 2.0,
-                    radii: [f32_f64(a); 4],
-                },
-                bounds: rect_around_origin(half),
-            }
-        }
-        ShapeData::Line(_) => return Ok(None),
-        ShapeData::Path { .. } => {
-            return Err(RenderError::Unsupported(names::PATH));
-        }
-    };
-    Ok(Some(boxed))
+    match box_form(shape) {
+        BoxForm::Box { extra, shape } => Ok(Some(Boxed {
+            extra,
+            shape: shape.into(),
+            bounds: rect_around_origin(shape.half),
+        })),
+        BoxForm::Empty => Ok(None),
+        BoxForm::Path => Err(RenderError::Unsupported(names::PATH)),
+    }
 }
 
 fn rect_around_origin(half: [f32; 2]) -> Rect {
@@ -144,16 +68,6 @@ fn rect_around_origin(half: [f32; 2]) -> Rect {
         f64::from(half[0]),
         f64::from(half[1]),
     )
-}
-
-fn clamped_radii(radii: kurbo::RoundedRectRadii, half: [f32; 2]) -> [f32; 4] {
-    let limit = f64::from(half[0].min(half[1]));
-    [
-        f32_f64(radii.top_left.clamp(0.0, limit)),
-        f32_f64(radii.top_right.clamp(0.0, limit)),
-        f32_f64(radii.bottom_right.clamp(0.0, limit)),
-        f32_f64(radii.bottom_left.clamp(0.0, limit)),
-    ]
 }
 
 /// The blur sigma the shader integrates against, modelling the oracle's
@@ -220,7 +134,7 @@ pub struct PaintData {
     /// First stop, relative to the resolved paint's stop buffer.
     pub first_stop: u32,
     /// `count | interp << 16 | extend << 20`; for `PAINT_IMAGE`,
-    /// `extend_x | extend_y << 4 | sampling << 8`.
+    /// `extend_x | extend_y << 4 | sampling << 8 | image.sampling_flags`.
     pub packed: u32,
     /// A registered image ID. Shader identities belong to the emitted range,
     /// keeping ordinary paint fields trivially copyable.
@@ -246,16 +160,6 @@ pub struct ResolvedShader {
     pub sampling: Affine,
 }
 
-/// sRGB-encodes one channel, preserving sign.
-fn srgb_encode(x: f32) -> f32 {
-    let e = if x.abs() <= 0.003_130_8 {
-        x.abs() * 12.92
-    } else {
-        1.055f32.mul_add(x.abs().powf(1.0 / 2.4), -0.055)
-    };
-    e.copysign(x)
-}
-
 fn push_stops(
     stops: &mut Vec<Stop>,
     gradient_stops: &[cherenkov::ColorStop],
@@ -269,12 +173,9 @@ fn push_stops(
     for stop in sorted.iter().take(count as usize) {
         let [r, g, b, a] = stop.color.components;
         let color = if interpolation == Interpolation::SrgbEncoded {
-            let [sr, sg, sb] = [
-                P3_TO_SRGB[0][0].mul_add(r, P3_TO_SRGB[0][1].mul_add(g, P3_TO_SRGB[0][2] * b)),
-                P3_TO_SRGB[1][0].mul_add(r, P3_TO_SRGB[1][1].mul_add(g, P3_TO_SRGB[1][2] * b)),
-                P3_TO_SRGB[2][0].mul_add(r, P3_TO_SRGB[2][1].mul_add(g, P3_TO_SRGB[2][2] * b)),
-            ];
-            [srgb_encode(sr), srgb_encode(sg), srgb_encode(sb), a]
+            // The CPU backend's stop conversion (`cpu/src/render/paint.rs`).
+            let [sr, sg, sb] = transform(&P3_TO_SRGB, [r, g, b]).map(srgb_encode);
+            [sr, sg, sb, a]
         } else {
             [r, g, b, a]
         };
@@ -300,13 +201,53 @@ const fn extend_code(extend: Extend) -> u32 {
     }
 }
 
-/// Lowers a paint; `to_local` maps content space to the instance's local
-/// (shape-centred) space in which the shader evaluates gradient parameters.
+/// The image space -> content transform that maps a `width` x `height`
+/// image onto the whole of `dst`.
+pub(super) fn image_placement(dst: &Rect, width: u32, height: u32) -> Affine {
+    Affine::translate((dst.x0, dst.y0))
+        * Affine::scale_non_uniform(
+            (dst.x1 - dst.x0) / f64::from(width),
+            (dst.y1 - dst.y0) / f64::from(height),
+        )
+}
+
+/// An image paint over a texture of `width` x `height` with source
+/// conversion `sampling_flags`; `transform` maps image space to content
+/// space and `to_local` content space to the instance's local space.
 #[expect(
     clippy::cast_precision_loss,
     clippy::many_single_char_names,
     reason = "image dimensions fit f32; affine coefficients are conventionally a..f"
 )]
+pub(super) fn image_paint(
+    to_local: Affine,
+    transform: Affine,
+    (width, height): (u32, u32),
+    (extend_x, extend_y): (Extend, Extend),
+    sampling: cherenkov::Sampling,
+    sampling_flags: u32,
+) -> PaintData {
+    // `to_local * transform` maps image space to instance-local; the
+    // shader needs the inverse.
+    let [a, b, c, d, e, f] = (to_local * transform).inverse().as_coeffs();
+    let sampling = match sampling {
+        cherenkov::Sampling::Nearest => 0,
+        cherenkov::Sampling::Linear => 1,
+    };
+    PaintData {
+        kind: PAINT_IMAGE,
+        grad: [f32_f64(a), f32_f64(b), f32_f64(c), f32_f64(d)],
+        grad2: [f32_f64(e), f32_f64(f), width as f32, height as f32],
+        packed: extend_code(extend_x)
+            | (extend_code(extend_y) << 4)
+            | (sampling << 8)
+            | sampling_flags,
+        ..PaintData::default()
+    }
+}
+
+/// Lowers a paint; `to_local` maps content space to the instance's local
+/// (shape-centred) space in which the shader evaluates gradient parameters.
 fn paint_data(
     paint: &Paint,
     to_local: Affine,
@@ -366,21 +307,17 @@ fn paint_data(
             let img = images.get(&pattern.image.raw()).ok_or_else(|| {
                 RenderError::Image(format!("unregistered image {}", pattern.image.raw()))
             })?;
-            // `to_local * transform` maps image space to instance-local; the
-            // shader needs the inverse.
-            let [a, b, c, d, e, f] = (to_local * pattern.transform).inverse().as_coeffs();
-            data.kind = PAINT_IMAGE;
-            data.grad = [f32_f64(a), f32_f64(b), f32_f64(c), f32_f64(d)];
-            let (iw, ih) = (img.width as f32, img.height as f32);
-            data.grad2 = [f32_f64(e), f32_f64(f), iw, ih];
-            let sampling = match pattern.sampling {
-                cherenkov::Sampling::Nearest => 0,
-                cherenkov::Sampling::Linear => 1,
+            data = PaintData {
+                image: Some(pattern.image.raw()),
+                ..image_paint(
+                    to_local,
+                    pattern.transform,
+                    (img.width, img.height),
+                    (pattern.extend_x, pattern.extend_y),
+                    pattern.sampling,
+                    img.sampling_flags,
+                )
             };
-            data.packed = extend_code(pattern.extend_x)
-                | (extend_code(pattern.extend_y) << 4)
-                | (sampling << 8);
-            data.image = Some(pattern.image.raw());
         }
         Paint::Shader(_) => return Err(RenderError::Unsupported(names::SHADER)),
         Paint::Transformed(_) => unreachable!("transformed paints resolve separately"),
@@ -605,6 +542,103 @@ pub enum Outline {
     },
 }
 
+/// Borrowed geometry after resolving a retained command reference.
+#[derive(Clone, Copy)]
+pub enum OutlineRef<'a> {
+    /// Fill geometry and its precomputed semantic hash.
+    Fill {
+        elements: &'a [PathEl],
+        content: u64,
+    },
+    /// Stroke geometry whose hash also depends on device tolerance.
+    Stroke {
+        shape: &'a ShapeData,
+        stroke: &'a kurbo::Stroke,
+    },
+}
+
+impl Outline {
+    /// Resolve owned and source-backed outlines without constructing geometry.
+    #[expect(
+        clippy::inline_always,
+        reason = "resolve borrowed outline fields at their use site"
+    )]
+    #[inline(always)]
+    pub fn get<'a>(&'a self, source: &'a cherenkov::DisplayList) -> OutlineRef<'a> {
+        match self {
+            Self::Fill { elements, content } => OutlineRef::Fill {
+                elements,
+                content: *content,
+            },
+            Self::Stroke { shape, stroke } => OutlineRef::Stroke { shape, stroke },
+            Self::Source { command, content } => match &source.commands()[*command] {
+                Command::Fill {
+                    shape: ShapeData::Path { elements, .. },
+                    ..
+                } => OutlineRef::Fill {
+                    elements,
+                    content: content.expect("prepared fill has a hash"),
+                },
+                Command::Stroke { shape, stroke, .. } => OutlineRef::Stroke { shape, stroke },
+                _ => unreachable!("prepared outline keeps its source kind"),
+            },
+        }
+    }
+}
+
+impl OutlineRef<'_> {
+    /// Conservative outline bounds without constructing a stroked path.
+    pub fn bounds(self) -> Rect {
+        use kurbo::Shape as _;
+        match self {
+            Self::Fill { elements, .. } => elements.bounding_box(),
+            Self::Stroke { shape, stroke } => {
+                // A square cap's diagonal can extend sqrt(2) half-widths
+                // along either local axis. Miter joins can extend farther.
+                let cap = if stroke.start_cap == kurbo::Cap::Square
+                    || stroke.end_cap == kurbo::Cap::Square
+                {
+                    std::f64::consts::SQRT_2
+                } else {
+                    1.0
+                };
+                let join = if stroke.join == kurbo::Join::Miter {
+                    stroke.miter_limit.max(1.0)
+                } else {
+                    1.0
+                };
+                let margin = stroke.width.abs() * 0.5 * cap.max(join);
+                shape.bounds().inflate(margin, margin)
+            }
+        }
+    }
+
+    pub fn gpu_candidate(self, complexity: path::Complexity, raster: Affine) -> bool {
+        match self {
+            Self::Fill { .. } => complexity.fill_candidate(),
+            Self::Stroke { stroke, .. } => complexity.stroke_candidate(stroke, raster),
+        }
+    }
+
+    /// Semantic identity at the tolerance used to construct the outline.
+    pub fn content(self, tolerance: f64) -> u64 {
+        match self {
+            Self::Fill { content, .. } => content,
+            Self::Stroke { shape, stroke } => path::hash_stroke(shape, stroke, tolerance),
+        }
+    }
+
+    /// Construct local geometry only when a realization needs it.
+    pub fn build(self, tolerance: f64) -> kurbo::BezPath {
+        match self {
+            Self::Fill { elements, .. } => kurbo::BezPath::from_vec(elements.to_vec()),
+            Self::Stroke { shape, stroke } => {
+                cherenkov_stroke::stroke(path::shape_path(shape, tolerance), stroke, tolerance)
+            }
+        }
+    }
+}
+
 /// A prepared glyph run either indexes retained source or owns expanded glyphs.
 pub enum GlyphSource {
     /// A partial run produced by nested pictures or COLR expansion.
@@ -684,6 +718,8 @@ pub enum Op {
         local: Affine,
         /// The fill rule.
         rule: FillRule,
+        /// Source complexity used before device-space preparation.
+        complexity: path::Complexity,
         /// The outline builder.
         outline: Outline,
         /// The resolved paint (identity local space — device pixels).
@@ -696,6 +732,8 @@ pub enum Op {
         local: Affine,
         /// The run, minus its COLR glyphs.
         run: GlyphSource,
+        /// Conservative local outline bounds, independent of device placement.
+        bounds: Rect,
         /// The resolved paint (identity local space).
         paint: ResolvedPaint,
     },
@@ -707,8 +745,6 @@ pub enum Op {
         font: u64,
         /// The glyph index.
         glyph: u32,
-        /// The glyph origin in run coordinates.
-        origin: [f32; 2],
         /// The run size.
         size: f32,
     },
@@ -879,6 +915,7 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: *rule,
+                complexity: path::Complexity::of(elements),
                 outline: source.map_or_else(
                     || Outline::Fill {
                         elements: Arc::clone(elements),
@@ -925,13 +962,10 @@ impl Lowerer<'_> {
             .images
             .get(&image.raw())
             .ok_or_else(|| RenderError::Image(format!("unregistered image {}", image.raw())))?;
-        let (iw, ih) = (f64::from(img.width), f64::from(img.height));
-        let (dw, dh) = (dst.x1 - dst.x0, dst.y1 - dst.y0);
-        if dw <= 0.0 || dh <= 0.0 {
+        if dst.x1 - dst.x0 <= 0.0 || dst.y1 - dst.y0 <= 0.0 {
             return Ok(());
         }
-        let transform =
-            Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(dw / iw, dh / ih);
+        let transform = image_placement(dst, img.width, img.height);
         let paint = Paint::Image(ImagePattern {
             image,
             transform,
@@ -955,6 +989,7 @@ impl Lowerer<'_> {
         ops: &mut Vec<Op>,
         source: Option<usize>,
     ) -> Result<(), RenderError> {
+        cherenkov::lowering::check_dashes(stroke)?;
         let hw = stroke.width / 2.0;
         let general = match shape {
             ShapeData::Path { .. } => true,
@@ -969,6 +1004,7 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: FillRule::NonZero,
+                complexity: path::Complexity::of_shape(shape),
                 outline: source.map_or_else(
                     || Outline::Stroke {
                         shape: shape.clone(),
@@ -1067,7 +1103,15 @@ impl Lowerer<'_> {
             return Ok(());
         }
         let mid = line.p0 + d * 0.5;
-        let extra = Affine::translate(mid.to_vec2()) * Affine::rotate(d.y.atan2(d.x));
+        let direction = d / len;
+        let extra = Affine::new([
+            direction.x,
+            direction.y,
+            -direction.y,
+            direction.x,
+            mid.x,
+            mid.y,
+        ]);
         let half = match stroke.start_cap {
             kurbo::Cap::Butt => [f32_f64(len / 2.0), f32_f64(hw)],
             _ => [f32_f64(len / 2.0 + hw), f32_f64(hw)],
@@ -1196,6 +1240,7 @@ impl Lowerer<'_> {
             if !run.glyphs.is_empty() {
                 ops.push(Op::Glyphs {
                     local: ambient,
+                    bounds: super::glyph::run_bounds(font, run)?,
                     run: source.map_or_else(
                         || GlyphSource::Run(run.clone()),
                         |index| GlyphSource::Command {
@@ -1251,21 +1296,25 @@ impl Lowerer<'_> {
         run: &GlyphRun,
         pending: &mut Vec<cherenkov::Glyph>,
         paint: ResolvedPaint,
-    ) {
+        font: &FontData,
+    ) -> Result<(), RenderError> {
         if pending.is_empty() {
-            return;
+            return Ok(());
         }
+        let run = GlyphRun {
+            font: run.font,
+            size: run.size,
+            coords: run.coords.clone(),
+            glyphs: std::mem::take(pending).into(),
+            style: run.style.clone(),
+        };
         ops.push(Op::Glyphs {
             local: ambient,
-            run: GlyphSource::Run(GlyphRun {
-                font: run.font,
-                size: run.size,
-                coords: run.coords.clone(),
-                glyphs: std::mem::take(pending).into(),
-                style: run.style.clone(),
-            }),
+            bounds: super::glyph::run_bounds(font, &run)?,
+            run: GlyphSource::Run(run),
             paint,
         });
+        Ok(())
     }
 
     #[inline(never)]
@@ -1301,7 +1350,7 @@ impl Lowerer<'_> {
             if let Some(color_glyphs) = color_glyphs.as_ref()
                 && color_glyphs.get(skrifa::GlyphId::new(glyph.id)).is_some()
             {
-                Self::push_pending(ops, ambient, run, &mut pending, resolved.clone());
+                Self::push_pending(ops, ambient, run, &mut pending, resolved.clone(), font)?;
                 let picture = crate::render::colr::glyph_picture(
                     font,
                     run.font.raw(),
@@ -1330,15 +1379,18 @@ impl Lowerer<'_> {
                 continue;
             }
             if bitmap {
-                let (local, origin) = match super::glyph::classify(glyph)? {
-                    super::glyph::GlyphPlacement::Translate(glyph) => (ambient, [glyph.x, glyph.y]),
-                    super::glyph::GlyphPlacement::Outline(place) => (ambient * place, [0.0, 0.0]),
+                // The placement composes like an image drawn under the
+                // glyph's transform, so the two realize identically.
+                let place = match super::glyph::classify(glyph)? {
+                    super::glyph::GlyphPlacement::Translate(glyph) => {
+                        Affine::translate((f64::from(glyph.x), f64::from(glyph.y)))
+                    }
+                    super::glyph::GlyphPlacement::Outline(place) => place,
                 };
                 ops.push(Op::BitmapGlyph {
-                    local,
+                    local: ambient * place,
                     font: run.font.raw(),
                     glyph: glyph.id,
-                    origin,
                     size: run.size,
                 });
                 continue;
@@ -1359,7 +1411,7 @@ impl Lowerer<'_> {
             if path.elements().is_empty() {
                 continue;
             }
-            Self::push_pending(ops, ambient, run, &mut pending, resolved.clone());
+            Self::push_pending(ops, ambient, run, &mut pending, resolved.clone(), font)?;
             self.fill(
                 ambient,
                 &ShapeData::Path {
@@ -1371,7 +1423,7 @@ impl Lowerer<'_> {
                 None,
             )?;
         }
-        Self::push_pending(ops, ambient, run, &mut pending, resolved);
+        Self::push_pending(ops, ambient, run, &mut pending, resolved, font)?;
         Ok(())
     }
 }
@@ -1395,4 +1447,131 @@ fn clip_shape(shape: &ShapeData) -> Result<ClipShape, RenderError> {
             _ => None,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use cherenkov::WorkingColor;
+    use cherenkov::kurbo::Ellipse;
+
+    use super::*;
+
+    #[test]
+    fn stroke_bounds_include_square_caps_and_miter_tips() {
+        use kurbo::Shape as _;
+        let shape = ShapeData::Path {
+            elements: vec![
+                PathEl::MoveTo((0.0, 0.0).into()),
+                PathEl::LineTo((10.0, 10.0).into()),
+                PathEl::LineTo((0.0, 11.0).into()),
+            ]
+            .into(),
+            rule: FillRule::NonZero,
+        };
+        for join in [kurbo::Join::Round, kurbo::Join::Bevel, kurbo::Join::Miter] {
+            for limit in [1.0, 4.0, 20.0] {
+                let stroke = kurbo::Stroke::new(8.0)
+                    .with_join(join)
+                    .with_caps(kurbo::Cap::Square)
+                    .with_miter_limit(limit);
+                let outline = OutlineRef::Stroke {
+                    shape: &shape,
+                    stroke: &stroke,
+                };
+                let bound = outline.bounds();
+                let actual = outline.build(0.001).bounding_box();
+                assert!(
+                    bound.x0 <= actual.x0
+                        && bound.y0 <= actual.y0
+                        && bound.x1 >= actual.x1
+                        && bound.y1 >= actual.y1
+                );
+            }
+        }
+    }
+
+    /// `stroke` against empty registries, as `draw` dispatches a
+    /// `Command::Stroke`.
+    fn lower_stroke(shape: &ShapeData, stroke: &kurbo::Stroke) -> Result<(), RenderError> {
+        let (mut pending, fonts, images) = (Vec::new(), FxHashMap::default(), FxHashMap::default());
+        let lowerer = Lowerer {
+            pending: &mut pending,
+            fonts: &fonts,
+            images: &images,
+        };
+        let mut ops = Vec::new();
+        lowerer.stroke(
+            Affine::IDENTITY,
+            shape,
+            stroke,
+            &Paint::Solid(WorkingColor::WHITE),
+            &mut ops,
+            None,
+        )
+    }
+
+    /// One shape per route `stroke` selects: the general outline path, the
+    /// line box path, and the offset and distance analytic strokes.
+    fn route_shapes() -> [ShapeData; 4] {
+        let mut path = kurbo::BezPath::new();
+        path.move_to((4.0, 4.0));
+        path.line_to((12.0, 12.0));
+        [
+            ShapeData::Path {
+                elements: path.into_elements().into(),
+                rule: FillRule::NonZero,
+            },
+            ShapeData::Line(Line::new((0.0, 0.0), (8.0, 0.0))),
+            ShapeData::Rect(Rect::new(0.0, 0.0, 8.0, 8.0)),
+            ShapeData::Ellipse(Ellipse::new((4.0, 4.0), (8.0, 3.0), 0.0)),
+        ]
+    }
+
+    /// A negative or non-finite dash entry is rejected before the lowering
+    /// picks a route, so every shape reports the same error.
+    #[test]
+    fn a_negative_or_nonfinite_dash_entry_errors_on_every_route() {
+        for entry in [-1.0, f64::NEG_INFINITY, f64::NAN, f64::INFINITY] {
+            let mut stroke = kurbo::Stroke::new(2.0);
+            stroke.dash_pattern.extend([4.0, entry]);
+            for shape in route_shapes() {
+                assert!(
+                    matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                    "dash entry {entry} on {shape:?}"
+                );
+            }
+        }
+    }
+
+    /// A dash pattern whose entries sum to zero is rejected on every
+    /// route.
+    #[test]
+    fn a_dash_pattern_summing_to_zero_errors_on_every_route() {
+        let mut stroke = kurbo::Stroke::new(2.0);
+        stroke.dash_pattern.extend([0.0, 0.0]);
+        for shape in route_shapes() {
+            assert!(
+                matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                "zero-sum pattern on {shape:?}"
+            );
+        }
+    }
+
+    /// A non-finite dash offset is rejected on every route, dashed or not.
+    #[test]
+    fn a_nonfinite_dash_offset_errors_on_every_route() {
+        for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for pattern in [Vec::new(), vec![4.0, 2.0]] {
+                let mut stroke = kurbo::Stroke::new(2.0);
+                stroke.dash_offset = offset;
+                stroke.dash_pattern.extend(pattern.iter().copied());
+                for shape in route_shapes() {
+                    assert!(
+                        matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                        "dash offset {offset}, {pattern:?} on {shape:?}"
+                    );
+                }
+            }
+        }
+    }
 }

@@ -33,6 +33,7 @@ impl Toolchain for Xcode {
 
 /// Represents an Apple SDK (e.g., iOS, macOS)
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[non_exhaustive]
 pub enum AppleSdk {
     /// iOS SDK
     #[serde(rename = "iOS")]

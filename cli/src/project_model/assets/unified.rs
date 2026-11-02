@@ -1,10 +1,10 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use askama::Template;
 use eyre::{Context, bail};
-use futures_util::StreamExt as _;
+use futures_util::{StreamExt as _, TryStreamExt as _};
 use image::ImageEncoder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -19,7 +19,6 @@ use waterui_assets_planner::{
 use super::icon::encode_macos_icns;
 use super::icon::{
     IconSource, LINUX_HICOLOR_SIZES, WINDOW_ICON_SIZE, encode_png, render_android_foreground,
-    render_apple_icon,
 };
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::project::Project;
@@ -37,6 +36,11 @@ const ANDROID_VALUES_NIGHT_DIR: &str = "app/src/main/res/values-night";
 const ANDROID_DRAWABLE_DIR: &str = "app/src/main/res/drawable";
 /// File name of the staged sync stamp inside the asset bundle.
 const SYNC_STAMP_FILE: &str = "waterui-sync-stamp";
+/// The version of what staging writes for a given source: the copy and
+/// [`optimize_image`]'s re-encoding. It is part of every bundle stamp, so
+/// raising it restages every bundle; raise it with any change to the bytes
+/// staging produces from unchanged sources.
+const STAGING_VERSION: u32 = 1;
 /// Asset-catalog directory name the generated Xcode project refers to.
 const APPLE_APP_ICON_SET: &str = "AppIcon.appiconset";
 /// The accent color set's name inside the generated asset catalog.
@@ -106,9 +110,9 @@ pub async fn stage_for_apple(
     write_apple_root_contents(&xcassets_dest).await?;
     let accent = project
         .manifest()
-        .theme
+        .theme()
         .as_ref()
-        .and_then(|theme| theme.accent);
+        .and_then(|theme| theme.accent());
 
     let icon = load_project_icon(&manifest)?;
     write_apple_app_icon(&icon, &xcassets_dest).await?;
@@ -155,29 +159,137 @@ pub async fn stage_library_resources(
     Ok(manifest)
 }
 
-/// Write one complete resource plan, including the content stamp.
+/// Write one complete resource plan, including the content stamp, into
+/// `dest_dir`'s [`ASSET_ROOT_DIR`], and answer that stamp — see
+/// [`stage_bundle`].
 pub async fn write_library_resources(
     manifest: &BundleManifest,
     dest_dir: &Path,
-) -> eyre::Result<()> {
-    let assets_dest = dest_dir.join(ASSET_ROOT_DIR);
-    stage_bundle(manifest, &assets_dest, &[]).await
+) -> eyre::Result<String> {
+    stage_bundle(manifest, &dest_dir.join(ASSET_ROOT_DIR), &[]).await
 }
 
-/// Stage `manifest`'s bundle into `dest_root`: drop whatever the plan no
-/// longer names, then write the assets and the sync stamp through the
-/// if-changed helpers — an unchanged build leaves every file byte- and
-/// mtime-identical (#2252). `extras` names further files the caller
-/// writes beside them, like the runtime window icon.
+/// [`write_library_resources`] for an Android target: `fonts` ship inside
+/// the bundle, as [`with_bundled_fonts`] plans them.
+pub async fn write_android_library_resources(
+    manifest: &BundleManifest,
+    dest_dir: &Path,
+    fonts: &[super::ResolvedFont],
+) -> eyre::Result<String> {
+    let staged = with_bundled_fonts(manifest, fonts)?;
+    stage_bundle(&staged, &dest_dir.join(ASSET_ROOT_DIR), &[]).await
+}
+
+/// `manifest` with `fonts` and its own font assets planned inside the
+/// bundle's [`STAGED_FONTS_DIR`], where a Hydrolysis Android runtime reads
+/// an application's faces from.
+///
+/// An Android package namespaces exactly one asset tree — the bundle — and
+/// the host application wins whatever a library stages beside it
+/// (water-rs/waterui#2348), so the faces ride inside it instead of in a
+/// `fonts` directory of their own the way every other platform stages them.
+/// Planning them as assets is what makes them ordinary bundle content: the
+/// content stamp covers them, so a changed face re-syncs on device; pruning
+/// drops a face the build no longer declares; and the copy skips bytes that
+/// did not change.
+///
+/// The result stages a bundle and is never the manifest generated code is
+/// built from — the font entries name no asset an application declared.
+fn with_bundled_fonts(
+    manifest: &BundleManifest,
+    fonts: &[super::ResolvedFont],
+) -> eyre::Result<BundleManifest> {
+    let mut staged = manifest.clone();
+    // A font the project itself ships as an asset is already in the plan at
+    // its own logical path, and a runtime that scans one directory does not
+    // find it there.
+    let project_fonts = scan_project_fonts(manifest)?;
+    let fonts_root = Path::new(waterui_assets_core::STAGED_FONTS_DIR);
+    let mut planned: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+    for font in fonts.iter().chain(&project_fonts) {
+        let file_name = font
+            .path
+            .file_name()
+            .ok_or_else(|| eyre::eyre!("font path '{}' has no file name", font.path.display()))?;
+        let logical_path = fonts_root.join(file_name);
+        if let Some(previous) = planned.insert(logical_path.clone(), font.path.clone())
+            && previous != font.path
+        {
+            bail!(
+                "fonts '{}' and '{}' both stage as '{}'; rename one of the files",
+                previous.display(),
+                font.path.display(),
+                logical_path.display()
+            );
+        }
+    }
+    staged
+        .assets_mut()
+        .extend(planned.into_iter().map(|(logical_path, source_path)| {
+            PlannedAsset::new(
+                String::new(),
+                source_path,
+                logical_path.clone(),
+                logical_path,
+                AssetKind::Font,
+                AssetRole::Regular,
+            )
+        }));
+    Ok(staged)
+}
+
+/// Stage `manifest`'s bundle into `dest_root` and answer its stamp — see
+/// [`manifest_stamp`]. `extras` names further files the caller writes
+/// beside the assets, like the runtime window icon.
+///
+/// Whatever the plan no longer names is dropped first. A bundle whose
+/// recorded [`SYNC_STAMP_FILE`] matches the stamp and still holds every
+/// planned asset is current and left as it is: nothing is re-encoded,
+/// copied or rewritten. Any other bundle has its stamp removed, its assets
+/// written through the if-changed helpers — an unchanged file stays byte-
+/// and mtime-identical (#2252) — and the stamp written last, so a stage cut
+/// short is never taken for a current one.
 async fn stage_bundle(
     manifest: &BundleManifest,
     dest_root: &Path,
     extras: &[&str],
-) -> eyre::Result<()> {
+) -> eyre::Result<String> {
     fs::create_dir_all(dest_root).await?;
-    prune_unlisted(dest_root, &staged_bundle_files(manifest, extras)).await?;
+    let planned = staged_bundle_files(manifest, extras);
+    let (stamp, ()) = futures_util::try_join!(
+        manifest_stamp(manifest),
+        prune_unlisted(dest_root, &planned),
+    )?;
+    let stamp_path = dest_root.join(SYNC_STAMP_FILE);
+    let recorded = match fs::read(&stamp_path).await {
+        Ok(recorded) => Some(recorded),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).wrap_err_with(|| format!("failed to read {}", stamp_path.display()));
+        }
+    };
+    if recorded.as_deref() == Some(stamp.as_bytes()) && assets_present(manifest, dest_root).await {
+        return Ok(stamp);
+    }
+    remove_file_if_exists(stamp_path.clone()).await?;
     copy_manifest_assets(manifest, dest_root).await?;
-    write_manifest_stamp(manifest, dest_root).await
+    fs::write(&stamp_path, stamp.as_bytes())
+        .await
+        .wrap_err_with(|| format!("failed to write {}", stamp_path.display()))?;
+    Ok(stamp)
+}
+
+/// Whether every asset `manifest` plans is still a file in `dest_root`: a
+/// recorded stamp vouches only for a bundle whose files are all still
+/// there — one removed since must be restaged, not shipped without it.
+async fn assets_present(manifest: &BundleManifest, dest_root: &Path) -> bool {
+    for asset in manifest.assets() {
+        match fs::metadata(dest_root.join(asset.logical_path())).await {
+            Ok(metadata) if metadata.is_file() => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// The project's launch screen, resolved, with the artwork it shows.
@@ -240,9 +352,26 @@ pub fn launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
     launch_assets_from(project, &manifest)
 }
 
+/// Resolves the project's launch screen — `[launch]` over `[theme]`, and
+/// the root `Launch.*` artwork path — without decoding any artwork, for
+/// callers that only name what the launch screen holds.
+///
+/// # Errors
+///
+/// Fails when the assets cannot be planned.
+pub fn launch_plan(project: &Project) -> eyre::Result<LaunchPlan> {
+    let manifest = build_main_manifest(project)?;
+    let water = project.manifest();
+    Ok(LaunchPlan::resolve(
+        water.launch(),
+        water.theme(),
+        &manifest,
+    ))
+}
+
 fn launch_assets_from(project: &Project, manifest: &BundleManifest) -> eyre::Result<LaunchAssets> {
     let water = project.manifest();
-    let plan = LaunchPlan::resolve(water.launch.as_ref(), water.theme.as_ref(), manifest);
+    let plan = LaunchPlan::resolve(water.launch(), water.theme(), manifest);
     let artwork = plan
         .image()
         .map(|path| IconSource::load(path))
@@ -260,38 +389,33 @@ fn launch_assets_from(project: &Project, manifest: &BundleManifest) -> eyre::Res
 fn load_project_icon(manifest: &BundleManifest) -> eyre::Result<IconSource> {
     manifest.root_artwork(AssetRole::AppIcon).map_or_else(
         || Ok(IconSource::default_logo()),
-        |icon| IconSource::load(&icon.source_path),
+        |icon| IconSource::load(icon.source_path()),
     )
-}
-
-/// The theme parent a generated Android app builds on: Material3 for the
-/// native View runtime's appcompat dependency closure, the platform's own
-/// Material theme for the Hydrolysis host, which ships neither library.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AndroidThemeParent {
-    /// `Theme.Material3.DayNight.NoActionBar` — appcompat/Material color
-    /// attributes, only valid with `com.google.android.material` linked.
-    Material3,
-    /// `@android:style/Theme.Material.NoActionBar` — framework attributes
-    /// only; the Hydrolysis host declares no appcompat or Material dep.
-    Platform,
 }
 
 /// Stage the project's assets under the Android backend's `res`/`assets`
 /// tree. `symbols` is the target build's app library — see
 /// [`stage_for_apple`].
+///
+/// `fonts` are the declared faces to ship inside the bundle, as
+/// [`with_bundled_fonts`] plans them — the Hydrolysis runtime reads an
+/// application's fonts from there.
+///
+/// The returned manifest is the project's plan, without the bundled font
+/// entries.
 pub async fn stage_for_android(
     project: &Project,
     backend_path: &Path,
     symbols: &ArtifactSymbols,
     dev_server: bool,
-    theme_parent: AndroidThemeParent,
+    fonts: &[super::ResolvedFont],
 ) -> eyre::Result<BundleManifest> {
     let manifest = build_manifest(project, symbols, dev_server).await?;
     let assets_dest = backend_path
         .join("app/src/main/assets")
         .join(ASSET_ROOT_DIR);
-    stage_bundle(&manifest, &assets_dest, &[]).await?;
+    let staged = with_bundled_fonts(&manifest, fonts)?;
+    stage_bundle(&staged, &assets_dest, &[]).await?;
 
     let res_root = backend_path.join("app/src/main/res");
     fs::create_dir_all(&res_root).await?;
@@ -300,8 +424,8 @@ pub async fn stage_for_android(
     let icon_background = icon.edge_color()?;
     let launch = launch_assets_from(project, &manifest)?;
 
-    let theme = project.manifest().theme.as_ref();
-    write_android_theme_files(theme, icon_background, &launch, backend_path, theme_parent).await?;
+    let theme = project.manifest().theme();
+    write_android_theme_files(theme, icon_background, &launch, backend_path).await?;
 
     // Older CLI versions staged the foreground as a vector drawable; a PNG
     // and an XML with the same resource name cannot coexist.
@@ -312,35 +436,29 @@ pub async fn stage_for_android(
     Ok(manifest)
 }
 
-/// Stage the project's assets under an embedded-mode Android library
-/// module's `assets` tree. A host mounts `waterui_assets` out of the AAR's
-/// merged assets, so only the raw asset files and their sync stamp ship —
+/// Stage the project's assets under an Android library module's `assets`
+/// tree. A host mounts `waterui_assets` out of the merged assets, so only the raw asset files and their sync stamp ship —
 /// the app-level `res`/`theme`/launcher artwork belongs to the host.
 /// `symbols` is the target build's app library — see [`stage_for_apple`].
 ///
-/// Returns the manifest and where the bundle was staged.
+/// `fonts` are the declared faces, staged inside the bundle like the app
+/// module's — see [`stage_for_android`].
+///
+/// Returns the manifest and the staged `waterui_assets` directory — the
+/// only entry the library writes under `src/main/assets`, which AAR asset
+/// merging shares with the host application.
 pub async fn stage_for_android_library(
     project: &Project,
     module_dir: &Path,
     symbols: &ArtifactSymbols,
     dev_server: bool,
-) -> eyre::Result<(BundleManifest, StagedAndroidAssets)> {
+    fonts: &[super::ResolvedFont],
+) -> eyre::Result<(BundleManifest, PathBuf)> {
     let manifest = build_manifest(project, symbols, dev_server).await?;
-    let root = module_dir.join("src/main/assets");
-    let bundle = root.join(ASSET_ROOT_DIR);
-    stage_bundle(&manifest, &bundle, &[]).await?;
+    let bundle = module_dir.join("src/main/assets").join(ASSET_ROOT_DIR);
+    stage_bundle(&with_bundled_fonts(&manifest, fonts)?, &bundle, &[]).await?;
 
-    Ok((manifest, StagedAndroidAssets { root, bundle }))
-}
-
-/// Where [`stage_for_android_library`] staged a library's assets.
-#[derive(Debug, Clone)]
-pub struct StagedAndroidAssets {
-    /// The module's `src/main/assets/` root.
-    pub root: PathBuf,
-    /// The staged bundle itself, the [`ASSET_ROOT_DIR`] directory in
-    /// `root` — always present once staging returns.
-    pub bundle: PathBuf,
+    Ok((manifest, bundle))
 }
 
 /// Renders the project's macOS `.icns` app icon for hand-assembled bundles
@@ -423,14 +541,14 @@ pub async fn stage_hicolor_icons(project: &Project, icons_root: &Path) -> eyre::
 /// that produced it owns the artifact enumeration, so this stays pure.
 pub fn scan_project_fonts(manifest: &BundleManifest) -> eyre::Result<Vec<super::ResolvedFont>> {
     manifest
-        .assets
+        .assets()
         .iter()
-        .filter(|asset| asset.kind == AssetKind::Font)
+        .filter(|asset| asset.kind() == AssetKind::Font)
         .map(|asset| {
-            let name = detect_font_family(&asset.source_path)?;
+            let name = detect_font_family(asset.source_path())?;
             Ok(super::ResolvedFont {
                 name,
-                path: asset.source_path.clone(),
+                path: asset.source_path().clone(),
             })
         })
         .collect()
@@ -441,12 +559,12 @@ pub fn scan_project_fonts(manifest: &BundleManifest) -> eyre::Result<Vec<super::
 /// Enough for the icon paths: `include_bundle!` mounts are sibling namespaces
 /// that can never claim the `AppIcon` role.
 fn build_main_manifest(project: &Project) -> eyre::Result<BundleManifest> {
-    Ok(BundleManifest {
-        crate_root: project.root().to_path_buf(),
-        assets_root: project.assets_dir(),
-        mounts: Vec::new(),
-        assets: plan_main_assets(project)?,
-    })
+    Ok(BundleManifest::new(
+        project.root().to_path_buf(),
+        project.assets_dir(),
+        Vec::new(),
+        plan_main_assets(project)?,
+    ))
 }
 
 fn plan_main_assets(project: &Project) -> eyre::Result<Vec<PlannedAsset>> {
@@ -458,7 +576,7 @@ fn plan_main_assets(project: &Project) -> eyre::Result<Vec<PlannedAsset>> {
         // declared wholesale and keep every file they name.
         Ok(plan_mount(&assets_dir, "")?
             .into_iter()
-            .filter(|asset| asset.logical_path != Path::new("README.md"))
+            .filter(|asset| asset.logical_path() != Path::new("README.md"))
             .collect())
     } else {
         Ok(Vec::new())
@@ -481,10 +599,10 @@ pub async fn build_manifest(
     // means bun, and the declared manager is never substituted.
     let package_manager = project
         .manifest()
-        .web
+        .web()
         .as_ref()
         .map_or_else(crate::web::PackageManager::default, |web| {
-            web.package_manager
+            web.package_manager()
         });
     // The main root is always planned; a second `assets` declaration is a
     // duplicate mount.
@@ -493,13 +611,13 @@ pub async fn build_manifest(
     for leaf in symbols.leaves_with_prefix(BUNDLE_META_PREFIX) {
         let meta = symbols.bundle_mount_meta(&leaf)?;
         // The `assets` mount is the main root, already planned above.
-        if meta.mount == "assets" {
+        if meta.mount() == "assets" {
             continue;
         }
-        if !seen.insert(meta.mount.clone()) {
+        if !seen.insert(meta.mount().to_owned()) {
             bail!(
                 "include_bundle mount '{}' is declared more than once",
-                meta.mount
+                meta.mount()
             );
         }
         // An `include_web!` mount carries the toolchain project that produces
@@ -508,48 +626,63 @@ pub async fn build_manifest(
         // the frontend build rides that same exactly-once guarantee. In
         // dev-server mode the app opens the bundler's URL instead, so neither
         // the build nor the staged copy happens.
-        if meta.project.is_some() {
+        if meta.project().is_some() {
             if dev_server {
                 continue;
             }
             crate::web::build_frontend(project.host(), package_manager, &meta).await?;
         }
-        assets.extend(plan_mount(&meta.path, &meta.mount)?);
-        mounts.push(BundleMount {
-            name: meta.mount,
-            root: meta.path,
-        });
+        let (mount, path, _) = meta.into_parts();
+        assets.extend(plan_mount(&path, &mount)?);
+        mounts.push(BundleMount::new(mount, path));
     }
 
-    assets.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
-    Ok(BundleManifest {
-        crate_root: project.root().to_path_buf(),
-        assets_root: project.assets_dir(),
+    assets.sort_by(|left, right| left.logical_path().cmp(right.logical_path()));
+    Ok(BundleManifest::new(
+        project.root().to_path_buf(),
+        project.assets_dir(),
         mounts,
         assets,
-    })
+    ))
 }
 
 async fn copy_manifest_assets(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
-    for asset in &manifest.assets {
-        let dest = dest_root.join(&asset.logical_path);
-        copy_asset(asset, &dest).await?;
-    }
-    Ok(())
+    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let copies: Vec<_> = manifest
+        .assets()
+        .iter()
+        .map(|asset| {
+            copy_asset(
+                asset.kind(),
+                asset.source_path().clone(),
+                dest_root.join(asset.logical_path()),
+            )
+        })
+        .collect();
+    futures_util::stream::iter(copies)
+        .buffer_unordered(workers)
+        .try_collect()
+        .await
 }
 
-async fn copy_asset(asset: &PlannedAsset, dest: &Path) -> eyre::Result<()> {
+/// Copy one asset of `kind` from `source` to `dest`, re-encoding an image
+/// on a blocking thread.
+async fn copy_asset(kind: AssetKind, source: PathBuf, dest: PathBuf) -> eyre::Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).await?;
     }
-    match asset.kind {
+    match kind {
         AssetKind::Image => {
-            let bytes = fs::read(&asset.source_path).await?;
-            let optimized = optimize_image(&bytes, &asset.source_path)?;
-            super::super::templates::write_file_if_changed(dest, &optimized).await?;
+            let optimized = smol::unblock(move || {
+                let bytes = std::fs::read(&source)
+                    .wrap_err_with(|| format!("failed to read {}", source.display()))?;
+                optimize_image(&bytes, &source)
+            })
+            .await?;
+            super::super::templates::write_file_if_changed(&dest, &optimized).await?;
         }
         _ => {
-            crate::utils::copy_file_if_changed(&asset.source_path, dest).await?;
+            crate::utils::copy_file_if_changed(&source, &dest).await?;
         }
     }
     Ok(())
@@ -602,25 +735,27 @@ fn optimize_image(bytes: &[u8], source: &Path) -> eyre::Result<Vec<u8>> {
     }
 }
 
-async fn write_manifest_stamp(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
-    let mut hasher = Sha256::new();
-    for asset in &manifest.assets {
-        hasher.update(asset.logical_path.to_string_lossy().as_bytes());
-        let bytes = std::fs::read(&asset.source_path).wrap_err_with(|| {
-            format!(
-                "Failed to read '{}' for asset stamp",
-                asset.source_path.display()
-            )
-        })?;
-        hasher.update(&bytes);
-    }
-    let stamp = hex::encode(hasher.finalize());
-    super::super::templates::write_file_if_changed(
-        &dest_root.join(SYNC_STAMP_FILE),
-        stamp.as_bytes(),
-    )
-    .await?;
-    Ok(())
+/// The digest a staged bundle is a function of: [`STAGING_VERSION`], then
+/// every asset's logical path and its source's length and bytes, in
+/// manifest order. The sources are read on a blocking thread.
+async fn manifest_stamp(manifest: &BundleManifest) -> eyre::Result<String> {
+    let sources: Vec<(PathBuf, PathBuf)> = manifest
+        .assets()
+        .iter()
+        .map(|asset| (asset.logical_path().clone(), asset.source_path().clone()))
+        .collect();
+    smol::unblock(move || {
+        let mut hasher = Sha256::new();
+        hasher.update(STAGING_VERSION.to_le_bytes());
+        for (logical_path, source_path) in &sources {
+            hasher.update(logical_path.to_string_lossy().as_bytes());
+            hasher.update([0]);
+            crate::utils::hash_file_into(&mut hasher, source_path)
+                .wrap_err("failed to read an asset for the bundle stamp")?;
+        }
+        Ok(hex::encode(hasher.finalize()))
+    })
+    .await
 }
 
 /// The relative file set a staged bundle holds once `manifest` is written:
@@ -628,9 +763,9 @@ async fn write_manifest_stamp(manifest: &BundleManifest, dest_root: &Path) -> ey
 /// the caller adds beside them.
 fn staged_bundle_files(manifest: &BundleManifest, extras: &[&str]) -> BTreeSet<PathBuf> {
     manifest
-        .assets
+        .assets()
         .iter()
-        .map(|asset| asset.logical_path.clone())
+        .map(|asset| asset.logical_path().clone())
         .chain(
             std::iter::once(SYNC_STAMP_FILE)
                 .chain(extras.iter().copied())
@@ -922,6 +1057,12 @@ async fn write_apple_root_contents(xcassets_dest: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Writes every `AppIcon.appiconset` slot full-bleed — the `mac` idiom
+/// included. The asset catalog renders `mac` slots through the system icon
+/// plate, which applies its own mask and inset, so baking the icon-grid
+/// inset into the PNG would shrink the artwork twice (#1656). The loose
+/// `.icns` a hand-assembled bundle serves keeps the inset shape instead —
+/// `render_macos_icon` in `icon.rs`.
 async fn write_apple_app_icon(source: &IconSource, xcassets_dest: &Path) -> eyre::Result<()> {
     #[derive(Serialize)]
     struct ImageItem<'a> {
@@ -949,11 +1090,7 @@ async fn write_apple_app_icon(source: &IconSource, xcassets_dest: &Path) -> eyre
     let mut images = Vec::new();
     for &(idiom, size, scale, pixels) in APPLE_APP_ICON_SPECS {
         let file_name = apple_app_icon_file(idiom, size, scale);
-        write_png(
-            &render_apple_icon(source, idiom, pixels)?,
-            &appicon_dir.join(&file_name),
-        )
-        .await?;
+        write_png(&source.render(pixels)?, &appicon_dir.join(&file_name)).await?;
         images.push(ImageItem {
             idiom,
             size,
@@ -1036,40 +1173,6 @@ struct AndroidThemesTemplate {
 )]
 struct AndroidLaunchArtworkTemplate;
 
-/// The theme slots and the resources they bind to, in the order the
-/// generated `colors.xml` and `themes.xml` list them, under the Material3
-/// attribute namespace appcompat supplies.
-const fn android_theme_slots(
-    theme: &ThemeConfig,
-) -> [(&'static str, &'static str, Option<HexColor>); 8] {
-    [
-        (
-            "android:colorBackground",
-            "waterui_background",
-            theme.background,
-        ),
-        ("colorSurface", "waterui_surface", theme.surface),
-        (
-            "colorSurfaceVariant",
-            "waterui_surface_variant",
-            theme.surface_variant,
-        ),
-        ("colorOutline", "waterui_border", theme.border),
-        ("colorOnSurface", "waterui_foreground", theme.foreground),
-        (
-            "colorOnSurfaceVariant",
-            "waterui_muted_foreground",
-            theme.muted_foreground,
-        ),
-        ("colorPrimary", "waterui_accent", theme.accent),
-        (
-            "colorOnPrimary",
-            "waterui_accent_foreground",
-            theme.accent_foreground,
-        ),
-    ]
-}
-
 /// The same theme tokens as framework attributes: what a generated app
 /// without appcompat or the Material components library — the Hydrolysis
 /// host — can bind against `Theme.Material`.
@@ -1080,14 +1183,14 @@ const fn android_platform_theme_slots(
         (
             "android:colorBackground",
             "waterui_background",
-            theme.background,
+            theme.background(),
         ),
-        ("android:colorPrimary", "waterui_accent", theme.accent),
-        ("android:colorAccent", "waterui_accent", theme.accent),
+        ("android:colorPrimary", "waterui_accent", theme.accent()),
+        ("android:colorAccent", "waterui_accent", theme.accent()),
         (
             "android:textColorPrimary",
             "waterui_foreground",
-            theme.foreground,
+            theme.foreground(),
         ),
     ]
 }
@@ -1103,7 +1206,6 @@ async fn write_android_theme_files(
     icon_background: Option<[u8; 3]>,
     launch: &LaunchAssets,
     backend_path: &Path,
-    theme_parent: AndroidThemeParent,
 ) -> eyre::Result<()> {
     let values_dir = backend_path.join(ANDROID_VALUES_DIR);
     let values_night_dir = backend_path.join(ANDROID_VALUES_NIGHT_DIR);
@@ -1129,18 +1231,9 @@ async fn write_android_theme_files(
 
     let plan = launch.plan();
     let themes = AndroidThemesTemplate {
-        theme_parent: match theme_parent {
-            AndroidThemeParent::Material3 => "Theme.Material3.DayNight.NoActionBar",
-            AndroidThemeParent::Platform => "@android:style/Theme.Material.NoActionBar",
-        },
+        theme_parent: "@android:style/Theme.Material.NoActionBar",
         theme_items: theme.map_or_else(Vec::new, |theme| {
-            let slots: Vec<_> = match theme_parent {
-                AndroidThemeParent::Material3 => android_theme_slots(theme).into_iter().collect(),
-                AndroidThemeParent::Platform => {
-                    android_platform_theme_slots(theme).into_iter().collect()
-                }
-            };
-            slots
+            android_platform_theme_slots(theme)
                 .into_iter()
                 .filter(|(_, _, value)| value.is_some())
                 .map(|(attr, color_name, _)| AndroidThemeItem { attr, color_name })
@@ -1180,7 +1273,7 @@ fn android_colors(
     launch: &LaunchAssets,
 ) -> eyre::Result<AndroidColorTables> {
     let accent = theme
-        .and_then(|theme| theme.accent)
+        .and_then(ThemeConfig::accent)
         .unwrap_or(DEFAULT_ACCENT);
     let mut colors = vec![AndroidColor {
         name: "ic_launcher_background",
@@ -1188,7 +1281,7 @@ fn android_colors(
     }];
     if let Some(theme) = theme {
         colors.extend(
-            android_theme_slots(theme)
+            android_platform_theme_slots(theme)
                 .into_iter()
                 .filter_map(|(_, name, value)| value.map(|value| AndroidColor { name, value })),
         );
@@ -1275,47 +1368,187 @@ mod tests {
     use crate::project::ManagedBackends;
     use waterui_assets_planner::LaunchConfig;
 
+    /// A minimal project under `root` — `Water.toml`, `Cargo.toml`,
+    /// `Cargo.lock`, `src/lib.rs` — opened through [`Project::open`].
+    /// `host_root` backs the machine's toolchain directory.
+    async fn open_fixture_project(host_root: &Path, root: &Path) -> Project {
+        std::fs::create_dir_all(root.join("src")).expect("src");
+        std::fs::write(
+            root.join("Water.toml"),
+            "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
+        )
+        .expect("Water.toml");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::write(
+            root.join("Cargo.lock"),
+            "version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("Cargo.lock");
+        std::fs::write(root.join("src/lib.rs"), "").expect("lib.rs");
+        Project::open(
+            &crate::toolchain::testing::real_toolchain_host(host_root),
+            root,
+            ManagedBackends::NONE,
+        )
+        .await
+        .expect("fixture project opens")
+    }
+
     #[test]
     fn the_scaffold_assets_readme_never_ships() {
         smol::block_on(async {
             let tempdir = tempfile::tempdir().expect("tempdir");
             let root = tempdir.path().join("fixture");
-            std::fs::create_dir_all(root.join("src")).expect("src");
             std::fs::create_dir_all(root.join("assets")).expect("assets");
-            std::fs::write(
-                root.join("Water.toml"),
-                "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
-            )
-            .expect("Water.toml");
-            std::fs::write(
-                root.join("Cargo.toml"),
-                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-            )
-            .expect("Cargo.toml");
-            std::fs::write(
-                root.join("Cargo.lock"),
-                "version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
-            )
-            .expect("Cargo.lock");
-            std::fs::write(root.join("src/lib.rs"), "").expect("lib.rs");
             std::fs::write(root.join("assets/README.md"), "# Assets\n").expect("readme");
             std::fs::write(root.join("assets/note.txt"), "hello").expect("asset");
 
-            let project = Project::open(
-                &crate::toolchain::testing::real_toolchain_host(tempdir.path()),
-                &root,
-                ManagedBackends::NONE,
-            )
-            .await
-            .expect("fixture project opens");
+            let project = open_fixture_project(tempdir.path(), &root).await;
             let assets = plan_main_assets(&project).expect("assets plan");
             assert_eq!(
                 assets
                     .iter()
-                    .map(|asset| asset.logical_path.as_path())
+                    .map(|asset| asset.logical_path().as_path())
                     .collect::<Vec<_>>(),
                 [Path::new("note.txt")],
                 "the scaffold README stays out of the package"
+            );
+        });
+    }
+
+    /// A declared face, as `resolve_fonts` answers one.
+    fn declared_font(dir: &Path, file_name: &str, bytes: &[u8]) -> super::super::ResolvedFont {
+        let path = dir.join(file_name);
+        std::fs::write(&path, bytes).expect("font file");
+        super::super::ResolvedFont {
+            name: "Fixture Sans".to_string(),
+            path,
+        }
+    }
+
+    /// AAR asset merging shares `src/main/assets` with the host application
+    /// and the host's files win, so the library's bundle is the one thing
+    /// the stage may place there — a sibling top-level directory like a
+    /// `fonts/` tree collides with whatever the host ships (#2348). The
+    /// faces the application declared therefore ship inside the bundle,
+    /// where `hydrolysis`'s Android font collection reads them from
+    /// (#2433).
+    #[test]
+    fn android_library_staging_writes_only_the_namespaced_bundle() {
+        smol::block_on(async {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let root = tempdir.path().join("fixture");
+            std::fs::create_dir_all(root.join("assets")).expect("assets");
+            std::fs::write(root.join("assets/note.txt"), "hello").expect("asset");
+            let project = open_fixture_project(tempdir.path(), &root).await;
+            let font = declared_font(tempdir.path(), "Fixture-Regular.ttf", b"face");
+
+            let module_dir = tempdir.path().join("waterui");
+            let (_manifest, bundle) = stage_for_android_library(
+                &project,
+                &module_dir,
+                &ArtifactSymbols::empty(),
+                false,
+                std::slice::from_ref(&font),
+            )
+            .await
+            .expect("library assets stage");
+
+            let assets_root = module_dir.join("src/main/assets");
+            assert_eq!(bundle, assets_root.join(ASSET_ROOT_DIR));
+            let entries = std::fs::read_dir(&assets_root)
+                .expect("the module's assets root exists")
+                .map(|entry| entry.expect("a readable entry").file_name())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                entries.as_slice(),
+                &[OsStr::new(ASSET_ROOT_DIR)],
+                "the library stages nothing beside the waterui_assets bundle"
+            );
+            assert!(bundle.join("note.txt").is_file());
+            assert!(bundle.join(SYNC_STAMP_FILE).is_file());
+            assert_eq!(
+                std::fs::read(
+                    bundle
+                        .join(waterui_assets_core::STAGED_FONTS_DIR)
+                        .join("Fixture-Regular.ttf")
+                )
+                .expect("the declared face ships inside the bundle"),
+                b"face",
+                "the bundle carries the declared face byte for byte"
+            );
+        });
+    }
+
+    /// A face the build no longer declares is pruned from the bundle, and a
+    /// changed face changes the bundle's stamp — what the device sync
+    /// compares, so a restaged font actually reaches a running app.
+    #[test]
+    fn bundled_fonts_are_stamped_and_pruned_like_any_asset() {
+        smol::block_on(async {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let root = tempdir.path().join("fixture");
+            std::fs::create_dir_all(root.join("assets")).expect("assets");
+            std::fs::write(root.join("assets/note.txt"), "hello").expect("asset");
+            let project = open_fixture_project(tempdir.path(), &root).await;
+            let module_dir = tempdir.path().join("waterui");
+
+            let stage = |fonts: Vec<super::super::ResolvedFont>| {
+                let project = &project;
+                let module_dir = &module_dir;
+                async move {
+                    let (_manifest, bundle) = stage_for_android_library(
+                        project,
+                        module_dir,
+                        &ArtifactSymbols::empty(),
+                        false,
+                        &fonts,
+                    )
+                    .await
+                    .expect("library assets stage");
+                    let stamp = std::fs::read_to_string(bundle.join(SYNC_STAMP_FILE))
+                        .expect("the staged bundle records its stamp");
+                    (bundle, stamp)
+                }
+            };
+
+            let (bundle, with_font) = stage(vec![declared_font(
+                tempdir.path(),
+                "Fixture-Regular.ttf",
+                b"face",
+            )])
+            .await;
+            let staged = bundle
+                .join(waterui_assets_core::STAGED_FONTS_DIR)
+                .join("Fixture-Regular.ttf");
+
+            let (_, rewritten) = stage(vec![declared_font(
+                tempdir.path(),
+                "Fixture-Regular.ttf",
+                b"other",
+            )])
+            .await;
+            assert_ne!(
+                with_font, rewritten,
+                "a changed face changes the stamp the device sync compares"
+            );
+            assert_eq!(
+                std::fs::read(&staged).expect("the face stays staged"),
+                b"other"
+            );
+
+            let (_, without_font) = stage(Vec::new()).await;
+            assert_ne!(
+                rewritten, without_font,
+                "dropping a declared face changes the stamp"
+            );
+            assert!(
+                !staged.exists(),
+                "a face the build no longer declares is pruned from the bundle"
             );
         });
     }
@@ -1382,6 +1615,35 @@ mod tests {
         });
     }
 
+    /// The asset catalog's `mac` slots render through the system icon
+    /// plate, which owns the mask and inset — the PNGs must be full-bleed
+    /// or the artwork is shrunk twice (#1656). The loose-`.icns` path keeps
+    /// the baked inset — `macos_icns_icon_is_inset_and_rounded` in
+    /// `icon.rs`.
+    #[test]
+    fn apple_app_icon_mac_slots_render_full_bleed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        smol::block_on(async {
+            write_apple_app_icon(&IconSource::default_logo(), temp.path())
+                .await
+                .expect("app icon set");
+            let decoded = image::open(
+                temp.path()
+                    .join(APPLE_APP_ICON_SET)
+                    .join("AppIcon-mac-512x512@2x.png"),
+            )
+            .expect("mac slot must be a decodable png")
+            .to_rgba8();
+            assert_eq!(decoded.dimensions(), (1024, 1024));
+            assert_eq!(
+                decoded.get_pixel(0, 0).0[3],
+                u8::MAX,
+                "the plate owns the macOS mask: the catalog slot keeps the \
+                 artwork's corner"
+            );
+        });
+    }
+
     #[test]
     fn apple_launch_image_is_written_at_three_scales() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1406,10 +1668,7 @@ mod tests {
 
     #[test]
     fn android_colors_derive_the_launcher_background_and_carry_the_launch_colors() {
-        let theme = ThemeConfig {
-            accent: Some(DEFAULT_ACCENT),
-            ..ThemeConfig::default()
-        };
+        let theme = ThemeConfig::default().with_accent(DEFAULT_ACCENT);
         let no_launch = LaunchAssets {
             plan: LaunchPlan::resolve(None, None, &empty_manifest()),
             artwork: None,
@@ -1438,10 +1697,10 @@ mod tests {
 
         let launch = LaunchAssets {
             plan: LaunchPlan::resolve(
-                Some(&LaunchConfig {
-                    background: Some(HexColor::from_rgb([0x0B, 0x1E, 0x3F])),
-                    background_dark: Some(HexColor::from_rgb([0, 0, 0])),
-                }),
+                Some(&LaunchConfig::new(
+                    Some(HexColor::from_rgb([0x0B, 0x1E, 0x3F])),
+                    Some(HexColor::from_rgb([0, 0, 0])),
+                )),
                 None,
                 &empty_manifest(),
             ),
@@ -1467,7 +1726,7 @@ mod tests {
     #[test]
     fn android_themes_bind_only_configured_slots_and_the_launch_theme() {
         let xml = AndroidThemesTemplate {
-            theme_parent: "Theme.Material3.DayNight.NoActionBar",
+            theme_parent: "@android:style/Theme.Material.NoActionBar",
             theme_items: vec![AndroidThemeItem {
                 attr: "colorPrimary",
                 color_name: "waterui_accent",
@@ -1487,7 +1746,7 @@ mod tests {
         assert!(!xml.contains("windowSplashScreenAnimatedIcon"));
 
         let xml = AndroidThemesTemplate {
-            theme_parent: "Theme.Material3.DayNight.NoActionBar",
+            theme_parent: "@android:style/Theme.Material.NoActionBar",
             theme_items: Vec::new(),
             launch_background: false,
             launch_artwork: true,
@@ -1501,12 +1760,7 @@ mod tests {
     }
 
     fn empty_manifest() -> BundleManifest {
-        BundleManifest {
-            crate_root: PathBuf::new(),
-            assets_root: PathBuf::new(),
-            mounts: Vec::new(),
-            assets: Vec::new(),
-        }
+        BundleManifest::new(PathBuf::new(), PathBuf::new(), Vec::new(), Vec::new())
     }
 
     /// Re-staging an unchanged manifest must rewrite nothing: a full
@@ -1519,19 +1773,19 @@ mod tests {
             let tempdir = tempfile::tempdir().expect("tempdir");
             let source = tempdir.path().join("note.txt");
             std::fs::write(&source, b"asset bytes").expect("write source");
-            let manifest = BundleManifest {
-                crate_root: tempdir.path().to_path_buf(),
-                assets_root: tempdir.path().to_path_buf(),
-                mounts: Vec::new(),
-                assets: vec![PlannedAsset {
-                    mount: String::new(),
-                    source_path: source.clone(),
-                    relative_path: PathBuf::from("note.txt"),
-                    logical_path: PathBuf::from("note.txt"),
-                    kind: AssetKind::Data,
-                    role: AssetRole::Regular,
-                }],
-            };
+            let manifest = BundleManifest::new(
+                tempdir.path().to_path_buf(),
+                tempdir.path().to_path_buf(),
+                Vec::new(),
+                vec![PlannedAsset::new(
+                    String::new(),
+                    source.clone(),
+                    PathBuf::from("note.txt"),
+                    PathBuf::from("note.txt"),
+                    AssetKind::Data,
+                    AssetRole::Regular,
+                )],
+            );
             let bundle = tempdir.path().join("staged").join(ASSET_ROOT_DIR);
             write_library_resources(&manifest, &tempdir.path().join("staged"))
                 .await
@@ -1571,6 +1825,16 @@ mod tests {
                     path.display()
                 );
             }
+
+            std::fs::remove_file(&staged_file).expect("remove the staged asset");
+            write_library_resources(&manifest, &tempdir.path().join("staged"))
+                .await
+                .expect("re-stage over a removed asset");
+            assert_eq!(
+                std::fs::read(&staged_file).expect("staged asset"),
+                b"asset bytes",
+                "a current stamp does not vouch for an asset removed since"
+            );
 
             std::fs::write(&source, b"changed bytes").expect("change the source");
             write_library_resources(&manifest, &tempdir.path().join("staged"))

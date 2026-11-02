@@ -89,6 +89,7 @@ pub struct MsvcBuildToolsInstallation;
 
 /// Errors that can occur while installing the MSVC build tools.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallMsvcBuildTools {
     /// The bootstrapper could not be downloaded or written.
     #[error(transparent)]

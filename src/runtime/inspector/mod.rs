@@ -23,6 +23,7 @@
 //! let _scope = inspector.observe_signals();       // reactive graph, main thread
 //! ```
 
+use std::fmt::Write as _;
 use std::io;
 use std::net::TcpListener;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -66,32 +67,137 @@ const DEFAULT_TASK_WINDOW_MS: u64 = 100;
 const DEFAULT_STALL_RATIO: f64 = 0.90;
 
 /// Where the endpoint is listening and the token required to talk to it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[non_exhaustive]
 pub struct InspectorEndpointInfo {
     /// Bound socket address.
-    pub addr: SocketAddr,
+    addr: SocketAddr,
     /// One-time token clients must present.
-    pub token: String,
+    token: String,
+}
+
+impl InspectorEndpointInfo {
+    /// Bound socket address.
+    #[must_use]
+    pub const fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// One-time token clients must present.
+    #[must_use]
+    pub const fn token(&self) -> &str {
+        self.token.as_str()
+    }
+}
+
+// The token is a credential: it travels in the advertisement and the
+// `Hello`, never into diagnostics.
+impl std::fmt::Debug for InspectorEndpointInfo {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InspectorEndpointInfo")
+            .field("addr", &self.addr)
+            .field("token", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Runtime endpoint configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[non_exhaustive]
 pub struct InspectorServerConfig {
     /// Address to bind.
-    pub host: IpAddr,
+    host: IpAddr,
     /// Port to bind; `0` picks an ephemeral one.
-    pub port: u16,
+    port: u16,
     /// One-time connection token.
-    pub token: String,
+    token: String,
     /// How often task occupancy is aggregated and published.
-    pub task_window: Duration,
+    task_window: Duration,
     /// Fraction of the frame budget above which a poll is reported as a stall.
-    pub stall_ratio: f64,
+    stall_ratio: f64,
     /// Name reported to the inspector.
-    pub app_name: String,
+    app_name: String,
 }
 
 impl InspectorServerConfig {
+    /// Address to bind.
+    #[must_use]
+    pub const fn host(&self) -> &IpAddr {
+        &self.host
+    }
+
+    /// Port to bind; `0` picks an ephemeral one.
+    #[must_use]
+    pub const fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// One-time connection token.
+    #[must_use]
+    pub const fn token(&self) -> &str {
+        self.token.as_str()
+    }
+
+    /// How often task occupancy is aggregated and published.
+    #[must_use]
+    pub const fn task_window(&self) -> Duration {
+        self.task_window
+    }
+
+    /// Fraction of the frame budget above which a poll is reported as a stall.
+    #[must_use]
+    pub const fn stall_ratio(&self) -> f64 {
+        self.stall_ratio
+    }
+
+    /// Name reported to the inspector.
+    #[must_use]
+    pub const fn app_name(&self) -> &str {
+        self.app_name.as_str()
+    }
+}
+
+// The token is a credential: the config carries it to the endpoint,
+// never into diagnostics.
+impl std::fmt::Debug for InspectorServerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InspectorServerConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("token", &"[redacted]")
+            .field("task_window", &self.task_window)
+            .field("stall_ratio", &self.stall_ratio)
+            .field("app_name", &self.app_name)
+            .finish()
+    }
+}
+
+impl InspectorServerConfig {
+    /// A configuration binding `host`:`port` (`0` picks an ephemeral port),
+    /// accepting `token`, aggregating task occupancy every `task_window`,
+    /// reporting polls above `stall_ratio` of the frame budget as stalls, and
+    /// advertising itself as `app_name`.
+    #[must_use]
+    pub const fn new(
+        host: IpAddr,
+        port: u16,
+        token: String,
+        task_window: Duration,
+        stall_ratio: f64,
+        app_name: String,
+    ) -> Self {
+        Self {
+            host,
+            port,
+            token,
+            task_window,
+            stall_ratio,
+            app_name,
+        }
+    }
+
     /// Builds a configuration from the environment, if inspection is enabled.
     ///
     /// Inspection is enabled by `WATERUI_INSPECTOR_TOKEN`. Optional settings:
@@ -179,15 +285,20 @@ const fn debug_host() -> IpAddr {
     }
 }
 
+/// What the launched CLI's captured output looks like in a diagnostic:
+/// the same bytes with the session token scrubbed, because a tool that
+/// reports the credential it was handed would otherwise print it.
+fn redacted_child_output(output: &[u8], token: &str) -> String {
+    String::from_utf8_lossy(output).replace(token, "[redacted]")
+}
+
 /// A token for one process, from the system's random source.
 fn generate_token() -> String {
-    use std::fmt::Write as _;
-    use std::hash::{BuildHasher, Hasher, RandomState};
-
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).expect("the operating system must provide inspector token entropy");
     let mut token = String::with_capacity(32);
-    for _ in 0..2 {
-        let value = RandomState::new().build_hasher().finish();
-        write!(token, "{value:016x}").expect("writing to a String cannot fail");
+    for byte in bytes {
+        write!(token, "{byte:02x}").expect("writing to a String cannot fail");
     }
     token
 }
@@ -342,8 +453,7 @@ impl InspectorRuntime {
             tracing::info!(
                 target: "waterui::inspector",
                 inspector_addr = %endpoint.addr,
-                token = %endpoint.token,
-                "Inspect requested; attach from your computer with `water inspector`"
+                "Inspect requested; the credentials are in the app's private advertisement — attach from your computer with `water inspector`"
             );
             return;
         }
@@ -355,8 +465,7 @@ impl InspectorRuntime {
             tracing::warn!(
                 target: "waterui::inspector",
                 inspector_addr = %endpoint.addr,
-                token = %endpoint.token,
-                "Could not find the `water` CLI; attach with `water inspect --target <addr> --token <token>`,                  or point WATERUI_CLI at the binary"
+                "Could not find the `water` CLI; attach with `WATERUI_INSPECTOR_TOKEN=<token> water inspector --target <addr>`, or point WATERUI_CLI at the binary"
             );
             return;
         };
@@ -366,8 +475,10 @@ impl InspectorRuntime {
             .arg("inspector")
             .arg("--target")
             .arg(endpoint.addr.to_string())
-            .arg("--token")
-            .arg(&endpoint.token);
+            // The credential travels in the child's environment: the CLI
+            // accepts no `--token`, because argv is readable by every
+            // process on the machine.
+            .env("WATERUI_INSPECTOR_TOKEN", &endpoint.token);
 
         // The CLI builds the inspector against the project it is inspecting, and
         // reads that project from its working directory. A launched application
@@ -410,9 +521,8 @@ impl InspectorRuntime {
                             target: "waterui::inspector",
                             status = %output.status,
                             inspector_addr = %addr,
-                            token = %token,
-                            stderr = %String::from_utf8_lossy(&output.stderr).trim_end(),
-                            stdout = %String::from_utf8_lossy(&output.stdout).trim_end(),
+                            stderr = %redacted_child_output(&output.stderr, &token).trim_end().to_owned(),
+                            stdout = %redacted_child_output(&output.stdout, &token).trim_end().to_owned(),
                             "`water inspector` failed"
                         ),
                         Err(error) => tracing::error!(
@@ -434,7 +544,6 @@ impl InspectorRuntime {
                 target: "waterui::inspector",
                 error = %error,
                 inspector_addr = %addr,
-                token = %token,
                 "Could not launch `water inspector`; attach manually"
             ),
         }
@@ -728,4 +837,72 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<()> {
         .spawn(body)
         .map(drop)
         .map_err(|error| io::Error::other(format!("failed to spawn {name} thread: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    /// The config's token is a credential: `Debug` keeps every setting
+    /// that diagnoses a misconfigured endpoint and never the secret.
+    #[test]
+    fn the_server_config_debug_never_shows_the_token() {
+        let config = super::InspectorServerConfig {
+            host: super::DEFAULT_HOST,
+            port: super::DEFAULT_PORT,
+            token: "s3cret-runtime-token".into(),
+            task_window: std::time::Duration::from_millis(super::DEFAULT_TASK_WINDOW_MS),
+            stall_ratio: super::DEFAULT_STALL_RATIO,
+            app_name: "CredentialDebugTest".into(),
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("s3cret-runtime-token"), "{rendered}");
+        assert!(rendered.contains("CredentialDebugTest"), "{rendered}");
+        assert!(rendered.contains("task_window"), "{rendered}");
+        assert!(rendered.contains("stall_ratio"), "{rendered}");
+    }
+
+    /// The advertised endpoint's token is a credential: `Debug` names
+    /// where to dial, never the secret that guards it — which the
+    /// runtime's own `Debug` inherits through its nested endpoint.
+    #[test]
+    fn the_endpoint_debug_never_shows_the_token() {
+        let endpoint = super::InspectorEndpointInfo {
+            addr: "127.0.0.1:23106".parse().expect("a valid address"),
+            token: "s3cret-runtime-token".into(),
+        };
+        let rendered = format!("{endpoint:?}");
+        assert!(!rendered.contains("s3cret-runtime-token"), "{rendered}");
+        assert!(rendered.contains("23106"), "{rendered}");
+    }
+
+    /// A child that echoes its own arguments prints the token it was
+    /// called with — the scrub removes every occurrence and keeps the
+    /// rest of the output.
+    #[test]
+    fn child_output_is_scrubbed_of_the_token() {
+        let output = super::redacted_child_output(
+            b"warning: retrying s3cret-runtime-token\ntoken s3cret-runtime-token refused",
+            "s3cret-runtime-token",
+        );
+        assert!(!output.contains("s3cret-runtime-token"), "{output}");
+        assert!(output.contains("warning: retrying"), "{output}");
+        assert!(output.contains("refused"), "{output}");
+        assert_eq!(
+            super::redacted_child_output(b"", "s3cret-runtime-token"),
+            ""
+        );
+    }
+
+    /// A generated token is a 128-bit credential rendered as lowercase
+    /// hex: 32 characters, each an ASCII hex digit.
+    #[test]
+    fn generated_tokens_are_128_bit_lowercase_hex() {
+        let token = super::generate_token();
+        assert_eq!(token.len(), 32, "{token}");
+        assert!(
+            token
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+            "{token}"
+        );
+    }
 }

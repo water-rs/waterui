@@ -10,20 +10,24 @@
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
+use std::ops::Range;
+use std::rc::Rc;
 
-use objc2::rc::Retained;
-use objc2::runtime::AnyClass;
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
+    NSAccessibility, NSAccessibilityElement, NSAccessibilityFrameInView, NSAccessibilityLinkRole,
     NSLineBreakMode, NSScreen, NSTextAlignment, NSTextField, NSTextFieldCell, NSView,
 };
-use objc2_core_foundation::{CGRect, CGSize};
+use objc2_core_foundation::{CGPoint, CGRect};
 use objc2_foundation::{
-    NSAlignmentOptions, NSAttributedString, NSEdgeInsets, NSObjectProtocol, NSString,
+    NSArray, NSAttributedString, NSEdgeInsets, NSObjectProtocol, NSString, NSUnionRect,
 };
 
 use crate::callback::guarded;
-use crate::text::{TextMetrics, WrapWidth};
+use crate::geometry::{Point, Rect};
+use crate::text::{Layout, SpanLink, TextMetrics, WrapWidth};
 
 /// The text and line limit a [`Label`] measures with.
 ///
@@ -57,22 +61,12 @@ define_class!(
     #[derive(Debug)]
     /// A non-editable, non-selectable, wrapped `NSTextField` used as a text
     /// leaf.
-    ///
-    /// Its `+cellClass` is `LabelCell`, so every construction path —
-    /// `initWithFrame:` included — draws through the pixel-anchoring cell.
     pub struct Label;
 
     // SAFETY: `NSObjectProtocol` asks nothing of an `NSTextField` subclass.
     unsafe impl NSObjectProtocol for Label {}
 
     impl Label {
-        // SAFETY: `cellClass` is `NSControl`'s own class selector — the
-        // override is invoked by `AppKit` constructors on the subclass.
-        #[unsafe(method(cellClass))]
-        fn cell_class() -> Option<&'static AnyClass> {
-            guarded("Label cellClass", || Some(LabelCell::class()))
-        }
-
         // SAFETY: see the module safety note.
         #[unsafe(method_id(accessibilityValue))]
         fn accessibility_value(&self) -> Option<Retained<NSString>> {
@@ -96,60 +90,16 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), setFrameSize: size] };
                 // A new width changes the wrapped height: invalidate the
-                // intrinsic size once per width.
+                // intrinsic size once per width. `labelWithString:` runs
+                // `setFrameSize:` during its own initialization — before
+                // any `set_ivars` could have run — so the ivar storage is
+                // read without the initialized check.
                 let width = self.bounds().size.width;
-                if width > 0.0
-                    && self.raw_ivars().reported_width.replace(width).to_bits()
-                        != width.to_bits()
-                {
+                // SAFETY: the storage is `set_ivars`-written, marked, or
+                // still zero-filled, all valid `LabelIvars` states.
+                let ivars = unsafe { crate::defined_class::raw_ivars(self) };
+                if width > 0.0 && ivars.reported_width.replace(width).to_bits() != width.to_bits() {
                     self.invalidate_layout();
-                }
-            });
-        }
-    }
-);
-
-define_class!(
-    // SAFETY: the class adds no ivars, implements no `Drop`, and is created
-    // only by `AppKit` itself through `+[NSTextField cellClass]`, which runs
-    // the cell's own designated initializers.
-    #[unsafe(super(NSTextFieldCell))]
-    #[name = "CocoaUiLabelCell"]
-    #[thread_kind = MainThreadOnly]
-    /// The cell [`Label`] draws through: its interior's origin is anchored to
-    /// the control view's backing pixels before text draws.
-    ///
-    /// A `NSTextField` sitting at a fractional backing origin receives an
-    /// interior whose text baselines fall between device pixels, so glyphs
-    /// raster across pixel bounds and smear. Aligning a zero-sized rectangle
-    /// at the interior's origin moves the anchor onto the nearest backing
-    /// pixel while leaving the interior's own size — and therefore wrapping,
-    /// layout, and any affine transform `AppKit` applies — untouched.
-    struct LabelCell;
-
-    // SAFETY: `NSObjectProtocol` asks nothing of an `NSTextFieldCell` subclass.
-    unsafe impl NSObjectProtocol for LabelCell {}
-
-    impl LabelCell {
-        // SAFETY: see the module safety note.
-        #[unsafe(method(drawInteriorWithFrame:inView:))]
-        fn draw_interior_with_frame_in_view(&self, cell_frame: CGRect, control_view: &NSView) {
-            guarded("LabelCell drawInteriorWithFrame:", || {
-                let anchor = control_view.backingAlignedRect_options(
-                    CGRect::new(cell_frame.origin, CGSize::ZERO),
-                    NSAlignmentOptions::AlignMinXNearest
-                        | NSAlignmentOptions::AlignMinYNearest
-                        | NSAlignmentOptions::AlignWidthNearest
-                        | NSAlignmentOptions::AlignHeightNearest,
-                );
-                let interior = CGRect::new(anchor.origin, cell_frame.size);
-                // SAFETY: see the module safety note.
-                unsafe {
-                    let () = msg_send![
-                        super(self),
-                        drawInteriorWithFrame: interior,
-                        inView: control_view
-                    ];
                 }
             });
         }
@@ -195,7 +145,7 @@ impl Label {
         // SAFETY: invoked on the subclass itself, `labelWithString:`
         // allocates through `self`, so the result is a `Label`.
         let this: Retained<Self> = unsafe { msg_send![Self::class(), labelWithString: &*title] };
-        this.mark_ivars_initialized();
+        crate::defined_class::mark_ivars_initialized(&*this);
         this.setEditable(false);
         this.setSelectable(false);
         this.setBordered(false);
@@ -309,53 +259,6 @@ impl Label {
         )
     }
 
-    /// The `LabelIvars` storage read without the debug initialized-ivars
-    /// check: `labelWithString:` triggers `setFrameSize:` during its own
-    /// initialization — before any `set_ivars` could have run — so this
-    /// override cannot go through `ivars()`.
-    fn raw_ivars(&self) -> &LabelIvars {
-        static OFFSET: std::sync::OnceLock<isize> = std::sync::OnceLock::new();
-        let offset = *OFFSET.get_or_init(|| {
-            Self::class()
-                .instance_variable(c"ivars")
-                .expect("objc2 stores DefinedClass ivars under the `ivars` ivar")
-                .offset()
-        });
-        // SAFETY: `ivars` is the storage `#[ivars = LabelIvars]` registers,
-        // so the offset points at a correctly aligned `LabelIvars`; freshly
-        // allocated objects have it zero-filled, which is a valid
-        // `LabelIvars` state (None / zeroed cells).
-        #[expect(clippy::cast_ptr_alignment)]
-        unsafe {
-            &*std::ptr::from_ref::<Self>(self)
-                .cast::<u8>()
-                .offset(offset)
-                .cast::<LabelIvars>()
-        }
-    }
-
-    /// `labelWithString:` allocs through `self` but never runs
-    /// `set_ivars`, so `objc2`'s drop flag reads `Allocated` — which both
-    /// debug `ivars()` checks and ivar destruction gate on. The zero-filled
-    /// storage already equals the initial `LabelIvars` state, so mark it
-    /// initialized the way `initialize_ivars` would have.
-    fn mark_ivars_initialized(&self) {
-        let cls = Self::class();
-        let Some(ivar) = cls.instance_variable(c"drop_flag") else {
-            return;
-        };
-        // SAFETY: `drop_flag` is `objc2`'s ivar-state marker; `0x0f` is its
-        // `InitializedIvars` value. The ivars hold valid zeroed state, so
-        // this only records what is already true.
-        unsafe {
-            std::ptr::from_ref::<Self>(self)
-                .cast::<u8>()
-                .cast_mut()
-                .offset(ivar.offset())
-                .write(0x0f);
-        }
-    }
-
     /// Device pixels per point where the label is drawn — its window's
     /// backing scale, falling back to the main screen.
     #[must_use]
@@ -375,5 +278,198 @@ impl Label {
     fn invalidate_layout(&self) {
         self.invalidateIntrinsicContentSize();
         crate::view::invalidate_layout(self);
+    }
+
+    /// The rect the cell draws its text in, in bounds coordinates —
+    /// `drawingRectForBounds:` answers where the cell's interior goes.
+    fn text_rect(&self) -> CGRect {
+        self.cell()
+            .and_then(|cell| cell.downcast::<NSTextFieldCell>().ok())
+            .map_or_else(
+                || self.bounds(),
+                |cell| cell.drawingRectForBounds(self.bounds()),
+            )
+    }
+
+    /// The laid-out stack a hit test runs through: container width is the
+    /// drawing rect's, paragraph alignment the label's own.
+    fn layout(&self) -> Option<Layout> {
+        let text = self.source_text()?;
+        Some(Layout::new(
+            MainThreadMarker::from(self),
+            &text,
+            self.text_rect().size.width,
+            self.alignment(),
+            self.maximumNumberOfLines().cast_unsigned(),
+        ))
+    }
+
+    /// The UTF-16 character index a point in bounds coordinates hits —
+    /// `None` when it lands outside the text. The bounds' y axis runs up
+    /// while the layout's runs down from the text rect's top.
+    #[must_use]
+    pub fn character_index(&self, point: Point) -> Option<usize> {
+        let rect = self.text_rect();
+        self.layout()?.character_index(CGPoint::new(
+            point.x - rect.origin.x,
+            rect.origin.y + rect.size.height - point.y,
+        ))
+    }
+
+    /// The rectangles a UTF-16 `range` covers in bounds coordinates — one
+    /// per line fragment the range crosses.
+    #[must_use]
+    pub fn rects(&self, range: Range<usize>) -> Vec<Rect> {
+        let Some(layout) = self.layout() else {
+            return Vec::new();
+        };
+        let rect = self.text_rect();
+        let top = rect.origin.y + rect.size.height;
+        layout
+            .rects(range)
+            .into_iter()
+            .map(|container_rect| {
+                Rect::new(
+                    container_rect.origin.x + rect.origin.x,
+                    top - container_rect.origin.y - container_rect.size.height,
+                    container_rect.size.width,
+                    container_rect.size.height,
+                )
+            })
+            .collect()
+    }
+
+    /// Publishes one `Link` accessibility element per span as children of
+    /// the label — the way `AppKit` hangs `AXLink` elements off a text
+    /// element. An element's label is the span's text, its frame the span's
+    /// drawn rectangles, its press the span's action. An empty list clears
+    /// them.
+    ///
+    /// The label stays an accessibility element for its full text.
+    pub fn set_link_elements(&self, links: &[SpanLink<'_>]) {
+        let view: &NSView = self;
+        let element: &ProtocolObject<dyn NSAccessibility> = ProtocolObject::from_ref(view);
+        if links.is_empty() {
+            // SAFETY: `nil` restores the view's traversal children.
+            unsafe { element.setAccessibilityChildren(None) };
+            return;
+        }
+        let elements: Vec<Retained<AnyObject>> = links
+            .iter()
+            .map(|link| {
+                Retained::into_super(Retained::into_super(SpanElement::new(self, link))).into()
+            })
+            .collect();
+        let array = NSArray::from_retained_slice(&elements);
+        // SAFETY: every entry is an `NSAccessibilityElement`.
+        unsafe { element.setAccessibilityChildren(Some(&array)) };
+    }
+}
+
+/// What a [`SpanElement`] answers with: frames computed live — so a moved
+/// or resized label never leaves a stale rect — and the activation an
+/// assistive press runs. `frame` reports screen coordinates,
+/// `frame_in_parent` the label's.
+struct SpanElementIvars {
+    frame: Rc<dyn Fn() -> CGRect>,
+    frame_in_parent: Rc<dyn Fn() -> CGRect>,
+    activate: Rc<dyn Fn()>,
+}
+
+define_class!(
+    // SAFETY: `NSAccessibilityElement`'s designated initializer is `init`,
+    // which `SpanElement::new` calls, and the class does not implement
+    // `Drop`.
+    #[unsafe(super(NSAccessibilityElement))]
+    #[name = "CocoaUiSpanElement"]
+    #[ivars = SpanElementIvars]
+    struct SpanElement;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSAccessibilityElement`
+    // subclass.
+    unsafe impl NSObjectProtocol for SpanElement {}
+
+    impl SpanElement {
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame(&self) -> CGRect {
+            guarded("SpanElement accessibilityFrame", || (self.ivars().frame)())
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrameInParentSpace))]
+        fn accessibility_frame_in_parent_space(&self) -> CGRect {
+            guarded("SpanElement accessibilityFrameInParentSpace", || {
+                (self.ivars().frame_in_parent)()
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            guarded("SpanElement accessibilityPerformPress", || {
+                (self.ivars().activate)();
+                true
+            })
+        }
+    }
+);
+
+impl SpanElement {
+    /// One span's element: `Link` role, the span's text as its label, and
+    /// the label as its accessibility parent.
+    fn new(label: &Label, link: &SpanLink<'_>) -> Retained<Self> {
+        let weak = Weak::new(label);
+        let union = {
+            let range = link.range.clone();
+            let weak = weak.clone();
+            move || -> CGRect {
+                let Some(label) = weak.load() else {
+                    return CGRect::ZERO;
+                };
+                label
+                    .rects(range.clone())
+                    .into_iter()
+                    .map(CGRect::from)
+                    .reduce(|a, b| NSUnionRect(a, b))
+                    .unwrap_or(CGRect::ZERO)
+            }
+        };
+        let frame = {
+            let union = union.clone();
+            Rc::new(move || {
+                weak.load().map_or(CGRect::ZERO, |label| {
+                    NSAccessibilityFrameInView(&label, union())
+                })
+            })
+        };
+        let frame_in_parent = Rc::new(union);
+        let mtm = MainThreadMarker::from(label);
+        let this = mtm.alloc::<Self>().set_ivars(SpanElementIvars {
+            frame,
+            frame_in_parent,
+            activate: Rc::clone(&link.activate),
+        });
+        // SAFETY: `init` is the class's designated initializer.
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        let element: &NSAccessibilityElement = &this;
+        let accessibility = ProtocolObject::<dyn NSAccessibility>::from_ref(element);
+        accessibility.setAccessibilityElement(true);
+        // SAFETY: the role constant is an immutable `NSString` `AppKit`
+        // exports.
+        accessibility.setAccessibilityRole(Some(unsafe { NSAccessibilityLinkRole }));
+        accessibility.setAccessibilityLabel(Some(&NSString::from_str(link.text)));
+        // SAFETY: the label is the element's accessibility parent — an
+        // `NSView` is a valid parent object.
+        unsafe {
+            accessibility.setAccessibilityParent(Some(AsRef::<AnyObject>::as_ref(label)));
+        }
+        this
+    }
+}
+
+impl fmt::Debug for SpanElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SpanElement").finish_non_exhaustive()
     }
 }

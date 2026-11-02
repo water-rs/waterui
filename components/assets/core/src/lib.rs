@@ -34,6 +34,16 @@ mod url;
 /// File name of the staged runtime window icon inside the asset bundle.
 pub const WINDOW_ICON_FILE: &str = ".window-icon.png";
 
+/// Directory inside the asset bundle holding the font files a build staged.
+///
+/// An Android package namespaces exactly one asset tree — its
+/// `waterui_assets` bundle — and the host application wins every path it
+/// shares (water-rs/waterui#2348), so the faces an application declares
+/// ship inside the bundle rather than beside it. The name carries the
+/// `waterui-` prefix the bundle's other own files carry, and no leading dot:
+/// `aapt2` drops hidden entries from a package's assets.
+pub const STAGED_FONTS_DIR: &str = "waterui-fonts";
+
 pub use error::AssetError;
 pub use kind::AssetKind;
 #[cfg(all(feature = "remote", not(target_arch = "wasm32")))]

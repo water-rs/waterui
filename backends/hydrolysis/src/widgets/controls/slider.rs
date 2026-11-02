@@ -33,32 +33,24 @@ use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 /// move-only `AnyView`s (they cannot be re-dispatched twice), so the persistent
 /// `Widget` node holds them as [`RetainedSubview`]s built once and re-flushed each
 /// frame; the cloneable `label`/`range`/`value` drive the track and accessibility.
-pub struct SliderRenderState {
+pub struct SliderRenderState<E: crate::text::TextEngine> {
     label: Label,
     /// The main label as a retained node sub-view, re-flushed each frame at its
     /// rect (reactive content stays live through the node's own re-flush). The
     /// cloneable `label` is kept alongside for accessibility resolution.
-    label_view: RetainedSubview,
-    min_value_label: RetainedSubview,
-    max_value_label: RetainedSubview,
+    label_view: RetainedSubview<E>,
+    min_value_label: RetainedSubview<E>,
+    max_value_label: RetainedSubview<E>,
     range: RangeInclusive<f64>,
     value: Binding<f64>,
     size: ControlSize,
     value_indicator: Option<ValueFormatter>,
 }
 
-impl SliderRenderState {
+impl<E: crate::text::TextEngine> SliderRenderState<E> {
     pub(crate) fn from_config(config: SliderConfig) -> Self {
-        let SliderConfig {
-            label,
-            min_value_label,
-            max_value_label,
-            range,
-            value,
-            size,
-            value_indicator,
-            ..
-        } = config;
+        let (label, min_value_label, max_value_label, range, value, size, value_indicator) =
+            config.into_parts();
         Self {
             label_view: RetainedSubview::new(AnyView::new(label.clone())),
             label,
@@ -75,21 +67,30 @@ impl SliderRenderState {
     /// `&mut HydroState`, no renderer, so labels must be built before then).
     pub(crate) fn prebuild_labels(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.label_view.ensure_built(renderer, env);
         self.min_value_label.ensure_built(renderer, env);
         self.max_value_label.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-views' layout-dirty marks: their measured sizes
+    /// feed the slider's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+            | self.min_value_label.take_layout_dirty_if_built()
+            | self.max_value_label.take_layout_dirty_if_built()
+    }
 }
 
-impl HydroNativeView for Native<SliderConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SliderConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_slider_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -99,8 +100,8 @@ impl HydroNativeView for Native<SliderConfig> {
 /// retained node path.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-fn slider_accessibility_parts(
-    renderer: &mut crate::renderer::SemanticCore,
+fn slider_accessibility_parts<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     label: &Label,
     range: &RangeInclusive<f64>,
@@ -110,13 +111,14 @@ fn slider_accessibility_parts(
 ) {
     #[cfg(feature = "accessibility")]
     {
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::Slider,
-            ));
+            ),
+        );
         let default_label =
-            crate::renderer::SemanticCore::accessibility_label_from_label(label, env);
+            crate::renderer::SemanticCore::<E>::accessibility_label_from_label(label, env);
         let resolved = renderer.resolve_accessibility_label(env, default_label);
         if let Some(resolved) = resolved {
             node.set_label(resolved);
@@ -167,12 +169,12 @@ fn slider_accessibility_parts(
 /// [`measure_slider_intrinsic`] but reading the value-end labels from their
 /// already-built [`RetainedSubview`]s (the measure path has no renderer to build
 /// on, so the labels are pre-built at tree-build time).
-pub fn measure_slider_node(
-    render_state: &SliderRenderState,
+pub fn measure_slider_node<E: crate::text::TextEngine>(
+    render_state: &SliderRenderState<E>,
     _proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let metrics = theme.slider_metrics(render_state.size);
     let label_size = render_state.label_view.measure_built(state, env, theme);
@@ -210,9 +212,9 @@ pub fn measure_slider_node(
 
 /// Renders a retained slider leaf every flush: emits a11y (unless hidden) then the
 /// track + thumb + labels + drag target, reading the value signal each frame.
-pub fn render_slider_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<SliderRenderState>>,
+pub fn render_slider_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<SliderRenderState<E>>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -238,9 +240,9 @@ pub fn render_slider_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_slider_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<SliderRenderState>>,
+pub fn render_slider_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<SliderRenderState<E>>>,
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
@@ -510,19 +512,9 @@ pub fn render_slider_parts(
             bubble.x1,
             bubble.y1,
         );
-        let text_ctx = RenderContext {
-            local: ctx.local,
-            bounds: text_rect,
-        };
-        let (hydro, scene) = ctx.renderer_mut().state_and_run_mut();
-        HydrolysisRenderer::render_styled_text(
-            hydro,
-            scene,
-            text_ctx,
-            label,
-            HorizontalAlignment::Center,
-            env,
-        );
+        let text_ctx = RenderContext::new(ctx.local, text_rect);
+        ctx.renderer_mut()
+            .render_styled_text(text_ctx, label, HorizontalAlignment::Center, env);
     }
     let usable_track = track_right - track_left;
     assert!(
@@ -535,7 +527,12 @@ pub fn render_slider_parts(
     if disabled {
         return;
     }
-    let inverse_transform = ctx.renderer_mut().current_hit_transform().inverse();
+    // The drag's point lands in window space and the track is node-local:
+    // resolve the inverse through the region's live placement at invoke
+    // time. The registration outlives this record, so a transform captured
+    // here goes stale the moment an ancestor moves the slider without
+    // re-recording it (a scroll, a transition).
+    let placement = ctx.renderer_mut().current_placement();
     let value_epsilon = slider_value_epsilon(span, usable_track);
     let keyboard_value = value_binding.clone();
     let keyboard_step = span / 100.0;
@@ -543,7 +540,7 @@ pub fn render_slider_parts(
         hit_bounds,
         press_slot,
         move |_renderer, point, _env| {
-            let local_point = inverse_transform * point;
+            let local_point = placement.resolved_transform(true).inverse() * point;
             let x = local_point.x.clamp(track_left, track_right);
             let t = (x - track_left) / usable_track;
             let next = span.mul_add(t, range_start);
@@ -576,9 +573,9 @@ pub fn render_slider_parts(
 /// they emit their own nodes here too. The main label flushes visual-only and
 /// emits nothing.
 #[cfg(feature = "accessibility")]
-pub fn emit_slider_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<SliderRenderState>>,
+pub fn emit_slider_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<SliderRenderState<E>>>,
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);

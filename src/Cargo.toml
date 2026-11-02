@@ -27,13 +27,19 @@ waterui-navigation.workspace = true
 waterui-form.workspace = true
 waterui-controls.workspace = true
 waterui-webview = { workspace = true, optional = true }
+waterui-widgets = { workspace = true, optional = true }
 # `number` is not optional here: `text!` interpolates every numeric argument
 # through `waterui_locale::LocalizedArgument`, so a WaterUI application that
 # formats a number into a string already depends on it.
 waterui-locale = { workspace = true, features = ["number"] }
+# `dir_static!` expansion lands inside the `assets` feature's generated
+# code, so the record helpers it names ride that feature's gate.
+waterui-meta = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
+# `Link` opens its URL in the system handler.
+robius-open.workspace = true
 # Grapheme clusters for the avatar monogram: a name's first "letter" is a
 # cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
 unicode-segmentation = "1.13"
@@ -54,13 +60,8 @@ waterui-math = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
 waterui-inspector-protocol = { workspace = true, optional = true }
-waterui-ts-schema = { workspace = true, optional = true }
+waterui-ts = { workspace = true, optional = true }
 waterkit-haptic = { workspace = true, optional = true }
-# The self-drawn video realization. Selected by `video-gpu` rather than by
-# `video`, because whether it is the realization is a property of the platform's
-# own frameworks, not of the semantic component.
-waterui-video-gpu = { workspace = true, optional = true }
-
 pastey.workspace = true
 # The document parser `FlowMarkdown` re-parses incrementally as a stream
 # arrives. Only the Markdown grammar: fenced code is highlighted by the `Code`
@@ -68,20 +69,26 @@ pastey.workspace = true
 tree-sitter = { version = "0.27", optional = true }
 tree-sitter-md = { version = "0.5.3", optional = true }
 
-# Opening a URL in a system handler (robius-open) has no meaning on bare
-# embedded; espidf uses a no-op in component/link.rs.
-[target.'cfg(not(target_os = "espidf"))'.dependencies]
-robius-open.workspace = true
+# The self-drawn video realization. Selected by `video-gpu` rather than by
+# `video`, because whether it is the realization is a property of the platform's
+# own frameworks, not of the semantic component. The web plays video through
+# the browser's `<video>` element, so a wasm32 build never links it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+waterui-video-gpu = { workspace = true, optional = true }
+# Inspector session tokens come from the OS RNG; the endpoint exists only on
+# native targets, so the entropy source is declared beside it.
+getrandom = { workspace = true, optional = true }
 
-# CPU-time profiling (cpu-time) needs CLOCK_*_CPUTIME_ID, absent in ESP-IDF
-# newlib; the runtime guard uses a zero-cost fallback there.
-[target.'cfg(all(any(unix, windows), not(target_os = "espidf")))'.dependencies]
+# CPU-time profiling (cpu-time) needs a per-thread CPU clock; the runtime guard
+# uses a zero-cost stand-in where there is none.
+[target.'cfg(any(unix, windows))'.dependencies]
 cpu-time.workspace = true
 
 [features]
 default = [
     "gpu",
     "assets",
+    "dialog",
     "snackbar",
     "highlight",
     "locale-datetime",
@@ -102,12 +109,15 @@ highlight = ["waterui-text/highlight"]
 # stack out, and embedded firmware disables it anyway — the hub is desktop
 # tooling, and its 64-bit sequence counters do not even exist on RV32
 # targets.
-inspector = ["dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
+inspector = ["dep:getrandom", "dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
 # Reactive-graph tracing for the Inspector's `signals` channel. Development
 # only: it attributes every state-owning signal node and reports every
 # notification. Off by default so release builds pay nothing — see
 # `nami_core::observe`.
 inspector-signals = ["inspector", "nami/observability"]
+# Window-modal confirmation / alert dialogs: the `Dialog` semantic and its
+# composed card realization for self-drawn backends.
+dialog = []
 # Window-owned transient notifications. Embedded apps that do not select this
 # feature omit the manager, overlay, timers, and code-widget feedback path.
 snackbar = []
@@ -119,6 +129,7 @@ effects = ["waterui-graphics/effects"]
 # waterui-svg). Default-on so every existing consumer is unaffected.
 # Disabling it lets a WaterUI app cross-compile lean for embedded targets
 # without the GPU stack.
+gles = ["gpu", "waterui-graphics/gles"]
 gpu = [
     "effects",
     "waterui-graphics/gpu",
@@ -129,7 +140,7 @@ gpu = [
 # behind `waterui-assets`' `media` feature) and video-kind assets into
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
 # each is enabled only when both sides are present.
-assets = ["dep:waterui-assets", "dep:waterui-assets-macros"]
+assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "dep:waterui-meta"]
 media = ["dep:waterui-media", "waterui-assets?/media"]
 video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
@@ -142,16 +153,32 @@ remote = [
     "waterui-assets?/remote",
 ]
 # `WaterUI`'s own GPU video player, installed as the video realization. Not
-# implied by `video`: Apple bridges AVPlayer, so an Apple application would
-# otherwise link and pay for a player it never runs. The backend that has no
-# native player to bridge selects this.
+# implied by `video`: Apple bridges AVPlayer and the web the `<video>` element,
+# so an application there would otherwise link and pay for a player it never
+# runs. The backend that has no native player to bridge selects this; on
+# wasm32 it links nothing.
 video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
 webview = ["dep:waterui-webview"]
-# The TypeScript props contract schema behind `waterui::ts::schema` — the
-# `TsType`/`TsProps` derives whose encoded contract the `water` CLI reads back
-# out of a debug artifact. Off by default: only a shell that mounts TypeScript
-# view modules needs it.
-ts = ["dep:waterui-ts-schema"]
+# The `#[waterui::widget]` authoring surface and its `WidgetKit` snapshot
+# schema (`waterui::widgets`). Off by default: an application that declares
+# no widgets pays for none of the schema or its FFI glue — and the `water`
+# CLI only generates an extension when the declaration records exist.
+widgets = ["dep:waterui-widgets", "waterui-macros/widgets"]
+# The TypeScript runtime behind `waterui::ts`: the embedded JavaScript engine,
+# the signal bridge, the component vocabulary a JSX tag resolves against, the
+# `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose
+# encoded form the `water` CLI reads back out of a debug artifact. Off by
+# default: only a shell that mounts TypeScript view modules needs it, and it
+# links a JavaScript engine. An application that writes no `tsx!` and leaves
+# this off links none of it — `waterui-ts` is an optional dependency and no
+# other feature pulls it in.
+ts = ["dep:waterui-ts"]
+# The over-the-air update client for TypeScript view bundles: fetches a
+# signed manifest and bundle, verifies them, and caches them for the next
+# launch. Separate from `ts` because it links an HTTP client, a signature
+# verifier and the file-system kit; an application that ships only its
+# baseline bundle leaves it off and opens no connection by construction.
+ts-ota = ["ts", "waterui-ts/ota"]
 navigation-restoration = ["waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
 # with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which
@@ -198,11 +225,13 @@ all = [
     "assets",
     "media",
     "webview",
+    "widgets",
     "flow-markdown",
     "markdown-math",
     "video-gpu",
     "navigation-restoration",
     "snackbar",
+    "dialog",
     "remote",
 ]
 
@@ -221,7 +250,7 @@ waterui = { path = "..", features = ["all", "ts"] }
 # payload — from the linked test binary.
 waterui-assets-planner.workspace = true
 waterui-meta.workspace = true
-object = { version = "0.37", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }
 
 [lints]
 workspace = true

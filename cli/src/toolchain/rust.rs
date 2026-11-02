@@ -138,6 +138,7 @@ impl RustToolchainInstallation {
 
 /// Errors that can occur during Rust toolchain installation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallRustToolchain {
     /// rustup was not found.
     #[error("rustup is required for automatic Rust toolchain fixes but is not on PATH.")]
@@ -649,23 +650,6 @@ pub(crate) async fn selected_rustup_toolchain(host: &Host) -> Result<String, Unf
     })
 }
 
-/// The rustup toolchain a project's own directory selects.
-///
-/// The generated crates a build compiles live in the build cache, outside the
-/// project tree, so rustup would resolve them to its default toolchain rather
-/// than the project's `rust-toolchain.toml`; every cargo and rustc invocation
-/// made on the project's behalf names this toolchain explicitly instead.
-///
-/// # Errors
-/// Returns an error when rustup is missing or resolves no toolchain for the
-/// project directory.
-pub(crate) async fn project_rustup_toolchain(
-    host: &Host,
-    project_root: &Path,
-) -> Result<String, UnfixableToolchain> {
-    selected_rustup_toolchain(&host.clone().with_cwd(project_root)).await
-}
-
 /// Targets installed on `toolchain`, via `rustup target list --installed`.
 pub(crate) async fn installed_rustup_targets(
     host: &Host,
@@ -750,6 +734,7 @@ impl RustTargetAdditions {
 
 /// Errors from `rustup target add`.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToAddRustTargets {
     /// rustup was not found.
     #[error("rustup is required to add Rust targets but is not on PATH.")]

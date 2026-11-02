@@ -335,11 +335,20 @@ impl MetalPresenter {
     /// `layer` is retained by the presenter; the caller adds it to the view
     /// hierarchy and owns its frame/hidden/contents-gravity bookkeeping.
     ///
+    /// `readable` keeps the layer's drawable textures readable for
+    /// GPU→GPU copies (`framebufferOnly(false)`) — surfaces armed for a
+    /// transition's frozen-frame hand-off pass `true`; everything else
+    /// keeps render-target-only drawables.
+    ///
     /// # Panics
     ///
     /// When called off the main thread.
     #[must_use]
-    pub fn new(layer: Retained<CAMetalLayer>, on_frame: Rc<dyn Fn(DrawableFrame)>) -> Self {
+    pub fn new(
+        layer: Retained<CAMetalLayer>,
+        on_frame: Rc<dyn Fn(DrawableFrame)>,
+        readable: bool,
+    ) -> Self {
         let mtm = MainThreadMarker::new().expect("MetalPresenter is created on the main thread");
         let inner = Rc::new_cyclic(|this| PresenterInner {
             layer,
@@ -350,13 +359,14 @@ impl MetalPresenter {
             this: this.clone(),
         });
         // The presenter owns the layer's static contract: drawables are
-        // render-targets only, the pool is bounded at two, presenting never
+        // render-targets only unless the caller armed the surface for
+        // frozen-frame copies, the pool is bounded at two, presenting never
         // blocks on the transaction, and until a new-size frame lands the
         // last frame scales. These setters must run BEFORE the link exists:
         // once a `CAMetalDisplayLink` is bound to the layer, mutating
         // `maximumDrawableCount` raises `CAMetalLayerInvalidOperation`
         // ("should not be called when using CAMetalDisplayLink").
-        inner.layer.setFramebufferOnly(true);
+        inner.layer.setFramebufferOnly(!readable);
         inner.layer.setMaximumDrawableCount(2);
         inner.layer.setPresentsWithTransaction(false);
         // SAFETY: `kCAGravityResize` is a system constant static.

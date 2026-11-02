@@ -8,8 +8,6 @@ use kurbo::Rect;
 use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
-#[cfg(feature = "accessibility")]
-use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_form::picker::color::ColorPickerConfig;
@@ -34,15 +32,15 @@ const COLOR_PICKER_MIN_WIDTH: f32 = 160.0;
 /// drives the swatch + accessibility, and its main label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame so reactive label
 /// content stays live.
-pub struct ColorPickerRenderState {
+pub struct ColorPickerRenderState<E: crate::text::TextEngine> {
     config: ColorPickerConfig,
-    label_view: RetainedSubview,
+    label_view: RetainedSubview<E>,
 }
 
-impl ColorPickerRenderState {
+impl<E: crate::text::TextEngine> ColorPickerRenderState<E> {
     pub(crate) fn from_config(config: ColorPickerConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
         }
     }
@@ -51,19 +49,26 @@ impl ColorPickerRenderState {
     /// `&mut HydroState`, no renderer, so it must be built before then).
     pub(crate) fn prebuild(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the picker's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
-impl HydroNativeView for Native<ColorPickerConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ColorPickerConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_color_picker_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -74,8 +79,8 @@ impl HydroNativeView for Native<ColorPickerConfig> {
 /// `Widget`-node path so both produce the same a11y tree.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn color_picker_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn color_picker_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     color_picker: &ColorPickerConfig,
     env: &Environment,
@@ -85,19 +90,20 @@ pub fn color_picker_accessibility(
     {
         let disabled = renderer.read_signal(&widget_disabled(env));
         let label = color_picker
-            .label
+            .label()
             .semantic_text()
             .resolve(env)
-            .content
+            .content()
             .snapshot()
             .to_plain()
             .to_string();
-        let value = format!("{:?}", renderer.read_signal(&color_picker.value));
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let value = format!("{:?}", renderer.read_signal(color_picker.value()));
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::Button,
-            ));
+            ),
+        );
         node.set_label(label);
         // The formatted color is the default value; an explicit `.a11y_value`
         // wins the same way `.a11y_label` wins the name.
@@ -115,22 +121,18 @@ pub fn color_picker_accessibility(
         // node carries the anchor; a semantic node carries none and mounts the
         // same window with no placement at all.
         let origin = ctx.map(|ctx| {
-            let bounds = ctx.bounds;
-            LayoutPoint::new(
-                crate::num_cast::f64_as_f32(bounds.x0),
-                crate::num_cast::f64_as_f32(bounds.y1),
-            )
+            crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds()))
         });
         let action_target = (!disabled).then(|| {
-            let value = color_picker.value.clone();
-            let support_alpha = color_picker.support_alpha;
-            let support_hdr = color_picker.support_hdr;
+            let value = color_picker.value().clone();
+            let support_alpha = color_picker.support_alpha();
+            let support_hdr = color_picker.support_hdr();
             // The popup opens in the picker's environment layered over the
             // dispatch's (water-rs/hydrolysis#140).
             let picker_env = env.clone();
             AccessibilityActionTarget::Activate {
                 action: Rc::new(RefCell::new(
-                    move |renderer: &mut crate::renderer::SemanticCore, env: &Environment| {
+                    move |renderer: &mut crate::renderer::SemanticCore<E>, env: &Environment| {
                         let env = picker_env.layered_on(env);
                         match origin {
                             Some(origin) => {
@@ -158,7 +160,7 @@ pub fn color_picker_accessibility(
         });
         let node_id = match ctx {
             Some(ctx) => {
-                let bounds = ctx.bounds;
+                let bounds = ctx.bounds();
                 renderer.register_accessibility_node(node, bounds, env, action_target)
             }
             None => renderer.register_accessibility_node_semantic(node, env, action_target),
@@ -178,12 +180,12 @@ pub fn color_picker_accessibility(
 /// Measures a retained color-picker leaf from its [`ColorPickerRenderState`],
 /// reading the label size from its already-built [`RetainedSubview`] so layout and
 /// render agree.
-pub fn measure_color_picker_node(
-    render_state: &ColorPickerRenderState,
+pub fn measure_color_picker_node<E: crate::text::TextEngine>(
+    render_state: &ColorPickerRenderState<E>,
     _proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let input_metrics = theme.input_field_metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
@@ -201,9 +203,9 @@ pub fn measure_color_picker_node(
 /// Renders a retained color-picker leaf every flush: emits a11y (unless hidden)
 /// then the field chrome + swatch + suffix + tap target, reading the value signal
 /// each frame.
-pub fn render_color_picker_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ColorPickerRenderState>>,
+pub fn render_color_picker_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ColorPickerRenderState<E>>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -222,14 +224,14 @@ pub fn render_color_picker_node(
     render_color_picker_parts(ctx, state, env);
 }
 
-fn measure_color_picker_intrinsic(
+fn measure_color_picker_intrinsic<E: crate::text::TextEngine>(
     color_picker: &ColorPickerConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let input_metrics = theme.input_field_metrics();
-    let label_size = measure_label_intrinsic(&color_picker.label, state, env, theme);
+    let label_size = measure_label_intrinsic(color_picker.label(), state, env, theme);
     let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
         f64::from(label_size.height).max(input_metrics.label_height)
     } else {
@@ -245,9 +247,9 @@ fn measure_color_picker_intrinsic(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_color_picker_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ColorPickerRenderState>>,
+pub fn render_color_picker_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ColorPickerRenderState<E>>>,
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
@@ -259,9 +261,9 @@ pub fn render_color_picker_parts(
     let (value_binding, support_alpha, support_hdr) = {
         let color_picker = &state.config;
         (
-            color_picker.value.clone(),
-            color_picker.support_alpha,
-            color_picker.support_hdr,
+            color_picker.value().clone(),
+            color_picker.support_alpha(),
+            color_picker.support_hdr(),
         )
     };
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
@@ -371,10 +373,9 @@ pub fn render_color_picker_parts(
         );
     }
 
-    let origin = waterui_core::layout::Point::new(
-        crate::num_cast::f64_as_f32(hit_bounds.x0),
-        crate::num_cast::f64_as_f32(hit_bounds.y1),
-    );
+    // The popup anchors in window space at the field's bottom edge.
+    let origin =
+        crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(hit_bounds));
     // The popup opens in the picker's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let picker_env = env.clone();
@@ -398,9 +399,9 @@ pub fn render_color_picker_parts(
 /// the same node `color_picker_accessibility` registers, with no bounds. The
 /// label sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
-pub fn emit_color_picker_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<ColorPickerRenderState>>,
+pub fn emit_color_picker_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<ColorPickerRenderState<E>>>,
     env: &Environment,
 ) {
     color_picker_accessibility(

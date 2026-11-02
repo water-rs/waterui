@@ -9,6 +9,8 @@ use cherenkov::{
     OffscreenFormat, Picture, Projective, ProjectiveLayers, RenderError, Rgba8, Sampling, Surface,
     Uploads, WorkingColor,
 };
+use cherenkov_oracle::image::F32Image;
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
 
 const SIZE: (u32, u32) = (64, 64);
 const CLEAR: WorkingColor = WorkingColor::new([0.1, 0.2, 0.6, 1.0]);
@@ -87,28 +89,27 @@ fn clear_pixel<B: Backend + ProjectiveLayers>(engine: &Engine<B>) -> [f32; 4] {
         e.content(Picture::record(|_| {}));
     });
     let pixels = scene.render().expect("clear");
-    assert!(pixels.iter().all(|px| bits(*px) == bits(pixels[0])));
+    assert_uniform(&pixels, pixels[0]);
     pixels[0]
 }
 
-/// A pixel's exact bits, for exact comparisons.
-fn bits(px: [f32; 4]) -> [u32; 4] {
-    px.map(f32::to_bits)
+/// Every pixel of a render is `want`.
+fn assert_uniform(pixels: &[[f32; 4]], want: [f32; 4]) {
+    assert_close(pixels.as_flattened(), &want.repeat(pixels.len()));
 }
 
-fn close(a: &[[f32; 4]], b: &[[f32; 4]], tolerance: f32, what: &str) {
-    for (i, (a, b)) in a.iter().zip(b).enumerate() {
-        for c in 0..4 {
-            assert!(
-                (a[c] - b[c]).abs() <= tolerance,
-                "{what}: pixel ({}, {}) channel {c}: {} != {}",
-                i % SIZE.0 as usize,
-                i / SIZE.0 as usize,
-                a[c],
-                b[c]
-            );
-        }
+/// A render as an image for the visual-equivalence comparison.
+fn image(pixels: &[[f32; 4]]) -> F32Image {
+    F32Image {
+        width: SIZE.0,
+        height: SIZE.1,
+        pixels: pixels.to_vec(),
     }
+}
+
+/// Two renders are visually equivalent.
+fn assert_renders_match(reference: &[[f32; 4]], test: &[[f32; 4]]) {
+    assert_images_match(&image(reference), &image(test));
 }
 
 /// An identity projection composes exactly like the affine layer, up to
@@ -122,7 +123,7 @@ pub fn identity_matches_affine<B: Backend + ProjectiveLayers>(config: impl Fn() 
     let a = projected.render().expect("projected");
     assert_eq!(projected.engine.stats().projective_realized, 1);
     let b = affine.render().expect("affine");
-    close(&a, &b, 2e-3, "identity projection");
+    assert_renders_match(&a, &b);
     assert_eq!(affine.engine.stats().projective_realized, 0);
 }
 
@@ -153,9 +154,7 @@ pub fn hidden_and_edge_on_contribute_nothing<B: Backend + ProjectiveLayers>(
     ] {
         let mut scene = Scene::<B>::new(&engine, |e| edit(e));
         let pixels = scene.render().expect(what);
-        for (i, px) in pixels.iter().enumerate() {
-            assert_eq!(bits(*px), bits(clear), "{what}: pixel {i} changed");
-        }
+        assert_uniform(&pixels, clear);
     }
 }
 
@@ -173,18 +172,16 @@ pub fn turns_keep_winding_and_show_both_sides<B: Backend + ProjectiveLayers>(
     let mut full = Scene::<B>::new(&engine, |e| {
         e.pivot(pivot).tilt(Vec2::new(0.0, TAU));
     });
-    close(&full.render().expect("full turn"), &flat, 2e-3, "full turn");
+    assert_renders_match(&flat, &full.render().expect("full turn"));
     let mut half = Scene::<B>::new(&engine, |e| {
         e.pivot(pivot).tilt(Vec2::new(0.0, PI));
     });
     let mut mirrored = Scene::<B>::new(&engine, |e| {
         e.pivot(pivot).scale(Vec2::new(-1.0, 1.0));
     });
-    close(
-        &half.render().expect("half turn"),
+    assert_renders_match(
         &mirrored.render().expect("mirror"),
-        2e-3,
-        "half turn",
+        &half.render().expect("half turn"),
     );
 }
 
@@ -220,8 +217,8 @@ pub fn cached_and_fresh_realizations_are_identical<B: Backend + ProjectiveLayers
     let fresh_engine = Engine::<B>::new(config()).expect("backend required");
     let mut fresh = Scene::<B>::new(&fresh_engine, pose(a));
     let cold = fresh.render().expect("fresh");
-    assert_eq!(first, again, "cached realization changed");
-    assert_eq!(cold, again, "fresh and cached realizations differ");
+    assert_renders_match(&again, &first);
+    assert_renders_match(&again, &cold);
     // Changing the content invalidates the retained image.
     warm.edit(|e| {
         e.content(Picture::record(|r| {
@@ -248,13 +245,13 @@ pub fn destructive_blend_keeps_its_operator_domain<B: Backend + ProjectiveLayers
     });
     let p = projected.render().expect("projected");
     let a = affine.render().expect("affine");
-    close(&p, &a, 2e-3, "destructive identity");
+    assert_renders_match(&a, &p);
     let clear = clear_pixel::<B>(&engine);
     let at = |x: usize, y: usize| p[y * SIZE.0 as usize + x];
     // Inside the clip, below the content: cleared by the operator.
-    assert_eq!(bits(at(20, 44)), bits([0.0; 4]));
+    assert_close(&at(20, 44), &[0.0; 4]);
     // Outside the clip: the parent is untouched.
-    assert_eq!(bits(at(4, 4)), bits(clear));
+    assert_close(&at(4, 4), &clear);
 }
 
 /// An invalid composed pose, and a projective layer without a clip, are
@@ -346,7 +343,7 @@ pub fn image_replacement_reaches_local_images<B: Backend + ProjectiveLayers + Up
     let mut fresh = Scene::<B>::new(&engine, |_| {});
     let image = engine.image(solid(green)).expect("image");
     draw(&fresh, image.id());
-    assert_eq!(fresh.render().expect("fresh green"), after);
+    assert_renders_match(&after, &fresh.render().expect("fresh green"));
 }
 
 /// Releasing a resource leaves no local image that read it behind: once
@@ -380,7 +377,9 @@ pub fn released_resources_leave_no_local_image<B: Backend + ProjectiveLayers + U
         drop(image);
         scene.render().expect("released");
         assert_eq!(engine.stats().projective_realized, 0);
-        drawn - resident(engine)
+        // Repaint caches may initialize while resources are released. Compare
+        // signed net changes; the affine twin subtracts that shared cost.
+        i128::from(drawn) - i128::from(resident(engine))
     };
     let local: u64 = cherenkov::lowering::projective::mip_levels((32, 32))
         .iter()
@@ -393,7 +392,7 @@ pub fn released_resources_leave_no_local_image<B: Backend + ProjectiveLayers + U
     let projective_engine = Engine::<B>::new(config()).expect("backend required");
     let affine_engine = Engine::<B>::new(config()).expect("backend required");
     assert!(
-        freed(&projective_engine, true) - freed(&affine_engine, false) >= local,
+        freed(&projective_engine, true) - freed(&affine_engine, false) >= i128::from(local),
         "the local image that read the released image is freed with it"
     );
 }
@@ -480,7 +479,7 @@ pub fn tilt_animates_and_clears<B: Backend + ProjectiveLayers>(config: impl Fn()
     let mut affine = Scene::<B>::new(&engine, |e| {
         e.pivot(Vec2::new(16.0, 16.0));
     });
-    assert_eq!(cleared, affine.render().expect("affine"));
+    assert_renders_match(&affine.render().expect("affine"), &cleared);
 }
 
 /// A card crossing the horizon: pixels whose ray meets the card's plane
@@ -555,12 +554,8 @@ pub fn horizon_crossing_excludes_the_back_half_space<B: Backend + ProjectiveLaye
         let inside = (1.5..30.5).contains(&local[0]) && (1.5..62.5).contains(&local[1]);
         if w < 0.0 && inside {
             back += 1;
-            assert_eq!(
-                bits(*px),
-                bits(clear),
-                "pixel {d:?} samples the back half-space"
-            );
-        } else if w > 0.0 && inside && bits(*px) != bits(clear) {
+            assert_close(px, &clear);
+        } else if w > 0.0 && inside && px[1] > clear[1] {
             front += 1;
         }
     }

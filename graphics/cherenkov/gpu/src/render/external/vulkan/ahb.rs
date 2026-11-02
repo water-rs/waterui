@@ -105,25 +105,8 @@ fn import_inner(
         return Err(NativeError::Invalid("external buffer reports no format"));
     }
 
-    // The frame's declared colour contract is the conversion contract —
-    // model, range and chroma siting are applied verbatim. The driver's
-    // `suggestedYcbcr*` values are advisory only (they are what the driver
-    // suggests, not what it requires; a camera or video NV12 buffer often
-    // carries a generic suggestion the frame's declared contract
-    // deliberately differs from). The one capability gate is the format's
-    // own feature set: cosited siting needs `COSITED_CHROMA_SAMPLES`, and
-    // `samplerYcbcrConversionComponents` is checked verbatim when the
-    // conversion is created.
     if external {
-        // Cosited siting needs the format feature.
-        if (desc.color.chroma_siting.x == crate::interop::ChromaOffset::Cosited
-            || desc.color.chroma_siting.y == crate::interop::ChromaOffset::Cosited)
-            && !format_features.contains(vk::FormatFeatureFlags::COSITED_CHROMA_SAMPLES)
-        {
-            return Err(NativeError::Unsupported(
-                "cosited chroma is not a feature of this buffer's format",
-            ));
-        }
+        check_conversion_features(&desc, format_features)?;
     }
 
     let dev = &shared.vk.device;
@@ -180,6 +163,38 @@ fn import_inner(
             Err(err)
         }
     }
+}
+
+/// The frame's declared colour contract is the conversion contract —
+/// model, range and chroma siting are applied verbatim. The driver's
+/// `suggestedYcbcr*` values are advisory only (they are what the driver
+/// suggests, not what it requires; a camera or video NV12 buffer often
+/// carries a generic suggestion the frame's declared contract deliberately
+/// differs from). The one capability gate is the format's own feature set:
+/// the bilinear chroma reconstruction (#1947) needs
+/// `SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER`, cosited siting needs
+/// `COSITED_CHROMA_SAMPLES`, and `samplerYcbcrConversionComponents` is
+/// checked verbatim when the conversion is created.
+fn check_conversion_features(
+    desc: &Ahb,
+    format_features: vk::FormatFeatureFlags,
+) -> Result<(), NativeError> {
+    if !format_features
+        .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER)
+    {
+        return Err(NativeError::Unsupported(
+            "linear chroma reconstruction is not a feature of this buffer's format",
+        ));
+    }
+    if (desc.color.chroma_siting.x == crate::interop::ChromaOffset::Cosited
+        || desc.color.chroma_siting.y == crate::interop::ChromaOffset::Cosited)
+        && !format_features.contains(vk::FormatFeatureFlags::COSITED_CHROMA_SAMPLES)
+    {
+        return Err(NativeError::Unsupported(
+            "cosited chroma is not a feature of this buffer's format",
+        ));
+    }
+    Ok(())
 }
 
 /// The fields `get_android_hardware_buffer_properties` reported,
@@ -257,7 +272,6 @@ fn bind_and_finish(
             },
             chroma_x: chroma_location(desc.color.chroma_siting.x),
             chroma_y: chroma_location(desc.color.chroma_siting.y),
-            filter: vk::Filter::NEAREST,
         };
         let conv = ycbcr::get(shared, key)?;
         let mut conv_info = vk::SamplerYcbcrConversionInfo::default().conversion(conv.conversion);

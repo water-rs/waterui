@@ -5,8 +5,7 @@ use std::str::FromStr;
 use crate::build::{BuildProfile, BuildProgress};
 use eyre::bail;
 use target_lexicon::{
-    Aarch64Architecture, Architecture, DefaultToHost, Environment, OperatingSystem,
-    Riscv32Architecture, Triple, Vendor,
+    Aarch64Architecture, Architecture, DefaultToHost, Environment, OperatingSystem, Triple, Vendor,
 };
 
 // ============================================================================
@@ -18,6 +17,7 @@ use target_lexicon::{
 /// This enum replaces the old `Platform` trait with a simpler, more explicit model.
 /// Each variant represents a specific target platform that `WaterUI` can build for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TargetPlatform {
     // Apple platforms
     /// macOS (ARM64)
@@ -29,8 +29,8 @@ pub enum TargetPlatform {
     /// Mac Catalyst — the iOS runtime bridged onto macOS
     /// (`aarch64-apple-ios-macabi`). It compiles against the macOS SDK's
     /// `System/iOSSupport` frameworks, not the macOS or iOS SDKs directly.
-    /// Internal to the target model for now; no `water` platform flag
-    /// selects it (#2103).
+    /// `water preview --platform ios` builds its in-process Apple preview
+    /// binary for this target; no other `water` command selects it.
     MacCatalyst,
     /// tvOS (physical device)
     TvOS,
@@ -54,22 +54,18 @@ pub enum TargetPlatform {
     Windows,
     /// Web (WASM + WebGPU)
     Web,
-    /// ESP32-S3 (Xtensa, ESP-IDF firmware)
-    Esp32S3,
-    /// ESP32-C3 (RISC-V, ESP-IDF firmware)
-    Esp32C3,
-    /// ESP32-P4 (RISC-V with FPU, ESP-IDF firmware)
-    Esp32P4,
 }
 
 /// Backend types available for building.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal dispatches each backend variant by variant"
+)]
 pub enum TargetBackend {
     /// Apple backend (Xcode, UIKit/AppKit)
     Apple,
-    /// Android backend (Gradle, Android Views)
-    Android,
     /// GTK4 backend (pure Rust binary)
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer)
@@ -79,6 +75,15 @@ pub enum TargetBackend {
 }
 
 impl TargetBackend {
+    /// Whether the backend is experimental: shipped without full testing
+    /// ahead of milestone releases, and never a prerequisite of a mainline
+    /// build. Apple and Hydrolysis are the mainline backends; GTK4 and `WinUI`
+    /// are experimental.
+    #[must_use]
+    pub const fn is_experimental(&self) -> bool {
+        matches!(self, Self::Gtk4 | Self::WinUi)
+    }
+
     /// The framework scaffold packages the backend's generated crate links —
     /// the names a `framework.json` `scaffold` (or `experimental-packages`)
     /// table keys on. A withheld package means the selected channel cannot
@@ -86,7 +91,7 @@ impl TargetBackend {
     #[must_use]
     pub const fn scaffold_packages(&self) -> &'static [&'static str] {
         match self {
-            Self::Apple | Self::Android => &[],
+            Self::Apple => &[],
             Self::Gtk4 => &["waterui-gtk"],
             // `hydrolysis` itself is an in-tree framework member resolved
             // through `hydrolysis-path`, not a scaffold package (#1635).
@@ -150,7 +155,6 @@ impl TargetBackend {
                 #[cfg(not(target_os = "macos"))]
                 bail!("Apple backend requires a macOS host");
             }
-            Self::Android => {}
         }
         Ok(())
     }
@@ -263,12 +267,6 @@ impl TargetPlatform {
             Self::Linux | Self::Windows => Triple::host(),
             Self::Web => Triple::from_str("wasm32-unknown-unknown")
                 .expect("web target triple must remain valid"),
-            Self::Esp32S3 => Triple::from_str("xtensa-esp32s3-espidf")
-                .expect("esp32s3 target triple must remain valid"),
-            Self::Esp32C3 => Triple::from_str("riscv32imc-esp-espidf")
-                .expect("esp32c3 target triple must remain valid"),
-            Self::Esp32P4 => Triple::from_str("riscv32imafc-esp-espidf")
-                .expect("esp32p4 target triple must remain valid"),
         }
     }
 
@@ -286,20 +284,15 @@ impl TargetPlatform {
             | Self::WatchOSSimulator
             | Self::VisionOS
             | Self::VisionOSSimulator => &[TargetBackend::Apple],
-            Self::Android => &[TargetBackend::Hydrolysis, TargetBackend::Android],
+            Self::Android | Self::Web => &[TargetBackend::Hydrolysis],
             Self::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
             Self::Windows => &[TargetBackend::Hydrolysis, TargetBackend::WinUi],
-            Self::Web => &[TargetBackend::Hydrolysis],
-            // No backend serves ESP32 targets yet: Dew is archived and
-            // Hydrolysis's embedded host lands with #1601.
-            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => &[],
         }
     }
 
-    /// Get the default backend for this platform — `None` for a platform no
-    /// backend serves yet (the ESP32 targets, until #1601).
+    /// Get the default backend for this platform.
     #[must_use]
-    pub const fn default_backend(&self) -> Option<TargetBackend> {
+    pub const fn default_backend(&self) -> TargetBackend {
         match self {
             Self::MacOS
             | Self::IOS
@@ -310,10 +303,28 @@ impl TargetPlatform {
             | Self::WatchOS
             | Self::WatchOSSimulator
             | Self::VisionOS
-            | Self::VisionOSSimulator => Some(TargetBackend::Apple),
-            Self::Android | Self::Windows | Self::Web => Some(TargetBackend::Hydrolysis),
-            Self::Linux => Some(TargetBackend::Gtk4),
-            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => None,
+            | Self::VisionOSSimulator => TargetBackend::Apple,
+            Self::Android | Self::Windows | Self::Web => TargetBackend::Hydrolysis,
+            Self::Linux => TargetBackend::Gtk4,
+        }
+    }
+
+    /// The platform name a font declaration's `platforms` scope uses for
+    /// this target: simulators share their device's name, and Mac Catalyst
+    /// runs on macOS.
+    #[must_use]
+    pub const fn font_platform(self) -> waterui_assets_planner::FontPlatform {
+        use waterui_assets_planner::FontPlatform;
+        match self {
+            Self::MacOS | Self::MacCatalyst => FontPlatform::Macos,
+            Self::IOS | Self::IOSSimulator => FontPlatform::Ios,
+            Self::TvOS | Self::TvOSSimulator => FontPlatform::Tvos,
+            Self::WatchOS | Self::WatchOSSimulator => FontPlatform::Watchos,
+            Self::VisionOS | Self::VisionOSSimulator => FontPlatform::Visionos,
+            Self::Android => FontPlatform::Android,
+            Self::Linux => FontPlatform::Linux,
+            Self::Windows => FontPlatform::Windows,
+            Self::Web => FontPlatform::Web,
         }
     }
 
@@ -321,9 +332,9 @@ impl TargetPlatform {
     /// the platform is one of the host's defaults.
     ///
     /// A macOS host builds every Apple platform through its one Xcode
-    /// toolchain; a Linux or Windows host builds its own desktop. Android,
-    /// the web and the ESP32 firmware are cross-compiled targets a project
-    /// selects — the host never targets them on its own.
+    /// toolchain; a Linux or Windows host builds its own desktop. Android
+    /// and the web are cross-compiled targets a project selects — the host
+    /// never targets them on its own.
     #[must_use]
     pub const fn host_builds(&self) -> bool {
         match self {
@@ -339,7 +350,7 @@ impl TargetPlatform {
             | Self::VisionOSSimulator => cfg!(target_os = "macos"),
             Self::Linux => cfg!(target_os = "linux"),
             Self::Windows => cfg!(target_os = "windows"),
-            Self::Android | Self::Web | Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => false,
+            Self::Android | Self::Web => false,
         }
     }
 
@@ -370,13 +381,7 @@ impl TargetPlatform {
             Self::WatchOSSimulator => Some("watchsimulator"),
             Self::VisionOS => Some("xros"),
             Self::VisionOSSimulator => Some("xrsimulator"),
-            Self::Android
-            | Self::Linux
-            | Self::Windows
-            | Self::Web
-            | Self::Esp32S3
-            | Self::Esp32C3
-            | Self::Esp32P4 => None,
+            Self::Android | Self::Linux | Self::Windows | Self::Web => None,
         }
     }
 
@@ -391,14 +396,7 @@ impl TargetPlatform {
             Self::TvOS | Self::TvOSSimulator => Some("tvOS"),
             Self::WatchOS | Self::WatchOSSimulator => Some("watchOS"),
             Self::VisionOS | Self::VisionOSSimulator => Some("visionOS"),
-            Self::MacCatalyst
-            | Self::Android
-            | Self::Linux
-            | Self::Windows
-            | Self::Web
-            | Self::Esp32S3
-            | Self::Esp32C3
-            | Self::Esp32P4 => None,
+            Self::MacCatalyst | Self::Android | Self::Linux | Self::Windows | Self::Web => None,
         }
     }
 
@@ -417,10 +415,7 @@ impl TargetPlatform {
             | Self::Android
             | Self::Linux
             | Self::Windows
-            | Self::Web
-            | Self::Esp32S3
-            | Self::Esp32C3
-            | Self::Esp32P4 => None,
+            | Self::Web => None,
         }
     }
 
@@ -435,13 +430,7 @@ impl TargetPlatform {
             Self::TvOS | Self::TvOSSimulator => Some("TVOS_DEPLOYMENT_TARGET"),
             Self::WatchOS | Self::WatchOSSimulator => Some("WATCHOS_DEPLOYMENT_TARGET"),
             Self::VisionOS | Self::VisionOSSimulator => Some("XROS_DEPLOYMENT_TARGET"),
-            Self::Android
-            | Self::Linux
-            | Self::Windows
-            | Self::Web
-            | Self::Esp32S3
-            | Self::Esp32C3
-            | Self::Esp32P4 => None,
+            Self::Android | Self::Linux | Self::Windows | Self::Web => None,
         }
     }
 
@@ -462,9 +451,6 @@ impl TargetPlatform {
             | Self::Android => Architecture::Aarch64(Aarch64Architecture::Aarch64),
             Self::Linux | Self::Windows => DefaultToHost::default().0.architecture,
             Self::Web => Architecture::Wasm32,
-            Self::Esp32S3 => Architecture::XTensa,
-            Self::Esp32C3 => Architecture::Riscv32(Riscv32Architecture::Riscv32imc),
-            Self::Esp32P4 => Architecture::Riscv32(Riscv32Architecture::Riscv32imafc),
         }
     }
 }
@@ -563,13 +549,25 @@ impl NativeOs {
 
     /// The `NativeOs` this CLI build runs on — the OS `Triple::host()`
     /// names.
-    const fn running_host() -> Self {
+    pub(crate) const fn running_host() -> Self {
         if cfg!(target_os = "macos") {
             Self::MacOs
         } else if cfg!(target_os = "windows") {
             Self::Windows
         } else {
             Self::Linux
+        }
+    }
+
+    /// The `TargetPlatform` a desktop build on this OS produces — what a
+    /// run targeting the machine itself resolves to. Anything else the
+    /// machine builds is a target it is not.
+    #[must_use]
+    pub(crate) const fn target_platform(self) -> TargetPlatform {
+        match self {
+            Self::MacOs => TargetPlatform::MacOS,
+            Self::Linux => TargetPlatform::Linux,
+            Self::Windows => TargetPlatform::Windows,
         }
     }
 }
@@ -661,6 +659,7 @@ pub fn ensure_desktop_platform_is_host(
 /// the developer's keychain, while a development package only has to run
 /// where it was built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum PackageAudience {
     /// A package for the developer's own machine: ad hoc signature on macOS,
     /// a direct-install artifact on Android.
@@ -707,9 +706,10 @@ pub struct PackageOptions {
     device_signing: DeviceSigning,
 
     /// Hardware UDID of the physical Apple device the package targets, when
-    /// packaging for one (`water run`); `None` for a device-agnostic
-    /// `water package`, which skips the profile's `ProvisionedDevices`
-    /// check and provisions with a generic iOS destination.
+    /// packaging for one (`water run`, `water package --device`); `None`
+    /// for a device-agnostic `water package`, which skips the profile's
+    /// `ProvisionedDevices` check and provisions with a generic iOS
+    /// destination.
     device_udid: Option<String>,
 
     /// Whether the package embeds the shared `WaterUI` Rust runtime.
@@ -725,6 +725,7 @@ pub struct PackageOptions {
 
 /// How a build for a physical device is code-signed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum DeviceSigning {
     /// Automatic signing with the developer team resolved on the host.
     #[default]
@@ -743,6 +744,7 @@ pub enum DeviceSigning {
 /// instead of the staged bundle. `water run` selects it in debug mode;
 /// packaging and `--release` runs never do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum WebFrontendMode {
     /// Build the frontend and stage its output into the bundle.
     #[default]
@@ -844,10 +846,15 @@ impl PackageOptions {
         self.debug
     }
 
-    /// Whether the package must embed the shared `WaterUI` Rust runtime.
+    /// Whether the package must embed the shared `WaterUI` Rust runtime for
+    /// `triple`.
+    ///
+    /// A development package asks for the shared runtime, but a target that
+    /// has no shared-runtime linkage — every `*-windows-*` triple
+    /// (water-rs/waterui#3049) — ships no runtime to embed.
     #[must_use]
-    pub const fn uses_shared_rust_runtime(&self) -> bool {
-        self.shared_rust_runtime
+    pub fn uses_shared_rust_runtime(&self, triple: &Triple) -> bool {
+        self.shared_rust_runtime && crate::build::RustLinkage::supports_shared_runtime(triple)
     }
 
     /// Whether web mounts are dev-server-served and skipped during staging.
@@ -916,8 +923,8 @@ mod host_support_tests {
             TargetPlatform::MacCatalyst.deployment_target_setting(),
             Some("IPHONEOS_DEPLOYMENT_TARGET")
         );
-        // Packaging answers stay unanswered — Xcode destinations and device
-        // families are #2103's job, so Catalyst fails fast on both.
+        // Catalyst is never packaged — only the preview binary builds for
+        // it — so the Xcode answers stay unanswered and fail fast.
         assert_eq!(TargetPlatform::MacCatalyst.xcode_destination_name(), None);
         assert_eq!(TargetPlatform::MacCatalyst.targeted_device_family(), None);
     }
@@ -934,11 +941,6 @@ mod host_support_tests {
         assert!(
             TargetBackend::Hydrolysis
                 .validate_host_support(TargetPlatform::Web)
-                .is_ok()
-        );
-        assert!(
-            TargetBackend::Android
-                .validate_host_support(TargetPlatform::Android)
                 .is_ok()
         );
     }
@@ -968,16 +970,17 @@ mod package_options_tests {
 
     #[test]
     fn development_embeds_shared_runtime_and_packaging_does_not() {
+        let shared_runtime_triple = super::TargetPlatform::MacOS.triple();
         let development = PackageOptions::development();
         assert!(development.is_debug());
         assert!(!development.is_distribution());
-        assert!(development.uses_shared_rust_runtime());
+        assert!(development.uses_shared_rust_runtime(&shared_runtime_triple));
 
         for options in [
             PackageOptions::packaging(super::PackageAudience::Development, true),
             PackageOptions::packaging(super::PackageAudience::Distribution, false),
         ] {
-            assert!(!options.uses_shared_rust_runtime());
+            assert!(!options.uses_shared_rust_runtime(&shared_runtime_triple));
         }
     }
 }

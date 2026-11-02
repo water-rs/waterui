@@ -32,9 +32,9 @@ pub trait Formatter<T>: Clone {
 #[non_exhaustive]
 pub struct TextConfig {
     /// The rich text content to be displayed.
-    pub content: Computed<StyledStr>,
+    content: Computed<StyledStr>,
     /// Paragraph alignment for multiline layout.
-    pub paragraph_alignment: Computed<HorizontalAlignment>,
+    paragraph_alignment: Computed<HorizontalAlignment>,
     /// Maximum number of laid-out lines, or `None` for no limit.
     ///
     /// Text that does not fit the limit is truncated at its last visible
@@ -42,7 +42,51 @@ pub struct TextConfig {
     /// machinery provides one. This is `SwiftUI`'s `lineLimit`: a control
     /// label capped at one line stays a label under compression instead of
     /// folding into a paragraph.
-    pub line_limit: Option<NonZeroUsize>,
+    line_limit: Option<NonZeroUsize>,
+}
+
+impl TextConfig {
+    /// The rich text content to be displayed.
+    #[must_use]
+    pub const fn content(&self) -> &Computed<StyledStr> {
+        &self.content
+    }
+
+    /// Paragraph alignment for multiline layout.
+    #[must_use]
+    pub const fn paragraph_alignment(&self) -> &Computed<HorizontalAlignment> {
+        &self.paragraph_alignment
+    }
+
+    /// Maximum number of laid-out lines, or `None` for no limit.
+    ///
+    /// Text that does not fit the limit is truncated at its last visible
+    /// line — with a trailing ellipsis where the backend's native text
+    /// machinery provides one. This is `SwiftUI`'s `lineLimit`: a control
+    /// label capped at one line stays a label under compression instead of
+    /// folding into a paragraph.
+    #[must_use]
+    pub const fn line_limit(&self) -> Option<NonZeroUsize> {
+        self.line_limit
+    }
+
+    /// Takes the rich text content out of the value.
+    #[must_use]
+    pub fn into_content(self) -> Computed<StyledStr> {
+        self.content
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Computed<StyledStr>,
+        Computed<HorizontalAlignment>,
+        Option<NonZeroUsize>,
+    ) {
+        (self.content, self.paragraph_alignment, self.line_limit)
+    }
 }
 
 impl TextConfig {

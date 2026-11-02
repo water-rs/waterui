@@ -9,9 +9,10 @@ use crate::platform::{
     GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError,
     SurfaceFrame, SurfaceProvider,
 };
-use crate::renderer::tests::MinimalTestTheme;
+use crate::renderer::tests::{MinimalTestTheme, test_environment};
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
-use crate::text::SessionTextEngine;
+use crate::text::ParleyEngine;
+use crate::theme::TextCaretMotion;
 use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,7 +20,6 @@ use std::time::Instant;
 use waterui::component::list::{List, ListItem};
 use waterui::window::{Window, WindowState};
 use waterui::{Binding, Signal, ViewExt as _};
-use waterui_backend_core::widget::TextCaretMotion;
 use waterui_core::animation::Animation;
 use waterui_core::id::SelfId;
 use waterui_core::{AnyView, Environment, binding};
@@ -28,7 +28,7 @@ use waterui_layout::scroll::ScrollController;
 
 #[test]
 fn changed_rebuild_input_wakes_platform_window() {
-    let mut runtime = test_runtime_window();
+    let mut runtime = test_runtime_window(&test_environment());
     runtime.clear_frame_mode();
     runtime.renderer.root_cell().mark_layout();
 
@@ -43,7 +43,7 @@ fn changed_rebuild_input_wakes_platform_window() {
 
 #[test]
 fn changed_reactive_input_refreshes_retained_tree() {
-    let mut runtime = test_runtime_window();
+    let mut runtime = test_runtime_window(&test_environment());
     runtime.clear_frame_mode();
     runtime.renderer.context_mark_layout();
 
@@ -61,7 +61,7 @@ fn changed_reactive_input_refreshes_retained_tree() {
 
 #[test]
 fn changed_scroll_input_schedules_a_full_frame_and_wakes_platform_window() {
-    let mut runtime = test_runtime_window();
+    let mut runtime = test_runtime_window(&test_environment());
     runtime.clear_frame_mode();
 
     // A consumed scroll schedules the one per-frame pass — patch, layout,
@@ -81,7 +81,7 @@ fn changed_scroll_input_schedules_a_full_frame_and_wakes_platform_window() {
 
 #[test]
 fn animation_ticks_schedule_full_frames() {
-    let mut runtime = test_runtime_window();
+    let mut runtime = test_runtime_window(&test_environment());
     runtime.clear_frame_mode();
 
     schedule_animation_update(&mut runtime, true);
@@ -116,7 +116,7 @@ fn invalid_swap_chain_is_reconfigured_and_retried_in_the_same_frame() {
 
 #[test]
 fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
-    let mut runtime = test_runtime_window();
+    let mut runtime = test_runtime_window(&test_environment());
     let now = Instant::now();
     let motion = TextCaretMotion {
         fade_cycle_duration: Duration::from_millis(1_000),
@@ -166,8 +166,8 @@ fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
 /// frames that were skipped.
 #[test]
 fn hidden_window_parks_the_pump_and_restores_exactly_one_frame() {
-    let mut runtime = test_runtime_window();
-    let env = crate::renderer::tests::test_environment();
+    let env = test_environment();
+    let mut runtime = test_runtime_window(&env);
     let mut now = Instant::now();
 
     // Settle the mount frames; the window goes idle on its own.
@@ -227,7 +227,7 @@ fn hidden_window_parks_the_pump_and_restores_exactly_one_frame() {
 /// post simply never runs.
 #[test]
 fn hidden_window_reports_no_deadline_for_an_armed_animation() {
-    let mut runtime = test_runtime_window();
+    let mut runtime = test_runtime_window(&test_environment());
     let now = Instant::now();
     let motion = TextCaretMotion {
         fade_cycle_duration: Duration::from_millis(1_000),
@@ -297,7 +297,7 @@ fn hidden_window_reports_no_ui_idle_readiness() {
 /// restore frame.
 #[test]
 fn un_hide_sync_posts_exactly_one_restore_wake() {
-    let mut runtime = test_runtime_window();
+    let mut runtime = test_runtime_window(&test_environment());
     runtime.platform.set_occluded(true);
     runtime.sync_occlusion();
     assert!(runtime.is_hidden(), "an occluded report must park the pump");
@@ -333,7 +333,7 @@ fn un_hide_sync_posts_exactly_one_restore_wake() {
 /// of those would keep waking a hidden pump.
 #[test]
 fn a_hidden_window_absorbs_direct_redraw_requests() {
-    let mut runtime = test_runtime_window();
+    let mut runtime = test_runtime_window(&test_environment());
     let _ = runtime.platform.take_redraw_request();
 
     runtime.set_hidden(true);
@@ -370,7 +370,7 @@ fn window_size_limits_reach_the_platform_window() {
             .max_height(480.0)
     };
     let window = Window::new("", binding(WindowState::Normal), content);
-    let mut runtime = runtime_window_for(window);
+    let mut runtime = runtime_window_for(window, &test_environment());
     let env = Environment::new();
     let _ = super::pump_window_semantics(&mut runtime, &env);
     let (min, max) = runtime
@@ -384,7 +384,7 @@ fn window_size_limits_reach_the_platform_window() {
     let window = Window::new("", binding(WindowState::Normal), content)
         .min_size(Size::new(300.0, 150.0))
         .max_size(Size::new(640.0, 480.0));
-    let mut runtime = runtime_window_for(window);
+    let mut runtime = runtime_window_for(window, &test_environment());
     let _ = super::pump_window_semantics(&mut runtime, &env);
     let (min, max) = runtime
         .platform
@@ -490,8 +490,8 @@ fn stretch_axis_content_leaves_the_window_maximum_unbounded() {
     let window = Window::new("", binding(WindowState::Normal), || {
         Frame::new(().size(100.0, 50.0)).max_width(f32::INFINITY)
     });
-    let mut runtime = runtime_window_for(window);
-    let _ = super::pump_window_semantics(&mut runtime, &crate::renderer::tests::test_environment());
+    let mut runtime = runtime_window_for(window, &test_environment());
+    let _ = super::pump_window_semantics(&mut runtime, &test_environment());
     let (min, max) = runtime
         .platform
         .applied_size_limits()
@@ -513,8 +513,8 @@ fn an_infinite_max_size_component_leaves_that_axis_unbounded() {
     let max = binding(Size::new(640.0, 480.0));
     let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0))
         .max_size(max.clone());
-    let mut runtime = runtime_window_for(window);
-    let env = crate::renderer::tests::test_environment();
+    let env = test_environment();
+    let mut runtime = runtime_window_for(window, &env);
     let _ = pump_window_semantics(&mut runtime, &env);
 
     // The user stretches the window past the pinned maximum.
@@ -555,7 +555,7 @@ fn a_nan_frame_panics_naming_the_field_and_value() {
     window
         .frame
         .set(Rect::new(Point::new(0.0, 0.0), Size::new(f32::NAN, 300.0)));
-    let _ = runtime_window_for(window);
+    let _ = runtime_window_for(window, &test_environment());
 }
 
 /// The same trust boundary applies to the explicit size limits: a NaN
@@ -567,8 +567,8 @@ fn a_nan_min_size_panics_naming_the_field_and_value() {
 
     let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0))
         .min_size(Size::new(f32::NAN, 100.0));
-    let mut runtime = runtime_window_for(window);
-    let _ = pump_window_semantics(&mut runtime, &crate::renderer::tests::test_environment());
+    let mut runtime = runtime_window_for(window, &test_environment());
+    let _ = pump_window_semantics(&mut runtime, &test_environment());
 }
 
 /// `max_size` accepts `+∞` per axis but nothing else non-finite.
@@ -581,8 +581,8 @@ fn a_nan_max_size_panics_naming_the_field_and_value() {
 
     let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0))
         .max_size(Size::new(640.0, f32::NAN));
-    let mut runtime = runtime_window_for(window);
-    let _ = pump_window_semantics(&mut runtime, &crate::renderer::tests::test_environment());
+    let mut runtime = runtime_window_for(window, &test_environment());
+    let _ = pump_window_semantics(&mut runtime, &test_environment());
 }
 
 /// A re-measure on a screen change updates the limits only: a user-set size
@@ -607,8 +607,8 @@ fn a_remeasure_preserves_the_user_size_inside_the_new_limits() {
             )
         })
     });
-    let mut runtime = runtime_window_sized(window, 800, 600);
-    let env = crate::renderer::tests::test_environment();
+    let env = test_environment();
+    let mut runtime = runtime_window_sized(window, 800, 600, &env);
     let _ = pump_window_semantics(&mut runtime, &env);
 
     // The user settles on a size beyond the loading screen's box.
@@ -656,8 +656,8 @@ fn a_remeasure_clamps_the_window_size_into_the_new_limits() {
             )
         })
     });
-    let mut runtime = runtime_window_sized(window, 800, 600);
-    let env = crate::renderer::tests::test_environment();
+    let env = test_environment();
+    let mut runtime = runtime_window_sized(window, 800, 600, &env);
     let _ = pump_window_semantics(&mut runtime, &env);
 
     runtime.platform.push_event(InputEvent::Resize {
@@ -694,7 +694,7 @@ fn an_explicit_maximum_clamps_a_larger_window() {
     // limits change, so the window is clamped into it.
     let pinned_max = Binding::container(Size::new(2000.0, 2000.0));
     let window = Window::new("", binding(WindowState::Normal), || ()).max_size(pinned_max.clone());
-    let mut runtime = runtime_window_sized(window, 800, 600);
+    let mut runtime = runtime_window_sized(window, 800, 600, &test_environment());
     let _ = pump_window_semantics(&mut runtime, &Environment::new());
     assert_eq!(
         *runtime.window.frame.snapshot().size(),
@@ -739,7 +739,7 @@ fn zero_layout_minimum_is_not_replaced_by_ideal_size() {
     let window = Window::new("", binding(WindowState::Normal), || {
         FixedContainer::new(IdealOnlyLayout, ())
     });
-    let mut runtime = runtime_window_for(window);
+    let mut runtime = runtime_window_for(window, &test_environment());
     let _ = super::pump_window_semantics(&mut runtime, &Environment::new());
     let (min, _) = runtime
         .platform
@@ -761,10 +761,10 @@ fn zero_layout_minimum_is_not_replaced_by_ideal_size() {
 fn window_minimum_is_the_coupled_box_not_independent_axes() {
     use waterui::prelude::text;
 
-    let env = crate::renderer::tests::test_environment();
+    let env = test_environment();
     let minimum_of = |content: &'static str| {
         let window = Window::new("", binding(WindowState::Normal), move || text(content));
-        let mut runtime = runtime_window_for(window);
+        let mut runtime = runtime_window_for(window, &env);
         let _ = super::pump_window_semantics(&mut runtime, &env);
         runtime
             .platform
@@ -799,10 +799,10 @@ fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
         let build_count = Rc::clone(&build_count);
         move || build_count.set(build_count.get() + 1)
     });
-    let mut runtime = runtime_window_for(window);
+    let env = test_environment();
+    let mut runtime = runtime_window_for(window, &env);
     // The rendered idle-drive below resolves the window's background through
     // the theme, so the test runs against the installed test theme.
-    let env = crate::renderer::tests::test_environment();
     let _ = pump_window_semantics(&mut runtime, &env);
     assert_eq!(build_count.get(), 1);
 
@@ -851,8 +851,8 @@ fn an_idle_window_repaints_when_its_background_changes() {
     let title = binding(waterui_core::Str::from("old title"));
     let window = Window::new(title.clone(), binding(WindowState::Normal), || ());
     let handle = window.handle();
-    let mut runtime = runtime_window_sized(window, 16, 16);
-    let env = crate::renderer::tests::test_environment();
+    let env = test_environment();
+    let mut runtime = runtime_window_sized(window, 16, 16, &env);
     let mut now = Instant::now();
 
     let idle_frames = drive_until_idle(&mut runtime, &env, &mut now, 60);
@@ -876,7 +876,7 @@ fn an_idle_window_repaints_when_its_background_changes() {
         render_window_with_capture(&mut runtime, &env, FrameReader::Snapshot, &mut || false)
             .snapshot
             .expect("the refresh frame captures a snapshot");
-    let pixel = &snapshot.rgba8[0..4];
+    let pixel = &snapshot.rgba8()[0..4];
     assert!(
         pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60 && pixel[3] == 255,
         "the snapshot must show the new background colour, got {pixel:?}"
@@ -904,6 +904,62 @@ fn an_idle_window_repaints_when_its_background_changes() {
     );
 }
 
+/// A theme change must reach an idle window whose content reads no theme
+/// token: the window's lifetime watches cover its resolved background and
+/// the installed colour scheme (water-rs/waterui#3548), so flipping the
+/// scheme binding schedules a frame whose clear is the new scheme's
+/// `Background` — the appearance-flip path #1972 exposed.
+#[test]
+fn a_scheme_change_repaints_the_clear_colour_of_an_idle_window() {
+    use waterui::theme::ColorScheme;
+    use waterui::theme::color::Background;
+
+    let scheme = binding(ColorScheme::Light);
+    let env = crate::renderer::tests::test_environment_with_scheme(scheme.clone());
+    let window = Window::new("", binding(WindowState::Normal), || ());
+    let mut runtime = runtime_window_sized(window, 16, 16, &env);
+    let mut now = Instant::now();
+
+    let idle_frames = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(idle_frames < 60, "the window never went idle");
+
+    scheme.set(ColorScheme::Dark);
+    assert!(
+        runtime.renderer.has_pending_semantic_update(),
+        "a scheme flip must request a frame for the clear colour"
+    );
+
+    // The flag becomes a scheduled refresh on the next advance, and the
+    // frame it runs clears to the new scheme's `Background`.
+    now += Duration::from_millis(16);
+    let _ = advance_runtime(&mut runtime, &env, now);
+    assert!(
+        runtime.mode.is_pending(),
+        "the scheme watch must arm a refresh frame"
+    );
+    let snapshot =
+        render_window_with_capture(&mut runtime, &env, FrameReader::Snapshot, &mut || false)
+            .snapshot
+            .expect("the refresh frame captures a snapshot");
+    let srgb =
+        waterui_graphics::color::working::to_srgb(Color::new(Background).resolve(&env).snapshot());
+    let pixel = &snapshot.rgba8()[0..4];
+    for (channel, expected) in pixel[..3].iter().zip([srgb.red, srgb.green, srgb.blue]) {
+        assert!(
+            expected.mul_add(-255.0, f32::from(*channel)).abs() <= 1.0,
+            "the clear colour must be the dark scheme's `Background`, got {pixel:?}"
+        );
+    }
+    assert_eq!(pixel[3], 255, "the opaque clear keeps full alpha");
+
+    // The repaint is one bounded frame: the window settles and stays idle.
+    let settle = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(
+        settle < 60,
+        "the window never went idle after the scheme repaint"
+    );
+}
+
 #[test]
 fn pending_lazy_height_refresh_precedes_scroll_input() {
     use waterui::ViewExt as _;
@@ -924,8 +980,8 @@ fn pending_lazy_height_refresh_precedes_scroll_input() {
             })
         }))
     });
-    let mut runtime = runtime_window_for(window);
-    let env = crate::renderer::tests::test_environment();
+    let env = test_environment();
+    let mut runtime = runtime_window_for(window, &env);
     let _ = pump_window_semantics(&mut runtime, &env);
 
     expanded.set(true);
@@ -962,7 +1018,7 @@ fn pending_lazy_height_refresh_precedes_scroll_input() {
 fn a_behind_window_material_asks_the_platform_to_blur_behind() {
     use waterui::background::Material;
 
-    let env = crate::renderer::tests::test_environment();
+    let env = test_environment();
     for (material, expected) in [
         (Material::UltraThin, true),
         (Material::Thin, true),
@@ -971,7 +1027,7 @@ fn a_behind_window_material_asks_the_platform_to_blur_behind() {
         (Material::UltraThick, false),
     ] {
         let window = Window::new("", binding(WindowState::Normal), || ()).background(material);
-        let mut runtime = runtime_window_for(window);
+        let mut runtime = runtime_window_for(window, &env);
         render_window(&mut runtime, &env, &mut || false);
         assert_eq!(
             runtime.platform.blur_behind(),
@@ -986,7 +1042,7 @@ fn a_behind_window_material_asks_the_platform_to_blur_behind() {
         waterui::Color::srgb(51, 51, 51).with_opacity(0.5),
     ] {
         let window = Window::new("", binding(WindowState::Normal), || ()).background(color);
-        let mut runtime = runtime_window_for(window);
+        let mut runtime = runtime_window_for(window, &test_environment());
         render_window(&mut runtime, &env, &mut || false);
         assert_eq!(
             runtime.platform.blur_behind(),
@@ -996,30 +1052,35 @@ fn a_behind_window_material_asks_the_platform_to_blur_behind() {
     }
 }
 
-fn runtime_window_for(window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
-    runtime_window_sized(window, 16, 16)
+fn runtime_window_for(
+    window: Window,
+    env: &Environment,
+) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
+    runtime_window_sized(window, 16, 16, env)
 }
 
 fn runtime_window_sized(
     window: Window,
     width: u32,
     height: u32,
-) -> RuntimeWindow<HeadlessPlatformWindow> {
+    env: &Environment,
+) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     let platform =
         HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
-    runtime_window_with_platform(window, platform)
+    runtime_window_with_platform(window, platform, env)
 }
 
 fn runtime_window_with_platform(
     window: Window,
     mut platform: HeadlessPlatformWindow,
-) -> RuntimeWindow<HeadlessPlatformWindow> {
+    env: &Environment,
+) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
-        SessionTextEngine::system(FontFamilyResolution::Strict),
+        ParleyEngine::system(FontFamilyResolution::Strict),
     );
-    RuntimeWindow::new(
+    RuntimeWindow::new_gpu(
         window,
         platform,
         renderer,
@@ -1028,7 +1089,63 @@ fn runtime_window_with_platform(
             interval: Duration::from_secs(1),
             slow_frame_threshold_override: None,
         },
+        env,
     )
+}
+
+/// The host-side construction, input pump and scene pump need only
+/// `PlatformWindow`: these helpers are deliberately generic over it, so an
+/// accidental `GpuSurfaceWindow` bound fails this test's compilation.
+#[test]
+fn host_window_pipeline_requires_no_gpu_surface_trait() {
+    fn construct<P: crate::platform::PlatformWindow, E: crate::text::TextEngine>(
+        window: Window,
+        platform: P,
+        renderer: HydrolysisRenderer<E>,
+        env: &Environment,
+    ) -> RuntimeWindow<P, E> {
+        RuntimeWindow::new(
+            window,
+            platform,
+            renderer,
+            RenderDiagnosticsConfig {
+                enabled: false,
+                interval: Duration::from_secs(1),
+                slow_frame_threshold_override: None,
+            },
+            env,
+        )
+    }
+    fn pump<P: crate::platform::PlatformWindow, E: crate::text::TextEngine>(
+        runtime: &mut RuntimeWindow<P, E>,
+        env: &Environment,
+    ) {
+        assert!(
+            !handle_input_events(runtime, env),
+            "an idle window stays open"
+        );
+        assert!(
+            super::window::pump_window_scene(runtime, env, &mut || false).built,
+            "the first pump builds the tree"
+        );
+    }
+
+    let platform = HeadlessPlatformWindow::new_for_tests(320, 200, wgpu::TextureFormat::Rgba8Unorm);
+    let env = test_environment();
+    let mut runtime = construct(
+        Window::new(
+            "",
+            waterui::Binding::container(waterui::window::WindowState::Normal),
+            || (),
+        ),
+        platform,
+        HydrolysisRenderer::with_engine(
+            Rc::new(MinimalTestTheme::default()),
+            ParleyEngine::system(FontFamilyResolution::Strict),
+        ),
+        &env,
+    );
+    pump(&mut runtime, &env);
 }
 
 /// An animated `List` scroll must keep the window awake until it settles.
@@ -1056,8 +1173,8 @@ fn an_animated_list_scroll_keeps_the_window_awake_until_it_settles() {
             .scroll_controller(&controller_for_view),
         )
     });
-    let mut runtime = runtime_window_sized(window, 160, 320);
-    let env = crate::renderer::tests::test_environment();
+    let env = test_environment();
+    let mut runtime = runtime_window_sized(window, 160, 320, &env);
     let mut now = Instant::now();
 
     // Settle the initial layout, then let the window go idle.
@@ -1102,7 +1219,7 @@ fn an_animated_list_scroll_keeps_the_window_awake_until_it_settles() {
 /// Runs frames while the runtime is still asking to be woken, returning how many
 /// it took to go idle. This is the winit loop's rule: no wake request, no frame.
 fn drive_until_idle(
-    runtime: &mut RuntimeWindow<HeadlessPlatformWindow>,
+    runtime: &mut RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>,
     env: &Environment,
     now: &mut Instant,
     max_frames: usize,
@@ -1112,11 +1229,11 @@ fn drive_until_idle(
 
 /// [`drive_until_idle`], running `check` on the window after every frame.
 fn drive_until_idle_checking(
-    runtime: &mut RuntimeWindow<HeadlessPlatformWindow>,
+    runtime: &mut RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>,
     env: &Environment,
     now: &mut Instant,
     max_frames: usize,
-    mut check: impl FnMut(&RuntimeWindow<HeadlessPlatformWindow>),
+    mut check: impl FnMut(&RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>),
 ) -> usize {
     for frame in 0..max_frames {
         let wake = runtime.mode.is_pending()
@@ -1145,8 +1262,8 @@ const ROW_HEIGHT_FOR_JUMP_TEST: f32 = 24.0;
 fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
     use waterui_controls::menu::{CommandExt as _, ResolvedMenuItem};
 
-    let mut runtime = sized_test_runtime_window(320, 240);
-    let mut env = crate::renderer::tests::test_environment();
+    let mut env = test_environment();
+    let mut runtime = sized_test_runtime_window(320, 240, &env);
     env.insert(crate::renderer::HydrolysisWindowOrigin { x: 0.0, y: 0.0 });
     let items = vec![ResolvedMenuItem::Command(
         "Copy".action(|| {}).resolve(&env),
@@ -1201,20 +1318,26 @@ fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
     );
 }
 
-fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
-    sized_test_runtime_window(16, 16)
+fn test_runtime_window(
+    env: &Environment,
+) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
+    sized_test_runtime_window(16, 16, env)
 }
 
-fn sized_test_runtime_window(width: u32, height: u32) -> RuntimeWindow<HeadlessPlatformWindow> {
+fn sized_test_runtime_window(
+    width: u32,
+    height: u32,
+    env: &Environment,
+) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     let window = Window::new("", binding(WindowState::Normal), || ());
     let mut platform =
         HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
-        SessionTextEngine::system(FontFamilyResolution::Strict),
+        ParleyEngine::system(FontFamilyResolution::Strict),
     );
-    RuntimeWindow::new(
+    RuntimeWindow::new_gpu(
         window,
         platform,
         renderer,
@@ -1223,6 +1346,7 @@ fn sized_test_runtime_window(width: u32, height: u32) -> RuntimeWindow<HeadlessP
             interval: Duration::from_secs(1),
             slow_frame_threshold_override: None,
         },
+        env,
     )
 }
 
@@ -1363,11 +1487,13 @@ fn debounced_on_change_fires_after_the_quiet_period() {
 fn a_binding_set_outside_a_frame_fires_the_installed_wake_once() {
     let value = Binding::i32(0);
     let content = value.clone();
-    let mut runtime =
-        runtime_window_for(Window::new("", binding(WindowState::Normal), move || {
+    let env = test_environment();
+    let mut runtime = runtime_window_for(
+        Window::new("", binding(WindowState::Normal), move || {
             waterui::text!("{content}")
-        }));
-    let env = crate::renderer::tests::test_environment();
+        }),
+        &env,
+    );
     let mut now = Instant::now();
     assert!(drive_until_idle(&mut runtime, &env, &mut now, 60) < 60);
     let fires = Rc::clone(&runtime.platform.frame_wake_count);
@@ -1407,11 +1533,12 @@ fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
     let mut platform =
         HeadlessPlatformWindow::new_for_tests(16, 16, wgpu::TextureFormat::Rgba8Unorm);
     platform.frame_transaction = Some(Rc::clone(&transaction));
+    let env = test_environment();
     let mut runtime = runtime_window_with_platform(
         Window::new("", binding(WindowState::Normal), || ()),
         platform,
+        &env,
     );
-    let env = crate::renderer::tests::test_environment();
     let now = Instant::now();
     transaction.sync_occlusion(runtime.platform.is_occluded());
     let _ = pump_frame_transaction(&mut runtime, &transaction, &env, now);
@@ -1500,6 +1627,48 @@ fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
     assert!(!runtime.renderer.has_pending_frame_request());
 }
 
+/// The cross-thread redraw handle's UI-thread post reads the gate as it
+/// stands when the post runs: one drained inside a transaction must not
+/// post a second frame into the one already running (water-rs/waterui#2287).
+#[test]
+fn frame_transaction_gates_a_ui_thread_wake() {
+    use super::window::{FrameDemand, FrameMode, FrameTransaction};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let transaction = FrameTransaction::default();
+    let posts = Arc::new(AtomicUsize::new(0));
+    let wake = transaction.ui_thread_wake({
+        let posts = Arc::clone(&posts);
+        move || {
+            posts.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let posted = || posts.load(Ordering::Relaxed);
+
+    transaction.sync_occlusion(false);
+    wake();
+    assert_eq!(posted(), 1, "an idle visible window posts the frame");
+
+    transaction.begin();
+    wake();
+    assert_eq!(posted(), 1, "a post inside a transaction joins it");
+    let _ = transaction.finish(
+        false,
+        FrameDemand {
+            mode: FrameMode::Idle,
+            redraw_pending: true,
+            signals_pending: false,
+        },
+    );
+    wake();
+    assert_eq!(posted(), 2, "closing the transaction reopens the gate");
+
+    transaction.sync_occlusion(true);
+    wake();
+    assert_eq!(posted(), 2, "an occluded window posts nothing");
+}
+
 #[test]
 fn frame_transaction_consumes_a_focused_fields_caret_redraw() {
     use super::window::FrameTransaction;
@@ -1507,15 +1676,16 @@ fn frame_transaction_consumes_a_focused_fields_caret_redraw() {
     use waterui_core::Str;
 
     let value = binding(Str::from("Caret"));
+    let env = test_environment();
     let mut runtime = runtime_window_sized(
         Window::new("", binding(WindowState::Normal), move || {
             TextField::new("Value", &value).hide_label()
         }),
         240,
         120,
+        &env,
     );
     let transaction = FrameTransaction::default();
-    let env = crate::renderer::tests::test_environment();
     let now = Instant::now();
     let _ = pump_frame_transaction(&mut runtime, &transaction, &env, now);
     assert!(runtime.renderer.set_focused_text_input(Some(0)));
@@ -1548,8 +1718,67 @@ fn frame_transaction_consumes_a_focused_fields_caret_redraw() {
     assert_eq!(runtime.presented_frames, presented + 1);
 }
 
+/// A redraw request raised before a transaction's render is served by that
+/// render, so the frame schedules no successor (water-rs/waterui#2325): an
+/// empty Choreographer callback per change was the Android symptom. Only a
+/// request raised after the render — an animation asking for its next
+/// frame — counts toward the transaction's continuation.
+#[test]
+fn a_frame_transaction_serves_redraws_raised_before_its_render() {
+    use super::window::{FrameDemand, FrameTransaction};
+
+    let transaction = FrameTransaction::default();
+    let env = test_environment();
+    let mut runtime = test_runtime_window(&env);
+    let mut now = Instant::now();
+
+    // Settle the mount frames; the window must be idle before the change.
+    let mut frames = 0;
+    while frames < 60 && pump_frame_transaction(&mut runtime, &transaction, &env, now) {
+        now += Duration::from_millis(16);
+        frames += 1;
+    }
+    assert!(frames < 60, "the window never went idle");
+
+    // A reactive mark between frames is the state change that posted this
+    // frame; `advance_runtime`'s dirty-mark path then requests the refresh
+    // and the redraw — demand this render serves in full.
+    now += Duration::from_millis(16);
+    runtime.renderer.context_mark_layout();
+    assert!(
+        !pump_frame_transaction(&mut runtime, &transaction, &env, now),
+        "a redraw request the frame renders must not schedule an empty successor"
+    );
+
+    // The same request raised after the render is the continuation path: it
+    // schedules the next frame.
+    now += Duration::from_millis(16);
+    runtime.renderer.context_mark_layout();
+    transaction.begin();
+    let _ = advance_runtime(&mut runtime, &env, now);
+    let surface_attached = !runtime.platform.is_occluded();
+    assert!(FrameTransaction::take_render_request(
+        &mut runtime,
+        surface_attached,
+        HeadlessPlatformWindow::take_redraw_request,
+    ));
+    assert!(render_window(&mut runtime, &env, &mut || false));
+    runtime.request_redraw();
+    assert!(
+        transaction.finish(
+            runtime.platform.is_occluded(),
+            FrameDemand {
+                mode: runtime.mode,
+                redraw_pending: runtime.platform.take_redraw_request(),
+                signals_pending: runtime.renderer.has_pending_frame_request(),
+            },
+        ),
+        "a redraw request raised after the render must schedule another frame"
+    );
+}
+
 fn pump_frame_transaction(
-    runtime: &mut RuntimeWindow<HeadlessPlatformWindow>,
+    runtime: &mut RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>,
     transaction: &super::window::FrameTransaction,
     env: &Environment,
     now: Instant,
@@ -1559,7 +1788,14 @@ fn pump_frame_transaction(
     transaction.begin();
     let _ = advance_runtime(runtime, env, now);
     let surface_attached = !runtime.platform.is_occluded();
-    if FrameTransaction::take_render_request(runtime, surface_attached) {
+    // The platform's redraw latch drains at the render boundary, the same
+    // place `AndroidSession::on_frame` drains `redraw_pending`: a request
+    // raised before the render is served by it.
+    if FrameTransaction::take_render_request(
+        runtime,
+        surface_attached,
+        HeadlessPlatformWindow::take_redraw_request,
+    ) {
         assert!(render_window(runtime, env, &mut || false));
     }
     transaction.finish(
@@ -1570,4 +1806,38 @@ fn pump_frame_transaction(
             signals_pending: runtime.renderer.has_pending_frame_request(),
         },
     )
+}
+
+/// The run entry installs its tracing subscriber before it invokes the app
+/// factory: events the application emits while building its `App` reach the
+/// log instead of being dropped (water-rs/waterui#2513). The headless
+/// one-shot `run` is the only `hydrolysis::run` that returns — the winit
+/// `run` never does, so this test exists only under that cfg — and only
+/// where the headless one-shot `run` itself exists: not on Android, whose
+/// host mounts `runner::android` instead.
+#[cfg(all(not(hydrolysis_winit), not(target_os = "android")))]
+#[test]
+fn a_run_installs_tracing_before_the_app_factory_runs() {
+    // SAFETY: nextest gives each test its own process, so mutating the
+    // environment races with nothing.
+    unsafe { std::env::set_var("RUST_LOG", "trace") };
+    let mut factory_saw_subscriber = false;
+    super::run(
+        |env| {
+            // `set_global_default` succeeds only where no subscriber exists:
+            // an Err means `run` installed the subscriber first, an Ok means
+            // the factory ran against none — the #2513 order.
+            factory_saw_subscriber = tracing::subscriber::set_global_default(
+                tracing::subscriber::NoSubscriber::default(),
+            )
+            .is_err();
+            waterui::app::App::new_with_windows(Vec::new(), env)
+        },
+        Environment::new(),
+        crate::testing::TestStyle::new(),
+    );
+    assert!(
+        factory_saw_subscriber,
+        "the app factory ran before the tracing subscriber was installed"
+    );
 }

@@ -15,16 +15,20 @@
 //! - [`Engine::render`] drains every surface's queued change set into one
 //!   commit per frame, samples the animations at the frame time and renders
 //!   on the render thread.
+#![expect(
+    clippy::exhaustive_enums,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 // The recording layer — and now the layer tree — is `cherenkov-record`;
 // these imports keep its modules at their old `crate::*` paths so engine
 // code is unchanged.
 use cherenkov_record::{animation, color, display_list, glyph, paint, record, shape, size, style};
 
-mod backdrop;
 mod backend;
 mod capability;
 mod config;
+pub mod damage;
 mod engine;
 mod error;
 mod frame;
@@ -36,7 +40,8 @@ mod message;
 mod resource;
 mod surface;
 mod text;
-mod union_cap;
+#[cfg(feature = "workers")]
+pub mod workers;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -53,10 +58,7 @@ pub use crate::animation::{
     Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
     settled, spring_step,
 };
-pub use crate::backdrop::{
-    BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
-    CaptureLevelsError, CaptureScale, CaptureScaleError,
-};
+
 pub use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
@@ -76,7 +78,7 @@ pub use crate::display_list::{
 };
 pub use crate::engine::Engine;
 pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
-pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
+pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError, SurfaceRejection};
 pub use crate::frame::{
     DEFAULT_REFRESH, FrameId, FrameStats, FrameTime, FrameTiming, Next, Offscreen, OffscreenFormat,
     PassTiming, Phases, Readback,
@@ -84,7 +86,7 @@ pub use crate::frame::{
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 pub use crate::image::{
     Astc4x4, Bc7, Etc2Rgba, Format, ImageColorSpace, ImageData, ImageFormat, ImageUpload, Rgba8,
-    Rgba16F,
+    Rgba16F, srgb_decode,
 };
 pub use crate::message::{FontData, InstallOp, ProducerId};
 pub use crate::paint::{
@@ -111,10 +113,12 @@ pub use crate::text::{TextLayout, draw_text};
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
     AnimationStart, BackdropEffect, BackdropId, BackdropOuter, BackdropOuterError, BackdropSample,
-    BackdropSampling, BackdropShaderEffect, BackdropShaderId, ColorMatrix, ContentOp, GpuInstalls,
-    ImageLimits, Install, Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode,
-    LayerOwner, LevelRamp, LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop,
-    Queue, Realize, Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree,
-    Target, Transaction, snap_animating,
+    BackdropSampling, BackdropShaderEffect, BackdropShaderId, BackdropShaderSource, BackdropSpec,
+    BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError, CaptureScale,
+    CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, ImageStorage, Install,
+    Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
+    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
+    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared,
+    SurfaceId, SurfaceTree, Target, Transaction, snap_animating,
 };
 pub use kurbo::Stroke;

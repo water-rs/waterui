@@ -1,13 +1,68 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
+#[cfg(hydrolysis_gpu_painter)]
 use nami::Signal;
 use waterui::cursor::CursorStyle;
-use waterui::window::{Window as WuiWindow, WindowState};
+use waterui::window::Window as WuiWindow;
+#[cfg(hydrolysis_gpu_painter)]
+use waterui::window::WindowState;
+#[cfg(hydrolysis_gpu_painter)]
 use waterui_graphics::gpu::RedrawHandle;
 
-#[cfg(any(all(hydrolysis_winit, not(target_os = "macos")), target_os = "android"))]
-use waterui_graphics::gpu::preferred_surface_format;
+/// The output request every Hydrolysis host surface is negotiated by:
+/// the engine selects compact SDR storage and upgrades for HDR content
+/// where the display chain carries it, paced FIFO, with a transparency-capable composite
+/// alpha mode iff the window is transparent (#2445).
+#[cfg(hydrolysis_winit)]
+#[cfg(hydrolysis_gpu_painter)]
+pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::interop::OutputRequest {
+    cherenkov_gpu::interop::OutputRequest {
+        transparent,
+        color_space: cherenkov_gpu::interop::ColorSpaceRequest::Content,
+        sync: cherenkov_gpu::DisplaySync::Synchronized,
+    }
+}
+
+/// Negotiates the output of a host-configured window surface — the
+/// engine's `select_content_output` over the surface's advertised capabilities
+/// with [`hydrolysis_output_request`], the display's reported headroom
+/// sampled alongside (#2445). The winit Linux and Windows hosts
+/// configure their swapchains from the result; the macOS host
+/// hands the same request to the engine's `WindowTarget` instead.
+///
+/// # Errors
+/// [`cherenkov::SurfaceError::UnsupportedTarget`] when the surface
+/// advertises nothing the request admits; the error names the request
+/// and the offer.
+#[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
+#[cfg(hydrolysis_gpu_painter)]
+pub fn negotiate_host_output(
+    surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
+    transparent: bool,
+    content_range: cherenkov_gpu::interop::ColorRange,
+) -> Result<cherenkov_gpu::interop::OutputSelection, cherenkov::SurfaceError> {
+    let caps = surface.get_capabilities(adapter);
+    let mut selection = cherenkov_gpu::interop::select_content_output(
+        &caps,
+        adapter.get_info().backend,
+        hydrolysis_output_request(transparent),
+        content_range,
+    )?;
+    selection.reported_headroom = surface.display_hdr_info(adapter).tone_map_headroom();
+    tracing::debug!(
+        target: "waterui::hydrolysis",
+        format = ?selection.format,
+        color_space = ?selection.color_space,
+        alpha_mode = ?selection.alpha_mode,
+        present_mode = ?selection.present_mode,
+        reason = ?selection.reason,
+        reported_headroom = ?selection.reported_headroom,
+        "negotiated surface output"
+    );
+    Ok(selection)
+}
 
 /// Releases the resources whose destruction `device` deferred.
 ///
@@ -19,6 +74,7 @@ use waterui_graphics::gpu::preferred_surface_format;
 ///
 /// Non-blocking: `PollType::Poll` processes what has already completed and
 /// returns.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn reclaim_device(device: &wgpu::Device) {
     if let Err(error) = poll_device(device, wgpu::PollType::Poll) {
         tracing::warn!("GPU device did not reclaim deferred resources: {error}");
@@ -30,6 +86,7 @@ pub fn reclaim_device(device: &wgpu::Device) {
 ///
 /// Every type that owns a device to the end of its life calls this from
 /// `Drop`. A device with nothing outstanding returns immediately.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn drain_device_before_teardown(device: &wgpu::Device) {
     if let Err(error) = poll_device(
         device,
@@ -52,6 +109,7 @@ pub fn drain_device_before_teardown(device: &wgpu::Device) {
 /// erroring. The device is dead either way, so the poll reports failure and
 /// lets the owner move on instead of taking the process down over bookkeeping
 /// for a device that no longer exists.
+#[cfg(hydrolysis_gpu_painter)]
 fn poll_device(
     device: &wgpu::Device,
     poll_type: wgpu::PollType,
@@ -79,7 +137,9 @@ fn poll_device(
 /// Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get the
 /// same hard `Engine::new` failure the engine documents. Normalized 16-bit
 /// textures feed HDR media paths wherever the adapter provides them.
+/// Indirect first instances enable the engine's optional GPU path coverage.
 #[must_use]
+#[cfg(hydrolysis_gpu_painter)]
 pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
     if cfg!(target_vendor = "apple") {
         assert!(
@@ -92,8 +152,11 @@ pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Featur
         );
     }
 
-    let mut required =
-        adapter_features & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS);
+    let mut required = adapter_features
+        & (wgpu::Features::PIPELINE_CACHE
+            | wgpu::Features::PASSTHROUGH_SHADERS
+            | wgpu::Features::SHADER_F16
+            | wgpu::Features::INDIRECT_FIRST_INSTANCE);
     if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
         required |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
     }
@@ -103,12 +166,18 @@ pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Featur
 /// The GPU context a [`DeviceLoss`] handle was taken on: the device-creation
 /// chain and its engine-pool identity.
 #[derive(Clone, Debug)]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct GpuContextHandle {
     /// Identity of this device creation chain for the engine pool.
     pub(crate) context_id: u64,
     /// The instance/adapter/device/queue of that chain, which the shared
     /// Cherenkov engine requires of its `SharedDevice`.
     pub(crate) shared_device: cherenkov_gpu::interop::SharedDevice,
+    /// `true` once a frame submitted on this generation completed its
+    /// queue work — the recovery budget's "productive" verdict: a device
+    /// that dies having presented resets the loss streak, while one that
+    /// never presented counts toward [`MAX_UNPRODUCTIVE_LOSSES`].
+    pub(crate) presented: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A view onto whether one context's device has been lost.
@@ -122,11 +191,13 @@ pub struct GpuContextHandle {
 /// only sees surface handles — adapter, device, queue and this handle —
 /// still reaches the device's full creation chain.
 #[derive(Clone, Debug, Default)]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct DeviceLoss {
     reason: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     gpu_context: Option<GpuContextHandle>,
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl DeviceLoss {
     /// Starts observing a device: installs its device-lost callback so the
     /// returned handle reports the loss the moment the driver announces it.
@@ -149,6 +220,7 @@ impl DeviceLoss {
             gpu_context: Some(GpuContextHandle {
                 context_id,
                 shared_device: shared_device.clone(),
+                presented: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }),
         };
         // The callback must be `Send` — a `DeviceLoss` clone is not, since it
@@ -172,8 +244,8 @@ impl DeviceLoss {
     /// # Panics
     /// When the handle was built without a context (`DeviceLoss::default`) —
     /// only [`SurfaceProvider`] device-loss handles can drive the engine pool.
-    pub(crate) fn gpu_context(&self) -> GpuContextHandle {
-        self.gpu_context.clone().unwrap_or_else(|| {
+    pub(crate) fn gpu_context(&self) -> &GpuContextHandle {
+        self.gpu_context.as_ref().unwrap_or_else(|| {
             panic!(
                 "hydrolysis: a DeviceLoss outside a hydrolysis surface carries no GPU context; \
                  take the handle from the surface's device_loss()"
@@ -181,10 +253,49 @@ impl DeviceLoss {
         })
     }
 
+    /// The driver-reported loss line, once a loss was reported; a
+    /// placeholder reason when the flag went up without one.
+    #[must_use]
+    pub(crate) fn describe_loss(&self) -> String {
+        self.reason()
+            .unwrap_or_else(|| "device reported lost".to_owned())
+    }
+
+    /// Marks this generation productive: a frame was submitted to its
+    /// queue. The flag resolves when wgpu reports the submission done —
+    /// on the next queue poll — so a device that dies mid-present still
+    /// reads as unproductive (water-rs/waterui#2742). On WebGPU the
+    /// browser's canvas presentation is the completion, so the flag is
+    /// set at submit time.
+    pub(crate) fn note_frame_presented(&self) {
+        let presented = std::sync::Arc::clone(&self.gpu_context().presented);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.gpu_context()
+            .shared_device
+            .queue
+            .on_submitted_work_done(move || {
+                presented.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+        #[cfg(target_arch = "wasm32")]
+        presented.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Whether the driver has reported this device lost.
     #[must_use]
     pub(crate) fn is_lost(&self) -> bool {
         self.reason().is_some()
+    }
+
+    /// Test-only: reports this generation lost the way the driver's
+    /// device-lost callback would, so the recovery paths run without a
+    /// dying device.
+    #[cfg(test)]
+    pub(crate) fn simulate_loss(&self, message: &str) {
+        *self
+            .reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(format!("simulated: {message}"));
     }
 
     /// The reason the driver gave for the loss, once it reported one.
@@ -197,8 +308,157 @@ impl DeviceLoss {
     }
 }
 
+/// Consecutive device generations a context may lose before the device is
+/// declared unrecoverable — the bound that turns a permanently failing
+/// device into an explicit error instead of an infinite retry
+/// (water-rs/waterui#2742).
+#[cfg(hydrolysis_gpu_painter)]
+pub const MAX_UNPRODUCTIVE_LOSSES: usize = 3;
+
+/// Ends a recovery streak: panics naming every recorded loss once the
+/// consecutive-unproductive budget ran out. `losses` counts generations
+/// that died before ever presenting and rebuild attempts that failed.
+#[cfg(hydrolysis_gpu_painter)]
+pub fn assert_within_recovery_budget(losses: &[String]) {
+    assert!(
+        losses.len() <= MAX_UNPRODUCTIVE_LOSSES,
+        "hydrolysis: GPU device is unrecoverable — {} consecutive generations \
+         died before presenting a frame: {}",
+        losses.len(),
+        losses.join("; ")
+    );
+}
+
+/// The swappable core of a recoverable GPU context: the live device
+/// generation every clone hands to its surfaces, and the running count of
+/// generations that died before presenting a frame.
+///
+/// A surface renders on a *clone* of the generation, so a live frame keeps
+/// naming the device it was taken on while the context's live generation
+/// moves on through a rebuild. Rebuilds run on the frame thread under the
+/// lock; the driver-side loss callback only writes the generation's own
+/// reason cell, which needs no lock.
+#[derive(Debug)]
+#[cfg(hydrolysis_gpu_painter)]
+pub struct RecoverableGpu {
+    inner: std::sync::Mutex<RecoverableGpuInner>,
+}
+
+#[derive(Debug)]
+#[cfg(hydrolysis_gpu_painter)]
+struct RecoverableGpuInner {
+    /// The live generation; [`RecoverableGpu::ensure_live`] replaces it
+    /// wholesale when the driver reported its device lost.
+    generation: DeviceLoss,
+    /// Losses and failed rebuilds since the last generation that
+    /// presented — the record the exhaustion panic reports.
+    unproductive_losses: Vec<String>,
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+impl RecoverableGpu {
+    /// A recoverable context holding `generation` — taken right after the
+    /// first device is opened.
+    pub(crate) const fn new(generation: DeviceLoss) -> Self {
+        Self {
+            inner: std::sync::Mutex::new(RecoverableGpuInner {
+                generation,
+                unproductive_losses: Vec::new(),
+            }),
+        }
+    }
+
+    /// The generation currently live in the context.
+    pub(crate) fn generation(&self) -> DeviceLoss {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation
+            .clone()
+    }
+
+    /// Restores the context to a live device generation.
+    ///
+    /// No-op while the live generation is. When the driver reported it
+    /// lost, the dead generation is recorded against the recovery budget
+    /// — cleared when it had presented, counted otherwise — `rebuild`
+    /// re-runs the host's adapter pick and device open on the context's
+    /// instance, and its result becomes the live generation. A failed
+    /// rebuild joins the budget and leaves the dead generation in place,
+    /// so the frame still reports the surface lost and the next one
+    /// retries; once [`MAX_UNPRODUCTIVE_LOSSES`] consecutive losses run
+    /// out, this panics naming every recorded loss.
+    ///
+    /// Returns the context's live generation; the caller adopts it when
+    /// its context id differs from the one it holds — another surface on
+    /// this context may already have rebuilt.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn ensure_live(
+        &self,
+        rebuild: impl FnOnce(&wgpu::Instance) -> Result<DeviceLoss, String>,
+    ) -> DeviceLoss {
+        let Some(dead) = self.take_lost() else {
+            return self.generation();
+        };
+        let new_generation = rebuild(&dead.gpu_context().shared_device.instance);
+        self.finish_recovery(&dead, new_generation)
+    }
+
+    /// The live generation when the driver reported it lost — the first
+    /// half of a recovery whose rebuild must `await` (WebGPU's device
+    /// request cannot block). [`Self::finish_recovery`] completes it; the
+    /// lock is never held across the rebuild.
+    pub(crate) fn take_lost(&self) -> Option<DeviceLoss> {
+        let generation = self.generation();
+        generation.is_lost().then_some(generation)
+    }
+
+    /// Completes the recovery `take_lost` started: records `dead` against
+    /// the budget — cleared when it had presented, counted otherwise —
+    /// installs `rebuilt` as the live generation, and returns whatever is
+    /// live (another surface may already have rebuilt past `dead`). A
+    /// failed rebuild joins the budget and leaves the dead generation in
+    /// place; once [`MAX_UNPRODUCTIVE_LOSSES`] consecutive losses run out,
+    /// this panics naming every recorded loss.
+    pub(crate) fn finish_recovery(
+        &self,
+        dead: &DeviceLoss,
+        rebuilt: Result<DeviceLoss, String>,
+    ) -> DeviceLoss {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if inner.generation.gpu_context().context_id != dead.gpu_context().context_id {
+            // Another surface already recovered past this generation.
+            return inner.generation.clone();
+        }
+        if dead
+            .gpu_context()
+            .presented
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            inner.unproductive_losses.clear();
+        } else {
+            inner.unproductive_losses.push(dead.describe_loss());
+        }
+        assert_within_recovery_budget(&inner.unproductive_losses);
+        match rebuilt {
+            Ok(generation) => inner.generation = generation,
+            Err(error) => {
+                inner
+                    .unproductive_losses
+                    .push(format!("device recreation failed: {error}"));
+                assert_within_recovery_budget(&inner.unproductive_losses);
+            }
+        }
+        inner.generation.clone()
+    }
+}
+
 /// Input button mapped from a platform pointer event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PointerButton {
     /// The primary button — the left button for right-handed mice.
     Primary,
@@ -216,6 +476,7 @@ pub enum PointerButton {
 
 /// Physical pointer source reported by the platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PointerKind {
     /// A mouse pointer.
     Mouse,
@@ -227,6 +488,10 @@ pub enum PointerKind {
 
 /// Input key state mapped from a platform keyboard event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a key is pressed or released"
+)]
 pub enum KeyState {
     /// The button or contact is down.
     Pressed,
@@ -241,6 +506,7 @@ pub enum KeyState {
 /// and `physical_code` instead — the W3C UI Events pair, which is what GPU
 /// surfaces receive and what the browser engines will move to.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KeyCode {
     /// A printable character key, as the layout resolved it.
     Character(String),
@@ -313,6 +579,7 @@ impl From<keyboard_types::Modifiers> for Modifiers {
 
 /// IME purpose for the focused text input target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TextInputPurpose {
     /// Plain single-line text.
     Normal,
@@ -331,80 +598,774 @@ pub use waterui_backend_core::input::TouchPhase;
 /// and speed is in logical units — the space [`InputEvent`] pointer
 /// positions already arrive in.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct TouchScrollConfig {
     /// How far a touch may travel from its down point before a scroll view
     /// claims the gesture — the platform's scaled touch slop, in logical
     /// units.
-    pub touch_slop: f32,
+    touch_slop: f32,
     /// The release speed under which the gesture settles without a fling, in
     /// logical units per second.
-    pub min_fling_velocity: f32,
+    min_fling_velocity: f32,
     /// The release speed a fling starts at at most, in logical units per
     /// second.
-    pub max_fling_velocity: f32,
-    /// The deceleration model and the coefficients the platform defines for
-    /// it.
-    pub fling: FlingDeceleration,
+    max_fling_velocity: f32,
+    /// The scroll physics family: how a fling decelerates and what an edge
+    /// does to a drag or fling that reaches it.
+    physics: ScrollPhysics,
 }
 
 impl TouchScrollConfig {
-    /// Android's density-1 defaults — `ViewConfiguration`'s constants
-    /// normalized to logical units, not the scaled values a host reports
-    /// at runtime. Tests drive them through the host's
-    /// `touch_scroll_config` seam so a touch drag claims scroll views the
-    /// way it does on device.
+    /// Creates a `TouchScrollConfig` from the platform's touch-slop and
+    /// fling-velocity values and its scroll physics.
+    #[must_use]
+    pub const fn new(
+        touch_slop: f32,
+        min_fling_velocity: f32,
+        max_fling_velocity: f32,
+        physics: ScrollPhysics,
+    ) -> Self {
+        Self {
+            touch_slop,
+            min_fling_velocity,
+            max_fling_velocity,
+            physics,
+        }
+    }
+
+    /// How far a touch may travel from its down point before a scroll view
+    /// claims the gesture — the platform's scaled touch slop, in logical
+    /// units.
+    #[must_use]
+    pub const fn touch_slop(&self) -> f32 {
+        self.touch_slop
+    }
+
+    /// The release speed under which the gesture settles without a fling, in
+    /// logical units per second.
+    #[must_use]
+    pub const fn min_fling_velocity(&self) -> f32 {
+        self.min_fling_velocity
+    }
+
+    /// The release speed a fling starts at at most, in logical units per
+    /// second.
+    #[must_use]
+    pub const fn max_fling_velocity(&self) -> f32 {
+        self.max_fling_velocity
+    }
+
+    /// The scroll physics family: how a fling decelerates and what an edge
+    /// does to a drag or fling that reaches it.
+    #[must_use]
+    pub const fn physics(&self) -> ScrollPhysics {
+        self.physics
+    }
+}
+
+impl TouchScrollConfig {
+    /// The Android `OverScroller` model with Android 12's stretch edges, at
+    /// density 1 — `ViewConfiguration`'s constants normalized to logical
+    /// units, not the scaled values the Android host reports at runtime.
+    ///
+    /// This is what non-Apple hosts that publish no touch-scroll
+    /// parameters of their own — the browser window, the winit desktop
+    /// windows, offscreen surfaces — report through
+    /// [`PlatformWindow::touch_scroll_config`], so a touch drag scrolls
+    /// on every host. Tests drive it through the same seam.
     #[must_use]
     pub fn android_default() -> Self {
         Self {
             touch_slop: 10.0,
             min_fling_velocity: 50.0,
             max_fling_velocity: 8_000.0,
-            fling: FlingDeceleration {
-                physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
-                friction: 0.015,
-            },
+            physics: ScrollPhysics::android(
+                SplineDeceleration {
+                    physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
+                    friction: 0.015,
+                },
+                EdgeStretch::android(1.0),
+            ),
+        }
+    }
+
+    /// The `UIScrollView` model: [`ScrollPhysics::uikit`]'s exponential
+    /// decay and rubber band.
+    ///
+    /// The gesture thresholds — slop and the fling velocity bounds — are
+    /// [`Self::android_default`]'s density-1 values: `UIKit` documents no
+    /// counterparts for its pan recognizer, so only the physics differ.
+    #[must_use]
+    pub fn uikit_default() -> Self {
+        Self {
+            physics: ScrollPhysics::uikit(),
+            ..Self::android_default()
+        }
+    }
+
+    /// The parameters for a host on `platform` that publishes none of its
+    /// own: Apple systems scroll as `UIScrollView` does, every other
+    /// system as Android's `OverScroller` does.
+    #[must_use]
+    pub fn for_platform(platform: ScrollPlatform) -> Self {
+        match platform {
+            ScrollPlatform::Apple => Self::uikit_default(),
+            ScrollPlatform::Other => Self::android_default(),
         }
     }
 }
 
-/// The fling's deceleration model: Android `OverScroller`'s spline.
+/// The system family whose scroll physics a host without parameters of its
+/// own reproduces — see [`TouchScrollConfig::for_platform`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the selection is binary by definition: Apple systems or not; a new family is a new physics, which must fail every match"
+)]
+pub enum ScrollPlatform {
+    /// iOS, iPadOS, macOS and the other Apple systems.
+    Apple,
+    /// Every other system.
+    Other,
+}
+
+impl ScrollPlatform {
+    /// The system native Hydrolysis is compiled for: Apple by its compile
+    /// target's vendor.
+    #[must_use]
+    pub const fn native() -> Self {
+        if cfg!(target_vendor = "apple") {
+            Self::Apple
+        } else {
+            Self::Other
+        }
+    }
+
+    /// The system a browser's `navigator.userAgent` names: Apple when it
+    /// names an iPhone, an iPad, or a Mac — iPadOS Safari reports itself as
+    /// `Macintosh` by default ("Request Desktop Website", on since iPadOS
+    /// 13), so `Macintosh` covers both.
+    #[must_use]
+    pub fn from_user_agent(user_agent: &str) -> Self {
+        if ["iPhone", "iPad", "Macintosh"]
+            .iter()
+            .any(|name| user_agent.contains(name))
+        {
+            Self::Apple
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// One scroll physics family, carried as a whole so a host selects it in
+/// one choice: the fling's deceleration and the edge's overscroll effect.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct ScrollPhysics {
+    /// How a released fling decelerates.
+    deceleration: FlingDeceleration,
+    /// What a drag or a fling that reaches a content edge does there.
+    overscroll: Overscroll,
+}
+
+impl ScrollPhysics {
+    /// How a released fling decelerates.
+    #[must_use]
+    pub const fn deceleration(&self) -> FlingDeceleration {
+        self.deceleration
+    }
+
+    /// What a drag or a fling that reaches a content edge does there.
+    #[must_use]
+    pub const fn overscroll(&self) -> Overscroll {
+        self.overscroll
+    }
+}
+
+impl ScrollPhysics {
+    /// Android's `OverScroller` spline with `coefficients`, and Android
+    /// 12's `stretch` edges — the edge effect Material 3 adopts.
+    #[must_use]
+    pub const fn android(coefficients: SplineDeceleration, stretch: EdgeStretch) -> Self {
+        Self {
+            deceleration: FlingDeceleration::OverScrollerSpline(coefficients),
+            overscroll: Overscroll::Stretch(stretch),
+        }
+    }
+
+    /// `UIScrollView`'s exponential decay at
+    /// `UIScrollView.DecelerationRate.normal` and its rubber-band edges.
+    #[must_use]
+    pub const fn uikit() -> Self {
+        Self {
+            deceleration: FlingDeceleration::ExponentialDecay(ExponentialDecay::NORMAL),
+            overscroll: Overscroll::RubberBand(RubberBand::UIKIT),
+        }
+    }
+}
+
+/// A fling's deceleration model.
+///
+/// The physics family is a `Copy` value every input dispatch carries across
+/// [`PlatformWindow::touch_scroll_config`], so the models are variants of a
+/// closed set rather than trait objects.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum FlingDeceleration {
+    /// Android `OverScroller`'s spline.
+    OverScrollerSpline(SplineDeceleration),
+    /// `UIScrollView`'s exponential velocity decay.
+    ExponentialDecay(ExponentialDecay),
+}
+
+/// `UIScrollView`'s deceleration: the velocity decays by a constant factor
+/// every millisecond — `v(t) = v0 · rate^t`, `t` in ms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct ExponentialDecay {
+    /// The velocity factor per millisecond.
+    rate_per_ms: f64,
+}
+
+impl ExponentialDecay {
+    /// The velocity factor per millisecond.
+    #[must_use]
+    pub const fn rate_per_ms(&self) -> f64 {
+        self.rate_per_ms
+    }
+}
+
+impl ExponentialDecay {
+    /// `UIScrollView.DecelerationRate.normal` — Apple Developer
+    /// Documentation, `UIScrollView.DecelerationRate`: the default rate,
+    /// whose `rawValue` `UIKit` reports as 0.998. Its reading as the velocity
+    /// factor per millisecond, and the projection `v0/1000 · rate/(1 −
+    /// rate)` built on it, are WWDC 2018 session 803, "Designing Fluid
+    /// Interfaces".
+    /// Measured on an iPad Pro 13-inch (M4) under iPadOS 26.5: 20 flings of
+    /// a `UIScrollView` released at 0.34 to 3.9 pt/ms decay at 0.998006
+    /// ± 0.000004 per millisecond, fitted to their `contentOffset` per
+    /// frame.
+    pub const NORMAL: Self = Self { rate_per_ms: 0.998 };
+}
+
+/// What a drag or fling that reaches a content edge does there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum Overscroll {
+    /// The offset stops at the edge: a drag pushing past it moves nothing,
+    /// a fling ends on it.
+    Clamped,
+    /// `UIScrollView`'s rubber band: a drag past the edge moves with
+    /// resistance, and a release or a fling past it springs back.
+    RubberBand(RubberBand),
+    /// Android 12's stretch: the offset stays on the edge and the content
+    /// stretches toward it — pulled by a drag past it, kicked by a fling
+    /// that reaches it, and relaxing on release.
+    Stretch(EdgeStretch),
+}
+
+/// Android 12's stretch edge effect — AOSP
+/// `frameworks/base/core/java/android/widget/EdgeEffect.java` with
+/// `TYPE_STRETCH`, the edge effect every Android 12+ scrolling container
+/// draws by default.
+///
+/// The effect keeps a pull distance per edge, as a fraction of the
+/// viewport's length along the axis (`mDistance`), that a drag past the
+/// edge adds to (`onPullDistance`), a fling reaching the edge kicks
+/// (`onAbsorb`) and a release lets relax (`onRelease`) on an underdamped
+/// spring (`updateSpring`). The distance becomes a stretch intensity
+/// (`dampStretchVector`) that scales the content away from the edge.
+///
+/// The spring's constants are unitless or per second; the take-over and
+/// rest thresholds are in physical pixels on Android and are carried here
+/// in logical units — [`Self::android`] divides them by the density.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct EdgeStretch {
+    /// The relaxing spring's natural angular frequency, in rad/s —
+    /// `NATURAL_FREQUENCY`.
+    natural_frequency: f64,
+    /// The relaxing spring's damping ratio, below 1 — `DAMPING_RATIO`.
+    damping_ratio: f64,
+    /// What a fling's speed at the edge is multiplied by to start the
+    /// spring — `ON_ABSORB_VELOCITY_ADJUSTMENT`.
+    absorb_velocity_scale: f64,
+    /// The stretch intensity's linear share per unit of pull —
+    /// `LINEAR_STRETCH_INTENSITY`.
+    linear_intensity: f64,
+    /// The stretch intensity's exponential share at full pull —
+    /// `EXP_STRETCH_INTENSITY`.
+    exponential_intensity: f64,
+    /// The pull over which the exponential share builds up —
+    /// `SCROLL_DIST_AFFECTED_BY_EXP_STRETCH`.
+    exponential_distance: f64,
+    /// The speed a relaxing stretch close to rest finishes at linearly, in
+    /// logical units per second — `LINEAR_VELOCITY_TAKE_OVER`.
+    linear_take_over_velocity: f64,
+    /// The stretch, in logical units, under which a relaxing spring this
+    /// slow finishes linearly — `LINEAR_DISTANCE_TAKE_OVER`.
+    linear_take_over_distance: f64,
+    /// The spring speed under which it counts as at rest, in logical units
+    /// per second — `VELOCITY_THRESHOLD`.
+    rest_velocity: f64,
+    /// The stretch, in logical units, under which a slow spring counts as
+    /// at rest — `VALUE_THRESHOLD`.
+    rest_distance: f64,
+}
+
+impl EdgeStretch {
+    /// The relaxing spring's natural angular frequency, in rad/s —
+    /// `NATURAL_FREQUENCY`.
+    #[must_use]
+    pub const fn natural_frequency(&self) -> f64 {
+        self.natural_frequency
+    }
+
+    /// The relaxing spring's damping ratio, below 1 — `DAMPING_RATIO`.
+    #[must_use]
+    pub const fn damping_ratio(&self) -> f64 {
+        self.damping_ratio
+    }
+
+    /// What a fling's speed at the edge is multiplied by to start the
+    /// spring — `ON_ABSORB_VELOCITY_ADJUSTMENT`.
+    #[must_use]
+    pub const fn absorb_velocity_scale(&self) -> f64 {
+        self.absorb_velocity_scale
+    }
+
+    /// The stretch intensity's linear share per unit of pull —
+    /// `LINEAR_STRETCH_INTENSITY`.
+    #[must_use]
+    pub const fn linear_intensity(&self) -> f64 {
+        self.linear_intensity
+    }
+
+    /// The stretch intensity's exponential share at full pull —
+    /// `EXP_STRETCH_INTENSITY`.
+    #[must_use]
+    pub const fn exponential_intensity(&self) -> f64 {
+        self.exponential_intensity
+    }
+
+    /// The pull over which the exponential share builds up —
+    /// `SCROLL_DIST_AFFECTED_BY_EXP_STRETCH`.
+    #[must_use]
+    pub const fn exponential_distance(&self) -> f64 {
+        self.exponential_distance
+    }
+
+    /// The speed a relaxing stretch close to rest finishes at linearly, in
+    /// logical units per second — `LINEAR_VELOCITY_TAKE_OVER`.
+    #[must_use]
+    pub const fn linear_take_over_velocity(&self) -> f64 {
+        self.linear_take_over_velocity
+    }
+
+    /// The stretch, in logical units, under which a relaxing spring this
+    /// slow finishes linearly — `LINEAR_DISTANCE_TAKE_OVER`.
+    #[must_use]
+    pub const fn linear_take_over_distance(&self) -> f64 {
+        self.linear_take_over_distance
+    }
+
+    /// The spring speed under which it counts as at rest, in logical units
+    /// per second — `VELOCITY_THRESHOLD`.
+    #[must_use]
+    pub const fn rest_velocity(&self) -> f64 {
+        self.rest_velocity
+    }
+
+    /// The stretch, in logical units, under which a slow spring counts as
+    /// at rest — `VALUE_THRESHOLD`.
+    #[must_use]
+    pub const fn rest_distance(&self) -> f64 {
+        self.rest_distance
+    }
+}
+
+impl EdgeStretch {
+    /// AOSP `EdgeEffect`'s constants (Android 12, `android12-release`) on a
+    /// display of `density` physical pixels per logical unit: its pixel
+    /// thresholds — 200 px/s and 8 px for the linear take-over, 0.01 px/s
+    /// and 0.001 px for rest — divided by `density`.
+    #[must_use]
+    pub const fn android(density: f64) -> Self {
+        Self {
+            natural_frequency: 24.657,
+            damping_ratio: 0.98,
+            absorb_velocity_scale: 13.0,
+            linear_intensity: 0.016,
+            exponential_intensity: 0.016,
+            exponential_distance: 0.33,
+            linear_take_over_velocity: 200.0 / density,
+            linear_take_over_distance: 8.0 / density,
+            rest_velocity: 0.01 / density,
+            rest_distance: 0.001 / density,
+        }
+    }
+}
+
+/// `UIScrollView`'s rubber band: the resistance a drag past an edge meets,
+/// the return a release past it makes, and the bounce a fling that reaches
+/// it makes.
+///
+/// The return and the bounce are different motions, measured separately:
+/// see [`ReleaseReturn`] and [`EdgeBounce`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct RubberBand {
+    /// The resistance `c` in `(1 − 1 / (x·c/d + 1)) · d` — the band's
+    /// slope at the edge.
+    coefficient: f64,
+    /// How a release past the edge returns onto it.
+    release: ReleaseReturn,
+    /// How a fling that reaches the edge bounces past it and back.
+    bounce: EdgeBounce,
+}
+
+impl RubberBand {
+    /// The resistance `c` in `(1 − 1 / (x·c/d + 1)) · d` — the band's
+    /// slope at the edge.
+    #[must_use]
+    pub const fn coefficient(&self) -> f64 {
+        self.coefficient
+    }
+
+    /// How a release past the edge returns onto it.
+    #[must_use]
+    pub const fn release(&self) -> ReleaseReturn {
+        self.release
+    }
+
+    /// How a fling that reaches the edge bounces past it and back.
+    #[must_use]
+    pub const fn bounce(&self) -> EdgeBounce {
+        self.bounce
+    }
+}
+
+impl RubberBand {
+    /// `UIScrollView`'s band. Neither the formula nor `c = 0.55` is Apple
+    /// documentation: both are reverse-engineered from `UIScrollView`'s
+    /// behaviour (Grant Paul's 2013 derivation, the form every UIKit-feel
+    /// reimplementation reproduces), with `d` the viewport's dimension
+    /// along the axis. Measured on an iPad Pro 13-inch (M4) under iPadOS
+    /// 26.5, from the `contentOffset` of `UIScrollView` drags held past the
+    /// top edge, the form fits with `c` = 0.5495 and `d` the viewport's
+    /// height within 0.14 pt rms.
+    pub const UIKIT: Self = Self {
+        coefficient: 0.55,
+        release: ReleaseReturn::UIKIT,
+        bounce: EdgeBounce::UIKIT,
+    };
+}
+
+/// The return onto an edge from a release past it.
+///
+/// For a release `x0` past the edge at velocity `v` — the release velocity
+/// `scrollViewWillEndDragging` reports, which is the finger's, not the
+/// banded offset's — the displacement from the edge `t` seconds later is
+/// `x(t) = (x0 + v·t) · e^(−ω·t)`, with `ω = 2π / response`: a critically
+/// damped spring whose initial velocity is `v − ω·x0` rather than `v`, so
+/// even a still release leaves at speed.
+///
+/// A release moving toward the content reaches the edge at `t_c = −x0 /
+/// v`, where `x0 + v·t` vanishes, and does not stop there: from the edge
+/// the offset decelerates into the content as a fling does, starting at
+/// `v · e^(−ω_h·t_c)`, with `ω_h = 2π / handover_response`. A slow release
+/// reaches the edge with no speed left and rests on it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct ReleaseReturn {
+    /// The period `2π / ω` of the decay rate `ω`, in seconds.
+    response: f64,
+    /// The period `2π / ω_h` of the rate `ω_h` that sets the velocity a
+    /// release moving toward the content crosses the edge with, in seconds.
+    handover_response: f64,
+}
+
+impl ReleaseReturn {
+    /// Creates a `ReleaseReturn` from its parts.
+    #[must_use]
+    pub const fn new(response: f64, handover_response: f64) -> Self {
+        Self {
+            response,
+            handover_response,
+        }
+    }
+
+    /// The period `2π / ω` of the decay rate `ω`, in seconds.
+    #[must_use]
+    pub const fn response(&self) -> f64 {
+        self.response
+    }
+
+    /// Sets the `response`.
+    pub const fn set_response(&mut self, response: f64) {
+        self.response = response;
+    }
+
+    /// The period `2π / ω_h` of the rate `ω_h` that sets the velocity a
+    /// release moving toward the content crosses the edge with, in seconds.
+    #[must_use]
+    pub const fn handover_response(&self) -> f64 {
+        self.handover_response
+    }
+}
+
+impl ReleaseReturn {
+    /// `UIScrollView`'s return. `UIKit` documents none of it. Measured on
+    /// an iPad Pro 13-inch (M4) under iPadOS 26.5, at 120 Hz: 25 releases
+    /// 46 to 329 pt past the top edge of a `UIScrollView`, each fitted
+    /// from its `contentOffset` per frame and its `scrollViewWillEndDragging`
+    /// velocity with no other free parameter. `ω` = 10.12 rad/s fits them
+    /// within 0.34 pt rms and predicts held-out releases within 0.37 pt
+    /// rms; a spring that starts at the release velocity instead misses
+    /// them by 9.6 pt rms. On the same device, 36 releases 42 to 184 pt
+    /// past the top edge while the finger moved back toward the content,
+    /// at release velocities of 60 to 2140 pt/s — matching the finger's
+    /// speed, not the band's slope of it: the 19 that come to rest on the
+    /// edge follow the same `ω` within 0.92 pt rms, and the 17 that cross
+    /// it decelerate inside at 0.99800 per ms, the fling's rate, from
+    /// `v · e^(−ω_h·t_c)`. `ω_h` = 14.04 rad/s fits all 36 within 6.7 pt
+    /// rms over runs of up to 800 pt; one `ω` for the whole run misses the
+    /// releases that stop on the edge by 7.8 pt rms.
+    pub const UIKIT: Self = Self {
+        response: 0.621,
+        handover_response: 0.4476,
+    };
+}
+
+/// The bounce of a fling that reaches an edge: the spring starts on the
+/// edge at [`Self::entry_velocity_scale`] times the deceleration's velocity
+/// there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct EdgeBounce {
+    /// The spring that carries the offset past the edge and back onto it.
+    spring: SpringBack,
+    /// The share of the fling's velocity at the edge that the spring
+    /// starts with.
+    entry_velocity_scale: f64,
+}
+
+impl EdgeBounce {
+    /// Creates a `EdgeBounce` from its parts.
+    #[must_use]
+    pub const fn new(spring: SpringBack, entry_velocity_scale: f64) -> Self {
+        Self {
+            spring,
+            entry_velocity_scale,
+        }
+    }
+
+    /// The spring that carries the offset past the edge and back onto it.
+    #[must_use]
+    pub const fn spring(&self) -> SpringBack {
+        self.spring
+    }
+
+    /// The share of the fling's velocity at the edge that the spring
+    /// starts with.
+    #[must_use]
+    pub const fn entry_velocity_scale(&self) -> f64 {
+        self.entry_velocity_scale
+    }
+}
+
+impl EdgeBounce {
+    /// `UIScrollView`'s bounce. `UIKit` documents none of it. Measured on
+    /// an iPad Pro 13-inch (M4) under iPadOS 26.5, at 120 Hz: 10 flings
+    /// that reach the top edge of a `UIScrollView` at 358 to 2470 pt/s,
+    /// their `contentOffset` per frame past the edge fitted from the
+    /// moment the decay crosses it. A critically damped spring with `ω` =
+    /// 10.98 rad/s, started at 0.9645 of the crossing velocity, fits them
+    /// within 0.23 pt rms; with the damping ratio free the fit gives 1.005.
+    pub const UIKIT: Self = Self {
+        spring: SpringBack {
+            response: 0.572,
+            damping_ratio: 1.0,
+        },
+        entry_velocity_scale: 0.9645,
+    };
+}
+
+/// A damped spring returning the offset onto an edge.
+///
+/// It is parameterised by response and damping ratio — `SwiftUI`'s
+/// `Spring(response:dampingRatio:)` parameterisation: natural angular
+/// frequency `ω0 = 2π / response`, damping ratio `ζ`. For a displacement
+/// `x0` from the edge and velocity `v0` at its start (`t = 0`):
+///
+/// - `ζ = 1`: `x(t) = (x0 + (v0 + ω0·x0)·t) · e^(−ω0·t)`
+/// - `ζ > 1`: `x(t) = c1·e^(r1·t) + c2·e^(r2·t)`, with
+///   `r1,2 = −ω0·(ζ ∓ √(ζ² − 1))`, `c1 = (v0 − r2·x0) / (r1 − r2)`,
+///   `c2 = x0 − c1`
+/// - `ζ < 1`: `x(t) = e^(−ζ·ω0·t) · (x0·cos(ωd·t) + (v0 + ζ·ω0·x0)/ωd ·
+///   sin(ωd·t))`, with `ωd = ω0·√(1 − ζ²)`
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct SpringBack {
+    /// The undamped period, in seconds: `ω0 = 2π / response`.
+    response: f64,
+    /// The damping ratio `ζ`: 1 is critical, above 1 overdamped.
+    damping_ratio: f64,
+}
+
+impl SpringBack {
+    /// Creates a `SpringBack` from its parts.
+    #[must_use]
+    pub const fn new(response: f64, damping_ratio: f64) -> Self {
+        Self {
+            response,
+            damping_ratio,
+        }
+    }
+
+    /// The undamped period, in seconds: `ω0 = 2π / response`.
+    #[must_use]
+    pub const fn response(&self) -> f64 {
+        self.response
+    }
+
+    /// The damping ratio `ζ`: 1 is critical, above 1 overdamped.
+    #[must_use]
+    pub const fn damping_ratio(&self) -> f64 {
+        self.damping_ratio
+    }
+}
+
+/// Android `OverScroller`'s spline coefficients.
 ///
 /// The spline's math is ported
 /// (`frameworks/base/core/java/android/widget/OverScroller.java`,
 /// `SplineScroller`); the platform computes the coefficients for its own
 /// display and feel.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FlingDeceleration {
+#[non_exhaustive]
+pub struct SplineDeceleration {
     /// `SplineScroller`'s `mPhysicalCoeff` — the physical-pixel acceleration
     /// scale the spline's distance and duration derive from, in logical
     /// units per second².
-    pub physical_coeff: f64,
+    physical_coeff: f64,
     /// `SplineScroller`'s `mFlingFriction` —
     /// `ViewConfiguration.getScrollFriction()` on Android.
-    pub friction: f64,
+    friction: f64,
+}
+
+impl SplineDeceleration {
+    /// Creates a `SplineDeceleration` from the platform's physical
+    /// coefficient and fling friction.
+    #[must_use]
+    pub const fn new(physical_coeff: f64, friction: f64) -> Self {
+        Self {
+            physical_coeff,
+            friction,
+        }
+    }
+
+    /// `SplineScroller`'s `mPhysicalCoeff` — the physical-pixel acceleration
+    /// scale the spline's distance and duration derive from, in logical
+    /// units per second².
+    #[must_use]
+    pub const fn physical_coeff(&self) -> f64 {
+        self.physical_coeff
+    }
+
+    /// `SplineScroller`'s `mFlingFriction` —
+    /// `ViewConfiguration.getScrollFriction()` on Android.
+    #[must_use]
+    pub const fn friction(&self) -> f64 {
+        self.friction
+    }
 }
 
 /// Focused text-input area used for IME activation and candidate-window placement.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct TextInputState {
     /// Left edge of the input field, in logical points.
-    pub x: f64,
+    x: f64,
     /// Top edge of the input field, in logical points.
-    pub y: f64,
+    y: f64,
     /// Width of the input field, in logical points.
-    pub width: f64,
+    width: f64,
     /// Height of the input field, in logical points.
-    pub height: f64,
+    height: f64,
     /// The field's purpose, which selects the platform's input treatment.
-    pub purpose: TextInputPurpose,
+    purpose: TextInputPurpose,
     /// The renderer's count of primary presses on editable targets. A
     /// platform with a soft keyboard shows it when this changes, which is
     /// how a tap on the already-focused field re-opens a dismissed keyboard.
-    pub activation: u64,
+    activation: u64,
+}
+
+impl TextInputState {
+    /// Creates a `TextInputState` from its parts.
+    #[must_use]
+    pub const fn new(
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        purpose: TextInputPurpose,
+        activation: u64,
+    ) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+            purpose,
+            activation,
+        }
+    }
+
+    /// Left edge of the input field, in logical points.
+    #[must_use]
+    pub const fn x(&self) -> f64 {
+        self.x
+    }
+
+    /// Top edge of the input field, in logical points.
+    #[must_use]
+    pub const fn y(&self) -> f64 {
+        self.y
+    }
+
+    /// Width of the input field, in logical points.
+    #[must_use]
+    pub const fn width(&self) -> f64 {
+        self.width
+    }
+
+    /// Height of the input field, in logical points.
+    #[must_use]
+    pub const fn height(&self) -> f64 {
+        self.height
+    }
+
+    /// The field's purpose, which selects the platform's input treatment.
+    #[must_use]
+    pub const fn purpose(&self) -> TextInputPurpose {
+        self.purpose
+    }
+
+    /// The renderer's count of primary presses on editable targets. A
+    /// platform with a soft keyboard shows it when this changes, which is
+    /// how a tap on the already-focused field re-opens a dismissed keyboard.
+    #[must_use]
+    pub const fn activation(&self) -> u64 {
+        self.activation
+    }
 }
 
 /// Input events emitted by a windowing backend.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum InputEvent {
     /// A pointer button pressed or a contact started.
     PointerDown {
@@ -493,7 +1454,8 @@ pub enum InputEvent {
         x: f32,
         /// Vertical position in logical points.
         y: f32,
-        /// The gesture's cumulative delta.
+        /// The fractional scale change since the previous event; the gesture
+        /// engine multiplies the running scale by `1 + delta`.
         delta: f32,
         /// The gesture's touch phase.
         phase: TouchPhase,
@@ -504,7 +1466,8 @@ pub enum InputEvent {
         x: f32,
         /// Vertical position in logical points.
         y: f32,
-        /// The gesture's cumulative delta.
+        /// The angle change since the previous event, in radians, clockwise
+        /// positive in the top-left (y-down) window coordinates.
         delta: f32,
         /// The gesture's touch phase.
         phase: TouchPhase,
@@ -517,7 +1480,7 @@ pub enum InputEvent {
     /// Text that is the `text` payload of the [`InputEvent::Key`] press
     /// immediately preceding it — the web platform's `keydown` →
     /// `beforeinput` pair, in that order. A press a key handler consumed
-    /// suppresses this event at dispatch. Distinct from [`TextInput`],
+    /// suppresses this event at dispatch. Distinct from [`InputEvent::TextInput`],
     /// which carries text with no key origin (synthetic pushes, test
     /// drivers) and is never suppressed.
     KeyText {
@@ -612,6 +1575,10 @@ pub enum InputEvent {
 
 /// Which screen edge a system back gesture started from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a back gesture starts from the left edge, the right edge, or no edge"
+)]
 pub enum BackEdge {
     /// The gesture started at the leading edge.
     Left,
@@ -631,6 +1598,7 @@ pub enum BackEdge {
 /// [`BackEdge::None`], or, on a platform that has no progress to report,
 /// deliver `Invoked` alone.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum BackNavigation {
     /// The platform began a predictive back gesture from `edge`.
     Started {
@@ -650,6 +1618,7 @@ pub enum BackNavigation {
 
 /// Errors raised by surface acquisition/presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SurfaceError {
     /// Surface acquisition timed out waiting for the next frame.
     Timeout,
@@ -675,11 +1644,14 @@ impl core::fmt::Display for SurfaceError {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl std::error::Error for SurfaceError {}
 
 /// A frame acquired from a host-presented surface, such as
 /// [`OffscreenSurface::acquire`].
 #[derive(Debug)]
+#[non_exhaustive]
+#[cfg(hydrolysis_gpu_painter)]
 pub enum SurfaceFrame {
     /// An offscreen render target: the frame already lives in a texture.
     Offscreen {
@@ -698,25 +1670,9 @@ pub enum SurfaceFrame {
         /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
-    /// A platform surface frame presented through Android's `ANativeWindow`.
-    #[cfg(target_os = "android")]
-    Android {
-        /// The surface texture this frame was acquired into; presenting it
-        /// queues the frame for display.
-        output: wgpu::SurfaceTexture,
-        /// A view of `texture` to render into or read from.
-        view: wgpu::TextureView,
-    },
-    /// A surface frame acquired from a browser canvas (the `web` feature).
-    #[cfg(all(target_arch = "wasm32", feature = "web"))]
-    Browser {
-        /// The acquired surface texture, handed to the frame's renderer.
-        output: wgpu::SurfaceTexture,
-        /// A view of `texture` to render into or read from.
-        view: wgpu::TextureView,
-    },
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl SurfaceFrame {
     #[must_use]
     /// The frame's texture, whichever presentation form it took.
@@ -725,10 +1681,6 @@ impl SurfaceFrame {
             Self::Offscreen { texture, .. } => texture,
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             Self::Window { output, .. } => &output.texture,
-            #[cfg(target_os = "android")]
-            Self::Android { output, .. } => &output.texture,
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            Self::Browser { output, .. } => &output.texture,
         }
     }
 
@@ -739,70 +1691,12 @@ impl SurfaceFrame {
             Self::Offscreen { view, .. } => view,
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             Self::Window { view, .. } => view,
-            #[cfg(target_os = "android")]
-            Self::Android { view, .. } => view,
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            Self::Browser { view, .. } => view,
         }
     }
 }
 
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
-pub fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
-    let preferred = preferred_surface_format(caps, true);
-    if supports_hydrolysis_surface_format(preferred) {
-        return normalize_surface_format(caps, preferred);
-    }
-
-    if let Some(format) = caps
-        .formats
-        .iter()
-        .copied()
-        .find(|format| supports_hydrolysis_surface_format(*format))
-    {
-        return normalize_surface_format(caps, format);
-    }
-
-    panic!(
-        "hydrolysis surface: requires one of Rgba16Float/Rgba32Float/Rgba8/Bgra8 surface formats, got {:?}",
-        caps.formats
-    );
-}
-
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
-fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
-    matches!(
-        format.remove_srgb_suffix(),
-        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
-    ) || matches!(
-        format,
-        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
-    )
-}
-
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
-fn normalize_surface_format(
-    caps: &wgpu::SurfaceCapabilities,
-    format: wgpu::TextureFormat,
-) -> wgpu::TextureFormat {
-    if format.is_srgb() {
-        let linear = format.remove_srgb_suffix();
-        if caps.formats.contains(&linear) {
-            return linear;
-        }
-    }
-    format
-}
-
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
+#[cfg(hydrolysis_gpu_painter)]
 pub fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
 ) -> Result<wgpu::SurfaceTexture, SurfaceError> {
@@ -823,6 +1717,7 @@ pub fn acquire_surface_texture(
 /// [`SurfaceProvider`] or the macOS winit engine target — the pump, the
 /// resize path and the engine pool consume only this; acquire, copy and
 /// present exist only on the host-acquired kind.
+#[cfg(hydrolysis_gpu_painter)]
 pub trait PresentationSurface {
     /// The wgpu adapter this surface renders through.
     fn adapter(&self) -> &wgpu::Adapter;
@@ -836,11 +1731,26 @@ pub trait PresentationSurface {
     fn size(&self) -> (u32, u32);
     /// Reconfigures the surface for a new pixel size.
     fn resize(&mut self, width: u32, height: u32);
+    /// Restores the surface's device generation after a driver-reported
+    /// loss: re-runs the device request on the surface's own context,
+    /// adopts the new generation and reconfigures the presentation target.
+    /// The pump calls it at the head of every render frame
+    /// (water-rs/waterui#2742). The default does nothing, for surfaces
+    /// whose recreation cannot run synchronously — the browser surface
+    /// recovers inside its async render path instead.
+    ///
+    /// # Panics
+    /// Implementations panic naming every recorded loss once
+    /// [`MAX_UNPRODUCTIVE_LOSSES`] consecutive generations die before
+    /// presenting: a permanently failing device is an explicit error,
+    /// never an infinite retry.
+    fn ensure_live(&mut self) {}
 }
 
 /// Rendering surface abstraction consumed by hydrolysis runner/renderer:
 /// the host-acquired kind, whose frame the pump acquires, renders into and
 /// presents.
+#[cfg(hydrolysis_gpu_painter)]
 pub trait SurfaceProvider: PresentationSurface {
     /// Acquires the next frame, or reports why none could be presented into.
     ///
@@ -850,6 +1760,8 @@ pub trait SurfaceProvider: PresentationSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError>;
     /// Presents an acquired frame to the surface.
     fn present(&mut self, frame: SurfaceFrame);
+    /// Updates content before acquiring a frame. Fixed-format targets keep their format.
+    fn set_content_range(&mut self, _range: cherenkov_gpu::interop::ColorRange) {}
     /// The surface's texture format.
     fn format(&self) -> wgpu::TextureFormat;
     /// The alpha convention the pixels written into this surface's textures
@@ -861,8 +1773,9 @@ pub trait SurfaceProvider: PresentationSurface {
         cherenkov_gpu::interop::OutputAlpha::Straight
     }
     /// The display's HDR headroom — the brightest white the surface
-    /// presents, relative to SDR white. Every current surface is SDR, so
-    /// the default is 1.0; an HDR presentation surface overrides it.
+    /// presents, relative to SDR white. The default, 1.0, is an SDR
+    /// target's; a window surface reports the headroom its output
+    /// negotiation sampled.
     fn display_headroom(&self) -> f32 {
         1.0
     }
@@ -880,16 +1793,38 @@ pub trait SurfaceProvider: PresentationSurface {
 /// on, and the window's engine-surface slot, created on the first frame and
 /// replaced when its device chain or transparency no longer matches.
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct EngineWindowTarget<'a> {
     /// The window the engine presents on.
     pub(crate) window: &'a std::sync::Arc<winit::window::Window>,
     /// The window's engine surface and mount, owned by the window's surface.
-    pub(crate) window_slot:
-        &'a mut Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
+    pub(crate) window_slot: &'a mut Option<
+        crate::renderer::CherenkovWindow<
+            crate::engine::WindowCherenkovSurface,
+            crate::text::ParleyEngine,
+        >,
+    >,
     /// Whether the window composites with what lies behind it.
     pub(crate) transparent: bool,
     /// Whether the window crossed displays since the previous frame.
     pub(crate) display_moved: bool,
+}
+
+/// Android's engine-presented window, owned by its `SurfaceView` attachment.
+#[cfg(target_os = "android")]
+#[cfg(hydrolysis_gpu_painter)]
+pub struct EngineAndroidTarget<'a> {
+    pub state: &'a std::rc::Rc<crate::engine::SharedEngineState>,
+    pub window: &'a ndk::native_window::NativeWindow,
+    pub window_slot: &'a mut Option<
+        crate::renderer::CherenkovWindow<
+            crate::engine::AndroidCherenkovSurface,
+            crate::text::ParleyEngine,
+        >,
+    >,
+    /// Whether the window's planes composite with what lies behind it —
+    /// `SurfaceControlTarget::transparent` when the engine surface is created.
+    pub transparent: bool,
 }
 
 /// The window's platform safe area in logical units.
@@ -1071,18 +2006,18 @@ pub trait PlatformWindow: 'static {
     fn is_occluded(&self) -> bool {
         false
     }
-    /// The window's touch-drag scroll gesture parameters, when the host
-    /// delivers touch input: the platform's own slop, fling velocity bounds
-    /// and deceleration coefficients, by value — the renderer carries no
-    /// defaults for them.
+    /// The window's touch-drag scroll gesture parameters: the platform's
+    /// own slop, fling velocity bounds and deceleration coefficients, by
+    /// value — the renderer carries no defaults for them.
     ///
-    /// The default `None` is for platforms with no platform-published
-    /// touch-gesture parameters to carry — a host that cannot source the
-    /// values reports none rather than inventing them, and a touch drag
-    /// then never claims a scroll view.
-    fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
-        None
-    }
+    /// Every host returns the values its touch input runs under; a host
+    /// that publishes no parameters of its own reports
+    /// [`TouchScrollConfig::for_platform`] for the system it runs on.
+    /// `None` is only the window
+    /// that genuinely cannot have them yet — the Android host before its
+    /// first metrics push — and a `PointerKind::Touch` press arriving
+    /// while it holds is a host bug the renderer panics on.
+    fn touch_scroll_config(&self) -> Option<TouchScrollConfig>;
     /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
     /// Sets the cursor image the window displays.
@@ -1103,6 +2038,7 @@ pub trait PlatformWindow: 'static {
 /// macOS winit window, whose `cherenkov_gpu::WindowTarget` presents inside
 /// `Engine::render`. The acquire and present calls that kind lacks are
 /// missing from its type, not asserted away at run time.
+#[cfg(hydrolysis_gpu_painter)]
 pub trait GpuSurfaceWindow: PlatformWindow {
     /// How this window's GPU surface presents — host-acquired, or
     /// engine-presented on the macOS winit window.
@@ -1118,10 +2054,24 @@ pub trait GpuSurfaceWindow: PlatformWindow {
         None
     }
 
-    /// Asks the compositor to blur what lies behind the window, or stops
-    /// asking. A target with no compositor blur keeps this default no-op.
-    fn set_blur_behind(&mut self, blur: bool) {
-        let _ = blur;
+    /// Asks the compositor to blur what lies behind the window at the
+    /// material level's measured blur, or stops asking (`None`). A target
+    /// with no compositor blur keeps this default no-op.
+    fn set_blur_behind(&mut self, level: Option<crate::renderer::material::BehindWindowLevel>) {
+        let _ = level;
+    }
+
+    /// Whether the host matches chrome of its own to the colour the
+    /// content paints along the window's top edge. When it does, the
+    /// runner reports that colour for every presented frame through
+    /// [`Self::set_top_edge_color`]; otherwise it never computes it.
+    const SAMPLES_TOP_EDGE: bool = false;
+
+    /// The colour the presented frame shows along the window's top edge
+    /// ([`HydrolysisRenderer::top_edge_color`](crate::renderer::HydrolysisRenderer::top_edge_color)),
+    /// reported when [`Self::SAMPLES_TOP_EDGE`] is set.
+    fn set_top_edge_color(&mut self, color: waterui_graphics::draw::WorkingColor) {
+        let _ = color;
     }
 }
 
@@ -1142,6 +2092,7 @@ pub trait GpuSurfaceWindow: PlatformWindow {
 /// the way out — see `drain_device_before_teardown`. Every headless test builds
 /// one of these, and on a runner without a GPU they were the ones dying on drop.
 #[derive(Clone, Debug)]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct OffscreenGpuContext {
     /// Shared so the device is drained once, when the last surface using it
     /// goes away. `drain_device_before_teardown` blocks until the device is
@@ -1151,28 +2102,45 @@ pub struct OffscreenGpuContext {
 }
 
 #[derive(Debug)]
+#[cfg(hydrolysis_gpu_painter)]
 struct OffscreenGpuContextInner {
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    /// Reports this device lost; taken when the device was opened.
-    device_loss: DeviceLoss,
+    /// The live device generation and its recovery budget; surfaces adopt
+    /// a clone of its `DeviceLoss` and this swaps it after a loss.
+    gpu: RecoverableGpu,
+    /// How the context picks an adapter — recorded at request time so a
+    /// lost device's recreation re-runs the same contract
+    /// (water-rs/waterui#2742). WebGPU cannot rebuild synchronously, so
+    /// the record exists only where recreation runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    selection: AdapterSelection,
+    /// The backend mask the context's instance was created on — the tier
+    /// its probe found an adapter in, so recreation probes the same
+    /// instance, never a new one.
+    #[cfg(not(target_arch = "wasm32"))]
+    backends: wgpu::Backends,
 }
 
 /// One id per device creation chain — instances, adapters, devices and
 /// queues are only shared inside one, so it is also the Cherenkov engine key.
+#[cfg(hydrolysis_gpu_painter)]
 static NEXT_GPU_CONTEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn next_gpu_context_id() -> u64 {
     NEXT_GPU_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl Drop for OffscreenGpuContextInner {
     fn drop(&mut self) {
-        crate::platform::drain_device_before_teardown(&self.device);
+        let generation = self.gpu.generation();
+        crate::platform::drain_device_before_teardown(
+            &generation.gpu_context().shared_device.device,
+        );
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl OffscreenGpuContext {
     /// Lets the device release everything dropped since the last call.
     ///
@@ -1182,15 +2150,16 @@ impl OffscreenGpuContext {
     /// in sequence otherwise keeps every one of their allocations outstanding
     /// until the device itself is torn down.
     pub fn reclaim(&self) {
-        reclaim_device(&self.inner.device);
+        let generation = self.inner.gpu.generation();
+        reclaim_device(&generation.gpu_context().shared_device.device);
     }
 
     /// Requests a context on the adapter `WaterUI` would render an application on.
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     pub async fn new() -> Self {
@@ -1199,9 +2168,9 @@ impl OffscreenGpuContext {
 
     /// Requests a context for `WaterUI` test hosts.
     ///
-    /// Unlike a production context, this allows compute-capable software
-    /// adapters so CI can run Hydrolysis accessibility tests on llvmpipe
-    /// without opting the runtime path into fallback adapters.
+    /// Unlike a production context, this allows software adapters so CI can
+    /// run Hydrolysis accessibility tests on llvmpipe without opting the
+    /// runtime path into fallback adapters.
     #[cfg(any(test, feature = "testing"))]
     pub async fn new_for_tests() -> Self {
         Self::new_with_adapter_selection(AdapterSelection::TEST).await
@@ -1216,28 +2185,45 @@ impl OffscreenGpuContext {
 
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::arc_with_non_send_sync,
-            reason = "`OffscreenGpuContextInner` holds a wgpu adapter, device and queue, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The context is shared by reference count on every target and is `Send + Sync` on all of them but this one, so the storage type is `Arc` everywhere rather than `Rc` here and `Arc` elsewhere."
+            reason = "the context is shared by reference count on every target; on wasm the page's single-threaded event loop never crosses it with a thread, and the handles' Send/Sync bound varies with Cargo feature unification"
         )
     )]
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     async fn new_with_adapter_selection(selection: AdapterSelection) -> Self {
-        let (instance, adapter) =
+        let (instance, adapter, backends) =
             request_instance_and_adapter("hydrolysis offscreen surface", selection).await;
+        #[cfg(target_arch = "wasm32")]
+        let _ = backends;
+        let generation = Self::open_device(&instance, &adapter)
+            .await
+            .expect("hydrolysis offscreen surface: failed to request wgpu device");
 
-        ensure_compute_capable_adapter(
-            &adapter,
-            "hydrolysis offscreen surface",
-            "failed to find compute-capable wgpu adapter",
-        );
-        let required_limits = required_device_limits(&adapter);
+        Self {
+            inner: std::sync::Arc::new(OffscreenGpuContextInner {
+                gpu: RecoverableGpu::new(generation),
+                #[cfg(not(target_arch = "wasm32"))]
+                selection,
+                #[cfg(not(target_arch = "wasm32"))]
+                backends,
+            }),
+        }
+    }
+
+    /// Opens the context's device generation on `adapter`: the shared
+    /// tail of the first request and of a lost device's recreation.
+    async fn open_device(
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+    ) -> Result<DeviceLoss, OpenDeviceError> {
+        let required_limits = required_device_limits(adapter);
         // PIPELINE_CACHE is requested wherever the adapter has it: without the
         // feature `create_pipeline_cache` errors, so the persistent store in
         // `pipeline_cache.rs` can only exist when it was requested here.
@@ -1259,34 +2245,52 @@ impl OffscreenGpuContext {
                     | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
                     | wgpu::Features::PIPELINE_CACHE
                     | wgpu::Features::PASSTHROUGH_SHADERS));
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
+        let (device, queue) = open_engine_device(
+            adapter,
+            &wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-offscreen-device"),
                 required_features,
                 required_limits,
-                memory_hints: wgpu::MemoryHints::Performance,
+                memory_hints: cherenkov_gpu::interop::memory_hints(adapter.get_info().backend),
                 experimental_features: wgpu::ExperimentalFeatures::default(),
                 trace: wgpu::Trace::default(),
-            })
-            .await
-            .expect("hydrolysis offscreen surface: failed to request wgpu device");
+            },
+        )
+        .await?;
         let context_id = next_gpu_context_id();
         let shared_device = cherenkov_gpu::interop::SharedDevice {
             instance: instance.clone(),
             adapter: adapter.clone(),
-            device: device.clone(),
-            queue: queue.clone(),
+            device,
+            queue,
         };
-        let device_loss = DeviceLoss::observe(shared_device, context_id);
+        Ok(DeviceLoss::observe(shared_device, context_id))
+    }
 
-        Self {
-            inner: std::sync::Arc::new(OffscreenGpuContextInner {
-                adapter,
-                device,
-                queue,
-                device_loss,
-            }),
-        }
+    /// Re-runs the context's adapter pick and device open on `instance` —
+    /// the lost generation's own — so a recreated device keeps the surface
+    /// objects and resources the chain already holds
+    /// (water-rs/waterui#2742).
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn recreate(&self, instance: &wgpu::Instance) -> Result<DeviceLoss, String> {
+        let (adapter, inspected) = probe_adapters(
+            instance,
+            None,
+            "hydrolysis offscreen surface",
+            self.inner.selection,
+            self.inner.backends,
+        )
+        .await;
+        let adapter = adapter.ok_or_else(|| {
+            format!(
+                "no surface-compatible adapter on the live instance \
+                 (inspected: {})",
+                inspected.join("; ")
+            )
+        })?;
+        Self::open_device(instance, &adapter)
+            .await
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -1298,8 +2302,12 @@ impl OffscreenGpuContext {
 /// allocations outstanding until the last one goes away — on a software
 /// rasterizer that runs the machine out of memory — but neither should each
 /// drop wait out the queued work of the other surfaces sharing the device.
+#[cfg(hydrolysis_gpu_painter)]
 pub struct OffscreenSurface {
     gpu: OffscreenGpuContext,
+    /// The device generation this surface renders on — a clone of the
+    /// context's live generation, adopted in [`PresentationSurface::ensure_live`].
+    handles: DeviceLoss,
     /// New logical width, in pixels.
     width: u32,
     /// New logical height, in pixels.
@@ -1308,11 +2316,13 @@ pub struct OffscreenSurface {
     last_presented: Option<wgpu::Texture>,
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 fn should_force_fallback_adapter() -> bool {
     std::env::var_os("WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER").is_some()
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg(hydrolysis_gpu_painter)]
 struct AdapterSelection {
     #[cfg_attr(
         target_arch = "wasm32",
@@ -1324,6 +2334,7 @@ struct AdapterSelection {
     allow_software_adapter: bool,
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl AdapterSelection {
     const PRODUCTION: Self = Self {
         allow_software_adapter: false,
@@ -1346,12 +2357,14 @@ impl AdapterSelection {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
 struct AdapterPreference {
     backend_rank: u8,
     device_type_rank: u8,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
 impl AdapterPreference {
     /// `prefer_software` is the diagnostics escape hatch: the flag is named
     /// `FORCE_FALLBACK_ADAPTER`, so with it set a software adapter must win
@@ -1370,6 +2383,7 @@ impl AdapterPreference {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
 const fn backend_rank(backend: wgpu::Backend) -> u8 {
     if cfg!(target_os = "windows") {
         match backend {
@@ -1402,6 +2416,7 @@ const fn backend_rank(backend: wgpu::Backend) -> u8 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
 const fn device_type_rank(device_type: wgpu::DeviceType) -> u8 {
     match device_type {
         wgpu::DeviceType::DiscreteGpu => 0,
@@ -1417,17 +2432,20 @@ const fn device_type_rank(device_type: wgpu::DeviceType) -> u8 {
 ///
 /// Hydrolysis is GPU-required by design, so the honest answer is another host
 /// or another renderer. The escape hatch is named as diagnostics and nothing
-/// more: a software adapter reports compute support and still aborts the
-/// process inside shader compilation (Microsoft Basic Render Driver on
-/// Windows Server does exactly that), so recommending it as the remedy sends
-/// the user somewhere worse than the refusal.
-const GPU_REQUIRED_GUIDANCE: &str = "Hydrolysis renders through GPU compute pipelines and has no CPU path: \
+/// more: a software adapter can still abort the process inside shader
+/// compilation (Microsoft Basic Render Driver on Windows Server does exactly
+/// that), so recommending it as the remedy sends the user somewhere worse
+/// than the refusal.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
+const GPU_REQUIRED_GUIDANCE: &str = "Hydrolysis renders through GPU pipelines and has no CPU path: \
 run on a machine with a GPU, or on a virtual machine enable hardware 3D acceleration and install the vendor driver. \
 For targets without a GPU, waterui-dew is the CPU renderer. \
 WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER=1 widens adapter selection to software adapters for diagnostics only; \
 a software adapter that cannot run the renderer's pipelines fails or aborts the process instead of drawing.";
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(hydrolysis_gpu_painter)]
 mod adapter_selection_tests {
     use super::{AdapterPreference, GPU_REQUIRED_GUIDANCE};
 
@@ -1467,15 +2485,73 @@ mod adapter_selection_tests {
 
     #[test]
     fn the_refusal_does_not_recommend_the_escape_hatch_as_a_remedy() {
-        // A software adapter that reports compute support can still abort the
-        // process in shader compilation, so the guidance must offer another
-        // host or Dew and name the flag as diagnostics only.
+        // A software adapter can still abort the process in shader
+        // compilation, so the guidance must offer another host or Dew and
+        // name the flag as diagnostics only.
         assert!(GPU_REQUIRED_GUIDANCE.contains("waterui-dew"));
         assert!(GPU_REQUIRED_GUIDANCE.contains("diagnostics only"));
+    }
+
+    /// The compute fields of a `wgpu::Limits` with every other field at its
+    /// default: `check_limits` is whole-set, and the raster floor
+    /// legitimately exceeds what a compute-free adapter offers elsewhere, so
+    /// the compute fields are compared through the same wgpu comparator on
+    /// their own.
+    fn compute_only(limits: &wgpu::Limits) -> wgpu::Limits {
+        wgpu::Limits {
+            max_compute_workgroup_storage_size: limits.max_compute_workgroup_storage_size,
+            max_compute_invocations_per_workgroup: limits.max_compute_invocations_per_workgroup,
+            max_compute_workgroup_size_x: limits.max_compute_workgroup_size_x,
+            max_compute_workgroup_size_y: limits.max_compute_workgroup_size_y,
+            max_compute_workgroup_size_z: limits.max_compute_workgroup_size_z,
+            max_compute_workgroups_per_dimension: limits.max_compute_workgroups_per_dimension,
+            ..wgpu::Limits::default()
+        }
+    }
+
+    #[test]
+    fn a_compute_free_adapter_is_asked_for_zero_compute_limits() {
+        // A WebGL2-class adapter reports zero for every compute field: the
+        // request must inherit the zeros, not the defaults' nonzero values
+        // that would fail the device request on a capability the pipeline
+        // never uses.
+        let adapter_limits = wgpu::Limits::downlevel_webgl2_defaults();
+        let requested = super::device_limits_for(&adapter_limits);
+        assert_eq!(requested.max_compute_workgroup_storage_size, 0);
+        assert_eq!(requested.max_compute_invocations_per_workgroup, 0);
+        assert_eq!(requested.max_compute_workgroup_size_x, 0);
+        assert_eq!(requested.max_compute_workgroup_size_y, 0);
+        assert_eq!(requested.max_compute_workgroup_size_z, 0);
+        assert_eq!(requested.max_compute_workgroups_per_dimension, 0);
+        assert!(compute_only(&requested).check_limits(&compute_only(&adapter_limits)));
+    }
+
+    #[test]
+    fn compute_limits_stay_at_the_default_floor() {
+        // An adapter offering more than the defaults is still asked for the
+        // defaults, and the rest of the request keeps its values.
+        let adapter_limits = wgpu::Limits {
+            max_compute_workgroup_storage_size: u32::MAX,
+            max_compute_invocations_per_workgroup: u32::MAX,
+            max_compute_workgroup_size_x: u32::MAX,
+            max_compute_workgroup_size_y: u32::MAX,
+            max_compute_workgroup_size_z: u32::MAX,
+            max_compute_workgroups_per_dimension: u32::MAX,
+            ..wgpu::Limits::default()
+        };
+        let requested = super::device_limits_for(&adapter_limits);
+        let defaults = wgpu::Limits::default();
+        assert_eq!(
+            requested.max_compute_workgroups_per_dimension,
+            defaults.max_compute_workgroups_per_dimension
+        );
+        assert_eq!(requested.max_bind_groups, defaults.max_bind_groups);
+        assert!(compute_only(&requested).check_limits(&compute_only(&adapter_limits)));
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
 const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
     match device_type {
         wgpu::DeviceType::Cpu => 0,
@@ -1486,46 +2562,42 @@ const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
     }
 }
 
-fn is_compute_capable_adapter(adapter: &wgpu::Adapter) -> bool {
-    let downlevel_caps = adapter.get_downlevel_capabilities();
-    let limits = adapter.limits();
-    downlevel_caps
-        .flags
-        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
-        && limits.max_compute_workgroups_per_dimension > 0
-}
-
 /// The wgpu backend masks Hydrolysis probes for an adapter, in order.
 ///
-/// `WGPU_BACKEND` is an absolute override — its mask is the only tier probed.
-/// Without it, `PRIMARY` (Vulkan, Metal, DX12, browser WebGPU) probes first and
-/// `GL` follows only when no primary adapter is acceptable, so wgpu
-/// instantiates the GL backend's EGL driver stack only on hosts that need it —
-/// a headless CI box where Mesa llvmpipe supplies GL 4.5 compute shaders —
-/// never alongside a Vulkan adapter it would sit idle next to.
+/// Android and Linux default to Vulkan. GLES is available only with `gles`.
+/// Other native hosts probe primary backends before GL. `WGPU_BACKEND` selects
+/// from the backends enabled by the build.
 #[cfg(not(target_arch = "wasm32"))]
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
+#[cfg(hydrolysis_gpu_painter)]
 fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
+    let enabled = cherenkov_gpu::GpuConfig::default().backends;
     match wgpu::Backends::from_env() {
-        Some(backends) => vec![backends],
+        Some(backends) => vec![backends & enabled],
+        None if enabled == wgpu::Backends::VULKAN => vec![enabled],
         None => vec![wgpu::Backends::PRIMARY, wgpu::Backends::GL],
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = backends;
+    // Cherenkov's shaders need DXC; wgpu's default `Auto` silently falls
+    // back to FXC when `dxcompiler.dll` does not load, and FXC cannot
+    // compile them (#1713). Requiring DXC makes wgpu drop the DirectX 12
+    // backend instead, so another backend's adapter is selected, or the
+    // no-adapter failure names the missing runtime.
+    descriptor.backend_options.dx12.shader_compiler =
+        wgpu::Dx12Compiler::default_dynamic_dxc().with_env();
     descriptor
 }
 
 /// Probe `instance` over `backends` for the best adapter that is
-/// surface-compatible, not `Noop`, software only when `selection` allows it,
-/// and compute-capable. `None` means this tier satisfied nothing; the
+/// surface-compatible, not `Noop`, and software only when `selection`
+/// allows it. `None` means this tier satisfied nothing; the
 /// inspected list comes back either way for the no-adapter panic.
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
 async fn probe_adapters(
     instance: &wgpu::Instance,
     compatible_surface: Option<&wgpu::Surface<'_>>,
@@ -1537,9 +2609,9 @@ async fn probe_adapters(
         // The diagnostics escape hatch widens which adapters are eligible
         // (`AdapterSelection::allow_software_adapter`); it does not hand the
         // renderer whatever `request_adapter` returns. Asking wgpu for a
-        // fallback adapter directly skipped the compute-capability filter and
-        // the ranking below, which is how a CPU adapter that cannot run the
-        // compute pipelines reached the engine's shader init.
+        // fallback adapter directly skipped the ranking below, which is how
+        // an adapter the engine cannot drive reached the engine's shader
+        // init.
         let mut best_candidate: Option<(AdapterPreference, wgpu::Adapter)> = None;
         let mut inspected_adapters: Vec<String> = Vec::new();
 
@@ -1548,16 +2620,12 @@ async fn probe_adapters(
             let surface_supported = compatible_surface
                 .as_ref()
                 .is_none_or(|surface| adapter.is_surface_supported(surface));
-            let limits = adapter.limits();
-            let compute_capable = is_compute_capable_adapter(&adapter);
 
             tracing::info!(
                 target: "hydrolysis::gpu",
                 context,
                 adapter = ?info,
                 surface_supported,
-                compute_capable,
-                max_compute_workgroups_per_dimension = limits.max_compute_workgroups_per_dimension,
                 "hydrolysis adapter candidate"
             );
 
@@ -1566,12 +2634,8 @@ async fn probe_adapters(
             }
 
             inspected_adapters.push(format!(
-                "'{}' ({:?}, {:?}, compute={}, max_compute_workgroups_per_dimension={})",
-                info.name,
-                info.backend,
-                info.device_type,
-                compute_capable,
-                limits.max_compute_workgroups_per_dimension
+                "'{}' ({:?}, {:?})",
+                info.name, info.backend, info.device_type
             ));
 
             if info.backend == wgpu::Backend::Noop
@@ -1584,10 +2648,6 @@ async fn probe_adapters(
                     adapter = ?info,
                     "skipping software/noop adapter because fallback adapter was not requested"
                 );
-                continue;
-            }
-
-            if !compute_capable {
                 continue;
             }
 
@@ -1611,11 +2671,18 @@ async fn probe_adapters(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
+#[cfg(hydrolysis_gpu_painter)]
 fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu::Backends]) -> ! {
     assert!(
         !inspected_adapters.is_empty(),
         "{context}: failed to find a surface-compatible wgpu adapter across the probed backends {tiers:?}. \
-    Set WGPU_BACKEND to an available backend or install/update the platform GPU driver."
+    Set WGPU_BACKEND to an available backend or install/update the platform GPU driver.{}",
+        if cfg!(windows) {
+            " DirectX 12 is only offered when the DXC runtime (dxcompiler.dll) loads: \
+`water run` stages it beside the binary and `water doctor` installs it."
+        } else {
+            ""
+        }
     );
 
     panic!(
@@ -1637,10 +2704,11 @@ Surface-compatible adapters inspected: {}. \
         reason = "wasm32 is single-threaded; adapter handles are !Send by design"
     )
 )]
+#[cfg(hydrolysis_gpu_painter)]
 async fn request_instance_and_adapter(
     context: &str,
     selection: AdapterSelection,
-) -> (wgpu::Instance, wgpu::Adapter) {
+) -> (wgpu::Instance, wgpu::Adapter, wgpu::Backends) {
     // WebGPU is the only wgpu backend wasm can reach, so the adapter is
     // requested rather than enumerated on every wasm build shape.
     #[cfg(target_arch = "wasm32")]
@@ -1648,9 +2716,8 @@ async fn request_instance_and_adapter(
         // The caller's selection preference only matters where backends can
         // be enumerated; on wasm every request goes to the one adapter source.
         let _ = selection;
-        let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(
-            wgpu::Backends::from_env().unwrap_or(wgpu::Backends::BROWSER_WEBGPU),
-        ));
+        let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::BROWSER_WEBGPU);
+        let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -1661,7 +2728,7 @@ async fn request_instance_and_adapter(
             .await
             .expect("hydrolysis adapter selection: failed to find web adapter");
         log_selected_adapter(context, &adapter);
-        (instance, adapter)
+        (instance, adapter, backends)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1675,7 +2742,10 @@ async fn request_instance_and_adapter(
             inspected_adapters.extend(inspected);
             if let Some(adapter) = adapter {
                 log_selected_adapter(context, &adapter);
-                return (instance, adapter);
+                // The winning tier's mask records which backend the
+                // instance was created on — a lost device's recreation
+                // probes this instance under the same mask.
+                return (instance, adapter, backends);
             }
         }
         fail_no_adapter(context, inspected_adapters, &tiers);
@@ -1687,11 +2757,17 @@ async fn request_instance_and_adapter(
 /// own surface before probing and the winning tier returns both.
 #[cfg(hydrolysis_winit)]
 #[cfg(not(target_os = "macos"))]
+#[cfg(hydrolysis_gpu_painter)]
 async fn request_instance_surface_adapter(
     context: &str,
     selection: AdapterSelection,
     make_surface: impl Fn(&wgpu::Instance) -> wgpu::Surface<'static>,
-) -> (wgpu::Instance, wgpu::Surface<'static>, wgpu::Adapter) {
+) -> (
+    wgpu::Instance,
+    wgpu::Surface<'static>,
+    wgpu::Adapter,
+    wgpu::Backends,
+) {
     let tiers = hydrolysis_backend_tiers();
     let mut inspected_adapters = Vec::new();
     for &backends in &tiers {
@@ -1702,12 +2778,13 @@ async fn request_instance_surface_adapter(
         inspected_adapters.extend(inspected);
         if let Some(adapter) = adapter {
             log_selected_adapter(context, &adapter);
-            return (instance, surface, adapter);
+            return (instance, surface, adapter, backends);
         }
     }
     fail_no_adapter(context, inspected_adapters, &tiers);
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 fn log_selected_adapter(context: &str, adapter: &wgpu::Adapter) {
     let info = adapter.get_info();
     tracing::info!(
@@ -1719,6 +2796,7 @@ fn log_selected_adapter(context: &str, adapter: &wgpu::Adapter) {
     );
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl Drop for OffscreenSurface {
     fn drop(&mut self) {
         self.last_presented = None;
@@ -1726,6 +2804,7 @@ impl Drop for OffscreenSurface {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl core::fmt::Debug for OffscreenSurface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("OffscreenSurface")
@@ -1736,6 +2815,7 @@ impl core::fmt::Debug for OffscreenSurface {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl OffscreenSurface {
     /// The surface's current pixel size `(width, height)`.
     #[must_use]
@@ -1746,25 +2826,38 @@ impl OffscreenSurface {
     /// The wgpu adapter this surface renders through.
     #[must_use]
     pub fn adapter(&self) -> &wgpu::Adapter {
-        &self.gpu.inner.adapter
+        &self.handles.gpu_context().shared_device.adapter
     }
 
     /// The wgpu device this surface renders through.
     #[must_use]
     pub fn device(&self) -> &wgpu::Device {
-        &self.gpu.inner.device
+        &self.handles.gpu_context().shared_device.device
     }
 
     /// The submission queue this surface renders through.
     #[must_use]
     pub fn queue(&self) -> &wgpu::Queue {
-        &self.gpu.inner.queue
+        &self.handles.gpu_context().shared_device.queue
     }
 
     /// Reports this surface's device lost; taken when the device was opened.
     #[must_use]
-    pub fn device_loss(&self) -> &DeviceLoss {
-        &self.gpu.inner.device_loss
+    pub const fn device_loss(&self) -> &DeviceLoss {
+        &self.handles
+    }
+
+    /// Swaps the surface to `generation` when the context handed down a
+    /// new device creation chain, dropping the frame texture the lost
+    /// device owned (water-rs/waterui#2742).
+    fn adopt_generation(&mut self, generation: DeviceLoss) {
+        if generation.gpu_context().context_id == self.handles.gpu_context().context_id {
+            return;
+        }
+        self.handles = generation;
+        // The retained frame texture was allocated on the dead device;
+        // the next acquire builds a fresh one on the live device.
+        self.last_presented = None;
     }
 
     /// The surface's texture format.
@@ -1775,10 +2868,23 @@ impl OffscreenSurface {
 
     /// The next frame to render into: the texture the last [`Self::present`]
     /// returned, or a fresh one at the surface's current size.
+    ///
+    /// # Panics
+    /// Panics when the surface's device is lost and the recreation
+    /// `PresentationSurface::ensure_live` runs could not restore it —
+    /// a caller reaching this inherent `acquire` has no `SurfaceError`
+    /// channel to report the loss through (water-rs/waterui#2742).
     pub fn acquire(&mut self) -> SurfaceFrame {
+        PresentationSurface::ensure_live(self);
+        assert!(
+            !self.handles.is_lost(),
+            "hydrolysis offscreen surface: {}",
+            self.handles.describe_loss()
+        );
         let texture = self.last_presented.take().unwrap_or_else(|| {
-            self.gpu
-                .inner
+            self.handles
+                .gpu_context()
+                .shared_device
                 .device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some("hydrolysis-offscreen-frame"),
@@ -1812,27 +2918,25 @@ impl OffscreenSurface {
         match frame {
             SurfaceFrame::Offscreen { texture, .. } => {
                 self.last_presented = Some(texture);
+                // The frame's queue work is submitted: credit this device
+                // generation as productive so a later loss does not count
+                // against the recovery budget (water-rs/waterui#2742). The
+                // pump path marks it again on `SurfaceProvider` — the flag
+                // is idempotent.
+                self.handles.note_frame_presented();
             }
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             SurfaceFrame::Window { .. } => {
                 panic!("hydrolysis offscreen surface received a window frame");
-            }
-            #[cfg(target_os = "android")]
-            SurfaceFrame::Android { .. } => {
-                panic!("hydrolysis offscreen surface received an android frame");
-            }
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            SurfaceFrame::Browser { .. } => {
-                panic!("hydrolysis offscreen surface received a browser frame");
             }
         }
     }
 
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     /// Creates an offscreen surface synchronously.
@@ -1842,9 +2946,9 @@ impl OffscreenSurface {
 
     /// Creates an offscreen surface for `WaterUI` test hosts.
     ///
-    /// Unlike production surfaces, this constructor allows compute-capable
-    /// software adapters so CI can run Hydrolysis accessibility tests on
-    /// llvmpipe without opting the runtime path into fallback adapters.
+    /// Unlike production surfaces, this constructor allows software adapters
+    /// so CI can run Hydrolysis accessibility tests on llvmpipe without
+    /// opting the runtime path into fallback adapters.
     #[cfg(any(test, feature = "testing"))]
     pub async fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         Self::on_context(
@@ -1866,8 +2970,10 @@ impl OffscreenSurface {
         height: u32,
         format: wgpu::TextureFormat,
     ) -> Self {
+        let handles = gpu.inner.gpu.generation();
         Self {
             gpu,
+            handles,
             width: width.max(1),
             height: height.max(1),
             format,
@@ -1888,42 +2994,93 @@ impl OffscreenSurface {
     }
 }
 
-pub fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
-    let adapter_limits = adapter.limits();
-    let downlevel_caps = adapter.get_downlevel_capabilities();
-    let base_limits = if downlevel_caps.is_webgpu_compliant()
-        || downlevel_caps
-            .flags
-            .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
-    {
-        wgpu::Limits::default()
-    } else {
-        wgpu::Limits::downlevel_webgl2_defaults()
-    };
-
-    base_limits
-        .using_resolution(adapter_limits.clone())
-        .using_alignment(adapter_limits)
-}
-
-pub fn ensure_compute_capable_adapter(
-    adapter: &wgpu::Adapter,
-    context: &str,
-    no_compute_message: &str,
-) {
-    let limits = adapter.limits();
-    if is_compute_capable_adapter(adapter) {
-        return;
+/// The limits a host requests of its wgpu device: the WebGPU defaults with
+/// resolution and alignment taken from the adapter. The engine's raster
+/// pipeline is written against the defaults, so an adapter below them fails
+/// the device request — there is no downlevel limits fallback.
+///
+/// Compute is a device capability, not part of the floor
+/// (`cherenkov_gpu::interop::SharedDevice::has_compute` reports it for the
+/// strategies that can use it), so the compute fields ask for
+/// `min(default, adapter)` — the defaults' nonzero values would fail the
+/// request on an adapter that reports zero compute the pipeline never uses.
+#[cfg(hydrolysis_gpu_painter)]
+fn device_limits_for(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
+    let defaults = wgpu::Limits::default();
+    wgpu::Limits {
+        max_compute_workgroup_storage_size: defaults
+            .max_compute_workgroup_storage_size
+            .min(adapter_limits.max_compute_workgroup_storage_size),
+        max_compute_invocations_per_workgroup: defaults
+            .max_compute_invocations_per_workgroup
+            .min(adapter_limits.max_compute_invocations_per_workgroup),
+        max_compute_workgroup_size_x: defaults
+            .max_compute_workgroup_size_x
+            .min(adapter_limits.max_compute_workgroup_size_x),
+        max_compute_workgroup_size_y: defaults
+            .max_compute_workgroup_size_y
+            .min(adapter_limits.max_compute_workgroup_size_y),
+        max_compute_workgroup_size_z: defaults
+            .max_compute_workgroup_size_z
+            .min(adapter_limits.max_compute_workgroup_size_z),
+        max_compute_workgroups_per_dimension: defaults
+            .max_compute_workgroups_per_dimension
+            .min(adapter_limits.max_compute_workgroups_per_dimension),
+        ..defaults
     }
-
-    let info = adapter.get_info();
-    panic!(
-        "{context}: {no_compute_message}. Selected adapter '{}' ({:?}) reports max_compute_workgroups_per_dimension = {}. \
-{GPU_REQUIRED_GUIDANCE}",
-        info.name, info.backend, limits.max_compute_workgroups_per_dimension
-    );
+    .using_resolution(adapter_limits.clone())
+    .using_alignment(adapter_limits.clone())
 }
 
+/// The limits a host-provided adapter is asked for.
+#[cfg(hydrolysis_gpu_painter)]
+pub fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    device_limits_for(&adapter.limits())
+}
+
+/// Opens the device every host shares with the Cherenkov engine.
+///
+/// On a Vulkan adapter this is the engine's own creation path
+/// (`cherenkov_gpu::interop::open_vulkan_device`), because the
+/// capabilities the engine composes with are chosen when `vkCreateDevice`
+/// runs and cannot be turned on afterwards: the external-frame and YCbCr
+/// extensions of water-rs/cherenkov#57's neighbour #166, and the
+/// dynamic-rendering local read and rasterization-order attachment access
+/// that keep composition intermediates in tile memory (waterui#2191). A
+/// device opened with `request_device` instead would make the engine
+/// materialize every intermediate through memory for its whole life.
+/// Every other backend goes through `request_device` unchanged.
+///
+/// # Errors
+/// [`OpenDeviceError`] when the backend or the engine's Vulkan path
+/// cannot open the device.
+#[cfg(hydrolysis_gpu_painter)]
+pub async fn open_engine_device(
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+) -> Result<(wgpu::Device, wgpu::Queue), OpenDeviceError> {
+    #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+    if adapter.get_info().backend == wgpu::Backend::Vulkan {
+        return Ok(cherenkov_gpu::interop::open_vulkan_device(
+            adapter, descriptor,
+        )?);
+    }
+    Ok(adapter.request_device(descriptor).await?)
+}
+
+/// Why [`open_engine_device`] could not open the shared device.
+#[derive(Debug, thiserror::Error)]
+#[cfg(hydrolysis_gpu_painter)]
+pub enum OpenDeviceError {
+    /// The backend refused the request.
+    #[error("{0}")]
+    Request(#[from] wgpu::RequestDeviceError),
+    /// The engine's Vulkan creation path failed.
+    #[error("{0}")]
+    Engine(#[from] cherenkov::EngineError),
+}
+
+#[cfg(hydrolysis_gpu_painter)]
 impl PresentationSurface for OffscreenSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         Self::adapter(self)
@@ -1954,10 +3111,45 @@ impl PresentationSurface for OffscreenSurface {
             self.last_presented = None;
         }
     }
+
+    /// Adopts the context's live device generation, rebuilding it when
+    /// the adopted one was lost (water-rs/waterui#2742). WebGPU's
+    /// adapter request cannot run inside a synchronous pump, so on wasm
+    /// a lost generation is still counted against the recovery budget —
+    /// the dead device ends in the explicit unrecoverable error rather
+    /// than livelocking the pump.
+    fn ensure_live(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let gpu = self.gpu.clone();
+            let generation = gpu
+                .inner
+                .gpu
+                .ensure_live(|instance| pollster::block_on(gpu.recreate(instance)));
+            self.adopt_generation(generation);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(dead) = self.gpu.inner.gpu.take_lost() {
+            let generation = self.gpu.inner.gpu.finish_recovery(
+                &dead,
+                Err("WebGPU device requests are async-only; the offscreen pump \
+                     cannot rebuild a lost device"
+                    .to_owned()),
+            );
+            self.adopt_generation(generation);
+        }
+    }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl SurfaceProvider for OffscreenSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
+        if self.handles.is_lost() {
+            // A dead generation a failed recreation left in place: the
+            // surface reports lost so the pump reschedules and the next
+            // frame retries the recovery under its budget.
+            return Err(SurfaceError::Lost);
+        }
         Ok(Self::acquire(self))
     }
 
@@ -1979,12 +3171,14 @@ impl SurfaceProvider for OffscreenSurface {
 /// [`Self::surface`], and an offscreen presentation target for
 /// [`Self::readback_rgba8`]. Frames are rendered explicitly through
 /// [`Self::engine`]'s `Engine::render`; nothing pumps or pumps-on-wake here.
+#[cfg(hydrolysis_gpu_painter)]
 pub struct OffscreenSceneSurface {
     target: OffscreenSurface,
     cherenkov: crate::engine::TextureCherenkovSurface,
     state: std::rc::Rc<crate::engine::SharedEngineState>,
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl core::fmt::Debug for OffscreenSceneSurface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("OffscreenSceneSurface")
@@ -1993,13 +3187,14 @@ impl core::fmt::Debug for OffscreenSceneSurface {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl OffscreenSceneSurface {
     crate::engine::cfg_async_fn! {
         /// Creates the host on the adapter `WaterUI` would render an
         /// application on, at `width × height` sRGB pixels.
         ///
         /// # Panics
-        /// Panics when no compute-capable adapter exists or the engine cannot
+        /// Panics when no usable adapter exists or the engine cannot
         /// be created — same failure contract as [`OffscreenGpuContext::new`].
         /// Async on wasm32, where the engine surface creation inside awaits
         /// the browser's GPU device.
@@ -2015,8 +3210,8 @@ impl OffscreenSceneSurface {
 
     #[cfg(any(test, feature = "testing"))]
     crate::engine::cfg_async_fn! {
-        /// Creates the host on a test context, allowing compute-capable
-        /// software adapters so CI can run on llvmpipe.
+        /// Creates the host on a test context, allowing software
+        /// adapters so CI can run on llvmpipe.
         #[must_use]
         pub fn new_for_tests(width: u32, height: u32) -> Self {
             crate::engine::engine_await!(Self::on_context(
@@ -2041,11 +3236,10 @@ impl OffscreenSceneSurface {
                 height,
                 wgpu::TextureFormat::Rgba8UnormSrgb,
             );
-            let context = target.device_loss().gpu_context();
             let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
-                context.context_id,
+                target.device_loss().gpu_context().context_id,
                 target.adapter(),
-                context.shared_device,
+                target.device_loss().gpu_context().shared_device.clone(),
             ));
             // The caller drives `engine.render` itself: no host loop exists
             // for the surface to wake.
@@ -2086,9 +3280,19 @@ impl OffscreenSceneSurface {
     /// first texture panics through the surface's presentation contract.
     ///
     /// # Panics
-    /// Panics when the readback fails.
+    /// Panics when the readback fails, and when the GPU device was lost:
+    /// `ensure_live` can rebuild the presentation target but not the
+    /// engine surface and mounts the caller holds through
+    /// [`Self::surface`], so this host reports the loss explicitly instead
+    /// of mixing device generations (water-rs/waterui#2742).
     #[must_use]
     pub fn readback_rgba8(&mut self) -> Vec<u8> {
+        assert!(
+            !self.target.device_loss().is_lost(),
+            "hydrolysis offscreen scene surface: the GPU device was lost; the \
+             caller-held engine surface cannot be rebuilt — recreate the \
+             OffscreenSceneSurface on a fresh context"
+        );
         let (width, height) = self.target.size();
         let frame = self.target.acquire();
         let texture = frame.texture().clone();
@@ -2112,6 +3316,7 @@ impl OffscreenSceneSurface {
 
 /// Headless platform window backed by an offscreen texture.
 #[derive(Debug)]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct OffscreenWindow {
     surface: OffscreenSurface,
     scale_factor: f64,
@@ -2124,6 +3329,7 @@ pub struct OffscreenWindow {
     )>,
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl OffscreenWindow {
     #[must_use]
     /// Creates an offscreen surface synchronously.
@@ -2138,7 +3344,7 @@ impl OffscreenWindow {
     /// Creates an offscreen window for `WaterUI` test hosts.
     ///
     /// This keeps production adapter selection strict while allowing
-    /// `waterui-testing` to run on compute-capable software adapters in CI.
+    /// `waterui-testing` to run on software adapters in CI.
     /// Requests a device of its own; a caller that builds several windows
     /// should request one [`OffscreenGpuContext`] and use [`Self::on_context`].
     #[cfg(any(test, feature = "testing"))]
@@ -2233,6 +3439,7 @@ impl OffscreenWindow {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl PlatformWindow for OffscreenWindow {
     fn content_size(&self) -> (u32, u32) {
         // An offscreen window is exactly its render target.
@@ -2286,6 +3493,13 @@ impl PlatformWindow for OffscreenWindow {
         self.scale_factor
     }
 
+    /// An offscreen surface publishes no touch-gesture parameters of its
+    /// own; its logical units are unscaled points — density 1 — so it
+    /// reports the density-1 model of the system it is compiled for.
+    fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
+        Some(TouchScrollConfig::for_platform(ScrollPlatform::native()))
+    }
+
     /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, _state: Option<TextInputState>) {}
 
@@ -2293,6 +3507,7 @@ impl PlatformWindow for OffscreenWindow {
     fn set_cursor_style(&mut self, _style: CursorStyle) {}
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl GpuSurfaceWindow for OffscreenWindow {
     /// The GPU surface this window presents into.
     type Presentation = OffscreenSurface;
@@ -2303,6 +3518,9 @@ impl GpuSurfaceWindow for OffscreenWindow {
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 mod web_impl;
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub mod web_appearance;
 
 #[cfg(hydrolysis_wayland_platform)]
 mod wayland_blur;
@@ -2315,6 +3533,14 @@ mod macos_display_moves;
 
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
 mod macos_blur_behind;
+
+#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+pub mod macos_appearance;
+
+// Compiled under `test` on every host: the module's pure mapping seam is
+// covered off-device, while the zbus client inside stays Linux-gated.
+#[cfg(any(all(hydrolysis_winit, target_os = "linux"), test))]
+pub mod linux_appearance;
 
 #[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
 pub mod native_menu_bar;
@@ -2344,20 +3570,22 @@ mod winit_impl {
     use super::{
         CursorStyle, DeviceLoss, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
         PlatformWindow, PointerButton, PointerKind, RedrawHandle, TextInputPurpose, TextInputState,
-        TouchPhase, enabled_window_buttons, validated_window_frame,
+        TouchPhase, TouchScrollConfig, enabled_window_buttons, validated_window_frame,
     };
     #[cfg(not(target_os = "macos"))]
     use super::{SurfaceError, SurfaceFrame, SurfaceProvider, reclaim_device};
 
     #[derive(Clone, Debug)]
     pub struct WinitGpuContext {
-        #[cfg(not(target_os = "macos"))]
-        instance: wgpu::Instance,
-        adapter: wgpu::Adapter,
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        /// Reports this device lost; taken when the device was opened.
-        device_loss: DeviceLoss,
+        /// The live device generation and its loss budget; every surface
+        /// on the context adopts a clone of its `DeviceLoss`, and this
+        /// swaps it after a loss (water-rs/waterui#2742).
+        gpu: Arc<super::RecoverableGpu>,
+        /// The adapter-selection contract and backend tier the context
+        /// was created on — a lost device's recreation re-runs them on
+        /// the live instance.
+        selection: super::AdapterSelection,
+        backends: wgpu::Backends,
     }
 
     impl WinitGpuContext {
@@ -2365,51 +3593,91 @@ mod winit_impl {
         /// required limits and features and gives it a context identity —
         /// the shared tail of every `WinitSurface` construction, whether a
         /// `wgpu::Surface` was created alongside (host-acquired) or the
-        /// engine presents instead (macOS).
+        /// engine presents instead (macOS). `selection`/`backends` record
+        /// the request's own contract for the recreation a later device
+        /// loss runs.
         ///
         /// # Panics
-        /// Panics when the adapter is not compute-capable or the device
-        /// request fails — the same failure contract as the windowed
-        /// surface that constructs it.
-        async fn open(instance: wgpu::Instance, adapter: wgpu::Adapter) -> Self {
-            super::ensure_compute_capable_adapter(
-                &adapter,
-                "hydrolysis winit surface",
-                "failed to find compute-capable wgpu adapter",
-            );
-            let required_limits = super::required_device_limits(&adapter);
+        /// Panics when the device request fails — the same failure contract
+        /// as the windowed surface that constructs it.
+        async fn open(
+            instance: wgpu::Instance,
+            adapter: wgpu::Adapter,
+            selection: super::AdapterSelection,
+            backends: wgpu::Backends,
+        ) -> Self {
+            let generation = Self::open_on(&instance, &adapter)
+                .await
+                .expect("hydrolysis winit surface: failed to request device");
+            Self {
+                gpu: Arc::new(super::RecoverableGpu::new(generation)),
+                selection,
+                backends,
+            }
+        }
+
+        /// Opens a device generation on `adapter` over `instance` — the
+        /// shared tail of the first request and of a lost device's
+        /// recreation.
+        async fn open_on(
+            instance: &wgpu::Instance,
+            adapter: &wgpu::Adapter,
+        ) -> Result<DeviceLoss, super::OpenDeviceError> {
+            let required_limits = super::required_device_limits(adapter);
             let required_features = crate::platform::required_media_features(adapter.features())
                 | (adapter.features()
                     & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
+            let (device, queue) = super::open_engine_device(
+                adapter,
+                &wgpu::DeviceDescriptor {
                     label: Some("hydrolysis-winit-device"),
                     required_features,
                     required_limits,
-                    memory_hints: wgpu::MemoryHints::Performance,
+                    memory_hints: cherenkov_gpu::interop::memory_hints(adapter.get_info().backend),
                     experimental_features: wgpu::ExperimentalFeatures::default(),
                     trace: wgpu::Trace::default(),
-                })
-                .await
-                .expect("hydrolysis winit surface: failed to request device");
+                },
+            )
+            .await?;
             let context_id = super::next_gpu_context_id();
-            let device_loss = DeviceLoss::observe(
+            Ok(DeviceLoss::observe(
                 cherenkov_gpu::interop::SharedDevice {
                     instance: instance.clone(),
                     adapter: adapter.clone(),
-                    device: device.clone(),
-                    queue: queue.clone(),
+                    device,
+                    queue,
                 },
                 context_id,
-            );
-            Self {
-                #[cfg(not(target_os = "macos"))]
+            ))
+        }
+
+        /// Re-runs the context's adapter pick and device open on
+        /// `instance` — the lost generation's own — so a recreated device
+        /// keeps the surfaces and engine resources the chain already
+        /// holds (water-rs/waterui#2742).
+        async fn recreate(
+            &self,
+            instance: &wgpu::Instance,
+            compatible_surface: Option<&wgpu::Surface<'_>>,
+        ) -> Result<DeviceLoss, String> {
+            let (adapter, inspected) = super::probe_adapters(
                 instance,
-                adapter,
-                device,
-                queue,
-                device_loss,
-            }
+                compatible_surface,
+                "hydrolysis winit surface",
+                self.selection,
+                self.backends,
+            )
+            .await;
+            let adapter = adapter.ok_or_else(|| {
+                format!(
+                    "no surface-compatible adapter on the live instance \
+                     (inspected: {})",
+                    inspected.join("; ")
+                )
+            })?;
+            Self::open_on(instance, &adapter)
+                .await
+                .map_err(|error| error.to_string())
         }
     }
 
@@ -2422,8 +3690,24 @@ mod winit_impl {
         #[cfg(not(target_os = "macos"))]
         surface: wgpu::Surface<'static>,
         gpu: WinitGpuContext,
+        /// The device generation this surface renders on — a clone of the
+        /// context's live generation, adopted in `ensure_live`
+        /// (water-rs/waterui#2742).
+        handles: DeviceLoss,
+        /// Whether the window composites with what lies behind it —
+        /// kept on host-acquired platforms so a rebuilt generation's
+        /// output renegotiation keeps the same answer.
+        #[cfg(not(target_os = "macos"))]
+        transparent: bool,
         #[cfg(not(target_os = "macos"))]
         config: wgpu::SurfaceConfiguration,
+        /// The negotiated output the swapchain was configured by — the
+        /// engine's `select_output` result, with the reported headroom
+        /// sampled at negotiation (#2445).
+        #[cfg(not(target_os = "macos"))]
+        selection: cherenkov_gpu::interop::OutputSelection,
+        #[cfg(not(target_os = "macos"))]
+        content_range: cherenkov_gpu::interop::ColorRange,
         /// The window this surface presents into. A host-presented surface
         /// asks it for the platform's next-frame pacing
         /// (`pre_present_notify`), which on Wayland requests the frame
@@ -2446,8 +3730,12 @@ mod winit_impl {
         display_moved: std::rc::Rc<std::cell::Cell<bool>>,
         /// The typed Cherenkov engine target, created on the first render.
         #[cfg(target_os = "macos")]
-        engine_window:
-            Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
+        engine_window: Option<
+            crate::renderer::CherenkovWindow<
+                crate::engine::WindowCherenkovSurface,
+                crate::text::ParleyEngine,
+            >,
+        >,
         /// The screen-change observer that sets `display_moved`;
         /// unregisters itself on drop.
         #[cfg(target_os = "macos")]
@@ -2485,15 +3773,15 @@ mod winit_impl {
             crate::renderer::FrameRenderTarget<'_>,
             super::EngineWindowTarget<'_>,
         ) {
-            let context = self.gpu.device_loss.gpu_context();
+            let context = self.handles.gpu_context();
             (
                 crate::renderer::FrameRenderTarget {
-                    adapter: &self.gpu.adapter,
-                    device: &self.gpu.device,
-                    queue: &self.gpu.queue,
-                    device_loss: self.gpu.device_loss.clone(),
+                    adapter: &context.shared_device.adapter,
+                    device: &context.shared_device.device,
+                    queue: &context.shared_device.queue,
+                    device_loss: self.handles.clone(),
                     gpu_context_id: context.context_id,
-                    shared_device: context.shared_device,
+                    shared_device: context.shared_device.clone(),
                     display_scale,
                     width: self.size.0,
                     height: self.size.1,
@@ -2506,51 +3794,6 @@ mod winit_impl {
                     display_moved: self.display_moved.replace(false),
                 },
             )
-        }
-
-        /// The composite alpha mode a surface is configured with.
-        ///
-        /// A window the compositor must see through needs a mode whose alpha
-        /// channel reaches it — premultiplied, postmultiplied, or the
-        /// platform-inherited mode compositors honour on alpha-capable
-        /// visuals — in that preference order. An opaque window takes
-        /// whatever the surface prefers first. An adapter offering a
-        /// transparent window none of the transparency-capable modes cannot
-        /// present it at all: under an opaque composite the pixels' alpha
-        /// never reaches the compositor and the window reads as fully
-        /// transparent, which is a window-creation error naming the adapter
-        /// and the modes it reported, not a silently opaque window.
-        #[cfg(any(test, not(target_os = "macos")))]
-        fn select_alpha_mode(
-            caps: &wgpu::SurfaceCapabilities,
-            requires_transparency: bool,
-            adapter_info: &wgpu::AdapterInfo,
-        ) -> wgpu::CompositeAlphaMode {
-            const TRANSPARENT_MODES: [wgpu::CompositeAlphaMode; 3] = [
-                wgpu::CompositeAlphaMode::PreMultiplied,
-                wgpu::CompositeAlphaMode::PostMultiplied,
-                wgpu::CompositeAlphaMode::Inherit,
-            ];
-            if !requires_transparency {
-                // An opaque window's alpha channel never reaches the
-                // compositor, so the surface's preferred mode is fine.
-                return caps.alpha_modes[0];
-            }
-            for wanted in TRANSPARENT_MODES {
-                if caps.alpha_modes.contains(&wanted) {
-                    return wanted;
-                }
-            }
-            let info = adapter_info;
-            panic!(
-                "hydrolysis winit surface: a transparent window needs a \
-                 transparency-capable composite alpha mode, but adapter {:?} \
-                 ({:?}, driver {:?} {:?}) offers only {:?} — presented pixels \
-                 would carry no alpha and the window would draw nothing. \
-                 Transparent windows require a compositing window manager and \
-                 an adapter that reports a non-opaque alpha mode.",
-                info.name, info.backend, info.driver, info.driver_info, caps.alpha_modes
-            );
         }
 
         /// The X11 presentation defect a transparent window hits on an old
@@ -2615,6 +3858,27 @@ mod winit_impl {
             )
         }
 
+        /// The surface's negotiated output configuration
+        /// ([`super::negotiate_host_output`]). An unmet request is a
+        /// window-creation failure naming the request, what the surface
+        /// offers, and the adapter, never a silently substituted pair.
+        #[cfg(not(target_os = "macos"))]
+        fn negotiate_surface_output(
+            surface: &wgpu::Surface<'static>,
+            adapter: &wgpu::Adapter,
+            transparent: bool,
+            content_range: cherenkov_gpu::interop::ColorRange,
+        ) -> cherenkov_gpu::interop::OutputSelection {
+            super::negotiate_host_output(surface, adapter, transparent, content_range)
+                .unwrap_or_else(|error| {
+                    let info = adapter.get_info();
+                    panic!(
+                        "hydrolysis winit surface: {error} (adapter {:?}, {:?})",
+                        info.name, info.backend
+                    )
+                })
+        }
+
         #[cfg(not(target_os = "macos"))]
         fn from_surface(
             surface: wgpu::Surface<'static>,
@@ -2625,32 +3889,40 @@ mod winit_impl {
             on_x11: bool,
             window: Arc<NativeWindow>,
         ) -> Self {
-            let caps = surface.get_capabilities(&gpu.adapter);
-            let format = super::select_hydrolysis_surface_format(&caps);
-            let adapter_info = gpu.adapter.get_info();
+            let handles = gpu.gpu.generation();
+            let adapter_info = handles.gpu_context().shared_device.adapter.get_info();
             if requires_transparency
                 && on_x11
                 && let Some(cause) = Self::mesa_x11_transparency_blocker(&adapter_info)
             {
                 panic!("hydrolysis winit surface: {cause}");
             }
-            let alpha_mode = Self::select_alpha_mode(&caps, requires_transparency, &adapter_info);
+            let selection = Self::negotiate_surface_output(
+                &surface,
+                &handles.gpu_context().shared_device.adapter,
+                requires_transparency,
+                cherenkov_gpu::interop::ColorRange::WideGamut,
+            );
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format,
-                color_space: wgpu::SurfaceColorSpace::Auto,
+                format: selection.format,
+                color_space: selection.color_space,
                 width: width.max(1),
                 height: height.max(1),
-                present_mode: wgpu::PresentMode::AutoVsync,
-                alpha_mode,
+                present_mode: selection.present_mode,
+                alpha_mode: selection.alpha_mode,
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,
             };
-            surface.configure(&gpu.device, &config);
+            surface.configure(&handles.gpu_context().shared_device.device, &config);
             Self {
                 surface,
                 gpu,
+                handles,
+                transparent: requires_transparency,
                 config,
+                selection,
+                content_range: cherenkov_gpu::interop::ColorRange::WideGamut,
                 window,
             }
         }
@@ -2663,24 +3935,36 @@ mod winit_impl {
             requires_transparency: bool,
         ) -> (Self, WinitGpuContext) {
             let (gpu, surface) = if let Some(gpu) = shared_gpu {
+                // The instance lives inside the context's live generation —
+                // a surface must be created on the instance that produced
+                // its adapter.
                 let surface = gpu
+                    .gpu
+                    .generation()
+                    .gpu_context()
+                    .shared_device
                     .instance
                     .create_surface(window.clone())
                     .expect("hydrolysis winit surface: failed to create shared surface");
                 (gpu.clone(), surface)
             } else {
-                let (instance, surface, adapter) = super::request_instance_surface_adapter(
-                    "hydrolysis winit surface",
-                    super::AdapterSelection::PRODUCTION,
-                    |instance| {
-                        instance
-                            .create_surface(window.clone())
-                            .expect("hydrolysis winit surface: failed to create surface")
-                    },
-                )
-                .await;
+                let selection = super::AdapterSelection::PRODUCTION;
+                let (instance, surface, adapter, backends) =
+                    super::request_instance_surface_adapter(
+                        "hydrolysis winit surface",
+                        selection,
+                        |instance| {
+                            instance
+                                .create_surface(window.clone())
+                                .expect("hydrolysis winit surface: failed to create surface")
+                        },
+                    )
+                    .await;
 
-                (WinitGpuContext::open(instance, adapter).await, surface)
+                (
+                    WinitGpuContext::open(instance, adapter, selection, backends).await,
+                    surface,
+                )
             };
 
             let size = window.inner_size();
@@ -2712,12 +3996,11 @@ mod winit_impl {
             let gpu = if let Some(gpu) = shared_gpu {
                 gpu.clone()
             } else {
-                let (instance, adapter) = super::request_instance_and_adapter(
-                    "hydrolysis winit surface",
-                    super::AdapterSelection::PRODUCTION,
-                )
-                .await;
-                WinitGpuContext::open(instance, adapter).await
+                let selection = super::AdapterSelection::PRODUCTION;
+                let (instance, adapter, backends) =
+                    super::request_instance_and_adapter("hydrolysis winit surface", selection)
+                        .await;
+                WinitGpuContext::open(instance, adapter, selection, backends).await
             };
             let size = window.inner_size();
             let display_moved = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -2727,6 +4010,7 @@ mod winit_impl {
             );
             (
                 Self {
+                    handles: gpu.gpu.generation(),
                     gpu: gpu.clone(),
                     window,
                     size: (size.width.max(1), size.height.max(1)),
@@ -2739,21 +4023,80 @@ mod winit_impl {
             )
         }
 
-        /// Re-selects the composite alpha mode for a window whose background
-        /// switched between opaque and translucent, reconfiguring only when
-        /// the mode actually changes. The selection is the one creation uses,
-        /// so a surface that offers no transparency-capable mode fails the
-        /// same way — on X11 that is a window created opaque, whose visual
-        /// cannot gain an alpha channel afterwards.
+        /// Adopts the context's live device generation — rebuilding it
+        /// when the adopted one was lost — and reconfigures the swapchain
+        /// on the new device (water-rs/waterui#2742). The `wgpu::Surface`
+        /// belongs to the instance, which recreation keeps, so a
+        /// reconfigure, not a re-attach, is enough.
+        #[cfg(not(target_os = "macos"))]
+        fn ensure_live(&mut self) {
+            let gpu = self.gpu.clone();
+            let generation = gpu.gpu.ensure_live(|instance| {
+                pollster::block_on(gpu.recreate(instance, Some(&self.surface)))
+            });
+            if generation.gpu_context().context_id == self.handles.gpu_context().context_id {
+                return;
+            }
+            self.handles = generation;
+            let shared = &self.handles.gpu_context().shared_device;
+            let selection = Self::negotiate_surface_output(
+                &self.surface,
+                &shared.adapter,
+                self.transparent,
+                self.content_range,
+            );
+            self.config.alpha_mode = selection.alpha_mode;
+            self.config.format = selection.format;
+            self.config.color_space = selection.color_space;
+            self.config.present_mode = selection.present_mode;
+            self.surface.configure(&shared.device, &self.config);
+            self.selection = selection;
+        }
+
+        /// Adopts the context's live device generation — rebuilding it
+        /// when the adopted one was lost. The engine's `WindowTarget` is
+        /// rebuilt on the new context id, so nothing here reconfigures.
+        #[cfg(target_os = "macos")]
+        fn ensure_live(&mut self) {
+            let gpu = self.gpu.clone();
+            let generation = gpu
+                .gpu
+                .ensure_live(|instance| pollster::block_on(gpu.recreate(instance, None)));
+            if generation.gpu_context().context_id != self.handles.gpu_context().context_id {
+                self.handles = generation;
+            }
+        }
+
+        /// Re-runs output negotiation for a window whose background switched
+        /// between opaque and translucent, reconfiguring only when the
+        /// selection actually changes. The negotiation is the one creation
+        /// uses, so a surface that offers no transparency-capable mode fails
+        /// the same way — on X11 that is a window created opaque, whose
+        /// visual cannot gain an alpha channel afterwards.
         #[cfg(not(target_os = "macos"))]
         fn set_transparent(&mut self, transparent: bool) {
-            let caps = self.surface.get_capabilities(&self.gpu.adapter);
-            let alpha_mode =
-                Self::select_alpha_mode(&caps, transparent, &self.gpu.adapter.get_info());
-            if alpha_mode != self.config.alpha_mode {
-                self.config.alpha_mode = alpha_mode;
-                self.surface.configure(&self.gpu.device, &self.config);
+            let selection = Self::negotiate_surface_output(
+                &self.surface,
+                &self.handles.gpu_context().shared_device.adapter,
+                transparent,
+                self.content_range,
+            );
+            if selection.alpha_mode != self.selection.alpha_mode
+                || selection.format != self.selection.format
+                || selection.color_space != self.selection.color_space
+                || selection.present_mode != self.selection.present_mode
+            {
+                self.config.alpha_mode = selection.alpha_mode;
+                self.config.format = selection.format;
+                self.config.color_space = selection.color_space;
+                self.config.present_mode = selection.present_mode;
+                self.surface.configure(
+                    &self.handles.gpu_context().shared_device.device,
+                    &self.config,
+                );
             }
+            self.selection = selection;
+            self.transparent = transparent;
         }
 
         /// Records the window's new transparency; the next frame recreates
@@ -2768,19 +4111,19 @@ mod winit_impl {
     #[cfg(target_os = "macos")]
     impl super::PresentationSurface for WinitSurface {
         fn adapter(&self) -> &wgpu::Adapter {
-            &self.gpu.adapter
+            &self.handles.gpu_context().shared_device.adapter
         }
 
         fn device(&self) -> &wgpu::Device {
-            &self.gpu.device
+            &self.handles.gpu_context().shared_device.device
         }
 
         fn queue(&self) -> &wgpu::Queue {
-            &self.gpu.queue
+            &self.handles.gpu_context().shared_device.queue
         }
 
         fn device_loss(&self) -> &DeviceLoss {
-            &self.gpu.device_loss
+            &self.handles
         }
 
         fn size(&self) -> (u32, u32) {
@@ -2790,27 +4133,31 @@ mod winit_impl {
         fn resize(&mut self, width: u32, height: u32) {
             self.size = (width.max(1), height.max(1));
         }
+
+        fn ensure_live(&mut self) {
+            Self::ensure_live(self);
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
     impl super::PresentationSurface for WinitSurface {
         /// The wgpu adapter this surface renders through.
         fn adapter(&self) -> &wgpu::Adapter {
-            &self.gpu.adapter
+            &self.handles.gpu_context().shared_device.adapter
         }
 
         /// The wgpu device this surface renders through.
         fn device(&self) -> &wgpu::Device {
-            &self.gpu.device
+            &self.handles.gpu_context().shared_device.device
         }
 
         /// The submission queue this surface renders through.
         fn queue(&self) -> &wgpu::Queue {
-            &self.gpu.queue
+            &self.handles.gpu_context().shared_device.queue
         }
 
         fn device_loss(&self) -> &DeviceLoss {
-            &self.gpu.device_loss
+            &self.handles
         }
 
         /// The surface's current pixel size `(width, height)`.
@@ -2820,15 +4167,29 @@ mod winit_impl {
 
         /// Reconfigures the surface for a new pixel size.
         fn resize(&mut self, width: u32, height: u32) {
+            self.ensure_live();
             self.config.width = width.max(1);
             self.config.height = height.max(1);
-            self.surface.configure(&self.gpu.device, &self.config);
+            self.surface.configure(
+                &self.handles.gpu_context().shared_device.device,
+                &self.config,
+            );
+        }
+
+        fn ensure_live(&mut self) {
+            Self::ensure_live(self);
         }
     }
 
     #[cfg(not(target_os = "macos"))]
     impl SurfaceProvider for WinitSurface {
         fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
+            if self.handles.is_lost() {
+                // A dead generation a failed recreation left in place:
+                // report lost so the pump reschedules and the next frame
+                // retries the recovery under its budget.
+                return Err(SurfaceError::Lost);
+            }
             let output = super::acquire_surface_texture(&self.surface)?;
             let view = output
                 .texture
@@ -2847,8 +4208,9 @@ mod winit_impl {
                     // pump parks there without any explicit signal. The
                     // call is a no-op on every other platform.
                     self.window.pre_present_notify();
-                    self.gpu.queue.present(output);
-                    reclaim_device(&self.gpu.device);
+                    let shared = &self.handles.gpu_context().shared_device;
+                    shared.queue.present(output);
+                    reclaim_device(&shared.device);
                 }
                 SurfaceFrame::Offscreen { .. } => {
                     panic!("hydrolysis winit surface received an offscreen frame")
@@ -2861,8 +4223,23 @@ mod winit_impl {
             self.config.format
         }
 
+        fn set_content_range(&mut self, range: cherenkov_gpu::interop::ColorRange) {
+            if range > self.content_range {
+                self.content_range = range;
+                self.set_transparent(self.transparent);
+            }
+        }
+
         fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
-            cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
+            cherenkov_gpu::interop::surface_output_alpha(self.selection.alpha_mode)
+        }
+
+        fn display_headroom(&self) -> f32 {
+            self.selection.reported_headroom.unwrap_or(1.0)
+        }
+
+        fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
+            self.selection.output_color()
         }
     }
 
@@ -3040,12 +4417,16 @@ mod winit_impl {
         resizable: bool,
         closable: bool,
         decorations: bool,
-        /// Whether the key went down (`Pressed`) or came up (`Released`).
+        /// The window's declared `WindowState` — `Normal`, `Minimized`,
+        /// `Maximized`, `Fullscreen` or `Closed`.
         state: WindowState,
         frame: waterui_core::layout::Rect,
         level: WindowLevel,
         attention: Option<UserAttention>,
         resize_increments: Option<waterui_core::layout::Size>,
+        /// The window's own icon, or `None` for the application icon the
+        /// runner staged at creation.
+        icon: Option<waterui::window::WindowIcon>,
     }
 
     /// A monitor's logical rect: `(position, extent)` — the shape
@@ -3087,6 +4468,10 @@ mod winit_impl {
         /// updates the binding, and reading the live geometry against the
         /// stale binding would yank the window straight back to its old frame.
         applied_properties: Option<AppliedWindowProperties>,
+        /// The application icon the runner staged on the window at creation
+        /// (`with_window_icon`): what `apply_properties` restores when the
+        /// declaration's `icon` binding reads `None`.
+        application_icon: Option<winit::window::Icon>,
         /// The requested window frame and state held until the window has
         /// actually mapped (`with_visible(false)`): on X11 a request made
         /// of an unmapped window is dropped, so the first mapped-signal
@@ -3161,7 +4546,7 @@ mod winit_impl {
             wake: RedrawHandle,
             requires_transparency: bool,
         ) -> Self {
-            Self::new_with_shared_gpu(window, wake, None, requires_transparency)
+            Self::new_with_shared_gpu(window, wake, None, requires_transparency, None)
                 .await
                 .0
         }
@@ -3176,7 +4561,7 @@ mod winit_impl {
         }
 
         /// Creates the surface for `window`, reusing `shared_gpu`'s device
-        /// chain when given and returning the [`WinitGpuContext`] in use so
+        /// chain when given and returning the `WinitGpuContext` in use so
         /// the caller can hand it to the next surface.
         ///
         /// `wake` asks the host's event loop to redraw this window. GPU
@@ -3189,6 +4574,10 @@ mod winit_impl {
         /// the last window closes. Post the request to the event loop and
         /// redraw the window there.
         ///
+        /// `application_icon` is the icon the host staged on the window at
+        /// creation: `apply_properties` restores it when the declaration's
+        /// `icon` binding reads `None`.
+        ///
         /// # Panics
         /// Propagates panics from surface and device creation.
         pub async fn new_with_shared_gpu(
@@ -3196,6 +4585,7 @@ mod winit_impl {
             wake: RedrawHandle,
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
+            application_icon: Option<winit::window::Icon>,
         ) -> (Self, WinitGpuContext) {
             let (surface, gpu) =
                 WinitSurface::new(window.clone(), shared_gpu, requires_transparency).await;
@@ -3228,6 +4618,7 @@ mod winit_impl {
                     current_cursor_style: CursorStyle::Arrow,
                     applied_size_limits: None,
                     applied_properties: None,
+                    application_icon,
                     pending_mapped_request: MappedRequestRetry::default(),
                     transparent: requires_transparency,
                     #[cfg(any(
@@ -3291,6 +4682,38 @@ mod winit_impl {
                     UserAttention::Informational => winit::window::UserAttentionType::Informational,
                     UserAttention::Critical => winit::window::UserAttentionType::Critical,
                 }));
+        }
+
+        /// Pushes the requested window icon to the window server: the
+        /// declaration's own [`WindowIcon`] converted to winit's, or — on
+        /// `None`, the default — the application icon staged at creation.
+        /// X11 and Windows realize it; winit reports Wayland, macOS and the
+        /// remaining targets unsupported, where the call is a no-op. On
+        /// Windows `set_window_icon` covers only the small title-bar icon
+        /// (`ICON_SMALL`), so the same image also goes to the taskbar and
+        /// Alt-Tab icon (`ICON_BIG`).
+        fn apply_window_icon(&self, icon: Option<&waterui::window::WindowIcon>) {
+            let icon = icon.map_or_else(
+                || self.application_icon.clone(),
+                |icon| {
+                    // `Icon::from_rgba` only checks the buffer against the
+                    // size, which `WindowIcon::new` already guarantees.
+                    Some(
+                        winit::window::Icon::from_rgba(
+                            icon.rgba().to_vec(),
+                            icon.width(),
+                            icon.height(),
+                        )
+                        .expect("a WindowIcon's pixels match its size"),
+                    )
+                },
+            );
+            #[cfg(target_os = "windows")]
+            {
+                use winit::platform::windows::WindowExtWindows as _;
+                self.window.set_taskbar_icon(icon.clone());
+            }
+            self.window.set_window_icon(icon);
         }
 
         /// The `AppKit` half of `set_blur_behind`: while the window asks, the
@@ -3489,6 +4912,7 @@ mod winit_impl {
         /// is the only truthful source there; X11 keeps streaming motion
         /// during XDND, and the query stays right even if the drag source
         /// grabs the pointer.
+        #[cfg(hydrolysis_desktop_queries)]
         fn live_pointer_position(&self) -> Option<(f32, f32)> {
             #[cfg(target_os = "windows")]
             {
@@ -3502,14 +4926,6 @@ mod winit_impl {
             {
                 self.x11_live_pointer_position()
             }
-            #[cfg(not(any(
-                target_os = "windows",
-                target_os = "macos",
-                hydrolysis_wayland_platform
-            )))]
-            {
-                None
-            }
         }
 
         /// `GetCursorPos` mapped into this window's client area
@@ -3517,7 +4933,7 @@ mod winit_impl {
         /// the same space `CursorMoved` reports in.
         #[cfg(target_os = "windows")]
         fn windows_live_pointer_position(&self) -> Option<(f32, f32)> {
-            use windows_sys::Win32::Foundation::POINT;
+            use windows_sys::Win32::Foundation::{HWND, POINT};
             use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
             use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
             let RawWindowHandle::Win32(win32) = self.window.window_handle().ok()?.as_raw() else {
@@ -3532,7 +4948,7 @@ mod winit_impl {
             // SAFETY: `hwnd` is the window's live Win32 handle for as long
             // as the `NativeWindow` lives, and `point` is a valid, writable
             // `POINT` the call rewrites in client coordinates.
-            if unsafe { ScreenToClient(win32.hwnd.get(), &raw mut point) } == 0 {
+            if unsafe { ScreenToClient(win32.hwnd.get() as HWND, &raw mut point) } == 0 {
                 return None;
             }
             let position = PhysicalPosition::new(f64::from(point.x), f64::from(point.y))
@@ -3927,7 +5343,8 @@ mod winit_impl {
                     self.pending_events.push(InputEvent::Rotation {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
-                        delta: *delta,
+                        // winit/AppKit report degrees, counter-clockwise positive.
+                        delta: -delta.to_radians(),
                         phase: map_touch_phase(*phase),
                     });
                 }
@@ -4244,6 +5661,7 @@ mod winit_impl {
                     .resize_increments
                     .as_ref()
                     .map(nami::Signal::snapshot),
+                icon: window.icon.snapshot(),
             };
             let previous = self.applied_properties.replace(properties.clone());
             let applied = previous.as_ref();
@@ -4272,6 +5690,9 @@ mod winit_impl {
                         LogicalSize::new(f64::from(size.width), f64::from(size.height))
                     }),
                 );
+            }
+            if applied.is_none_or(|p| p.icon != properties.icon) {
+                self.apply_window_icon(properties.icon.as_ref());
             }
             // The frame binding is pushed to the window only when it changed
             // since the previous pump. A user-driven resize or move lands in
@@ -4380,7 +5801,11 @@ mod winit_impl {
         /// the fallback keeps the stream that never went quiet (X11 motion
         /// during XDND) supplying it.
         fn pointer_position(&self) -> Option<(f32, f32)> {
-            self.live_pointer_position().or(Some(self.pointer_position))
+            #[cfg(hydrolysis_desktop_queries)]
+            let live = self.live_pointer_position();
+            #[cfg(not(hydrolysis_desktop_queries))]
+            let live = None;
+            live.or(Some(self.pointer_position))
         }
 
         /// Requests that the window be repainted.
@@ -4412,6 +5837,16 @@ mod winit_impl {
                 .current_monitor()
                 .and_then(|monitor| monitor.refresh_rate_millihertz())
                 .map(|millihertz| f64::from(millihertz) / 1000.0)
+        }
+
+        /// winit publishes no touch-gesture parameters, and its logical
+        /// points are density-1 units, so the window reports the density-1
+        /// model of the system it is compiled for — `UIScrollView`'s on
+        /// Apple targets, Android's `OverScroller` elsewhere.
+        fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
+            Some(TouchScrollConfig::for_platform(
+                crate::platform::ScrollPlatform::native(),
+            ))
         }
 
         /// Pushes the focused text input's state to the platform IME.
@@ -4481,7 +5916,8 @@ mod winit_impl {
             target_os = "windows",
             hydrolysis_wayland_platform
         ))]
-        fn set_blur_behind(&mut self, blur: bool) {
+        fn set_blur_behind(&mut self, level: Option<crate::renderer::material::BehindWindowLevel>) {
+            let blur = level.is_some();
             if self.blur_behind == blur {
                 return;
             }
@@ -4856,8 +6292,9 @@ mod winit_impl {
         #[test]
         fn cursor_position_is_converted_to_logical_coordinates() {
             let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25), 2.0);
-            assert_eq!(x, 192.25);
-            assert_eq!(y, 108.125);
+            // Halving a dyadic position is exact, and both halves fit f32.
+            assert_eq!(x.to_bits(), 192.25_f32.to_bits());
+            assert_eq!(y.to_bits(), 108.125_f32.to_bits());
         }
 
         #[test]
@@ -4866,8 +6303,9 @@ mod winit_impl {
                 &MouseScrollDelta::PixelDelta(PhysicalPosition::new(120.0, -48.5)),
                 2.0,
             );
-            assert_eq!(dx, 60.0);
-            assert_eq!(dy, -24.25);
+            // Halving a dyadic delta is exact, and both halves fit f32.
+            assert_eq!(dx.to_bits(), 60.0_f32.to_bits());
+            assert_eq!(dy.to_bits(), (-24.25_f32).to_bits());
             assert!(!is_line_delta);
         }
 
@@ -4875,8 +6313,9 @@ mod winit_impl {
         fn line_scroll_delta_is_preserved() {
             let (dx, dy, is_line_delta) =
                 map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5), 2.0);
-            assert_eq!(dx, -2.0);
-            assert_eq!(dy, 3.5);
+            // A line delta passes through unscaled.
+            assert_eq!(dx.to_bits(), (-2.0_f32).to_bits());
+            assert_eq!(dy.to_bits(), 3.5_f32.to_bits());
             assert!(is_line_delta);
         }
 
@@ -5052,9 +6491,31 @@ mod winit_impl {
             alpha_modes: &[wgpu::CompositeAlphaMode],
         ) -> wgpu::SurfaceCapabilities {
             wgpu::SurfaceCapabilities {
+                formats: vec![wgpu::TextureFormat::Bgra8UnormSrgb],
+                format_capabilities: vec![wgpu::SurfaceFormatCapabilities {
+                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    color_spaces: wgpu::SurfaceColorSpaces::SRGB,
+                }],
+                present_modes: vec![wgpu::PresentMode::Fifo],
                 alpha_modes: alpha_modes.to_vec(),
-                ..wgpu::SurfaceCapabilities::default()
+                usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
             }
+        }
+
+        /// The composite alpha mode the host's output request resolves to
+        /// on a surface advertising `modes` — the engine's `select_output`
+        /// with `hydrolysis_output_request`, as creation and the
+        /// transparency switch both run it (#2445).
+        fn negotiated_alpha_mode(
+            transparent: bool,
+            modes: &[wgpu::CompositeAlphaMode],
+        ) -> Result<wgpu::CompositeAlphaMode, cherenkov::SurfaceError> {
+            cherenkov_gpu::interop::select_output(
+                &caps_with_alpha_modes(modes),
+                wgpu::Backend::Vulkan,
+                crate::platform::hydrolysis_output_request(transparent),
+            )
+            .map(|selection| selection.alpha_mode)
         }
 
         fn fake_adapter_info() -> wgpu::AdapterInfo {
@@ -5078,35 +6539,24 @@ mod winit_impl {
         fn a_transparent_window_gets_the_first_transparent_alpha_mode_the_surface_offers() {
             use wgpu::CompositeAlphaMode as Mode;
             assert_eq!(
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::Inherit, Mode::PreMultiplied]),
-                    true,
-                    &fake_adapter_info(),
-                ),
+                negotiated_alpha_mode(true, &[Mode::Opaque, Mode::Inherit, Mode::PreMultiplied],)
+                    .unwrap(),
                 Mode::PreMultiplied
             );
             // X11 compositing on a 32-bit visual reports exactly this pair:
             // with no explicit multiplied mode the inherited mode is the only
             // one whose alpha reaches the compositor.
             assert_eq!(
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::Inherit]),
-                    true,
-                    &fake_adapter_info(),
-                ),
+                negotiated_alpha_mode(true, &[Mode::Opaque, Mode::Inherit]).unwrap(),
                 Mode::Inherit
             );
         }
 
         #[test]
-        fn an_opaque_window_keeps_the_surface_preferred_alpha_mode() {
+        fn an_opaque_window_keeps_the_opaque_alpha_mode() {
             use wgpu::CompositeAlphaMode as Mode;
             assert_eq!(
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::PreMultiplied]),
-                    false,
-                    &fake_adapter_info(),
-                ),
+                negotiated_alpha_mode(false, &[Mode::Opaque, Mode::PreMultiplied]).unwrap(),
                 Mode::Opaque
             );
         }
@@ -5127,10 +6577,9 @@ mod winit_impl {
                     .background(material)
             };
             let select = |material, modes: &[Mode]| {
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(modes),
+                negotiated_alpha_mode(
                     crate::runner::window_requires_transparency(&window(material), &env),
-                    &fake_adapter_info(),
+                    modes,
                 )
             };
             for level in [Material::UltraThin, Material::Thin] {
@@ -5138,17 +6587,18 @@ mod winit_impl {
                     select(
                         level,
                         &[Mode::Opaque, Mode::PostMultiplied, Mode::PreMultiplied]
-                    ),
+                    )
+                    .unwrap(),
                     Mode::PreMultiplied
                 );
                 assert_eq!(
-                    select(level, &[Mode::Opaque, Mode::PostMultiplied]),
+                    select(level, &[Mode::Opaque, Mode::PostMultiplied]).unwrap(),
                     Mode::PostMultiplied
                 );
             }
             for level in [Material::Regular, Material::Thick, Material::UltraThick] {
                 assert_eq!(
-                    select(level, &[Mode::Opaque, Mode::PreMultiplied]),
+                    select(level, &[Mode::Opaque, Mode::PreMultiplied]).unwrap(),
                     Mode::Opaque
                 );
             }
@@ -5218,13 +6668,16 @@ mod winit_impl {
         }
 
         #[test]
-        #[should_panic(expected = "fake adapter")]
         fn a_transparent_window_on_an_opaque_only_adapter_fails_at_creation() {
             use wgpu::CompositeAlphaMode as Mode;
-            let _ = super::WinitSurface::select_alpha_mode(
-                &caps_with_alpha_modes(&[Mode::Opaque]),
-                true,
-                &fake_adapter_info(),
+            // The negotiation reports the surface unsupported; surface
+            // creation turns the error into the window-creation panic.
+            assert!(
+                matches!(
+                    negotiated_alpha_mode(true, &[Mode::Opaque]),
+                    Err(cherenkov::SurfaceError::UnsupportedTarget(_))
+                ),
+                "an opaque-only adapter cannot present a transparent window"
             );
         }
 
@@ -5557,7 +7010,19 @@ mod winit_impl {
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::ExportedBrowserSurface as BrowserSurface;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
+#[cfg(all(
+    target_arch = "wasm32",
+    feature = "web",
+    any(feature = "video", feature = "webview-system")
+))]
+pub use web_impl::OcclusionShields;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::report_fatal_error;
+#[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
+pub use web_impl::yield_wheel;
 
 #[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
@@ -5566,3 +7031,96 @@ pub use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
 pub use winit_impl::ExportedWinitWindow as WinitWindow;
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
 pub use winit_impl::WinitSurface;
+
+/// Device-loss recovery tests: a simulated loss must swap the surface's
+/// generation for a rebuilt device on the same instance, and a streak of
+/// losses that never presented ends in the explicit unrecoverable error
+/// (water-rs/waterui#2742). Offscreen surfaces exercise the shared
+/// `RecoverableGpu` path every host's `ensure_live` runs.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod recovery_tests {
+    use super::{
+        MAX_UNPRODUCTIVE_LOSSES, OffscreenGpuContext, OffscreenSurface, PresentationSurface,
+    };
+
+    const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+    fn test_surface() -> (OffscreenGpuContext, OffscreenSurface) {
+        let context = OffscreenGpuContext::new_for_tests_blocking();
+        let surface = OffscreenSurface::on_context(context.clone(), 4, 4, FORMAT);
+        (context, surface)
+    }
+
+    #[test]
+    fn a_lost_generation_is_rebuilt_on_the_same_context() {
+        let (context, mut surface) = test_surface();
+        let original = surface.device_loss().gpu_context().context_id;
+        surface
+            .device_loss()
+            .simulate_loss("driver reported the device gone");
+        PresentationSurface::ensure_live(&mut surface);
+        let live = surface.device_loss();
+        assert_ne!(
+            live.gpu_context().context_id,
+            original,
+            "a lost device must be replaced, not kept"
+        );
+        assert!(!live.is_lost(), "the rebuilt generation is live");
+        // The surface renders on a clone of the context's live generation:
+        // the context swapped to the same rebuilt device.
+        assert_eq!(
+            context.inner.gpu.generation().gpu_context().context_id,
+            live.gpu_context().context_id
+        );
+    }
+
+    #[test]
+    fn a_failed_rebuild_leaves_the_loss_reported_until_a_retry_succeeds() {
+        let (context, mut surface) = test_surface();
+        surface.device_loss().simulate_loss("gone");
+        let live = context
+            .inner
+            .gpu
+            .ensure_live(|_| Err("no adapter".to_owned()));
+        assert!(
+            live.is_lost(),
+            "a failed rebuild keeps the dead generation in place"
+        );
+        PresentationSurface::ensure_live(&mut surface);
+        assert!(
+            !surface.device_loss().is_lost(),
+            "the next frame's rebuild succeeds and is adopted"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "GPU device is unrecoverable")]
+    fn unproductive_losses_end_in_the_unrecoverable_error() {
+        let (_context, mut surface) = test_surface();
+        // Every generation dies before presenting a frame; the budget is
+        // consecutive, so one loss past MAX_UNPRODUCTIVE_LOSSES panics.
+        for _ in 0..=MAX_UNPRODUCTIVE_LOSSES {
+            surface
+                .device_loss()
+                .simulate_loss("gone before presenting");
+            PresentationSurface::ensure_live(&mut surface);
+        }
+    }
+
+    #[test]
+    fn a_loss_after_a_presented_frame_resets_the_streak() {
+        let (_context, mut surface) = test_surface();
+        for _ in 0..(MAX_UNPRODUCTIVE_LOSSES * 2) {
+            // A generation that got a frame through is productive: its
+            // death counts a fresh streak, never accumulating to the panic.
+            surface
+                .device_loss()
+                .gpu_context()
+                .presented
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            surface.device_loss().simulate_loss("gone after presenting");
+            PresentationSurface::ensure_live(&mut surface);
+            assert!(!surface.device_loss().is_lost());
+        }
+    }
+}

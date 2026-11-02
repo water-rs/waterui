@@ -134,7 +134,22 @@ where
 
 /// An error indicating that a value is out of a specified range.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OutOfRange<T>(pub Range<T>);
+
+impl<T> OutOfRange<T> {
+    /// Reports a value outside `range`.
+    #[must_use]
+    pub const fn new(range: Range<T>) -> Self {
+        Self(range)
+    }
+
+    /// The range the value fell outside of.
+    #[must_use]
+    pub const fn range(&self) -> &Range<T> {
+        &self.0
+    }
+}
 
 impl<T: Display> Display for OutOfRange<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -153,7 +168,7 @@ impl<T: Display + Debug + Ord + Clone + 'static> Validator<T> for Range<T> {
     fn validate(&self, value: T) -> Result<(), Self::Err> {
         self.contains(&value)
             .then_some(())
-            .ok_or(OutOfRange(self.clone()))
+            .ok_or_else(|| OutOfRange::new(self.clone()))
     }
 }
 
@@ -230,6 +245,10 @@ pub struct And<A, B>(A, B);
 
 /// An error type for the `And` validator, representing which validator failed.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: exactly one of the two combined validators failed"
+)]
 pub enum AndError<A, B> {
     /// The first validator failed.
     A(A),

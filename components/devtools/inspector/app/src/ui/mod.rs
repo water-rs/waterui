@@ -6,6 +6,7 @@
 
 use waterui::prelude::theme_color::{Accent, Background, MutedForeground};
 use waterui::prelude::*;
+use waterui::reactive::collection::List as ReactiveList;
 use waterui_icons_lucide as lucide;
 
 use crate::connection::SubscriptionSender;
@@ -67,7 +68,7 @@ fn sidebar(model: Model) -> impl View + Clone {
         vstack((
             connection_badge(&model).background(Background),
             Divider,
-            List::for_each(Section::ALL, {
+            List::for_each(ReactiveList::from(Vec::from(Section::ALL)), {
                 let model = model.clone();
                 move |section| ListItem::new(sidebar_row(section, &model))
             })

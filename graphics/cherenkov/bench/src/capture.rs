@@ -127,6 +127,7 @@ pub fn convert(capture: &Capture) -> Result<(Scene, Vec<Resource>), CaptureError
         .collect();
     let state = State { fonts, images };
     let mut scene = Scene {
+        scroll_extent: None,
         width: capture.width,
         height: capture.height,
         working_space: WorkingSpace::LinearDisplayP3,
@@ -270,6 +271,7 @@ impl State<'_> {
                             opacity: f64::from(group.opacity),
                             blend: blend(group.blend),
                             blend_space: blend_space(group.blend_space),
+                            filter: None,
                         }));
                     } else if group.blend_space == EngineBlendSpace::Linear {
                         // A group carrying layers cannot sit in `GroupItem`;

@@ -7,6 +7,11 @@ use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_w
 use cherenkov::{Draw, EvenOdd, WorkingColor};
 use cherenkov::{Engine, EngineError, Offscreen, OffscreenFormat};
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_images_match;
+
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
 
 const CLEAR: WorkingColor = WorkingColor::new([0.0, 0.0, 0.0, 1.0]);
 const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
@@ -32,11 +37,8 @@ fn pending_paths_reuse_their_coverage_layout() -> Result<(), Box<dyn std::error:
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert_eq!(engine.stats().paths_rasterized, 1);
     let pixels = wait!(surface.readback())?;
-    for y in 0..80 {
-        for x in 0..63 {
-            assert_eq!(px(&pixels, x, y), px(&pixels, x + 65, y), "translated pixel {x},{y}");
-        }
-    }
+    // A whole-pixel translation rasterises the same coverage.
+    assert_images_match(&crop(&pixels, 0..63, 0..80), &crop(&pixels, 65..128, 0..80));
     Ok(())
 }
 }
@@ -156,9 +158,8 @@ fn overhang() -> BezPath {
 }
 
 split_test! {
-/// Coverage clipped by the surface is cached per integer offset: the same
-/// path drawn first half off-screen, then shifted, must not replay the
-/// clipped coverage.
+/// Re-recorded geometry can be retained across translations, but coverage
+/// clipped at one placement must not leak into a later fractional placement.
 fn a_clipped_path_is_cached_per_offset() -> Result<(), Box<dyn std::error::Error>> {
     let engine = match wait!(Engine::<Gpu>::new(GpuConfig::default())) {
         Ok(engine) => engine,
@@ -171,39 +172,34 @@ fn a_clipped_path_is_cached_per_offset() -> Result<(), Box<dyn std::error::Error
     surface.update(|tx| {
         tx[surface.root()].push(&layer);
     });
-    // Frame 1: the path hangs off the top-left, so its coverage is clipped.
-    surface.update(|tx| {
-        tx[&layer].content(surface.record(|c| c.fill(overhang(), RED)));
-    });
-    wait!(engine.render(cherenkov::FrameTime::now()))?;
-    // Frame 2: the same path at a different integer offset.
-    surface.update(|tx| {
-        tx[&layer].content(surface.record(|c| {
-            c.transform(cherenkov::kurbo::Affine::translate((64.0, 64.0)), |c| {
-                c.fill(overhang(), RED);
-            });
-        }));
-    });
-    wait!(engine.render(cherenkov::FrameTime::now()))?;
-    let shifted = wait!(surface.readback())?;
-    // A fresh engine renders the same shifted draw for comparison.
-    let Some(fresh) = wait!(render(|c| {
-        c.transform(cherenkov::kurbo::Affine::translate((64.0, 64.0)), |c| {
-            c.fill(overhang(), RED);
+    // Preparing outside the surface must not round the stored geometry in
+    // that distant device frame. Moving it back then exercises both clipping
+    // and a changed subpixel phase, through the map's full-recording path.
+    for offset in [
+        (-1.0e9, -1.0e9),
+        (0.0, 0.0),
+        (64.0, 64.0),
+        (0.125, 0.25),
+        (64.25, 64.375),
+    ] {
+        let transform = cherenkov::kurbo::Affine::translate(offset);
+        surface.update(|tx| {
+            tx[&layer].content(surface.record(|c| {
+                c.transform(transform, |c| c.fill(overhang(), RED));
+            }));
         });
-    }))?
-    else {
-        return Ok(());
-    };
-    for (i, (a, b)) in shifted.pixels.iter().zip(&fresh.pixels).enumerate() {
-        for c in 0..4 {
-            assert!(
-                (a[c] - b[c]).abs() < 1e-3,
-                "pixel {i} channel {c}: {} vs {}",
-                a[c],
-                b[c]
-            );
-        }
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        let shifted = wait!(surface.readback())?;
+        let Some(fresh) = wait!(render(|c| {
+            c.transform(transform, |c| c.fill(overhang(), RED));
+        }))?
+        else {
+            return Ok(());
+        };
+        assert_images_match(
+            &crop(&shifted, 0..64, 0..64),
+            &crop(&fresh, 0..64, 0..64),
+        );
     }
     Ok(())
 }
@@ -793,6 +789,263 @@ fn overlapping_fills_cover_their_union_not_their_winding() -> Result<(), Box<dyn
     assert!((r - 0.75).abs() < 0.01, "union coverage: {r}");
     let [r, ..] = px(&readback, 2, 2);
     assert!(r > 0.99, "interior: {r}");
+    Ok(())
+}
+}
+
+/// Quarter-covered dots 10 px apart in every 4-row coverage strip: each
+/// dot is its own atlas cell, 51 × 64 = 3264 cells in one path.
+fn sparse_dots() -> BezPath {
+    let mut path = BezPath::new();
+    for strip in 0..64_u32 {
+        for column in 0..51_u32 {
+            let x = f64::from(column * 10) + 1.25;
+            let y = f64::from(strip * 4) + 1.25;
+            path.move_to((x, y));
+            path.line_to((x + 0.5, y));
+            path.line_to((x + 0.5, y + 0.5));
+            path.line_to((x, y + 0.5));
+            path.close_path();
+        }
+    }
+    path
+}
+
+split_test! {
+/// A leaf whose path emits more cells than 11 bits count keeps every
+/// one: replayed from retained storage while a sibling layer changes,
+/// it draws the same pixels as the frame that produced it
+/// (water-rs/waterui#2778).
+fn a_leaf_with_thousands_of_cells_replays_every_cell() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine())? else {
+        return Ok(());
+    };
+    let (surface, dots) = wait!(sized_surface(&engine, (512, 272)))?;
+    let marker = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&marker);
+        tx[&dots].content(surface.record(|c| c.fill(sparse_dots(), RED)));
+        tx[&marker].content(surface.record(|c| {
+            c.fill(cherenkov::kurbo::Rect::new(0.0, 260.0, 8.0, 268.0), RED);
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 1);
+    let produced = wait!(surface.readback())?;
+    let [r, ..] = px(&produced, 1, 1);
+    assert!((r - 0.25).abs() < 0.01, "a dot is quarter covered: {r}");
+    surface.update(|tx| {
+        tx[&marker].content(surface.record(|c| {
+            c.fill(cherenkov::kurbo::Rect::new(0.0, 260.0, 8.0, 268.0), CLEAR);
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 0, "the dots replay");
+    let replayed = wait!(surface.readback())?;
+    assert_images_match(&crop(&replayed, 0..512, 0..256), &crop(&produced, 0..512, 0..256));
+    Ok(())
+}
+}
+
+/// 0.5 px dots at 1 px pitch in a 4-row band — a second qualifying
+/// path whose coverage stays disjoint from `sparse_dots`' rows.
+fn dense_band() -> BezPath {
+    let mut path = BezPath::new();
+    for row in 0..4_u32 {
+        for column in 0..512_u32 {
+            let x = f64::from(column);
+            let y = 266.0 + f64::from(row);
+            path.move_to((x + 0.25, y + 0.25));
+            path.line_to((x + 0.75, y + 0.25));
+            path.line_to((x + 0.75, y + 0.75));
+            path.line_to((x + 0.25, y + 0.75));
+            path.close_path();
+        }
+    }
+    path
+}
+
+split_test! {
+/// An integer layer translation replays the retained coverage entry —
+/// the block shifts per draw and nothing regenerates; a fractional
+/// translation changes the placement key and regenerates
+/// (water-rs/waterui#3081).
+fn a_gpu_path_replays_under_integer_translation_only() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::Affine;
+    let Some(engine) = wait!(engine())? else {
+        return Ok(());
+    };
+    let (surface, dots) = wait!(sized_surface(&engine, (512, 272)))?;
+    surface.update(|tx| {
+        tx[&dots].content(surface.record(|c| c.fill(sparse_dots(), RED)));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 1);
+    let produced = wait!(surface.readback())?;
+    // +3, +2 keeps the hull on the surface: same key, a per-draw shift.
+    surface.update(|tx| {
+        tx[&dots].transform(Affine::translate((3.0, 2.0)));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 0, "an integer move replays");
+    let moved = wait!(surface.readback())?;
+    assert_images_match(&crop(&moved, 3..512, 2..258), &crop(&produced, 0..509, 0..256));
+    // A half-pixel translation changes the key: the entry regenerates.
+    surface.update(|tx| {
+        tx[&dots].transform(Affine::translate((3.5, 2.0)));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 1, "a fractional move regenerates");
+    Ok(())
+}
+}
+
+split_test! {
+/// One retained entry serves two integer-offset draws of the same
+/// path — frame 1 generates once per distinct key — and changing only
+/// the other path's content regenerates it alone (water-rs/waterui#3081).
+fn a_retained_gpu_entry_serves_two_offsets_and_survives_a_sibling_change(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::Affine;
+    let Some(engine) = wait!(engine())? else {
+        return Ok(());
+    };
+    let (surface, layer) = wait!(sized_surface(&engine, (512, 272)))?;
+    let draw = |surface: &cherenkov::Surface<Gpu>, band: BezPath| {
+        surface.record(move |c| {
+            c.fill(sparse_dots(), RED);
+            c.transform(Affine::translate((3.0, 7.0)), |c| {
+                c.fill(sparse_dots(), RED);
+            });
+            c.fill(band, RED);
+        })
+    };
+    surface.update(|tx| {
+        tx[&layer].content(draw(&surface, dense_band()));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(
+        engine.stats().paths_rasterized,
+        2,
+        "one generation per distinct key"
+    );
+    let produced = wait!(surface.readback())?;
+    // A band of 1 px squares on a shifted pitch — a new content hash.
+    let mut changed = BezPath::new();
+    for row in 0..4_u32 {
+        for column in 0..340_u32 {
+            let x = f64::from(column) * 1.5;
+            let y = 266.0 + f64::from(row);
+            changed.move_to((x + 0.3, y + 0.3));
+            changed.line_to((x + 0.8, y + 0.3));
+            changed.line_to((x + 0.8, y + 0.8));
+            changed.line_to((x + 0.3, y + 0.8));
+            changed.close_path();
+        }
+    }
+    surface.update(|tx| {
+        tx[&layer].content(draw(&surface, changed));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(
+        engine.stats().paths_rasterized,
+        1,
+        "only the changed path regenerates"
+    );
+    let replayed = wait!(surface.readback())?;
+    assert_images_match(&crop(&replayed, 0..506, 0..264), &crop(&produced, 0..506, 0..264));
+    Ok(())
+}
+}
+
+/// Where the cut test's content lies in its local space, as in a document
+/// scrolled this far: tens of thousands of units from the origin.
+const CUT_SCROLL: (f64, f64) = (40_000.0, 24_000.0);
+const CUT_SIZE: (u32, u32) = (96, 64);
+
+/// The transform both renders of the cut test draw under: the scroll, then
+/// a rotation with a non-uniform scale, so the local point of a device
+/// pixel is inexact.
+fn cut_transform() -> cherenkov::kurbo::Affine {
+    use cherenkov::kurbo::{Affine, Vec2};
+    Affine::new([0.93, 0.37, -0.41, 0.89, 21.3, 3.7]) * Affine::translate(-Vec2::from(CUT_SCROLL))
+}
+
+split_fn! {
+/// `path` filled under [`cut_transform`] with a repeating three-stop
+/// linear gradient a few pixels long, starting at the scrolled origin.
+fn render_cut(
+    engine: &Engine<Gpu>,
+    path: BezPath,
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(Offscreen::new(CUT_SIZE, OffscreenFormat::LinearF16), || {}))?;
+    surface.clear_color(CLEAR);
+    let (x, y) = CUT_SCROLL;
+    let paint = cherenkov::LinearGradient::new((x, y), (x + 6.1, y + 2.7))
+        .extend(cherenkov::Extend::Repeat)
+        .stop(0.0, WorkingColor::new([0.93, 0.11, 0.27, 1.0]))
+        .stop(0.43, WorkingColor::new([0.17, 0.81, 0.39, 1.0]))
+        .stop(1.0, WorkingColor::new([0.21, 0.29, 1.37, 1.0]));
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.transform(cut_transform(), |c| c.fill(path, paint));
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+}
+
+split_test! {
+/// A device-space cell paints its pixel, not a point interpolated across
+/// the cell (#2835). A gradient-filled triangle renders twice: alone, and
+/// with a hairline a few pixels to its right in the same path. The
+/// hairline moves the right edge of every strip cell of the triangle —
+/// its gap is cheaper to bridge than a second cell — but not one covered
+/// pixel, so every pixel away from the hairline looks the same.
+///
+/// An interpolated local point rounds by an amount that grows with the
+/// local coordinates at the cell's corners. The content lies far from its
+/// local origin and the gradient repeats every few pixels, so that
+/// rounding moves the gradient by more than the half-float surface
+/// resolves.
+fn a_cell_paints_the_same_however_its_path_is_cut() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::{Rect, Shape as _, Vec2};
+    let Some(engine) = wait!(engine())? else {
+        return Ok(());
+    };
+    let transform = cut_transform();
+    let mut triangle = BezPath::new();
+    triangle.move_to((1.3, 2.1));
+    triangle.line_to((47.9, 5.3));
+    triangle.line_to((9.7, 51.6));
+    triangle.close_path();
+    let triangle = cherenkov::kurbo::Affine::translate(Vec2::from(CUT_SCROLL)) * triangle;
+    let device = (transform * triangle.clone()).bounding_box();
+    // Twelve device columns right of the triangle, inside its rows.
+    let hairline = Rect::new(device.x1 + 12.2, device.y0 + 1.0, device.x1 + 13.8, device.y1 - 1.0);
+    let mut with_hairline = triangle.clone();
+    with_hairline.extend((transform.inverse() * hairline.to_path(0.01)).iter());
+    let alone = wait!(render_cut(&engine, triangle))?;
+    let cut = wait!(render_cut(&engine, with_hairline))?;
+    let away = hairline.inflate(2.0, 2.0);
+    let (width, height) = (CUT_SIZE.0 as usize, CUT_SIZE.1 as usize);
+    let reference = crop(&alone, 0..width, 0..height);
+    let mut test = crop(&cut, 0..width, 0..height);
+    let mut painted = 0;
+    for y in 0..CUT_SIZE.1 {
+        for x in 0..CUT_SIZE.0 {
+            let i = y as usize * width + x as usize;
+            if away.contains((f64::from(x) + 0.5, f64::from(y) + 0.5)) {
+                // The hairline's own pixels are out of the comparison.
+                test.pixels[i] = reference.pixels[i];
+                continue;
+            }
+            painted += usize::from(reference.pixels[i] != CLEAR.components);
+        }
+    }
+    assert_images_match(&reference, &test);
+    assert!(painted > 900, "the triangle paints {painted} pixels");
     Ok(())
 }
 }

@@ -7,6 +7,8 @@ use cherenkov::{
     Animation, Backend, Curve, Draw, Engine, FrameTime, Next, Offscreen, OffscreenFormat, Picture,
     WorkingColor, snap_animating,
 };
+use cherenkov_oracle::image::F32Image;
+use cherenkov_oracle::metrics::assert_images_match;
 use nami::SignalExt as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -98,14 +100,18 @@ pub fn component_animation<B: Backend>(config: B::Config) {
         }
         let a = wait!(actual.readback()).expect("animated");
         let b = wait!(reference.readback()).expect("reference");
-        for (index, (a, b)) in a.pixels.iter().zip(b.pixels).enumerate() {
-            for (a, b) in a.iter().zip(b) {
-                assert!(
-                    (a - b).abs() < 0.003,
-                    "step {step} pixel {index}: {a} != {b}"
-                );
-            }
-        }
+        assert_images_match(
+            &F32Image {
+                width: b.width,
+                height: b.height,
+                pixels: b.pixels,
+            },
+            &F32Image {
+                width: a.width,
+                height: a.height,
+                pixels: a.pixels,
+            },
+        );
     }
     // Count only the wakes from here on: the animation woke the host
     // while it ran.

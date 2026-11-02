@@ -1,10 +1,15 @@
 //! Pump-based headless runtime for tests, snapshots and offscreen rendering.
 
 use super::*;
+use crate::animation::PerpetualAnimation;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
     AccessibilityActivationPointError, AccessibilityContentTypes, WINDOW_ID_STRIDE,
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -12,7 +17,7 @@ use crate::renderer::accessibility::{
 pub(super) struct HeadlessPlatformWindow {
     inner: OffscreenWindow,
     pending_events: VecDeque<InputEvent>,
-    redraw_requested: Cell<bool>,
+    redraw_requested: Arc<AtomicBool>,
     #[cfg(test)]
     pub(super) frame_wake_count: Rc<Cell<u32>>,
     #[cfg(test)]
@@ -56,7 +61,7 @@ impl HeadlessPlatformWindow {
         Self {
             inner: OffscreenWindow::on_context(gpu, width, height, format),
             pending_events: VecDeque::new(),
-            redraw_requested: Cell::new(false),
+            redraw_requested: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             frame_wake_count: Rc::new(Cell::new(0)),
             #[cfg(test)]
@@ -90,8 +95,8 @@ impl HeadlessPlatformWindow {
         !self.pending_events.is_empty()
     }
 
-    pub(super) const fn take_redraw_request(&self) -> bool {
-        self.redraw_requested.replace(false)
+    pub(super) fn take_redraw_request(&self) -> bool {
+        self.redraw_requested.swap(false, Ordering::AcqRel)
     }
 }
 
@@ -130,7 +135,7 @@ impl PlatformWindow for HeadlessPlatformWindow {
     }
 
     fn request_redraw(&self) {
-        self.redraw_requested.set(true);
+        self.redraw_requested.store(true, Ordering::Release);
     }
 
     /// The headless pump is driven explicitly by the harness — a request
@@ -177,8 +182,15 @@ impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
         crate::platform::GpuSurfaceWindow::surface(&mut self.inner)
     }
 
-    fn set_blur_behind(&mut self, blur: bool) {
-        self.blur_behind.set(Some(blur));
+    fn gpu_surface_redraw_handle(&self) -> Option<waterui_graphics::RedrawHandle> {
+        let pending = Arc::clone(&self.redraw_requested);
+        Some(waterui_graphics::RedrawHandle::new(move || {
+            pending.store(true, Ordering::Release);
+        }))
+    }
+
+    fn set_blur_behind(&mut self, level: Option<crate::renderer::material::BehindWindowLevel>) {
+        self.blur_behind.set(Some(level.is_some()));
     }
 }
 
@@ -210,39 +222,121 @@ impl HeadlessPlatformWindow {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 /// The outcome of one headless frame pump.
+#[non_exhaustive]
 pub struct HeadlessPumpResult {
     /// Whether the pump rebuilt the view tree.
-    pub rebuilt: bool,
+    rebuilt: bool,
     /// The frame's CPU/GPU stage profile.
-    pub profile: FrameProfile,
+    profile: FrameProfile,
     /// The frame's CPU/GPU stage split under `frame-profile`: GPU stages stay
     /// `None` on a device without `TIMESTAMP_QUERY`.
     #[cfg(feature = "frame-profile")]
-    pub stages: crate::renderer::FrameStageTimes,
+    stages: crate::renderer::FrameStageTimes,
     #[cfg(feature = "accessibility")]
     /// The accessibility tree update the frame produced.
-    pub tree_update: Option<AccessibilityTreeUpdate>,
+    tree_update: Option<AccessibilityTreeUpdate>,
     #[cfg(feature = "accessibility")]
     /// The content types the emitted tree's text fields declared — the map
     /// the update publishes beside it.
-    pub content_types: AccessibilityContentTypes,
+    content_types: AccessibilityContentTypes,
     /// The captured frame snapshot, when capture was requested.
-    pub snapshot: Option<HeadlessSnapshot>,
+    snapshot: Option<HeadlessSnapshot>,
     #[cfg(feature = "accessibility")]
     /// The accessibility node holding UI focus.
-    pub ui_focus: Option<accesskit::NodeId>,
+    ui_focus: Option<accesskit::NodeId>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HeadlessPumpResult {
+    /// Whether the pump rebuilt the view tree.
+    #[must_use]
+    pub const fn rebuilt(&self) -> bool {
+        self.rebuilt
+    }
+
+    /// The frame's CPU/GPU stage profile.
+    #[must_use]
+    pub const fn profile(&self) -> FrameProfile {
+        self.profile
+    }
+
+    /// The frame's CPU/GPU stage split under `frame-profile`: GPU stages stay
+    /// `None` on a device without `TIMESTAMP_QUERY`.
+    #[cfg(feature = "frame-profile")]
+    #[must_use]
+    pub const fn stages(&self) -> crate::renderer::FrameStageTimes {
+        self.stages
+    }
+
+    /// The accessibility tree update the frame produced.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub const fn tree_update(&self) -> Option<&AccessibilityTreeUpdate> {
+        self.tree_update.as_ref()
+    }
+
+    /// Takes the accessibility tree update the frame produced.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn into_tree_update(self) -> Option<AccessibilityTreeUpdate> {
+        self.tree_update
+    }
+
+    /// The content types the emitted tree's text fields declared — the map
+    /// the update publishes beside it.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub const fn content_types(&self) -> &AccessibilityContentTypes {
+        &self.content_types
+    }
+
+    /// The captured frame snapshot, when capture was requested.
+    #[must_use]
+    pub const fn snapshot(&self) -> Option<&HeadlessSnapshot> {
+        self.snapshot.as_ref()
+    }
+
+    /// Takes the captured frame snapshot, when capture was requested.
+    #[must_use]
+    pub fn into_snapshot(self) -> Option<HeadlessSnapshot> {
+        self.snapshot
+    }
+
+    /// Takes the captured frame snapshot out of the result, leaving none.
+    pub const fn take_snapshot(&mut self) -> Option<HeadlessSnapshot> {
+        self.snapshot.take()
+    }
+
+    /// The accessibility node holding UI focus.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub const fn ui_focus(&self) -> Option<accesskit::NodeId> {
+        self.ui_focus
+    }
+
+    /// Takes the accessibility tree update out of the result, leaving none.
+    #[cfg(feature = "accessibility")]
+    pub const fn take_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
+        self.tree_update.take()
+    }
+
+    /// Takes the content types out of the result, leaving the map empty.
+    #[cfg(feature = "accessibility")]
+    pub fn take_content_types(&mut self) -> AccessibilityContentTypes {
+        core::mem::take(&mut self.content_types)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 /// A headless hydrolysis runtime for tests and tooling.
 pub struct HeadlessRuntime {
     env: Environment,
-    runtime: RuntimeWindow<HeadlessPlatformWindow>,
+    runtime: RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>,
     pending_window_queue: Rc<RefCell<Vec<Window>>>,
-    popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow>>,
+    popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>>,
     /// The style the runtime was launched with, kept so popup windows'
     /// renderers measure and encode with the same widget theme.
-    theme: Rc<dyn crate::engine::WidgetTheme>,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
     /// Every window this runtime opens renders on this one device: the main
     /// window, and each popup it later vends. Requesting a device per window
     /// made a runtime that opens a popup pay for two.
@@ -388,7 +482,7 @@ impl HeadlessRuntime {
 
     /// Creates a headless runtime for `WaterUI` test hosts.
     ///
-    /// This constructor allows compute-capable software adapters for CI-only
+    /// This constructor allows software adapters for CI-only
     /// semantic testing while keeping [`Self::new`] on production adapter
     /// selection, and resolves font families strictly
     /// ([`FontFamilyResolution::Strict`]): a named family the collection
@@ -490,20 +584,38 @@ impl HeadlessRuntime {
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
-        install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
+        install_headless_window_managers::<crate::text::ParleyEngine>(
+            &mut env,
+            Rc::clone(&pending_window_queue),
+        );
         env.insert(HydrolysisTextContextMenuMode::Overlay);
-        crate::theme::install_theme_tokens(&mut env, Some(&style));
-        let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-        ));
-        // The application's fonts, built once: the system collection plus the
-        // staged fonts directory, exactly as the windowed runners load them.
+        // A headless host has no platform appearance: the scheme is Light
+        // unless the application installs its own.
+        crate::theme::install_theme_tokens(
+            &mut env,
+            Some(&style),
+            waterui::theme::ColorScheme::Light,
+        );
+        let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
+        // The application's fonts, built once: the platform's collection plus
+        // the staged fonts directory, exactly as the windowed runners load
+        // them.
         // Every window's renderer is seeded from this collection, and a
         // self-drawn component that typesets text itself reads it out of the
         // environment instead of enumerating the system's fonts for itself.
-        let fonts = crate::text::fonts::platform_collection(&env);
+        let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
+        // The capture service mounts its subtree under a snapshot of the
+        // assembled environment — the theme tokens, hooks and font
+        // collection a window's subtree resolves — so it must be installed
+        // last (water-rs/waterui#2703).
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::new(
+                Rc::clone(&theme),
+                env.clone(),
+                family_resolution,
+            ),
+        ));
 
         // Headless binaries (preview, tests) have no platform runner to install
         // a tracing subscriber; honor `RUST_LOG` here so they stay debuggable.
@@ -528,6 +640,8 @@ impl HeadlessRuntime {
             ),
         ));
 
+        window.arm_close_requests(&env);
+
         let mut platform = HeadlessPlatformWindow::on_context(
             gpu.clone(),
             width.max(1),
@@ -537,27 +651,29 @@ impl HeadlessRuntime {
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&theme),
-            SessionTextEngine::from_collection(&fonts, family_resolution),
+            ParleyEngine::from_collection(&fonts, family_resolution),
         );
         renderer.set_window_id(
-            env.get::<MenuShortcutRegistry>()
+            env.get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        let runtime = RuntimeWindow::new_gpu(
+            window,
+            platform,
+            renderer,
+            RenderDiagnosticsConfig {
+                enabled: false,
+                interval: Duration::from_secs(1),
+                slow_frame_threshold_override: None,
+            },
+            &env,
+        );
 
         Self {
             env,
-            runtime: RuntimeWindow::new(
-                window,
-                platform,
-                renderer,
-                RenderDiagnosticsConfig {
-                    enabled: false,
-                    interval: Duration::from_secs(1),
-                    slow_frame_threshold_override: None,
-                },
-            ),
+            runtime,
             pending_window_queue,
             popup_windows: Vec::new(),
             theme,
@@ -570,7 +686,10 @@ impl HeadlessRuntime {
         }
     }
 
-    fn create_popup_runtime(&self, window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
+    fn create_popup_runtime(
+        &self,
+        window: Window,
+    ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
@@ -580,19 +699,26 @@ impl HeadlessRuntime {
             height,
             wgpu::TextureFormat::Rgba8Unorm,
         );
+        // The vended window's host reports the same touch-gesture
+        // parameters the main window's does: a `set_touch_scroll_config`
+        // call applies to every window the runtime owns.
+        platform
+            .touch_scroll_config
+            .set(self.runtime.platform.touch_scroll_config.get());
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&self.theme),
-            SessionTextEngine::from_collection(&self.fonts, self.family_resolution),
+            ParleyEngine::from_collection(&self.fonts, self.family_resolution),
         );
         renderer.set_window_id(
             self.env
-                .get::<MenuShortcutRegistry>()
+                .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
-        RuntimeWindow::new(
+        window.arm_close_requests(&self.env);
+        RuntimeWindow::new_gpu(
             window,
             platform,
             renderer,
@@ -601,6 +727,7 @@ impl HeadlessRuntime {
                 interval: Duration::from_secs(1),
                 slow_frame_threshold_override: None,
             },
+            &self.env,
         )
     }
 
@@ -663,17 +790,17 @@ impl HeadlessRuntime {
     #[must_use]
     pub fn gpu_identity(&self) -> crate::GpuIdentity {
         let surface = self.runtime.platform.inner.surface_ref();
-        crate::GpuIdentity {
-            adapter: surface.adapter().get_info(),
-            adapter_features: surface.adapter().features(),
-            device_features: surface.device().features(),
-        }
+        crate::GpuIdentity::new(
+            surface.adapter().get_info(),
+            surface.adapter().features(),
+            surface.device().features(),
+        )
     }
 
     /// Performs an accessibility action against the merged tree.
     ///
     /// Popup-window node ids are shifted into their own stride in the merged
-    /// update (see [`SemanticCore::take_merged_accessibility_tree_update`]),
+    /// update (see `SemanticCore::take_merged_accessibility_tree_update`),
     /// so a request whose target lands in a popup's range demuxes back to that
     /// window's core — the action targets (a menu item's activation, a picker
     /// row's selection) live there. Returns whether the action changed state,
@@ -767,9 +894,10 @@ impl HeadlessRuntime {
     ///
     /// # Errors
     /// Returns [`AccessibilityActivationPointError::NoNode`] when the id
-    /// resolves to a closed popup or a node with no projected region, and
-    /// [`AccessibilityActivationPointError::UnknownNode`] when no window
-    /// holds it.
+    /// resolves to a closed popup or no window holds it, and
+    /// [`AccessibilityActivationPointError::NoBounds`] or
+    /// [`AccessibilityActivationPointError::EmptyFragment`] when the node has
+    /// no projected region.
     #[cfg(feature = "accessibility")]
     pub fn accessibility_activation_point(
         &self,
@@ -845,16 +973,43 @@ impl HeadlessRuntime {
     /// with their own timeout rather than trusting one settled probe.
     #[must_use]
     pub fn is_settled(&self) -> bool {
+        self.is_quiescent(PerpetualAnimation::Counts)
+    }
+
+    /// [`Self::is_settled`] except that repeat-forever animations (an
+    /// indeterminate spinner, a repeating morph) do not count: whether any
+    /// work remains that will finish on its own.
+    #[must_use]
+    pub fn is_settled_except_perpetual(&self) -> bool {
+        self.is_quiescent(PerpetualAnimation::Ignored)
+    }
+
+    fn is_quiescent(&self, perpetual: PerpetualAnimation) -> bool {
+        let scheduled = |renderer: &HydrolysisRenderer<crate::text::ParleyEngine>| match perpetual {
+            PerpetualAnimation::Counts => renderer.has_scheduled_semantic_work(),
+            PerpetualAnimation::Ignored => renderer.has_finite_semantic_work(),
+        };
         !self.runtime.platform.has_pending_events()
             && !self.local_executor.has_pending()
             && self.pending_window_queue.borrow().is_empty()
-            && !self.runtime.mode.is_pending()
-            && !self.runtime.renderer.has_scheduled_semantic_work()
+            && !self.runtime.mode.is_pending_with(perpetual)
+            && !scheduled(&self.runtime.renderer)
             && self.popup_windows.iter().all(|popup| {
-                !popup.mode.is_pending()
+                !popup.mode.is_pending_with(perpetual)
                     && !popup.platform.has_pending_events()
-                    && !popup.renderer.has_scheduled_semantic_work()
+                    && !scheduled(&popup.renderer)
             })
+    }
+
+    /// Blocks until work parked outside the runtime — a timer, a fetch, a
+    /// decode on a worker thread — re-queues a task on this runtime's local
+    /// executor, returning whether one arrived within `timeout`.
+    ///
+    /// The event-driven wait for a host that is settled but still waiting on
+    /// such work: the next pump drains what arrived.
+    #[must_use]
+    pub fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        self.local_executor.wait_queued(timeout)
     }
 
     /// Whether a state change has been requested but not yet flushed, so the
@@ -892,10 +1047,15 @@ impl HeadlessRuntime {
 
     /// The touch-gesture parameters this runtime's host reports — a test's
     /// stand-in for the platform's `ViewConfiguration` push, applied by the
-    /// next input dispatch.
+    /// next input dispatch. Every window the host owns reports them:
+    /// already-mounted popups are set here, and popups it vends later are
+    /// seeded from the main window's platform.
     #[cfg(any(test, feature = "testing"))]
     pub fn set_touch_scroll_config(&mut self, config: crate::platform::TouchScrollConfig) {
         self.runtime.platform.set_touch_scroll_config(config);
+        for popup in &mut self.popup_windows {
+            popup.platform.set_touch_scroll_config(config);
+        }
     }
 
     /// The environment the runtime renders its windows in, for tests that
@@ -907,14 +1067,16 @@ impl HeadlessRuntime {
 
     /// The main window's renderer, for tests that assert on frame internals.
     #[cfg(test)]
-    pub(crate) const fn renderer(&self) -> &HydrolysisRenderer {
+    pub(crate) const fn renderer(&self) -> &HydrolysisRenderer<crate::text::ParleyEngine> {
         &self.runtime.renderer
     }
 
     /// The main window's renderer mutably — editing-session tests write
     /// projections through it.
     #[cfg(test)]
-    pub(crate) const fn renderer_mut(&mut self) -> &mut HydrolysisRenderer {
+    pub(crate) const fn renderer_mut(
+        &mut self,
+    ) -> &mut HydrolysisRenderer<crate::text::ParleyEngine> {
         &mut self.runtime.renderer
     }
 
@@ -1098,13 +1260,19 @@ impl HeadlessRuntime {
         if render_result.is_some() {
             // The renderer's frame-work counters are sampled after the frame's
             // render and its readback have both submitted on the same queue,
-            // so they cover all the GPU work this pump ran for it.
-            profile.counters.frame_work = self.runtime.renderer.frame_work_counters();
+            // so they cover all the GPU work this pump ran for it. The frame's
+            // own snapshot already left the profile inside the render pump —
+            // the tail drained here is the work that ran after it (the
+            // readback's own submissions), which joins the same frame's count.
+            profile
+                .counters_mut()
+                .frame_work_mut()
+                .accumulate(self.runtime.renderer.take_frame_work_counters());
         }
-        profile.phases.executor_before = executor_before;
-        profile.phases.input = input;
-        profile.phases.animation = animation;
-        profile.phases.executor_after = executor_after;
+        profile.phases_mut().set_executor_before(executor_before);
+        profile.phases_mut().set_input(input);
+        profile.phases_mut().set_animation(animation);
+        profile.phases_mut().set_executor_after(executor_after);
 
         #[cfg(feature = "accessibility")]
         let merged = self.runtime.renderer.take_merged_accessibility_tree_update(
@@ -1148,27 +1316,28 @@ fn composite_popup_snapshot(
 ) {
     let offset_x = crate::num_cast::f32_as_i32(frame.x().round());
     let offset_y = crate::num_cast::f32_as_i32(frame.y().round());
-    for source_y in 0..source.height {
+    for source_y in 0..source.height() {
         let target_y = offset_y + i32::try_from(source_y).expect("source y should fit i32");
-        if target_y < 0 || target_y >= i32::try_from(target.height).expect("height should fit i32")
+        if target_y < 0
+            || target_y >= i32::try_from(target.height()).expect("height should fit i32")
         {
             continue;
         }
-        for source_x in 0..source.width {
+        for source_x in 0..source.width() {
             let target_x = offset_x + i32::try_from(source_x).expect("source x should fit i32");
             if target_x < 0
-                || target_x >= i32::try_from(target.width).expect("width should fit i32")
+                || target_x >= i32::try_from(target.width()).expect("width should fit i32")
             {
                 continue;
             }
-            let source_index = ((source_y * source.width + source_x) * 4) as usize;
+            let source_index = ((source_y * source.width() + source_x) * 4) as usize;
             let target_index = ((u32::try_from(target_y).expect("target y should be non-negative")
-                * target.width
+                * target.width()
                 + u32::try_from(target_x).expect("target x should be non-negative"))
                 * 4) as usize;
             composite_pixel(
-                &mut target.rgba8[target_index..target_index + 4],
-                &source.rgba8[source_index..source_index + 4],
+                &mut target.rgba8_mut()[target_index..target_index + 4],
+                &source.rgba8()[source_index..source_index + 4],
             );
         }
     }
@@ -1520,10 +1689,10 @@ mod generation_tests {
         );
         assert_eq!(installs.get(), 2, "invalidator re-installed after rebuild");
         let snapshot = second.snapshot.take().expect("capture after replacement");
-        assert_eq!((snapshot.width, snapshot.height), (96, 64));
+        assert_eq!((snapshot.width(), snapshot.height()), (96, 64));
         let pixel = |x: usize, y: usize| {
             let offset = (y * 96 + x) * 4;
-            &snapshot.rgba8[offset..offset + 4]
+            &snapshot.rgba8()[offset..offset + 4]
         };
         // The fill covers (8,8)..(40,24): real red pixels on the new device.
         assert!(pixel(24, 16)[0] > 200, "fill renders on the new device");

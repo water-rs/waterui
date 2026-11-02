@@ -18,18 +18,47 @@ use crate::{AssetRole, BundleManifest, HexColor, ThemeConfig};
 /// The launch artwork is not configured here: like the app icon, it is the
 /// single `Launch.*` image at the root of the assets directory.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct LaunchConfig {
     /// Background behind the launch artwork. Defaults to the theme background.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background: Option<HexColor>,
+    background: Option<HexColor>,
     /// Background used when the system is in dark appearance. Defaults to
     /// `background`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background_dark: Option<HexColor>,
+    background_dark: Option<HexColor>,
+}
+
+impl LaunchConfig {
+    /// Background behind the launch artwork. Defaults to the theme background.
+    #[must_use]
+    pub const fn background(&self) -> Option<HexColor> {
+        self.background
+    }
+
+    /// Background used when the system is in dark appearance. Defaults to
+    /// `background`.
+    #[must_use]
+    pub const fn background_dark(&self) -> Option<HexColor> {
+        self.background_dark
+    }
+}
+
+impl LaunchConfig {
+    /// A launch section with `background` and, for dark appearance,
+    /// `background_dark`.
+    #[must_use]
+    pub const fn new(background: Option<HexColor>, background_dark: Option<HexColor>) -> Self {
+        Self {
+            background,
+            background_dark,
+        }
+    }
 }
 
 /// The light or dark appearance a launch screen is resolved for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColorScheme {
     /// Light appearance.
     Light,
@@ -65,13 +94,13 @@ impl LaunchPlan {
     ) -> Self {
         let background = launch
             .and_then(|launch| launch.background)
-            .or_else(|| theme.and_then(|theme| theme.background));
+            .or_else(|| theme.and_then(ThemeConfig::background));
         let background_dark = launch
             .and_then(|launch| launch.background_dark)
             .or(background);
         let image = manifest
             .root_artwork(AssetRole::LaunchImage)
-            .map(|asset| asset.source_path.clone());
+            .map(|asset| asset.source_path().clone());
         Self {
             background,
             background_dark,
@@ -121,12 +150,12 @@ mod tests {
             fs::write(assets_root.join(file), b"png").unwrap();
         }
         // The tempdir is gone after this, which is fine: the plan only carries paths.
-        BundleManifest {
-            crate_root: temp.path().to_path_buf(),
-            assets_root: assets_root.clone(),
-            mounts: Vec::new(),
-            assets: plan_mount(&assets_root, "").unwrap(),
-        }
+        BundleManifest::new(
+            temp.path().to_path_buf(),
+            assets_root.clone(),
+            Vec::new(),
+            plan_mount(&assets_root, "").unwrap(),
+        )
     }
 
     #[test]
@@ -140,9 +169,10 @@ mod tests {
 
     #[test]
     fn theme_background_fills_in_both_appearances() {
-        let theme = ThemeConfig {
-            background: Some(color("#101010")),
-            ..ThemeConfig::default()
+        let theme = {
+            let mut literal = ThemeConfig::default();
+            literal.set_background(Some(color("#101010")));
+            literal
         };
         let plan = LaunchPlan::resolve(None, Some(&theme), &manifest_with(&[]));
         assert_eq!(plan.background(ColorScheme::Light), Some(&color("#101010")));
@@ -152,9 +182,10 @@ mod tests {
 
     #[test]
     fn launch_section_overrides_theme_and_dark_falls_back_to_light() {
-        let theme = ThemeConfig {
-            background: Some(color("#101010")),
-            ..ThemeConfig::default()
+        let theme = {
+            let mut literal = ThemeConfig::default();
+            literal.set_background(Some(color("#101010")));
+            literal
         };
         let launch = LaunchConfig {
             background: Some(color("#0B1E3F")),

@@ -4,57 +4,53 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 use waterui_graphics::color::Color;
-use waterui_graphics::{
-    ExternalFrameView, FilteredView, GpuContentView, Gradient, SceneView, resolve_scene_proposal,
-};
+#[cfg(hydrolysis_gpu)]
+use waterui_graphics::{ExternalFrameView, GpuContentView};
+use waterui_graphics::{FilteredView, Gradient, SceneView, resolve_scene_proposal};
 use waterui_shape::{ResolvedMorphShape, ResolvedShape};
 
-impl HydroNativeView for Native<GpuContentView> {
+#[cfg(hydrolysis_gpu)]
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<GpuContentView> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
-        view.as_inner()
-            .intrinsic_size()
-            .unwrap_or_else(LayoutSize::zero)
+        view.as_inner().measure(ProposalSize::UNSPECIFIED).size
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
-        // Same intrinsic-proposal contract as `SceneView`: a natural size
-        // answers it where the container left an axis open, and content that
-        // is not fills the proposal.
-        graphics_dimensions_from_proposal(resolve_scene_proposal(
-            view.as_inner().intrinsic_size(),
-            proposal,
-        ))
+        // The view's own measure asks the live content: a source whose
+        // size resolves after mount reports it here, where the
+        // `intrinsic_size` snapshot would keep answering what the content
+        // claimed at construction (water-rs/waterui#1958).
+        view.as_inner().measure(proposal)
     }
 }
 
-impl HydroNativeView for Native<ExternalFrameView> {
+#[cfg(hydrolysis_gpu)]
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ExternalFrameView> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
-        view.as_inner()
-            .intrinsic_size()
-            .unwrap_or_else(LayoutSize::zero)
+        view.as_inner().measure(ProposalSize::UNSPECIFIED).size
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         // The view's own measure honours its intrinsic size where the
@@ -63,12 +59,12 @@ impl HydroNativeView for Native<ExternalFrameView> {
     }
 }
 
-impl HydroNativeView for Native<SceneView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SceneView> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         view.as_inner()
             .intrinsic_size()
@@ -76,10 +72,10 @@ impl HydroNativeView for Native<SceneView> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         // Scene content that is naturally a size answers with it wherever the
@@ -91,95 +87,95 @@ impl HydroNativeView for Native<SceneView> {
     }
 }
 
-impl HydroNativeView for Native<FilteredView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<FilteredView> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         crate::renderer::measure_view_intrinsic(&view.as_inner().content, state, env, theme)
     }
 }
 
-impl HydroNativeView for Native<Color> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<Color> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::zero()
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         graphics_dimensions_from_proposal(proposal)
     }
 }
 
-impl HydroNativeView for Native<Gradient> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<Gradient> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::zero()
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         graphics_dimensions_from_proposal(proposal)
     }
 }
 
-impl HydroNativeView for Native<ResolvedShape> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedShape> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::zero()
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         graphics_dimensions_from_proposal(proposal)
     }
 }
 
-impl HydroNativeView for Native<ResolvedMorphShape> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedMorphShape> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::zero()
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         graphics_dimensions_from_proposal(proposal)

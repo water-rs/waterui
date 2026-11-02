@@ -3,6 +3,13 @@
 //! Colour: `vello_cpu` composites in premultiplied `f32` over an rgba8
 //! pixmap; paints take `peniko` colours (sRGB-tagged). Readback is the
 //! pixmap's premultiplied rgba8, decoded to the suite working space.
+//!
+//! Threads: `VELLO_CPU_THREADS` selects the dispatcher. Unset or `0` is the
+//! single-threaded dispatcher, which flattens and builds strips inside
+//! `encode` and rasterizes in `submit`. `N > 0` is the multithreaded
+//! dispatcher with `N` workers beside the calling thread; `submit` flushes
+//! it before rasterizing, so the flush is timed with the render. The
+//! report's `device.adapter` states the dispatcher and its worker count.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -11,7 +18,7 @@ use cherenkov_scene::Feature;
 use vello_common::paint::PaintType;
 use vello_cpu::kurbo::{Affine, BezPath, Rect, Stroke};
 use vello_cpu::peniko::{BlendMode as PBlendMode, Fill, FontData, ImageBrush};
-use vello_cpu::{Pixmap, PixmapMut, RenderContext, Resources};
+use vello_cpu::{Pixmap, PixmapMut, RenderContext, RenderSettings, Resources};
 
 use crate::convert::{self, Prepared};
 use crate::memory::{AdapterMemory, Reading};
@@ -25,10 +32,13 @@ use crate::{
 pub struct VelloCpu {
     info: EngineInfo,
     ctx: Option<RenderContext>,
+    settings: RenderSettings,
     res: Resources,
     prepared: Option<Prepared>,
     lowered: Option<Lowered<PaintType>>,
     counters: Counters,
+    /// When the last submit's raster work ended.
+    completed: crate::ObservedCompletion,
 }
 
 /// The `RenderContext` and prepared scene state do not format.
@@ -45,35 +55,52 @@ impl VelloCpu {
     /// Adapter key.
     pub const NAME: &'static str = "vello-cpu";
 
-    /// Creates the adapter.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
+    /// Creates the adapter with Vello defaults or an explicit worker override.
+    ///
+    /// # Errors
+    /// [`BenchError::Engine`] when `VELLO_CPU_THREADS` is not a worker count.
+    pub fn new() -> Result<Self, BenchError> {
+        let settings = RenderSettings::default();
+        let num_threads = match std::env::var("VELLO_CPU_THREADS") {
+            Err(std::env::VarError::NotPresent) => settings.num_threads,
+            Ok(value) => value.parse::<u16>().map_err(|e| {
+                BenchError::Engine(format!("vello-cpu: VELLO_CPU_THREADS={value:?}: {e}"))
+            })?,
+            Err(e) => {
+                return Err(BenchError::Engine(format!(
+                    "vello-cpu: VELLO_CPU_THREADS: {e}"
+                )));
+            }
+        };
+        Ok(Self {
             info: EngineInfo {
                 name: Self::NAME,
                 engine_crate: "vello_cpu",
                 crate_version: env!("DEP_VELLO_CPU_VERSION"),
                 source_rev: option_env!("DEP_VELLO_CPU_SOURCE_REV").map(String::from),
                 output_format: "premultiplied rgba8 Pixmap (straight sRGB quantization)".into(),
-                precision: "f32 premultiplied pipeline (vello_cpu `f32_pipeline` feature)",
-                route: "cpu-raster",
+                precision: "u8/u16 premultiplied pipeline (Vello OptimizeSpeed)",
+                route: if num_threads == 0 {
+                    "cpu-raster (single-threaded dispatcher)"
+                } else {
+                    "cpu-raster (multithreaded dispatcher)"
+                },
                 color_note: "peniko brushes (sRGB-tagged); scene colours quantized to rgba8 sRGB; \
                              readback decoded sRGB→linear P3",
                 encode_scope: "records `vello_cpu::RenderContext` calls (set_paint/fill_path/\
                                push_layer/glyph_run) against fonts/images prepared once",
             },
             ctx: None,
+            settings: RenderSettings {
+                num_threads,
+                ..settings
+            },
             res: Resources::new(),
             prepared: None,
             lowered: None,
             counters: Counters::default(),
-        }
-    }
-}
-
-impl Default for VelloCpu {
-    fn default() -> Self {
-        Self::new()
+            completed: crate::ObservedCompletion::default(),
+        })
     }
 }
 
@@ -179,7 +206,8 @@ impl VelloLikeCtx for VelloCpu {
                 id: g.id,
                 x: g.x,
                 y: g.y,
-            }));
+            }))
+            .expect("vello_cpu glyph run renders");
     }
 }
 
@@ -219,12 +247,21 @@ impl Engine for VelloCpu {
 
     fn encode(&mut self, input: &EncodeInput<'_>) -> Result<(), BenchError> {
         self.counters = Counters::default();
-        let mut ctx = RenderContext::new(
+        let (width, height) = (
             u16::try_from(input.scene.width)
                 .map_err(|_| BenchError::Engine("vello-cpu: scene exceeds u16 dims".into()))?,
             u16::try_from(input.scene.height)
                 .map_err(|_| BenchError::Engine("vello-cpu: scene exceeds u16 dims".into()))?,
         );
+        // One context per run: a multithreaded dispatcher owns its worker
+        // pool, so building a context per frame would time pool creation.
+        let mut ctx = match self.ctx.take() {
+            Some(mut ctx) => {
+                ctx.reset_and_resize(width, height);
+                ctx
+            }
+            None => RenderContext::new_with(width, height, self.settings),
+        };
         // Clear to scene clear colour.
         ctx.set_paint(PaintType::Solid(crate::convert::peniko_solid(
             &input.scene.clear,
@@ -245,7 +282,7 @@ impl Engine for VelloCpu {
             .lowered
             .take()
             .ok_or_else(|| BenchError::Engine("vello-cpu: encode before prepare".into()))?;
-        replay(self, &lowered, &mut counters);
+        replay(self, &lowered, &mut counters, input.scroll_transform());
         self.lowered = Some(lowered);
         self.counters = counters;
         Ok(())
@@ -258,10 +295,14 @@ impl Engine for VelloCpu {
             .ok_or_else(|| BenchError::Engine("vello-cpu: submit before encode".into()))?;
         // Always rasterize — `measure` must execute the real render even
         // without readback (`ctx.flush()` alone only drains the dispatcher).
+        // The flush finishes the multithreaded dispatcher's strip work.
         let render_at = Instant::now();
+        ctx.flush();
         let mut pixmap = Pixmap::new(ctx.width(), ctx.height());
         ctx.render(PixmapMut::from(&mut pixmap), &mut self.res);
-        let render_seconds = render_at.elapsed().as_secs_f64();
+        let rendered = Instant::now();
+        let render_seconds = rendered.duration_since(render_at).as_secs_f64();
+        self.completed.record(rendered);
         let readback_at = Instant::now();
         let image = readback.then(|| {
             let rgba8: &[u8] = bytemuck::cast_slice(pixmap.data());
@@ -274,10 +315,27 @@ impl Engine for VelloCpu {
         Ok(Submit {
             image,
             gpu: Vec::new(),
-            phases: None,
+            phases: Vec::new(),
+            composition: None,
+            gpu_wait_seconds: 0.0,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(
+            "the host instant RenderContext::render returned, after the CPU raster work it ran ended",
+        )
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        self.completed.take(Self::NAME)
+    }
+
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // submit completes the CPU raster work before returning.
+        Ok(())
     }
 
     fn counters(&self) -> Counters {
@@ -285,7 +343,13 @@ impl Engine for VelloCpu {
     }
 
     fn device(&self) -> DeviceInfo {
+        let threads = self.settings.num_threads;
         DeviceInfo {
+            adapter: Some(if threads == 0 {
+                "vello-cpu (single-threaded dispatcher)".to_owned()
+            } else {
+                format!("vello-cpu ({threads} threads)")
+            }),
             cpu: cpu_model(),
             thermal_celsius: thermal_celsius(),
             ..Default::default()
@@ -298,6 +362,7 @@ impl Engine for VelloCpu {
             wgpu_allocator: Reading::unavailable("Vello CPU has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("Vello CPU has no Skia budget"),
             vk_memory_budget: Reading::unavailable("Vello CPU has no Vulkan device"),
+            metal_allocated_bytes: Reading::unavailable("Vello CPU has no Metal device"),
         }
     }
 }

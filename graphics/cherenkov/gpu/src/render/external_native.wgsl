@@ -15,7 +15,8 @@
 @group(1) @binding(6) var ext_sampler: sampler;
 
 @fragment
-fn fs_external_format(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_external_format(fragment: VsOut) -> @location(0) vec4<f32> {
+    let in = device_quad_pixel(fragment);
     var cov: f32;
     switch in.meta_.x {
         case KIND_SPAN: {
@@ -34,9 +35,11 @@ fn fs_external_format(in: VsOut) -> @location(0) vec4<f32> {
     // own size — `in.cell.zw` carries it — which need not be the frame's:
     // the pixel coordinate scales by `params.dims / quad`.
     let px = (in.local + in.cell.zw * 0.5) * (params.dims.xy / in.cell.zw);
-    // The conversion sampler is NEAREST: sampling at the texel centre the
-    // texel contract (`round(pos - 0.5)`, edge-clamped) gives the same
-    // sample ext_texel_f32 would. UV = centre / dims in [0, 1].
+    // Sampling at the luma texel centre the texel contract picks
+    // (`round(pos - 0.5)`, edge-clamped) gives that luma texel alone under
+    // the conversion's linear filter, and the conversion reconstructs
+    // chroma bilinearly at that luma position from the sited chroma — the
+    // decode `ext_frame_yuv` runs. UV = centre / dims in [0, 1].
     let xy = clamp(round(px - vec2<f32>(0.5)), vec2<f32>(0.0),
                    params.dims.xy - vec2<f32>(1.0));
     let c = textureSample(ext_image, ext_sampler,

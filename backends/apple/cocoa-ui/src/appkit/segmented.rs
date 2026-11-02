@@ -3,7 +3,11 @@
 //!
 //! Segments carry a label and an optional icon; the control runs
 //! `on_select` with the tapped segment's index. It is the Mac's in-toolbar
-//! tab control: `trackingMode` `.selectOne`, spring-loaded, compact sizing.
+//! tab control: `trackingMode` `.selectOne`, the extra-large control size,
+//! and segments filled equally. A unified toolbar then draws that control
+//! at the platform tab picker's metrics — same height as the free control,
+//! narrower — so the toolbar item follows the intrinsic size instead of a
+//! width measured before the control joins the toolbar.
 //!
 //! # Safety
 //!
@@ -21,9 +25,11 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::sel;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSImage, NSSegmentSwitchTracking, NSSegmentedControl};
+use objc2_app_kit::{
+    NSControlSize, NSImage, NSSegmentDistribution, NSSegmentSwitchTracking, NSSegmentedControl,
+};
 use objc2_core_foundation::{CGRect, CGSize};
-use objc2_foundation::{NSObjectProtocol, NSString};
+use objc2_foundation::{NSCopying, NSObjectProtocol, NSString};
 
 use crate::callback::guarded;
 
@@ -40,6 +46,9 @@ pub struct Segment {
     pub enabled: bool,
     /// The segment's badge text, shown after the label.
     pub badge: Option<String>,
+    /// Whether the segment is the search tab — `SwiftUI`'s toolbar tab
+    /// picker draws it icon-only.
+    pub is_search: bool,
 }
 
 /// Called with the tapped segment's index.
@@ -103,6 +112,10 @@ impl SegmentedControl {
         // initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
         this.setSegmentStyle(objc2_app_kit::NSSegmentStyle::Automatic);
+        // The system toolbar tab picker is an extra-large, equally filled
+        // segmented control. The regular size is a shorter, narrower capsule.
+        this.setControlSize(NSControlSize::ExtraLarge);
+        this.setSegmentDistribution(NSSegmentDistribution::FillEqually);
         this.setTrackingMode(NSSegmentSwitchTracking::SelectOne);
         // SAFETY: `self` is its own target for `segmentChanged:`.
         unsafe {
@@ -123,21 +136,34 @@ impl SegmentedControl {
         self.setSegmentCount(segments.len().cast_signed());
         for (index, segment) in segments.iter().enumerate() {
             let index = index.cast_signed();
-            let label = segment.badge.as_ref().map_or_else(
-                || segment.label.clone(),
-                |badge| format!("{} ({badge})", segment.label),
-            );
-            self.setLabel_forSegment(&NSString::from_str(&label), index);
+            // `SwiftUI`'s toolbar tab picker draws a plain label — a
+            // badge never joins the title (water-rs/waterui#3591) — and
+            // an image only on the search tab, which is icon-only.
+            let label = if segment.is_search {
+                ""
+            } else {
+                &segment.label
+            };
+            self.setLabel_forSegment(&NSString::from_str(label), index);
             self.setEnabled_forSegment(segment.enabled, index);
-            if let Some(symbol) = &segment.symbol {
-                if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                    &NSString::from_str(symbol),
-                    None,
-                ) {
-                    self.setImage_forSegment(Some(&image), index);
-                }
-            } else if let Some(image) = &segment.image {
-                self.setImage_forSegment(Some(image), index);
+            let image = segment.is_search.then(|| {
+                segment
+                    .symbol
+                    .as_ref()
+                    .and_then(|symbol| {
+                        NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                            &NSString::from_str(symbol),
+                            None,
+                        )
+                    })
+                    .or_else(|| segment.image.clone())
+            });
+            if let Some(Some(image)) = image {
+                // The icon-only segment's accessible name is its label, on
+                // a copy so a shared caller image keeps its own description.
+                let image = image.copy();
+                image.setAccessibilityDescription(Some(&NSString::from_str(&segment.label)));
+                self.setImage_forSegment(Some(&image), index);
             }
         }
         self.sizeToFit();

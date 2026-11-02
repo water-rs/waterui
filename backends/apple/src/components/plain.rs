@@ -85,9 +85,9 @@ fn platform_font(
     mtm: cocoa_ui::MainThreadMarker,
     resolved: &ResolvedFont,
 ) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    match resolved.family.as_deref() {
+    let size = f64::from(resolved.size());
+    let weight = platform_weight(resolved.weight());
+    match resolved.family() {
         Some(family) if !family.is_empty() => {
             let mut resolved_font = None;
             for candidate in family_candidates(family) {
@@ -105,7 +105,7 @@ fn platform_font(
                 )
             })
         }
-        _ => match resolved.design {
+        _ => match resolved.design() {
             FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
             FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
         },
@@ -174,8 +174,8 @@ fn render(state: &PlainState, duration: Option<f64>) {
         background: None,
         underline: false,
         strikethrough: false,
-        letter_spacing: f64::from(state.font.letter_spacing),
-        line_height: state.font.line_height.map_or(0.0, f64::from),
+        letter_spacing: f64::from(state.font.letter_spacing()),
+        line_height: state.font.line_height().map_or(0.0, f64::from),
     };
     let attributed = cocoa_ui::text::build(state.mtm, &[run]);
     let label = state.label.clone();

@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.os.Looper
 import android.view.Surface
 
 /**
@@ -12,6 +13,8 @@ import android.view.Surface
 object NativeBridge {
     /**
      * Incremented in lock-step with `JNI_SCHEMA` in the Rust runner.
+     * 24 adds `DefineEffect` (`effect, stage_count, kind + 12 float` stages)
+     * for native `RenderEffect` chains (#1750).
      * History: 1 = surface/input/IME events; 2 = `nativeSetVisible`
      * (Activity `onStart`/`onStop` → pump visibility); 3 = the
      * InputConnection range protocol (`nativeEditOp`/`nativeEditingState`,
@@ -34,12 +37,36 @@ object NativeBridge {
      * `WindowInsetsAnimationCompat` progress pushes each IME animation frame;
      * 11 = [nativeUiThreadServices] creates the one executor per UI thread
      * at load time, and [nativeCreateSession] takes its handle so every
-     * session shares it; 12 = [nativeSetHighRefresh] takes a typed `active`
+     * session shares it; 12 = `nativeSetHighRefresh` takes a typed `active`
      * flag in place of the `-1f` sentinel float the native side decoded as a
      * release, and [nativeSurfaceAttached] carries the display's peak
-     * refresh rate that flag asks for.
+     * refresh rate that flag asks for; 13 = a platform-view placement names
+     * either a factory `kind` or a registered `instance`, and the
+     * `HydrolysisWebView` natives join the edge; 14 =
+     * `nativePlatformViewFocus` reported whether a mounted platform-view
+     * child held UI focus; 15 = the focus report reads through the frame —
+     * [HydrolysisSession.onNativePlatformViewFocus] replaces the pushed
+     * native, which left with it; 16 = `onNativeFatalError` leaves the
+     * table — a lost GPU device is recreated instead of ending the
+     * session, and a recreation that exhausts its loss budget already
+     * reaches the host as the frame call's `IllegalStateException`;
+     * 17 = [nativeSetFrameDemand] separates continuous work and touch, and
+     * surface attachment carries the display's suggested ARR rates; 18 =
+     * the frame carries the HWUI command buffer (`src/hwui` on the Rust
+     * side, `dev.waterui.hydrolysis.hwui` here) decoded onto retained
+     * `RenderNode`s (water-rs/waterui#1811); 19 = the HWUI text wire
+     * carries a default-style row: row zero of every packed shape request
+     * is the paragraph's base paint; 20 = [nativeCreateSession] takes the
+     * session-owned painter and [nativeSetHostAttached] reports the host
+     * view's bind state; 21 = the BindPlatformView op binds a platform
+     * view inside its owner's RenderNode; 22 = [nativePlatformViewHitTest]
+     * answers the retained tree's platform view under a host pixel; 23 =
+     * [nativeCreateSession] carries the configuration's night-mode flag so
+     * the session's colour-scheme signal starts on the real `uiMode`, and
+     * [nativeSetColorScheme] reports every later change
+     * (water-rs/waterui#3544).
      */
-    private const val SCHEMA: Int = 12
+    private const val SCHEMA: Int = 24
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -53,7 +80,8 @@ object NativeBridge {
     /** [nativeBackEvent] phase: the gesture committed, or a back button was pressed. */
     const val BACK_INVOKED: Int = 3
 
-    private var initialized = false
+    /** The `System.loadLibrary` name [load] mounted, or null before it. */
+    private var loadedLibraryName: String? = null
 
     /**
      * Opaque handle for the UI-thread services the load hook created once:
@@ -72,7 +100,15 @@ object NativeBridge {
      */
     @Synchronized
     fun load(libraryName: String, logLevel: String?) {
-        if (initialized) return
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "hydrolysis: load must run on the main thread, whose looper the executor registers with"
+        }
+        loadedLibraryName?.let { loaded ->
+            check(loaded == libraryName) {
+                "hydrolysis: the process already mounted '$loaded'; a second library '$libraryName' cannot share it"
+            }
+            return
+        }
         System.loadLibrary(libraryName)
         val nativeSchema = nativeInit(SCHEMA, logLevel)
         check(nativeSchema == SCHEMA) {
@@ -80,7 +116,7 @@ object NativeBridge {
         }
         uiThreadServices = nativeUiThreadServices()
         check(uiThreadServices != 0L) { "hydrolysis: the UI-thread executor was not created" }
-        initialized = true
+        loadedLibraryName = libraryName
     }
 
     @JvmStatic private external fun nativeInit(schema: Int, logLevel: String?): Int
@@ -102,14 +138,45 @@ object NativeBridge {
      * `uiThreadServices` is the handle [load] created — every session
      * shares that executor rather than installing its own.
      */
+    /**
+     * `painter` is the session-owned [SessionPainter] — null on the GPU
+     * backend, the HWUI painter object otherwise.
+     *
+     * `nightMode` is `Configuration.uiMode`'s night flag at the moment the
+     * session is created — the colour-scheme signal's initial value, so the
+     * theme tokens never start on a Light default corrected a frame later.
+     */
     @JvmStatic
     external fun nativeCreateSession(
         session: HydrolysisSession,
         context: Context,
+        painter: SessionPainter?,
         uiThreadServices: Long,
+        nightMode: Boolean,
     ): Long
 
     @JvmStatic external fun nativeDestroySession(sessionPtr: Long)
+
+    /**
+     * The configuration's night-mode flag — pushed when a host view binds
+     * and on every `onConfigurationChanged`; the native side re-resolves
+     * the colour-scheme signal only when the value moved.
+     */
+    @JvmStatic external fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean)
+
+    /**
+     * The host bound (`true`) or unbound (`false`) its view — the session's
+     * attach gate; called from [HydrolysisSession.bind] / `unbind`.
+     */
+    @JvmStatic external fun nativeSetHostAttached(sessionPtr: Long, attached: Boolean)
+
+    /**
+     * The retained tree's platform view under host pixel (`x`, `y`) — the
+     * HWUI painter's ordered hit test. `0` means no view is drawn there or
+     * an interactive target painted above it takes the point; any other
+     * value is a placement id.
+     */
+    @JvmStatic external fun nativePlatformViewHitTest(sessionPtr: Long, x: Float, y: Float): Long
 
     @JvmStatic
     external fun nativeSetMetrics(
@@ -144,14 +211,16 @@ object NativeBridge {
 
     /**
      * A band surface was created. `peakRefreshHz` is the highest rate the
-     * band's display offers at its current resolution — what a
-     * [nativeSetHighRefresh] demand asks this surface for.
+     * band's display offers at its current resolution. Normal and high
+     * rates are the ARR suggestions, or the peak on a non-ARR display.
      */
     @JvmStatic
     external fun nativeSurfaceAttached(
         sessionPtr: Long,
         surface: Surface,
         peakRefreshHz: Float,
+        normalRefreshHz: Float,
+        highRefreshHz: Float,
         width: Int,
         height: Int,
         generation: Long,
@@ -174,12 +243,11 @@ object NativeBridge {
     @JvmStatic external fun nativeSetVisible(sessionPtr: Long, visible: Boolean)
 
     /**
-     * The scheduler's high-refresh demand. `active` asks the surface for the
-     * peak rate its attach reported, for as long as the pump runs or a touch
-     * is held; `false` releases the request. The native side holds the
-     * demand across surface re-creations.
+     * Continuous work and touch demand, combined with the engine's content
+     * range on the native side. The demand survives surface re-creation.
      */
-    @JvmStatic external fun nativeSetHighRefresh(sessionPtr: Long, active: Boolean)
+    @JvmStatic
+    external fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean)
 
     /**
      * One system-back phase. `phase` is a `BACK_*` constant. `edge` is
@@ -275,4 +343,5 @@ object NativeBridge {
 
     /** Platform-view placement frame set, or null when unchanged. */
     @JvmStatic external fun nativePlatformViewFrames(sessionPtr: Long): String?
+
 }

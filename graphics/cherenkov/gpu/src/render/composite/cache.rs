@@ -1,12 +1,14 @@
 //! Exact structural keys: changing paint values never repeats lifetime analysis.
 
-use super::plan::{ExecutionPlan, ReadKind};
+use super::plan::{Combine, ExecutionPlan, Formats, Limits, ReadKind};
+use crate::render::composition::Materialization;
 use crate::render::lower::{Frame, ImageSource, Pass, PipelineKind, Source, Target};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Draw {
     source: Option<Source>,
     read: ReadKind,
+    combine: Combine,
     opaque: bool,
     count: usize,
 }
@@ -23,6 +25,8 @@ struct PassShape {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Placement {
+    color_range: crate::render::present::ColorRange,
+    extended_range: bool,
     region: [u32; 4],
     space: cherenkov::BlendSpace,
     transparent_clear: bool,
@@ -34,7 +38,10 @@ pub struct Cache {
     draws: Vec<Draw>,
     placements: Vec<Placement>,
     samples: Vec<[u32; 6]>,
-    settings: Option<(wgpu::TextureFormat, u8)>,
+    /// The formats and the executor mode the cached structure was
+    /// analyzed under: `Ok` limits for a native partition, `Err` for a
+    /// portable graph attributed to that reason.
+    settings: Option<(Formats, Result<Limits, Materialization>)>,
 }
 
 impl Cache {
@@ -47,12 +54,16 @@ impl Cache {
 
     /// Returns whether lifetime analysis changed. Geometry-only updates
     /// retain image identities and recompute attachment eligibility.
+    ///
+    /// `limits` is what the backend's tile executor can hold, or why it
+    /// has none: `Ok` builds the native partition, `Err` the portable
+    /// dependency graph attributed to that reason (#2558).
     pub fn update(
         &mut self,
         plan: &mut ExecutionPlan,
         frame: &Frame,
-        format: wgpu::TextureFormat,
-        slots: u8,
+        formats: Formats,
+        limits: Result<Limits, Materialization>,
     ) -> bool {
         let pass_shapes = || {
             frame
@@ -76,6 +87,7 @@ impl Cache {
                 .map(|range| Draw {
                     source: range.source,
                     read: super::plan::read_kind(frame, range),
+                    combine: super::plan::combine(frame, range),
                     opaque: !matches!(
                         range.pipeline,
                         PipelineKind::SrcOver | PipelineKind::Replace
@@ -86,7 +98,7 @@ impl Cache {
                     count: range.instances.len(),
                 })
         };
-        let changed = self.settings != Some((format, slots))
+        let changed = self.settings != Some((formats, limits))
             || !self.passes.iter().copied().eq(pass_shapes())
             || !self.draws.iter().copied().eq(draws());
         if changed {
@@ -94,10 +106,14 @@ impl Cache {
             self.passes.extend(pass_shapes());
             self.draws.clear();
             self.draws.extend(draws());
-            self.settings = Some((format, slots));
-            *plan = ExecutionPlan::build(frame, format, slots);
+            self.settings = Some((formats, limits));
+            *plan = ExecutionPlan::build(frame, formats, limits);
         }
-        let placements = || frame.passes.iter().map(placement);
+        let placements = || {
+            frame.passes.iter().enumerate().map(|(index, pass)| {
+                placement(pass, super::plan::requires_extended_range(frame, index))
+            })
+        };
         let samples = || {
             frame
                 .passes
@@ -127,15 +143,17 @@ impl Cache {
             self.samples.clear();
             self.samples.extend(samples());
             if !changed {
-                plan.update_placement(frame, slots);
+                plan.update_placement(frame, formats, limits);
             }
         }
         changed
     }
 }
 
-fn placement(pass: &Pass) -> Placement {
+fn placement(pass: &Pass, extended_range: bool) -> Placement {
     Placement {
+        color_range: pass.color_range,
+        extended_range,
         region: pass.region,
         space: pass.space,
         transparent_clear: pass

@@ -12,11 +12,9 @@ still required before readback; the newly fallible mapped-range access keeps
 the previous invariant checks. Shader generation keeps naga's integer-division
 checks enabled, matching the previous compiler's behavior.
 
-The bench's Vello baselines are not upgraded: the pinned lexoliu/vello forks
-require `wgpu ^29`, and Vello is not this project's code to port. The bench
-links both majors — `wgpu` 30 for the cherenkov adapter, `wgpu29` (a renamed
-`wgpu` 29 dependency) for `vello-classic`, `vello-hybrid` and their shared
-`wgpu_ctx` — and each engine keeps its own device. The transitional
+The bench's Vello baselines (`vello-classic`, `vello-hybrid`) run on the same
+`wgpu` 30 as the cherenkov adapter: the pinned lexoliu/vello `waterui/v0.11`
+branch is vello 0.11, which is on wgpu 30. Each engine keeps its own device. The transitional
 in-repo Vello backend is removed: `cherenkov-gpu` has superseded it, and
 it could not survive filtrate's move to wgpu 30.
 

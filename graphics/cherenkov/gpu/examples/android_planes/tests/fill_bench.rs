@@ -14,9 +14,12 @@ fn p010_fill_cost() {
     let stride = WIDTH as usize;
     let mut mapped = vec![0u8; stride * 2 * (HEIGHT as usize + HEIGHT as usize / 2)];
     // Warm up: first frame also pays the row-pattern allocations.
+    // SAFETY: `mapped` is a writable `stride * 2 * (HEIGHT + HEIGHT / 2)`
+    // byte buffer, covering the P010 luma and chroma planes.
     unsafe { pattern::fill_p010(mapped.as_mut_ptr(), stride, 0) };
     let start = Instant::now();
     for frame in 1..=FRAMES {
+        // SAFETY: as above.
         unsafe { pattern::fill_p010(mapped.as_mut_ptr(), stride, frame) };
         std::hint::black_box(mapped[0]);
     }

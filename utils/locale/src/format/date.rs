@@ -30,6 +30,7 @@ static DATETIME_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Date formatting style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum DateStyle {
     /// Short date: "12/31/2023" or "31.12.2023"
     Short,
@@ -44,6 +45,7 @@ pub enum DateStyle {
 
 /// Time formatting style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum TimeStyle {
     /// Short time: "3:45 PM" or "15:45"
     #[default]

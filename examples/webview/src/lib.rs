@@ -8,23 +8,31 @@
 //!
 //! Controls drive the page through [`WebViewProxy`], extracted from the
 //! environment exactly the way `State<T>` is.
+//!
+//! On the web the page is a cross-origin `<iframe>`, which an embedder can
+//! navigate and nothing more: the history controls, the redirect policy, the
+//! injected script, the page API and JavaScript evaluation are not compiled
+//! there, so this example gates them the same way.
 
 use waterui::app::App;
+#[cfg(not(target_arch = "wasm32"))]
 use waterui::js_api;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::webview::{
-    Json, ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent, WebViewProxy,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use waterui::webview::{Json, ScriptInjectionTime, serde_json};
+use waterui::webview::{Url, WebView, WebViewController, WebViewEvent, WebViewProxy};
 use waterui::widget::condition::when;
 
+#[cfg(not(target_arch = "wasm32"))]
 /// What the `greet` handler answers with.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Greeting {
     text: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Everything the page is allowed to reach.
 ///
 /// One object instead of a list of `.handler(...)` and `.expose(...)` calls,
@@ -37,11 +45,12 @@ struct PageApi {
     greetings: Binding<u32>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[js_api]
 impl PageApi {
-    /// Mirrored state, writable: `waterui.state.address = "https://..."` in the
-    /// page moves the toolbar, because this is one binding with two views onto
-    /// it.
+    /// Mirrored state, writable: once `waterui.ready` has resolved,
+    /// `waterui.state.address = "https://..."` in the page moves the toolbar,
+    /// because this is one binding with two views onto it.
     fn address(&self) -> Binding<Str> {
         self.address.clone()
     }
@@ -99,6 +108,7 @@ fn handle_webview_event(
         WebViewEvent::Error(err) => {
             status.set(Str::from(format!("Error: {err}")));
         }
+        _ => {}
     }
 }
 
@@ -111,13 +121,13 @@ struct NavigateState {
 }
 
 /// The controls beside the page. Every action takes a [`WebViewProxy`], which the
-/// surrounding `with_proxy` scope supplies.
+/// surrounding `with_proxy` scope supplies. `bridge` holds the controls that
+/// need more of the page than navigation.
 fn toolbar(
     status: Binding<Str>,
     progress_value: Binding<f64>,
     address: Binding<Str>,
-    allow_redirects: Binding<bool>,
-    js_result: Binding<Str>,
+    bridge: impl View,
 ) -> impl View {
     vstack((
         text("WebView Playground")
@@ -141,6 +151,26 @@ fn toolbar(
                 }),
         ))
         .spacing(8.0),
+        bridge,
+        vstack((
+            text("Status:")
+                .caption()
+                .foreground(theme_color::MutedForeground),
+            text!("{status}").body().foreground(theme_color::Foreground),
+        ))
+        .spacing(8.0),
+        progress(progress_value.clone()).label(text("Load progress").caption()),
+    ))
+    .spacing(5.0)
+    .max_width(420.0)
+}
+
+/// History, the redirect policy and JavaScript evaluation: what a native web
+/// view offers beyond navigation.
+#[cfg(not(target_arch = "wasm32"))]
+fn bridge_controls(allow_redirects: Binding<bool>) -> impl View {
+    let js_result: Binding<Str> = binding("");
+    vstack((
         hstack((
             button("Back").action(|proxy: WebViewProxy| proxy.go_back()),
             button("Forward").action(|proxy: WebViewProxy| proxy.go_forward()),
@@ -154,20 +184,17 @@ fn toolbar(
             .action_async(
                 |proxy: WebViewProxy, State(result): State<Binding<Str>>| async move {
                     match proxy.run_javascript("document.title").await {
-                        Ok(title) => result.set(title),
+                        // The raw path answers JSON, so the title arrives as a
+                        // quoted string.
+                        Ok(title) => result.set(Str::from(
+                            serde_json::from_str::<String>(&title)
+                                .expect("document.title answers a JSON string"),
+                        )),
                         Err(err) => result.set(Str::from(format!("JS error: {err}"))),
                     }
                 },
             )
             .state(&js_result),
-        vstack((
-            text("Status:")
-                .caption()
-                .foreground(theme_color::MutedForeground),
-            text!("{status}").body().foreground(theme_color::Foreground),
-        ))
-        .spacing(8.0),
-        progress(progress_value.clone()).label(text("Load progress").caption()),
         hstack((
             text("JS Result:")
                 .caption()
@@ -179,7 +206,6 @@ fn toolbar(
         .spacing(8.0),
     ))
     .spacing(5.0)
-    .max_width(420.0)
 }
 
 fn missing_controller_view() -> impl View {
@@ -197,10 +223,10 @@ fn webview_playground() -> impl View {
     let progress_value = Binding::f64(0.0);
     let address: Binding<Str> = binding("https://waterui.dev");
     let allow_redirects = Binding::bool(false);
-    let js_result: Binding<Str> = binding("");
-    let greetings: Binding<u32> = binding(0_u32);
 
-    let open = WebView::open("https://waterui.dev")
+    let open = WebView::open("https://waterui.dev");
+    #[cfg(not(target_arch = "wasm32"))]
+    let open = open
         .redirects_enabled(allow_redirects.clone())
         // Runs on every page load; the page can call back with
         // `waterui.invoke("logTitle", document.title)`.
@@ -215,19 +241,23 @@ fn webview_playground() -> impl View {
         // look like collected onto a type.
         .serve(PageApi {
             address: address.clone(),
-            greetings: greetings.clone(),
-        })
-        .on_event({
-            let status = status.clone();
-            let progress_value = progress_value.clone();
-            let address = address.clone();
-            let allow_redirects = allow_redirects.clone();
-            move |event| {
-                handle_webview_event(event, &status, &progress_value, &address, &allow_redirects)
-            }
+            greetings: binding(0_u32),
         });
+    let open = open.on_event({
+        let status = status.clone();
+        let progress_value = progress_value.clone();
+        let address = address.clone();
+        let allow_redirects = allow_redirects.clone();
+        move |event| {
+            handle_webview_event(event, &status, &progress_value, &address, &allow_redirects)
+        }
+    });
 
-    open.with_proxy(move || toolbar(status, progress_value, address, allow_redirects, js_result))
+    #[cfg(not(target_arch = "wasm32"))]
+    let bridge = bridge_controls(allow_redirects);
+    #[cfg(target_arch = "wasm32")]
+    let bridge = ();
+    open.with_proxy(move || toolbar(status, progress_value, address, bridge))
 }
 
 #[derive(Debug)]

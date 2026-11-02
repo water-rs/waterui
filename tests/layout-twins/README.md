@@ -128,7 +128,7 @@ recorded frame.
 | h-scroll, content 300×60 | content y +10 | content y +10 | agree — cross-axis centered |
 | both-axis, content 60×30 | content +20,+25 (centered) | content at 0,0 (top-left) | **diverge** — W does not center cross-axis under a two-axis scroll |
 | w=0 host | viewport `0×80`, content x −30 | viewport `0×80`, content x −30 | agree |
-| inner v-scroll under w=None | `(nil,80)→60×80` (probe) | inner viewport `0×80` | **diverge** — S answers content-hug width 60; W viewport collapses to 0 |
+| inner v-scroll under w=None | `(nil,80)→60×80` (probe) | inner viewport `0×80` | **diverge (pre-#1208 capture)** — S answers content-hug width 60; W viewport collapsed to 0. Under the current rule W answers 60×80 too — re-capture to confirm |
 
 SwiftUI scroll `sizeThatFits` answers:
 
@@ -139,7 +139,8 @@ SwiftUI scroll `sizeThatFits` answers:
 | ∞×80 | 60×80 | | 100×∞ | 60×∞ |
 
 The viewport *answer* hugs the content on the cross axis (60) for every width
-proposal, and hugs content height when the height is unbounded. See a12:
+proposal, and hugs content height when the height is unbounded. WaterUI's
+answer follows the same rule since water-rs/waterui#1208. See a12:
 under a root proposal the hugged answer becomes the placed frame.
 
 ## A12 — root scroll against the window's safe area
@@ -149,13 +150,14 @@ window 393×852, safeInsets `{62 top, 12 bottom}`.
 
 | case | SwiftUI | WaterUI | observation |
 |---|---|---|---|
-| `a12.scroll` | viewport `171,62 60×778`; content y=62 | viewport `0,62 393×778`; content y=62 | **diverge** — S cross-axis *hugs* content (60w); W fills the safe region width. Both respect top inset |
-| `a12.ignore` | viewport `60×778` (still safe-bounded); content y=0 | viewport `0,0 393×852` (full window); content y=62 | opposite split — S keeps a safe viewport but draws content into the unsafe zone; W moves the viewport past the safe area but content still starts at 62 |
+| `a12.scroll` | viewport `171,62 60×778`; content y=62 | viewport `0,62 393×778`; content y=62 | **diverge (pre-#1208 capture)** — S cross-axis *hugs* content (60w); W filled the safe region width. Under the current rule W hugs too (`~166.5,62 60×778`), converging on S — re-capture to confirm |
+| `a12.ignore` | viewport `60×778` (still safe-bounded); content y=0 | viewport `0,0 393×852` (full window); content y=62 | split — S keeps a safe viewport but draws content into the unsafe zone; W moves the viewport past the safe area but content still starts at 62. Since #1208 W also hugs the 60pt width; the vertical safe-area split remains |
 | `a12.bar` | bar `0,0 402×44` — touches the chrome | bar `0,62 393×44` — inside safe region | **diverge** — S overlay reaches the unsafe top edge; W overlay clamps to the safe area |
 
 macOS s1 (AppKit window coords, bottom-left origin): S scroll `420,32
 60×418` below the 32pt titlebar; W scroll `0,0 500×500` full runner window —
-same viewport divergence as iOS. Both bars reach the window top: S bar
+the same viewport divergence as iOS, closed by #1208: W's scroll now hugs
+(`220,0 60×500`), converging on S. Both bars reach the window top: S bar
 `0,0 900×44`, W bar `0,456 500×44` (the top 44pt strip of the 500-tall
 window). The runner window has no safe insets, so the safe-area split of
 `a12.ignore` does not appear on macOS.

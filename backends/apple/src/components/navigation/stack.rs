@@ -15,8 +15,13 @@
 //! window's toolbar while the window carries a titlebar — the
 //! `WuiWindowToolbar.attached(to:)` + `topEntry` wiring.
 
+use alloc::boxed::Box;
 use alloc::rc::{Rc, Weak};
+use alloc::vec::Vec;
+use core::cell::RefCell;
 
+use cocoa_ui::{Retained, view};
+use waterui::Environment;
 use waterui::navigation::{
     AnyNavigationTransition, CustomNavigationController, NativeNavigationTransition,
     NavigationController, NavigationStack, NavigationTransaction, resolve_navigation_root,
@@ -25,6 +30,8 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensi
 
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
+use crate::transition::ghost::Ghost;
+use crate::transition::live::{LiveChild, Removal};
 
 /// Installs the stack's claim on the dispatcher.
 pub fn install(dispatcher: &mut Dispatcher) {
@@ -48,6 +55,51 @@ fn stack_leaf(stack: NavigationStack<(), ()>, ctx: &RenderContext<'_>) -> Native
     let mut leaf = driver.build(root);
     leaf.keep(driver);
     leaf
+}
+
+/// What roots a split column's `UINavigationController`: always a
+/// `NavigationView`, either already built or still to be resolved from a
+/// selected destination. A plain view (the empty-selection placeholder)
+/// cannot be expressed, so it can never reach [`resolve_navigation_root`].
+#[cfg(target_os = "ios")]
+pub(super) enum ColumnRoot {
+    /// A navigation page the caller built.
+    Resolved(Box<waterui::navigation::NavigationView>),
+    /// A selected destination, resolved once the column's controller is
+    /// installed in its environment.
+    Destination(waterui_backend_core::AnyView),
+}
+
+/// The split-column leaf: `content` renders as the root page of a fresh
+/// [`platform::Stack`], and the returned `UINavigationController` is the
+/// column's `viewController`. A collapsed split then pushes the page onto
+/// the compact stack with the platform's back affordance, and the page's
+/// `navigationItem` chrome — large title, the `searchable` field,
+/// toolbar items — applies instead of drawing in-content.
+#[cfg(target_os = "ios")]
+pub(super) fn column_leaf(
+    content: ColumnRoot,
+    ctx: &RenderContext<'_>,
+) -> (
+    NativeLeaf,
+    cocoa_ui::Retained<cocoa_ui::uikit::NavigationController>,
+) {
+    let driver = Rc::new(platform::Stack::for_column());
+    let erased: Rc<dyn Sink> = driver.clone();
+    let mut env = ctx.env().clone();
+    let controller = NavigationController::new(Receiver {
+        driver: Rc::downgrade(&erased),
+    });
+    env.insert(controller);
+    driver.prepare(ctx, env.clone());
+    let root = match content {
+        ColumnRoot::Resolved(root) => *root,
+        ColumnRoot::Destination(destination) => resolve_navigation_root(destination, &env),
+    };
+    let mut leaf = driver.build(root);
+    let nav = driver.nav();
+    leaf.keep(driver);
+    (leaf, nav)
 }
 
 /// What each platform driver answers to transactions.
@@ -82,6 +134,53 @@ fn page_transition(
     declared.unwrap_or(stack).native()
 }
 
+/// How an entry's `LiveChild` mounts: the initial build and pages
+/// landing under the top mount plainly; the page a transaction pushes
+/// on top plays its declared insertion (§5.5).
+#[derive(Clone, Copy)]
+enum Mount {
+    /// The first page — nothing plays on initial build.
+    Root,
+    /// The transaction's new top page.
+    Top,
+    /// A page landing under the top — not visible, plays nothing.
+    Below,
+}
+
+/// Removal ghosts of claimed pages a pop replaced, held until each
+/// completes.
+type Ghosts = Rc<RefCell<Vec<Ghost>>>;
+
+/// Whether an entry's live child carries a `.transition(...)` claim.
+fn is_claimed(leaf: &RefCell<Option<LiveChild>>) -> bool {
+    leaf.borrow()
+        .as_ref()
+        .is_some_and(|leaf| leaf.claim().is_some())
+}
+
+/// Retires a leaving claimed page into a removal ghost `ghosts` holds
+/// until it completes (§5.5). The caller has already moved the still-live
+/// transition host to where the ghost plays: a ghost reparented after
+/// `remove` sees a transient window loss, which it reads as completion.
+fn retire_page(leaf: LiveChild, env: &Environment, ghosts: &Ghosts) {
+    let ghost_view = view::retain_base(leaf.view());
+    let held = Rc::downgrade(ghosts);
+    let removal = Removal {
+        env,
+        slot: None,
+        on_complete: Box::new(move || {
+            if let Some(held) = held.upgrade() {
+                held.borrow_mut().retain(|ghost| {
+                    core::ptr::from_ref(ghost.host()) != Retained::as_ptr(&ghost_view)
+                });
+            }
+        }),
+    };
+    if let Some(ghost) = leaf.remove(removal) {
+        ghosts.borrow_mut().push(ghost);
+    }
+}
+
 /// The stack's layout: fills its parent — a navigation container claims
 /// the whole space it is offered.
 #[derive(Debug)]
@@ -110,9 +209,9 @@ mod platform {
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::Retained;
     use cocoa_ui::geometry::Rect as KitRect;
-    use cocoa_ui::objc2_ui_kit::{UIBarButtonItem, UIControlEvents};
+    use cocoa_ui::objc2_ui_kit::UIBarButtonItem;
     use cocoa_ui::uikit::{
-        HostView, LargeTitle, NavContentController, NavPage, NavSearch, bar_item, first_button,
+        HostView, LargeTitle, NavContentController, NavPage, NavSearch, bar_item,
     };
     use cocoa_ui::view;
     use waterui::Environment;
@@ -123,12 +222,15 @@ mod platform {
         NavigationTransaction, NavigationTransactionId, NavigationView,
     };
     use waterui::reactive::Signal;
-    use waterui_core::layout::ProposalSize;
+    use waterui::resolve::Resolvable;
+    use waterui::theme::color::Foreground;
 
+    use crate::components::text::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
+    use crate::transition::live::LiveChild;
 
-    use super::super::bar::{BarItem, BarItemIcon, BarState, bar_item_frame, search_prompt};
-    use super::{Fill, Sink, page_transition};
+    use super::super::bar::{BarItem, BarState, bar_item_frame, search_prompt};
+    use super::{Fill, Ghosts, Mount, Sink, is_claimed, page_transition, retire_page};
 
     /// A pending transaction: it completes when `UINavigationController`
     /// settles to the expected depth — `didShow` reconciles the way the
@@ -156,9 +258,10 @@ mod platform {
     struct Entry {
         /// The page's view controller.
         controller: Retained<NavContentController>,
-        /// The rendered content — kept for its watchers.
-        #[allow(dead_code)]
-        leaf: NativeLeaf,
+        /// The rendered content inside the page's root view — a claimed
+        /// page's `.transition(...)` lives on it and a claimed pop takes
+        /// it into a ghost. `None` once the ghost hand-off ran.
+        leaf: RefCell<Option<LiveChild>>,
         /// The rendered bar — kept for its leaves.
         #[allow(dead_code)]
         bar: BarState,
@@ -196,10 +299,18 @@ mod platform {
         transition: AnyNavigationTransition,
         /// The pages — entry 0 is the root.
         pages: RefCell<Vec<Rc<Entry>>>,
+        /// Removal transitions in flight — the stack owns the ghosts of
+        /// claimed pages a pop replaced, held until `on_complete` fires.
+        ghosts: Ghosts,
         /// The outstanding transaction, when any.
         pending: RefCell<Option<Pending>>,
         /// The main-thread proof.
         mtm: MainThreadMarker,
+        /// Whether the stack drives a split column: a collapsed
+        /// `UISplitViewController` pushes the column's top page onto the
+        /// compact stack, so the root keeps its back affordance and a page
+        /// appearing on a foreign bar re-shows it.
+        column: bool,
     }
 
     impl fmt::Debug for Stack {
@@ -221,9 +332,27 @@ mod platform {
                 nav: OnceCell::new(),
                 transition,
                 pages: RefCell::new(Vec::new()),
+                ghosts: Ghosts::default(),
                 pending: RefCell::new(None),
                 mtm: MainThreadMarker::new().expect("views resolve on the main thread"),
+                column: false,
             }
+        }
+
+        /// A stack driving one split column — the split installs the
+        /// native controller as the column's `viewController`.
+        pub(super) fn for_column() -> Self {
+            Self {
+                column: true,
+                ..Self::new(AnyNavigationTransition::new(
+                    waterui::navigation::navigation_transition::automatic(),
+                ))
+            }
+        }
+
+        /// The column's `UINavigationController`, once `build` ran.
+        pub(super) fn nav(&self) -> Retained<cocoa_ui::uikit::NavigationController> {
+            self.nav.get().expect("built").clone()
         }
 
         /// Captures the environment the children resolve against and the
@@ -246,7 +375,7 @@ mod platform {
         /// Renders the root page, installs the native controller's handlers
         /// and returns the stack's leaf.
         pub(super) fn build(self: &Rc<Self>, root: NavigationView) -> NativeLeaf {
-            let root = self.make_entry(root, true);
+            let root = self.make_entry(root, Mount::Root);
             let nav = cocoa_ui::uikit::NavigationController::new(self.mtm, &root.controller);
             nav.set_prefers_large_titles(true);
             let driver = Rc::downgrade(self);
@@ -298,61 +427,77 @@ mod platform {
             leaf
         }
 
-        /// Renders one page: content plus `Bar` chrome on `navigationItem`.
-        fn make_entry(&self, mut view: NavigationView, root: bool) -> Entry {
+        /// Renders one page: the content mounts into the entry's root
+        /// view — a `HostView` handed to `NavContentController` as
+        /// `controller.view` — through `LiveChild`, so a page-root
+        /// `.transition(...)` is claimed by the stack (§5.5); `Bar`
+        /// chrome applies on `navigationItem` as before.
+        fn make_entry(&self, mut view: NavigationView, mount: Mount) -> Entry {
             let renderer = self.renderer.get().expect("prepared");
             let ctx = renderer.context();
             let leaf = ctx.render(core::mem::take(&mut view.content));
             let bar = BarState::new(&mut view.bar, &ctx);
-            let controller = NavContentController::new(self.mtm, leaf.view());
+            let host = HostView::new(self.mtm, KitRect::ZERO);
+            host.set_layout_handler(|host| {
+                let rect = view::bounds(host);
+                for subview in view::subviews(host) {
+                    view::set_frame(&subview, rect);
+                }
+            });
+            let controller = NavContentController::new(self.mtm, &host);
+            let leaf = match mount {
+                Mount::Top => LiveChild::mount_inserted(leaf, &host, None, self.env()),
+                Mount::Root | Mount::Below => LiveChild::mount(leaf, &host, None),
+            };
+            // The page root is a transparent wrapper: the tab controller's
+            // scroll-surface association looks through it to the page. It
+            // answers what it holds now — a popped page's content retires
+            // into a ghost the host must not keep alive.
+            crate::primary_content::forward_current(&host, |host| {
+                view::subviews(host).into_iter().next()
+            });
+            // The navigation bar's top-edge tracking surface: the page's
+            // declared scroll view, so large-title collapse and the search
+            // field's pull-down reveal follow the list.
+            controller.set_top_scroll_surface(|controller| {
+                crate::primary_content::declared_scroll_view(controller.view()?.as_ref())
+            });
+            let root = matches!(mount, Mount::Root);
             let state = Rc::new(RefCell::new(core::mem::take(&mut view.state)));
             let transition = page_transition(view.transition.as_ref(), &self.transition);
             let mut keep = KeepAlive::default();
-            let mut page = NavPage {
-                title: bar.title.text.clone().unwrap_or_default(),
-                subtitle: bar.subtitle.text.clone(),
-                ..NavPage::default()
-            };
-            if let Some(principal) = bar.principal() {
-                page.title_view = Some(cocoa_ui::view::retain_base(principal.leaf.view()));
-            } else if bar.title.text.is_none() {
-                page.title_view = Some(cocoa_ui::view::retain_base(bar.title.leaf.view()));
-            }
-            page.leading = bar
-                .leading_items()
-                .map(|item| self.button(item, &mut keep))
-                .collect();
-            page.trailing = bar
-                .trailing_items()
-                .map(|item| self.button(item, &mut keep))
-                .collect();
-            page.bottom = bar
-                .bottom_items()
-                .map(|item| self.button(item, &mut keep))
-                .collect();
-            page.large_title = match bar.display_mode {
-                NavigationTitleDisplayMode::Automatic => LargeTitle::Automatic,
-                NavigationTitleDisplayMode::Inline => LargeTitle::Inline,
-                NavigationTitleDisplayMode::Medium | NavigationTitleDisplayMode::Large => {
-                    LargeTitle::Large
-                }
-            };
-            page.hides_back = root;
-            if !root {
-                let state = Rc::clone(&state);
-                let env = self.env().clone();
-                let model = self.model.get().expect("prepared").clone();
-                page.on_back = Some(Rc::new(move || {
-                    if state.borrow_mut().attempt_pop(&env) {
-                        model.request_pop(1);
-                    }
-                }));
-            }
+            let mut page = self.nav_page(&bar, root, &mut keep, &state);
             if let Some(search) = bar.search.as_ref() {
                 page.search = Some(attach_search(search, ctx.env(), &controller, &mut keep));
             }
             page.hidden = bar.hidden.snapshot();
             controller.set_page(&page);
+            keep.bind(&Foreground.resolve(ctx.env()), {
+                let controller = controller.clone();
+                move |color| controller.set_title_color(&platform_color(&color))
+            });
+            if self.column {
+                // A collapsed split pushes the column's own stack onto the
+                // compact stack, so the page's `navigationController()` is
+                // still its column nav and the page's recorded intent
+                // applies to it — while the pushed stack's
+                // `navigationController()` answers the compact stack,
+                // whose bar carries the back affordance and must show.
+                let hidden = bar.hidden.clone();
+                let page_controller = cocoa_ui::objc2::rc::Weak::new(&*controller);
+                controller.set_will_appear_handler(move |animated| {
+                    let Some(controller) = page_controller.load() else {
+                        return;
+                    };
+                    let Some(nav) = controller.navigationController() else {
+                        return;
+                    };
+                    if let Some(outer) = nav.navigationController() {
+                        outer.setNavigationBarHidden_animated(false, animated);
+                    }
+                    nav.setNavigationBarHidden_animated(hidden.snapshot(), animated);
+                });
+            }
             {
                 let appear_state = Rc::clone(&state);
                 let env = self.env().clone();
@@ -373,7 +518,7 @@ mod platform {
             }
             Entry {
                 controller,
-                leaf,
+                leaf: RefCell::new(Some(leaf)),
                 bar,
                 state,
                 transition,
@@ -381,57 +526,75 @@ mod platform {
             }
         }
 
-        /// One semantic item as a `UIBarButtonItem`: an icon item carries a
-        /// symbol plus an action forwarded to the rendered content's first
-        /// button — `firstButton.sendActions(.primaryActionTriggered)` —
-        /// while a plain item hosts the content itself. The title signal
-        /// feeds `accessibilityLabel`.
-        fn button(&self, item: &BarItem, keep: &mut KeepAlive) -> Retained<UIBarButtonItem> {
-            let action = first_button(item.leaf.view()).map(|button| {
-                Rc::new(move || {
-                    button.sendActionsForControlEvents(UIControlEvents::PrimaryActionTriggered);
-                }) as Rc<dyn Fn()>
-            });
-            let object = match item.icon.as_ref() {
-                Some(BarItemIcon::System(name)) => bar_item(self.mtm, Some(name), None, action),
-                Some(BarItemIcon::View(icon)) => {
-                    // The declared icon draws inside the bar's chrome as a
-                    // template image the bar tints; a view that cannot
-                    // render stays hosted as the item's custom view.
-                    let size = icon
-                        .layout()
-                        .measure(ProposalSize {
-                            width: None,
-                            height: None,
-                        })
-                        .size;
-                    cocoa_ui::view::set_frame(
-                        icon.view(),
-                        cocoa_ui::geometry::Rect::new(
-                            0.0,
-                            0.0,
-                            f64::from(size.width),
-                            f64::from(size.height),
-                        ),
-                    );
-                    self.icon_item(item, icon, action, keep)
-                }
-                None => {
-                    // A hosted item must arrive with a real frame: the bar
-                    // wraps it as the item's customView and never lays it
-                    // out itself.
-                    cocoa_ui::view::set_frame(item.leaf.view(), bar_item_frame(item));
-                    bar_item(self.mtm, None, Some(item.leaf.view()), None)
+        /// Assembles the `NavPage` record from a page's bar state —
+        /// title, principal, item buttons and large-title mode — plus
+        /// the back affordance a non-root page carries.
+        fn nav_page(
+            &self,
+            bar: &BarState,
+            root: bool,
+            keep: &mut KeepAlive,
+            state: &Rc<RefCell<NavigationDestinationState>>,
+        ) -> NavPage {
+            let mut page = NavPage {
+                title: bar.title.text.clone().unwrap_or_default(),
+                subtitle: bar.subtitle.text.clone(),
+                ..NavPage::default()
+            };
+            if let Some(principal) = bar.principal() {
+                page.title_view = Some(cocoa_ui::view::retain_base(principal.leaf.view()));
+            } else if bar.title.text.is_none() {
+                page.title_view = Some(cocoa_ui::view::retain_base(bar.title.leaf.view()));
+            }
+            page.leading = bar
+                .leading_items()
+                .map(|item| self.button(item, keep))
+                .collect();
+            page.trailing = bar
+                .trailing_items()
+                .map(|item| self.button(item, keep))
+                .collect();
+            page.bottom = bar
+                .bottom_items()
+                .map(|item| self.button(item, keep))
+                .collect();
+            page.large_title = match bar.display_mode {
+                NavigationTitleDisplayMode::Automatic => LargeTitle::Automatic,
+                NavigationTitleDisplayMode::Inline => LargeTitle::Inline,
+                NavigationTitleDisplayMode::Medium | NavigationTitleDisplayMode::Large => {
+                    LargeTitle::Large
                 }
             };
-            if let Some(title) = item.title.clone() {
-                let object = object.clone();
-                keep.bind(&title, move |title| {
-                    let text = title.to_plain().to_string();
-                    cocoa_ui::uikit::bar_item_accessibility_label(&object, &text);
-                });
+            // A column stack's root keeps the back affordance: a collapsed
+            // split pushes the page onto the compact stack, where the
+            // button returns to the sidebar column.
+            page.hides_back = root && !self.column;
+            if !root {
+                let state = Rc::clone(state);
+                let env = self.env().clone();
+                let model = self.model.get().expect("prepared").clone();
+                page.on_back = Some(Rc::new(move || {
+                    if state.borrow_mut().attempt_pop(&env) {
+                        model.request_pop(1);
+                    }
+                }));
             }
-            object
+            page
+        }
+
+        /// One semantic item as a `UIBarButtonItem`. An icon item carries a
+        /// symbol plus an action forwarded to the rendered content's first
+        /// button — `firstButton.sendActions(.primaryActionTriggered)`. A
+        /// single text button is a title item the bar draws. Any other plain
+        /// item is hosted as the item's custom view. The title signal feeds
+        /// `accessibilityLabel`.
+        fn button(&self, item: &BarItem, keep: &mut KeepAlive) -> Retained<UIBarButtonItem> {
+            crate::components::navigation::button_bar_item(
+                item,
+                keep,
+                self.mtm,
+                |icon, action, keep| self.icon_item(item, icon, action, keep),
+            )
         }
 
         /// A `View` icon under `gpu_surface`: the item is created at once
@@ -567,18 +730,49 @@ mod platform {
             let mut pages = self.pages.borrow_mut();
             let cut = prefix.min(pages.len());
             let removed: Vec<Rc<Entry>> = pages.split_off(cut);
-            let removed: Vec<Rc<RefCell<NavigationDestinationState>>> = removed
+            let removed_states: Vec<Rc<RefCell<NavigationDestinationState>>> = removed
                 .iter()
                 .map(|entry| Rc::clone(&entry.state))
                 .collect();
+            let inserted_count = transaction.inserted.len();
             let mut inserted = Vec::new();
-            for builder in transaction.inserted {
-                inserted.push(Rc::new(self.make_entry(builder.build(), false)));
+            for (index, builder) in transaction.inserted.into_iter().enumerate() {
+                let mount = if index + 1 == inserted_count {
+                    Mount::Top
+                } else {
+                    Mount::Below
+                };
+                inserted.push(Rc::new(self.make_entry(builder.build(), mount)));
             }
-            let animated = inserted
-                .last()
-                .or_else(|| pages.last())
-                .is_some_and(|entry| entry.transition != NativeNavigationTransition::None);
+            // A claimed top page — leaving or entering — replaces the
+            // stack's own animation for this change (§5.5).
+            let leaving_claimed = removed.last().is_some_and(|entry| is_claimed(&entry.leaf));
+            let entering_claimed = inserted.last().is_some_and(|entry| is_claimed(&entry.leaf));
+            let claimed = leaving_claimed || entering_claimed;
+            if leaving_claimed && let Some(entry) = removed.last() {
+                // The claimed page retires into a ghost above the page
+                // beneath it and below the bars, as Hydrolysis paints the
+                // moving page over the stationary one — before
+                // `set_pages` removes the controller, so its pixels
+                // never leave the window.
+                let leaf = entry
+                    .leaf
+                    .borrow_mut()
+                    .take()
+                    .expect("a live page entry holds its child");
+                let nav = self.nav.get().expect("built");
+                let nav_view = nav.view().expect("nav view");
+                let frame =
+                    view::convert_rect(leaf.view(), view::bounds(leaf.view()), Some(&nav_view));
+                nav.insert_beneath_bars(leaf.view());
+                view::set_frame(leaf.view(), frame);
+                retire_page(leaf, self.env(), &self.ghosts);
+            }
+            let animated = !claimed
+                && inserted
+                    .last()
+                    .or_else(|| pages.last())
+                    .is_some_and(|entry| entry.transition != NativeNavigationTransition::None);
             pages.extend(inserted);
             let controllers: Vec<Retained<NavContentController>> =
                 pages.iter().map(|entry| entry.controller.clone()).collect();
@@ -589,7 +783,7 @@ mod platform {
             *self.pending.borrow_mut() = Some(Pending {
                 id: transaction.id,
                 expected: pages.len(),
-                removed,
+                removed: removed_states,
             });
         }
     }
@@ -604,16 +798,23 @@ mod platform {
     ) -> NavSearch {
         let config = NavSearch {
             placeholder: search_prompt(search, env).snapshot().to_plain().to_string(),
-            text: search.text.snapshot().to_string(),
-            placement: Some(cocoa_ui::uikit::SearchBarPlacement::Stacked),
-            hides_when_scrolling: Some(false),
+            text: search.text().snapshot().to_string(),
+            // `.automatic`: on iOS 26 a page pushed by a collapsed split
+            // carries the field in the bottom toolbar, matching the
+            // platform's own `.searchable` presentation; `Stacked` would
+            // pin it under the bar.
+            placement: None,
+            // A `.searchable` page declares no display mode, so the field
+            // keeps the platform's own behaviour: tucked under the title and
+            // revealed by pulling the content down.
+            hides_when_scrolling: None,
         };
-        let binding = search.text.clone();
+        let binding = search.text().clone();
         controller.set_search_change_handler(move |text| {
             binding.set(Str::from(text));
         });
         let target = controller.clone();
-        keep.bind(&search.text.clone(), move |text| {
+        keep.bind(&search.text().clone(), move |text| {
             target.set_search_text(text.as_ref());
         });
         let target = controller.clone();
@@ -639,7 +840,7 @@ mod platform {
     };
     use cocoa_ui::geometry::Size as KitSize;
     use cocoa_ui::objc2_app_kit::{NSImage, NSView, NSWindowStyleMask};
-    use cocoa_ui::view::{bounds, set_frame};
+    use cocoa_ui::view::{self, bounds, set_frame};
     use waterui::Environment;
     use waterui::Str;
     use waterui::navigation::{
@@ -650,17 +851,19 @@ mod platform {
     use waterui_core::layout::ProposalSize;
 
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
+    use crate::transition::live::LiveChild;
 
     use super::super::bar::{BarItem, BarItemIcon, BarState, search_prompt};
-    use super::{Fill, Sink, page_transition};
+    use super::{Fill, Ghosts, Mount, Sink, is_claimed, page_transition, retire_page};
 
     /// One page on the stack.
     struct Entry {
         /// The page's host view.
         view: Retained<NSView>,
-        /// The rendered content — kept for its watchers.
-        #[allow(dead_code)]
-        leaf: NativeLeaf,
+        /// The rendered content inside the entry host — a claimed
+        /// page's `.transition(...)` lives on it and a claimed pop takes
+        /// it into a ghost. `None` once the ghost hand-off ran.
+        leaf: RefCell<Option<LiveChild>>,
         /// The rendered bar — kept for its leaves.
         bar: BarState,
         /// The destination's reactive state.
@@ -700,6 +903,9 @@ mod platform {
         transition: AnyNavigationTransition,
         /// The pages — entry 0 is the root.
         entries: RefCell<Vec<Rc<Entry>>>,
+        /// Removal transitions in flight — the stack owns the ghosts of
+        /// claimed pages a pop replaced, held until `on_complete` fires.
+        ghosts: Ghosts,
         /// The window's toolbar coordinator, while a titled window hosts us.
         toolbar: RefCell<Option<Retained<WindowToolbar>>>,
         /// The search field published for the current top page.
@@ -736,6 +942,7 @@ mod platform {
                 host: HostView::new(mtm, cocoa_ui::geometry::Rect::ZERO),
                 transition,
                 entries: RefCell::new(Vec::new()),
+                ghosts: Ghosts::default(),
                 toolbar: RefCell::new(None),
                 search_field: RefCell::new(None),
                 chrome_active: Cell::new(true),
@@ -765,6 +972,12 @@ mod platform {
         /// handlers wired.
         pub(super) fn build(self: &Rc<Self>, root: NavigationView) -> NativeLeaf {
             let _ = self.self_weak.set(Rc::downgrade(self));
+            // The stack owns its pages' safe-area answer —
+            // `WuiSafeAreaManaging` in the baseline — so the window root
+            // hands it the whole window, not the safe-area rect: a page
+            // touches the edge the window-drawn bar sits on and receives
+            // that region as its container safe area (§7.1).
+            self.host.set_manages_safe_area(true);
             let driver = Rc::clone(self);
             self.host.set_layout_handler(move |host| {
                 driver.layout(host);
@@ -777,25 +990,39 @@ mod platform {
             self.host.set_hidden_handler(move |_host, hidden| {
                 driver.set_chrome_active(!hidden);
             });
-            let entry = self.make_entry(root);
+            let entry = self.make_entry(root, Mount::Root);
             self.entries.borrow_mut().push(Rc::new(entry));
             self.place_entries();
             NativeLeaf::new(&*self.host, Fill)
         }
 
-        /// Renders one page: content in a host view, bar state and the
-        /// hidden watcher that republishes chrome — `refreshChromeIfTop`.
-        fn make_entry(&self, mut view: NavigationView) -> Entry {
+        /// Renders one page: the content mounts into the entry's host
+        /// view through `LiveChild`, so a page-root `.transition(...)`
+        /// is claimed by the stack (§5.5); bar state and the hidden
+        /// watcher republish chrome — `refreshChromeIfTop`.
+        fn make_entry(&self, mut view: NavigationView, mount: Mount) -> Entry {
             let renderer = self.renderer.get().expect("prepared");
             let ctx = renderer.context();
             let leaf = ctx.render(core::mem::take(&mut view.content));
             let bar = BarState::new(&mut view.bar, &ctx);
             let host = HostView::new(self.mtm, cocoa_ui::geometry::Rect::ZERO);
-            host.add_subview(leaf.view());
+            let leaf = match mount {
+                Mount::Top => LiveChild::mount_inserted(leaf, &host, None, self.env()),
+                Mount::Root | Mount::Below => LiveChild::mount(leaf, &host, None),
+            };
+            crate::primary_content::forward_current(&host, |host| {
+                cocoa_ui::view::subviews(host).into_iter().next()
+            });
+            // The page resolves the region its top edge reached the way
+            // the window root does: `content_frame` hands a safe-area
+            // manager the bounds — a scroll surface reaches under the
+            // window-drawn bar and insets its own content — and anything
+            // else the safe-area rect (§7.1).
             host.set_layout_handler(|host| {
-                let rect = bounds(host);
+                let host_view: &NSView = host;
+                let context = crate::native_layout::LayoutContext::of(host_view);
                 for subview in cocoa_ui::view::subviews(host) {
-                    set_frame(&subview, rect);
+                    set_frame(&subview, context.content_frame(&subview));
                 }
             });
             let state = Rc::new(RefCell::new(core::mem::take(&mut view.state)));
@@ -811,7 +1038,7 @@ mod platform {
             }
             Entry {
                 view: host.into_super(),
-                leaf,
+                leaf: RefCell::new(Some(leaf)),
                 bar,
                 state,
                 transition,
@@ -821,13 +1048,11 @@ mod platform {
             }
         }
 
-        /// Frames every entry inside `host`: each fills bounds minus the
-        /// titlebar's safe-area inset — `layoutEntries`.
+        /// Frames every entry inside `host`: each fills the bounds, so a
+        /// page touches the edge the window-drawn bar sits on —
+        /// `layoutEntries`.
         fn layout(&self, host: &HostView) {
-            let mut rect = bounds(host);
-            let inset = self.host.safe_area_insets().top;
-            rect.origin.y += inset;
-            rect.size.height -= inset;
+            let rect = bounds(host);
             for entry in self.entries.borrow().iter() {
                 cocoa_ui::view::set_frame(&entry.view, rect);
             }
@@ -856,9 +1081,13 @@ mod platform {
             let previous_top = self.top_view.get();
             let entries = self.entries.borrow();
             let top = entries.last().cloned();
-            let fade = top
-                .as_ref()
-                .is_some_and(|entry| entry.transition == NativeNavigationTransition::Fade);
+            // A claimed top entry carries its own insertion — the stack's
+            // fade is skipped for it (§5.5).
+            let claimed_top = top.as_ref().is_some_and(|entry| is_claimed(&entry.leaf));
+            let fade = !claimed_top
+                && top
+                    .as_ref()
+                    .is_some_and(|entry| entry.transition == NativeNavigationTransition::Fade);
             let mut hide_after = Vec::new();
             for (index, entry) in entries.iter().enumerate() {
                 let is_top = index + 1 == entries.len();
@@ -989,8 +1218,8 @@ mod platform {
                         .to_plain()
                         .as_ref(),
                 );
-                field.set_text(search.text.snapshot().as_ref());
-                let binding = search.text.clone();
+                field.set_text(search.text().snapshot().as_ref());
+                let binding = search.text().clone();
                 field.set_change_handler(move |field| {
                     binding.set(Str::from(field.text()));
                 });
@@ -1009,8 +1238,8 @@ mod platform {
         /// control — `firstButton`'s `performClick` — and a `View` icon or
         /// no icon hosts the content itself.
         fn child(&self, entry: &Entry, item: &BarItem) -> ToolbarChild {
-            // The item's action and its chrome both come from the button
-            // inside it, the way `firstButton` informed `actionItem`.
+            // The item's action comes from the button inside it, the way
+            // `firstButton` informed `actionItem`.
             let button = first_button(item.leaf.view());
             let action = button.as_ref().map(|button| {
                 let button = button.clone();
@@ -1019,7 +1248,6 @@ mod platform {
                     unsafe { activate(button.control()) };
                 }) as Rc<dyn Fn()>
             });
-            let bordered = button.as_ref().is_none_or(|button| !button.is_borderless());
             let label = item
                 .title
                 .as_ref()
@@ -1036,7 +1264,6 @@ mod platform {
                         None,
                     ),
                     label,
-                    bordered,
                     action,
                 },
                 Some(BarItemIcon::View(icon)) => {
@@ -1052,7 +1279,6 @@ mod platform {
                         },
                         icon: Self::view_icon(self, entry, item, icon),
                         label,
-                        bordered,
                         action,
                     }
                 }
@@ -1063,7 +1289,6 @@ mod platform {
                     },
                     icon: None,
                     label,
-                    bordered,
                     action,
                 },
             }
@@ -1124,12 +1349,32 @@ mod platform {
             let cut = prefix.min(entries.len());
             let removed: Vec<Rc<Entry>> = entries.split_off(cut);
             let env = self.env().clone();
-            for entry in &removed {
+            let last = removed.len().saturating_sub(1);
+            for (index, entry) in removed.iter().enumerate() {
+                // Only the top page leaving ghosts: a claimed entry's
+                // still-live transition host moves above the stack's
+                // pages at the entry's last frame, as Hydrolysis paints
+                // the moving page over the stationary one, then retires.
+                if index == last
+                    && let Some(leaf) = entry.leaf.borrow_mut().take()
+                    && leaf.claim().is_some()
+                {
+                    let frame = view::frame(&entry.view);
+                    view::add_subview(&self.host, leaf.view());
+                    view::set_frame(leaf.view(), frame);
+                    retire_page(leaf, self.env(), &self.ghosts);
+                }
                 cocoa_ui::view::remove_from_superview(&entry.view);
                 entry.state.borrow_mut().popped(&env);
             }
-            for builder in transaction.inserted {
-                entries.push(Rc::new(self.make_entry(builder.build())));
+            let inserted_count = transaction.inserted.len();
+            for (index, builder) in transaction.inserted.into_iter().enumerate() {
+                let mount = if index + 1 == inserted_count {
+                    Mount::Top
+                } else {
+                    Mount::Below
+                };
+                entries.push(Rc::new(self.make_entry(builder.build(), mount)));
             }
             drop(entries);
             self.place_entries();

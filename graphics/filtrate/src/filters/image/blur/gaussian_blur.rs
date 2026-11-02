@@ -14,10 +14,13 @@ const GAUSSIAN_BLUR: &str = include_str!(concat!(
 /// Gaussian blur kernel radius in multiples of the standard deviation.
 pub const GAUSSIAN_RADIUS_PER_SIGMA: f32 = 4.0;
 
+const GAUSSIAN_BLUR_F16: &str = include_str!("../../../shaders/image/blur/gaussian_blur_f16.wgsl");
+
 /// The horizontal pass, averaging in the working space.
 const HORIZONTAL: SpatialStage = SpatialStage {
     name: "gaussian_blur_horizontal",
     source: GAUSSIAN_BLUR,
+    source_f16: Some(GAUSSIAN_BLUR_F16),
     params: &[ParamSource::Param(0), ParamSource::Constant(&[1.0, 0.0])],
     space: OperatingSpace::Working,
     shape: None,
@@ -28,6 +31,7 @@ const HORIZONTAL: SpatialStage = SpatialStage {
 const VERTICAL: SpatialStage = SpatialStage {
     name: "gaussian_blur_vertical",
     source: GAUSSIAN_BLUR,
+    source_f16: Some(GAUSSIAN_BLUR_F16),
     params: &[ParamSource::Param(0), ParamSource::Constant(&[0.0, 1.0])],
     space: OperatingSpace::Working,
     shape: None,
@@ -39,6 +43,7 @@ const VERTICAL: SpatialStage = SpatialStage {
 const HORIZONTAL_SRGB: SpatialStage = SpatialStage {
     name: "gaussian_blur_horizontal_srgb",
     source: GAUSSIAN_BLUR,
+    source_f16: Some(GAUSSIAN_BLUR_F16),
     params: &[ParamSource::Param(0), ParamSource::Constant(&[1.0, 0.0])],
     space: OperatingSpace::Srgb,
     shape: None,
@@ -49,6 +54,7 @@ const HORIZONTAL_SRGB: SpatialStage = SpatialStage {
 const VERTICAL_SRGB: SpatialStage = SpatialStage {
     name: "gaussian_blur_vertical_srgb",
     source: GAUSSIAN_BLUR,
+    source_f16: Some(GAUSSIAN_BLUR_F16),
     params: &[ParamSource::Param(0), ParamSource::Constant(&[0.0, 1.0])],
     space: OperatingSpace::Srgb,
     shape: None,

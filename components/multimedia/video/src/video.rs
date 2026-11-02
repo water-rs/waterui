@@ -36,6 +36,7 @@ use crate::{
 /// How the decoded picture fills the bounds it is given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
+#[non_exhaustive]
 pub enum ContentMode {
     /// Fit the video within the bounds while maintaining aspect ratio (letterbox/pillarbox).
     #[default]
@@ -49,6 +50,10 @@ pub enum ContentMode {
 /// Packing layout for an equirectangular spherical-video source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations unpack each stereo layout variant by variant; a new layout must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SphericalStereoLayout {
     /// One panorama shared by both eyes or displayed as an ordinary 360-degree view.
     #[default]
@@ -238,6 +243,10 @@ impl EquirectangularProjection {
 
 /// Projection used to present decoded video frames.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations present each projection variant by variant; a new projection must fail their build instead of falling into a wildcard arm"
+)]
 pub enum VideoProjection {
     /// Ordinary planar presentation using [`ContentMode`].
     #[default]
@@ -319,6 +328,10 @@ impl Default for Volume {
 
 /// Subtitle track selection policy for a player instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations select subtitles variant by variant; a new policy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SubtitleSelection {
     /// Use the player's default choice.
     #[default]
@@ -331,6 +344,10 @@ pub enum SubtitleSelection {
 
 /// Audio track selection policy for a player instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations select tracks variant by variant; a new policy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum AudioTrackSelection {
     /// Use the player's default or autoselected audio track.
     #[default]
@@ -341,6 +358,10 @@ pub enum AudioTrackSelection {
 
 /// Video-quality track selection policy for a player instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations select tracks variant by variant; a new policy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum VideoTrackSelection {
     /// Let adaptive playback select the video quality.
     #[default]
@@ -560,6 +581,7 @@ impl VideoTrackInfo {
 
 /// Origin of one subtitle track in the active presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SubtitleTrackOrigin {
     /// Application-supplied sidecar asset.
     Sidecar,
@@ -700,21 +722,66 @@ impl TrackCatalog {
 /// `Video` / `VideoPlayer` use one policy object so apps can explicitly choose
 /// between VOD buffering behavior and realtime behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PlaybackPolicy {
     /// `true` for realtime streams (low-latency/live), `false` for VOD/static files.
-    pub realtime: bool,
+    realtime: bool,
     /// Minimum buffered duration before starting playback for VOD.
-    pub vod_start_buffer_ms: u32,
+    vod_start_buffer_ms: u32,
     /// Minimum buffered duration to resume after a VOD stall.
-    pub vod_resume_buffer_ms: u32,
+    vod_resume_buffer_ms: u32,
     /// Buffer level below which VOD enters buffering state.
-    pub vod_stall_buffer_ms: u32,
+    vod_stall_buffer_ms: u32,
     /// For realtime mode, drop video frames that are later than this threshold.
-    pub live_max_video_late_ms: u32,
+    live_max_video_late_ms: u32,
     /// Bounded segmented-network and adaptive-selection policy.
-    pub network: NetworkPlaybackPolicy,
+    network: NetworkPlaybackPolicy,
     /// Required platform power path for this session.
-    pub power: PlaybackPowerPolicy,
+    power: PlaybackPowerPolicy,
+}
+
+impl PlaybackPolicy {
+    /// `true` for realtime streams (low-latency/live), `false` for VOD/static files.
+    #[must_use]
+    pub const fn realtime(&self) -> bool {
+        self.realtime
+    }
+
+    /// Minimum buffered duration before starting playback for VOD.
+    #[must_use]
+    pub const fn vod_start_buffer_ms(&self) -> u32 {
+        self.vod_start_buffer_ms
+    }
+
+    /// Minimum buffered duration to resume after a VOD stall.
+    #[must_use]
+    pub const fn vod_resume_buffer_ms(&self) -> u32 {
+        self.vod_resume_buffer_ms
+    }
+
+    /// Buffer level below which VOD enters buffering state.
+    #[must_use]
+    pub const fn vod_stall_buffer_ms(&self) -> u32 {
+        self.vod_stall_buffer_ms
+    }
+
+    /// For realtime mode, drop video frames that are later than this threshold.
+    #[must_use]
+    pub const fn live_max_video_late_ms(&self) -> u32 {
+        self.live_max_video_late_ms
+    }
+
+    /// Bounded segmented-network and adaptive-selection policy.
+    #[must_use]
+    pub const fn network(&self) -> NetworkPlaybackPolicy {
+        self.network
+    }
+
+    /// Required platform power path for this session.
+    #[must_use]
+    pub const fn get_power(&self) -> PlaybackPowerPolicy {
+        self.power
+    }
 }
 
 /// Power-path requirement for media playback.
@@ -723,6 +790,7 @@ pub struct PlaybackPolicy {
 /// output route, or active interactive features cannot satisfy the invariant.
 /// They never begin on one path and silently fall back to another.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PlaybackPowerPolicy {
     /// Let the backend select its canonical path while preserving all features.
     #[default]
@@ -735,6 +803,7 @@ pub enum PlaybackPowerPolicy {
 
 /// Active media-output architecture selected by a backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PlaybackOutputPath {
     /// A native player owns its platform-defined media path.
     PlatformManaged,
@@ -1162,6 +1231,7 @@ impl PlaybackMetrics {
 
 /// Events emitted by video components.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Event {
     /// The video is ready to play.
     ReadyToPlay,

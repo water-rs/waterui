@@ -109,6 +109,17 @@ impl ParamSender {
         let sender = self.clone();
         param.watch_animated(Box::new(move |target| sender.send(param_index, target)))
     }
+
+    /// Wakes the host and arms `redraw_hint` for a change that carries no
+    /// parameter event: a watcher whose payload lives in shared state beside
+    /// the tracks (the shader effect's animation flag) delivers it there and
+    /// calls this, so there is nothing for the channel to drain.
+    pub fn wake(&self) {
+        self.events_pending.store(true, Ordering::Release);
+        if let Some(callback) = self.redraw_callback.get() {
+            callback();
+        }
+    }
 }
 
 /// Installs one watcher per visited parameter, collecting their guards.

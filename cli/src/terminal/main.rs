@@ -15,6 +15,8 @@ use eyre::Result;
 use futures_util::future::{self, Either};
 use tracing_subscriber::EnvFilter;
 
+#[cfg(target_os = "macos")]
+use commands::test_runner;
 use commands::{
     bench, build, channel, clean, completions, create, device, devices, doctor, fetch, gc, init,
     inspector, mcp, package, preview, run, update,
@@ -88,6 +90,11 @@ enum Commands {
 
     /// Print the shell completion script for a shell.
     Completions(completions::Args),
+
+    /// The cargo/nextest target runner for the Apple test destinations.
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    TestRunner(test_runner::Args),
 }
 
 impl Commands {
@@ -114,6 +121,8 @@ impl Commands {
             | Self::Gc(_)
             | Self::Update(_)
             | Self::Completions(_) => None,
+            #[cfg(target_os = "macos")]
+            Self::TestRunner(_) => None,
         }
     }
 }
@@ -139,6 +148,15 @@ async fn request_build_cache_cleanup(command: &Commands) {
             "Failed to start the build-cache cleanup: {error:#}"
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+const fn is_test_runner(command: &Commands) -> bool {
+    matches!(command, Commands::TestRunner(_))
+}
+#[cfg(not(target_os = "macos"))]
+const fn is_test_runner(_: &Commands) -> bool {
+    false
 }
 
 fn main() -> Result<()> {
@@ -180,7 +198,7 @@ fn main() -> Result<()> {
                 | Commands::Update(_)
                 | Commands::Mcp(_)
                 | Commands::Completions(_)
-        );
+        ) && !is_test_runner(&cli.command);
 
         let result = match cli.command {
             Commands::Run(args) => Box::pin(run::run(&shell, args, interrupt_rx))
@@ -212,7 +230,7 @@ fn main() -> Result<()> {
                 until_interrupt(device::run(&shell, args), &interrupt_rx).await
             }
             Commands::Devices(args) => {
-                until_interrupt(devices::run(&shell, args), &interrupt_rx).await
+                until_interrupt(Box::pin(devices::run(&shell, args)), &interrupt_rx).await
             }
             Commands::Gc(args) => until_interrupt(gc::run(&shell, args), &interrupt_rx).await,
             Commands::Fetch(args) => {
@@ -221,9 +239,9 @@ fn main() -> Result<()> {
             Commands::Preview(args) => {
                 until_interrupt(Box::pin(preview::run(&shell, args)), &interrupt_rx).await
             }
-            Commands::Inspector(args) => {
-                Box::pin(until_interrupt(inspector::run(&shell, args), &interrupt_rx)).await
-            }
+            Commands::Inspector(args) => Box::pin(inspector::run(&shell, args, interrupt_rx))
+                .await
+                .map(Some),
             Commands::Mcp(args) => until_interrupt(mcp::run(&shell, args), &interrupt_rx).await,
             Commands::Update(args) => {
                 until_interrupt(update::run(&shell, args), &interrupt_rx).await
@@ -231,6 +249,14 @@ fn main() -> Result<()> {
             Commands::Completions(args) => {
                 until_interrupt(async { completions::run(&args) }, &interrupt_rx).await
             }
+            #[cfg(target_os = "macos")]
+            Commands::TestRunner(args) => match test_runner::run(&args, interrupt_rx).await {
+                Ok(status) => std::process::exit(i32::from(status)),
+                Err(error) => {
+                    let _ = shell.error(format!("water test-runner: {error:#}"));
+                    std::process::exit(1);
+                }
+            },
         }
         .map(|_: Option<()>| ());
 

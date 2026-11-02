@@ -87,9 +87,9 @@ impl Frames {
         let at = self.at();
         let result = runtime.pump_at(true, at);
         (
-            result.profile.counters,
+            result.profile().counters(),
             result
-                .snapshot
+                .into_snapshot()
                 .expect("a capturing pump must produce a snapshot"),
         )
     }
@@ -115,13 +115,21 @@ fn secondary_click(x: f32, y: f32) -> [InputEvent; 2] {
 }
 
 fn runtime_with(view: impl View) -> HeadlessRuntime {
+    runtime_with_on(
+        view,
+        crate::platform::OffscreenGpuContext::new_for_tests_blocking(),
+    )
+}
+
+fn runtime_with_on(view: impl View, gpu: crate::platform::OffscreenGpuContext) -> HeadlessRuntime {
     let view = RefCell::new(Some(AnyView::new(view)));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         view.borrow_mut()
             .take()
             .expect("the fixture view is built once")
     });
-    HeadlessRuntime::new_for_tests(
+    HeadlessRuntime::new_for_tests_on_context(
+        gpu,
         pumped_test_environment(),
         builder,
         WINDOW,
@@ -134,7 +142,7 @@ fn runtime_with(view: impl View) -> HeadlessRuntime {
 /// separate window: the presenting window's retained-engine fields stay
 /// zero on its frames.
 fn assert_engine_counters_zero(counters: &FrameCounters) {
-    let m = counters.frame_work;
+    let m = counters.frame_work();
     assert_eq!(m.layer_creations, 0, "no retained engine layers mount");
     assert_eq!(m.layer_removals, 0, "no retained engine layers unmount");
 }
@@ -142,7 +150,7 @@ fn assert_engine_counters_zero(counters: &FrameCounters) {
 /// A drawn context menu presents through the window's retained
 /// context-menu host: its opening frame mounts the menu's layers.
 fn assert_presentation_mounts(counters: &FrameCounters) {
-    let m = counters.frame_work;
+    let m = counters.frame_work();
     assert!(
         m.layer_creations >= 1,
         "the context-menu host mounts the menu's layers"
@@ -154,7 +162,7 @@ fn assert_presentation_mounts(counters: &FrameCounters) {
 /// frame (`layer_creations >= 1`), while a fixture with no unmount sees no
 /// removals.
 fn assert_retained_engine_counters(counters: &FrameCounters) {
-    let m = counters.frame_work;
+    let m = counters.frame_work();
     assert!(
         m.layer_creations >= 1,
         "the retained engine mounts the fixture's layers"
@@ -178,7 +186,7 @@ fn nested_clip_blend_opacity_counts() {
     let mut runtime = runtime_with(view);
     let mut frames = Frames::new();
     let (counters, _snapshot) = frames.render(&mut runtime);
-    let m = counters.frame_work;
+    let m = counters.frame_work();
 
     assert!(m.semantic_builds > 0, "the mount must dispatch view bodies");
     assert!(
@@ -270,10 +278,10 @@ fn transformed_image_brushes_count() {
     let mut runtime = runtime_with(waterui_graphics::SceneView::new(ImagePane { image: None }));
     let mut frames = Frames::new();
     let (counters, snapshot) = frames.render(&mut runtime);
-    let m = counters.frame_work;
+    let m = counters.frame_work();
 
     let pixel_at = |x: usize, y: usize| -> &[u8] {
-        &snapshot.rgba8[(x + y * snapshot.width as usize) * 4..][..4]
+        &snapshot.rgba8()[(x + y * snapshot.width() as usize) * 4..][..4]
     };
     assert_ne!(
         pixel_at(136, 76),
@@ -295,7 +303,7 @@ fn glyph_only_scene_counts() {
     )));
     let mut frames = Frames::new();
     let (counters, _snapshot) = frames.render(&mut runtime);
-    let m = counters.frame_work;
+    let m = counters.frame_work();
 
     assert!(
         m.font_registrations >= 2,
@@ -342,7 +350,7 @@ fn variable_colr_bitmap_fonts_count() {
     );
     let mut frames = Frames::new();
     let (counters, _snapshot) = frames.render(&mut runtime);
-    let m = counters.frame_work;
+    let m = counters.frame_work();
 
     assert!(
         m.font_registrations >= 3,
@@ -378,7 +386,7 @@ fn shadow_silhouettes_count() {
     )));
     let mut frames = Frames::new();
     let (counters, snapshot) = frames.render(&mut runtime);
-    let m = counters.frame_work;
+    let m = counters.frame_work();
 
     // The engine owns the silhouette: a shadow is recorded as a native op
     // (`blurred_rounded_rect`/`scene.shadow`), never an image upload, so a
@@ -392,14 +400,14 @@ fn shadow_silhouettes_count() {
     // silhouette blurs, so a dark pixel is silhouette evidence — `pixel`-
     // precise geometry is `tests/shadow.rs`'s beat. One dark pixel per
     // caster half proves both silhouette classes reached the frame.
-    let mid = (snapshot.height as usize / 2) * snapshot.width as usize * 4;
+    let mid = (snapshot.height() as usize / 2) * snapshot.width() as usize * 4;
     // A blurred black silhouette on the white background paints neutral
     // greys — channels within a few points of each other and under white.
     // The caster's blue fill never matches (its blue channel leads by ~140).
     let grey_shadow =
         |p: &[u8; 4]| p[0] < 230 && p[0].abs_diff(p[1]) < 12 && p[1].abs_diff(p[2]) < 12;
     assert!(
-        snapshot.rgba8[..mid]
+        snapshot.rgba8()[..mid]
             .as_chunks::<4>()
             .0
             .iter()
@@ -407,7 +415,7 @@ fn shadow_silhouettes_count() {
         "the rounded-rect caster's blurred silhouette must reach the frame"
     );
     assert!(
-        snapshot.rgba8[mid..]
+        snapshot.rgba8()[mid..]
             .as_chunks::<4>()
             .0
             .iter()
@@ -459,7 +467,7 @@ fn context_menu_holes_render() {
     let at = frames.at();
     let result = runtime.pump_at(true, at + Duration::from_millis(600));
 
-    let menu = result.tree_update.as_ref().is_some_and(|update| {
+    let menu = result.tree_update().is_some_and(|update| {
         update
             .nodes
             .iter()
@@ -470,12 +478,12 @@ fn context_menu_holes_render() {
         "the mounted context menu must merge into the a11y tree"
     );
 
-    let m = result.profile.counters.frame_work;
+    let m = result.profile().counters().frame_work();
     assert!(
         m.structural_patches + m.semantic_builds > 0,
         "mounting the menu mutates the retained tree"
     );
-    assert_presentation_mounts(&result.profile.counters);
+    assert_presentation_mounts(&result.profile().counters());
 }
 
 /// Popup opening: a mounted popup is a second window the pump's merged a11y
@@ -512,19 +520,19 @@ fn popup_opening_counts() {
     // hold threshold so the context-menu gesture resolves.
     let result = runtime.pump_at(true, at + Duration::from_millis(600));
     assert!(
-        result.tree_update.as_ref().is_some_and(|update| update
+        result.tree_update().is_some_and(|update| update
             .nodes
             .iter()
             .any(|(_, node)| node.label() == Some("Copy"))),
         "the open popup's commands must merge into the a11y tree"
     );
 
-    let m = result.profile.counters.frame_work;
+    let m = result.profile().counters().frame_work();
     assert!(
         m.recorded_view_contents > 0,
         "the mount frame still encodes"
     );
-    assert_engine_counters_zero(&result.profile.counters);
+    assert_engine_counters_zero(&result.profile().counters());
 }
 
 /// Scrolling a lazy list: input events drive structural patches into the
@@ -538,7 +546,7 @@ fn scrolling_counts() {
     let mut runtime = runtime_with(view);
     let mut frames = Frames::new();
     let (first, _) = frames.render(&mut runtime);
-    assert!(first.frame_work.semantic_builds > 0);
+    assert!(first.frame_work().semantic_builds > 0);
     assert_retained_engine_counters(&first);
 
     let mut saw_scroll_work = false;
@@ -551,7 +559,7 @@ fn scrolling_counts() {
             is_line_delta: false,
         });
         let (counters, _snapshot) = frames.render(&mut runtime);
-        let m = counters.frame_work;
+        let m = counters.frame_work();
         saw_scroll_work |= m.recorded_view_contents > 0 && m.gpu_submissions > 0;
     }
     assert!(
@@ -614,28 +622,36 @@ fn gpu_content_under_clips_and_effects() {
     let mut runtime = runtime_with(view);
     let mut frames = Frames::new();
 
-    // The surface's async setup needs a few executor drains before it renders.
+    // The surface's async setup needs a few executor drains before it
+    // renders. Each pump's counters are its own, so the layer mount is
+    // asserted on the frame that actually mounted the GPU content layer —
+    // the first whose mount stats list one.
+    let mut mount_frame = None;
     for _ in 0..12 {
-        if renders.load(core::sync::atomic::Ordering::Relaxed) > 0 {
+        if renders.load(core::sync::atomic::Ordering::Relaxed) > 0 && mount_frame.is_some() {
             break;
         }
         let at = frames.at();
-        let _ = runtime.pump_at(false, at);
+        let result = runtime.pump_at(false, at);
+        if mount_frame.is_none() && result.profile().counters().gpu_content_layers() >= 1 {
+            mount_frame = Some(result.profile().counters());
+        }
     }
     assert!(
         renders.load(core::sync::atomic::Ordering::Relaxed) > 0,
         "the GPU surface must have drawn"
     );
+    assert_retained_engine_counters(
+        &mount_frame.expect("the GPU content layer must have mounted on some frame"),
+    );
 
     let (counters, _snapshot) = frames.render(&mut runtime);
-    let m = counters.frame_work;
-    assert!(
-        counters.gpu_content_layers >= 1,
-        "a GPU surface under a clip composites as a GPU content layer"
-    );
+    let m = counters.frame_work();
     assert!(m.gpu_submissions > 0, "the probe's submit is counted");
-    assert!(m.recorded_view_contents > 0);
-    assert_retained_engine_counters(&counters);
+    assert_eq!(
+        m.recorded_view_contents, 0,
+        "the settled frame re-presents the probe's own output; it records nothing"
+    );
 }
 
 /// The determinism clause: two capturing pumps of the same view at the same
@@ -660,14 +676,95 @@ fn repeated_fixed_clock_captures_are_identical() {
     let second = runtime.pump_at(true, at);
 
     let (a, b) = (
-        first.snapshot.expect("first capture"),
-        second.snapshot.expect("second capture"),
+        first.into_snapshot().expect("first capture"),
+        second.into_snapshot().expect("second capture"),
     );
     assert_eq!(
-        a.rgba8, b.rgba8,
+        a.rgba8(),
+        b.rgba8(),
         "fixed-clock captures of an unchanged view must be byte-identical"
     );
     // Per-pump counters are not asserted identical: the second pump re-runs
     // the measure/layout work its own pipeline state requires, which legit-
     // imately differs once the first pump populated caches.
+}
+
+/// A paint signal reaches the retained command without another host tree pass.
+#[test]
+fn live_colour_updates_without_layout_or_recording() {
+    let color = Binding::container(Color::srgb(210, 30, 10));
+    let mut runtime = runtime_with(waterui_graphics::color::signal_color(color.clone()));
+    let mut frames = Frames::new();
+    let (_, before) = frames.render(&mut runtime);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while runtime
+        .pump_at(false, frames.at())
+        .profile()
+        .counters()
+        .rendered()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "unchanged colour must become idle"
+        );
+    }
+    color.set(Color::srgb(10, 60, 220));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let counters = loop {
+        let result = runtime.pump_at(false, frames.at());
+        if result.profile().counters().rendered() {
+            break result.profile().counters();
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "colour signal must wake the renderer");
+        let _ = runtime.wait_for_local_work(remaining);
+    };
+    let (_, after) = frames.render(&mut runtime);
+    super::structural_transitions::save(&before, "live_colour", "before");
+    super::structural_transitions::save(&after, "live_colour", "after");
+    let work = counters.frame_work();
+    assert_eq!(work.semantic_builds, 0);
+    assert_eq!(work.structural_patches, 0);
+    assert_eq!(work.measure_calls, 0);
+    assert_eq!(work.layout_calls, 0);
+    assert_eq!(work.recorded_view_contents, 0);
+    assert_eq!(work.layer_creations, 0);
+    assert_eq!(work.layer_removals, 0);
+}
+
+#[test]
+fn short_text_signal_repaints_only_its_changed_region() {
+    let value = Binding::container(10u32);
+    let label = value.clone();
+    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
+    let mut runtime = runtime_with_on(
+        vstack((
+            text("Unchanged heading"),
+            waterui::text!("{label}", label = label),
+            text("Unchanged footer"),
+        )),
+        gpu,
+    );
+    let mut frames = Frames::new();
+    let (_, mut before) = frames.render(&mut runtime);
+    super::structural_transitions::save(&before, "text-damage", "initial");
+    let _ = diagnostics.take();
+    for number in [11, 12] {
+        value.set(number);
+        let (_, after) = frames.render(&mut runtime);
+        let reports = diagnostics.take();
+        assert!(!reports.is_empty(), "text update must reach the engine");
+        let pixels: u64 = reports.iter().map(|report| report.repaint_pixels).sum();
+        assert!(
+            pixels > 0 && pixels < u64::from(WINDOW) * u64::from(WINDOW) / 20,
+            "short text update repainted {pixels} pixels"
+        );
+        assert_ne!(
+            before.rgba8(),
+            after.rgba8(),
+            "text update must change the image"
+        );
+        super::structural_transitions::save(&after, "text-damage", &number.to_string());
+        before = after;
+    }
 }

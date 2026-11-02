@@ -33,11 +33,13 @@ mod error;
 #[cfg(all(feature = "remote", not(target_arch = "wasm32")))]
 mod fetch_cache;
 mod into_url;
+mod origin;
 mod parser;
 
 use core::str::FromStr;
 pub use error::ParseError;
 pub use into_url::IntoUrl;
+pub use origin::Origin;
 
 #[cfg(feature = "remote")]
 use core::error::Error;
@@ -197,6 +199,7 @@ pub struct Url {
 
 /// The kind of URL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum UrlKind {
     /// A web URL (http/https/ftp etc)
     Web,
@@ -927,6 +930,7 @@ impl Signal for Fetched {
 #[cfg(feature = "remote")]
 /// Errors that can occur while downloading a remote resource into memory.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RemoteDownloadError {
     /// The HTTP transport or request pipeline failed.
     Http(Box<zenwave::Error>),

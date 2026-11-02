@@ -4,6 +4,10 @@
 ///
 /// Used by the `asset!` macro to determine the appropriate return type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "each asset kind maps to its own typed asset handle in the generated code; a new kind must fail the build of every mapping"
+)]
 pub enum AssetKind {
     /// Font files (.ttf, .otf, .ttc, .otc, .woff, .woff2)
     /// Returns: `FontAsset`

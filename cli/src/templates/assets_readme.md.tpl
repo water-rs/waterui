@@ -1,7 +1,12 @@
 # Assets
 
 Files placed here are bundled into {{ ctx.app_display_name }} and reachable from Rust
-through the `assets!` macro, which resolves paths relative to this directory:
+through the `assets!` macro, which resolves paths relative to this directory. The macro
+lives behind the facade's `assets` feature — opt in on the `waterui` dependency:
+
+```toml
+waterui = { ..., features = ["assets"] }
+```
 
 ```rust
 use waterui::assets;

@@ -81,7 +81,7 @@ fn table_runtime() -> HeadlessRuntime {
 /// accessibility update from the first two rows' window-space origins.
 fn row_pitch(result: &crate::HeadlessPumpResult) -> f64 {
     let mut items = result
-        .tree_update
+        .tree_update()
         .as_ref()
         .expect("a list frame must publish an accessibility update")
         .nodes
@@ -102,7 +102,7 @@ fn row_pitch(result: &crate::HeadlessPumpResult) -> f64 {
 /// accessibility update emits, in index order.
 fn row_items(result: &crate::HeadlessPumpResult) -> Vec<(usize, accesskit::Rect)> {
     let mut items = result
-        .tree_update
+        .tree_update()
         .as_ref()
         .expect("a list frame must publish an accessibility update")
         .nodes
@@ -134,7 +134,7 @@ fn pan(runtime: &mut HeadlessRuntime, dy: f32) {
 
 fn scroll_y(result: &crate::HeadlessPumpResult) -> f64 {
     result
-        .tree_update
+        .tree_update()
         .as_ref()
         .expect("a scroll frame must publish an accessibility update")
         .nodes
@@ -193,7 +193,7 @@ fn a_list_scroll_frame_records_only_newly_revealed_rows() {
         scroll_y(&nudged) > resting,
         "the pan must present the new scroll offset"
     );
-    let work = nudged.profile.counters.frame_work;
+    let work = nudged.profile().counters().frame_work();
     assert_eq!(
         work.semantic_builds, 0,
         "a pan revealing no rows must record no row"
@@ -208,11 +208,11 @@ fn a_list_scroll_frame_records_only_newly_revealed_rows() {
     // the list's extent bookkeeping, not scroll work), so the misses bound to
     // the window — they must not scale with how far the pan travelled.
     assert!(
-        nudged.profile.counters.measurement_cache_misses <= MAX_VISIBLE_WINDOW,
+        nudged.profile().counters().measurement_cache_misses() <= MAX_VISIBLE_WINDOW,
         "a scroll frame missed the measurement cache {} times — more than one viewport",
-        nudged.profile.counters.measurement_cache_misses
+        nudged.profile().counters().measurement_cache_misses()
     );
-    assert_eq!(nudged.profile.counters.rebuild_iterations, 0);
+    assert_eq!(nudged.profile().counters().rebuild_iterations(), 0);
 
     // A deeper pan records only the rows it reveals — never the whole visible
     // window and never a count that scales with the row total.
@@ -223,7 +223,7 @@ fn a_list_scroll_frame_records_only_newly_revealed_rows() {
         let presented = scroll_y(&panned);
         assert!(presented > offset, "every pan must present its new offset");
         offset = presented;
-        let work = panned.profile.counters.frame_work;
+        let work = panned.profile().counters().frame_work();
         assert!(
             work.semantic_builds <= MAX_REVEALED_PER_FRAME,
             "a scroll frame recorded {} rows — more than one viewport of new rows",
@@ -240,11 +240,11 @@ fn a_list_scroll_frame_records_only_newly_revealed_rows() {
             work.recorded_view_contents
         );
         assert_eq!(work.structural_patches, 0);
-        assert_eq!(panned.profile.counters.rebuild_iterations, 0);
+        assert_eq!(panned.profile().counters().rebuild_iterations(), 0);
         assert!(
-            panned.profile.counters.measurement_cache_misses <= MAX_VISIBLE_WINDOW,
+            panned.profile().counters().measurement_cache_misses() <= MAX_VISIBLE_WINDOW,
             "a scroll frame missed the measurement cache {} times — more than one viewport",
-            panned.profile.counters.measurement_cache_misses
+            panned.profile().counters().measurement_cache_misses()
         );
     }
 }
@@ -264,7 +264,7 @@ fn a_table_scroll_frame_records_only_newly_revealed_cells() {
         scroll_y(&nudged) > resting,
         "the pan must present the new scroll offset"
     );
-    let work = nudged.profile.counters.frame_work;
+    let work = nudged.profile().counters().frame_work();
     assert!(
         work.semantic_builds <= COLUMNS as u64,
         "a pan revealing at most one row recorded {} cells",
@@ -277,11 +277,11 @@ fn a_table_scroll_frame_records_only_newly_revealed_cells() {
     );
     assert_eq!(work.structural_patches, 0);
     assert!(
-        nudged.profile.counters.measurement_cache_misses <= MAX_VISIBLE_WINDOW,
+        nudged.profile().counters().measurement_cache_misses() <= MAX_VISIBLE_WINDOW,
         "a scroll frame missed the measurement cache {} times — more than one viewport",
-        nudged.profile.counters.measurement_cache_misses
+        nudged.profile().counters().measurement_cache_misses()
     );
-    assert_eq!(nudged.profile.counters.rebuild_iterations, 0);
+    assert_eq!(nudged.profile().counters().rebuild_iterations(), 0);
 
     let mut offset = scroll_y(&nudged);
     for frame in 2..=4 {
@@ -290,7 +290,7 @@ fn a_table_scroll_frame_records_only_newly_revealed_cells() {
         let presented = scroll_y(&panned);
         assert!(presented > offset, "every pan must present its new offset");
         offset = presented;
-        let work = panned.profile.counters.frame_work;
+        let work = panned.profile().counters().frame_work();
         assert!(
             work.semantic_builds <= MAX_REVEALED_PER_FRAME,
             "a scroll frame recorded {} cells — more than one viewport of new rows",
@@ -307,11 +307,11 @@ fn a_table_scroll_frame_records_only_newly_revealed_cells() {
             work.recorded_view_contents
         );
         assert_eq!(work.structural_patches, 0);
-        assert_eq!(panned.profile.counters.rebuild_iterations, 0);
+        assert_eq!(panned.profile().counters().rebuild_iterations(), 0);
         assert!(
-            panned.profile.counters.measurement_cache_misses <= MAX_VISIBLE_WINDOW,
+            panned.profile().counters().measurement_cache_misses() <= MAX_VISIBLE_WINDOW,
             "a scroll frame missed the measurement cache {} times — more than one viewport",
-            panned.profile.counters.measurement_cache_misses
+            panned.profile().counters().measurement_cache_misses()
         );
     }
 }
@@ -347,7 +347,7 @@ fn a_list_below_a_header_scrolls_against_the_intersecting_window() {
         scroll_y(&nudged) > resting,
         "the pan must present the new scroll offset"
     );
-    let work = nudged.profile.counters.frame_work;
+    let work = nudged.profile().counters().frame_work();
     assert_eq!(
         work.semantic_builds, 0,
         "a pan revealing no rows must record no row"
@@ -358,7 +358,7 @@ fn a_list_below_a_header_scrolls_against_the_intersecting_window() {
     );
     assert_eq!(work.structural_patches, 0);
     assert_eq!(work.layer_removals, 0);
-    assert_eq!(nudged.profile.counters.rebuild_iterations, 0);
+    assert_eq!(nudged.profile().counters().rebuild_iterations(), 0);
 
     // A deep pan through the shifted viewport: the emitted rows are exactly
     // the ones whose content-space band intersects it — `offset` in content

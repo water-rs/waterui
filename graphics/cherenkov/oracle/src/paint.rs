@@ -338,9 +338,10 @@ mod tests {
         }
     }
 
+    #[track_caller]
     fn assert_t(g: &RadialGradient, p: (f64, f64), want: f64) {
         let t = radial_t(Point::new(p.0, p.1), g);
-        assert!((t - want).abs() < 1e-9, "t at {p:?}: {t}, want {want}");
+        crate::metrics::assert_close(&[t], &[want]);
     }
 
     #[test]

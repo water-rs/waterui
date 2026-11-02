@@ -125,6 +125,10 @@ impl Default for PointerButtons {
 
 /// Represents the phase of a gesture interaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed gesture lifecycle (started, updated, ended, cancelled) that every backend maps its native recognizer onto"
+)]
 pub enum GesturePhase {
     /// The gesture has just begun.
     Started,
@@ -158,13 +162,51 @@ impl GesturePoint {
 /// Backends place this structure into the environment when a tap is recognised,
 /// allowing gesture handlers to extract the payload using [`Use<TapEvent>`](crate::extract::Use).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct TapEvent {
     /// Location of the tap in the widget's coordinate space.
-    pub location: GesturePoint,
+    location: GesturePoint,
     /// Number of taps that occurred in succession.
-    pub count: u32,
+    count: u32,
     /// The button that tapped.
-    pub button: PointerButton,
+    button: PointerButton,
+}
+
+impl TapEvent {
+    /// Location of the tap in the widget's coordinate space.
+    #[must_use]
+    pub const fn location(&self) -> GesturePoint {
+        self.location
+    }
+
+    /// Sets the `location`.
+    pub const fn set_location(&mut self, location: GesturePoint) {
+        self.location = location;
+    }
+
+    /// Number of taps that occurred in succession.
+    #[must_use]
+    pub const fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// The button that tapped.
+    #[must_use]
+    pub const fn button(&self) -> PointerButton {
+        self.button
+    }
+}
+
+impl TapEvent {
+    /// A tap of `count` successive taps of `button` at `location`.
+    #[must_use]
+    pub const fn new(location: GesturePoint, count: u32, button: PointerButton) -> Self {
+        Self {
+            location,
+            count,
+            button,
+        }
+    }
 }
 
 /// Event payload for long-press gestures.
@@ -172,13 +214,51 @@ pub struct TapEvent {
 /// Backends insert this into the environment alongside [`Gesture::LongPress`]
 /// whenever a long-press interaction fires.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct LongPressEvent {
     /// Location of the press in the widget's coordinate space.
-    pub location: GesturePoint,
+    location: GesturePoint,
     /// Duration, in platform-defined time units, that the press was held.
-    pub duration: f32,
+    duration: f32,
     /// The button that is held.
-    pub button: PointerButton,
+    button: PointerButton,
+}
+
+impl LongPressEvent {
+    /// Location of the press in the widget's coordinate space.
+    #[must_use]
+    pub const fn location(&self) -> GesturePoint {
+        self.location
+    }
+
+    /// Sets the `location`.
+    pub const fn set_location(&mut self, location: GesturePoint) {
+        self.location = location;
+    }
+
+    /// Duration, in platform-defined time units, that the press was held.
+    #[must_use]
+    pub const fn duration(&self) -> f32 {
+        self.duration
+    }
+
+    /// The button that is held.
+    #[must_use]
+    pub const fn button(&self) -> PointerButton {
+        self.button
+    }
+}
+
+impl LongPressEvent {
+    /// A press of `button` at `location`, held for `duration`.
+    #[must_use]
+    pub const fn new(location: GesturePoint, duration: f32, button: PointerButton) -> Self {
+        Self {
+            location,
+            duration,
+            button,
+        }
+    }
 }
 
 /// Event payload for drag gestures.
@@ -186,17 +266,86 @@ pub struct LongPressEvent {
 /// Each drag update stores a fresh [`DragEvent`] in the environment so handlers
 /// can observe pointer position and motion metrics.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct DragEvent {
     /// Phase of the drag gesture.
-    pub phase: GesturePhase,
+    phase: GesturePhase,
     /// Current location of the pointer.
-    pub location: GesturePoint,
+    location: GesturePoint,
     /// Total translation since the drag started.
-    pub translation: GesturePoint,
+    translation: GesturePoint,
     /// Velocity of the drag in points per second.
-    pub velocity: GesturePoint,
+    velocity: GesturePoint,
     /// The button that drags.
-    pub button: PointerButton,
+    button: PointerButton,
+}
+
+impl DragEvent {
+    /// Phase of the drag gesture.
+    #[must_use]
+    pub const fn phase(&self) -> GesturePhase {
+        self.phase
+    }
+
+    /// Current location of the pointer.
+    #[must_use]
+    pub const fn location(&self) -> GesturePoint {
+        self.location
+    }
+
+    /// Sets the `location`.
+    pub const fn set_location(&mut self, location: GesturePoint) {
+        self.location = location;
+    }
+
+    /// Total translation since the drag started.
+    #[must_use]
+    pub const fn translation(&self) -> GesturePoint {
+        self.translation
+    }
+
+    /// Sets the `translation`.
+    pub const fn set_translation(&mut self, translation: GesturePoint) {
+        self.translation = translation;
+    }
+
+    /// Velocity of the drag in points per second.
+    #[must_use]
+    pub const fn velocity(&self) -> GesturePoint {
+        self.velocity
+    }
+
+    /// Sets the `velocity`.
+    pub const fn set_velocity(&mut self, velocity: GesturePoint) {
+        self.velocity = velocity;
+    }
+
+    /// The button that drags.
+    #[must_use]
+    pub const fn button(&self) -> PointerButton {
+        self.button
+    }
+}
+
+impl DragEvent {
+    /// A drag of `button` in `phase`, now at `location`, moved by
+    /// `translation` since it started, moving at `velocity`.
+    #[must_use]
+    pub const fn new(
+        phase: GesturePhase,
+        location: GesturePoint,
+        translation: GesturePoint,
+        velocity: GesturePoint,
+        button: PointerButton,
+    ) -> Self {
+        Self {
+            phase,
+            location,
+            translation,
+            velocity,
+            button,
+        }
+    }
 }
 
 /// Event payload for magnification (pinch) gestures.
@@ -204,15 +353,61 @@ pub struct DragEvent {
 /// This payload accompanies [`Gesture::Magnification`] entries in the
 /// environment when zoom gestures are recognised.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MagnificationEvent {
     /// Phase of the magnification gesture.
-    pub phase: GesturePhase,
+    phase: GesturePhase,
     /// Focal point of the gesture.
-    pub center: GesturePoint,
+    center: GesturePoint,
     /// Current scale factor relative to the gesture start.
-    pub scale: f32,
+    scale: f32,
     /// Rate of change of the scale factor.
-    pub velocity: f32,
+    velocity: f32,
+}
+
+impl MagnificationEvent {
+    /// Phase of the magnification gesture.
+    #[must_use]
+    pub const fn phase(&self) -> GesturePhase {
+        self.phase
+    }
+
+    /// Focal point of the gesture.
+    #[must_use]
+    pub const fn center(&self) -> GesturePoint {
+        self.center
+    }
+
+    /// Sets the `center`.
+    pub const fn set_center(&mut self, center: GesturePoint) {
+        self.center = center;
+    }
+
+    /// Current scale factor relative to the gesture start.
+    #[must_use]
+    pub const fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// Rate of change of the scale factor.
+    #[must_use]
+    pub const fn velocity(&self) -> f32 {
+        self.velocity
+    }
+}
+
+impl MagnificationEvent {
+    /// A magnification in `phase` about `center`, at `scale` relative to the
+    /// gesture start, changing at `velocity`.
+    #[must_use]
+    pub const fn new(phase: GesturePhase, center: GesturePoint, scale: f32, velocity: f32) -> Self {
+        Self {
+            phase,
+            center,
+            scale,
+            velocity,
+        }
+    }
 }
 
 /// Payload describing an in-flight rotation gesture.
@@ -221,15 +416,61 @@ pub struct MagnificationEvent {
 /// when rotation gestures are recognised, mirroring [`MagnificationEvent`] for
 /// the other two-finger transform gesture.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct RotationEvent {
     /// Phase of the rotation gesture.
-    pub phase: GesturePhase,
+    phase: GesturePhase,
     /// Pivot point the rotation is measured around.
-    pub center: GesturePoint,
+    center: GesturePoint,
     /// Current angle in radians relative to the gesture start.
-    pub angle: f32,
+    angle: f32,
     /// Rate of change of the angle, in radians per second.
-    pub velocity: f32,
+    velocity: f32,
+}
+
+impl RotationEvent {
+    /// Phase of the rotation gesture.
+    #[must_use]
+    pub const fn phase(&self) -> GesturePhase {
+        self.phase
+    }
+
+    /// Pivot point the rotation is measured around.
+    #[must_use]
+    pub const fn center(&self) -> GesturePoint {
+        self.center
+    }
+
+    /// Sets the `center`.
+    pub const fn set_center(&mut self, center: GesturePoint) {
+        self.center = center;
+    }
+
+    /// Current angle in radians relative to the gesture start.
+    #[must_use]
+    pub const fn angle(&self) -> f32 {
+        self.angle
+    }
+
+    /// Rate of change of the angle, in radians per second.
+    #[must_use]
+    pub const fn velocity(&self) -> f32 {
+        self.velocity
+    }
+}
+
+impl RotationEvent {
+    /// A rotation in `phase` about `center`, at `angle` radians from the
+    /// gesture start, changing at `velocity` radians per second.
+    #[must_use]
+    pub const fn new(phase: GesturePhase, center: GesturePoint, angle: f32, velocity: f32) -> Self {
+        Self {
+            phase,
+            center,
+            angle,
+            velocity,
+        }
+    }
 }
 
 /// Describes a tap interaction that must occur a specific number of times.
@@ -237,9 +478,23 @@ pub struct RotationEvent {
 #[non_exhaustive]
 pub struct TapGesture {
     /// The number of consecutive taps required to trigger this gesture.
-    pub count: u32,
+    count: u32,
     /// The buttons that can tap; [`PointerButtons::PRIMARY`] by default.
-    pub buttons: PointerButtons,
+    buttons: PointerButtons,
+}
+
+impl TapGesture {
+    /// The number of consecutive taps required to trigger this gesture.
+    #[must_use]
+    pub const fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// The buttons that can tap; [`PointerButtons::PRIMARY`] by default.
+    #[must_use]
+    pub const fn get_buttons(&self) -> PointerButtons {
+        self.buttons
+    }
 }
 
 impl TapGesture {
@@ -278,9 +533,23 @@ impl Default for TapGesture {
 #[non_exhaustive]
 pub struct LongPressGesture {
     /// The minimum duration (in time units) the press must be held.
-    pub duration: u32,
+    duration: u32,
     /// The buttons that can press; [`PointerButtons::PRIMARY`] by default.
-    pub buttons: PointerButtons,
+    buttons: PointerButtons,
+}
+
+impl LongPressGesture {
+    /// The minimum duration (in time units) the press must be held.
+    #[must_use]
+    pub const fn duration(&self) -> u32 {
+        self.duration
+    }
+
+    /// The buttons that can press; [`PointerButtons::PRIMARY`] by default.
+    #[must_use]
+    pub const fn get_buttons(&self) -> PointerButtons {
+        self.buttons
+    }
 }
 
 impl LongPressGesture {
@@ -309,9 +578,23 @@ impl LongPressGesture {
 #[non_exhaustive]
 pub struct DragGesture {
     /// The minimum distance the pointer must travel to initiate the drag.
-    pub min_distance: f32,
+    min_distance: f32,
     /// The buttons that can drag; [`PointerButtons::PRIMARY`] by default.
-    pub buttons: PointerButtons,
+    buttons: PointerButtons,
+}
+
+impl DragGesture {
+    /// The minimum distance the pointer must travel to initiate the drag.
+    #[must_use]
+    pub const fn min_distance(&self) -> f32 {
+        self.min_distance
+    }
+
+    /// The buttons that can drag; [`PointerButtons::PRIMARY`] by default.
+    #[must_use]
+    pub const fn get_buttons(&self) -> PointerButtons {
+        self.buttons
+    }
 }
 
 impl DragGesture {
@@ -338,7 +621,15 @@ impl DragGesture {
 #[non_exhaustive]
 pub struct MagnificationGesture {
     /// The initial scale factor when the gesture begins.
-    pub initial_scale: f32,
+    initial_scale: f32,
+}
+
+impl MagnificationGesture {
+    /// The initial scale factor when the gesture begins.
+    #[must_use]
+    pub const fn initial_scale(&self) -> f32 {
+        self.initial_scale
+    }
 }
 
 impl MagnificationGesture {
@@ -354,7 +645,15 @@ impl MagnificationGesture {
 #[non_exhaustive]
 pub struct RotationGesture {
     /// The initial angle (in radians) when the gesture begins.
-    pub initial_angle: f32,
+    initial_angle: f32,
+}
+
+impl RotationGesture {
+    /// The initial angle (in radians) when the gesture begins.
+    #[must_use]
+    pub const fn initial_angle(&self) -> f32 {
+        self.initial_angle
+    }
 }
 
 impl RotationGesture {
@@ -539,9 +838,28 @@ impl_gesture! {
 #[non_exhaustive]
 pub struct GestureObserver {
     /// The gesture to observe.
-    pub gesture: Gesture,
+    gesture: Gesture,
     /// The action to execute when the gesture is recognized.
-    pub action: BoxedAction<()>,
+    action: BoxedAction<()>,
+}
+
+impl GestureObserver {
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(self) -> (Gesture, BoxedAction<()>) {
+        (self.gesture, self.action)
+    }
+
+    /// The gesture to observe.
+    #[must_use]
+    pub const fn gesture(&self) -> &Gesture {
+        &self.gesture
+    }
+
+    /// The action to execute when the gesture is recognized.
+    #[must_use]
+    pub const fn action(&self) -> &BoxedAction<()> {
+        &self.action
+    }
 }
 
 impl fmt::Debug for GestureObserver {

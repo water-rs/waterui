@@ -247,6 +247,10 @@ pub enum AccessibilityChildren {
 
 /// The semantic checked state of a checkable control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed tri-state (unchecked, checked, mixed) that every backend maps onto its native checked state"
+)]
 pub enum AccessibilityChecked {
     /// The control is not checked.
     False,
