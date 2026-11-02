@@ -108,6 +108,10 @@ where
         ))
     }
 
+    fn set_length_scale(&mut self, scale: f32) {
+        self.0.set_length_scale(scale);
+    }
+
     fn retained_memory(&self) -> RetainedMemory {
         Effect::retained_memory(&self.0)
     }
@@ -138,6 +142,11 @@ pub trait Runnable {
     fn footprint_bound(&mut self) -> Option<filtrate_core::Footprint> {
         None
     }
+
+    /// The display scale the next [`Runnable::footprint_bound`] answer
+    /// applies — planning runs ahead of encode, so the current frame's
+    /// scale arrives through this, not only through `EffectInput`.
+    fn set_length_scale(&mut self, _scale: f32) {}
 
     #[cfg(not(target_arch = "wasm32"))]
     fn setup(&mut self, ctx: &EffectContext<'_>) -> Result<(), filtrate::EffectSetupError>;
@@ -577,6 +586,14 @@ impl Registry {
         self.entries
             .get_mut(&key)
             .and_then(|entry| entry.effect.footprint_bound())
+    }
+
+    /// The display scale the registered filter's footprint answers apply —
+    /// set from the frame's own scale before planning asks.
+    pub fn set_length_scale(&mut self, key: FilterKey, scale: f32) {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.effect.set_length_scale(scale);
+        }
     }
 
     pub(super) fn apply(

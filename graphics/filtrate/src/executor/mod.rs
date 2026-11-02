@@ -112,6 +112,11 @@ impl<F: Filter> Executor<F> {
             ParamAnimator::new(targets, |installer| filter.visit_signals(installer));
         let mut length_indices = LengthIndices(Vec::new());
         filter.collect_stages(&mut length_indices);
+        // Several stages may index the same length parameter — a two-pass
+        // blur's horizontal and vertical halves share one radius — and each
+        // is scaled exactly once.
+        length_indices.0.sort_unstable();
+        length_indices.0.dedup();
         Self {
             filter,
             output_size: |width, height| (width, height),
@@ -205,6 +210,14 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Executor<F, S> {
     pub fn param_bounds(&mut self) -> F::Params {
         let bounds = self.animator.magnitude_bounds();
         F::Params::read_from(&self.pixel_params(&bounds))
+    }
+
+    /// Sets the display scale the next `pixel_params`, `param_bounds` and
+    /// `footprint` answers apply — driven ahead of planning so the current
+    /// frame's scale shapes footprint and capture decisions, not only the
+    /// eventual encode.
+    pub const fn set_length_scale(&mut self, scale: f32) {
+        self.length_scale = scale;
     }
 
     /// The largest distance, in pixels, between an output pixel and any

@@ -743,7 +743,14 @@ impl SurfaceState {
     }
 
     /// The `BackdropGroupInfo` map lowering needs for this surface.
-    fn backdrop_info(&self, filters: &mut filter::Registry) -> FxHashMap<u64, BackdropGroupInfo> {
+    /// `length_scale` is the current frame's display scale: capture planning
+    /// runs ahead of encode, so each group filter hears it here rather than
+    /// reusing the scale its last encode left behind.
+    fn backdrop_info(
+        &self,
+        filters: &mut filter::Registry,
+        length_scale: f32,
+    ) -> FxHashMap<u64, BackdropGroupInfo> {
         self.backdrop_groups
             .iter()
             .map(|(g, state)| {
@@ -751,11 +758,13 @@ impl SurfaceState {
                     *g,
                     BackdropGroupInfo {
                         filter: state.filter,
-                        footprint: state
-                            .filter
-                            .map_or(Some(filtrate_core::Footprint::ZERO), |key| {
+                        footprint: state.filter.map_or(
+                            Some(filtrate_core::Footprint::ZERO),
+                            |key| {
+                                filters.set_length_scale(key, length_scale);
                                 filters.footprint_bound(key)
-                            }),
+                            },
+                        ),
                         spec: state.spec,
                     },
                 )
@@ -6682,6 +6691,10 @@ impl GpuRenderer {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "validated display scale fits f32"
+    )]
     fn lower_all(
         &mut self,
         pending: &mut [SurfaceState],
@@ -6692,7 +6705,8 @@ impl GpuRenderer {
         let coverage_options = self.coverage_options();
         let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
             .iter()
-            .map(|surf| surf.backdrop_info(&mut self.filters))
+            .zip(frames.iter())
+            .map(|(surf, sf)| surf.backdrop_info(&mut self.filters, sf.display.scale as f32))
             .collect();
         self.ready_planes(frames, pending);
         #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -6800,6 +6814,10 @@ impl GpuRenderer {
     }
 
     #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "validated display scale fits f32"
+    )]
     fn lower_all(
         &mut self,
         pending: &mut [SurfaceState],
@@ -6810,7 +6828,8 @@ impl GpuRenderer {
         let coverage_options = self.coverage_options();
         let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
             .iter()
-            .map(|surf| surf.backdrop_info(&mut self.filters))
+            .zip(frames.iter())
+            .map(|(surf, sf)| surf.backdrop_info(&mut self.filters, sf.display.scale as f32))
             .collect();
         self.ready_planes(frames, pending);
         let currents: FxHashMap<ProducerId, &external::Slot> = self
