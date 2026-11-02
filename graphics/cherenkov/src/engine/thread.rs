@@ -757,7 +757,7 @@ fn commit<B: Backend>(
     }
     state.content_animating = *animating;
     for op in ops.drain(..) {
-        let changed = match state.tree.apply_op(op) {
+        let invalidates = match state.tree.apply_op(op) {
             Realize::Remove(layer) => {
                 renderer.remove_layer(surface, layer);
                 true
@@ -768,7 +768,7 @@ fn commit<B: Backend>(
                     _ => None,
                 };
                 let previous = renderer.set_content(surface, layer, content);
-                let changed = replacement
+                let invalidates = replacement
                     .as_ref()
                     .zip(previous.as_ref())
                     .is_none_or(|(new, old)| new != old);
@@ -777,7 +777,7 @@ fn commit<B: Backend>(
                 {
                     recycled.push((layer, old));
                 }
-                changed
+                invalidates
             }
             Realize::Install(layer, install) => {
                 // The install reports its content's declared alpha —
@@ -790,7 +790,7 @@ fn commit<B: Backend>(
             }
             Realize::Applied => true,
         };
-        if changed {
+        if invalidates {
             state.commits = Commits::Other;
         }
     }
