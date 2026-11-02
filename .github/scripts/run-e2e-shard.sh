@@ -178,6 +178,21 @@ if [[ "${platform}" == "ios" ]]; then
   fi
   xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
 
+  # The first `simctl io screenshot` each boot pays a one-time cost while the
+  # io channel's render pipeline initializes — 20-30 s in nightly receipts,
+  # 451 s in the run behind #1539. Inside the settle loop that stall consumed
+  # the shared capture budget before the next deadline check. One warmup here
+  # moves the stall out of the budget; it is bounded on its own so a genuinely
+  # hung channel still shows up in the command receipts instead of blocking
+  # the shard.
+  local warmup_frame warmup_deadline_at
+  warmup_frame="$(mktemp "${TMPDIR:-/tmp}/e2e-warmup-shot.XXXXXX.png")"
+  warmup_deadline_at="$("${command_deadline}" deadline --seconds 120)"
+  "${command_deadline}" run --label "capture:simctl-io-screenshot-warmup" \
+    --deadline-at "${warmup_deadline_at}" --receipt "${receipts_file}" \
+    -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${warmup_frame}" >/dev/null || true
+  rm -f "${warmup_frame}"
+
   # An iOS capture is the whole display (macOS captures the app's own window),
   # so a SpringBoard notification banner lands in the frame and reads as a
   # divergence from the app's own baseline and from the SwiftUI twin. Booting
