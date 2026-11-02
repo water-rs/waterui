@@ -184,14 +184,15 @@ define_class!(
     }
 );
 
-/// The field height the idiom's own convention holds — under the pad
-/// idiom the platform's plain field is 23 pt while a borderless
-/// `UITextField` measures 21.5, so its reports floor at 23 (#3722). Every
-/// other idiom already agrees with `UIKit`'s measure, so the floor
-/// releases there.
+/// The field height the Mac Catalyst pad idiom's own convention holds —
+/// there the platform's plain field is 23 pt while a borderless
+/// `UITextField` measures 21.5, so its reports floor at 23 (#3722). A
+/// physical iPad and every other idiom already agree with `UIKit`'s
+/// measure, so the floor releases everywhere regular iOS runs.
 fn canonical_field_height(field: &UITextField) -> CGFloat {
-    if objc2_ui_kit::UIDevice::currentDevice(field.mtm()).userInterfaceIdiom()
-        == objc2_ui_kit::UIUserInterfaceIdiom::Pad
+    if cfg!(target_abi = "macabi")
+        && objc2_ui_kit::UIDevice::currentDevice(field.mtm()).userInterfaceIdiom()
+            == objc2_ui_kit::UIUserInterfaceIdiom::Pad
     {
         23.0
     } else {
