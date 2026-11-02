@@ -7052,6 +7052,12 @@ mod tests {
         caches
             .get_mut(&root)
             .expect("root content")
+            .replace(picture(10.0));
+        assert!(!caches[&root].retained.realizations().is_empty());
+        assert_eq!(draw(&mut caches), 0, "equivalent replacement stays clean");
+        caches
+            .get_mut(&root)
+            .expect("root content")
             .replace(picture(70.0));
         assert!(caches[&root].retained.realizations().is_empty());
         let moved = draw(&mut caches);

@@ -141,6 +141,11 @@ fn compare_frames(isolated: bool, blurred: bool) -> Result<(), Box<dyn std::erro
                 retained_report.repaint_pixels,
                 u64::from(size.0) * u64::from(size.1)
             );
+        } else if !blurred && step == 2 {
+            assert_eq!(
+                retained_report.repaint_pixels, 0,
+                "identical replacement stays clean"
+            );
         } else if !blurred {
             // Re-recording replaces both the moving shape and the distant
             // fixed shape. One scissor encloses them, including the clean gap,
