@@ -16,22 +16,26 @@ use std::fmt;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
+use std::sync::Mutex;
+
 use block2::RcBlock;
 use cocoa_ui::Retained;
 use objc2::MainThreadMarker;
 use objc2::runtime::ProtocolObject;
-use objc2_metal::{MTLCommandBuffer, MTLCommandBufferHandler};
+use objc2_metal::{MTLCommandBuffer, MTLCommandBufferHandler, MTLCommandBufferStatus};
 use waterui_graphics::gpu::SharedGpuContext;
 use waterui_graphics::wgpu;
 use wgpu_hal::api::Metal as MetalApi;
 
 /// The submission's pixels were never vouched for: the context generation
 /// that owned the queue was reported lost before the submission's
-/// `on_submitted_work_done` callback ran. Whatever landed belongs to the
-/// dead generation — the work must be re-encoded on the replacement
+/// `on_submitted_work_done` callback ran, or the submitted command buffer
+/// itself ended on any status other than `Completed`. Whatever landed
+/// belongs to the dead work — it must be re-encoded on the replacement
 /// context, never trusted.
 pub struct SubmissionFailed {
-    /// The reason the driver reported through the context's `DeviceLoss`.
+    /// The reason the driver reported — the context's `DeviceLoss`, or the
+    /// command buffer's own failure.
     reason: String,
 }
 
@@ -84,11 +88,13 @@ impl std::error::Error for SubmissionFailed {}
 /// `context` is retained across the asynchronous completion so the poll runs
 /// against the exact device generation that submitted the work.
 ///
-/// `completion` runs with `Ok(())` only when the callback fired while the
-/// context's `DeviceLoss` stood unannounced; a loss reported first settles
-/// the submission as `Err(SubmissionFailed)` — the pixels belong to the
-/// dead generation and the consumer goes through explicit context
-/// recovery instead.
+/// `completion` runs with `Ok(())` only when the submitted marker command
+/// buffer reported `Completed` — its terminal status read directly, never
+/// inferred from the callback firing — and the context's `DeviceLoss`
+/// stood unannounced. Any other terminal status settles the submission as
+/// `Err(SubmissionFailed)` with the driver's description, as does a loss
+/// reported first — the pixels belong to the dead work and the consumer
+/// goes through explicit context recovery instead.
 pub fn submit_with_completion(
     _mtm: MainThreadMarker,
     encoder: wgpu::CommandEncoder,
@@ -117,9 +123,25 @@ pub fn submit_with_completion(
     }
     .expect("a recording Metal marker encoder must expose its raw command buffer");
 
+    // The handler's buffer is the submitted marker command buffer itself:
+    // read its terminal status directly, never infer the batch's success
+    // from the callback merely firing — a buffer that ends on `Error`
+    // retires and wakes the poll all the same.
+    let outcome = Arc::new(Mutex::new(None::<String>));
+    let service_outcome = Arc::clone(&outcome);
     let service_context = Arc::clone(context);
     let service = RcBlock::new(
-        move |_cmd_buf: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+        move |cmd_buf: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+            // SAFETY: `cmd_buf` is the command buffer this handler fires
+            // for — valid for the call's duration.
+            let buffer = unsafe { cmd_buf.as_ref() };
+            let status = buffer.status();
+            if status != MTLCommandBufferStatus::Completed {
+                *service_outcome.lock().unwrap() = Some(buffer.error().map_or_else(
+                    || format!("the submitted command buffer ended with status {status:?}"),
+                    |error| error.localizedDescription().to_string(),
+                ));
+            }
             let context = service_context.clone();
             cocoa_ui::main_queue::enqueue(move |_mtm| {
                 context
@@ -139,13 +161,16 @@ pub fn submit_with_completion(
     // One ordered batch: the caller's work commits before the marker, so the
     // marker's completion implies the work completed.
     context.queue().submit([encoder.finish(), marker.finish()]);
-    // A loss announced before the callback ran fails the submission — its
-    // pixels, if any, belong to the dead generation.
+    // A buffer error or a loss announced before the callback ran fails the
+    // submission — its pixels, if any, belong to the dead work.
     let device_loss = context.device_loss();
     context.queue().on_submitted_work_done(move || {
         completion(
-            device_loss
-                .reason()
+            outcome
+                .lock()
+                .unwrap()
+                .take()
+                .or_else(|| device_loss.reason())
                 .map_or(Ok(()), |reason| Err(SubmissionFailed { reason })),
         );
     });
