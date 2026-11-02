@@ -696,7 +696,10 @@ impl ContentData {
     }
 
     pub fn replace(&mut self, list: cherenkov::Picture) -> cherenkov::Picture {
-        let previous = self.retained.replace(list);
+        let (previous, changed) = self.retained.replace(list);
+        if !changed {
+            return previous;
+        }
         self.range = None;
         self.storage.instances.clear();
         self.storage.stops.clear();

@@ -385,10 +385,15 @@ impl<O: Operation, E> Content<O, E> {
         }
     }
 
-    /// Replace all source commands while keeping the lowering buffers available.
-    pub fn replace(&mut self, list: crate::Picture) -> crate::Picture {
+    /// Replace source commands, returning the previous picture and whether it changed.
+    /// Equivalent content retains preparation, including any pending slot updates.
+    pub fn replace(&mut self, list: crate::Picture) -> (crate::Picture, bool) {
         self.live = true;
+        let changed = self.list != list;
         let previous = std::mem::replace(&mut self.list, list);
+        if !changed {
+            return (previous, false);
+        }
         self.dirty = Dirty::default();
         self.emissions.clear();
         if let Some(lowered) = &mut self.lowered {
@@ -396,7 +401,7 @@ impl<O: Operation, E> Content<O, E> {
             lowered.spans.clear();
         }
         self.rebuild = true;
-        previous
+        (previous, true)
     }
 
     /// Extract the retained source picture.
@@ -2798,7 +2803,11 @@ mod content_tests {
         });
         let mut content = Content::<TestOp, ()>::new(previous.clone());
 
-        assert_eq!(content.replace(replacement.clone()), previous);
+        assert_eq!(content.replace(replacement.clone()), (previous, true));
+        assert_eq!(
+            content.replace(replacement.clone()),
+            (replacement.clone(), false)
+        );
         assert_eq!(content.into_picture(), replacement);
     }
 }
