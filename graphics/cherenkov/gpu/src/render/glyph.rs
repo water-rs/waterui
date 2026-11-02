@@ -594,6 +594,8 @@ pub struct Atlas {
     dedupe_masks: rustc_hash::FxHashSet<u64>,
     plan_cells: Vec<(u32, u32)>,
     plan_all: Vec<(u32, u32)>,
+    /// Shape whose unchanged cell sequence has already rejected every shrink.
+    shrink_checked: Option<(u32, u32)>,
     /// Per-shelf cell counts, scatter cursors and the flat cell order
     /// for [`Self::upload_committed`], rebuilt in place each commit.
     bucket_counts: Vec<u32>,
@@ -679,6 +681,7 @@ impl Atlas {
             bucket_next: Vec::new(),
             bucket_order: Vec::new(),
             plan_all: Vec::new(),
+            shrink_checked: None,
         }
     }
 
@@ -988,7 +991,15 @@ impl Atlas {
             // packs exactly the cells a repacked commit places, so the
             // verdict transfers.
             if self.pages > 1 {
-                self.live_cells();
+                let changed = self.live_cells();
+                if !changed && self.shrink_checked == Some((self.size, self.pages)) {
+                    return if evicted {
+                        AtlasPlan::FitsEviction
+                    } else {
+                        AtlasPlan::Fits
+                    };
+                }
+                self.shrink_checked = None;
                 // Probe smallest texture first — so the released atlas
                 // lands on the shape a fresh engine reaches for the same
                 // content, not just any smaller area (#211).
@@ -1034,6 +1045,7 @@ impl Atlas {
                         return AtlasPlan::Resize(size, pages);
                     }
                 }
+                self.shrink_checked = Some((self.size, self.pages));
             }
             return if evicted {
                 AtlasPlan::FitsEviction
@@ -1045,6 +1057,7 @@ impl Atlas {
         // repack keeps only the live set — the pending cells plus the
         // surviving cached cells — so the target probe packs exactly
         // those. Unreferenced cache would bloat — or break — it (#211).
+        self.shrink_checked = None;
         self.live_cells();
         let shapes = self.grow_shapes();
         for &(size, pages) in &shapes {
@@ -1134,12 +1147,28 @@ impl Atlas {
     /// then the batch's pending cells (`plan_cells`, deduped misses
     /// only; pending-referenced cache entries arrive through the
     /// surviving set instead).
-    fn live_cells(&mut self) {
+    fn live_cells(&mut self) -> bool {
         let mut plan_all = std::mem::take(&mut self.plan_all);
-        plan_all.clear();
-        self.each_surviving_cell(|_, _, w, h| plan_all.push((w, h)));
-        plan_all.extend_from_slice(&self.plan_cells);
+        let mut count = 0;
+        let mut changed = false;
+        let mut append = |w, h| {
+            if let Some(cell) = plan_all.get_mut(count) {
+                changed |= *cell != (w, h);
+                *cell = (w, h);
+            } else {
+                changed = true;
+                plan_all.push((w, h));
+            }
+            count += 1;
+        };
+        self.each_surviving_cell(|_, _, w, h| append(w, h));
+        for &(w, h) in &self.plan_cells {
+            append(w, h);
+        }
+        changed |= count != plan_all.len();
+        plan_all.truncate(count);
         self.plan_all = plan_all;
+        changed
     }
 
     /// Whether `slot`'s shelf was touched this commit — the criterion
@@ -4085,6 +4114,11 @@ mod tests {
         };
         atlas.resize_to(&device, size, pages);
         assert_eq!(atlas.pages(), 2);
+        assert!(matches!(atlas.plan(&refs), AtlasPlan::Fits));
+        assert_eq!(atlas.shrink_checked, Some((size, pages)));
+        atlas.begin_commit(&[]);
+        assert!(matches!(atlas.plan(&refs), AtlasPlan::Fits));
+        assert_eq!(atlas.shrink_checked, Some((size, pages)));
         let bytes_peak = atlas.gpu_bytes();
         let old_origin = atlas
             .store_glyph(&device, &queue, key(100), 0, 0, 512, 512, &texels)
