@@ -1388,32 +1388,10 @@ async fn gpu_readiness_trip(stage: &std::cell::Cell<&'static str>) {
         .await;
         // A queue submission alone is not presenting (#3529): the stall the
         // issue describes keeps `CAMetalDisplayLink` from ever delivering a
-        // drawable. The gate presents one real frame through the
-        // production `MetalPresenter` — link delivery → drawable →
-        // `drawable.present()` — so a wedged display path still holds the
-        // suite here instead of inside a case.
+        // drawable — `present_readiness_frame` drives the real
+        // render → present → completion loop against a visible layer.
         stage.set("frame presentation");
-        let (present_tx, present_rx) = futures::channel::oneshot::channel::<()>();
-        let present_tx = std::cell::RefCell::new(Some(present_tx));
-        let layer = cocoa_ui::objc2_quartz_core::CAMetalLayer::new();
-        let presenter = cocoa_ui::metal_presenter::MetalPresenter::new(
-            layer,
-            std::rc::Rc::new(move |frame| {
-                if frame.present().is_some()
-                    && let Some(tx) = present_tx.borrow_mut().take()
-                {
-                    let _ = tx.send(());
-                }
-            }),
-            false,
-        );
-        presenter.set_device(&crate::gpu_runtime::raw_metal_device(&context));
-        presenter.set_drawable_size(cocoa_ui::objc2_core_foundation::CGSize::new(64.0, 64.0));
-        presenter.set_paused(false);
-        present_rx
-            .await
-            .expect("the readiness present delivers its frame or the sender drops");
-        drop(presenter);
+        present_readiness_frame(&context).await;
         // One queue-completion trip proves the GPU side of the frame
         // settled too — `submit_with_completion` carries the error a dead
         // device would surface instead of letting the case discover it.
@@ -1436,6 +1414,100 @@ async fn gpu_readiness_trip(stage: &std::cell::Cell<&'static str>) {
         result.unwrap_or_else(|failure| panic!("the readiness submission failed: {failure}"));
         let _ = queue;
     }
+}
+
+/// Presents one real frame end to end: a `CAMetalLayer` in a visible
+/// window, one clear encoded into the `CAMetalDisplayLink`-delivered
+/// drawable's texture, `presentDrawable` on that same command buffer,
+/// and the buffer's completed handler — so a wedged display path holds
+/// the suite here instead of inside a case.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the gate polls the future by hand on the main thread; the MetalPresenter and UIWindow it holds across the wait are single-threaded"
+)]
+async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuContext) {
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::objc2_metal::{
+        MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
+        MTLLoadAction, MTLRenderPassDescriptor, MTLStoreAction,
+    };
+    let (present_tx, present_rx) = futures::channel::oneshot::channel::<()>();
+    let present_tx = std::cell::RefCell::new(Some(present_tx));
+    let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
+    let present_window = spawned_window(mtm);
+    let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
+    let host = controller.host_view().retain();
+    present_window.setRootViewController(Some(&controller));
+    present_window.makeKeyAndVisible();
+    let layer = cocoa_ui::objc2_quartz_core::CAMetalLayer::new();
+    host.layer().addSublayer(&layer);
+    let render_queue = crate::gpu_runtime::raw_metal_device(context)
+        .newCommandQueue()
+        .expect("the readiness device creates a command queue");
+    let presenter = cocoa_ui::metal_presenter::MetalPresenter::new(
+        layer,
+        std::rc::Rc::new(move |frame| {
+            let drawable = cocoa_ui::objc2::runtime::ProtocolObject::<
+                dyn cocoa_ui::objc2_metal::MTLDrawable,
+            >::from_retained(frame.drawable());
+            let texture = frame.texture();
+            let buffer = render_queue
+                .commandBuffer()
+                .expect("the readiness queue hands a command buffer");
+            let pass = MTLRenderPassDescriptor::renderPassDescriptor();
+            let attachment = unsafe {
+                // SAFETY: index 0 is the first color attachment every
+                // render pass descriptor answers.
+                pass.colorAttachments().objectAtIndexedSubscript(0)
+            };
+            attachment.setTexture(Some(&texture));
+            attachment.setLoadAction(MTLLoadAction::Clear);
+            attachment.setStoreAction(MTLStoreAction::Store);
+            attachment.setClearColor(MTLClearColor {
+                red: 0.0,
+                green: 0.0,
+                blue: 0.0,
+                alpha: 1.0,
+            });
+            let render = buffer
+                .renderCommandEncoderWithDescriptor(&pass)
+                .expect("the readiness pass opens a render encoder");
+            render.endEncoding();
+            buffer.presentDrawable(&drawable);
+            if let Some(tx) = present_tx.borrow_mut().take() {
+                let tx = std::cell::RefCell::new(Some(tx));
+                let handler = block2::RcBlock::new(
+                    move |_buf: core::ptr::NonNull<
+                        cocoa_ui::objc2::runtime::ProtocolObject<
+                            dyn cocoa_ui::objc2_metal::MTLCommandBuffer,
+                        >,
+                    >| {
+                        if let Some(tx) = tx.borrow_mut().take() {
+                            let _ = tx.send(());
+                        }
+                    },
+                );
+                unsafe {
+                    // SAFETY: `handler` is a valid completion block of the
+                    // documented signature, attached before `commit` as
+                    // the API requires; `addCompletedHandler` copies it.
+                    buffer.addCompletedHandler(block2::RcBlock::as_ptr(&handler)
+                        as cocoa_ui::objc2_metal::MTLCommandBufferHandler);
+                }
+            }
+            buffer.commit();
+        }),
+        false,
+    );
+    presenter.set_device(&crate::gpu_runtime::raw_metal_device(context));
+    presenter.set_drawable_size(cocoa_ui::objc2_core_foundation::CGSize::new(64.0, 64.0));
+    presenter.set_paused(false);
+    present_rx
+        .await
+        .expect("the readiness present delivers its frame or the sender drops");
+    drop(presenter);
+    drop(present_window);
 }
 
 /// `block_on_main` that names the stage it stalls on — the readiness gate

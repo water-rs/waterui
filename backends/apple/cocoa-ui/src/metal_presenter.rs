@@ -120,6 +120,14 @@ impl DrawableFrame {
         self.drawable.texture()
     }
 
+    /// The `CAMetalDrawable` this frame presents — callers that commit
+    /// their own command buffers use it for `presentDrawable:` so the
+    /// frame's presentation rides the same submission as its render work.
+    #[must_use]
+    pub fn drawable(&self) -> Retained<ProtocolObject<dyn CAMetalDrawable>> {
+        self.drawable.clone()
+    }
+
     /// The update's target presentation timestamp, `CACurrentMediaTime`
     /// seconds.
     #[must_use]
