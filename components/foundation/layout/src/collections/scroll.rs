@@ -11,7 +11,7 @@ use crate::{Point, Size, StretchAxis};
 #[non_exhaustive]
 pub struct ScrollRequest<T> {
     /// The position the scroll view moves to.
-    pub target: T,
+    target: T,
     /// How the scroll view moves there. `None` jumps in one frame.
     /// [`Animation::Default`] uses the backend's default scroll motion: the
     /// native smooth scroll on a backend that drives a platform scroll view,
@@ -21,7 +21,7 @@ pub struct ScrollRequest<T> {
     /// The C FFI does not carry the animation yet, so the Kotlin Android
     /// runtime, which consumes it, jumps for every request
     /// (water-rs/waterui#2084).
-    pub animation: Option<Animation>,
+    animation: Option<Animation>,
 }
 
 impl<T> ScrollRequest<T> {
@@ -62,15 +62,15 @@ impl<T> ScrollRequest<T> {
 #[non_exhaustive]
 pub struct ScrollPosition {
     /// The content offset the viewport's origin sits at, in points.
-    pub offset: Point,
+    offset: Point,
     /// The size of the visible scroll area, in points.
-    pub viewport_size: Size,
+    viewport_size: Size,
     /// The scrollable extent, in points.
-    pub content_size: Size,
+    content_size: Size,
     /// Whether the viewport touches the start of every scrollable axis.
-    pub at_start: bool,
+    at_start: bool,
     /// Whether the viewport touches the end of every scrollable axis.
-    pub at_end: bool,
+    at_end: bool,
 }
 
 impl ScrollPosition {
@@ -306,14 +306,14 @@ pub struct ScrollView {
 #[non_exhaustive]
 pub struct ScrollViewParts {
     /// The axis or axes the view scrolls along.
-    pub axis: Axis,
+    axis: Axis,
     /// The scrolled content.
-    pub content: AnyView,
+    content: AnyView,
     /// The programmatic scroll controller, if one is connected.
-    pub controller: Option<ScrollController<Point>>,
+    controller: Option<ScrollController<Point>>,
     /// The binding the backend reports the content offset into, if one is
     /// connected.
-    pub offset: Option<Binding<Point>>,
+    offset: Option<Binding<Point>>,
 }
 
 impl ScrollViewParts {
