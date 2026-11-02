@@ -564,19 +564,17 @@ define_class!(
     }
 );
 
-/// The row height the idiom's own convention holds — under the pad idiom
-/// the platform's row convention is 52 pt while the detached cell
-/// measure reports 44, so the stock height floors at 52 (#3723). Every
-/// other idiom already agrees with `UIKit`'s measure, so the floor
-/// releases there.
-fn canonical_row_height(table: &TableView) -> CGFloat {
-    if objc2_ui_kit::UIDevice::currentDevice(table.mtm()).userInterfaceIdiom()
-        == objc2_ui_kit::UIUserInterfaceIdiom::Pad
-    {
-        52.0
-    } else {
-        0.0
-    }
+/// The row height a live table's self-sizing pass measures for a stock
+/// cell — a cell carrying the platform's `cell` content configuration
+/// with a line of text. On the pad idiom `UIKit` reports 51.5 pt where a
+/// bare detached cell reports 44, so the configuration, not a constant,
+/// carries each idiom's convention (#3723).
+fn stock_cell(mtm: MainThreadMarker) -> Retained<TableCell> {
+    let cell = TableCell::new(mtm);
+    let configuration = UIListContentConfiguration::cellConfiguration(mtm);
+    configuration.setText(Some(&NSString::from_str("Row")));
+    cell.setContentConfiguration(Some(ProtocolObject::from_ref(&*configuration)));
+    cell
 }
 
 impl TableView {
@@ -652,12 +650,12 @@ impl TableView {
     /// row takes when `min_row_height` is unset, measured the way a live
     /// table's self-sizing pass measures it: `sizeThatFits` on a detached
     /// cell reports a point less than `systemLayoutSizeFittingSize`, the
-    /// measurement `UITableView` actually applies.
+    /// measurement `UITableView` actually applies. The cell carries the
+    /// platform's stock content configuration, so each idiom's own
+    /// convention lands in the answer (#3723).
     #[must_use]
     pub fn stock_row_height(&self) -> f64 {
-        crate::view::fitting_size(&TableCell::new(self.mtm()))
-            .height
-            .max(canonical_row_height(self))
+        crate::view::fitting_size(&stock_cell(self.mtm())).height
     }
 
     /// The table's directional layout margins.
