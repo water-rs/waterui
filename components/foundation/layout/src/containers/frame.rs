@@ -363,10 +363,7 @@ fn frame_resolved_axis(
         // unbounded: a maximum is something to grow into, not a source of
         // infinity of its own — a finite one still bounds the answer, so
         // the release applies only when `max` is itself unbounded.
-        if extent.is_infinite()
-            && child_size.is_finite()
-            && max.is_none_or(|maximum| maximum.is_infinite())
-        {
+        if extent.is_infinite() && child_size.is_finite() && max.is_none_or(f32::is_infinite) {
             child_size
         } else {
             extent
