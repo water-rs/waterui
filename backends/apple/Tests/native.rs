@@ -84,7 +84,12 @@ fn main() {
     // path stalled inside the process while it resumes — the runner's
     // `caffeinate` wakes the display but cannot observe the stall, so the
     // suite gates on one real GPU trip before its first case (#3529).
-    #[cfg(all(target_os = "ios", feature = "native-test", feature = "gpu_surface"))]
+    #[cfg(all(
+        target_os = "ios",
+        not(catalyst),
+        feature = "native-test",
+        feature = "gpu_surface"
+    ))]
     if !args.list {
         waterui_apple::native_test_support::await_gpu(90.0);
     }

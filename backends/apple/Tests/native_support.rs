@@ -1309,13 +1309,27 @@ pub fn install_gpu(
 /// truly dead device fails naming the bound instead of hanging a case.
 /// Kept off the main thread where `wgpu` compiles Metal state the same
 /// way `filtrate`'s `compile::validated` does.
-#[cfg(all(target_os = "ios", feature = "gpu_surface"))]
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
 pub fn await_gpu(seconds: f64) {
     let _ = executor_core::try_init_local_executor(
         native_executor::NativeMainExecutor::new()
             .expect("the native suite runs on the process's main thread"),
     );
-    block_on_main(seconds, async {
+    // The stage the run is waiting on, for the timeout panic's name.
+    let stage = std::cell::Cell::new("GPU runtime");
+    await_gpu_stage(seconds, &stage, gpu_readiness_trip(&stage));
+}
+
+/// The trip `await_gpu` blocks on: runtime → pipeline compile → one real
+/// presented frame → queue completion.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the gate polls the future by hand on the main thread; the MetalPresenter it holds across the wait is single-threaded"
+)]
+async fn gpu_readiness_trip(stage: &std::cell::Cell<&'static str>) {
+    use waterui_graphics::wgpu;
+    {
         let runtime = waterui_graphics::gpu::GpuRuntime::new()
             .await
             .expect("the harness provides a GPU runtime");
@@ -1326,8 +1340,13 @@ pub fn await_gpu(seconds: f64) {
         // thread — the same `blocking::unblock` trip `filtrate`'s
         // `compile::validated` takes, so the gate warms exactly the path
         // the suites' effect setup stalls on (#3529).
+        stage.set("pipeline compile");
         let compile_device = device.clone();
         blocking::unblock(move || {
+            // `filtrate`'s `compile::validated` wraps pipeline creation in a
+            // validation error scope; the gate takes the same trip so the
+            // warmed path matches what effect setup walks.
+            let error_scope = compile_device.push_error_scope(wgpu::ErrorFilter::Validation);
             let module = compile_device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("native-test readiness"),
                 source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
@@ -1361,8 +1380,44 @@ pub fn await_gpu(seconds: f64) {
                     multiview_mask: None,
                     cache: None,
                 });
+            assert!(
+                futures::executor::block_on(error_scope.pop()).is_none(),
+                "the readiness pipeline compiles without validation errors"
+            );
         })
         .await;
+        // A queue submission alone is not presenting (#3529): the stall the
+        // issue describes keeps `CAMetalDisplayLink` from ever delivering a
+        // drawable. The gate presents one real frame through the
+        // production `MetalPresenter` — link delivery → drawable →
+        // `drawable.present()` — so a wedged display path still holds the
+        // suite here instead of inside a case.
+        stage.set("frame presentation");
+        let (present_tx, present_rx) = futures::channel::oneshot::channel::<()>();
+        let present_tx = std::cell::RefCell::new(Some(present_tx));
+        let layer = cocoa_ui::objc2_quartz_core::CAMetalLayer::new();
+        let presenter = cocoa_ui::metal_presenter::MetalPresenter::new(
+            layer,
+            std::rc::Rc::new(move |frame| {
+                if frame.present().is_some()
+                    && let Some(tx) = present_tx.borrow_mut().take()
+                {
+                    let _ = tx.send(());
+                }
+            }),
+            false,
+        );
+        presenter.set_device(&crate::gpu_runtime::raw_metal_device(&context));
+        presenter.set_drawable_size(cocoa_ui::objc2_core_foundation::CGSize::new(64.0, 64.0));
+        presenter.set_paused(false);
+        present_rx
+            .await
+            .expect("the readiness present delivers its frame or the sender drops");
+        drop(presenter);
+        // One queue-completion trip proves the GPU side of the frame
+        // settled too — `submit_with_completion` carries the error a dead
+        // device would surface instead of letting the case discover it.
+        stage.set("submission completion");
         let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
         let (done, submitted) = futures::channel::oneshot::channel();
         crate::gpu_completion::submit_with_completion(
@@ -1372,16 +1427,53 @@ pub fn await_gpu(seconds: f64) {
             }),
             &context,
             move |result| {
-                let _ = done.send(result.is_ok());
+                let _ = done.send(result);
             },
         );
-        let completed = submitted.await.unwrap_or(false);
+        let result = submitted
+            .await
+            .expect("the readiness submission reports its completion");
+        result.unwrap_or_else(|failure| panic!("the readiness submission failed: {failure}"));
         let _ = queue;
-        completed
-    });
+    }
 }
 
-use waterui_graphics::wgpu;
+/// `block_on_main` that names the stage it stalls on — the readiness gate
+/// uses it so a wedge reports which leg never answered.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn await_gpu_stage(
+    seconds: f64,
+    stage: &std::cell::Cell<&'static str>,
+    future: impl core::future::Future<Output = ()>,
+) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+    use std::time::Instant;
+    struct Flag(Arc<AtomicBool>);
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let woken = Arc::new(AtomicBool::new(false));
+    let waker = Waker::from(Arc::new(Flag(Arc::clone(&woken))));
+    let mut cx = Context::from_waker(&waker);
+    let mut gate = core::pin::pin!(future);
+    let start = Instant::now();
+    loop {
+        woken.store(false, Ordering::Release);
+        if matches!(gate.as_mut().poll(&mut cx), Poll::Ready(())) {
+            return;
+        }
+        assert!(
+            start.elapsed().as_secs_f64() < seconds,
+            "the GPU readiness {} stage did not settle within {seconds}s",
+            stage.get(),
+        );
+        pump_main_until(0.05, || woken.load(Ordering::Acquire));
+    }
+}
 
 /// Rehosts the detached `view` the way `capture_rgba` does.
 ///
