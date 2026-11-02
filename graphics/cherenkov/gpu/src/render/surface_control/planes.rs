@@ -1129,25 +1129,24 @@ impl Planes {
         });
         let mut part = 0;
         let mut seen = Vec::new();
-        let mut above_mark = false;
+        // Entries after the last external host window's mark present under
+        // the second root — above the embedded windows — when the host set
+        // one; anything earlier stays under `root`, beneath the windows it
+        // precedes in paint order (water-rs/waterui#2225).
+        let last_mark = stack
+            .iter()
+            .rposition(|entry| matches!(entry, Entry::HostWindow));
         for (index, entry) in stack.iter().enumerate() {
             let z = plan::z_order(index);
-            // Entries after an external host window's mark present under
-            // the second root — above the embedded windows — when the
-            // host set one; otherwise they stay under `root` and draw
-            // under the windows as before (water-rs/waterui#2225).
-            let root = if above_mark {
+            let root = if last_mark.is_some_and(|mark| index > mark) {
                 self.top_root.as_ref().unwrap_or(&self.root)
             } else {
                 &self.root
             };
             match entry {
-                // An external host window's mark shows nothing: it splits
-                // the stack so later entries reparent to the second
-                // presentation root (water-rs/waterui#2225).
-                Entry::HostWindow => {
-                    above_mark = true;
-                }
+                // An external host window's mark shows nothing: it is the
+                // paint-order boundary between the roots.
+                Entry::HostWindow => {}
                 Entry::Engine {
                     raster, properties, ..
                 } => {

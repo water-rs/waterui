@@ -117,6 +117,28 @@ impl HydrolysisAndroidPainter {
         }
     }
 
+    /// The band `View` this painter mounts above the platform-view
+    /// overlay — the GPU painter's `HydrolysisGpuTopBand` carries the
+    /// self-drawn entries a frame paints over its embedded views
+    /// (water-rs/waterui#2225). A painter that draws in-order ships none.
+    #[must_use]
+    pub fn top_band_import(self) -> Option<String> {
+        match self {
+            Self::Gpu => Some("dev.waterui.hydrolysis.gpu.HydrolysisGpuTopBand".to_string()),
+            Self::Hwui => None,
+        }
+    }
+
+    /// The top band class name [`Self::top_band_import`] supplies, when
+    /// set.
+    #[must_use]
+    pub fn top_band_class(self) -> Option<String> {
+        match self {
+            Self::Gpu => Some("HydrolysisGpuTopBand".to_string()),
+            Self::Hwui => None,
+        }
+    }
+
     /// The CLI's own spelling of the painter, for help text and messages.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -608,6 +630,8 @@ async fn template_entry(
         min_api_level: framework_min.max(painter.min_api_level()),
         painter_band_import: painter.band_import(),
         painter_band_class: painter.band_class(),
+        painter_top_band_import: painter.top_band_import(),
+        painter_top_band_class: painter.top_band_class(),
     })
 }
 

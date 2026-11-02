@@ -24,7 +24,18 @@ fun interface PlatformViewRecorder {
     fun drawLocal(id: Long, canvas: Canvas, width: Int, height: Int, transform: android.graphics.Matrix)
 }
 
-interface OrderedContent {
+/**
+ * The paint-order hit query the touch paths ask: the platform view the
+ * retained tree places under host pixel (`x`, `y`), `null` when none is
+ * drawn there or an interactive target above it takes the point. Split
+ * from [OrderedContent] so the GPU band — whose surfaces draw outside the
+ * container — still answers gesture ownership (water-rs/waterui#2225).
+ */
+fun interface OrderedHitTest {
+    fun platformViewAt(x: Float, y: Float): Long?
+}
+
+interface OrderedContent : OrderedHitTest {
     /** The entries, bottom first. */
     val entryCount: Int
 
@@ -56,7 +67,7 @@ interface OrderedContent {
      * no view is drawn there or an interactive target painted above it
      * takes the point; non-interactive content never does.
      */
-    fun platformViewAt(x: Float, y: Float): Long?
+    override fun platformViewAt(x: Float, y: Float): Long?
 }
 
 /** The ordered hit test, apart from views so the JVM tests it. */

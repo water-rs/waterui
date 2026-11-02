@@ -1475,6 +1475,15 @@ impl AndroidSession {
             let executor = self.executor.clone();
             #[cfg(hydrolysis_gpu_painter)]
             let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
+            #[cfg(hydrolysis_gpu_painter)]
+            if self.runtime.platform.surface.has_pending_top_root()
+                && self.runtime.platform.top_surface.is_attached()
+            {
+                // The engine window was (re)created under a pending
+                // top-root request — replay the top band's target onto it.
+                let target = self.runtime.platform.top_surface.top_root_target();
+                self.runtime.platform.surface.set_top_root(target);
+            }
             #[cfg(hydrolysis_hwui)]
             let presented = self
                 .hwui

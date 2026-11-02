@@ -232,6 +232,14 @@ class HydrolysisSession internal constructor(
         }
         hostView = view
         painter?.attach(view)
+        // The paint-order hit query every binding needs for gesture
+        // ownership — the painter's OrderedContent covers the draw side;
+        // on the GPU band, whose surfaces live outside the platform-view
+        // container, this is the whole ordered answer
+        // (water-rs/waterui#2225).
+        view.platformViewRegistry.setOrderedHitTest(
+            OrderedHitTest { x, y -> platformViewAt(x, y) },
+        )
         withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
             NativeBridge.nativeSetHostAttached(ptr, true)
         }
@@ -261,6 +269,7 @@ class HydrolysisSession internal constructor(
         // retained session, so they must be free of the old slots before
         // the next binding mounts them.
         view.platformViewRegistry.detachInstances()
+        view.platformViewRegistry.setOrderedHitTest(null)
         painter?.detach(view)
         if (!destroyed) {
             withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->

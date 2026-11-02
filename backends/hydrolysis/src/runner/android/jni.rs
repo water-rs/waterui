@@ -772,9 +772,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible
 /// ordered hit test the Kotlin host's gesture dispatch asks before latching
 /// a native gesture. `0` means no view is drawn there or an interactive
 /// target painted above it takes the point; non-interactive content never
-/// blocks a view. HWUI builds only: the GPU path's slots own their own hit
-/// order.
-#[cfg(hydrolysis_hwui)]
+/// blocks a view.
+#[cfg(any(hydrolysis_hwui, hydrolysis_gpu_painter))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformViewHitTest<
     'local,
@@ -789,15 +788,16 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
 
     guard_val(&mut env, 0, |_env| {
         let session = session(session_ptr);
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
+        let scale = session.runtime.platform.scale_factor();
+        #[cfg(hydrolysis_hwui)]
         let id = session
             .runtime
             .renderer
-            .platform_view_hit(
-                session.hwui.surface.encoder(),
-                kurbo::Point::new(f64::from(x), f64::from(y)),
-                session.runtime.platform.scale_factor(),
-            )
+            .platform_view_hit(session.hwui.surface.encoder(), point, scale)
             .map_err(|e| JniError(e.to_string()))?;
+        #[cfg(hydrolysis_gpu_painter)]
+        let id = session.runtime.renderer.platform_view_hit_gpu(point, scale);
         Ok(id.map_or(0, |id| i64::from_ne_bytes(id.to_ne_bytes())))
     })
 }

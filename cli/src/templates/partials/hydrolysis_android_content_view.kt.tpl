@@ -4,4 +4,9 @@ HydrolysisHostView(context, session).apply {
     // and native embeddings draw above it.
     addView({{ ctx.hydrolysis_android_painter_band_class() }}(context, session), 0)
     {%- endif %}
+    {%- if ctx.hydrolysis_android_has_top_band() %}
+    // The top band is the last child, above the platform-view overlay: the
+    // entries a frame paints over its embedded views present into it.
+    addView({{ ctx.hydrolysis_android_top_band_class() }}(context, session))
+    {%- endif %}
 }

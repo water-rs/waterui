@@ -214,6 +214,10 @@ pub struct AndroidSurface {
     >,
     /// GPU pipelines survive `SurfaceHolder` teardown while this host stays alive.
     engine_state: Option<std::rc::Rc<crate::engine::SharedEngineState>>,
+    /// The latest top-root request not yet delivered to a live engine
+    /// window — a target that arrived before the window existed, or whose
+    /// window has since been rebuilt (water-rs/waterui#2225).
+    top_root_pending: std::cell::Cell<bool>,
     native_window: Option<WindowLease>,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// engine surface — valid while between surface generations too.
@@ -278,6 +282,7 @@ impl AndroidSurface {
             generation: 0,
             engine_window: None,
             engine_state: None,
+            top_root_pending: std::cell::Cell::new(false),
             native_window: None,
             width: 0,
             height: 0,
@@ -405,17 +410,27 @@ impl AndroidSurface {
     /// `SurfaceControlTarget` — a surface the host places above the
     /// embedded platform views (water-rs/waterui#2225). `None` returns
     /// those entries to this window's own root, beneath the views.
-    /// No-ops until the engine window exists.
+    /// With no live engine window the request stays pending and the host
+    /// replays it once one exists.
     pub(crate) fn set_top_root(
         &self,
         target: Option<cherenkov_gpu::interop::android::SurfaceControlTarget>,
     ) {
+        self.top_root_pending.set(target.is_some());
         if let Some(window) = self.engine_window.as_ref() {
             window
                 .surface
                 .set_top_root(target)
                 .expect("hydrolysis android: engine render thread is gone");
+            self.top_root_pending.set(false);
         }
+    }
+
+    /// Whether a top-root request still waits for a live engine window —
+    /// the host re-pushes the top surface's target when this and
+    /// `top_surface.is_attached()` both hold.
+    pub(crate) fn has_pending_top_root(&self) -> bool {
+        self.top_root_pending.get() && self.engine_window.is_some()
     }
 
     /// The `SurfaceControlTarget` the base window presents above-mark
