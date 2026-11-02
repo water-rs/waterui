@@ -361,8 +361,12 @@ fn frame_resolved_axis(
             .max(child_size);
         // An unbounded answer is legal only on an axis the child left
         // unbounded: a maximum is something to grow into, not a source of
-        // infinity of its own.
-        if extent.is_infinite() && child_size.is_finite() {
+        // infinity of its own — a finite one still bounds the answer, so
+        // the release applies only when `max` is itself unbounded.
+        if extent.is_infinite()
+            && child_size.is_finite()
+            && max.is_none_or(|maximum| maximum.is_infinite())
+        {
             child_size
         } else {
             extent
@@ -578,6 +582,24 @@ mod tests {
         };
         let size = layout.size_that_fits(ProposalSize::new(Some(30.0), Some(10.0)), &[&child]);
         assert_eq!(size, Size::new(58.3, 20.0));
+    }
+
+    /// An unbounded offer is still an offer: a finite `max` clamps it, so
+    /// the frame grows to `max` rather than staying at its finite child.
+    #[test]
+    fn a_max_frame_clamps_an_unbounded_offer() {
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(60.0)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(57.0, 20.0),
+        };
+        let size = layout.size_that_fits(
+            ProposalSize::new(Some(f32::INFINITY), Some(10.0)),
+            &[&child],
+        );
+        assert_eq!(size, Size::new(60.0, 20.0));
     }
 
     /// A larger offer is still the extent the frame grows into, capped by
