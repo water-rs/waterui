@@ -1672,7 +1672,6 @@ dependencies = [
  "crossbeam-channel",
  "filtrate-core",
  "kurbo",
- "libc",
  "libm",
  "nami",
  "parley 0.12.0",

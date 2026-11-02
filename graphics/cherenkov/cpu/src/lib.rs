@@ -74,9 +74,7 @@ pub struct RasterInfo {
 pub struct RasterConfig {
     /// Positive worker count for the banded rasterizer. An explicit count
     /// takes precedence over `RAYON_NUM_THREADS`, which must also be positive.
-    /// Otherwise Apple uses the highest-performance physical core class;
-    /// Android counts allowed cores with at least half the maximum capacity;
-    /// other native platforms use their available parallelism. Automatic
+    /// Otherwise the host's available parallelism is used. Automatic
     /// discovery is unsupported on WebAssembly.
     pub threads: Option<usize>,
     /// Memory budgets; only `budget.cpu` is used for resident images and cached glyph masks.
