@@ -80,6 +80,14 @@ fn main() {
     #[cfg(catalyst)]
     let _background_application =
         (!args.list).then(|| cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm()));
+    // A host display asleep at run start leaves the simulator's Metal
+    // path stalled inside the process while it resumes — the runner's
+    // `caffeinate` wakes the display but cannot observe the stall, so the
+    // suite gates on one real GPU trip before its first case (#3529).
+    #[cfg(all(target_os = "ios", feature = "native-test", feature = "gpu_surface"))]
+    if !args.list {
+        waterui_apple::native_test_support::await_gpu(90.0);
+    }
     libtest_mimic::run(&args, trials()).exit();
 }
 

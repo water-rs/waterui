@@ -1297,6 +1297,92 @@ pub fn install_gpu(
     crate::dispatch::install(env);
 }
 
+/// Gates the suite on one real trip through the simulator's Metal path:
+/// runtime, pipeline creation, submission, completion.
+///
+/// A host display asleep when the run starts leaves these calls stalled
+/// inside the process while the simulator resumes presenting — the
+/// runner's `caffeinate` wakes the display but cannot observe the
+/// in-process stall, and `simctl io screenshot` answers regardless
+/// (#3529). The only honest readiness signal is a completed GPU trip:
+/// this blocks the suite until one lands, bounded at `seconds` so a
+/// truly dead device fails naming the bound instead of hanging a case.
+/// Kept off the main thread where `wgpu` compiles Metal state the same
+/// way `filtrate`'s `compile::validated` does.
+#[cfg(all(target_os = "ios", feature = "gpu_surface"))]
+pub fn await_gpu(seconds: f64) {
+    let _ = executor_core::try_init_local_executor(
+        native_executor::NativeMainExecutor::new()
+            .expect("the native suite runs on the process's main thread"),
+    );
+    block_on_main(seconds, async {
+        let runtime = waterui_graphics::gpu::GpuRuntime::new()
+            .await
+            .expect("the harness provides a GPU runtime");
+        let context = runtime.context();
+        let device = context.device().clone();
+        let queue = context.queue().clone();
+        // Pipeline creation compiles Metal shader state on the calling
+        // thread — the same `blocking::unblock` trip `filtrate`'s
+        // `compile::validated` takes, so the gate warms exactly the path
+        // the suites' effect setup stalls on (#3529).
+        let compile_device = device.clone();
+        blocking::unblock(move || {
+            let module = compile_device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("native-test readiness"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
+                    "@vertex fn vs() -> @builtin(position) vec4f { return vec4f(); }
+                     @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }",
+                )),
+            });
+            let _pipeline =
+                compile_device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("native-test readiness"),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+        })
+        .await;
+        let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
+        let (done, submitted) = futures::channel::oneshot::channel();
+        crate::gpu_completion::submit_with_completion(
+            mtm,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("native-test readiness"),
+            }),
+            &context,
+            move |result| {
+                let _ = done.send(result.is_ok());
+            },
+        );
+        let completed = submitted.await.unwrap_or(false);
+        let _ = queue;
+        completed
+    });
+}
+
+use waterui_graphics::wgpu;
+
 /// Rehosts the detached `view` the way `capture_rgba` does.
 ///
 /// The view goes into the offscreen capture window and is laid out
