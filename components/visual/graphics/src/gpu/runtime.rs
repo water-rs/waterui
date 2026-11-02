@@ -325,6 +325,14 @@ impl SharedGpuContext {
         self.device_loss.record(reason.to_owned());
     }
 
+    /// Records a failed submission as this context's death: a command
+    /// buffer the queue retired without landing retires the whole context,
+    /// exactly as a driver-reported loss does — `context()` rebuilds it and
+    /// consumers re-encode on the replacement generation.
+    pub fn mark_submission_failed(&self, reason: String) {
+        self.device_loss.record(reason);
+    }
+
     /// Whether this device generation presented a frame to completion.
     ///
     /// A lost generation that presented at least once counts as an ordinary

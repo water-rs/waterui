@@ -164,14 +164,21 @@ pub fn submit_with_completion(
     // A buffer error or a loss announced before the callback ran fails the
     // submission — its pixels, if any, belong to the dead work.
     let device_loss = context.device_loss();
+    let service_context = Arc::clone(context);
     context.queue().on_submitted_work_done(move || {
-        completion(
-            outcome
-                .lock()
-                .unwrap()
-                .take()
-                .or_else(|| device_loss.reason())
-                .map_or(Ok(()), |reason| Err(SubmissionFailed { reason })),
-        );
+        let reason = outcome
+            .lock()
+            .unwrap()
+            .take()
+            .or_else(|| device_loss.reason());
+        if let Some(reason) = &reason
+            && device_loss.reason().is_none()
+        {
+            // A buffer-level failure the driver never announced still retires
+            // the context: consumers parked on the next publication re-encode
+            // on the rebuilt generation instead of waiting forever.
+            service_context.mark_submission_failed(reason.clone());
+        }
+        completion(reason.map_or(Ok(()), |reason| Err(SubmissionFailed { reason })));
     });
 }
