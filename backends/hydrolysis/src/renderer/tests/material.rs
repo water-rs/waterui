@@ -126,7 +126,11 @@ fn installed(
         .cherenkov_window
         .as_ref()
         .expect("the frame installed into a window");
-    let memory = window.host.engine.memory();
+    let memory = window
+        .host
+        .engine
+        .memory()
+        .expect("the render thread answers memory queries");
     (
         mounts(runtime).backdrop_display_scale(member),
         memory.backdrop_captures.0,

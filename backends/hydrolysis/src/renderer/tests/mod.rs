@@ -405,6 +405,7 @@ pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
         .host
         .engine
         .memory()
+        .expect("the render thread answers memory queries")
         .backdrop_captures
         .0
 }
