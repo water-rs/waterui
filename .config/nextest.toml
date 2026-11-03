@@ -253,8 +253,8 @@ command = ["uv", "run", "cli/tests/fixtures/fonts/generate.py"]
 # families through system font discovery, or `hydrolysis`, whose own test
 # targets render the same families under `testing::TestStyle` through the
 # dev-dependency the crate carries on itself. That set is a fact of the
-# package graph, and `.github/tools/affected` (`affected nextest-fixtures`,
-# run by the affected-scope job) fails CI naming every package this filter
+# package graph, and `.github/tools/nextest-fixtures` (run by the
+# affected-scope job) fails CI naming every package this filter
 # is missing or carries without cause. `rdeps(waterui-testing)` cannot
 # replace the list: it follows dev-dependency edges at every hop, while
 # cargo links a package's dev-dependencies into its own tests only.

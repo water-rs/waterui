@@ -7,14 +7,17 @@
 # ///
 """Compute what the PR/push gate must run for a diff.
 
-Reads the diff between the given base revision and `HEAD`, runs the
-determinator tool on it, then writes `GITHUB_OUTPUT` keys:
+Reads the diff between the given base revision and `HEAD`, takes the shared
+`lexoliu/affected-crates` tool's report of it (run with
+`.github/affected-rules.toml`; it supplies `workspace`, `affected`,
+`members` and `owners`) from the `AFFECTED_REPORT` environment variable, then
+writes `GITHUB_OUTPUT` keys:
 
 - `packages` — the crates the gate checks and lints: space-separated
   package names, or the literal `workspace` when the diff can reach any
   crate (an outside-package path the rules do not map, or a path that
   directory-matches only the root package without belonging to it, selects
-  everything — see the tool's module doc). Empty when nothing can be
+  everything — see the tool's documentation). Empty when nothing can be
   affected — a prose-only change still gets `cargo fmt`, nothing more.
 - `package-args` — `packages` rendered as `-p` flags for cargo.
 - `linux-package-args` — `package-args` without the crates the Linux lint
@@ -49,7 +52,7 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
 
 Usage:
 
-    affected.py --base <rev> [--tool .github/tools/affected/target/release/affected]
+    AFFECTED_REPORT=<report JSON> affected.py --base <rev>
 
 Any uncertainty — an unresolvable base, an unparsable manifest — widens
 the gate to `workspace`; it never narrows it on a guess.
@@ -205,13 +208,8 @@ def emit(outputs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="base revision or sha")
-    parser.add_argument("--head", default="HEAD")
-    parser.add_argument(
-        "--tool",
-        default=".github/tools/affected/target/release/affected",
-        help="path to the built determinator binary",
-    )
     args = parser.parse_args()
+    head = "HEAD"
 
     outputs = {
         "packages": "workspace",
@@ -223,9 +221,9 @@ def main():
         "apple-legs": json.dumps(apple_legs("workspace"), separators=(",", ":")),
     }
     try:
-        base = git("merge-base", args.base, args.head).strip()
-        entries = changed_entries(base, args.head)
-        msrv = msrv_relevant(base, args.head, entries)
+        base = git("merge-base", args.base, head).strip()
+        entries = changed_entries(base, head)
+        msrv = msrv_relevant(base, head, entries)
 
         # The comment-only classification: a modified .rs file is
         # comment-only when its normalised tree is unchanged; prose does
@@ -250,18 +248,14 @@ def main():
             commentable_paths is not None
             and has_rs_change
             and all(
-                not semantic_differs(source_at(base, path), source_at(args.head, path))
+                not semantic_differs(source_at(base, path), source_at(head, path))
                 for path in commentable_paths
             )
         )
 
-        # The tool always runs: its `owners` map is the only path→crate
-        # mapper (the comment-only lane reads it).
-        report = json.loads(
-            subprocess.check_output(
-                [args.tool, "--base", base, "--head", args.head], text=True
-            )
-        ) if entries else None
+        # The shared tool's `owners` map is the only path→crate mapper (the
+        # comment-only lane reads it); a missing report widens below.
+        report = json.loads(os.environ["AFFECTED_REPORT"]) if entries else None
 
         def scene_assets_for(names):
             return "true" if SCENE_ASSET_OWNERS & set(names) else "false"
