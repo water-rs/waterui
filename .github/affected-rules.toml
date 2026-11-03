@@ -1,4 +1,5 @@
-# Determinator rules for the fast gate (ci.yml `scope`, dev.yml `scope`).
+# Determinator rules for the fast gate (ci.yml `scope`, dev.yml `scope`),
+# read by the shared lexoliu/affected-crates tool.
 #
 # A changed file under a package's directory already belongs to that
 # package — the determinator's ancestor matching, which the gate relies on
@@ -46,7 +47,7 @@ globs = [
 mark-changed = "all"
 
 # The gate's own machinery — workflows, composite actions, the scripts they
-# run and this tool (including this rules file) — can rewrite what a run
+# run and the in-tree tools (including this rules file) — can rewrite what a run
 # does, so a change there is verified against the whole workspace.
 [[path-rule]]
 globs = [
@@ -54,6 +55,7 @@ globs = [
     ".github/actions/**",
     ".github/scripts/**",
     ".github/tools/**",
+    ".github/affected-rules.toml",
 ]
 mark-changed = "all"
 
