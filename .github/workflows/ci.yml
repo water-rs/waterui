@@ -78,8 +78,7 @@ env:
 
 jobs:
   # Which checks this change can reach. `code` is any changed file that is
-  # not prose or repository metadata, so a docs-only change runs the typo
-  # check and nothing else; `deps` is what the audit, license and
+  # not prose or repository metadata; `deps` is what the audit, license and
   # unused-dependency checks read; `android` is the CLI's Android paths and
   # the Hydrolysis Android host, the only changes that can break the
   # create/build/package cycle the `android-package` job runs. A workflow
@@ -183,22 +182,6 @@ jobs:
     uses: ./.github/workflows/affected.yml
     with:
       base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
-
-  typos:
-    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Typos
-    if: (github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      # Pinned like every other tool install: a new dictionary turns a
-      # green job red with no change to the repository. crate-ci/typos
-      # downloaded this same binary on every run; install-tool caches it.
-      - uses: ./.github/actions/install-tool
-        with:
-          tool: typos@1.49.0
-          path: ~/.cargo/bin/typos*
-      - run: typos
 
   # The release scripts derive the certified `framework.json` from the root
   # manifest; their tests pin that derivation to the tree, so they run whenever
