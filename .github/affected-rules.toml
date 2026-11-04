@@ -40,7 +40,6 @@ globs = [
     "rustfmt.toml",
     ".rustfmt.toml",
     "deny.toml",
-    ".typos.toml",
     ".config/**",
     "release-plz.toml",
 ]
