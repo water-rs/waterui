@@ -663,6 +663,7 @@ fn finish(
                 aspects,
                 lease,
                 plane_fences: Vec::new(),
+                hook: None,
             })),
             #[cfg(target_os = "android")]
             plane: None,

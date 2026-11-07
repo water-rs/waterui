@@ -472,6 +472,7 @@ fn nv12_generation(
             lease: vulkan::sync::Lease::None,
             fence_fd: None,
             plane_fences: vec![],
+            hook: None,
         })),
         #[cfg(target_os = "android")]
         plane: None,
@@ -801,6 +802,7 @@ fn rgb_generation(
             lease: vulkan::sync::Lease::None,
             fence_fd: None,
             plane_fences: vec![],
+            hook: None,
         })),
         #[cfg(target_os = "android")]
         plane: None,
@@ -1272,6 +1274,81 @@ fn idle_retirement_submits_native_release() {
     // queue reference — completed, so VUID-vkDestroySemaphore-semaphore-
     // 01149 is met; `semaphore` is destroyed exactly once.
     unsafe { dev.destroy_semaphore(semaphore, None) };
+}
+
+/// A native frame's `on_release` hook runs once its generation's release
+/// submission has completed — the generation is already `Released` when
+/// it runs — and not when the producer drops its own copy of the frame:
+/// the engine's slot still reads the planes until a replacement retires
+/// it.
+#[test]
+fn native_release_hook_runs_after_the_release_completes() {
+    let Some((shared, device)) = setup() else {
+        return;
+    };
+    let Some(first) = make_rgb(&shared, &device, (8, 8), [0x80, 0x20, 0x10, 0xff]) else {
+        eprintln!("unavailable: RGB image");
+        return;
+    };
+    let generation = rgb_generation(&shared, &device, first, (8, 8), None, None);
+    let state = Arc::clone(&generation.state);
+    let (released, release) = std::sync::mpsc::channel();
+    let external = ExternalFrame::native(vulkan::Frame { generation })
+        .expect("native frame")
+        .on_release(move || {
+            released
+                .send(*state.lock().expect("generation state"))
+                .expect("the test receives the release");
+        });
+    let producer_copy = external.clone();
+    let engine = Engine::<Gpu>::new(GpuConfig {
+        device: Some(shared.clone()),
+        ..GpuConfig::default()
+    })
+    .expect("engine");
+    let (target, _) = TextureTarget::new((16, 16));
+    let surface = engine.surface(target, || {}).expect("surface");
+    let layer = surface.layer();
+    let (video, sink) = engine.frame_producer();
+    sink.submit(external);
+    surface.update(|tx| {
+        tx[surface.root()].push(&layer);
+        tx[&layer].content(video.at((8, 8)));
+    });
+    render_twice(&engine);
+    drop(producer_copy);
+    let _ = shared.device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: Some(std::time::Duration::from_secs(5)),
+    });
+    assert!(
+        release.try_recv().is_err(),
+        "the installed frame is not released while the engine still shows it"
+    );
+
+    let Some(second) = make_rgb(&shared, &device, (8, 8), [0x10, 0x80, 0x20, 0xff]) else {
+        eprintln!("unavailable: RGB image");
+        return;
+    };
+    sink.submit(
+        ExternalFrame::native(vulkan::Frame {
+            generation: rgb_generation(&shared, &device, second, (8, 8), None, None),
+        })
+        .expect("native frame"),
+    );
+    render_twice(&engine);
+    // The release's destroy runs on the queue's completion callback,
+    // which fires on a device poll.
+    let _ = shared.device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: Some(std::time::Duration::from_secs(5)),
+    });
+    assert_eq!(
+        release.try_recv(),
+        Ok(vulkan::State::Released),
+        "the replaced frame's hook runs once its release completed"
+    );
+    assert!(release.try_recv().is_err(), "the hook runs exactly once");
 }
 
 #[test]

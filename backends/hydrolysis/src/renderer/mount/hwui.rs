@@ -98,6 +98,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _tx: &mut Transaction<'_, Self>,
         _layer: &Layer,
         _runtime: &mut ExternalFrameRuntime,
+        _presented: waterui_graphics::gpu::PresentedSize,
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         panic!(

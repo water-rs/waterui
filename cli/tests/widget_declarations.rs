@@ -262,20 +262,34 @@ fn assert_fixture_declarations(fixture: &WidgetFixture) {
     assert_eq!(intent.symbol(), format!("waterui_intent_widget_app_{hash}"));
 
     // The `waterui-widgets` static record the extension build locates the
-    // shipped Swift sources through rides the same artifact.
-    let sources = fixture_swift_sources(&symbols);
+    // shipped Swift sources through rides the same artifact on Apple
+    // targets, the only ones that package a `WidgetKit` extension; every
+    // other target carries no record.
+    #[cfg(target_vendor = "apple")]
+    {
+        let sources = fixture_swift_sources(&symbols);
+        assert!(
+            sources.join("FFI.swift").is_file(),
+            "the record points at the crate's Swift sources: {}",
+            sources.display()
+        );
+    }
+    #[cfg(not(target_vendor = "apple"))]
     assert!(
-        sources.join("FFI.swift").is_file(),
-        "the record points at the crate's Swift sources: {}",
-        sources.display()
+        symbols.meta_record(SWIFT_SOURCES_RECORD).is_err(),
+        "only Apple targets carry the widget sources record"
     );
 }
 
+/// The record `waterui-widgets` locates its shipped Swift sources through.
+const SWIFT_SOURCES_RECORD: &str = "waterui_meta_widgets_swift_sources";
+
+#[cfg(target_vendor = "apple")]
 fn fixture_swift_sources(symbols: &ArtifactSymbols) -> PathBuf {
     PathBuf::from(
         String::from_utf8(
             symbols
-                .meta_record("waterui_meta_widgets_swift_sources")
+                .meta_record(SWIFT_SOURCES_RECORD)
                 .expect("the widget sources are declared"),
         )
         .expect("the sources path is UTF-8"),
