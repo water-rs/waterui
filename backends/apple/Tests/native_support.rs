@@ -1432,7 +1432,7 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
         MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
         MTLLoadAction, MTLRenderPassDescriptor, MTLStoreAction,
     };
-    let (present_tx, present_rx) = futures::channel::oneshot::channel::<()>();
+    let (present_tx, present_rx) = futures::channel::oneshot::channel::<Result<(), String>>();
     let present_tx = std::cell::RefCell::new(Some(present_tx));
     let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
     let present_window = spawned_window(mtm);
@@ -1442,12 +1442,23 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
     present_window.makeKeyAndVisible();
     let layer = cocoa_ui::objc2_quartz_core::CAMetalLayer::new();
     host.layer().addSublayer(&layer);
+    layer.setFrame(host.bounds());
     let render_queue = crate::gpu_runtime::raw_metal_device(context)
         .newCommandQueue()
         .expect("the readiness device creates a command queue");
+    let delivered = std::rc::Rc::new(std::cell::Cell::new(0u8));
+    let tick = delivered.clone();
     let presenter = cocoa_ui::metal_presenter::MetalPresenter::new(
         layer,
         std::rc::Rc::new(move |frame| {
+            // CAMetalDrawable on iOS answers neither `addPresentedHandler`
+            // nor `presentedTime`; the observable proof that a frame
+            // reached the screen is the drawable pool releasing it —
+            // `nextDrawable` only recycles a slot once the compositor
+            // has presented it. Releasing the gate on the third delivery
+            // (the pool holds three) means the first frame's drawable
+            // came back, i.e. it actually displayed.
+            tick.set(tick.get() + 1);
             let drawable = cocoa_ui::objc2::runtime::ProtocolObject::<
                 dyn cocoa_ui::objc2_metal::MTLDrawable,
             >::from_retained(frame.drawable());
@@ -1475,26 +1486,10 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
                 .expect("the readiness pass opens a render encoder");
             render.endEncoding();
             buffer.presentDrawable(&drawable);
-            if let Some(tx) = present_tx.borrow_mut().take() {
-                let tx = std::cell::RefCell::new(Some(tx));
-                let handler = block2::RcBlock::new(
-                    move |_buf: core::ptr::NonNull<
-                        cocoa_ui::objc2::runtime::ProtocolObject<
-                            dyn cocoa_ui::objc2_metal::MTLCommandBuffer,
-                        >,
-                    >| {
-                        if let Some(tx) = tx.borrow_mut().take() {
-                            let _ = tx.send(());
-                        }
-                    },
-                );
-                unsafe {
-                    // SAFETY: `handler` is a valid completion block of the
-                    // documented signature, attached before `commit` as
-                    // the API requires; `addCompletedHandler` copies it.
-                    buffer.addCompletedHandler(block2::RcBlock::as_ptr(&handler)
-                        as cocoa_ui::objc2_metal::MTLCommandBufferHandler);
-                }
+            if tick.get() == 3
+                && let Some(tx) = present_tx.borrow_mut().take()
+            {
+                witness_frame_delivery(&buffer, tx);
             }
             buffer.commit();
         }),
@@ -1505,9 +1500,57 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
     presenter.set_paused(false);
     present_rx
         .await
-        .expect("the readiness present delivers its frame or the sender drops");
+        .expect("the readiness present delivers its frame or the sender drops")
+        .unwrap_or_else(|reason| panic!("the readiness frame failed: {reason}"));
     drop(presenter);
     drop(present_window);
+}
+
+/// The buffer that carried the clear + `presentDrawable` must report
+/// `MTLCommandBufferStatusCompleted` — a handler firing with
+/// `MTLCommandBufferStatusError` is the same stall the gate exists to
+/// catch, so the failure reason is propagated (#3529). Whether the
+/// drawable reached the screen is proven by the pool recycling it —
+/// the gate only arms this on the third display-link delivery.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn witness_frame_delivery(
+    buffer: &cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandBuffer>,
+    tx: futures::channel::oneshot::Sender<Result<(), String>>,
+) {
+    use cocoa_ui::objc2_metal::MTLCommandBuffer;
+
+    let send = std::cell::RefCell::new(Some(tx));
+    let send = move |outcome: Result<(), String>| {
+        if let Some(tx) = send.borrow_mut().take() {
+            let _ = tx.send(outcome);
+        }
+    };
+    let complete = block2::RcBlock::new(
+        move |buf: core::ptr::NonNull<
+            cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandBuffer>,
+        >| {
+            // SAFETY: Metal delivers the handler a valid buffer.
+            let buf = unsafe { buf.as_ref() };
+            send(
+                if buf.status() == cocoa_ui::objc2_metal::MTLCommandBufferStatus::Completed {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "command buffer status {:?}: {:?}",
+                        buf.status(),
+                        buf.error()
+                    ))
+                },
+            );
+        },
+    );
+    unsafe {
+        // SAFETY: the block matches its documented signature, attached
+        // before `commit` as the API requires; the handler slot copies it.
+        buffer
+            .addCompletedHandler(block2::RcBlock::as_ptr(&complete)
+                as cocoa_ui::objc2_metal::MTLCommandBufferHandler);
+    }
 }
 
 /// `block_on_main` that names the stage it stalls on — the readiness gate
