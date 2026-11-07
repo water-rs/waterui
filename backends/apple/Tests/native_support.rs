@@ -1440,25 +1440,27 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
     let host = controller.host_view().retain();
     present_window.setRootViewController(Some(&controller));
     present_window.makeKeyAndVisible();
+    cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&present_window));
+    present_window.layoutIfNeeded();
     let layer = cocoa_ui::objc2_quartz_core::CAMetalLayer::new();
+    // The drawable's presentation rides the CoreAnimation commit, so the
+    // transaction's completion block is the display-side witness for the
+    // frame that carried it — the documented stand-in for the
+    // `addPresentedHandler`/`presentedTime` CAMetalDrawable lacks on iOS.
+    layer.setPresentsWithTransaction(true);
     host.layer().addSublayer(&layer);
-    layer.setFrame(host.bounds());
+    let bounds = cocoa_ui::view::bounds(&host);
+    assert!(
+        bounds.size.width > 0.0 && bounds.size.height > 0.0,
+        "the readiness host lays out before the metal layer mounts"
+    );
+    layer.setFrame(bounds.into());
     let render_queue = crate::gpu_runtime::raw_metal_device(context)
         .newCommandQueue()
         .expect("the readiness device creates a command queue");
-    let delivered = std::rc::Rc::new(std::cell::Cell::new(0u8));
-    let tick = delivered.clone();
     let presenter = cocoa_ui::metal_presenter::MetalPresenter::new(
         layer,
         std::rc::Rc::new(move |frame| {
-            // CAMetalDrawable on iOS answers neither `addPresentedHandler`
-            // nor `presentedTime`; the observable proof that a frame
-            // reached the screen is the drawable pool releasing it —
-            // `nextDrawable` only recycles a slot once the compositor
-            // has presented it. Releasing the gate on the third delivery
-            // (the pool holds three) means the first frame's drawable
-            // came back, i.e. it actually displayed.
-            tick.set(tick.get() + 1);
             let drawable = cocoa_ui::objc2::runtime::ProtocolObject::<
                 dyn cocoa_ui::objc2_metal::MTLDrawable,
             >::from_retained(frame.drawable());
@@ -1486,12 +1488,14 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
                 .expect("the readiness pass opens a render encoder");
             render.endEncoding();
             buffer.presentDrawable(&drawable);
-            if tick.get() == 3
-                && let Some(tx) = present_tx.borrow_mut().take()
-            {
+            if let Some(tx) = present_tx.borrow_mut().take() {
                 witness_frame_delivery(&buffer, tx);
             }
             buffer.commit();
+            // End the transaction carrying this present explicitly —
+            // its completion block lands when the compositor has applied
+            // the commit that put the frame on screen.
+            cocoa_ui::objc2_quartz_core::CATransaction::commit();
         }),
         false,
     );
@@ -1519,37 +1523,58 @@ fn witness_frame_delivery(
 ) {
     use cocoa_ui::objc2_metal::MTLCommandBuffer;
 
-    let send = std::cell::RefCell::new(Some(tx));
-    let send = move |outcome: Result<(), String>| {
-        if let Some(tx) = send.borrow_mut().take() {
-            let _ = tx.send(outcome);
+    let state = std::rc::Rc::new(std::cell::RefCell::new((Some(tx), 0u8)));
+    let send = std::rc::Rc::new(move |outcome: Result<(), String>| {
+        let mut state = state.borrow_mut();
+        if let Err(reason) = outcome {
+            if let Some(tx) = state.0.take() {
+                let _ = tx.send(Err(reason));
+            }
+        } else {
+            state.1 += 1;
+            if state.1 == 2
+                && let Some(tx) = state.0.take()
+            {
+                let _ = tx.send(Ok(()));
+            }
         }
+    });
+    let complete = {
+        let send = send.clone();
+        block2::RcBlock::new(
+            move |buf: core::ptr::NonNull<
+                cocoa_ui::objc2::runtime::ProtocolObject<
+                    dyn cocoa_ui::objc2_metal::MTLCommandBuffer,
+                >,
+            >| {
+                // SAFETY: Metal delivers the handler a valid buffer.
+                let buf = unsafe { buf.as_ref() };
+                send(
+                    if buf.status() == cocoa_ui::objc2_metal::MTLCommandBufferStatus::Completed {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "command buffer status {:?}: {:?}",
+                            buf.status(),
+                            buf.error()
+                        ))
+                    },
+                );
+            },
+        )
     };
-    let complete = block2::RcBlock::new(
-        move |buf: core::ptr::NonNull<
-            cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandBuffer>,
-        >| {
-            // SAFETY: Metal delivers the handler a valid buffer.
-            let buf = unsafe { buf.as_ref() };
-            send(
-                if buf.status() == cocoa_ui::objc2_metal::MTLCommandBufferStatus::Completed {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "command buffer status {:?}: {:?}",
-                        buf.status(),
-                        buf.error()
-                    ))
-                },
-            );
-        },
-    );
+    let committed = block2::RcBlock::new(move || {
+        send(Ok(()));
+    });
     unsafe {
-        // SAFETY: the block matches its documented signature, attached
-        // before `commit` as the API requires; the handler slot copies it.
+        // SAFETY: the blocks match their documented signatures; the
+        // buffer handler attaches before `commit`, and the transaction
+        // completion is set inside the transaction the caller commits
+        // right after this returns.
         buffer
             .addCompletedHandler(block2::RcBlock::as_ptr(&complete)
                 as cocoa_ui::objc2_metal::MTLCommandBufferHandler);
+        cocoa_ui::objc2_quartz_core::CATransaction::setCompletionBlock(Some(&committed));
     }
 }
 
