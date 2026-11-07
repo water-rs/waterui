@@ -1443,11 +1443,7 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
     cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&present_window));
     present_window.layoutIfNeeded();
     let layer = cocoa_ui::objc2_quartz_core::CAMetalLayer::new();
-    // The drawable's presentation rides the CoreAnimation commit, so the
-    // transaction's completion block is the display-side witness for the
-    // frame that carried it — the documented stand-in for the
-    // `addPresentedHandler`/`presentedTime` CAMetalDrawable lacks on iOS.
-    layer.setPresentsWithTransaction(true);
+    let probe_layer = layer.clone();
     host.layer().addSublayer(&layer);
     let bounds = cocoa_ui::view::bounds(&host);
     assert!(
@@ -1487,21 +1483,24 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
                 .renderCommandEncoderWithDescriptor(&pass)
                 .expect("the readiness pass opens a render encoder");
             render.endEncoding();
-            buffer.presentDrawable(&drawable);
             if let Some(tx) = present_tx.borrow_mut().take() {
-                witness_frame_delivery(&buffer, tx);
+                arm_present_witness(&buffer, drawable, tx);
             }
             buffer.commit();
-            // End the transaction carrying this present explicitly —
-            // its completion block lands when the compositor has applied
-            // the commit that put the frame on screen.
-            cocoa_ui::objc2_quartz_core::CATransaction::commit();
         }),
         false,
     );
     presenter.set_device(&crate::gpu_runtime::raw_metal_device(context));
     presenter.set_drawable_size(cocoa_ui::objc2_core_foundation::CGSize::new(64.0, 64.0));
     presenter.set_paused(false);
+    // `MetalPresenter` reconfigures the layer for its own cadence —
+    // including resetting `presentsWithTransaction` — so the flag is
+    // asserted only after the presenter settles. With it, this frame's
+    // drawable presentation rides the CoreAnimation commit the callback
+    // ends, and that commit's completion is the display-side witness for
+    // the frame (the documented stand-in for the `addPresentedHandler`/
+    // `presentedTime` APIs `CAMetalDrawable` lacks on iOS).
+    probe_layer.setPresentsWithTransaction(true);
     present_rx
         .await
         .expect("the readiness present delivers its frame or the sender drops")
@@ -1510,37 +1509,37 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
     drop(present_window);
 }
 
-/// The buffer that carried the clear + `presentDrawable` must report
-/// `MTLCommandBufferStatusCompleted` — a handler firing with
-/// `MTLCommandBufferStatusError` is the same stall the gate exists to
-/// catch, so the failure reason is propagated (#3529). Whether the
-/// drawable reached the screen is proven by the pool recycling it —
-/// the gate only arms this on the third display-link delivery.
+/// The witness tally the two completion paths share — the Metal buffer
+/// handler may run on any driver thread while the transaction
+/// completion lands on the main one, so it rides a mutex.
 #[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
-fn witness_frame_delivery(
+type WitnessState = std::sync::Mutex<(
+    Option<futures::channel::oneshot::Sender<Result<(), String>>>,
+    u8,
+)>;
+
+/// Arms the frame's two witnesses: the buffer carrying the clear must
+/// report `MTLCommandBufferStatusCompleted` — an error propagates its
+/// reason — and the transaction carrying the present must complete.
+///
+/// Transaction-synchronized presentation forbids the convenience
+/// `presentDrawable`: once the buffer is scheduled the drawable
+/// presents at the commit carrying it. The schedule witness fires on a
+/// driver thread, so the present hops back to the main transaction that
+/// claims the completion block.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn arm_present_witness(
     buffer: &cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandBuffer>,
+    drawable: cocoa_ui::Retained<
+        cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLDrawable>,
+    >,
     tx: futures::channel::oneshot::Sender<Result<(), String>>,
 ) {
-    use cocoa_ui::objc2_metal::MTLCommandBuffer;
+    use cocoa_ui::objc2_metal::{MTLCommandBuffer, MTLDrawable};
 
-    let state = std::rc::Rc::new(std::cell::RefCell::new((Some(tx), 0u8)));
-    let send = std::rc::Rc::new(move |outcome: Result<(), String>| {
-        let mut state = state.borrow_mut();
-        if let Err(reason) = outcome {
-            if let Some(tx) = state.0.take() {
-                let _ = tx.send(Err(reason));
-            }
-        } else {
-            state.1 += 1;
-            if state.1 == 2
-                && let Some(tx) = state.0.take()
-            {
-                let _ = tx.send(Ok(()));
-            }
-        }
-    });
+    let state = std::sync::Arc::new(WitnessState::new((Some(tx), 0u8)));
     let complete = {
-        let send = send.clone();
+        let state = state.clone();
         block2::RcBlock::new(
             move |buf: core::ptr::NonNull<
                 cocoa_ui::objc2::runtime::ProtocolObject<
@@ -1549,7 +1548,8 @@ fn witness_frame_delivery(
             >| {
                 // SAFETY: Metal delivers the handler a valid buffer.
                 let buf = unsafe { buf.as_ref() };
-                send(
+                witness_signal(
+                    &state,
                     if buf.status() == cocoa_ui::objc2_metal::MTLCommandBufferStatus::Completed {
                         Ok(())
                     } else {
@@ -1563,23 +1563,72 @@ fn witness_frame_delivery(
             },
         )
     };
-    let committed = block2::RcBlock::new(move || {
-        send(Ok(()));
-    });
+    let scheduled = block2::RcBlock::new(
+        move |_buf: core::ptr::NonNull<
+            cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandBuffer>,
+        >| {
+            let state = state.clone();
+            let drawable = drawable.clone();
+            let on_main = block2::RcBlock::new(move || {
+                drawable.present();
+                // The completion block rides the transaction this
+                // present is bound to — its fire marks the commit that
+                // put the frame on screen.
+                let state = state.clone();
+                let committed = block2::RcBlock::new(move || {
+                    witness_signal(&state, Ok(()));
+                });
+                unsafe {
+                    // SAFETY: the block matches the documented signature
+                    // and is set on the implicit transaction the next
+                    // line commits.
+                    cocoa_ui::objc2_quartz_core::CATransaction::setCompletionBlock(Some(
+                        &committed,
+                    ));
+                }
+                cocoa_ui::objc2_quartz_core::CATransaction::commit();
+            });
+            unsafe {
+                // SAFETY: `on_main` outlives the call — `performBlock`
+                // copies the block.
+                cocoa_ui::objc2_foundation::NSRunLoop::mainRunLoop().performBlock(&on_main);
+            }
+        },
+    );
     unsafe {
-        // SAFETY: the blocks match their documented signatures; the
-        // buffer handler attaches before `commit`, and the transaction
-        // completion is set inside the transaction the caller commits
-        // right after this returns.
+        // SAFETY: the blocks match their documented signatures, attached
+        // before `commit` as the API requires.
         buffer
             .addCompletedHandler(block2::RcBlock::as_ptr(&complete)
                 as cocoa_ui::objc2_metal::MTLCommandBufferHandler);
-        cocoa_ui::objc2_quartz_core::CATransaction::setCompletionBlock(Some(&committed));
+        buffer
+            .addScheduledHandler(block2::RcBlock::as_ptr(&scheduled)
+                as cocoa_ui::objc2_metal::MTLCommandBufferHandler);
     }
 }
 
-/// `block_on_main` that names the stage it stalls on — the readiness gate
-/// uses it so a wedge reports which leg never answered.
+/// One witness event — the buffer's completion or the present's
+/// transaction completion — tallied into the gate's release. Two `Ok`s
+/// release it; the first error propagates its reason.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn witness_signal(state: &WitnessState, outcome: Result<(), String>) {
+    let mut state = state
+        .lock()
+        .expect("the readiness witness state is never poisoned");
+    if let Err(reason) = outcome {
+        if let Some(tx) = state.0.take() {
+            let _ = tx.send(Err(reason));
+        }
+    } else {
+        state.1 += 1;
+        if state.1 == 2
+            && let Some(tx) = state.0.take()
+        {
+            let _ = tx.send(Ok(()));
+        }
+    }
+}
+
 #[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
 fn await_gpu_stage(
     seconds: f64,
