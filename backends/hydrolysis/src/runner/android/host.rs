@@ -1454,47 +1454,7 @@ impl AndroidSession {
         {
             self.runtime.platform.request_redraw();
         }
-        let mut flushed = false;
-        let surface_attached = self.runtime.platform.presentation_attached();
-        // A redraw request raised before this frame renders is served by
-        // that render — it drains into the render demand here, so only a
-        // request raised from this point on, an animation asking for its
-        // next frame, still counts toward the transaction's continuation.
-        #[cfg(hydrolysis_hwui)]
-        if self.hwui.surface.has_pending() {
-            // Queued scene changes the Kotlin callback's wake posted nothing
-            // for — the transaction counts them into its continuation; no
-            // Java frame post runs inside the open transaction.
-            self.runtime.platform.request_redraw();
-        }
-        if FrameTransaction::take_render_request(
-            &mut self.runtime,
-            surface_attached,
-            AndroidHostWindow::take_redraw_pending,
-        ) {
-            let executor = self.executor.clone();
-            #[cfg(hydrolysis_gpu_painter)]
-            let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
-            #[cfg(hydrolysis_gpu_painter)]
-            if self.runtime.platform.surface.has_pending_top_root()
-                && self.runtime.platform.top_surface.is_attached()
-            {
-                // The engine window was (re)created under a pending
-                // top-root request — replay the top band's target onto it.
-                let target = self.runtime.platform.top_surface.top_root_target();
-                self.runtime.platform.surface.set_top_root(target);
-            }
-            #[cfg(hydrolysis_hwui)]
-            let presented = self
-                .hwui
-                .render(&mut self.runtime, &self.env, &mut || executor.drain())
-                .unwrap_or_else(|e| panic!("hydrolysis HWUI: frame render failed: {}", e.0));
-            flushed = true;
-            if presented {
-                self.presented_once.set(true);
-            }
-            self.sync_back_navigation_available();
-        }
+        let flushed = self.render_due_frame();
         // A lost device is recreated inside the frame above
         // (`PresentationSurface::ensure_live`, water-rs/waterui#2742); a
         // recreation that exhausts its loss budget panics there, which the
@@ -1576,6 +1536,51 @@ impl AndroidSession {
             deadline_in_nanos,
             should_close,
         }
+    }
+
+    /// The frame's render leg: a redraw request raised before this frame
+    /// renders is served by that render — it drains into the render demand
+    /// here, so only a request raised from this point on, an animation
+    /// asking for its next frame, still counts toward the transaction's
+    /// continuation. Answers whether the pump flushed content.
+    fn render_due_frame(&mut self) -> bool {
+        let surface_attached = self.runtime.platform.presentation_attached();
+        #[cfg(hydrolysis_hwui)]
+        if self.hwui.surface.has_pending() {
+            // Queued scene changes the Kotlin callback's wake posted nothing
+            // for — the transaction counts them into its continuation; no
+            // Java frame post runs inside the open transaction.
+            self.runtime.platform.request_redraw();
+        }
+        if !FrameTransaction::take_render_request(
+            &mut self.runtime,
+            surface_attached,
+            AndroidHostWindow::take_redraw_pending,
+        ) {
+            return false;
+        }
+        let executor = self.executor.clone();
+        #[cfg(hydrolysis_gpu_painter)]
+        let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
+        #[cfg(hydrolysis_gpu_painter)]
+        if self.runtime.platform.surface.has_pending_top_root()
+            && self.runtime.platform.top_surface.is_attached()
+        {
+            // The engine window was (re)created under a pending
+            // top-root request — replay the top band's target onto it.
+            let target = self.runtime.platform.top_surface.top_root_target();
+            self.runtime.platform.surface.set_top_root(target);
+        }
+        #[cfg(hydrolysis_hwui)]
+        let presented = self
+            .hwui
+            .render(&mut self.runtime, &self.env, &mut || executor.drain())
+            .unwrap_or_else(|e| panic!("hydrolysis HWUI: frame render failed: {}", e.0));
+        if presented {
+            self.presented_once.set(true);
+        }
+        self.sync_back_navigation_available();
+        true
     }
 
     /// The Kotlin GPU band created or replaced its surface; `generation`
@@ -1727,9 +1732,12 @@ impl AndroidSession {
             "wake posted: top surface detached"
         );
         // Above-mark entries return to the base root — beneath the views —
-        // until a new top surface attaches (water-rs/waterui#2225).
-        self.runtime.platform.surface.set_top_root(None);
-        self.runtime.platform.top_surface.detach_for(generation);
+        // until a new top surface attaches (water-rs/waterui#2225). A stale
+        // `surfaceDestroyed` naming an old generation must not clear the
+        // live top root, so the generation check runs before the unbind.
+        if self.runtime.platform.top_surface.detach_for(generation) {
+            self.runtime.platform.surface.set_top_root(None);
+        }
     }
 
     /// Combines host work with the engine's content-rate range for this window.

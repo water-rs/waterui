@@ -1244,7 +1244,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
     /// of them covers. Self-drawn content that registered no target never
     /// blocks a native view. Embedded targets answer their transformed
     /// bounding box, as every rect here is axis-aligned.
-    #[cfg(any(hydrolysis_hosted, test))]
+    #[cfg(any(hydrolysis_hosted, hydrolysis_gpu_painter, test))]
     fn interactive_regions_above<'a>(
         &'a self,
         order: usize,
