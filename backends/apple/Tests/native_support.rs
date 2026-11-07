@@ -1434,8 +1434,11 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
     };
     let (present_tx, present_rx) = futures::channel::oneshot::channel::<Result<(), String>>();
     let present_tx = std::cell::RefCell::new(Some(present_tx));
-    let held_drawables =
-        std::rc::Rc::new(std::cell::RefCell::new(std::vec::Vec::<cocoa_ui::Retained<cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLDrawable>>>::new()));
+    let held_drawables = std::rc::Rc::new(std::cell::RefCell::new(std::vec::Vec::<
+        cocoa_ui::Retained<
+            cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLDrawable>,
+        >,
+    >::new()));
     let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
     // A scene-attached window when the host connects one —
     // `drawViewHierarchy` only captures composited content under a real
