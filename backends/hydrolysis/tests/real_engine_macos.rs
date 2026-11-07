@@ -15,11 +15,31 @@
 //! # Why `harness = false`
 //!
 //! `WKWebView` is `MainThreadOnly` and libtest runs every test on a worker
-//! thread, so this target owns its `main` and runs its scenarios sequentially
-//! on the real process main thread, pumping the main `NSRunLoop` by hand.
-//! nextest reports the whole binary as one test, which is accurate: the
-//! scenarios share one process because the main thread is the resource under
-//! test.
+//! thread, so this target owns its `main` and hands its scenarios to
+//! `libtest-mimic` pinned to one test thread, which runs every trial on the
+//! calling thread — the real process main thread — where each pumps the main
+//! `NSRunLoop` by hand. Under `cargo test` the scenarios run one after
+//! another in this process; under nextest each runs as its own process.
+
+use libtest_mimic::{Arguments, Trial};
+
+fn main() {
+    let mut arguments = Arguments::from_args();
+    // With a single runner `libtest-mimic` executes every trial on `main`'s
+    // thread, which is the point of this harness.
+    arguments.test_threads = Some(1);
+    libtest_mimic::run(&arguments, trials()).exit();
+}
+
+#[cfg(target_os = "macos")]
+fn trials() -> Vec<Trial> {
+    real::trials()
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn trials() -> Vec<Trial> {
+    Vec::new()
+}
 
 #[cfg(target_os = "macos")]
 mod real {
@@ -36,9 +56,11 @@ mod real {
     use executor_core::LocalExecutor;
     use executor_core::async_executor::AsyncLocalExecutor;
     use hydrolysis::MacSystemWebViewController;
+    use libtest_mimic::Trial;
     use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
     use serde_json::Value;
     use tiny_http::{Header, Response, Server};
+    use waterui_core::MainThreadBound;
     use waterui_webview::{
         BackendEvent, BridgeOrigins, CustomWebViewController as _, IntoJsReply, JsReply, Json,
         OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard,
@@ -748,29 +770,50 @@ mod real {
         }
     }
 
-    pub fn run() {
+    /// A scenario that drives the engine, named by its function.
+    macro_rules! engine_scenario {
+        ($scenario:ident) => {
+            (stringify!($scenario), $scenario as fn(&TestExecutor))
+        };
+    }
+
+    /// Every scenario, run on the thread that builds the list — `main`'s.
+    ///
+    /// The engine spawns handler replies onto the thread's local executor,
+    /// which is installed once per process, so every engine scenario ticks
+    /// that one executor; it stays bound to the main thread it was made on.
+    pub fn trials() -> Vec<Trial> {
         let executor = TestExecutor(Rc::new(AsyncLocalExecutor::new()));
         executor_core::init_local_executor(executor.clone());
 
-        hosted_node_mounts_once_and_unmounts_when_retired();
+        let engine_scenarios = [
+            engine_scenario!(navigation_reaches_each_url_and_history_moves_both_ways),
+            engine_scenario!(a_handler_reply_reaches_the_page_as_its_value),
+            engine_scenario!(the_page_can_reach_the_whole_waterui_object),
+            engine_scenario!(integers_beyond_two_to_the_fifty_third_cross_intact),
+            engine_scenario!(typed_evaluation_awaits_the_wrapper),
+            engine_scenario!(raw_evaluation_answers_json),
+            engine_scenario!(a_keyed_injection_replaces_its_predecessor),
+            engine_scenario!(a_local_file_document_receives_the_bridge),
+            engine_scenario!(an_any_policy_admits_an_opaque_document),
+            engine_scenario!(mirrored_state_reaches_only_admitted_documents),
+        ];
 
-        navigation_reaches_each_url_and_history_moves_both_ways(&executor);
-        a_handler_reply_reaches_the_page_as_its_value(&executor);
-        the_page_can_reach_the_whole_waterui_object(&executor);
-        integers_beyond_two_to_the_fifty_third_cross_intact(&executor);
-        typed_evaluation_awaits_the_wrapper(&executor);
-        raw_evaluation_answers_json(&executor);
-        a_keyed_injection_replaces_its_predecessor(&executor);
-        a_local_file_document_receives_the_bridge(&executor);
-        an_any_policy_admits_an_opaque_document(&executor);
-        mirrored_state_reaches_only_admitted_documents(&executor);
+        let hosted = Trial::test(
+            stringify!(hosted_node_mounts_once_and_unmounts_when_retired),
+            || {
+                hosted_node_mounts_once_and_unmounts_when_retired();
+                Ok(())
+            },
+        );
+        std::iter::once(hosted)
+            .chain(engine_scenarios.into_iter().map(|(name, scenario)| {
+                let executor = MainThreadBound::new(executor.clone());
+                Trial::test(name, move || {
+                    scenario(&executor);
+                    Ok(())
+                })
+            }))
+            .collect()
     }
 }
-
-#[cfg(target_os = "macos")]
-fn main() {
-    real::run();
-}
-
-#[cfg(not(target_os = "macos"))]
-fn main() {}
