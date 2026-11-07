@@ -51,6 +51,14 @@ constructor(
     private var generation = 0L
 
     init {
+        // Above the window's own view content — the tier every boundary
+        // band presents at. Interleaving beneath a regular view needs
+        // that view's content in its own surface, which the platform
+        // views are not (water-rs/waterui#2225).
+        setZOrderMediaOverlay(true)
+    }
+
+    init {
         holder.addCallback(this)
         // Above-band content is mostly transparency — the surface needs an
         // alpha-capable format or the clear would black out the window.
