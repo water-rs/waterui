@@ -512,7 +512,7 @@ impl View for Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StretchAxis;
+    use crate::{LayoutError, Rect, ResolvedExtent, StretchAxis, resolve_layout_extent};
     use alloc::rc::Rc;
     use core::cell::{Cell, RefCell};
     use nami::{SignalExt, binding};
@@ -669,10 +669,10 @@ mod tests {
     impl<C: SubView> SubView for FramedChild<C> {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::resolve_layout_extent(&self.layout, bounds, proposal, &[&self.child])
+        ) -> Result<ResolvedExtent, LayoutError> {
+            resolve_layout_extent(&self.layout, bounds, proposal, &[&self.child])
         }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.layout.size_that_fits(proposal, &[&self.child]))
@@ -690,10 +690,10 @@ mod tests {
     impl SubView for WrappingChild {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let width = proposal.width.unwrap_or(200.0).clamp(10.0, 200.0);
@@ -790,10 +790,10 @@ mod tests {
     impl SubView for MockSubView {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
@@ -816,10 +816,10 @@ mod tests {
     impl SubView for FillingSubView {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(Size::new(
@@ -865,9 +865,9 @@ mod tests {
     impl<C: SubView> SubView for RecordingSubView<C> {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
+        ) -> Result<ResolvedExtent, LayoutError> {
             self.inner.resolve_extent(bounds, proposal)
         }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
@@ -1365,10 +1365,10 @@ mod tests {
     impl SubView for HeightCoupledSubView {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let offered_height = proposal.height.unwrap_or(20.0);
@@ -1389,10 +1389,10 @@ mod tests {
     impl SubView for WidthCoupledSubView {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let offered_width = proposal.width.unwrap_or(20.0);

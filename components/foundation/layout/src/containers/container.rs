@@ -10,8 +10,8 @@ use waterui_core::{
     AnyView, Native, NativeView, View,
     layout::{
         HorizontalAlignment, LayoutDirection, LayoutError, LayoutInvalidationCallback,
-        PlacedSubview, PlacementInput, ProposalSize, Rect, ResolvedExtent, Size, SubView,
-        SubviewPlacement, VerticalAlignment, ViewDimensions,
+        PlacedSubview, PlacementInput, Point, ProposalSize, Rect, ResolvedExtent, Size, SubView,
+        SubviewPlacement, VerticalAlignment, ViewDimensions, with_memoized_children,
     },
     view::TupleViews,
     views::{AnyViews, Views, ViewsExt},
@@ -42,10 +42,7 @@ impl DirectionalLayout {
 /// inverse.
 fn mirror_rect(bounds: Rect, frame: Rect) -> Rect {
     Rect::new(
-        waterui_core::layout::Point::new(
-            bounds.min_x() + bounds.max_x() - frame.max_x(),
-            frame.y(),
-        ),
+        Point::new(bounds.min_x() + bounds.max_x() - frame.max_x(), frame.y()),
         *frame.size(),
     )
 }
@@ -92,9 +89,11 @@ impl SubView for MirroredChild<'_> {
     }
 }
 
-/// `layout`'s response under `direction`: the layout's own logical rule,
-/// mirrored about the bounds for right-to-left, with each child's physical
-/// response seen through a mirroring adapter so it is not mirrored twice.
+/// `layout`'s response under `direction`.
+///
+/// The layout's own logical rule, mirrored about the bounds for right-to-left,
+/// with each child's physical response seen through a mirroring adapter so it
+/// is not mirrored twice.
 ///
 /// This is [`Layout::resolve_extent`] for a layout a container wraps for its
 /// direction. A lazy container, whose answer comes from its own measurement
@@ -120,10 +119,7 @@ pub fn directional_response(
             container: input.bounds,
         })
         .collect();
-    let mirrored: Vec<&dyn SubView> = mirrored
-        .iter()
-        .map(|child| child as &dyn SubView)
-        .collect();
+    let mirrored: Vec<&dyn SubView> = mirrored.iter().map(|child| child as &dyn SubView).collect();
     Ok(mirror_rect(
         input.bounds,
         layout.resolve_extent(input, &mirrored)?,
@@ -144,7 +140,7 @@ pub fn resolve_directional_extent(
     proposal: ProposalSize,
     children: &[&dyn SubView],
 ) -> Result<ResolvedExtent, LayoutError> {
-    waterui_core::layout::with_memoized_children(children, |children| {
+    with_memoized_children(children, |children| {
         let input = PlacementInput {
             bounds,
             proposal,
@@ -389,6 +385,7 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use crate::UnitPoint;
     use crate::ViewDimensions;
     use waterui_core::layout::Point;
 
@@ -398,12 +395,10 @@ mod tests {
     impl Layout for OffsetLayout {
         fn resolve_extent(
             &self,
-            input: crate::PlacementInput,
+            input: PlacementInput,
             _children: &[&dyn SubView],
-        ) -> Result<Rect, crate::LayoutError> {
-            Ok(input
-                .bounds
-                .align(input.extent()?, crate::UnitPoint::TOP_LEADING))
+        ) -> Result<Rect, LayoutError> {
+            Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
         }
 
         fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
@@ -435,8 +430,8 @@ mod tests {
             &self,
             bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size).with_horizontal(HorizontalAlignment::Leading, self.guide)

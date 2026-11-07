@@ -29,8 +29,9 @@ use waterui::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_backend_core::AnyView;
 use waterui_core::Computed;
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, LayoutDirection, ProposalSize, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions, measure_layout, with_memoized_children,
+    HorizontalAlignment, Layout, LayoutDirection, LayoutError, PlacementInput, ProposalSize,
+    Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView, VerticalAlignment,
+    ViewDimensions, measure_layout, resolve_layout_extent, with_memoized_children,
 };
 use waterui_core::views::AnyViews;
 
@@ -1235,29 +1236,24 @@ impl SubView for ContainerSubView {
     /// container answers its layout's rule over its real children.
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: LayoutRect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+    ) -> Result<ResolvedExtent, LayoutError> {
         if self.state.borrow().lazy.is_some() {
             let answer = self.measure(proposal).size;
             let rect = self.state.borrow().layout.resolve_extent(
-                waterui_core::layout::PlacementInput {
+                PlacementInput {
                     bounds,
                     proposal,
                     answer,
                 },
                 &[],
             )?;
-            return Ok(waterui_core::layout::ResolvedExtent { answer, rect });
+            return Ok(ResolvedExtent { answer, rect });
         }
         with_children_tx(&self.state, &self.pending, || {
             let state = self.state.borrow();
-            waterui_core::layout::resolve_layout_extent(
-                &*state.layout,
-                bounds,
-                proposal,
-                &children(&state),
-            )
+            resolve_layout_extent(&*state.layout, bounds, proposal, &children(&state))
         })
     }
 
@@ -1593,11 +1589,10 @@ mod tests {
     impl SubView for FixedChild {
         fn resolve_extent(
             &self,
-            bounds: waterui_core::layout::Rect,
+            bounds: LayoutRect,
             proposal: ProposalSize,
-        ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError>
-        {
-            waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
 
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {

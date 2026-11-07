@@ -815,7 +815,9 @@ mod leaf {
 
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
-    use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+    use waterui_core::layout::{
+        LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+    };
 
     use super::{HostView, Label, MainThreadMarker, PlatformView, mtm};
 
@@ -825,11 +827,10 @@ mod leaf {
     impl SubView for TestSubView {
         fn resolve_extent(
             &self,
-            bounds: waterui_core::layout::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError>
-        {
-            waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
 
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
@@ -10557,7 +10558,8 @@ mod embedding {
         HostEnvironment, waterui_apple_measure, waterui_apple_update_environment,
     };
     use waterui_core::layout::{
-        Layout, LayoutDirection, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+        Layout, LayoutDirection, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size,
+        SubView, SubviewPlacement, UnitPoint,
     };
     use waterui_locale::locale_binding;
 
@@ -10843,13 +10845,10 @@ mod embedding {
         }
         fn resolve_extent(
             &self,
-            input: waterui_core::layout::PlacementInput,
+            input: PlacementInput,
             _children: &[&dyn SubView],
-        ) -> Result<Rect, waterui_core::layout::LayoutError> {
-            Ok(input.bounds.align(
-                input.extent()?,
-                waterui_core::layout::UnitPoint::TOP_LEADING,
-            ))
+        ) -> Result<Rect, LayoutError> {
+            Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
         }
         fn place(
             &self,

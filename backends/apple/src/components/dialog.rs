@@ -33,7 +33,9 @@ use waterui::reactive::{Binding, Computed, Signal};
 use waterui::text::StyledStr;
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -211,9 +213,9 @@ impl core::fmt::Debug for DialogSubView {
 impl SubView for DialogSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: Rect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+    ) -> Result<ResolvedExtent, LayoutError> {
         self.state.child.layout().resolve_extent(bounds, proposal)
     }
 

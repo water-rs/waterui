@@ -22,7 +22,10 @@ use cocoa_ui::view;
 use waterui::drag_drop::DragPayload;
 use waterui::drag_drop::{Draggable, PlatformRepresentation};
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -102,9 +105,9 @@ impl core::fmt::Debug for DraggableSubView {
 impl SubView for DraggableSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: LayoutRect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+    ) -> Result<ResolvedExtent, LayoutError> {
         self.state
             .borrow()
             .child

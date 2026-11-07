@@ -370,7 +370,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StretchAxis;
+    use crate::{LayoutError, Rect, ResolvedExtent, StretchAxis};
 
     struct MockSubView {
         size: Size,
@@ -379,10 +379,10 @@ mod tests {
     impl SubView for MockSubView {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
@@ -428,10 +428,10 @@ mod tests {
     impl SubView for ZStackSpacerLeaf {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(Size::zero())

@@ -2,9 +2,11 @@
 //! each container positions its own answer inside the bounds it is assigned,
 //! independently of where it places its children.
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
+use core::num::NonZeroUsize;
 use nami::Computed;
 
+use super::MinLengthSpacerView;
 use crate::padding::{EdgeInsets, PaddingLayout};
 use crate::stack::{
     Alignment, HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment, ZStackLayout,
@@ -199,7 +201,10 @@ fn adding_a_background_never_moves_the_response() {
         .resolve_extent(bounds, ProposalSize::UNSPECIFIED)
         .unwrap()
         .rect;
-    assert_eq!(response(&BackgroundLayout, bounds, &children), content_alone);
+    assert_eq!(
+        response(&BackgroundLayout, bounds, &children),
+        content_alone
+    );
 }
 
 #[test]
@@ -270,7 +275,7 @@ fn a_grid_block_is_anchored_top_leading_whatever_its_alignment() {
     let b = Leaf(Size::new(10.0, 10.0));
     let children: [&dyn SubView; 2] = [&a, &b];
     let layout = GridLayout::new(
-        core::num::NonZeroUsize::new(2).unwrap(),
+        NonZeroUsize::new(2).unwrap(),
         Size::new(4.0, 4.0),
         Alignment::BottomTrailing,
     );
@@ -297,7 +302,7 @@ fn an_absolute_canvas_responds_at_its_origin_not_at_its_children() {
 
 #[test]
 fn a_promoted_spacer_keeps_its_zero_response() {
-    let spacer_view = super::MinLengthSpacerView {
+    let spacer_view = MinLengthSpacerView {
         min_length: 0.0,
         axis: StretchAxis::Horizontal,
     };
@@ -309,7 +314,11 @@ fn a_promoted_spacer_keeps_its_zero_response() {
     let children: [&dyn SubView; 2] = [&spacer_view, &leaf];
     let bounds = rect(0.0, 0.0, 100.0, 10.0);
     let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
-    assert_eq!(placements[0].frame.width(), 80.0, "the stack allocates the gap");
+    assert_eq!(
+        placements[0].frame.width(),
+        80.0,
+        "the stack allocates the gap"
+    );
     let spacer_response = spacer_view
         .resolve_extent(placements[0].frame, placements[0].proposal)
         .unwrap();
@@ -329,7 +338,7 @@ fn every_container_response_is_translation_covariant() {
     };
     let overlay = OverlayLayout::default();
     let pad = padding(3.0, 1.0, 7.0, 2.0);
-    let cases: Vec<(&dyn Layout, &[&dyn SubView])> = alloc::vec![
+    let cases: Vec<(&dyn Layout, &[&dyn SubView])> = vec![
         (&hstack, &pair),
         (&zstack, &pair),
         (&overlay, &pair),

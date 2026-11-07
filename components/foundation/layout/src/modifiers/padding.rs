@@ -105,7 +105,8 @@ impl Layout for PaddingLayout {
         // Placement proposes the region the child is placed in: the bounds
         // less the insets, so a padded child stretched by its container lays
         // out across the room it actually has.
-        let child_proposal = ProposalSize::new(Some(child_frame.width()), Some(child_frame.height()));
+        let child_proposal =
+            ProposalSize::new(Some(child_frame.width()), Some(child_frame.height()));
 
         vec![SubviewPlacement::new(child_frame, child_proposal)]
     }
@@ -359,6 +360,7 @@ mod tests {
     use crate::StretchAxis;
     use crate::ViewDimensions;
     use crate::measure_layout;
+    use crate::{LayoutError, Rect, ResolvedExtent};
     use alloc::rc::Rc;
     use core::cell::Cell;
     use nami::binding;
@@ -370,10 +372,10 @@ mod tests {
     impl SubView for MockSubView {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
@@ -395,10 +397,10 @@ mod tests {
     impl SubView for GuidedSubview {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)

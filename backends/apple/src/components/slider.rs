@@ -22,7 +22,10 @@ use waterui::component::slider::SliderConfig;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
@@ -226,10 +229,10 @@ impl core::fmt::Debug for SliderSubView {
 impl SubView for SliderSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: LayoutRect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
-        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
 
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is

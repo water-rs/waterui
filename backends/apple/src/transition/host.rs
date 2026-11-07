@@ -12,7 +12,10 @@ use core::cell::{Cell, RefCell};
 
 use cocoa_ui::geometry::Rect;
 use cocoa_ui::{PlatformView, Retained, view};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 use waterui_core::transition::TransitionProperties;
 
 use crate::contract::{Mounted, NativeLeaf};
@@ -121,16 +124,11 @@ impl SubView for TransitionHostSubView {
     /// does.
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: LayoutRect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+    ) -> Result<ResolvedExtent, LayoutError> {
         self.0.content.borrow().as_ref().map_or_else(
-            || {
-                waterui_core::layout::ResolvedExtent::centred(
-                    bounds,
-                    waterui_core::layout::Size::zero(),
-                )
-            },
+            || ResolvedExtent::centred(bounds, Size::zero()),
             |content| content.layout().resolve_extent(bounds, proposal),
         )
     }

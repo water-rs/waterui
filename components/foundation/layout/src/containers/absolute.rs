@@ -717,6 +717,7 @@ mod tests {
     use super::*;
     use crate::StretchAxis;
     use crate::ViewDimensions;
+    use crate::{LayoutError, Rect, ResolvedExtent};
     use alloc::vec;
     use core::cell::Cell;
     use waterui_core::MainThreadBound;
@@ -729,10 +730,10 @@ mod tests {
     impl SubView for MockSubView {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
@@ -766,10 +767,10 @@ mod tests {
     impl SubView for ProposalAwareView {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.last_width.set(proposal.width);

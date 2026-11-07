@@ -172,17 +172,17 @@ pub fn aspect_ratio(content: impl View, ratio: impl IntoSignalF32 + 'static) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ViewDimensions;
+    use crate::{LayoutError, Rect, ResolvedExtent, ViewDimensions};
 
     struct Content(Size);
 
     impl SubView for Content {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.0)

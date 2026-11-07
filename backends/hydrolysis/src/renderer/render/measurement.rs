@@ -1,16 +1,19 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::text::TextEngine;
 use crate::text::TextLayout as _;
 use crate::theme::WidgetTheme;
+use crate::widgets::layout::container::resolve_lazy_container_extent;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
 use waterui::navigation::tab::TabIcon;
 use waterui_core::handler::BoxedAction;
-use waterui_core::layout::{LayoutError, ResolvedExtent, resolve_layout_extent};
+use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
 use waterui_core::views::ViewSnapshot;
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
+use waterui_layout::container::resolve_directional_extent;
 
 pub struct MeasuredTableMetrics {
     pub(crate) column_widths: Vec<f64>,
@@ -359,7 +362,7 @@ fn measure_view_dimensions_with_proposal_with_budget<E: crate::text::TextEngine>
 ///
 /// A [`LayoutError`] when the answer or `bounds` is not valid geometry, or a
 /// layout broke the response-extent identity.
-pub fn resolve_view_extent<E: crate::text::TextEngine>(
+pub fn resolve_view_extent<E: TextEngine>(
     view: &AnyView,
     bounds: LayoutRect,
     proposal: ProposalSize,
@@ -377,17 +380,14 @@ pub fn resolve_view_extent<E: crate::text::TextEngine>(
     // form already carries the wrapper.
     if let Some(container) = view.downcast_ref::<FixedContainer>() {
         let (layout, children) = container.as_parts();
-        let direction = waterui_core::layout::layout_direction(&scoped_env).snapshot();
+        let direction = layout_direction(&scoped_env).snapshot();
         let state = RefCell::new(state);
         let subviews: Vec<HydroSubview<'_, E>> = children
             .iter()
             .map(|child| HydroSubview::from_view(child, &state, &scoped_env, theme))
             .collect();
         let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
-        return waterui_layout::container::resolve_directional_extent(
-            layout, direction, bounds, proposal, &refs,
-        )
-        .map(Some);
+        return resolve_directional_extent(layout, direction, bounds, proposal, &refs).map(Some);
     }
     if let Some(container) = view.downcast_ref::<Native<FixedContainer>>() {
         let (layout, children) = container.as_inner().as_parts();
@@ -403,15 +403,8 @@ pub fn resolve_view_extent<E: crate::text::TextEngine>(
         .map(Some);
     }
     if let Some(lazy) = view.downcast_ref::<Native<LazyContainer>>() {
-        return crate::widgets::layout::container::resolve_lazy_container_extent(
-            state,
-            lazy,
-            &scoped_env,
-            theme,
-            bounds,
-            proposal,
-        )
-        .map(Some);
+        return resolve_lazy_container_extent(state, lazy, &scoped_env, theme, bounds, proposal)
+            .map(Some);
     }
     Ok(None)
 }
@@ -421,7 +414,7 @@ pub fn resolve_view_extent<E: crate::text::TextEngine>(
 /// # Errors
 ///
 /// As [`resolve_layout_extent`].
-pub fn resolve_layout_view_extent<'a, E: crate::text::TextEngine>(
+pub fn resolve_layout_view_extent<'a, E: TextEngine>(
     layout: &dyn Layout,
     children: impl IntoIterator<Item = &'a AnyView>,
     bounds: LayoutRect,

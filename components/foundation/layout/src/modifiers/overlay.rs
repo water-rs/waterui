@@ -238,7 +238,7 @@ pub const fn overlay<Base: View, Layer: View>(base: Base, layer: Layer) -> Overl
 mod tests {
     use super::*;
     use crate::container::FixedContainer;
-    use crate::{StretchAxis, ViewDimensions};
+    use crate::{LayoutError, Rect, ResolvedExtent, StretchAxis, ViewDimensions};
     use waterui_core::{AnyView, Environment, View};
 
     struct MockSubView {
@@ -248,10 +248,10 @@ mod tests {
     impl SubView for MockSubView {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)

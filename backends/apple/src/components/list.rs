@@ -40,7 +40,10 @@ use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{Point, ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
 use crate::proposal::{self, Placement};
@@ -1431,10 +1434,10 @@ impl fmt::Debug for ListSubView {
 impl SubView for ListSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: Rect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
-        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
 
     #[expect(

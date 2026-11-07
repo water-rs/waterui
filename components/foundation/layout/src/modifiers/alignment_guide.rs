@@ -319,6 +319,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::{LayoutError, Rect, ResolvedExtent};
     use waterui_core::{AnyView, Environment, View, layout::Point};
 
     use super::*;
@@ -340,10 +341,10 @@ mod tests {
     impl SubView for GuidedSubview {
         fn resolve_extent(
             &self,
-            bounds: crate::Rect,
+            bounds: Rect,
             proposal: ProposalSize,
-        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
-            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)

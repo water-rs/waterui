@@ -14,7 +14,9 @@ use waterui::component::toggle::{ToggleConfig, ToggleStyle};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -116,10 +118,10 @@ impl core::fmt::Debug for ToggleSubView {
 impl SubView for ToggleSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: Rect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
-        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
 
     // Measured points come back in f64; `ViewDimensions` speaks f32 — the

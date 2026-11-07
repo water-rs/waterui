@@ -7,6 +7,7 @@ use super::ContainerNode;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::WidgetTheme;
 use waterui_core::layout::{LayoutError, ResolvedExtent, resolve_layout_extent};
 use waterui_graphics::scene_stretch_axis;
 use waterui_layout::scroll::scroll_stretch_axis;
@@ -405,7 +406,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         &self,
         state: &mut HydroState<E>,
         env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        theme: &Rc<dyn WidgetTheme>,
         bounds: Rect,
         proposal: ProposalSize,
     ) -> Result<Option<ResolvedExtent>, LayoutError> {

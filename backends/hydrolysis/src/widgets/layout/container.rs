@@ -1,17 +1,21 @@
 use crate::renderer::lazy::{LazyStackAxisConfig, lazy_stack_axis_config};
 use crate::renderer::{
-    HydroNativeView, HydroState, estimate_layout_intrinsic, measure_layout_dimensions,
-    measure_transient_view_with_proposal, normalize_layout_view, resolve_layout_view_extent,
+    HydroNativeView, HydroState, HydroSubview, estimate_layout_intrinsic,
+    measure_layout_dimensions, measure_transient_view_with_proposal, normalize_layout_view,
 };
+use crate::text::TextEngine;
+use crate::theme::WidgetTheme;
+use nami::Signal;
+use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::views::Views;
 use waterui_core::layout::{
     LayoutError, PlacementInput, ProposalSize, Rect as LayoutRect, ResolvedExtent,
-    Size as LayoutSize,
+    Size as LayoutSize, SubView,
 };
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot};
 use waterui_core::{AnyView, Environment, Native};
-use waterui_layout::container::{FixedContainer, LazyContainer};
+use waterui_layout::container::{FixedContainer, LazyContainer, resolve_directional_extent};
 
 /// Materializes every child view of a non-virtualized lazy collection in order.
 /// Used for measurement of `AbsoluteLayout`/`ZStackLayout` collections, which
@@ -157,11 +161,11 @@ fn lazy_stack_sample_size<E: crate::text::TextEngine>(
 ///
 /// A [`LayoutError`] when the answer or `bounds` is not valid geometry, or a
 /// layout broke the response-extent identity.
-pub fn resolve_lazy_container_extent<E: crate::text::TextEngine>(
+pub fn resolve_lazy_container_extent<E: TextEngine>(
     state: &mut HydroState<E>,
     view: &Native<LazyContainer>,
     env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
+    theme: &Rc<dyn WidgetTheme>,
     bounds: LayoutRect,
     proposal: ProposalSize,
 ) -> Result<ResolvedExtent, LayoutError> {
@@ -180,16 +184,13 @@ pub fn resolve_lazy_container_extent<E: crate::text::TextEngine>(
     }
     let views = materialize_all(&children.snapshot(), env);
     let direction = view.as_inner().direction().snapshot();
-    let state = std::cell::RefCell::new(state);
-    let subviews: Vec<crate::renderer::HydroSubview<'_, E>> = views
+    let state = RefCell::new(state);
+    let subviews: Vec<HydroSubview<'_, E>> = views
         .iter()
-        .map(|child| crate::renderer::HydroSubview::from_view(child, &state, env, theme))
+        .map(|child| HydroSubview::from_view(child, &state, env, theme))
         .collect();
-    let refs: Vec<&dyn waterui_core::layout::SubView> = subviews
-        .iter()
-        .map(|view| view as &dyn waterui_core::layout::SubView)
-        .collect();
-    waterui_layout::container::resolve_directional_extent(layout, direction, bounds, proposal, &refs)
+    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+    resolve_directional_extent(layout, direction, bounds, proposal, &refs)
 }
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<LazyContainer> {

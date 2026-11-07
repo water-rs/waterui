@@ -35,6 +35,7 @@ use fmt::Debug;
 use alloc::{rc::Rc, vec::Vec};
 use nami::watcher::BoxWatcherGuard;
 use smallvec::SmallVec;
+use thiserror::Error;
 
 /// The logical horizontal direction used by layout containers.
 ///
@@ -550,7 +551,7 @@ impl SubviewPlacement {
 ///
 /// Every variant is a broken contract, not a layout outcome: a well-formed tree
 /// never produces one.
-#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Error)]
 #[non_exhaustive]
 pub enum LayoutError {
     /// An answer had a NaN, negative or negatively infinite extent. Only
@@ -2300,7 +2301,10 @@ mod tests {
     fn zero_answer_is_real_geometry() {
         let bounds = Rect::from_size(Size::new(20.0, 20.0));
         let resolved = ResolvedExtent::centred(bounds, Size::zero()).unwrap();
-        assert_eq!(resolved.rect, Rect::new(Point::new(10.0, 10.0), Size::zero()));
+        assert_eq!(
+            resolved.rect,
+            Rect::new(Point::new(10.0, 10.0), Size::zero())
+        );
     }
 
     #[test]

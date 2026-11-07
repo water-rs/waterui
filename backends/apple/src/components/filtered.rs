@@ -23,7 +23,9 @@ use objc2::MainThreadMarker;
 use objc2_metal::{MTLDevice as _, MTLTexture as _};
 use objc2_quartz_core::CAMetalLayer;
 use waterui_backend_core::{AnyView, View};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 use waterui_graphics::filter_view::{AnyEffect, ErasedEffect, FilteredView, ParamGuards};
 use waterui_graphics::filtrate::{
     EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
@@ -1688,16 +1690,11 @@ impl SubView for FilteredSubView {
     /// content answers a zero size centred in `bounds`, as `measure` does.
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: Rect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+    ) -> Result<ResolvedExtent, LayoutError> {
         self.mounted().map_or_else(
-            || {
-                waterui_core::layout::ResolvedExtent::centred(
-                    bounds,
-                    waterui_core::layout::Size::zero(),
-                )
-            },
+            || ResolvedExtent::centred(bounds, Size::zero()),
             |m| m.layout().resolve_extent(bounds, proposal),
         )
     }

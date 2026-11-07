@@ -19,7 +19,10 @@ use waterui::graphics::color::WorkingColor;
 use waterui::reactive::{Computed, Signal, SignalExt};
 use waterui::resolve::Resolvable;
 use waterui::theme::color::AccentForeground;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
@@ -133,9 +136,9 @@ impl core::fmt::Debug for BadgeSubView {
 impl SubView for BadgeSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: LayoutRect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+    ) -> Result<ResolvedExtent, LayoutError> {
         self.state
             .borrow()
             .content

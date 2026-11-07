@@ -31,7 +31,10 @@ use waterui::reactive::{Signal, SignalExt};
 use waterui::resolve::Resolvable;
 use waterui::theme::color::{Accent, AccentContainer, Border, Tertiary, TertiaryContainer};
 use waterui_backend_core::Environment;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -264,10 +267,10 @@ impl core::fmt::Debug for ProgressSubView {
 impl SubView for ProgressSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: LayoutRect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
-        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
 
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is

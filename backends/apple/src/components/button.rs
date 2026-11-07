@@ -30,7 +30,9 @@ use waterui::theme::install_font_signal;
 use waterui_backend_core::{AnyView, Environment};
 use waterui_core::handler::BoxedAction;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 #[cfg(target_os = "macos")]
 use crate::components::control_size::platform_control_size;
@@ -288,10 +290,10 @@ struct ButtonSubView {
 impl SubView for ButtonSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: Rect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
-        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
 
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {

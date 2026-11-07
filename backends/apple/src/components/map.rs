@@ -19,7 +19,9 @@ use waterui::Str;
 use waterui::animation::Animation;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 use waterui_map::{Annotation, Coordinate, MapConfig, MapStatus, MapStyle, Region};
 
 use crate::contract::NativeLeaf;
@@ -117,10 +119,10 @@ impl core::fmt::Debug for MapSubView {
 impl SubView for MapSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: Rect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
-        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
 
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {

@@ -25,7 +25,10 @@ use waterui::layout::scroll::{
     Axis, ScrollController, ScrollPosition, ScrollRequest, ScrollView, scroll_stretch_axis,
 };
 use waterui::reactive::{Binding, Signal};
-use waterui_core::layout::{Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
@@ -257,10 +260,10 @@ struct ScrollSubView {
 impl SubView for ScrollSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: Rect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
-        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
 
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {

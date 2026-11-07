@@ -24,7 +24,9 @@ use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
 use objc2::MainThreadMarker;
 use objc2_metal::{MTLPixelFormat, MTLTexture};
 use waterui_core::NativeView;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 use waterui_graphics::cherenkov::{Display, FrameTime, Next};
 use waterui_graphics::draw::kurbo;
 use waterui_graphics::gpu::{
@@ -2397,10 +2399,10 @@ struct SurfaceSubView {
 impl SubView for SurfaceSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: Rect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
-        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
 
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {

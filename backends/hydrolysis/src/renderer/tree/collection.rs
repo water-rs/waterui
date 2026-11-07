@@ -8,6 +8,7 @@ use super::layout::resolved_content_rect;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::WidgetTheme;
 use std::rc::Rc;
 
 use nami::collection::CollectionChange;
@@ -354,7 +355,7 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
     pub(super) fn resolve_extent(
         &self,
         state: &mut HydroState<E>,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        theme: &Rc<dyn WidgetTheme>,
         bounds: LayoutRect,
         proposal: ProposalSize,
     ) -> Result<ResolvedExtent, LayoutError> {
@@ -1395,7 +1396,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
     pub(super) fn resolve_extent(
         &self,
         state: &mut HydroState<E>,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        theme: &Rc<dyn WidgetTheme>,
         bounds: LayoutRect,
         proposal: ProposalSize,
     ) -> Result<ResolvedExtent, LayoutError> {

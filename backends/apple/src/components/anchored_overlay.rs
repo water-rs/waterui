@@ -30,8 +30,8 @@ use waterui_backend_core::Environment;
 use waterui_backend_core::overlay::{PhysicalEdge, logical_edge, place_anchored_overlay};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{
-    LayoutDirection, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
-    layout_direction,
+    LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
+    SubView, ViewDimensions, layout_direction,
 };
 use waterui_core::{Computed, Metadata};
 
@@ -540,9 +540,9 @@ impl core::fmt::Debug for AnchoredSubView {
 impl SubView for AnchoredSubView {
     fn resolve_extent(
         &self,
-        bounds: waterui_core::layout::Rect,
+        bounds: Rect,
         proposal: ProposalSize,
-    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+    ) -> Result<ResolvedExtent, LayoutError> {
         self.state.child.layout().resolve_extent(bounds, proposal)
     }
 
