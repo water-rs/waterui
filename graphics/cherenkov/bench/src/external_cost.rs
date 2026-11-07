@@ -1030,13 +1030,18 @@ fn memory_snapshot(
     let info = shared.adapter.get_info();
     MemorySnapshot::capture(
         AdapterMemory {
-            engine: Reading::Measured(EngineBytes {
-                cpu_bytes: usage.cpu.0,
-                gpu_bytes: usage.gpu.0,
-                backdrop_capture_bytes: usage.backdrop_captures.0,
-                filter_target_bytes: usage.filter_targets.0,
-                filter_image_bytes: usage.filter_images.0,
-            }),
+            engine: usage.map_or_else(
+                |error| Reading::unavailable(error.to_string()),
+                |usage| {
+                    Reading::Measured(EngineBytes {
+                        cpu_bytes: usage.cpu.0,
+                        gpu_bytes: usage.gpu.0,
+                        backdrop_capture_bytes: usage.backdrop_captures.0,
+                        filter_target_bytes: usage.filter_targets.0,
+                        filter_image_bytes: usage.filter_images.0,
+                    })
+                },
+            ),
             wgpu_allocator: wgpu_allocator(&shared.device, info.backend),
             skia_budgeted: Reading::unavailable("not a Skia adapter"),
             vk_memory_budget: wgpu_vk_memory_budget(&shared.device, info.backend, &info.name),

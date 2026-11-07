@@ -113,7 +113,7 @@ fn an_isolated_layer_composes_on_chip_and_reports_its_attachments() {
     // Outside the layer the clear colour stands.
     close(px(2, 2), [0.8, 0.8, 0.8, 1.0]);
 
-    let memory = engine.memory();
+    let memory = engine.memory().unwrap();
     eprintln!(
         "tile attachments: reserved {:?}, committed {:?}",
         memory.tile_reserved, memory.tile_committed

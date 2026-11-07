@@ -1680,15 +1680,16 @@ impl Engine for Cherenkov {
     fn counters(&self) -> Counters {
         let mut counters = self.counters.clone();
         let stats = self.engine.stats();
-        let memory = self.engine.memory();
         counters.dispatches = Some(stats.draws);
         counters.passes = Some(stats.passes);
-        counters.memory_gpu_bytes = Some(memory.gpu.0);
-        counters.memory_cpu_bytes = Some(memory.cpu.0);
-        counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
-        counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
-        counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
-        counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        if let Ok(memory) = self.engine.memory() {
+            counters.memory_gpu_bytes = Some(memory.gpu.0);
+            counters.memory_cpu_bytes = Some(memory.cpu.0);
+            counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
+            counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
+            counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
+            counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        }
         counters
     }
 
@@ -1715,13 +1716,18 @@ impl Engine for Cherenkov {
     fn memory(&self) -> AdapterMemory {
         let usage = self.engine.memory();
         AdapterMemory {
-            engine: Reading::Measured(EngineBytes {
-                cpu_bytes: usage.cpu.0,
-                gpu_bytes: usage.gpu.0,
-                backdrop_capture_bytes: usage.backdrop_captures.0,
-                filter_target_bytes: usage.filter_targets.0,
-                filter_image_bytes: usage.filter_images.0,
-            }),
+            engine: usage.map_or_else(
+                |error| Reading::unavailable(error.to_string()),
+                |usage| {
+                    Reading::Measured(EngineBytes {
+                        cpu_bytes: usage.cpu.0,
+                        gpu_bytes: usage.gpu.0,
+                        backdrop_capture_bytes: usage.backdrop_captures.0,
+                        filter_target_bytes: usage.filter_targets.0,
+                        filter_image_bytes: usage.filter_images.0,
+                    })
+                },
+            ),
             wgpu_allocator: Reading::unavailable("cherenkov-cpu has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("cherenkov-cpu has no Skia budget"),
             vk_memory_budget: Reading::unavailable("cherenkov-cpu has no Vulkan device"),

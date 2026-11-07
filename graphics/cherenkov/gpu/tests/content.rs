@@ -166,7 +166,7 @@ fn content_is_retained_clipped_and_wakes_an_idle_host() -> Result<(), Box<dyn st
     wait!(engine.render(FrameTime::now()))?;
     // The last drop retires through the transaction stream: the retire
     // message lands behind the remove.
-    let _ = wait!(engine.memory());
+    let _ = wait!(engine.memory())?;
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     Ok(())
 }
@@ -225,7 +225,7 @@ fn hidden_surface_pulls_no_content_and_shows_current_state()
     wakes.store(0, Ordering::Relaxed);
     surface.visibility(Visibility::Hidden)?;
     // The reply lands only after the render thread applied the hide.
-    let _ = wait!(engine.memory());
+    let _ = wait!(engine.memory())?;
     send.send(wgpu::Color::GREEN)?;
     redraw.request_redraw();
     fill.set(WorkingColor::BLACK);
