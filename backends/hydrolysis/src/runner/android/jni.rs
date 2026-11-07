@@ -81,8 +81,9 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// each band `View`'s `ImageReader` surface, keyed by the placement id of the
 /// platform view it sits above; `onNativeBandShow` tells a band to show its
 /// newest image in a named colour space and `onNativeBandClear` to show
-/// nothing (water-rs/waterui#2225).
-pub const JNI_SCHEMA: jint = 25;
+/// nothing (water-rs/waterui#2225). 26 = the HWUI `DefineEffect` wire carries
+/// the overscroll stretch stage kind.
+pub const JNI_SCHEMA: jint = 26;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]

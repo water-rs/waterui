@@ -1,7 +1,7 @@
 //! The HWUI layer target: the mount's commit seam for the Android
 //! `RenderNode` backend. Primitive, text and picture recording are fully
-//! supported, and `FilteredView` lowers to native `RenderEffect` chains;
-//! GPU-content, overscroll-stretch and material capabilities are named
+//! supported, and `FilteredView` and the overscroll stretch lower to native
+//! `RenderEffect` chains; GPU-content and material capabilities are named
 //! refusals at install, matching `Encoder::refuse`'s policy — the issues
 //! that carry each capability are named in the panic.
 
@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
 use waterui_graphics::Reactive;
+use waterui_graphics::filter_view::AnyEffect;
 use waterui_graphics::filtrate::filters::OverscrollStretch;
 
 #[cfg(hydrolysis_gpu)]
@@ -117,10 +118,12 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         })
     }
 
-    fn stretch_filter(_host: &Self::Host, _filter: OverscrollStretch<Reactive>) -> FilterHandle {
-        panic!(
-            "hydrolysis HWUI: overscroll stretch requires native RenderEffect lowering (water-rs/waterui#1750)"
-        );
+    fn stretch_filter(host: &Self::Host, filter: OverscrollStretch<Reactive>) -> FilterHandle {
+        FilterHandle::new(
+            host.backend
+                .register_filter(AnyEffect::filter(filter), host.effect_wake.clone())
+                .unwrap_or_else(|error| panic!("{error}")),
+        )
     }
 
     fn mount_material(

@@ -282,6 +282,7 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
         bitmaps.clear()
         programs.clear()
         effects.clear()
+        nativeEffects.clear()
         effectBindings.clear()
         hostCount = 0
     }
@@ -682,6 +683,7 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
             throw CommandBufferException("HWUI replay: effect $effect is released while nodes still draw through it")
         }
         effects.remove(effect)
+        nativeEffects.release(effect)
     }
 
     override fun releaseTextLayout(layout: Int) = text.release(layout)

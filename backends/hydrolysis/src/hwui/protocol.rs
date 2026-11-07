@@ -415,6 +415,11 @@ codes! {
         /// One linear-light matrix: the conjugated product's top three
         /// rows, row-major.
         LINEAR_COLOR = 1;
+        /// The overscroll stretch shader: the frame from the stretched
+        /// viewport's space to the drawn node's own pixels `[a, b, c, d,
+        /// e, f]`, the viewport's `width, height`, HWUI's stretch direction
+        /// `x, y` and the interpolation strength, in `values[0..11]`.
+        OVERSCROLL_STRETCH = 2;
     }
 }
 

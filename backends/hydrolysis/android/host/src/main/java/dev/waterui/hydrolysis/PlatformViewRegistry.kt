@@ -725,7 +725,7 @@ class PlatformViewRegistry internal constructor(
     }
 
     /** The AGSL source, read once when the first stretch shows. */
-    private val stretchSource: String by lazy { OverscrollStretchEffect.loadSource(context) }
+    private val stretchSource: String by lazy { OverscrollStretchShader.source() }
 
     /**
      * Lays the slot out in the binding's pixel space. A translation-only
