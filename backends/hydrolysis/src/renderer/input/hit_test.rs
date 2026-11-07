@@ -1060,7 +1060,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// (window hit-test space) — `None` when no view is drawn there. The
     /// GPU band's ordered hit test asks this instead of an encoder record.
     #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
-    #[cfg_attr(not(target_os = "android"), expect(dead_code))]
+    // Alive only on Android's GPU painter — HWUI asks its encoder instead.
+    #[cfg_attr(
+        not(all(target_os = "android", hydrolysis_gpu_painter)),
+        allow(dead_code)
+    )]
     pub(crate) fn platform_view_at(&self, point: kurbo::Point) -> Option<u64> {
         self.materialized_platform_views
             .iter()
