@@ -565,7 +565,8 @@ impl<B: Filters> Engine<B> {
     where
         B: Runs<F>,
     {
-        let id = FilterId::new(Self::alloc(&self.next_filter));
+        let id = FilterId::new(Self::alloc(&self.next_filter))
+            .with_coordinate_remap(F::COORDINATE_REMAP);
         (self.post)(Message::Resource(Box::new(move |r: &mut B::Renderer| {
             B::add_filter(r, id, filter);
         })));

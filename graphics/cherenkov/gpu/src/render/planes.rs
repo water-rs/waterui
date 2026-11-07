@@ -321,6 +321,25 @@ fn isolates(tree: &SurfaceTree, id: LayerId) -> bool {
         || (id != tree.root() && node.blends_within())
 }
 
+/// Whether the lowering splits the layer's isolation at a host-window
+/// mark: the layer filters its subtree by a pure coordinate remap
+/// ([`cherenkov::FilterId::is_coordinate_remap`]) and composites it at
+/// full opacity with the `Normal` blend, unprojected, and no descendant
+/// blends within it (a blended child would read only its own region's
+/// content). Each region of the subtree then renders into its own
+/// offscreen under the same device-space filter and composes in paint
+/// order, which is the filtered whole up to the sampler's edge filtering
+/// (water-rs/waterui#2225).
+fn splits(tree: &SurfaceTree, id: LayerId) -> bool {
+    let node = tree.layer(id);
+    node.filter
+        .is_some_and(cherenkov::FilterId::is_coordinate_remap)
+        && node.opacity >= 1.0
+        && node.blend == BlendMode::Normal
+        && tree.projective_pose(id).is_none()
+        && (id == tree.root() || !node.blends_within())
+}
+
 /// One layer in paint order.
 struct Visit {
     id: LayerId,
@@ -767,11 +786,14 @@ fn mandatory_plane<C: Compositor>(
 ) -> Result<(), Ineligible> {
     let visit = &order[i];
     let node = tree.layer(visit.id);
-    if let Some(&a) = visit
-        .ancestors
-        .iter()
-        .find(|&&a| isolates(tree, order[a].id))
-    {
+    // A host-window mark on a band compositor is a cut in the paint order,
+    // so an ancestor whose isolation the lowering splits at it
+    // ([`splits`]) does not keep it from the surface level.
+    let cuts = C::HOST_WINDOW_BANDS && source == Source::HostWindow;
+    if let Some(&a) = visit.ancestors.iter().find(|&&a| {
+        let id = order[a].id;
+        isolates(tree, id) && !(cuts && splits(tree, id))
+    }) {
         return Err(Ineligible::Isolated(order[a].id));
     }
     if node.filter.is_some() {

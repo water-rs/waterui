@@ -1254,3 +1254,137 @@ fn host_window_marks_take_no_plane_budget() {
         "the parts beneath and above the video, then each mark's band"
     );
 }
+
+/// A scroll view's inner layer as the Android renderer lowers it while the
+/// overscroll stretch shows — clipped to the viewport, offset by its scroll
+/// position and filtered with `filter` — holding two host-window marks with
+/// content between and above them.
+fn stretched_scroll(filter: FilterId) -> (SurfaceTree, FxHashMap<LayerId, Candidate>) {
+    const INNER: LayerId = LayerId::new(10);
+    const FIRST: LayerId = LayerId::new(11);
+    const CARD: LayerId = LayerId::new(12);
+    const SECOND: LayerId = LayerId::new(13);
+    const TAIL: LayerId = LayerId::new(15);
+    let mut tree = SurfaceTree::new();
+    for id in [INNER, FIRST, CARD, SECOND, TAIL] {
+        tree.apply(LayerOp::Create(id));
+    }
+    for (parent, child) in [
+        (ROOT, INNER),
+        (INNER, FIRST),
+        (INNER, CARD),
+        (INNER, SECOND),
+        (INNER, TAIL),
+    ] {
+        tree.apply(LayerOp::Push { parent, child });
+    }
+    tree.apply(LayerOp::Clip(
+        INNER,
+        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 300.0))),
+    ));
+    tree.apply(LayerOp::ScrollOffset(INNER, prop(Vec2::new(0.0, 40.0))));
+    tree.apply(LayerOp::Filter(INNER, Some(filter)));
+    tree.apply(LayerOp::HostWindow(FIRST, Some(1)));
+    tree.apply(LayerOp::HostWindow(SECOND, Some(2)));
+    let marks = [(FIRST, host_window()), (SECOND, host_window())]
+        .into_iter()
+        .collect();
+    (tree, marks)
+}
+
+const STRETCH: LayerId = LayerId::new(10);
+
+/// The overscroll stretch is a pure coordinate remap, so a mark inside the
+/// stretched inner layer is placed: the lowering renders the layer once for
+/// the base and once per band, each under the same device-space stretch.
+/// Before, the filter made the layer an isolating ancestor and the mark
+/// failed with `Isolated`.
+#[test]
+fn a_mark_under_a_coordinate_remap_filter_is_placed() {
+    let (tree, marks) = stretched_scroll(FilterId::new(1).with_coordinate_remap(true));
+    let plan = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+    assert_eq!(plan.unplaced, []);
+    assert_eq!(plan.rejected, []);
+    assert_eq!(
+        plan.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [LayerId::new(11), LayerId::new(13)]
+    );
+    // Both marks keep the inner layer's clip and scroll on their path, so
+    // the host places each platform view in the scrolled viewport.
+    for plane in &plan.planes {
+        let inner = &plane.path[1];
+        assert_eq!(inner.layer, STRETCH);
+        assert_eq!(inner.scroll, Vec2::new(0.0, 40.0));
+        assert!(inner.clip.is_some());
+    }
+    assert_eq!(
+        plan.parts(),
+        3,
+        "the base part beneath the first mark and one band per mark"
+    );
+}
+
+/// A filter that is not a coordinate remap changes the pixels around it,
+/// so it still keeps the mark from the surface level.
+#[test]
+fn a_mark_under_a_filter_that_is_not_a_remap_stays_unplaced() {
+    let (tree, marks) = stretched_scroll(FilterId::new(1));
+    let plan = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+    assert_eq!(
+        plan.unplaced,
+        [
+            (LayerId::new(11), Ineligible::Isolated(STRETCH)),
+            (LayerId::new(13), Ineligible::Isolated(STRETCH)),
+        ]
+    );
+    assert_eq!(plan.planes, []);
+}
+
+/// Splitting needs the group to composite as the plain filtered whole: a
+/// group opacity, a blend or a projective pose on the filtered layer still
+/// fail, and so does a compositor without bands, whose marks are planes.
+#[test]
+fn a_remap_filter_splits_only_a_plain_group_on_a_band_compositor() {
+    let remap = FilterId::new(1).with_coordinate_remap(true);
+    for style in [
+        LayerOp::Opacity(STRETCH, prop(0.5)),
+        LayerOp::Blend(STRETCH, BlendMode::Multiply),
+    ] {
+        let (mut tree, marks) = stretched_scroll(remap);
+        tree.apply(style);
+        let plan = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+        assert_eq!(plan.planes, []);
+        assert_eq!(plan.unplaced.len(), 2);
+        assert!(
+            plan.unplaced
+                .iter()
+                .all(|(_, cause)| *cause == Ineligible::Isolated(STRETCH))
+        );
+    }
+    let (tree, marks) = stretched_scroll(remap);
+    let plan = plan::<Test>(&tree, &marks, &FxHashSet::default());
+    assert_eq!(plan.planes, []);
+    assert_eq!(plan.unplaced.len(), 2);
+}
+
+/// A child blending within the stretched group would read only its own
+/// region's content once the group splits, so the group is not split.
+#[test]
+fn a_blended_child_keeps_the_stretched_group_whole() {
+    const GLOW: LayerId = LayerId::new(14);
+    let (mut tree, marks) = stretched_scroll(FilterId::new(1).with_coordinate_remap(true));
+    tree.apply(LayerOp::Create(GLOW));
+    tree.apply(LayerOp::Push {
+        parent: STRETCH,
+        child: GLOW,
+    });
+    tree.apply(LayerOp::Blend(GLOW, BlendMode::Multiply));
+    let plan = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+    assert_eq!(plan.planes, []);
+    assert_eq!(plan.unplaced.len(), 2);
+    assert!(
+        plan.unplaced
+            .iter()
+            .all(|(_, cause)| *cause == Ineligible::Isolated(STRETCH))
+    );
+}

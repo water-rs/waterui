@@ -123,19 +123,45 @@ pub enum BlendSpace {
 /// A filter chain registered with the render target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct FilterId(u64);
+pub struct FilterId {
+    raw: u64,
+    coordinate_remap: bool,
+}
 
 impl FilterId {
-    /// Creates an identifier from a backend-assigned raw value.
+    /// Creates an identifier from a backend-assigned raw value, for a
+    /// filter that is not a coordinate remap.
     #[must_use]
     pub const fn new(raw: u64) -> Self {
-        Self(raw)
+        Self {
+            raw,
+            coordinate_remap: false,
+        }
+    }
+
+    /// Declares whether the filter is a pure coordinate remap
+    /// (`filtrate_core::Filter::COORDINATE_REMAP`), set by whoever
+    /// registers it from the filter's type.
+    #[must_use]
+    pub const fn with_coordinate_remap(self, coordinate_remap: bool) -> Self {
+        Self {
+            coordinate_remap,
+            ..self
+        }
     }
 
     /// The raw value.
     #[must_use]
     pub const fn raw(self) -> u64 {
-        self.0
+        self.raw
+    }
+
+    /// Whether the filter is a pure coordinate remap: it commutes with
+    /// source-over compositing up to edge filtering, so a group it filters
+    /// may be filtered part by part in paint order.
+    #[must_use]
+    pub const fn is_coordinate_remap(self) -> bool {
+        self.coordinate_remap
     }
 }
 
