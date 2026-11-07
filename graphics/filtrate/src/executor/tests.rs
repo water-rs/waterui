@@ -1096,9 +1096,9 @@ struct TestGpu {
 }
 
 fn create_test_device() -> TestGpu {
-    let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-    instance_descriptor.backends = wgpu::Backends::all();
-    let instance = wgpu::Instance::new(instance_descriptor);
+    // Only the target's one native backend is compiled in, so the default
+    // instance enumerates just that.
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,

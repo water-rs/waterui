@@ -2359,7 +2359,6 @@ impl AdapterSelection {
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(hydrolysis_gpu_painter)]
 struct AdapterPreference {
-    backend_rank: u8,
     device_type_rank: u8,
 }
 
@@ -2372,45 +2371,11 @@ impl AdapterPreference {
     /// software-adapter run on a machine that has a GPU.
     const fn for_info(info: &wgpu::AdapterInfo, prefer_software: bool) -> Self {
         Self {
-            backend_rank: backend_rank(info.backend),
             device_type_rank: if prefer_software {
                 software_first_device_type_rank(info.device_type)
             } else {
                 device_type_rank(info.device_type)
             },
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(hydrolysis_gpu_painter)]
-const fn backend_rank(backend: wgpu::Backend) -> u8 {
-    if cfg!(target_os = "windows") {
-        match backend {
-            wgpu::Backend::Dx12 => 0,
-            wgpu::Backend::Vulkan => 1,
-            wgpu::Backend::Metal => 2,
-            wgpu::Backend::Gl => 3,
-            wgpu::Backend::BrowserWebGpu => 4,
-            wgpu::Backend::Noop => 5,
-        }
-    } else if cfg!(target_os = "macos") {
-        match backend {
-            wgpu::Backend::Metal => 0,
-            wgpu::Backend::Vulkan => 1,
-            wgpu::Backend::Dx12 => 2,
-            wgpu::Backend::Gl => 3,
-            wgpu::Backend::BrowserWebGpu => 4,
-            wgpu::Backend::Noop => 5,
-        }
-    } else {
-        match backend {
-            wgpu::Backend::Vulkan => 0,
-            wgpu::Backend::Metal => 1,
-            wgpu::Backend::Dx12 => 2,
-            wgpu::Backend::Gl => 3,
-            wgpu::Backend::BrowserWebGpu => 4,
-            wgpu::Backend::Noop => 5,
         }
     }
 }
@@ -2562,20 +2527,16 @@ const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
     }
 }
 
-/// The wgpu backend masks Hydrolysis probes for an adapter, in order.
+/// The wgpu backend mask Hydrolysis probes for an adapter.
 ///
-/// Android and Linux are Vulkan-only: one tier, and a `WGPU_BACKEND` naming
-/// another backend panics. Other native hosts probe primary backends before
-/// GL, and `WGPU_BACKEND` selects from the backends enabled by the build.
+/// Every native target renders through its one
+/// [`cherenkov_gpu::REQUIRED_BACKEND`], so there is a single mask, and a
+/// `WGPU_BACKEND` naming another backend panics.
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(hydrolysis_gpu_painter)]
-fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
+fn hydrolysis_backends() -> wgpu::Backends {
     let enabled = cherenkov_gpu::GpuConfig::default().backends;
-    match cherenkov_gpu::backends_from_env() {
-        Some(backends) => vec![backends & enabled],
-        None if enabled == wgpu::Backends::VULKAN => vec![enabled],
-        None => vec![wgpu::Backends::PRIMARY, wgpu::Backends::GL],
-    }
+    cherenkov_gpu::backends_from_env().unwrap_or(enabled) & enabled
 }
 
 #[cfg(hydrolysis_gpu_painter)]
@@ -2585,8 +2546,7 @@ fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDes
     // Cherenkov's shaders need DXC; wgpu's default `Auto` silently falls
     // back to FXC when `dxcompiler.dll` does not load, and FXC cannot
     // compile them (#1713). Requiring DXC makes wgpu drop the DirectX 12
-    // backend instead, so another backend's adapter is selected, or the
-    // no-adapter failure names the missing runtime.
+    // backend instead, so the no-adapter failure names the missing runtime.
     descriptor.backend_options.dx12.shader_compiler =
         wgpu::Dx12Compiler::default_dynamic_dxc().with_env();
     descriptor
@@ -2594,7 +2554,7 @@ fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDes
 
 /// Probe `instance` over `backends` for the best adapter that is
 /// surface-compatible, not `Noop`, and software only when `selection`
-/// allows it. `None` means this tier satisfied nothing; the
+/// allows it. `None` means no adapter qualified; the
 /// inspected list comes back either way for the no-adapter panic.
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(hydrolysis_gpu_painter)]
@@ -2667,28 +2627,18 @@ async fn probe_adapters(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
-)]
 #[cfg(hydrolysis_gpu_painter)]
-fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu::Backends]) -> ! {
-    assert!(
-        !(cherenkov_gpu::VULKAN_ONLY && inspected_adapters.is_empty()),
-        "{context}: unsupported device: no surface-compatible Vulkan adapter was found. \
-GPU rendering on Linux and Android requires a Vulkan driver; install or update the \
-vendor Vulkan driver (for example Mesa's `vulkan-*` package or the NVIDIA driver)."
-    );
+fn fail_no_adapter(context: &str, inspected_adapters: &[String], backends: wgpu::Backends) -> ! {
+    if let Some(required) = cherenkov_gpu::REQUIRED_BACKEND {
+        assert!(
+            !inspected_adapters.is_empty(),
+            "{context}: no surface-compatible adapter was found. {required}"
+        );
+    }
     assert!(
         !inspected_adapters.is_empty(),
-        "{context}: failed to find a surface-compatible wgpu adapter across the probed backends {tiers:?}. \
-    Set WGPU_BACKEND to an available backend or install/update the platform GPU driver.{}",
-        if cfg!(windows) {
-            " DirectX 12 is only offered when the DXC runtime (dxcompiler.dll) loads: \
-`water run` stages it beside the binary and `water doctor` installs it."
-        } else {
-            ""
-        }
+        "{context}: failed to find a surface-compatible wgpu adapter on the backends {backends:?}. \
+Install or update the platform GPU driver."
     );
 
     panic!(
@@ -2699,8 +2649,8 @@ Surface-compatible adapters inspected: {}. \
     );
 }
 
-/// Probe each backend tier on a fresh instance until one yields an adapter
-/// Hydrolysis can use. The instance is returned because a wgpu `Surface` must
+/// Probe the target's backend on a fresh instance for an adapter Hydrolysis
+/// can use. The instance is returned because a wgpu `Surface` must
 /// be created on the instance that produced its adapter — the caller keeps
 /// both, or recreates its surface on the returned instance.
 #[cfg_attr(
@@ -2739,22 +2689,17 @@ async fn request_instance_and_adapter(
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let tiers = hydrolysis_backend_tiers();
-        let mut inspected_adapters = Vec::new();
-        for &backends in &tiers {
-            let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
-            let (adapter, inspected) =
-                probe_adapters(&instance, None, context, selection, backends).await;
-            inspected_adapters.extend(inspected);
-            if let Some(adapter) = adapter {
-                log_selected_adapter(context, &adapter);
-                // The winning tier's mask records which backend the
-                // instance was created on — a lost device's recreation
-                // probes this instance under the same mask.
-                return (instance, adapter, backends);
-            }
-        }
-        fail_no_adapter(context, inspected_adapters, &tiers);
+        let backends = hydrolysis_backends();
+        let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
+        let (adapter, inspected_adapters) =
+            probe_adapters(&instance, None, context, selection, backends).await;
+        let Some(adapter) = adapter else {
+            fail_no_adapter(context, &inspected_adapters, backends);
+        };
+        log_selected_adapter(context, &adapter);
+        // The mask records which backend the instance was created on — a
+        // lost device's recreation probes this instance under the same mask.
+        (instance, adapter, backends)
     }
 }
 
@@ -2774,20 +2719,16 @@ async fn request_instance_surface_adapter(
     wgpu::Adapter,
     wgpu::Backends,
 ) {
-    let tiers = hydrolysis_backend_tiers();
-    let mut inspected_adapters = Vec::new();
-    for &backends in &tiers {
-        let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
-        let surface = make_surface(&instance);
-        let (adapter, inspected) =
-            probe_adapters(&instance, Some(&surface), context, selection, backends).await;
-        inspected_adapters.extend(inspected);
-        if let Some(adapter) = adapter {
-            log_selected_adapter(context, &adapter);
-            return (instance, surface, adapter, backends);
-        }
-    }
-    fail_no_adapter(context, inspected_adapters, &tiers);
+    let backends = hydrolysis_backends();
+    let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
+    let surface = make_surface(&instance);
+    let (adapter, inspected_adapters) =
+        probe_adapters(&instance, Some(&surface), context, selection, backends).await;
+    let Some(adapter) = adapter else {
+        fail_no_adapter(context, &inspected_adapters, backends);
+    };
+    log_selected_adapter(context, &adapter);
+    (instance, surface, adapter, backends)
 }
 
 #[cfg(hydrolysis_gpu_painter)]
@@ -6532,7 +6473,7 @@ mod winit_impl {
                 device_pci_bus_id: String::new(),
                 driver: String::new(),
                 driver_info: String::new(),
-                backend: wgpu::Backend::Gl,
+                backend: wgpu::Backend::Vulkan,
                 subgroup_min_size: 4,
                 subgroup_max_size: 128,
                 transient_saves_memory: Some(false),

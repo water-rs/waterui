@@ -87,6 +87,11 @@ libc = "0.2"
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-sys = { version = "0.6", optional = true }
 
+# Each native target renders through its one wgpu backend (see the workspace
+# `wgpu` entry), also for the vello adapters that do not link `cherenkov-gpu`.
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["dx12"] }
+
 # The Skia GPU backend set for this target, declared on a second `skia-safe`
 # entry under the platform table: Cargo merges same-name declarations, so
 # whichever adapter feature enabled `dep:skia-safe` gets the prebuilt combo
@@ -95,11 +100,13 @@ ndk-sys = { version = "0.6", optional = true }
 # off the feature lists above: the union is what `--all-features` asks for.
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 skia-safe = { version = "0.153", optional = true, features = ["vulkan", "ganesh"] }
+wgpu = { workspace = true, optional = true, features = ["vulkan"] }
 
 # `external-cost`'s `CVPixelBuffer`/`IOSurface` producer (#168) and
 # skia-metal's Metal handle plumbing.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 skia-safe = { version = "0.153", optional = true, features = ["metal", "graphite"] }
+wgpu = { workspace = true, optional = true, features = ["metal"] }
 objc2 = { version = "0.6.3", optional = true, default-features = false }
 # skia-metal's completion marker: `MTLCommandBuffer::addCompletedHandler`.
 block2 = { version = "0.6.2", optional = true, default-features = false, features = ["alloc"] }
