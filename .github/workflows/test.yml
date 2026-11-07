@@ -1153,18 +1153,18 @@ jobs:
 
   # ── Cherenkov engine legs (#1449) ──────────────────────────────────────
   # The checks water-rs/cherenkov's `ci.yml` ran on every pull request,
-  # moved in with the tree. The CPU corpus comparison owns `bench-corpus`,
+  # moved in with the tree. The CPU adapter checks own `bench-corpus`,
   # the Metal adapters own `bench-macos-metal`, and the NDK build owns
   # `bench-android`. All three are `full`-only: they are the engine's
   # correctness surface — oracle-compared renders, feature-matrix lint
   # and target builds — not per-change compile gates, matching where the
-  # rest of the nightly's non-lint checks live (#379/#458).
+  # rest of the nightly's non-lint checks live (#379/#458). Rendering the
+  # corpus on the competitor engines (Vello, Skia) is not part of the
+  # certification: `nightly.yml` runs it as informational jobs.
 
-  # The corpus comparison: every generated scene rendered on the CPU
-  # adapters against the oracle's f64 reference, plus the lint of every
-  # bench adapter feature in combination and alone. The scene tree is
-  # generated, not committed, so the fonts and corpus this renders come
-  # from the pinned sources every machine fetches.
+  # The CPU adapter checks: the lint of every bench adapter feature in
+  # combination and alone, and the Cherenkov adapter tests rendering on
+  # lavapipe.
   cherenkov-corpus:
     name: cherenkov corpus (CPU adapters)
     if: inputs.full
@@ -1226,41 +1226,13 @@ jobs:
           path: /tmp/cherenkov-bench-*/out/
           if-no-files-found: ignore
           retention-days: 14
-      - run: cargo build --locked --release -p cherenkov-bench --features vello-cpu,skia
-      # The oracle reference depends only on the scene; build it once for
-      # both passes below (#218).
-      - name: Render the corpus reference
-        run: |
-          ./target/release/cherenkov-bench reference \
-            --corpus graphics/cherenkov/scenes/corpus --out-dir graphics/cherenkov/out/reference
-      - name: Render the corpus on CPU adapters
-        run: |
-          set -euo pipefail
-          for engine in vello-cpu skia-cpu; do
-            ./target/release/cherenkov-bench render --engine "$engine" \
-              --corpus graphics/cherenkov/scenes/corpus --out-dir "graphics/cherenkov/out/$engine" \
-              --reference graphics/cherenkov/out/reference
-          done
-          python3 - <<'PY'
-          import glob, json, sys
-          files = glob.glob('graphics/cherenkov/out/*/render-*.json')
-          # Every corpus scene produces a report (metrics or unsupported).
-          scenes = {json.load(open(f))['scene'] for f in files}
-          corpus = {p.split('/')[-2] for p in glob.glob('graphics/cherenkov/scenes/corpus/*/scene.json')}
-          missing = corpus - scenes
-          assert not missing, f'scenes without a report: {missing}'
-          measured = [f for f in files if 'metrics' in json.load(open(f))]
-          assert measured, 'no metrics JSON produced'
-          for f in files:
-              d = json.load(open(f))
-              assert 'info' in d and d['info']['crate_version'], f'{f} lacks provenance'
-          print(f'{len(files)} reports ({len(measured)} measured) across {len(scenes)} scenes')
-          PY
 
-  # The Metal side: Skia Metal, Vello classic and hybrid on a real Apple
-  # GPU, the map-scene frame measure that hangs on no Linux adapter, and
-  # the presentation corpus — srgb-hw, srgb-shader and linear-p3 — the
-  # leg that keeps the presentation pass honest against the oracle.
+  # The Metal side: the lint of every Metal adapter feature, the map-scene
+  # frame measure that hangs on no Linux adapter, and the presentation
+  # corpus — srgb-hw, srgb-shader and linear-p3 — the leg that keeps the
+  # presentation pass honest against the oracle. Rendering the corpus on the
+  # Skia Metal and Vello adapters is the informational `bench-corpus-metal`
+  # job in `nightly.yml`.
   cherenkov-metal:
     name: cherenkov corpus (Metal adapters)
     if: inputs.full
@@ -1284,7 +1256,7 @@ jobs:
         run: |
           cargo clippy --locked --profile ci-check -p cherenkov-bench --all-targets \
             --features skia-metal,vello-classic,vello-hybrid,cherenkov,cherenkov-cpu -- -D warnings
-      - run: cargo build --locked --release -p cherenkov-bench --features skia-metal,vello-classic,vello-hybrid,cherenkov
+      - run: cargo build --locked --release -p cherenkov-bench --features cherenkov
       # Many timed frames of the map scene on a Metal device: the workload
       # that used to hang the render thread on Apple GPUs.
       - name: Measure the map scene on Metal
@@ -1295,36 +1267,13 @@ jobs:
           RUST_LOG=info,cherenkov_gpu=debug ./target/release/cherenkov-bench measure \
             --engine cherenkov --corpus graphics/cherenkov/out/map-only --frames 20 --warmup 5 --out graphics/cherenkov/out/measure-metal
       # #218: the oracle's f64 reference depends only on the scene, so the
-      # six passes below share one parallel render instead of each
-      # recomputing it; `render --reference` verifies the scene inputs
+      # three presentation passes below share one parallel render instead of
+      # each recomputing it; `render --reference` verifies the scene inputs
       # still match the cached file.
       - name: Render the corpus reference
         run: |
           ./target/release/cherenkov-bench reference \
             --corpus graphics/cherenkov/scenes/corpus --out-dir graphics/cherenkov/out/reference
-      - name: Render the corpus on Metal adapters
-        run: |
-          set -euo pipefail
-          for engine in skia-metal vello-classic vello-hybrid; do
-            ./target/release/cherenkov-bench render --engine "$engine" \
-              --corpus graphics/cherenkov/scenes/corpus --out-dir "graphics/cherenkov/out/$engine" \
-              --reference graphics/cherenkov/out/reference
-          done
-          python3 - <<'PY'
-          import glob, json
-          files = glob.glob('graphics/cherenkov/out/*/render-*.json')
-          # Every corpus scene produces a report (metrics or unsupported).
-          scenes = {json.load(open(f))['scene'] for f in files}
-          corpus = {p.split('/')[-2] for p in glob.glob('graphics/cherenkov/scenes/corpus/*/scene.json')}
-          missing = corpus - scenes
-          assert not missing, f'scenes without a report: {missing}'
-          measured = [f for f in files if 'metrics' in json.load(open(f))]
-          assert measured, 'no metrics JSON produced'
-          for f in files:
-              d = json.load(open(f))
-              assert 'info' in d and d['info']['crate_version'], f'{f} lacks provenance'
-          print(f'{len(files)} reports ({len(measured)} measured) across {len(scenes)} scenes')
-          PY
       # #100: the corpus through the real presentation pass, one run per
       # output kind, compared to the oracle's matching presentation.
       - name: Render the presentation corpus
