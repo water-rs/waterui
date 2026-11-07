@@ -97,15 +97,7 @@ where
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
         let _ = tree.sample(time, 1.0);
-        // An identical replacement keeps the lowered content, so the full
-        // surface first takes a different picture to lower the whole list
-        // from scratch, as its reference role needs.
-        for picture in [
-            Picture::record(|_| {}),
-            crate::Picture::from_list(list.clone()),
-        ] {
-            let _ = renderer.set_content(ids[1], layer, Some(ContentOp::Replace(picture)));
-        }
+        replace_from_scratch(renderer, ids[1], layer, &list);
         let incremental = render(renderer, &mut frames, ids[0], &tree, size, time);
         let full = render(renderer, &mut frames, ids[1], &tree, size, time);
         if step > 0 {
@@ -210,15 +202,7 @@ where
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
         let _ = tree.sample(time, 1.0);
-        // An identical replacement keeps the lowered content, so the full
-        // surface first takes a different picture to lower the whole list
-        // from scratch, as its reference role needs.
-        for picture in [
-            Picture::record(|_| {}),
-            crate::Picture::from_list(list.clone()),
-        ] {
-            let _ = renderer.set_content(ids[1], layer, Some(ContentOp::Replace(picture)));
-        }
+        replace_from_scratch(renderer, ids[1], layer, &list);
         let incremental = render(renderer, &mut frames, ids[0], &tree, size, time).await;
         let full = render(renderer, &mut frames, ids[1], &tree, size, time).await;
         if step > 0 {
@@ -255,6 +239,20 @@ where
         renderer.destroy_surface(id);
     }
     renderer.remove_font(font);
+}
+
+/// Gives the full-lowering reference surface `list` as content it must lower
+/// from scratch. An identical replacement keeps the lowered content, so the
+/// surface first takes a different picture.
+fn replace_from_scratch<R: Renderer>(
+    renderer: &mut R,
+    id: SurfaceId,
+    layer: LayerId,
+    list: &crate::DisplayList,
+) {
+    for picture in [Picture::record(|_| {}), Picture::from_list(list.clone())] {
+        let _ = renderer.set_content(id, layer, Some(ContentOp::Replace(picture)));
+    }
 }
 
 fn register_font<R: Renderer>(renderer: &mut R, data: FontData) -> FontId {
