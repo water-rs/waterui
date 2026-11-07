@@ -1,9 +1,8 @@
 name: Nightly failure issue
 
 description: >-
-  Opens, or updates in place, the one open tracking issue for an
-  informational nightly job that failed, from an issue template that links
-  the run. The caller keeps the `failure()` and branch conditions and needs
+  Opens, or updates in place, the one open tracking issue for a nightly
+  failure, from an issue template that links the run. The caller keeps the `failure()` and branch conditions and needs
   `issues: write`.
 
 inputs:

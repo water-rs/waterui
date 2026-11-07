@@ -1442,11 +1442,6 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: JasonEtco/create-an-issue@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      - uses: ./.github/actions/nightly-failure-issue
         with:
-          filename: .github/NIGHTLY_FAILURE.md
-          update_existing: true
-          search_existing: open
+          template: .github/NIGHTLY_FAILURE.md
