@@ -451,3 +451,22 @@ def test_an_unknown_group_or_a_host_group_is_an_error():
 def test_an_unknown_target_is_an_error():
     with pytest.raises(ValueError):
         crates_for("x86_64-apple-ios", "workspace")
+
+
+# ---- wasm32 lint legs ----
+
+from wasm_gated import LEGS as WASM_LEGS, legs_in_scope as wasm_legs_in_scope
+
+
+def test_wasm_workspace_scope_runs_every_leg():
+    assert wasm_legs_in_scope("workspace") == list(WASM_LEGS)
+
+
+def test_wasm_scope_selects_only_the_affected_packages_legs():
+    legs = wasm_legs_in_scope("waterui-core hydrolysis cherenkov")
+    assert [leg[0] for leg in legs] == ["hydrolysis", "hydrolysis", "cherenkov"]
+
+
+def test_wasm_scope_without_a_wasm_package_runs_nothing():
+    assert wasm_legs_in_scope("waterui-core") == []
+    assert wasm_legs_in_scope("") == []
