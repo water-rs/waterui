@@ -353,8 +353,11 @@ serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
 # 30, the exact minor `cherenkov-gpu` builds against: an application can link
 # only one wgpu, and every `wgpu` type that crosses between the engine and a
-# `GpuContent` producer must be one type.
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl", "webgpu"] }
+# `GpuContent` producer must be one type. Only target-neutral features live
+# here: a workspace dependency cannot be target-specific, so each crate that
+# creates a GPU instance enables its target's one native backend (`dx12` on
+# Windows, `metal` on Apple, `vulkan` on Linux and Android) in a target table.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "webgpu"] }
 parley = { version = "0.12", default-features = false }
 kurbo = "0.13"
 skrifa = "0.48.0"

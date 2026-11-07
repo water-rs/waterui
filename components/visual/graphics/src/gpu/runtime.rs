@@ -33,11 +33,16 @@ pub enum GpuRuntimeError {
     /// No adapter satisfied the request.
     #[error("no compatible GPU adapter: {0}")]
     Adapter(#[from] wgpu::RequestAdapterError),
-    /// A Vulkan-only target (Linux, Android) has no usable Vulkan adapter.
-    #[error(
-        "unsupported device: no Vulkan adapter is available ({0}); GPU rendering on Linux and Android requires a Vulkan driver, so install or update the device's Vulkan driver"
-    )]
-    VulkanUnavailable(#[source] wgpu::RequestAdapterError),
+    /// The target's only GPU backend (Vulkan, DX12 or Metal) has no usable
+    /// adapter.
+    #[error("{required} ({source})")]
+    UnsupportedDevice {
+        /// The backend the target requires.
+        required: cherenkov_gpu::RequiredBackend,
+        /// Why the adapter request failed.
+        #[source]
+        source: wgpu::RequestAdapterError,
+    },
     /// The adapter refuses passthrough shaders, which the precompiled
     /// shaders this device loads require on Vulkan, Metal and Direct3D 12
     /// (cherenkov issue #57; shaderloom native artifacts).
@@ -221,8 +226,9 @@ impl SharedGpuContext {
     pub async fn new(generation: u64) -> Result<Self, GpuRuntimeError> {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
         let enabled = cherenkov_gpu::GpuConfig::default().backends;
-        // Validates `WGPU_BACKEND` against the target: a non-Vulkan request
-        // on a Vulkan-only target panics instead of leaving no backend.
+        // Validates `WGPU_BACKEND` against the target: a request for another
+        // backend than the target's required one panics instead of leaving
+        // no backend.
         descriptor.backends = cherenkov_gpu::backends_from_env().unwrap_or(enabled) & enabled;
         let instance = Instance::new(descriptor);
         let adapter = instance
@@ -233,12 +239,9 @@ impl SharedGpuContext {
                 apply_limit_buckets: false,
             })
             .await
-            .map_err(|error| {
-                if cherenkov_gpu::VULKAN_ONLY {
-                    GpuRuntimeError::VulkanUnavailable(error)
-                } else {
-                    GpuRuntimeError::Adapter(error)
-                }
+            .map_err(|source| match cherenkov_gpu::REQUIRED_BACKEND {
+                Some(required) => GpuRuntimeError::UnsupportedDevice { required, source },
+                None => GpuRuntimeError::Adapter(source),
             })?;
         // cherenkov's fixed shaders are precompiled and load through wgpu's
         // passthrough API on Vulkan and Metal (cherenkov issue #57), and

@@ -113,5 +113,13 @@ name = "gpu_runtime"
 harness = false
 required-features = ["gpu"]
 
+# Each native target renders through its one backend (see the workspace `wgpu`
+# entry).
 [target.'cfg(target_os = "windows")'.dependencies]
-wgpu = { workspace = true, optional = true, features = ["gles"] }
+wgpu = { workspace = true, optional = true, features = ["dx12"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["metal"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["vulkan"] }

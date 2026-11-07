@@ -64,15 +64,18 @@ impl Gpu {
     /// [`BenchError::Gpu`] when no adapter offers a usable target format or
     /// device creation fails.
     pub fn new(profiler_features: wgpu::Features) -> Result<Self, BenchError> {
+        let backends = if cfg!(any(target_os = "linux", target_os = "android")) {
+            wgpu::Backends::VULKAN
+        } else if cfg!(target_os = "windows") {
+            wgpu::Backends::DX12
+        } else {
+            wgpu::Backends::METAL
+        };
         let instance = Instance::new(wgpu::InstanceDescriptor {
-            backends: if cfg!(any(target_os = "linux", target_os = "android")) {
-                wgpu::Backends::VULKAN
-            } else {
-                wgpu::Backends::PRIMARY | wgpu::Backends::GL
-            },
+            backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+        let adapters = pollster::block_on(instance.enumerate_adapters(backends));
         let mut attempts = Vec::new();
         // (adapter, format, has-timestamps): prefer a timestamp-capable
         // adapter, then a usable format.
