@@ -1601,12 +1601,13 @@ fn staged_resolves_share_the_surface_staging_texture() -> Result<(), Box<dyn std
         "MemoryUsage::gpu counts the staging's regrowth"
     );
     // The shared texture is kept across frames: a re-committed frame
-    // grows nothing.
+    // grows nothing. The content differs from the last commit — an
+    // identical replacement skips the frame entirely.
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
                 Rect::new(0.0, 0.0, 64.0, 64.0),
-                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                WorkingColor::new([0.75, 0.0, 0.0, 1.0]),
             );
         }));
     });
