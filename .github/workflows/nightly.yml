@@ -1315,14 +1315,9 @@ jobs:
           PY
       - name: Report failure
         if: failure() && github.ref == 'refs/heads/dev'
-        uses: JasonEtco/create-an-issue@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        uses: ./.github/actions/nightly-failure-issue
         with:
-          filename: .github/BENCH_CORPUS_FAILURE.md
-          update_existing: true
-          search_existing: open
+          template: .github/BENCH_CORPUS_FAILURE.md
 
   bench-corpus-metal:
     name: Corpus on Vello and Skia (Metal, informational)
@@ -1374,14 +1369,9 @@ jobs:
           PY
       - name: Report failure
         if: failure() && github.ref == 'refs/heads/dev'
-        uses: JasonEtco/create-an-issue@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        uses: ./.github/actions/nightly-failure-issue
         with:
-          filename: .github/BENCH_CORPUS_FAILURE.md
-          update_existing: true
-          search_existing: open
+          template: .github/BENCH_CORPUS_FAILURE.md
 
   test-report:
     name: Test Report

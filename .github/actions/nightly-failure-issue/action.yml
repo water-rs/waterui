@@ -1,0 +1,28 @@
+name: Nightly failure issue
+
+description: >-
+  Opens, or updates in place, the one open tracking issue for an
+  informational nightly job that failed, from an issue template that links
+  the run. The caller keeps the `failure()` and branch conditions and needs
+  `issues: write`.
+
+inputs:
+  template:
+    description: Path of the issue template (front matter plus body) that may use {{ env.RUN_URL }}.
+    required: true
+  token:
+    description: Token that files the issue.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - uses: JasonEtco/create-an-issue@v2
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      with:
+        filename: ${{ inputs.template }}
+        update_existing: true
+        search_existing: open

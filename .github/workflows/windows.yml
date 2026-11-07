@@ -177,14 +177,9 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Report failure
         if: failure() && github.ref == 'refs/heads/dev'
-        uses: JasonEtco/create-an-issue@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        uses: ./.github/actions/nightly-failure-issue
         with:
-          filename: .github/WINDOWS_FAILURE.md
-          update_existing: true
-          search_existing: open
+          template: .github/WINDOWS_FAILURE.md
 
   # Every crate's own optional features, in its own job so the test tarball
   # above holds one feature variant of the dependency graph instead of two
@@ -282,14 +277,9 @@ jobs:
           retention-days: 14
       - name: Report failure
         if: failure() && github.ref == 'refs/heads/dev'
-        uses: JasonEtco/create-an-issue@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        uses: ./.github/actions/nightly-failure-issue
         with:
-          filename: .github/WINDOWS_FAILURE.md
-          update_existing: true
-          search_existing: open
+          template: .github/WINDOWS_FAILURE.md
 
   lint:
     name: windows-latest (lint)
@@ -333,11 +323,6 @@ jobs:
         run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --all-targets -- -D warnings
       - name: Report failure
         if: failure() && github.ref == 'refs/heads/dev'
-        uses: JasonEtco/create-an-issue@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        uses: ./.github/actions/nightly-failure-issue
         with:
-          filename: .github/WINDOWS_FAILURE.md
-          update_existing: true
-          search_existing: open
+          template: .github/WINDOWS_FAILURE.md
