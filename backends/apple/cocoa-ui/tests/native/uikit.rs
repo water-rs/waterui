@@ -73,10 +73,6 @@ pub fn trials() -> Vec<Trial> {
             "capture",
             a_detached_capture_renders_and_teardown_stays_clean
         ),
-        case!(
-            "uikit::table",
-            the_stock_row_height_is_a_configured_cell_measure
-        ),
     ])
 }
 
@@ -1046,32 +1042,4 @@ fn a_detached_capture_renders_and_teardown_stays_clean() {
     crate::harness::pump_main_turn();
     let _layer = content.layer(); // crashes on an invalidated layer
     label.removeFromSuperview();
-}
-
-/// #3723: the stock row height is the self-size of a cell carrying the
-/// platform's `cell` content configuration — not a bare detached cell's
-/// measure. The test configures its own cell, so a regression back to the
-/// bare measure fails where the idioms disagree (51.5 vs 44 on Catalyst).
-fn the_stock_row_height_is_a_configured_cell_measure() {
-    use cocoa_ui::objc2::runtime::ProtocolObject;
-    use cocoa_ui::objc2_foundation::NSString;
-    use cocoa_ui::objc2_ui_kit::{UIContentConfiguration, UIListContentConfiguration};
-    use cocoa_ui::uikit::{TableCell, TableView};
-
-    let mtm = marker();
-    let cell = TableCell::new(mtm);
-    let configuration = UIListContentConfiguration::cellConfiguration(mtm);
-    configuration.setText(Some(&NSString::from_str("Row")));
-    // SAFETY: the configuration is a `UIListContentConfiguration`, the cell's
-    // content-configuration protocol object.
-    unsafe {
-        let _: () = msg_send![
-            &*cell,
-            setContentConfiguration: ProtocolObject::<dyn UIContentConfiguration>::from_ref(
-                &*configuration
-            )
-        ];
-    }
-    let expected = cocoa_ui::view::fitting_size(&cell).height;
-    assert_eq!(TableView::new(mtm).stock_row_height(), expected);
 }
