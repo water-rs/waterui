@@ -49,6 +49,8 @@ writes `GITHUB_OUTPUT` keys:
 - `apple-legs` — JSON list of test.yml's `macos` matrix entries: the Apple
   lint targets with an Apple-gated crate in scope (`apple_gated.py`),
   `[]` when there is none, so no macOS runner starts to find nothing.
+- `wasm` — `true` when a package with a wasm32 lint leg (`wasm_gated.py`) is
+  in scope, so the `wasm32` job starts only when it has work.
 
 Usage:
 
@@ -68,6 +70,7 @@ import sys
 import tomllib
 
 from apple_gated import legs as apple_legs
+from wasm_gated import legs_in_scope as wasm_legs
 from rust_semantic_diff import changed_entries, git, semantic_differs, source_at
 
 # Cargo.toml tables whose content can move the dependency graph or the
@@ -219,6 +222,7 @@ def main():
         "comment-only": "false",
         "msrv": "true",
         "apple-legs": json.dumps(apple_legs("workspace"), separators=(",", ":")),
+        "wasm": "true",
     }
     try:
         base = git("merge-base", args.base, head).strip()
@@ -266,9 +270,13 @@ def main():
         def apple_legs_for(scope):
             return json.dumps(apple_legs(scope), separators=(",", ":"))
 
+        def wasm_for(scope):
+            return "true" if wasm_legs(scope) else "false"
+
         if not entries:
             outputs.update(
                 {
+                    "wasm": "false",
                     "packages": "",
                     "workspace-wide": "false",
                     "msrv": "false",
@@ -286,6 +294,7 @@ def main():
                     "msrv": "true" if msrv else "false",
                     "scene-assets": "true",
                     "apple-legs": apple_legs_for("workspace"),
+                    "wasm": "true",
                 }
             )
         elif comment_only:
@@ -306,6 +315,7 @@ def main():
                     "msrv": "true" if msrv else "false",
                     "scene-assets": scene_assets_for(owners),
                     "apple-legs": apple_legs_for(" ".join(owners)),
+                    "wasm": wasm_for(" ".join(owners)),
                 }
             )
         else:
@@ -319,6 +329,7 @@ def main():
                     "msrv": "true" if msrv else "false",
                     "scene-assets": scene_assets_for(affected),
                     "apple-legs": apple_legs_for(" ".join(affected)),
+                    "wasm": wasm_for(" ".join(affected)),
                 }
             )
     except Exception as error:  # widen on any failure — never scope on a guess

@@ -10,9 +10,9 @@ permissions:
 # It is a compile-check gate, not a test-certifying one: format and
 # default-features clippy on Linux, plus the checks a change can break, chosen
 # per change by the `changes` job below. Running anything is `test.yml` with
-# `full: false`, and every job in that workflow except `lint` is gated on
-# `full`, so no test executes here — that is the #458 decision, "dev is the
-# compile-checked, not test-certified channel". The tests themselves, every
+# `full: false`, and every job in that workflow except `lint` and the
+# scoped Apple and wasm32 lint legs is gated on `full`, so no test executes
+# here — that is the #458 decision, "dev is the compile-checked, not test-certified channel". The tests themselves, every
 # other clippy shape, macOS and Windows, the all-features runs, the macOS
 # suites, the examples, coverage and the `cargo hack` sweep are `nightly.yml`,
 # once a day against `dev` (#923). The backend e2e nightlies in the backend
@@ -449,6 +449,7 @@ jobs:
       comment-only: ${{ needs.scope.outputs.comment-only == 'true' }}
       scene-assets: ${{ needs.scope.outputs.scene-assets == 'true' }}
       apple-legs: ${{ needs.scope.outputs.apple-legs }}
+      wasm: ${{ needs.scope.outputs.wasm == 'true' }}
 
   # The one required check for the Test workflow. A pull request that changes
   # no code skips the `test` call above, and a skipped reusable-workflow call

@@ -64,6 +64,11 @@ on:
           JSON list of test.yml's `macos` matrix entries — the Apple lint
           targets with an Apple-gated crate in scope — or `[]`.
         value: ${{ jobs.scope.outputs.apple-legs }}
+      wasm:
+        description: >
+          `true` when a package with a wasm32 lint leg (`wasm_gated.py`) is
+          in scope.
+        value: ${{ jobs.scope.outputs.wasm }}
 
 jobs:
   scope:
@@ -79,6 +84,7 @@ jobs:
       msrv: ${{ steps.compute.outputs.msrv }}
       scene-assets: ${{ steps.compute.outputs.scene-assets }}
       apple-legs: ${{ steps.compute.outputs.apple-legs }}
+      wasm: ${{ steps.compute.outputs.wasm }}
     steps:
       - uses: actions/checkout@v4
         # The diff and the base revision's package graph both need the
@@ -142,6 +148,7 @@ jobs:
               echo "msrv=true"
               echo "scene-assets=true"
               echo "apple-legs=$(python3 .github/scripts/apple_gated.py --legs workspace)"
+              echo "wasm=true"
             } >> "$GITHUB_OUTPUT"
           else
             uv run .github/scripts/affected.py --base "${{ inputs.base }}"
