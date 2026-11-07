@@ -998,7 +998,17 @@ pub enum PlaneContent<'a> {
     /// splits the presentation stack at the window's paint-order position
     /// so the realization can route what follows elsewhere
     /// (water-rs/waterui#2225).
-    HostWindow,
+    HostWindow {
+        /// The host's id for the window — its band's key.
+        #[cfg_attr(
+            not(target_os = "android"),
+            expect(
+                dead_code,
+                reason = "only Android's realization presents host-window bands"
+            )
+        )]
+        window: u64,
+    },
 }
 
 /// The platform object a hosted plane shows

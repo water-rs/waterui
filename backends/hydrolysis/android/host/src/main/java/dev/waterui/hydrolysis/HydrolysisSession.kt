@@ -2,6 +2,7 @@ package dev.waterui.hydrolysis
 
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.ColorSpace
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -544,21 +545,34 @@ class HydrolysisSession internal constructor(
     }
 
     /**
-     * A frame that changed the band of `region` finished on the GPU: the
-     * band shows its newest image, or nothing when [image] is false
-     * (water-rs/waterui#2225). The native frame latches every band it
-     * changed in one UI-thread turn and then applies the base surface's
-     * transaction, so all of them draw in the same view frame. Latching
-     * only acquires an image and invalidates — nothing re-enters native.
+     * A frame that changed the band above the platform view whose placement
+     * id is [view] finished on the GPU: the band shows its newest image,
+     * encoded in the `ColorSpace.Named` constant [colorSpace] its swapchain
+     * rendered in (water-rs/waterui#2225). The native frame updates every
+     * band it changed in one UI-thread turn and then applies the base
+     * surface's transaction, so all of them draw in the same view frame.
+     * Showing only acquires an image and invalidates — nothing re-enters
+     * native.
      */
     @CalledFromNative
-    fun onNativeBandLatch(region: Int, image: Boolean) {
-        val band =
-            checkNotNull(hostView?.platformViewRegistry?.band(region)) {
-                "hydrolysis: the native frame latched band $region, which no View shows"
-            }
-        band.latch(image)
+    fun onNativeBandShow(view: Long, colorSpace: String) {
+        bandAbove(view).show(ColorSpace.get(ColorSpace.Named.valueOf(colorSpace)))
     }
+
+    /**
+     * A frame emptied the region of the band above the platform view whose
+     * placement id is [view]: the band shows nothing. Applied in the same
+     * turn as [onNativeBandShow].
+     */
+    @CalledFromNative
+    fun onNativeBandClear(view: Long) {
+        bandAbove(view).clear()
+    }
+
+    private fun bandAbove(view: Long): RegionBand =
+        checkNotNull(hostView?.platformViewRegistry?.band(view)) {
+            "hydrolysis: the native frame updated the band above view $view, which no View shows"
+        }
 }
 
 /**

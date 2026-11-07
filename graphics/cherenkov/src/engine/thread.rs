@@ -429,7 +429,7 @@ fn apply_message<B: Backend>(
         }
         Message::Display { id, display } => set_display(surfaces, id, display),
         Message::DisplayMoved { id } => set_display_moved(surfaces, id),
-        Message::SetBand { id, region, target } => renderer.set_band(id, region, target),
+        Message::SetBand { id, window, target } => renderer.set_band(id, window, target),
         Message::Visibility { id, visibility } => {
             set_visibility::<B>(renderer, surfaces, id, visibility);
         }
@@ -1226,7 +1226,7 @@ impl<B: Backend> LocalState<B> {
             }
             Message::Display { id, display } => set_display(surfaces, id, display),
             Message::DisplayMoved { id } => set_display_moved(surfaces, id),
-            Message::SetBand { id, region, target } => renderer.set_band(id, region, target),
+            Message::SetBand { id, window, target } => renderer.set_band(id, window, target),
             Message::Visibility { id, visibility } => {
                 set_visibility::<B>(renderer, surfaces, id, visibility);
             }

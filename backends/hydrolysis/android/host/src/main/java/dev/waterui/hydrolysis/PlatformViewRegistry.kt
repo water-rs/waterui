@@ -413,19 +413,20 @@ class PlatformViewRegistry internal constructor(
     }
 
     /**
-     * Creates the [RegionBand] a GPU host inserts after the `region`-th
-     * ordered platform view — the View that shows the self-drawn content
-     * painted above it (water-rs/waterui#2225). `null` on hosts whose
+     * Creates the [RegionBand] a GPU host inserts right after the platform
+     * view whose placement id it is given — the View that shows the
+     * self-drawn content painted above that view (water-rs/waterui#2225).
+     * The id is the one the engine names the band by. `null` on hosts whose
      * painter draws that content in order itself: platform views keep
      * their contiguous child order.
      */
-    var bandFactory: ((Int) -> RegionBand)? = null
+    var bandFactory: ((Long) -> RegionBand)? = null
 
-    /** The live bands, keyed by the region they show. */
-    private val bands = mutableMapOf<Int, RegionBand>()
+    /** The live bands, keyed by the placement id of the view each sits above. */
+    private val bands = mutableMapOf<Long, RegionBand>()
 
-    /** The band showing `region`, while one is mounted. */
-    internal fun band(region: Int): RegionBand? = bands[region]
+    /** The band above the platform view whose placement id is [view], while one is mounted. */
+    internal fun band(view: Long): RegionBand? = bands[view]
 
     private fun orderChanged(wanted: List<Placement>): Boolean {
         val step = if (bandFactory != null) 2 else 1
@@ -440,13 +441,17 @@ class PlatformViewRegistry internal constructor(
 
     private fun orderSlots(wanted: List<Placement>) {
         // Platform view `i` sits at index `2i` under a band factory, its
-        // following band at `2i + 1` — a View drawing in child order,
-        // above the platform views before it and beneath the ones after,
-        // which is exactly where region `i + 1` paints
-        // (water-rs/waterui#2225).
+        // own band at `2i + 1` — a View drawing in child order, above the
+        // platform views before it and beneath the ones after, which is
+        // exactly where the content above that view's mark paints. The band
+        // is named by the view's placement id, the id the engine marks the
+        // view's layer with, so a view the engine plans no region for (one
+        // clipped away entirely) keeps an empty band rather than shifting
+        // every later region onto the wrong view (water-rs/waterui#2225).
         val factory = bandFactory
+        val live = HashSet<Long>()
         var index = 0
-        for ((i, placement) in wanted.withIndex()) {
+        for (placement in wanted) {
             val slot = slots[placement.id] ?: continue
             if (container.indexOfChild(slot.view) != index) {
                 container.removeView(slot.view)
@@ -454,8 +459,8 @@ class PlatformViewRegistry internal constructor(
             }
             index++
             if (factory != null) {
-                val region = i + 1
-                val band = bands.getOrPut(region) { factory(region) }
+                live.add(placement.id)
+                val band = bands.getOrPut(placement.id) { factory(placement.id) }
                 if (container.indexOfChild(band) != index) {
                     container.removeView(band)
                     container.addView(band, index)
@@ -463,10 +468,10 @@ class PlatformViewRegistry internal constructor(
                 index++
             }
         }
-        // Boundaries the placement list no longer reaches are stale.
-        val stale = bands.keys.filter { it > wanted.size }
-        for (region in stale) {
-            bands.remove(region)?.let(container::removeView)
+        // Bands above views no longer ordered here are stale.
+        val stale = bands.keys.filter { it !in live }
+        for (view in stale) {
+            bands.remove(view)?.let(container::removeView)
         }
     }
 

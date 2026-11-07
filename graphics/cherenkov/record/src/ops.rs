@@ -153,8 +153,9 @@ pub enum LayerOp {
     /// no recorded content — an external host window occupies its frame
     /// — and every mark splits the surface's paint order into regions,
     /// each presented in its own band stacked above that window
-    /// (water-rs/waterui#2225).
-    HostWindow(LayerId, bool),
+    /// (water-rs/waterui#2225). The mark names the window by the host's
+    /// own id for it, which is how the host finds the band to stack.
+    HostWindow(LayerId, Option<u64>),
     /// Set the layer content, or clear it.
     Content(LayerId, Option<ContentOp>),
     /// Append a child.

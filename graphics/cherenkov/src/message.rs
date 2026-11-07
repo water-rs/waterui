@@ -223,9 +223,8 @@ pub enum Message<B: Backend> {
     SetBand {
         /// The surface id.
         id: SurfaceId,
-        /// The region the band presents — region `r` is above the `r`-th
-        /// mark, 1-based.
-        region: usize,
+        /// The host's id for the window whose mark opens the region.
+        window: u64,
         /// The band's presentation target, or `None` to clear.
         target: Option<B::Target>,
     },

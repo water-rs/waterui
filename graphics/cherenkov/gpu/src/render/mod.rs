@@ -3488,6 +3488,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
 /// layers.
 fn plane_stack<'a, 'p: 'a>(
     surface: &'a SurfaceState,
+    tree: &'a cherenkov::SurfaceTree,
     producers: &'a FxHashMap<ProducerId, &'p external::Slot>,
     updates: Option<&'a FxHashSet<LayerId>>,
 ) -> impl Iterator<Item = planes::Plane<'a>> + 'a {
@@ -3509,7 +3510,12 @@ fn plane_stack<'a, 'p: 'a>(
             if placement.source == planes::Source::HostWindow {
                 return planes::Plane {
                     placement,
-                    content: planes::PlaneContent::HostWindow,
+                    content: planes::PlaneContent::HostWindow {
+                        window: tree
+                            .layer(placement.layer)
+                            .host_window()
+                            .expect("a host-window plane is a marked layer"),
+                    },
                 };
             }
             let content = surface
@@ -3554,14 +3560,16 @@ fn plane_candidates<'a>(
             .map(|(&layer, hosted)| (layer, hosted.candidate())),
     );
     candidates.extend(tree.layers().filter_map(|(layer, node)| {
-        node.host_window().then_some((
-            layer,
-            planes::Candidate {
-                size: (0, 0),
-                raster: kurbo::Affine::IDENTITY,
-                source: planes::Source::HostWindow,
-            },
-        ))
+        node.host_window().map(|_| {
+            (
+                layer,
+                planes::Candidate {
+                    size: (0, 0),
+                    raster: kurbo::Affine::IDENTITY,
+                    source: planes::Source::HostWindow,
+                },
+            )
+        })
     }));
     candidates.extend(surf.bindings.iter().filter_map(|(layer, binding)| {
         let slot = producers.get(&binding.producer()).copied()?;
@@ -3913,9 +3921,9 @@ impl Renderer for GpuRenderer {
         diag::set_surface(None);
     }
 
-    /// The band presenting region `region` of surface `id` — the content
-    /// above the `region`-th external host window's mark
-    /// (water-rs/waterui#2225). The target is an ordinary window: its
+    /// The band of host window `window_id` on surface `id` — the content
+    /// above the mark naming that window (water-rs/waterui#2225). The
+    /// target is an ordinary window: its
     /// swapchain is the band's presentation surface, which the surface's
     /// plane system fills with that region's engine composition.
     ///
@@ -3924,7 +3932,7 @@ impl Renderer for GpuRenderer {
     /// no `SurfaceControl` plane system, or when the band's swapchain
     /// cannot be created.
     #[cfg(target_os = "android")]
-    fn set_band(&mut self, id: SurfaceId, region: usize, target: Option<Self::Target>) {
+    fn set_band(&mut self, id: SurfaceId, window_id: u64, target: Option<Self::Target>) {
         let band = target.map(|target| {
             let crate::GpuTarget::Window(window) = target else {
                 panic!("surface {id:?}: a band presents through a window target");
@@ -3939,13 +3947,15 @@ impl Renderer for GpuRenderer {
                     window.output,
                     None,
                 )
-                .unwrap_or_else(|error| panic!("surface {id:?}: band {region} swapchain: {error}")),
+                .unwrap_or_else(|error| {
+                    panic!("surface {id:?}: host window {window_id}'s band swapchain: {error}")
+                }),
             )
         });
         self.planes
             .get_mut(&id)
             .unwrap_or_else(|| panic!("surface {id:?} has no plane system to present bands"))
-            .set_band(region, band);
+            .set_band(window_id, band);
     }
 
     fn destroy_surface(&mut self, id: SurfaceId) {
@@ -6648,7 +6658,7 @@ impl GpuRenderer {
                 // part's shown buffer in place (#90).
                 planes::SystemPlanes::refresh(
                     system,
-                    plane_stack(surface, currents, sf.plane_frames),
+                    plane_stack(surface, sf.tree, currents, sf.plane_frames),
                 )?;
                 Ok((planes::Presentation::Presented, PlatformCommit::default()))
             } else {
@@ -6663,7 +6673,7 @@ impl GpuRenderer {
                         },
                     })
                     .collect();
-                let stack: Vec<_> = plane_stack(surface, currents, None).collect();
+                let stack: Vec<_> = plane_stack(surface, sf.tree, currents, None).collect();
                 planes::SystemPlanes::compose(
                     system,
                     planes::Composition {
