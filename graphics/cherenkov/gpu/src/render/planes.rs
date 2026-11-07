@@ -131,7 +131,9 @@ pub trait Compositor {
     /// host's windows, so nothing painted above the first mark promotes
     /// — frames and captures composite into their region's band, and
     /// hosted content there is unplaceable
-    /// ([`Ineligible::AboveHostWindow`]).
+    /// ([`Ineligible::AboveHostWindow`]). A mark is then a split point
+    /// rather than a plane: it never counts against [`Self::BUDGET`],
+    /// which bounds only the planes beneath the first mark.
     const HOST_WINDOW_BANDS: bool = false;
 
     /// Whether a system layer shows `frame` itself, with the colour the
@@ -471,7 +473,8 @@ fn suffixes(
 }
 
 /// Each offered candidate's verdict in paint order as its `order`
-/// index — `Err(Budget)` once `C::BUDGET` promotions are taken. The
+/// index — `Err(Budget)` once `C::BUDGET` promotions are taken, marks
+/// excluded on a band compositor ([`Compositor::HOST_WINDOW_BANDS`]). The
 /// offered set is `candidates` intersected with `ready`, plus every
 /// mandatory candidate: a candidate whose realization is still pending is
 /// absent from the verdicts entirely, not rejected, and mandatory content
@@ -528,6 +531,12 @@ fn verdicts<'a, C: Compositor>(
     }
     let mut promoted = 0;
     for source in Source::BUDGET_ORDER {
+        // A band compositor shows no plane for a mark: the mark only cuts
+        // the paint order, and its region presents in the host's band
+        // swapchain, so it takes nothing from the surface's budget.
+        if C::HOST_WINDOW_BANDS && source == Source::HostWindow {
+            continue;
+        }
         for (i, verdict) in decisions.iter_mut() {
             if candidates[&order[*i].id].source == source && verdict.is_ok() {
                 if promoted < C::BUDGET {
