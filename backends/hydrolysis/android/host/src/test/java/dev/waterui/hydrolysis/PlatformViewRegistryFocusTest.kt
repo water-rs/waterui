@@ -460,6 +460,63 @@ class PlatformViewRegistryFocusTest {
         assertTrue(hostView.touches.isEmpty())
     }
 
+    @Test
+    fun `a latched gesture never reorders the GPU band's paint order`() {
+        val (hostView, registry) = host()
+        val events = mutableListOf<String>()
+        registry.bandFactory = { id ->
+            object : RegionBand(hostView.context) {
+                override fun draw(canvas: Canvas) {
+                    super.draw(canvas)
+                    events += "band$id:draw"
+                }
+
+                override fun show(colorSpace: android.graphics.ColorSpace) = Unit
+
+                override fun clear() = Unit
+            }
+        }
+        // Two slots side by side with a band after each: the container holds
+        // slot 7, band 7, slot 8, band 8 — paint order.
+        mount(
+            hostView,
+            events,
+            """[
+                {"id":7,"kind":"first","x":0,"y":0,"width":100,"height":100,"order":0,"visible":true},
+                {"id":8,"kind":"second","x":100,"y":0,"width":100,"height":100,"order":1,"visible":true}
+            ]""",
+            mapOf("first" to "a", "second" to "b"),
+        )
+        // The GPU painter has the hit test only, never ordered content.
+        registry.setOrderedHitTest { x, y ->
+            listOf(7L, 8L).firstOrNull { registry.containsPlatformView(it, x, y) }
+        }
+        val paintOrder = listOf("a:draw", "band7:draw", "b:draw", "band8:draw")
+
+        events.clear()
+        registry.container.draw(Canvas())
+        assertEquals(paintOrder, events)
+
+        // The gesture on the first slot reaches it and keeps its target...
+        events.clear()
+        registry.container.dispatchTouchEvent(touch(MotionEvent.ACTION_DOWN, 10f, 10f))
+        assertEquals(listOf("a:touch:0"), events)
+
+        // ...without moving it above the band that paints over it.
+        events.clear()
+        registry.container.draw(Canvas())
+        assertEquals(paintOrder, events)
+
+        events.clear()
+        registry.container.dispatchTouchEvent(touch(MotionEvent.ACTION_MOVE, 12f, 12f))
+        registry.container.dispatchTouchEvent(touch(MotionEvent.ACTION_UP, 12f, 12f))
+        assertEquals(listOf("a:touch:2", "a:touch:1"), events)
+        events.clear()
+        registry.container.draw(Canvas())
+        assertEquals(paintOrder, events)
+        assertTrue(hostView.touches.isEmpty())
+    }
+
     private companion object {
         const val OVERLAPPING =
             """[{"id":7,"kind":"low","x":0,"y":0,"width":100,"height":100,"order":0,"visible":true},{"id":8,"kind":"high","x":0,"y":0,"width":100,"height":100,"order":1,"visible":true}]"""
