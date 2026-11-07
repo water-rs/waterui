@@ -298,8 +298,6 @@ pub struct EffectInput<'a> {
     /// at the shader multiplied by it: a blur radius or offset declared in
     /// points lands in device pixels.
     pub length_scale: f32,
-    /// The clip shape, for filters that read it.
-    pub shape: ShapeTextures,
 }
 
 impl fmt::Debug for EffectInput<'_> {

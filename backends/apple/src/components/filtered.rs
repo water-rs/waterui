@@ -1161,7 +1161,6 @@ fn encode_effects(
             height: input_height,
             timing,
             length_scale: state.current_scale.get() as f32,
-            shape: ShapeTextures::default(),
         };
         let output = EffectOutput {
             device,

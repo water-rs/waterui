@@ -652,7 +652,6 @@ impl Registry {
             height: size.1,
             timing,
             length_scale: scope.length_scale,
-            shape: ShapeTextures::default(),
         };
         let output = EffectOutput {
             device,
