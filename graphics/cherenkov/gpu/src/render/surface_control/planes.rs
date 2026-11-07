@@ -549,9 +549,12 @@ pub struct Planes {
     /// presents the entries paint order places above the `r`-th external
     /// host window's mark — above that window, beneath any later ones —
     /// a container under the surface the host places at that boundary
-    /// (water-rs/waterui#2225). `None` defers that region's entries to the
-    /// nearest lower band, then to `root` beneath every window.
-    top_roots: Vec<Option<SurfaceControl>>,
+    /// (water-rs/waterui#2225). The second tuple field names the
+    /// parent's `ASurfaceControl` pointer so a replay of the same
+    /// target is a no-op rather than a root rebuild. `None` means no
+    /// band presents that boundary: entries there are detached, never
+    /// shown under a layer the paint order places them above.
+    top_roots: Vec<Option<(SurfaceControl, usize)>>,
     root_shown: bool,
     extended_range: Option<ExtendedRangeBrightness>,
     size: (u32, u32),
@@ -1134,21 +1137,20 @@ impl Planes {
         // Every external host window's mark is its own boundary: entries
         // above the `marks`-th one present under that boundary's root —
         // above the windows before it, beneath the ones after — when the
-        // host set one. A boundary with no attached band defers to the
-        // nearest lower band, then to `root` beneath everything
-        // (water-rs/waterui#2225).
+        // host set one. A boundary with no attached band must not
+        // silently draw those entries beneath a window they cover:
+        // their parts and planes detach instead of committing the wrong
+        // order (water-rs/waterui#2225).
         let mut marks = 0usize;
         for (index, entry) in stack.iter().enumerate() {
             let z = plan::z_order(index);
             let root = if marks == 0 {
-                &self.root
+                Some(&self.root)
             } else {
-                self.top_roots[..marks.min(self.top_roots.len())]
-                    .iter()
-                    .rev()
-                    .flatten()
-                    .next()
-                    .unwrap_or(&self.root)
+                self.top_roots
+                    .get(marks - 1)
+                    .and_then(Option::as_ref)
+                    .map(|(child, _)| child)
             };
             match entry {
                 // An external host window's mark shows nothing: it is the
@@ -1158,7 +1160,7 @@ impl Planes {
                     raster, properties, ..
                 } => {
                     let this = &mut self.parts[part];
-                    transaction.reparent(&this.surface, Some(root));
+                    transaction.reparent(&this.surface, root);
                     if let Some(at) = chosen[part] {
                         let buffer = &mut this.buffers[at];
                         buffer.state = State::Shown;
@@ -1217,6 +1219,12 @@ impl Planes {
                     let plane = match self.promoted.entry(promotion.layer) {
                         std::collections::hash_map::Entry::Occupied(slot) => slot.into_mut(),
                         std::collections::hash_map::Entry::Vacant(slot) => {
+                            let Some(root) = root else {
+                                // No band presents this boundary — the
+                                // plane must not commit beneath a window
+                                // it belongs above: leave it uncreated.
+                                continue;
+                            };
                             let surface = root
                                 .child(c"cherenkov frame")
                                 .map_err(|e| RenderError::Render(e.to_string()))?;
@@ -1233,7 +1241,7 @@ impl Planes {
                             })
                         }
                     };
-                    transaction.reparent(&plane.surface, Some(root));
+                    transaction.reparent(&plane.surface, root);
                     if plane.generation != promotion.generation {
                         set_frame(&mut transaction, &plane.surface, promotion.frame, dup_fence)?;
                         promotion.frame.lease();
@@ -1262,7 +1270,12 @@ impl Planes {
                         object: (*object).clone(),
                         shown: None,
                     });
-                    object.attach(&mut transaction, root);
+                    match root {
+                        Some(root) => object.attach(&mut transaction, root),
+                        // No band presents this boundary — detach rather
+                        // than show beneath a window the entry covers.
+                        None => object.detach(&mut transaction),
+                    }
                     self.ops.clear();
                     plan::diff_hosted(plane.shown.as_ref(), &properties, &mut self.ops);
                     for &op in &self.ops {
@@ -1359,13 +1372,25 @@ impl Planes {
         if self.top_roots.len() < region {
             self.top_roots.resize_with(region, || None);
         }
-        self.top_roots[region - 1] =
-            match target {
-                Some(target) => Some(target.parent.child(c"cherenkov top").map_err(|e| {
+        let parent = target.map(|target| target.parent.as_ptr() as usize);
+        if self.top_roots[region - 1]
+            .as_ref()
+            .is_some_and(|(_, bound)| *bound == parent.unwrap_or(usize::MAX))
+        {
+            // The live root already presents this exact band — a replay
+            // after an engine-window rebuild or a redundant refresh must
+            // not tear it down (water-rs/waterui#2225).
+            return Ok(());
+        }
+        self.top_roots[region - 1] = match target {
+            Some(target) => Some((
+                target.parent.child(c"cherenkov top").map_err(|e| {
                     SurfaceError::UnsupportedTarget(format!("surface control: {e}"))
-                })?),
-                None => None,
-            };
+                })?,
+                target.parent.as_ptr() as usize,
+            )),
+            None => None,
+        };
         Ok(())
     }
 
