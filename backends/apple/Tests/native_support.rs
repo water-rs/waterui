@@ -1318,10 +1318,33 @@ pub fn await_gpu(seconds: f64) {
     // The stage the run is waiting on, for the timeout panic's name.
     let stage = std::cell::Cell::new("GPU runtime");
     // One absolute deadline bounds the whole gate — the pool witness and
-    // every stage inside the trip spend from the same clock, never a
+    // every stage inside every trip spend from the same clock, never a
     // fresh `seconds` each.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
-    await_gpu_stage(seconds, &stage, gpu_readiness_trip(&stage, deadline));
+    await_gpu_stage(seconds, &stage, gpu_readiness_trip(&stage, 0, deadline));
+    // One landed trip proves the first stall unstuck — not that the
+    // cold-boot window passed: it recurs per call site until it closes
+    // (#3798). A repeat trip landing inside a fast bound is the warmth
+    // signal — each probes a fresh pipeline (`salt` varies the shader)
+    // so warmth covers call sites the first trip never walked; retry
+    // until one lands within the same total budget.
+    stage.set("warmth");
+    let mut salt = 0u32;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !left.is_zero(),
+            "the GPU readiness warmth stage did not settle within {seconds}s"
+        );
+        salt += 1;
+        if poll_gpu_stage(
+            left.min(std::time::Duration::from_secs(5)).as_secs_f64(),
+            &stage,
+            gpu_readiness_trip(&stage, salt, deadline),
+        ) {
+            return;
+        }
+    }
 }
 
 /// The trip `await_gpu` blocks on: runtime → pipeline compile → one real
@@ -1331,7 +1354,11 @@ pub fn await_gpu(seconds: f64) {
     clippy::future_not_send,
     reason = "the gate polls the future by hand on the main thread; the MetalPresenter it holds across the wait is single-threaded"
 )]
-async fn gpu_readiness_trip(stage: &std::cell::Cell<&'static str>, deadline: std::time::Instant) {
+async fn gpu_readiness_trip(
+    stage: &std::cell::Cell<&'static str>,
+    salt: u32,
+    deadline: std::time::Instant,
+) {
     use waterui_graphics::wgpu;
     {
         let runtime = waterui_graphics::gpu::GpuRuntime::new()
@@ -1351,12 +1378,16 @@ async fn gpu_readiness_trip(stage: &std::cell::Cell<&'static str>, deadline: std
             // validation error scope; the gate takes the same trip so the
             // warmed path matches what effect setup walks.
             let error_scope = compile_device.push_error_scope(wgpu::ErrorFilter::Validation);
+            // `salt` varies the fragment's constant so every probe
+            // compiles a pipeline Metal has never seen — a fast compile
+            // then proves the service is warm for any new shader, not
+            // that the cache hit this one again (#3798).
             let module = compile_device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("native-test readiness"),
-                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
-                    "@vertex fn vs() -> @builtin(position) vec4f { return vec4f(); }
-                     @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }",
-                )),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(format!(
+                    "@vertex fn vs() -> @builtin(position) vec4f {{ return vec4f(); }}
+                     @fragment fn fs() -> @location(0) vec4f {{ return vec4f({salt}.0); }}",
+                ))),
             });
             let _pipeline =
                 compile_device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1809,6 +1840,22 @@ fn await_gpu_stage(
     stage: &std::cell::Cell<&'static str>,
     future: impl core::future::Future<Output = ()>,
 ) {
+    assert!(
+        poll_gpu_stage(seconds, stage, future),
+        "the GPU readiness {} stage did not settle within {seconds}s",
+        stage.get(),
+    );
+}
+
+/// The hand-rolled poll `await_gpu_stage` panics through: `false` at the
+/// deadline so the warmth probe can retry a stalled trip instead of
+/// failing the suite on it.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn poll_gpu_stage(
+    seconds: f64,
+    stage: &std::cell::Cell<&'static str>,
+    future: impl core::future::Future<Output = ()>,
+) -> bool {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::{Context, Poll, Wake, Waker};
@@ -1824,16 +1871,15 @@ fn await_gpu_stage(
     let mut cx = Context::from_waker(&waker);
     let mut gate = core::pin::pin!(future);
     let start = Instant::now();
+    let _ = stage;
     loop {
         woken.store(false, Ordering::Release);
         if matches!(gate.as_mut().poll(&mut cx), Poll::Ready(())) {
-            return;
+            return true;
         }
-        assert!(
-            start.elapsed().as_secs_f64() < seconds,
-            "the GPU readiness {} stage did not settle within {seconds}s",
-            stage.get(),
-        );
+        if start.elapsed().as_secs_f64() >= seconds {
+            return false;
+        }
         pump_main_until(0.05, || woken.load(Ordering::Acquire));
     }
 }
