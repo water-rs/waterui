@@ -12,7 +12,8 @@ permissions:
 # per change by the `changes` job below. Running anything is `test.yml` with
 # `full: false`, and every job in that workflow except `lint` and the
 # scoped Apple and wasm32 lint legs is gated on `full`, so no test executes
-# here — that is the #458 decision, "dev is the compile-checked, not test-certified channel". The tests themselves, every
+# here — that is the #458 decision, "dev is the compile-checked, not
+# test-certified channel". The tests themselves, every
 # other clippy shape, macOS and Windows, the all-features runs, the macOS
 # suites, the examples, coverage and the `cargo hack` sweep are `nightly.yml`,
 # once a day against `dev` (#923). The backend e2e nightlies in the backend
