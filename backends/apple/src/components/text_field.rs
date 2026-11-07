@@ -37,6 +37,8 @@ use waterui::reactive::Computed;
 use waterui::reactive::{Binding, Signal};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
+#[cfg(target_os = "macos")]
+use waterui::text::font::Body;
 use waterui::text::font::{FontDesign, FontWeight, ResolvedFont};
 use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
@@ -718,6 +720,19 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The prompt renders into the placeholder under the placeholder
         // color — `WuiStyledStrRenderer`'s `defaultForegroundColor`.
         wire_prompt(mtm, &mut leaf, ctx, &field, &prompt);
+
+        // The theme `Body` font is the field's own font, as in the secure
+        // field: a single-line `NSTextField` cell positions its line by that
+        // font, not by the attributed value or placeholder, and typing into
+        // an empty field starts in it.
+        #[cfg(target_os = "macos")]
+        leaf.bind(&Body.resolve(ctx.env()), {
+            let field = field.clone();
+            move |font| {
+                crate::measure_memo::invalidate();
+                field.set_font(&platform_font(mtm, &font, false));
+            }
+        });
 
         // Announce the label's semantic text on the field.
         leaf.bind(&accessibility_label, {
