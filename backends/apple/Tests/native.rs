@@ -1527,10 +1527,50 @@ mod offset {
     }
 
     pub fn trials() -> Vec<libtest_mimic::Trial> {
-        vec![t(
-            "relayout_keeps_the_full_translation",
-            relayout_keeps_the_full_translation,
-        )]
+        vec![
+            t(
+                "relayout_keeps_the_full_translation",
+                relayout_keeps_the_full_translation,
+            ),
+            t(
+                "translation_past_the_window_edge_leaves_layout_unchanged",
+                translation_past_the_window_edge_leaves_layout_unchanged,
+            ),
+        ]
+    }
+
+    /// The translation is visual: content an offset carries past the
+    /// window's leading edge still lays out inside its own untransformed
+    /// bounds. Measuring the safe-area boundary through the transform
+    /// clipped the content's layout rect at the window edge, so a
+    /// fixed-size child landed off its container's centre — the
+    /// `liquid_glass` backdrop discs sat short of their offsets.
+    fn translation_past_the_window_edge_leaves_layout_unchanged() {
+        use waterui::ViewExt as _;
+        use waterui::graphics::color::Color;
+        use waterui::shape::{Circle, ShapeExt as _};
+
+        let disc = Circle.fill(Color::srgb(255, 149, 0)).size(100.0, 100.0);
+        let mount = mount_uikit(
+            mtm(),
+            AnyView::new(Metadata::new(disc, Offset::new(-400.0, 0.0))),
+            &render_environment(),
+        );
+        for _ in 0..2 {
+            mount.window.layoutIfNeeded();
+        }
+        let wrapper = view::retain_base(mount.content.view());
+        let container = &view::subviews(&wrapper)[0];
+        let shape = &view::subviews(container)[0];
+        let width = view::bounds(container).size.width;
+        let frame = view::frame(shape);
+        assert_eq!(frame.size.width, 100.0, "the disc keeps its declared width");
+        assert!(
+            (frame.origin.x - (width - 100.0) / 2.0).abs() < 0.5,
+            "the disc is centred in its container's untransformed bounds: \
+             x {} in a container {width} wide",
+            frame.origin.x
+        );
     }
 
     /// Two layout passes must leave the declared translation whole and the
