@@ -1348,12 +1348,13 @@ impl Planes {
         &mut self,
         target: Option<&SurfaceControlTarget>,
     ) -> Result<(), SurfaceError> {
-        self.top_root = match target {
-            Some(target) => Some(target.parent.child(c"cherenkov top").map_err(|e| {
-                SurfaceError::UnsupportedTarget(format!("surface control: {}", e))
-            })?),
-            None => None,
-        };
+        self.top_root =
+            match target {
+                Some(target) => Some(target.parent.child(c"cherenkov top").map_err(|e| {
+                    SurfaceError::UnsupportedTarget(format!("surface control: {}", e))
+                })?),
+                None => None,
+            };
         Ok(())
     }
 

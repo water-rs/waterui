@@ -1662,18 +1662,22 @@ impl AndroidSession {
             height,
             "wake posted: top surface attached"
         );
-        let refresh = self.runtime.platform.surface_refresh.unwrap_or(
-            super::gpu::DisplayRefresh {
+        let refresh = self
+            .runtime
+            .platform
+            .surface_refresh
+            .unwrap_or(super::gpu::DisplayRefresh {
                 peak: 60.0,
                 normal: 60.0,
                 high: 60.0,
-            },
+            });
+        let attached = self.runtime.platform.top_surface.attach(
+            native_window,
+            refresh,
+            width,
+            height,
+            generation,
         );
-        let attached =
-            self.runtime
-                .platform
-                .top_surface
-                .attach(native_window, refresh, width, height, generation);
         attached.map_err(|error| error.to_string())?;
         // The base window's above-mark entries present under this root —
         // the top band's container sits above the embedded platform views
