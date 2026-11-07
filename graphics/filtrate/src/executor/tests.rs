@@ -20,8 +20,8 @@ use crate::{
     CpuKernel, Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRenderError, EffectSetupError, Filter, FilterExt, FilterParam, Footprint, ImageVisitor,
     Interpolator, OperatingSpace, ParamArray, ParamSource, PipelineCache, Placed, ShaderEffect,
-    ShapeInput, ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard,
-    WorkingSpace, filters, kind,
+    ShapeInput, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace, filters,
+    kind,
 };
 use filtrate_core::space::{
     P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
@@ -31,7 +31,38 @@ use filtrate_core::space::{
 // Test filters for the declarations no built-in uses yet
 // ============================================================================
 
-/// Scales the input by the clip shape's mask.
+/// Writes the shape's signed distance field to red.
+struct SdfReadout;
+
+impl Filter for SdfReadout {
+    type Kind = kind::Spatial;
+    type Params = [f32; 0];
+
+    fn params(&self) -> [f32; 0] {
+        []
+    }
+
+    fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
+        const STAGE: SpatialStage = SpatialStage {
+            name: "sdf_readout",
+            source: include_str!("test_snippets/sdf_readout.wgsl"),
+            source_f16: None,
+            params: &[],
+            space: OperatingSpace::Working,
+            shape: Some(ShapeInput::Sdf),
+            aux: &[],
+        };
+        collector.spatial(Placed::new(&STAGE));
+    }
+}
+
+impl SpatialFilter for SdfReadout {
+    fn footprint_of(_params: &[f32; 0]) -> Footprint {
+        Footprint::ZERO
+    }
+}
+
+/// Scales the input by the shape's mask.
 struct Masked;
 
 impl Filter for Masked {
@@ -1221,9 +1252,8 @@ fn frame_input<'a>(
     texture: &'a wgpu::Texture,
     size: (u32, u32),
     delta: Duration,
-    shape: ShapeTextures,
 ) -> EffectInput<'a> {
-    frame_input_format(gpu, texture, size, delta, shape, FORMAT)
+    frame_input_format(gpu, texture, size, delta, FORMAT)
 }
 
 fn frame_input_format<'a>(
@@ -1231,7 +1261,6 @@ fn frame_input_format<'a>(
     texture: &'a wgpu::Texture,
     size: (u32, u32),
     delta: Duration,
-    shape: ShapeTextures,
     format: wgpu::TextureFormat,
 ) -> EffectInput<'a> {
     EffectInput {
@@ -1243,7 +1272,6 @@ fn frame_input_format<'a>(
         width: size.0,
         height: size.1,
         timing: EffectFrameTiming::new(Duration::ZERO, delta, 0),
-        shape,
     }
 }
 
@@ -1330,7 +1358,6 @@ fn render_rgba8<F: Filter>(
     executor: &mut Executor<F>,
     size: (u32, u32),
     rgba: &[u8],
-    shape: ShapeTextures,
 ) -> Vec<u8> {
     let input = upload(gpu, size, rgba);
     let output = texture(
@@ -1340,7 +1367,7 @@ fn render_rgba8<F: Filter>(
     );
     executor
         .render(
-            &frame_input(gpu, &input, size, Duration::ZERO, shape),
+            &frame_input(gpu, &input, size, Duration::ZERO),
             &frame_output(gpu, &output, size),
         )
         .expect("test render should succeed");
@@ -1348,16 +1375,10 @@ fn render_rgba8<F: Filter>(
 }
 
 /// Runs `filter` once on `rgba` and reads the result back.
-fn run<F: Filter>(
-    gpu: &TestGpu,
-    filter: F,
-    size: (u32, u32),
-    rgba: &[u8],
-    shape: ShapeTextures,
-) -> Vec<u8> {
+fn run<F: Filter>(gpu: &TestGpu, filter: F, size: (u32, u32), rgba: &[u8]) -> Vec<u8> {
     let mut executor = Executor::new(filter);
     setup(gpu, &mut executor);
-    render_rgba8(gpu, &mut executor, size, rgba, shape)
+    render_rgba8(gpu, &mut executor, size, rgba)
 }
 
 fn to_unorm(value: f32) -> u8 {
@@ -1410,13 +1431,7 @@ fn gpu_color_filter_executes_and_writes_output() {
     let black: Vec<u8> = core::iter::repeat_n([0u8, 0, 0, 255], 64)
         .flatten()
         .collect();
-    let output = run(
-        &gpu,
-        filters::Brightness(0.25_f32),
-        size,
-        &black,
-        ShapeTextures::default(),
-    );
+    let output = run(&gpu, filters::Brightness(0.25_f32), size, &black);
     metrics::assert_images_match(
         &rgba8_image(size, &[64, 64, 64, 255].repeat(64)),
         &rgba8_image(size, &output),
@@ -1463,43 +1478,134 @@ fn gpu_chains_match_their_cpu_kernels() {
         .flatten()
         .map(|&value| to_unorm(value))
         .collect();
-    let output = run(&gpu, chain, size, &rgba, ShapeTextures::default());
+    let output = run(&gpu, chain, size, &rgba);
     metrics::assert_images_match(&rgba8_image(size, &expected), &rgba8_image(size, &output));
 }
 
 #[test]
-fn gpu_shape_mask_reaches_the_stage() {
+fn gpu_shape_mask_is_the_input_coverage() {
     let gpu = create_test_device();
     let size = (4, 1);
-    let white = [255u8; 16];
-    let mask = upload(
-        &gpu,
-        size,
-        &[0, 0, 0, 255, 64, 0, 0, 255, 128, 0, 0, 255, 255, 0, 0, 255],
-    );
-    let shape = ShapeTextures {
-        sdf: None,
-        mask: Some(mask.create_view(&wgpu::TextureViewDescriptor::default())),
-    };
-    let output = run(&gpu, Masked, size, &white, shape);
+    // Premultiplied white at four coverages: the stage scales each by its
+    // own alpha.
+    let input = [
+        0, 0, 0, 0, 64, 64, 64, 64, 128, 128, 128, 128, 255, 255, 255, 255,
+    ];
+    let output = run(&gpu, Masked, size, &input);
     metrics::assert_unorm8_close(
         &output,
         &[
-            0, 0, 0, 0, 64, 64, 64, 64, 128, 128, 128, 128, 255, 255, 255, 255,
+            0, 0, 0, 0, 16, 16, 16, 16, 64, 64, 64, 64, 255, 255, 255, 255,
         ],
     );
+}
 
-    // Without the mask the frame fails instead of reading nothing.
-    let mut executor = Executor::new(Masked);
-    setup(&gpu, &mut executor);
-    let input = upload(&gpu, size, &white);
-    let target = texture(&gpu, size, wgpu::TextureUsages::RENDER_ATTACHMENT);
-    assert_eq!(
-        executor.render(
-            &frame_input(&gpu, &input, size, Duration::ZERO, ShapeTextures::default()),
-            &frame_output(&gpu, &target, size),
-        ),
-        Err(EffectRenderError::MissingShape(ShapeInput::Mask))
+/// Runs [`SdfReadout`] on premultiplied white at `coverage` and returns the
+/// field it read.
+fn shape_sdf(gpu: &TestGpu, size: (u32, u32), coverage: &[f32]) -> Vec<f32> {
+    let texels: Vec<[f32; 4]> = coverage.iter().map(|&alpha| [alpha; 4]).collect();
+    let mut executor = Executor::new(SdfReadout);
+    setup_format(
+        gpu,
+        &mut executor,
+        wgpu::TextureFormat::Rgba32Float,
+        wgpu::TextureFormat::Rgba32Float,
+    );
+    let input = upload_f32(gpu, size, &texels);
+    let output = texture_format(
+        gpu,
+        size,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        wgpu::TextureFormat::Rgba32Float,
+    );
+    executor
+        .render(
+            &frame_input_format(
+                gpu,
+                &input,
+                size,
+                Duration::ZERO,
+                wgpu::TextureFormat::Rgba32Float,
+            ),
+            &frame_output_format(gpu, &output, size, wgpu::TextureFormat::Rgba32Float),
+        )
+        .expect("test render should succeed");
+    readback_f32_image(gpu, &output, size)
+        .into_iter()
+        .map(|texel| texel[0])
+        .collect()
+}
+
+/// Asserts `field` is within `tolerance` pixels of `expected` at every
+/// pixel centre.
+fn assert_field_close(
+    size: (u32, u32),
+    field: &[f32],
+    tolerance: f32,
+    expected: impl Fn(f32, f32) -> f32,
+) {
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            let got = field[usize::try_from(y * size.0 + x).expect("fits usize")];
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "test coordinates are small integers"
+            )]
+            let want = expected(x as f32 + 0.5, y as f32 + 0.5);
+            assert!(
+                (got - want).abs() <= tolerance,
+                "pixel ({x}, {y}): distance {got}, expected {want}"
+            );
+        }
+    }
+}
+
+#[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "test coordinates are small integers"
+)]
+fn gpu_shape_sdf_is_the_distance_to_the_half_coverage_contour() {
+    // An anti-aliased disc, its coverage supersampled 8 × 8 per pixel.
+    const SAMPLES: u32 = 8;
+    let gpu = create_test_device();
+    let size = (48, 40);
+
+    let (center, radius) = ([20.0f32, 22.0], 13.5f32);
+    let disc: Vec<f32> = (0..size.1)
+        .flat_map(|y| (0..size.0).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let inside = (0..SAMPLES * SAMPLES)
+                .filter(|sample| {
+                    let px = x as f32 + ((sample % SAMPLES) as f32 + 0.5) / SAMPLES as f32;
+                    let py = y as f32 + ((sample / SAMPLES) as f32 + 0.5) / SAMPLES as f32;
+                    (px - center[0]).hypot(py - center[1]) < radius
+                })
+                .count();
+            inside as f32 / (SAMPLES * SAMPLES) as f32
+        })
+        .collect();
+    assert_field_close(size, &shape_sdf(&gpu, size, &disc), 0.25, |x, y| {
+        (x - center[0]).hypot(y - center[1]) - radius
+    });
+
+    // Opaque content ends at the input's edges. A corner pixel's
+    // neighbourhood is also that of a 45° edge through both crossings, so
+    // the field there is the sub-pixel model's closest line, within the
+    // same tolerance.
+    let (width, height) = (size.0 as f32, size.1 as f32);
+    let opaque = vec![1.0; (size.0 * size.1) as usize];
+    assert_field_close(size, &shape_sdf(&gpu, size, &opaque), 0.25, |x, y| {
+        -x.min(width - x).min(y).min(height - y)
+    });
+
+    // Nothing covered is farther than any distance the field holds.
+    let empty = vec![0.0; (size.0 * size.1) as usize];
+    assert!(
+        shape_sdf(&gpu, size, &empty)
+            .iter()
+            .all(|&distance| distance == f32::from(half::f16::MAX)),
+        "an empty shape is at the field's largest distance everywhere"
     );
 }
 
@@ -1519,7 +1625,7 @@ fn gpu_srgb_stages_run_in_srgb() {
             [r, g, b, 255]
         })
         .collect();
-    let output = run(&gpu, CssInvert, size, &rgba, ShapeTextures::default());
+    let output = run(&gpu, CssInvert, size, &rgba);
     metrics::assert_images_match(&rgba8_image(size, &expected), &rgba8_image(size, &output));
 
     // The reproduction of #1942: the stage's CPU kernel runs on the sRGB
@@ -1597,16 +1703,10 @@ fn gpu_manual_bilinear_matches_hardware_filtering() {
     let size = (16, 16);
     let rgba = create_test_input_rgba(size.0, size.1);
     let params = [0.5_f32, 0.5, 0.4, 180.0];
-    let hardware = run(
-        &gpu,
-        filters::TwirlDistortion(params),
-        size,
-        &rgba,
-        ShapeTextures::default(),
-    );
+    let hardware = run(&gpu, filters::TwirlDistortion(params), size, &rgba);
     let mut executor = Executor::new(filters::TwirlDistortion(params));
     setup_unfilterable(&gpu, &mut executor, FORMAT, FORMAT);
-    let manual = render_rgba8(&gpu, &mut executor, size, &rgba, ShapeTextures::default());
+    let manual = render_rgba8(&gpu, &mut executor, size, &rgba);
     metrics::assert_images_match(&rgba8_image(size, &hardware), &rgba8_image(size, &manual));
 }
 
@@ -1624,7 +1724,6 @@ fn gpu_folded_chain_matches_the_unfolded_chain() {
         filters::Brightness(0.1_f32).then(filters::Blur(1.0_f32)),
         size,
         &rgba,
-        ShapeTextures::default(),
     );
     let mut executor = Executor::new(filters::Brightness(0.1_f32).then(filters::Blur(1.0_f32)));
     setup_folded(&gpu, &mut executor);
@@ -1639,7 +1738,7 @@ fn gpu_folded_chain_matches_the_unfolded_chain() {
         [0..2, 2..3],
         "the colour prefix folded into the blur's samples"
     );
-    let folded = render_rgba8(&gpu, &mut executor, size, &rgba, ShapeTextures::default());
+    let folded = render_rgba8(&gpu, &mut executor, size, &rgba);
     metrics::assert_unorm8_close(&folded, &unfolded);
 }
 
@@ -1655,7 +1754,6 @@ fn gpu_folded_segment_reads_the_size_uniform() {
         filters::Brightness(0.1_f32).then(filters::Vignette(0.8_f32, 0.3_f32)),
         size,
         &rgba,
-        ShapeTextures::default(),
     );
     let mut executor =
         Executor::new(filters::Brightness(0.1_f32).then(filters::Vignette(0.8_f32, 0.3_f32)));
@@ -1671,7 +1769,7 @@ fn gpu_folded_segment_reads_the_size_uniform() {
         0..2,
         "the colour prefix folded into the vignette's samples"
     );
-    let folded = render_rgba8(&gpu, &mut executor, size, &rgba, ShapeTextures::default());
+    let folded = render_rgba8(&gpu, &mut executor, size, &rgba);
     metrics::assert_unorm8_close(&folded, &unfolded);
 }
 
@@ -1701,7 +1799,6 @@ fn gpu_filtered_samples_work_on_rgba32f_input() {
                 &input,
                 size,
                 Duration::ZERO,
-                ShapeTextures::default(),
                 wgpu::TextureFormat::Rgba32Float,
             ),
             &frame_output_format(&gpu, &output, size, wgpu::TextureFormat::Rgba32Float),
@@ -1749,7 +1846,7 @@ fn gpu_float_aux_upload_keeps_its_precision() {
     );
     executor
         .render(
-            &frame_input(&gpu, &input, size, Duration::ZERO, ShapeTextures::default()),
+            &frame_input(&gpu, &input, size, Duration::ZERO),
             &frame_output_format(&gpu, &output, size, wgpu::TextureFormat::Rgba32Float),
         )
         .expect("test render should succeed");
@@ -1787,7 +1884,7 @@ fn gpu_texture_aux_binds_at_native_format() {
     );
     executor
         .render(
-            &frame_input(&gpu, &input, size, Duration::ZERO, ShapeTextures::default()),
+            &frame_input(&gpu, &input, size, Duration::ZERO),
             &frame_output_format(&gpu, &output, size, wgpu::TextureFormat::Rgba32Float),
         )
         .expect("test render should succeed");
@@ -1862,13 +1959,7 @@ fn gpu_mismatched_sizes_fail_the_frame() {
     let target = texture(&gpu, (11, 7), wgpu::TextureUsages::RENDER_ATTACHMENT);
     assert_eq!(
         executor.render(
-            &frame_input(
-                &gpu,
-                &input,
-                (6, 4),
-                Duration::ZERO,
-                ShapeTextures::default()
-            ),
+            &frame_input(&gpu, &input, (6, 4), Duration::ZERO,),
             &frame_output(&gpu, &target, (11, 7)),
         ),
         Err(EffectRenderError::SizeMismatch {
@@ -1915,13 +2006,7 @@ fn gpu_declared_output_size_maps_the_whole_input() {
     );
     executor
         .render(
-            &frame_input(
-                &gpu,
-                &input,
-                (2, 2),
-                Duration::ZERO,
-                ShapeTextures::default(),
-            ),
+            &frame_input(&gpu, &input, (2, 2), Duration::ZERO),
             &frame_output(&gpu, &target, size),
         )
         .expect("declared output size renders");
@@ -1938,13 +2023,7 @@ fn gpu_declared_output_size_maps_the_whole_input() {
     let wrong = texture(&gpu, (2, 2), wgpu::TextureUsages::RENDER_ATTACHMENT);
     assert_eq!(
         executor.render(
-            &frame_input(
-                &gpu,
-                &input,
-                (2, 2),
-                Duration::ZERO,
-                ShapeTextures::default()
-            ),
+            &frame_input(&gpu, &input, (2, 2), Duration::ZERO,),
             &frame_output(&gpu, &wrong, (2, 2)),
         ),
         Err(EffectRenderError::SizeMismatch {
@@ -1981,13 +2060,7 @@ fn gpu_declared_output_size_preserves_spatial_sampling() {
         );
         executor
             .render(
-                &frame_input(
-                    &gpu,
-                    &input,
-                    (4, 1),
-                    Duration::ZERO,
-                    ShapeTextures::default(),
-                ),
+                &frame_input(&gpu, &input, (4, 1), Duration::ZERO),
                 &frame_output(&gpu, &target, size),
             )
             .expect("resized spatial pass renders");
@@ -2030,13 +2103,7 @@ fn gpu_reactive_output_sizes_keep_each_encodes_uniforms() {
             );
             executor
                 .encode_render(
-                    &frame_input(
-                        &gpu,
-                        &input,
-                        (2, 1),
-                        Duration::ZERO,
-                        ShapeTextures::default(),
-                    ),
+                    &frame_input(&gpu, &input, (2, 1), Duration::ZERO),
                     &frame_output(&gpu, &target, declared),
                     &mut encoder,
                 )
@@ -2087,7 +2154,7 @@ fn gpu_params_animate_between_frames() {
     let render = |executor: &mut Executor<_>, delta| {
         executor
             .render(
-                &frame_input(&gpu, &input, size, delta, ShapeTextures::default()),
+                &frame_input(&gpu, &input, size, delta),
                 &frame_output(&gpu, &output, size),
             )
             .expect("render should succeed")
@@ -2233,7 +2300,6 @@ fn assert_f16_matches_cpu<F: Filter + CpuFilter>(
                 &input_texture,
                 size,
                 Duration::ZERO,
-                ShapeTextures::default(),
                 wgpu::TextureFormat::Rgba16Float,
             ),
             &frame_output_format(gpu, &output, size, wgpu::TextureFormat::Rgba16Float),
@@ -2491,7 +2557,7 @@ fn gpu_params_rewrite_buffers_across_frames() {
                         Duration::ZERO,
                         frame as u64 + 1,
                     ),
-                    ..frame_input(&gpu, &input, size, Duration::ZERO, ShapeTextures::default())
+                    ..frame_input(&gpu, &input, size, Duration::ZERO)
                 },
                 &frame_output(&gpu, &output, size),
                 &mut encoder,
@@ -2510,7 +2576,6 @@ fn gpu_params_rewrite_buffers_across_frames() {
             },
             size,
             &rgba,
-            ShapeTextures::default(),
         );
         metrics::assert_images_match(
             &rgba8_image(size, &want),
@@ -2612,7 +2677,7 @@ fn gpu_export_filter_gallery_images() {
 
     macro_rules! export_filter {
         ($name:literal, $filter:expr) => {{
-            let result = run(&gpu, $filter, size, &input, ShapeTextures::default());
+            let result = run(&gpu, $filter, size, &input);
             write_png(&output_dir.join($name), size, &result);
         }};
     }
@@ -2804,46 +2869,22 @@ fn gpu_one_effect_two_sizes_one_encoder() {
         });
     executor
         .encode_render(
-            &frame_input(
-                &gpu,
-                &input_a,
-                size_a,
-                Duration::ZERO,
-                ShapeTextures::default(),
-            ),
+            &frame_input(&gpu, &input_a, size_a, Duration::ZERO),
             &frame_output(&gpu, &output_a, size_a),
             &mut encoder,
         )
         .expect("first encode should succeed");
     executor
         .encode_render(
-            &frame_input(
-                &gpu,
-                &input_b,
-                size_b,
-                Duration::ZERO,
-                ShapeTextures::default(),
-            ),
+            &frame_input(&gpu, &input_b, size_b, Duration::ZERO),
             &frame_output(&gpu, &output_b, size_b),
             &mut encoder,
         )
         .expect("second encode should succeed");
     gpu.queue.submit([encoder.finish()]);
     // References: the same effect, one encode per submission.
-    let want_a = run(
-        &gpu,
-        GaussianBlur::new(8.0_f32),
-        size_a,
-        &rgba_a,
-        ShapeTextures::default(),
-    );
-    let want_b = run(
-        &gpu,
-        GaussianBlur::new(8.0_f32),
-        size_b,
-        &rgba_b,
-        ShapeTextures::default(),
-    );
+    let want_a = run(&gpu, GaussianBlur::new(8.0_f32), size_a, &rgba_a);
+    let want_b = run(&gpu, GaussianBlur::new(8.0_f32), size_b, &rgba_b);
     metrics::assert_images_match(
         &rgba8_image(size_a, &want_a),
         &rgba8_image(size_a, &readback_rgba8_image(&gpu, &output_a, size_a)),
@@ -2878,7 +2919,7 @@ fn gpu_intermediates_evicted_when_size_unused() {
             .encode_render(
                 &EffectInput {
                     timing: EffectFrameTiming::new(Duration::ZERO, Duration::ZERO, sequence),
-                    ..frame_input(gpu, &input, size, Duration::ZERO, ShapeTextures::default())
+                    ..frame_input(gpu, &input, size, Duration::ZERO)
                 },
                 &frame_output(gpu, &output, size),
                 &mut encoder,
@@ -2986,7 +3027,7 @@ fn render_shader_effect(
         .render(
             &EffectInput {
                 timing,
-                ..frame_input(gpu, input, size, Duration::ZERO, ShapeTextures::default())
+                ..frame_input(gpu, input, size, Duration::ZERO)
             },
             &frame_output(gpu, &output, size),
         )
@@ -3038,7 +3079,7 @@ fn gpu_shader_effect_reads_input_time_and_params() {
                     Duration::from_millis(16),
                     90,
                 ),
-                ..frame_input(&gpu, &input, size, Duration::ZERO, ShapeTextures::default())
+                ..frame_input(&gpu, &input, size, Duration::ZERO)
             },
             &frame_output(&gpu, &output, size),
         )
@@ -3094,13 +3135,7 @@ fn gpu_shader_effect_two_sizes_one_encoder() {
                     &EffectInput {
                         view: view.clone(),
                         timing: EffectFrameTiming::new(time, Duration::ZERO, sequence),
-                        ..frame_input(
-                            &gpu,
-                            texture,
-                            *size,
-                            Duration::ZERO,
-                            ShapeTextures::default(),
-                        )
+                        ..frame_input(&gpu, texture, *size, Duration::ZERO)
                     },
                     &frame_output(&gpu, output, *size),
                     &mut encoder,
@@ -3174,14 +3209,7 @@ fn gpu_shader_effect_sampling_requires_a_filterable_input() {
     );
     loading
         .render(
-            &frame_input_format(
-                &gpu,
-                &input,
-                size,
-                Duration::ZERO,
-                ShapeTextures::default(),
-                unfilterable,
-            ),
+            &frame_input_format(&gpu, &input, size, Duration::ZERO, unfilterable),
             &frame_output(&gpu, &output, size),
         )
         .expect("a texel-loading shader renders an unfilterable input");

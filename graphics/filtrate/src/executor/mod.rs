@@ -17,6 +17,7 @@ pub mod animation;
 mod entry;
 mod gpu;
 mod plan;
+mod shape;
 pub mod uniforms;
 
 #[cfg(test)]
