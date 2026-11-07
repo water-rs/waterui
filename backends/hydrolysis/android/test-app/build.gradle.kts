@@ -27,7 +27,7 @@ android {
         applicationId =
             if (painter == "hwui") "dev.waterui.hydrolysis.testapp.hwui"
             else "dev.waterui.hydrolysis.testapp"
-        minSdk = 31
+        minSdk = 33
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -83,7 +83,7 @@ for (buildType in listOf("debug", "release")) {
             androidComponents.sdkComponents.ndkDirectory.get().asFile.absolutePath,
         )
         val args =
-            mutableListOf("cargo", "ndk", "--platform", "31")
+            mutableListOf("cargo", "ndk", "--platform", "33")
         targetAbis.forEach { args.addAll(listOf("--target", it)) }
         args.addAll(
             listOf(

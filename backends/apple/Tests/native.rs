@@ -11726,7 +11726,10 @@ mod gesture_events {
         drive::<NSClickGestureRecognizer>(host, &click);
         assert!(events.borrow().is_empty(), "arming the Then emitted");
 
-        // Now the armed rotation forwards.
+        // Now the armed rotation forwards the second gesture's own event
+        // unchanged: AppKit's counter-clockwise getter of 0.5 is the
+        // contract's clockwise angle of -0.5, as the plain rotation reports
+        // (#3706).
         sender.seed(NSGestureRecognizerState::Began, 0.5, here);
         drive::<NSRotationGestureRecognizer>(host, &sender);
         {
@@ -11738,7 +11741,11 @@ mod gesture_events {
                 );
             };
             assert_eq!(event.phase(), GesturePhase::Started);
-            assert!((event.angle() - 0.5).abs() < 1e-6);
+            assert!(
+                (event.angle() + 0.5).abs() < 1e-6,
+                "the Then forwards the rotation's clockwise angle, saw {}",
+                event.angle()
+            );
         }
         assert!(
             matches!(gestures.borrow().as_slice(), [Gesture::Then(_)]),

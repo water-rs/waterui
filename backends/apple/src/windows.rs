@@ -105,6 +105,16 @@ mod imp {
         HOSTS.with(|hosts| hosts.borrow_mut().push(host));
     }
 
+    /// Releases every open window and the view tree it owns. The quit path
+    /// calls it from `applicationWillTerminate:`, while the main thread is
+    /// still alive: the process exit that follows would otherwise drop the
+    /// windows in thread-local teardown, where the GPU objects they own
+    /// can no longer reach their own thread-locals.
+    pub fn close_all() {
+        let hosts = HOSTS.with(|hosts| core::mem::take(&mut *hosts.borrow_mut()));
+        drop(hosts);
+    }
+
     /// Realizes `declaration` as a platform window and returns its host. The
     /// window is ordered front at full transparency and revealed when its
     /// content reports ready — the same path the Swift host took, so a GPU
@@ -1165,7 +1175,7 @@ pub use imp::{Pending, WindowHost, realize};
 #[cfg(target_os = "ios")]
 pub use imp::{Scenes, connect, connect_embedded, declare};
 #[cfg(target_os = "macos")]
-pub use imp::{bind_background, realize, track};
+pub use imp::{bind_background, close_all, realize, track};
 
 /// A waterui layout rect, as the kit sees it.
 #[cfg(target_os = "macos")]

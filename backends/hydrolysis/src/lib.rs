@@ -116,7 +116,7 @@ pub use platform::{
 };
 #[cfg(hydrolysis_runtime)]
 pub use platform_view::{
-    PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
+    PlacementStretch, PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
 };
 #[cfg(hydrolysis_gpu_painter)]
 pub use readback::{ReadbackError, readback_texture_rgba8};

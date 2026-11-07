@@ -2,6 +2,7 @@ package dev.waterui.hydrolysis
 
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.ColorSpace
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -213,9 +214,9 @@ class HydrolysisSession internal constructor(
 
     /**
      * The retained tree's platform view under host pixel (`x`, `y`) — the
-     * HWUI painter's ordered hit test; `null` means no view is drawn there
-     * or an interactive target above it takes the point. GPU sessions never
-     * call this.
+     * ordered hit test of the HWUI painter and of the GPU band; `null` means
+     * no view is drawn there or an interactive target above it takes the
+     * point.
      */
     internal fun platformViewAt(x: Float, y: Float): Long? {
         val id =
@@ -232,6 +233,14 @@ class HydrolysisSession internal constructor(
         }
         hostView = view
         painter?.attach(view)
+        // The paint-order hit query every binding needs for gesture
+        // ownership — the painter's OrderedContent covers the draw side;
+        // on the GPU painter, whose bands take no touches and whose base
+        // surface lives outside the platform-view container, this is the
+        // whole ordered answer (water-rs/waterui#2225).
+        view.platformViewRegistry.setOrderedHitTest(
+            OrderedHitTest { x, y -> platformViewAt(x, y) },
+        )
         withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
             NativeBridge.nativeSetHostAttached(ptr, true)
         }
@@ -261,6 +270,7 @@ class HydrolysisSession internal constructor(
         // retained session, so they must be free of the old slots before
         // the next binding mounts them.
         view.platformViewRegistry.detachInstances()
+        view.platformViewRegistry.setOrderedHitTest(null)
         painter?.detach(view)
         if (!destroyed) {
             withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
@@ -533,6 +543,36 @@ class HydrolysisSession internal constructor(
         if (nativeDepth == 0) translucencyListeners.forEach { it(next) }
         else translucencyPending = true
     }
+
+    /**
+     * A frame that changed the band above the platform view whose placement
+     * id is [view] finished on the GPU: the band shows its newest image,
+     * encoded in the `ColorSpace.Named` constant [colorSpace] its swapchain
+     * rendered in (water-rs/waterui#2225). The native frame updates every
+     * band it changed in one UI-thread turn and then applies the base
+     * surface's transaction, so all of them draw in the same view frame.
+     * Showing only acquires an image and invalidates — nothing re-enters
+     * native.
+     */
+    @CalledFromNative
+    fun onNativeBandShow(view: Long, colorSpace: String) {
+        bandAbove(view).show(ColorSpace.get(ColorSpace.Named.valueOf(colorSpace)))
+    }
+
+    /**
+     * A frame emptied the region of the band above the platform view whose
+     * placement id is [view]: the band shows nothing. Applied in the same
+     * turn as [onNativeBandShow].
+     */
+    @CalledFromNative
+    fun onNativeBandClear(view: Long) {
+        bandAbove(view).clear()
+    }
+
+    private fun bandAbove(view: Long): RegionBand =
+        checkNotNull(hostView?.platformViewRegistry?.band(view)) {
+            "hydrolysis: the native frame updated the band above view $view, which no View shows"
+        }
 }
 
 /**

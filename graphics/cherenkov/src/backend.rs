@@ -134,6 +134,21 @@ pub trait Renderer: 'static {
     /// that asked for a redraw while it was hidden is drawn then.
     fn set_visibility(&mut self, id: SurfaceId, visibility: Visibility);
 
+    /// Sets or clears the band of host window `window` on surface `id` —
+    /// the content painted above the mark naming that window and beneath
+    /// the next mark (water-rs/waterui#2225). The host stacks the band's
+    /// presentation target right above the window; `None` leaves the
+    /// region with no band, and its content is not shown rather than
+    /// drawn beneath a window it covers.
+    ///
+    /// # Panics
+    /// The default: the renderer has no band realization, so a host that
+    /// splits a surface into bands is using the wrong renderer.
+    fn set_band(&mut self, id: SurfaceId, window: u64, target: Option<Self::Target>) {
+        let _ = target;
+        panic!("surface {id:?}: this renderer cannot present host window {window}'s band");
+    }
+
     /// Destroys a surface's render-side state.
     fn destroy_surface(&mut self, id: SurfaceId);
 

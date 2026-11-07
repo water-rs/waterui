@@ -40,8 +40,6 @@ use super::text::TextLayoutIds;
 
 /// `drawMesh`.
 pub const MESH_API: u32 = 34;
-/// AGSL `RuntimeShader`.
-pub const RUNTIME_SHADER_API: u32 = 33;
 
 /// The id pools of what recordings define.
 #[derive(Debug)]
@@ -1120,7 +1118,6 @@ impl Lower<'_> {
     }
 
     fn runtime_shader(&mut self, shader: &ShaderPaint, local: Affine) -> Result<u32, HwuiError> {
-        self.require("a runtime shader", RUNTIME_SHADER_API)?;
         let runtime =
             self.registry
                 .lock()

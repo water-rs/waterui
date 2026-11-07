@@ -217,6 +217,17 @@ pub enum Message<B: Backend> {
         /// The surface id.
         id: SurfaceId,
     },
+    /// Set or clear the band presenting one region of the surface: the
+    /// content above an external host window's mark
+    /// (water-rs/waterui#2225). `None` leaves the region unshown.
+    SetBand {
+        /// The surface id.
+        id: SurfaceId,
+        /// The host's id for the window whose mark opens the region.
+        window: u64,
+        /// The band's presentation target, or `None` to clear.
+        target: Option<B::Target>,
+    },
     /// An opaque render-thread operation that cannot fail: font, filter
     /// and effect registration and removal, capability hooks.
     Resource(ResOp<B>),

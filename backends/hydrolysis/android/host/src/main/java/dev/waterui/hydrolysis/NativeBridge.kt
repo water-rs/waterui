@@ -29,7 +29,7 @@ object NativeBridge {
      * `JNI_OnLoad`; 7 = `nativeSetMetrics` carries the `ViewConfiguration`
      * touch-scroll parameters (slop, min/max fling velocity, scroll
      * friction); 8 = [nativeCreateSession] drops `sdkInt`. The API floor is
-     * 31, so `ANativeWindow_setFrameRate` is linked directly; 9 =
+     * 33, so `ANativeWindow_setFrameRate` is linked directly; 9 =
      * [nativeBackEvent] and `onNativeBackAvailable` carry system back into
      * the navigation stack and report whether a back target is registered;
      * 10 = `nativeSetMetrics` splits the window insets into the container
@@ -64,9 +64,13 @@ object NativeBridge {
      * [nativeCreateSession] carries the configuration's night-mode flag so
      * the session's colour-scheme signal starts on the real `uiMode`, and
      * [nativeSetColorScheme] reports every later change
-     * (water-rs/waterui#3544).
+     * (water-rs/waterui#3544). 25 = the GPU band edge —
+     * [nativeBandAttached] / [nativeBandDetached] carry each band View's
+     * `ImageReader` surface, and `onNativeBandLatch` shows a band's newest
+     * image (water-rs/waterui#2225). 26 = the HWUI `DefineEffect` wire
+     * carries the overscroll stretch stage kind.
      */
-    private const val SCHEMA: Int = 24
+    private const val SCHEMA: Int = 26
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -235,6 +239,27 @@ object NativeBridge {
     )
 
     @JvmStatic external fun nativeSurfaceDestroyed(sessionPtr: Long, generation: Long)
+
+    /**
+     * A band View created the `ImageReader` it shows — `surface` is the
+     * reader's, which the engine presents the self-drawn content above the
+     * platform view whose placement id is `view` into. A resize creates a
+     * new reader under a new [generation][nativeBandDetached]; the base
+     * band's attachment drives the frame cadence.
+     */
+    @JvmStatic
+    external fun nativeBandAttached(
+        sessionPtr: Long,
+        view: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+        generation: Long,
+    )
+
+    /** The reader `generation` of the band above `view` is about to close. */
+    @JvmStatic
+    external fun nativeBandDetached(sessionPtr: Long, view: Long, generation: Long)
 
     /**
      * The Activity's started state (`onStart`/`onStop`) — drives the frame

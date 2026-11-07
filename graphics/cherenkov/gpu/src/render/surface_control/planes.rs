@@ -36,7 +36,7 @@ use crate::interop::{
 use crate::render::external::vulkan::{self, NativeError, PlaneAcquire, ReleaseSync, Repr, Shared};
 use crate::render::planes::Presentation;
 use crate::render::planes::{Composition, Compositor, PlaneContent, SystemPlanes};
-use crate::render::present::Presenter;
+use crate::render::present::{Presenter, WindowSurface};
 
 /// Buffers per engine part: one shown, one queued, one being drawn.
 const BUFFERS_PER_PART: usize = 3;
@@ -307,8 +307,10 @@ fn raster_entry<'a>(
     })
 }
 
-/// The stack `composition` describes, bottom first, with each promoted
-/// frame's plane properties.
+/// The base stack `composition` describes — everything beneath its first
+/// host-window mark — bottom first, with each promoted frame's plane
+/// properties. What lies above the first mark presents in bands
+/// ([`band_regions`]).
 ///
 /// # Errors
 /// [`RenderError`] when the plan promoted a layer whose buffer or placement
@@ -368,6 +370,9 @@ fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderErro
                 )?);
                 continue;
             }
+            // The base stack ends at the first host window: the stack's
+            // surface controls cannot sit between the host's windows.
+            PlaneContent::HostWindow { .. } => break,
         };
         let FramePlanes::Native(native) = &frame.planes else {
             return Err(cannot_show(layer, &Ineligible::NotABuffer));
@@ -413,6 +418,145 @@ const fn full(size: (u32, u32)) -> Placement {
             rotate_90: false,
         },
     })
+}
+
+/// The band regions of `composition` in paint order: each host window's
+/// id with the engine part painted above its mark and beneath the next
+/// one, `None` where nothing is painted there.
+///
+/// # Panics
+/// When a promoted plane lies above the first mark: the planner keeps
+/// everything there in the engine ([`Compositor::HOST_WINDOW_BANDS`]).
+fn band_regions(composition: &Composition<'_>) -> Vec<(u64, Option<usize>)> {
+    let mut regions: Vec<(u64, Option<usize>)> = Vec::new();
+    for slot in plan::stack_order(composition.parts.len(), composition.planes.len()) {
+        match slot {
+            Slot::Plane(n) => match composition.planes[n].content {
+                PlaneContent::HostWindow { window } => regions.push((window, None)),
+                _ => assert!(
+                    regions.is_empty(),
+                    "layer {:?} was promoted above a host window's mark",
+                    composition.planes[n].placement.layer
+                ),
+            },
+            Slot::Part(n) => {
+                if let Some((_, part)) = regions.last_mut() {
+                    *part = Some(n);
+                }
+            }
+        }
+    }
+    regions
+}
+
+/// The presentation surface of one band region: a window — on Android
+/// the `ImageReader` surface behind the host's band `View` — whose
+/// swapchain shows the region's engine composition. The host stacks the
+/// band right above the host window that opens the region
+/// (water-rs/waterui#2225).
+pub struct Band {
+    window: WindowSurface,
+    /// The engine part the band's latest image shows; `None` before its
+    /// first image and once its region is empty.
+    shown: Option<usize>,
+}
+
+impl Band {
+    /// A band presenting through `window`'s swapchain, showing nothing
+    /// yet.
+    ///
+    /// # Panics
+    /// When the swapchain's negotiated format is not 8-bit RGBA: the
+    /// band's `ImageReader` holds `RGBA_8888` buffers.
+    #[must_use]
+    pub fn new(window: WindowSurface) -> Self {
+        let format = window.selection().format;
+        assert!(
+            matches!(
+                format,
+                wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
+            ),
+            "a band's RGBA_8888 reader cannot hold the swapchain's {format:?} images"
+        );
+        Self {
+            window,
+            shown: None,
+        }
+    }
+}
+
+/// What a band's host does with one band when it applies a
+/// [`BandCommit`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BandUpdate {
+    /// The host's id for the window whose band changed.
+    pub window: u64,
+    /// `Some(space)`: show the newest image the band's swapchain
+    /// delivered, whose pixels are encoded in `space` — the colour space
+    /// the swapchain negotiated. `None`: the region is empty — show
+    /// nothing.
+    pub image: Option<wgpu::SurfaceColorSpace>,
+}
+
+/// A frame that changed bands, handed to the host once the GPU finished
+/// every image of it (water-rs/waterui#2225).
+///
+/// The host latches each band's newest image — or clears it — as
+/// [`Self::updates`] lists, and applies the commit in the same UI-thread
+/// turn, ahead of the view system's next draw: the base surface's
+/// transaction then reaches the system compositor in the same frame as
+/// the view frame that draws the bands. The surface presents nothing new
+/// until the commit is applied; dropping it applies it.
+pub struct BandCommit {
+    transaction: Option<(Transaction, Vec<Pending>)>,
+    release: mpsc::Sender<Released>,
+    applied: Arc<AtomicBool>,
+    waker: cherenkov::CompletionWaker,
+    updates: Vec<BandUpdate>,
+}
+
+impl BandCommit {
+    /// The bands this frame changed, by host window.
+    #[must_use]
+    pub fn updates(&self) -> &[BandUpdate] {
+        &self.updates
+    }
+
+    /// Applies the base surface's transaction and lets the surface
+    /// present its next frame.
+    pub fn apply(mut self) {
+        self.commit();
+    }
+
+    fn commit(&mut self) {
+        if let Some((transaction, pending)) = self.transaction.take() {
+            Planes::apply(transaction, &self.release, pending);
+            self.applied.store(true, Ordering::Release);
+            self.waker.wake();
+        }
+    }
+}
+
+impl Drop for BandCommit {
+    fn drop(&mut self) {
+        self.commit();
+    }
+}
+
+impl std::fmt::Debug for BandCommit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BandCommit")
+            .field("updates", &self.updates)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A band commit the host holds: the surface waits for it before its
+/// next frame.
+struct Committing {
+    applied: Arc<AtomicBool>,
+    generation: u64,
+    display: cherenkov::Display,
 }
 
 /// A buffer whose release a completion reports.
@@ -528,6 +672,9 @@ struct PendingPresentation {
     transaction: Transaction,
     replaced: Vec<Pending>,
     headrooms: Vec<(usize, crate::render::headroom::Readback)>,
+    /// The bands the frame changed: the transaction goes to the host as a
+    /// [`BandCommit`] instead of being applied here.
+    bands: Vec<BandUpdate>,
     generation: u64,
     display: cherenkov::Display,
 }
@@ -540,6 +687,17 @@ pub struct Planes {
     /// The engine's container under the host's parent: every part and plane
     /// is its child, so their z-orders never interleave with the host's.
     root: SurfaceControl,
+    /// The bands by the host's id for the window whose mark opens their
+    /// region: each presents the content painted above that window's mark
+    /// and beneath the next one (water-rs/waterui#2225). A region with no
+    /// band is not shown, never drawn beneath a window the paint order
+    /// places it above.
+    bands: FxHashMap<u64, Band>,
+    /// Where a frame that changed bands goes once its GPU work finished;
+    /// `None` on a host that presents no bands.
+    band_commits: Option<mpsc::Sender<BandCommit>>,
+    /// The band commit the host holds, which the next frame waits for.
+    committing: Option<Committing>,
     root_shown: bool,
     extended_range: Option<ExtendedRangeBrightness>,
     size: (u32, u32),
@@ -614,6 +772,9 @@ impl Planes {
             waker,
             presenting: None,
             root,
+            bands: FxHashMap::default(),
+            band_commits: target.band_commits.clone(),
+            committing: None,
             root_shown: false,
             extended_range: ExtendedRangeBrightness::load(),
             size: target.size(),
@@ -712,6 +873,20 @@ impl Planes {
         reason = "one frame's buffers, submission and transaction belong together"
     )]
     fn present(&mut self, composition: Composition<'_>) -> Result<Presentation, RenderError> {
+        if let Some(committing) = &self.committing {
+            // The host still holds the last band commit: a new frame
+            // would let its images and the base transaction pair with
+            // the wrong band images.
+            if !committing.applied.load(Ordering::Acquire) {
+                return Ok(Presentation::Pending);
+            }
+            let committing = self.committing.take().expect("held band commit");
+            if committing.generation == composition.generation
+                && committing.display == composition.display
+            {
+                return Ok(Presentation::Presented);
+            }
+        }
         if let Some(pending) = &self.presenting {
             if !pending.ready.load(Ordering::Acquire) {
                 return Ok(Presentation::Pending);
@@ -737,6 +912,30 @@ impl Planes {
                         pending.display.headroom.max(1.0).min(peak),
                     );
             }
+            if !pending.bands.is_empty() {
+                // Every band image of the frame is complete: the host
+                // latches them and applies the base transaction together.
+                let applied = Arc::new(AtomicBool::new(false));
+                self.band_commits
+                    .as_ref()
+                    .expect("a surface with bands has a band-commit sink")
+                    .send(BandCommit {
+                        transaction: Some((pending.transaction, pending.replaced)),
+                        release: self.release.clone(),
+                        applied: Arc::clone(&applied),
+                        waker: self.waker.clone(),
+                        updates: pending.bands,
+                    })
+                    .map_err(|_| {
+                        RenderError::Render("the host's band-commit receiver is gone".into())
+                    })?;
+                self.committing = Some(Committing {
+                    applied,
+                    generation: pending.generation,
+                    display: pending.display,
+                });
+                return Ok(Presentation::Pending);
+            }
             Self::apply(pending.transaction, &self.release, pending.replaced);
             if pending.generation == composition.generation
                 && pending.display == composition.display
@@ -746,6 +945,7 @@ impl Planes {
         }
         let native = |e: NativeError| RenderError::Render(format!("surface control: {e}"));
         let stack = stack(&composition)?;
+        let regions = band_regions(&composition);
         if self.extended_range.is_none()
             && stack.iter().any(|entry| {
                 matches!(
@@ -888,6 +1088,39 @@ impl Planes {
                 }
             }
         }
+        // Each band shows its region's part: a new image when the part
+        // changed or the band shows another one, nothing once the region
+        // is empty. Every image is acquired before anything is submitted,
+        // so a swapchain that cannot give one retries the whole frame.
+        let mut band_images = Vec::new();
+        let mut band_clears = Vec::new();
+        for (&window, band) in &self.bands {
+            let part = regions
+                .iter()
+                .find(|&&(marked, _)| marked == window)
+                .and_then(|&(_, part)| part);
+            match part {
+                Some(part) => {
+                    if band.shown == Some(part) && composition.parts[part].damage.is_empty() {
+                        continue;
+                    }
+                    let Some(image) = band.window.acquire(device)? else {
+                        return Ok(Presentation::Retry);
+                    };
+                    band_images.push((window, part, image));
+                }
+                None if band.shown.is_some() => band_clears.push(window),
+                None => {}
+            }
+        }
+        let mut band_updates = Vec::with_capacity(band_images.len() + band_clears.len());
+        for window in band_clears {
+            self.bands.get_mut(&window).expect("listed above").shown = None;
+            band_updates.push(BandUpdate {
+                window,
+                image: None,
+            });
+        }
         // Parts the plan no longer splits off leave in this frame's
         // transaction.
         let mut transaction = Transaction::new();
@@ -1011,6 +1244,27 @@ impl Planes {
         let hand_back = barrier(false, !headrooms.is_empty());
         {
             let _submit = self.submit_lock.lock().expect("submit guard");
+            // The band images go first: the base submission's exported
+            // fence signals only after every earlier operation on this
+            // queue — the band blits and the swapchains' release of each
+            // queued image — so the completion it reports covers them,
+            // and the host never samples a band image the GPU is still
+            // writing.
+            for (window, part, image) in band_images {
+                let band = self.bands.get_mut(&window).expect("acquired above");
+                presenter.texture(
+                    device,
+                    queue,
+                    composition.parts[part].view,
+                    band.window.output(&image.texture, display.headroom),
+                );
+                queue.present(image);
+                band.shown = Some(part);
+                band_updates.push(BandUpdate {
+                    window,
+                    image: Some(band.window.selection().color_space),
+                });
+            }
             // SAFETY: `queue` is the engine's Vulkan queue, and the waits
             // and signal staged on it are consumed by the `queue.submit`
             // below on the same queue.
@@ -1059,7 +1313,7 @@ impl Planes {
             let device = device.clone();
             let completed = Arc::clone(&ready);
             let waker = self.waker.clone();
-            let wake = !headrooms.is_empty();
+            let wake = !headrooms.is_empty() || !band_updates.is_empty();
             let owner = Arc::clone(&self.shared);
             let completion = Arc::new(dup_fence(&acquire_fence)?);
             let retained = Arc::clone(&completion);
@@ -1256,15 +1510,19 @@ impl Planes {
             });
         }
 
-        if headrooms.is_empty() {
+        if headrooms.is_empty() && band_updates.is_empty() {
             Self::apply(transaction, &self.release, pending);
             Ok(Presentation::Presented)
         } else {
+            // A frame that changed bands waits for its GPU completion like
+            // one that reads source brightness back: only then may the
+            // host sample the band images it latches with this transaction.
             self.presenting = Some(PendingPresentation {
                 ready,
                 transaction,
                 replaced: pending,
                 headrooms,
+                bands: band_updates,
                 generation: composition.generation,
                 display,
             });
@@ -1307,6 +1565,29 @@ impl Planes {
                 drop(removed);
             }
         });
+    }
+
+    /// Sets or clears the band presenting the region above host window
+    /// `window`'s mark — `window` is the host's own id for it, the id the
+    /// mark carries (water-rs/waterui#2225). A new band shows its region
+    /// from the next frame on; `None` leaves the region unshown.
+    ///
+    /// # Panics
+    /// For a band on a surface whose target registered no band-commit
+    /// sink ([`SurfaceControlTarget::band_commits`]).
+    pub fn set_band(&mut self, window: u64, band: Option<Band>) {
+        match band {
+            Some(band) => {
+                assert!(
+                    self.band_commits.is_some(),
+                    "a surface presenting bands needs a band-commit sink"
+                );
+                self.bands.insert(window, band);
+            }
+            None => {
+                self.bands.remove(&window);
+            }
+        }
     }
 
     /// Presents only `frames`: one transaction that sets each promoted
@@ -1362,6 +1643,8 @@ impl Planes {
                     self.raster_updates.push((index, properties));
                     continue;
                 }
+                // A host-window mark carries no buffer to refresh.
+                PlaneContent::HostWindow { .. } => continue,
             };
             let FramePlanes::Native(native) = &frame.planes else {
                 return Err(cannot_show(layer, &Ineligible::NotABuffer));
@@ -1506,6 +1789,9 @@ impl Compositor for Planes {
     const BUDGET: usize = plan::BUDGET;
     // `setBufferAlpha` fades a buffer only; a hosted container has none.
     const HOSTS_OPACITY: bool = false;
+    // A region above a host window presents in a band `View` the host
+    // stacks between its windows; no surface control can sit there.
+    const HOST_WINDOW_BANDS: bool = true;
 
     fn expresses_transform(transform: Affine) -> bool {
         plan::expresses_transform(transform)

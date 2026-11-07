@@ -213,10 +213,16 @@ private fun blurStage(radius: Float): IntArray =
 private fun colorStage(): IntArray =
     intArrayOf(EffectKind.LINEAR_COLOR) + IntArray(12) { if (it % 5 == 0) java.lang.Float.floatToIntBits(1f) else 0 }
 
+private fun stretchStage(): IntArray =
+    intArrayOf(EffectKind.OVERSCROLL_STRETCH) +
+        floatArrayOf(1f, 0f, 0f, 1f, 0f, 0f, 400f, 800f, 0f, -0.02f, 0.7f, 0f)
+            .map(java.lang.Float::floatToIntBits).toIntArray()
+
     @Test
     fun a_valid_mixed_chain_decodes() {
         val sink = LoggingSink()
-        val (buffer, length) = frame(1, effectRecord(0, 2, blurStage(8f) + colorStage()))
+        val (buffer, length) =
+            frame(1, effectRecord(0, 3, blurStage(8f) + colorStage() + stretchStage()))
         CommandDecoder(sink).decode(buffer, length)
         assertEquals(1, sink.lines.count { it.startsWith("DefineEffect") })
     }

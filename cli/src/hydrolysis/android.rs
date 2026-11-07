@@ -117,6 +117,29 @@ impl HydrolysisAndroidPainter {
         }
     }
 
+    /// The region band `View` this painter's platform-view registry stacks
+    /// after each embedded platform view — the GPU painter's
+    /// `HydrolysisGpuRegionBand` shows the self-drawn content a frame
+    /// paints above that view (water-rs/waterui#2225). A painter that
+    /// draws in order ships none.
+    #[must_use]
+    pub fn region_band_import(self) -> Option<String> {
+        match self {
+            Self::Gpu => Some("dev.waterui.hydrolysis.gpu.HydrolysisGpuRegionBand".to_string()),
+            Self::Hwui => None,
+        }
+    }
+
+    /// The region band class name [`Self::region_band_import`] supplies,
+    /// when set.
+    #[must_use]
+    pub fn region_band_class(self) -> Option<String> {
+        match self {
+            Self::Gpu => Some("HydrolysisGpuRegionBand".to_string()),
+            Self::Hwui => None,
+        }
+    }
+
     /// The CLI's own spelling of the painter, for help text and messages.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -608,6 +631,8 @@ async fn template_entry(
         min_api_level: framework_min.max(painter.min_api_level()),
         painter_band_import: painter.band_import(),
         painter_band_class: painter.band_class(),
+        painter_region_band_import: painter.region_band_import(),
+        painter_region_band_class: painter.region_band_class(),
     })
 }
 
@@ -1900,7 +1925,7 @@ mod tests {
             crate::assets::assert_settings_plugin_markers(settings);
 
             let gradle = files["app/build.gradle.kts"].as_str();
-            assert!(gradle.contains("minSdk = 31"), "gpu api floor: {gradle}");
+            assert!(gradle.contains("minSdk = 33"), "gpu api floor: {gradle}");
             crate::assets::assert_module_plugin_markers(gradle);
             assert!(
                 gradle.contains("\"dev.waterui.hydrolysis:host\""),
@@ -2304,7 +2329,7 @@ mod tests {
 
             let gradle = files["app/build.gradle.kts"].as_str();
             assert!(
-                gradle.contains("minSdk = 31"),
+                gradle.contains("minSdk = 33"),
                 "framework api floor: {gradle}"
             );
             assert!(

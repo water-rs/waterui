@@ -258,7 +258,10 @@ class CommandDecoder(private val sink: CommandSink) {
                 val values = floats(count * 12)
                 for (i in 0 until count) {
                     val kind = word()
-                    if (kind != EffectKind.BLUR && kind != EffectKind.LINEAR_COLOR) {
+                    if (kind != EffectKind.BLUR &&
+                        kind != EffectKind.LINEAR_COLOR &&
+                        kind != EffectKind.OVERSCROLL_STRETCH
+                    ) {
                         fail("effect ${unsigned(effect)} stage $i kind ${unsigned(kind)} is unknown")
                     }
                     kinds[i] = kind

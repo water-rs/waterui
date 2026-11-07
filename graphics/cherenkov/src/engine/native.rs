@@ -357,6 +357,32 @@ impl<B: Backend> Engine<B> {
         Ok(surface)
     }
 
+    /// Sets or clears the band of host window `window` on `surface`: the
+    /// content painted above the mark naming that window
+    /// ([`LayerEdit::host_window`](crate::LayerEdit::host_window)) and
+    /// beneath the next mark presents into `target`, which the host stacks
+    /// right above the window (water-rs/waterui#2225). `None` leaves the
+    /// region with no band, and its content is not shown. A renderer
+    /// without a band realization panics on the render thread
+    /// ([`Renderer::set_band`](crate::Renderer::set_band)).
+    ///
+    /// # Errors
+    /// [`SurfaceError::Lost`] when the render thread is gone.
+    pub fn set_band(
+        &self,
+        surface: &Surface<B>,
+        window: u64,
+        target: Option<impl Into<B::Target>>,
+    ) -> Result<(), SurfaceError> {
+        self.tx
+            .send(Message::SetBand {
+                id: surface.id(),
+                window,
+                target: target.map(Into::into),
+            })
+            .map_err(|_| SurfaceError::Lost)
+    }
+
     /// The number of surfaces still alive, for leak testing.
     #[doc(hidden)]
     pub fn live_surfaces(&self) -> usize {
@@ -539,7 +565,8 @@ impl<B: Filters> Engine<B> {
     where
         B: Runs<F>,
     {
-        let id = FilterId::new(Self::alloc(&self.next_filter));
+        let id = FilterId::new(Self::alloc(&self.next_filter))
+            .with_coordinate_remap(F::COORDINATE_REMAP);
         (self.post)(Message::Resource(Box::new(move |r: &mut B::Renderer| {
             B::add_filter(r, id, filter);
         })));
