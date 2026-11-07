@@ -39,7 +39,7 @@ impl ShownStretch {
         clippy::cast_possible_truncation,
         reason = "filtrate parameters are f32"
     )]
-    fn params(self, world: kurbo::Affine) -> [f32; 10] {
+    pub(super) fn params(self, world: kurbo::Affine) -> [f32; 10] {
         let frame = world * kurbo::Affine::translate(self.viewport.origin().to_vec2());
         let [xx, xy, yx, yy, tx, ty] = frame.as_coeffs();
         [

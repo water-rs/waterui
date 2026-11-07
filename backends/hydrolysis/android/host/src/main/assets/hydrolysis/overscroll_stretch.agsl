@@ -1,0 +1,76 @@
+// Overscroll stretch for an embedded platform View: Android's edge-weighted
+// stretch warp, HWUI's `stretchShader` (frameworks/base
+// libs/hwui/effects/StretchEffect.cpp), remapping each axis of a frame
+// independently. A port of filtrate's `overscroll_stretch.wgsl`, the stage
+// the engine stretches the surrounding self-drawn content with, so a View
+// warps exactly as the content around it does.
+//
+// The shader runs in the View's local pixel space. `origin` is the View's
+// top-left corner in the window's pixels, which carries a local position to
+// the space the frame is given in. The frame is the affine map from the
+// stretched viewport's own space — `[0, size.x] x [0, size.y]`, the space
+// HWUI evaluates the shader in — to window pixels:
+// `pixel = (a*x + c*y + e, b*x + d*y + f)`, `frameLinear = (a, b, c, d)` and
+// `frameOffset = (e, f)`. Inside the viewport each position samples the
+// content at the position `computeOverscroll` maps it to; outside it the
+// content passes through.
+//
+// `stretch` is HWUI's merged stretch direction per axis: positive pulls the
+// left/top edge, negative the right/bottom one. `strength` is HWUI's
+// `INTERPOLATION_STRENGTH_VALUE`.
+
+uniform shader content;
+uniform float2 origin;
+uniform float4 frameLinear;
+uniform float2 frameOffset;
+uniform float2 size;
+uniform float2 stretch;
+uniform float strength;
+
+// HWUI's `computeOverscroll` with `uStretchAffectedDist = extent`, for a
+// position inside `[0, extent]`: `computeOverscrollStart` for a positive
+// overscroll, `computeOverscrollEnd` for a negative one.
+float stretchAxis(float position, float overscroll, float extent) {
+    float stretched = extent / (1.0 + abs(overscroll));
+    float reciprocal = 1.0 / extent;
+    float source = position;
+    if (overscroll > 0.0) {
+        float offset = extent - position;
+        float variation = mix(1.0, offset * reciprocal, strength);
+        source = stretched - offset / (1.0 + overscroll * variation);
+    } else if (overscroll < 0.0) {
+        float offset = position;
+        float variation = mix(1.0, offset * reciprocal, strength);
+        source = extent - (stretched - offset / (1.0 - overscroll * variation));
+    }
+    return source;
+}
+
+half4 main(float2 coords) {
+    float2 relative = coords + origin - frameOffset;
+    float determinant = frameLinear.x * frameLinear.w - frameLinear.y * frameLinear.z;
+    float2 local = float2(
+        frameLinear.w * relative.x - frameLinear.z * relative.y,
+        frameLinear.x * relative.y - frameLinear.y * relative.x
+    ) / determinant;
+    if (local.x >= 0.0 && local.x <= size.x && local.y >= 0.0 && local.y <= size.y) {
+        // HWUI samples a snapshot of the node clamped to its edge texels:
+        // keep the sample half a pixel inside the viewport, so the pulled
+        // edge repeats the edge row instead of blending what lies outside.
+        float2 inset = 0.5 / float2(length(frameLinear.xy), length(frameLinear.zw));
+        float2 warped = clamp(
+            float2(
+                stretchAxis(local.x, stretch.x, size.x),
+                stretchAxis(local.y, stretch.y, size.y)
+            ),
+            inset,
+            size - inset
+        );
+        float2 source = float2(
+            frameLinear.x * warped.x + frameLinear.z * warped.y + frameOffset.x,
+            frameLinear.y * warped.x + frameLinear.w * warped.y + frameOffset.y
+        );
+        return content.eval(source - origin);
+    }
+    return content.eval(coords);
+}
