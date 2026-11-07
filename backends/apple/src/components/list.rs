@@ -1368,10 +1368,13 @@ fn watch_deletable(
 #[cfg(target_os = "ios")]
 fn update_separator_insets(cell: &TableCell) {
     let content_view = cell.contentView();
-    let leaf = leftmost_text_x(&content_view).or_else(|| leftmost_content_x(&content_view));
-    let leading = leaf.map_or(0.0, |view| {
-        view::convert_point(&view, cocoa_ui::geometry::Point::new(0.0, 0.0), cell).x
-    });
+    let leading = leftmost_text_x(&content_view, cell)
+        .or_else(|| {
+            leftmost_content_x(&content_view).map(|view| {
+                view::convert_point(&view, cocoa_ui::geometry::Point::new(0.0, 0.0), cell).x
+            })
+        })
+        .unwrap_or(0.0);
     cell.set_separator_inset(KitInsets {
         top: 0.0,
         left: leading,
@@ -1380,23 +1383,27 @@ fn update_separator_insets(cell: &TableCell) {
     });
 }
 
-/// `leftmostTextX`: the first subview chain that lands on a kit text view
-/// — the label classes — and the view it ends on.
-#[cfg(target_os = "ios")]
-fn leftmost_text_x(view: &cocoa_ui::PlatformView) -> Option<Retained<cocoa_ui::PlatformView>> {
-    for subview in view::subviews(view) {
-        let name = view::class_name(&subview);
-        if matches!(
-            name,
-            "CocoaUiLabel" | "CocoaUiTextField" | "CocoaUiSecureTextField"
-        ) {
-            return Some(subview);
-        }
-        if let Some(found) = leftmost_text_x(&subview) {
-            return Some(found);
-        }
-    }
-    None
+/// `leftmostTextX`: the leading x, in `space`'s coordinates, of the kit
+/// text view — the label and field classes — furthest toward the leading
+/// edge anywhere under `view`. Every text in the row competes, not the
+/// first one the walk meets: a title indented behind an icon does not
+/// pull the separator past detail lines that start at the content edge.
+fn leftmost_text_x(view: &cocoa_ui::PlatformView, space: &cocoa_ui::PlatformView) -> Option<f64> {
+    view::subviews(view)
+        .iter()
+        .filter_map(|subview| {
+            if matches!(
+                view::class_name(subview),
+                "CocoaUiLabel" | "CocoaUiTextField" | "CocoaUiSecureTextField"
+            ) {
+                Some(
+                    view::convert_point(subview, cocoa_ui::geometry::Point::new(0.0, 0.0), space).x,
+                )
+            } else {
+                leftmost_text_x(subview, space)
+            }
+        })
+        .reduce(f64::min)
 }
 
 /// `leftmostContentX`: the same walk restricted to `WaterUI.`/`CocoaUi`
@@ -2198,7 +2205,7 @@ mod platform_impl {
                 // row-content inset.
                 let leading = view::subviews(row_view)
                     .first()
-                    .and_then(|cell| leftmost_text_x_appkit(cell))
+                    .and_then(|cell| leftmost_text_x(cell, cell))
                     .map_or(16.0, |x| 16.0 + (x - 10.0).max(0.0));
                 (leading, 16.0)
             })));
@@ -2323,24 +2330,6 @@ mod platform_impl {
             }
             true
         }
-    }
-
-    /// `AppKit`'s `leftmostTextX` — the separator leading guide reads the
-    /// leftmost text-bearing view inside the cell view.
-    fn leftmost_text_x_appkit(view: &cocoa_ui::PlatformView) -> Option<f64> {
-        for subview in view::subviews(view) {
-            let name = view::class_name(&subview);
-            if matches!(
-                name,
-                "CocoaUiLabel" | "CocoaUiTextField" | "CocoaUiSecureTextField"
-            ) {
-                return Some(view::frame(&subview).origin.x);
-            }
-            if let Some(found) = leftmost_text_x_appkit(&subview) {
-                return Some(found + view::frame(&subview).origin.x);
-            }
-        }
-        None
     }
 }
 
