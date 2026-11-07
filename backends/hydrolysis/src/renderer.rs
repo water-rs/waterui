@@ -1940,13 +1940,15 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// topmost view placed there, unless an interactive target painted
     /// above it covers the point — the GPU band's ordered hit test, the
     /// same rule the HWUI `platform_view_hit` applies (water-rs/waterui#2225).
-    /// `scale` is the density the touch edge divides host pixels by.
+    /// `scale` is the density the touch edge divides host pixels by: the
+    /// placed frames and the interactive targets are both in window logical
+    /// coordinates.
     #[cfg(hydrolysis_gpu_painter)]
-    #[cfg_attr(not(target_os = "android"), expect(dead_code))]
+    #[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
     pub(crate) fn platform_view_hit_gpu(&self, point: kurbo::Point, scale: f64) -> Option<u64> {
         let logical = kurbo::Point::new(point.x / scale, point.y / scale);
         self.core
-            .platform_view_at(point)
+            .platform_view_at(logical)
             .filter(|view| !self.core.platform_view_occluded(*view, logical))
     }
 

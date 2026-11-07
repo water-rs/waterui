@@ -1095,7 +1095,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// The topmost placed platform view whose frame and clip cover `point`
-    /// (window hit-test space) — `None` when no view is drawn there. The
+    /// (window logical coordinates, the space the placements are in) —
+    /// `None` when no view is drawn there. The
     /// GPU band's ordered hit test asks this instead of an encoder record.
     #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
     // Alive only on Android's GPU painter — HWUI asks its encoder instead.
