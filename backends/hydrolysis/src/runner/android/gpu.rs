@@ -416,20 +416,23 @@ impl AndroidSurface {
         &self,
         target: Option<cherenkov_gpu::interop::android::SurfaceControlTarget>,
     ) {
+        // `pending` records that a top root was requested, not that one
+        // delivery is still owed — a rebuilt engine window must replay it,
+        // so the flag stays set until `set_top_root(None)` arrives
+        // (water-rs/waterui#2225).
         self.top_root_pending.set(target.is_some());
         if let Some(window) = self.engine_window.as_ref() {
             window
                 .surface
                 .set_top_root(target)
                 .expect("hydrolysis android: engine render thread is gone");
-            self.top_root_pending.set(false);
         }
     }
 
     /// Whether a top-root request still waits for a live engine window —
     /// the host re-pushes the top surface's target when this and
     /// `top_surface.is_attached()` both hold.
-    pub(crate) fn has_pending_top_root(&self) -> bool {
+    pub(crate) const fn has_pending_top_root(&self) -> bool {
         self.top_root_pending.get() && self.engine_window.is_some()
     }
 
