@@ -191,7 +191,8 @@ mod imp {
                 // `AppKit`'s own `terminate:` would arrive as a cancellable
                 // quit; the session filed a required request instead.
                 false
-            });
+            })
+            .will_terminate(|_| crate::windows::close_all());
         application.run(handlers);
         std::process::exit(0);
     }
