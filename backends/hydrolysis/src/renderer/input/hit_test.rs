@@ -514,6 +514,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             placement: crate::platform_view::PlatformViewPlacement,
             frame: kurbo::Rect,
             clip: kurbo::Rect,
+            /// The overscroll stretches warping the view and the window
+            /// region it draws into while they show.
+            stretches: Vec<crate::platform_view::PlacementStretch>,
+            stretch_region: Option<kurbo::Rect>,
             #[cfg(any(test, hydrolysis_hwui))]
             owner: Weak<mount::NodeCell<E>>,
             #[cfg(any(test, hydrolysis_hwui))]
@@ -801,6 +805,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 let (transform, clip, _alpha) = entry.region.placement.resolved_chain(false);
                 let frame = crate::renderer::transformed_rect(transform, entry.region.local);
                 let clipped = clip.map_or(frame, |clip| frame.intersect(clip));
+                // The warp moves the view's content past its frame, inside
+                // the stretching viewports: the host lays the view out in
+                // the frame joined with them, cut by the paint chain's clip.
+                let resolved = entry.region.placement.resolved_stretches();
+                let stretch_region = (!resolved.is_empty()).then(|| {
+                    let joined = resolved
+                        .iter()
+                        .fold(frame, |joined, stretch| joined.union(stretch.viewport));
+                    clip.map_or(joined, |clip| joined.intersect(clip))
+                });
+                let stretches = resolved
+                    .into_iter()
+                    .map(|stretch| crate::platform_view::PlacementStretch {
+                        params: stretch.params,
+                        strength: stretch.strength,
+                    })
+                    .collect();
                 orders.push(entry.order.clone());
                 staged_platform.push(StagedPlatform {
                     order: entry.order.clone(),
@@ -808,6 +829,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     placement: entry.payload.placement.clone(),
                     frame,
                     clip: clipped,
+                    stretches,
+                    stretch_region,
                     #[cfg(any(test, hydrolysis_hwui))]
                     owner: entry.owner.clone(),
                     #[cfg(any(test, hydrolysis_hwui))]
@@ -972,6 +995,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     placement.set_order(rank(&staged.order) as u32);
                 }
                 placement.set_visible(!clipped.is_zero_area());
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "window coordinates fit f32 — same cast as the frame above"
+                )]
+                placement.set_stretch(
+                    staged.stretches,
+                    staged.stretch_region.map(|region| {
+                        [
+                            region.x0 as f32,
+                            region.y0 as f32,
+                            region.width() as f32,
+                            region.height() as f32,
+                        ]
+                    }),
+                );
                 crate::renderer::MaterializedPlatformView {
                     table: staged.table,
                     placement,

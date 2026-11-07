@@ -11,6 +11,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.core.view.isVisible
 import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * The embedded-native-view registry: a transparent [FrameLayout] laid out on
@@ -384,6 +385,8 @@ class PlatformViewRegistry internal constructor(
                     clip = clip,
                     order = entry.optLong("order", 0L),
                     visible = entry.optBoolean("visible", true),
+                    stretches = stretches(entry),
+                    stretchRegion = entry.optJSONArray("stretch_region")?.floats(4),
                 )
             )
         }
@@ -410,6 +413,27 @@ class PlatformViewRegistry internal constructor(
         if (changed || orderChanged(wanted)) orderSlots(wanted)
         container.requestLayout()
         container.invalidate()
+    }
+
+    /**
+     * The overscroll stretches of a placement entry, outermost first: the
+     * stretch filter's parameters the engine warps the surrounding content
+     * with, for the slot's [OverscrollStretchEffect] to warp the view by.
+     */
+    private fun stretches(entry: JSONObject): List<OverscrollStretch> {
+        val array = entry.optJSONArray("stretches") ?: return emptyList()
+        return List(array.length()) { index ->
+            val stretch = array.getJSONObject(index)
+            OverscrollStretch(
+                params = stretch.getJSONArray("params").floats(OverscrollStretch.PARAMS),
+                strength = stretch.getDouble("strength").toFloat(),
+            )
+        }
+    }
+
+    private fun JSONArray.floats(count: Int): FloatArray {
+        check(length() == count) { "hydrolysis: expected $count numbers, got ${length()}" }
+        return FloatArray(count) { getDouble(it).toFloat() }
     }
 
     /**
@@ -580,6 +604,13 @@ class PlatformViewRegistry internal constructor(
         val density = context.resources.displayMetrics.density
         fun px(value: Float) = (value * density).toInt()
 
+        if (placement.stretches.isNotEmpty()) {
+            applyStretch(slot, density)
+            view.visibility = if (placement.visible) View.VISIBLE else View.INVISIBLE
+            return
+        }
+        endStretch(slot)
+
         val params = view.layoutParams as FrameLayout.LayoutParams
         val width = px(placement.width)
         val height = px(placement.height)
@@ -605,6 +636,72 @@ class PlatformViewRegistry internal constructor(
             }
         view.visibility = if (placement.visible) View.VISIBLE else View.INVISIBLE
     }
+
+    /**
+     * Lays the slot out for the overscroll stretches its placement carries
+     * and warps it by them. The engine stretches the self-drawn content
+     * around the view in its own passes; the view is a real View it cannot
+     * warp, so the slot draws through the same stretch as a RenderEffect
+     * ([OverscrollStretchEffect]). The warp carries the view's content past
+     * its frame, so the slot takes the placement's stretch region and the
+     * mounted view keeps its frame size and window position inside it
+     * ([StretchLayout]), clipped by the region as an unstretched slot is by
+     * its clip. Touches keep the frame's unwarped geometry: a stretch shows
+     * while a scroll gesture owns the pointer or a fling settles.
+     */
+    private fun applyStretch(slot: Slot, density: Float) {
+        val placement = slot.placement
+        val region =
+            placement.stretchRegion
+                ?: error("hydrolysis: platform view ${placement.id} is stretched without a region")
+        val layout =
+            StretchLayout.of(
+                floatArrayOf(placement.x, placement.y, placement.width, placement.height),
+                region,
+                density,
+            )
+        val view = slot.view
+        val params = view.layoutParams as FrameLayout.LayoutParams
+        if (params.width != layout.regionWidth || params.height != layout.regionHeight ||
+            params.leftMargin != layout.regionLeft || params.topMargin != layout.regionTop
+        ) {
+            params.width = layout.regionWidth
+            params.height = layout.regionHeight
+            params.leftMargin = layout.regionLeft
+            params.topMargin = layout.regionTop
+            view.layoutParams = params
+        }
+        view.clipBounds = null
+        val mounted = slot.mounted.layoutParams as FrameLayout.LayoutParams
+        if (mounted.width != layout.mountedWidth || mounted.height != layout.mountedHeight ||
+            mounted.leftMargin != layout.mountedLeft || mounted.topMargin != layout.mountedTop
+        ) {
+            mounted.width = layout.mountedWidth
+            mounted.height = layout.mountedHeight
+            mounted.leftMargin = layout.mountedLeft
+            mounted.topMargin = layout.mountedTop
+            slot.mounted.layoutParams = mounted
+        }
+        val effect =
+            slot.stretch ?: OverscrollStretchEffect(stretchSource).also { slot.stretch = it }
+        effect.update(view, placement.stretches, density, layout.regionLeft, layout.regionTop)
+    }
+
+    /** Draws `slot` unstretched again, its mounted view filling it. */
+    private fun endStretch(slot: Slot) {
+        val effect = slot.stretch ?: return
+        slot.stretch = null
+        effect.clear(slot.view)
+        val mounted = slot.mounted.layoutParams as FrameLayout.LayoutParams
+        mounted.width = ViewGroup.LayoutParams.MATCH_PARENT
+        mounted.height = ViewGroup.LayoutParams.MATCH_PARENT
+        mounted.leftMargin = 0
+        mounted.topMargin = 0
+        slot.mounted.layoutParams = mounted
+    }
+
+    /** The AGSL source, read once when the first stretch shows. */
+    private val stretchSource: String by lazy { OverscrollStretchEffect.loadSource(context) }
 
     /**
      * Lays the slot out in the binding's pixel space. A translation-only
@@ -693,6 +790,9 @@ class PlatformViewRegistry internal constructor(
         var nativeWidth = 0
         var nativeHeight = 0
         val nativeTransform = Matrix()
+
+        /** The overscroll stretch this slot draws through while its placement carries one. */
+        var stretch: OverscrollStretchEffect? = null
     }
 
     private class Placement(
@@ -706,5 +806,9 @@ class PlatformViewRegistry internal constructor(
         val clip: FloatArray?,
         val order: Long,
         val visible: Boolean,
+        /** The overscroll stretches warping the view, outermost first. */
+        val stretches: List<OverscrollStretch>,
+        /** The window region the warped view draws into: `[x, y, width, height]`. */
+        val stretchRegion: FloatArray?,
     )
 }
