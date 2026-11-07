@@ -17,6 +17,9 @@ name: Nightly
 # ci.yml requires on a pull request into `main`: a red nightly blocks the
 # release, not integration on `dev`. A red scheduled run opens one tracking
 # issue and keeps it current instead of failing a run nobody is watching.
+# The competitor-engine corpus renders (Vello, Skia) and the Windows leg
+# (tier 2) are informational: they neither certify nor fail the run, and file
+# an issue of their own.
 
 on:
   # Off-peak UTC, after the backend nightlies (02:00–06:47 UTC) have left
@@ -73,11 +76,14 @@ jobs:
   windows:
     name: Windows
     uses: ./.github/workflows/windows.yml
-    # The Windows source writer's cache-retirement step needs actions:write
-    # on its own family; nothing else in the called workflow gains it.
+    # Informational (tier 2): windows.yml's jobs are `continue-on-error` and
+    # file their own issue, so this job never fails the run and certification
+    # does not wait on it. The source writer's cache-retirement step needs
+    # actions:write on its own family; the failure report needs issues:write.
     permissions:
       contents: read
       actions: write
+      issues: write
 
   # The in-tree Apple backend's packaged-example suite — group packaging on
   # iOS simulator and macOS, the capture shards and the packaged-app/native
@@ -1243,6 +1249,130 @@ jobs:
           echo "::warning::could not append tonight's metrics to $HISTORY_BRANCH"
           exit 1
 
+  # The competitor-engine corpus renders: every generated scene rendered on
+  # the Vello and Skia adapters against the oracle's f64 reference. They
+  # compare Cherenkov with other projects' engines, so their result does not
+  # decide whether a framework revision is certified; an adapter defect is
+  # still fixed here. Neither job is in `promote.needs`
+  # or `report.needs`, and `continue-on-error` keeps a failure from turning
+  # the run red: the job still shows as failed on the run, and its last step
+  # files the tracking issue. The adapter clippy and the Cherenkov checks stay
+  # gating in `test.yml`.
+  bench-corpus-cpu:
+    name: Corpus on Vello and Skia (CPU, informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+      # Restore-only reader of the shared Linux cargo-sources archive
+      # (the lint job writes it); nightly lanes save nothing.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # skia-safe's prebuilt Linux binaries link the system freetype and
+      # fontconfig, which the runner does not ship (fontconfig is in the
+      # shared list, freetype is this job's extra).
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          extra-packages: libfreetype-dev
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
+      - run: cargo build --locked --release -p cherenkov-bench --features vello-cpu,skia
+      # The oracle reference depends only on the scene; build it once for
+      # both passes below (#218).
+      - name: Render the corpus reference
+        run: |
+          ./target/release/cherenkov-bench reference \
+            --corpus graphics/cherenkov/scenes/corpus --out-dir graphics/cherenkov/out/reference
+      - name: Render the corpus on CPU adapters
+        run: |
+          set -euo pipefail
+          for engine in vello-cpu skia-cpu; do
+            ./target/release/cherenkov-bench render --engine "$engine" \
+              --corpus graphics/cherenkov/scenes/corpus --out-dir "graphics/cherenkov/out/$engine" \
+              --reference graphics/cherenkov/out/reference
+          done
+          python3 - <<'PY'
+          import glob, json, sys
+          files = glob.glob('graphics/cherenkov/out/*/render-*.json')
+          # Every corpus scene produces a report (metrics or unsupported).
+          scenes = {json.load(open(f))['scene'] for f in files}
+          corpus = {p.split('/')[-2] for p in glob.glob('graphics/cherenkov/scenes/corpus/*/scene.json')}
+          missing = corpus - scenes
+          assert not missing, f'scenes without a report: {missing}'
+          measured = [f for f in files if 'metrics' in json.load(open(f))]
+          assert measured, 'no metrics JSON produced'
+          for f in files:
+              d = json.load(open(f))
+              assert 'info' in d and d['info']['crate_version'], f'{f} lacks provenance'
+          print(f'{len(files)} reports ({len(measured)} measured) across {len(scenes)} scenes')
+          PY
+      - name: Report failure
+        if: failure() && github.ref == 'refs/heads/dev'
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          template: .github/BENCH_CORPUS_FAILURE.md
+
+  bench-corpus-metal:
+    name: Corpus on Vello and Skia (Metal, informational)
+    runs-on: xcode-27
+    timeout-minutes: 90
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+      # Restore-only reader of the shared macOS cargo-sources archive
+      # (apple.yml's rust job writes it); nightly lanes save nothing.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
+      - run: cargo build --locked --release -p cherenkov-bench --features skia-metal,vello-classic,vello-hybrid
+      # The oracle reference depends only on the scene; build it once for
+      # the three passes below (#218).
+      - name: Render the corpus reference
+        run: |
+          ./target/release/cherenkov-bench reference \
+            --corpus graphics/cherenkov/scenes/corpus --out-dir graphics/cherenkov/out/reference
+      - name: Render the corpus on Metal adapters
+        run: |
+          set -euo pipefail
+          for engine in skia-metal vello-classic vello-hybrid; do
+            ./target/release/cherenkov-bench render --engine "$engine" \
+              --corpus graphics/cherenkov/scenes/corpus --out-dir "graphics/cherenkov/out/$engine" \
+              --reference graphics/cherenkov/out/reference
+          done
+          python3 - <<'PY'
+          import glob, json
+          files = glob.glob('graphics/cherenkov/out/*/render-*.json')
+          # Every corpus scene produces a report (metrics or unsupported).
+          scenes = {json.load(open(f))['scene'] for f in files}
+          corpus = {p.split('/')[-2] for p in glob.glob('graphics/cherenkov/scenes/corpus/*/scene.json')}
+          missing = corpus - scenes
+          assert not missing, f'scenes without a report: {missing}'
+          measured = [f for f in files if 'metrics' in json.load(open(f))]
+          assert measured, 'no metrics JSON produced'
+          for f in files:
+              d = json.load(open(f))
+              assert 'info' in d and d['info']['crate_version'], f'{f} lacks provenance'
+          print(f'{len(files)} reports ({len(measured)} measured) across {len(scenes)} scenes')
+          PY
+      - name: Report failure
+        if: failure() && github.ref == 'refs/heads/dev'
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          template: .github/BENCH_CORPUS_FAILURE.md
+
   test-report:
     name: Test Report
     needs: [test, windows, webview-js, ts-js, msrv]
@@ -1262,7 +1392,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-ignored, cli-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1306,17 +1436,12 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-ignored, cli-e2e]
     if: failure() && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: JasonEtco/create-an-issue@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      - uses: ./.github/actions/nightly-failure-issue
         with:
-          filename: .github/NIGHTLY_FAILURE.md
-          update_existing: true
-          search_existing: open
+          template: .github/NIGHTLY_FAILURE.md

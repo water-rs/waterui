@@ -1412,8 +1412,19 @@ fn mount_external<T: LayerTarget<E>, E: crate::text::TextEngine>(
     if runtime.receiver.is_none() {
         cx.stats.installs += 1;
     }
+    // The extent the install layer covers on screen: a source without a
+    // natural size renders at exactly this many pixels.
+    let world = cx.window_transform * cell.placement().resolved_transform(false);
+    let (width, height) = gpu_content_pixels(world, bounds);
+    let presented = waterui_graphics::gpu::PresentedSize {
+        pixels: waterui_graphics::OffscreenSize::try_from_pixels(width, height)
+            .expect("a layer's pixel extent is at least one pixel on each axis"),
+        scale: cx.display_scale,
+    };
     let wake = (cx.wakes)(cell);
-    if let Some(pixels) = T::mount_external_frame(cx.host, cx.tx, install, &mut runtime, wake) {
+    if let Some(pixels) =
+        T::mount_external_frame(cx.host, cx.tx, install, &mut runtime, presented, wake)
+    {
         write_props(
             cx.tx,
             install,

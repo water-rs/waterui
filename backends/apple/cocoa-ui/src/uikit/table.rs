@@ -564,16 +564,19 @@ define_class!(
     }
 );
 
-/// The row height a live table's self-sizing pass measures for a stock
-/// cell — a cell carrying the platform's `cell` content configuration
-/// with a line of text. On the pad idiom `UIKit` reports 51.5 pt where a
-/// bare detached cell reports 44, so the configuration, not a constant,
-/// carries each idiom's convention (#3723).
+/// The cell whose self-size is the platform's row floor. On iPhone and
+/// iPad a bare cell already reports the list row floor (52 pt on iOS 27),
+/// and the stock `cell` content configuration overshoots it by its text
+/// line (53 pt). Mac Catalyst's bare cell keeps the legacy 44 pt minimum,
+/// and there the configured cell carries the convention instead (51.5 pt,
+/// #3723).
 fn stock_cell(mtm: MainThreadMarker) -> Retained<TableCell> {
     let cell = TableCell::new(mtm);
-    let configuration = UIListContentConfiguration::cellConfiguration(mtm);
-    configuration.setText(Some(&NSString::from_str("Row")));
-    cell.setContentConfiguration(Some(ProtocolObject::from_ref(&*configuration)));
+    if cfg!(target_abi = "macabi") {
+        let configuration = UIListContentConfiguration::cellConfiguration(mtm);
+        configuration.setText(Some(&NSString::from_str("Row")));
+        cell.setContentConfiguration(Some(ProtocolObject::from_ref(&*configuration)));
+    }
     cell
 }
 
@@ -650,9 +653,8 @@ impl TableView {
     /// row takes when `min_row_height` is unset, measured the way a live
     /// table's self-sizing pass measures it: `sizeThatFits` on a detached
     /// cell reports a point less than `systemLayoutSizeFittingSize`, the
-    /// measurement `UITableView` actually applies. The cell carries the
-    /// platform's stock content configuration, so each idiom's own
-    /// convention lands in the answer (#3723).
+    /// measurement `UITableView` actually applies. [`stock_cell`] picks the
+    /// cell that carries each platform's own floor (#3723).
     #[must_use]
     pub fn stock_row_height(&self) -> f64 {
         crate::view::fitting_size(&stock_cell(self.mtm())).height

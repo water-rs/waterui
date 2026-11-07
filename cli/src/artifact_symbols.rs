@@ -259,7 +259,9 @@ mod tests {
         args.push("--lib");
         args.extend_from_slice(extra_args);
         let artifacts = built_fixture(
-            &crate::toolchain::Host::current().without_cargo_target_dir(),
+            &crate::toolchain::Host::current()
+                .without_cargo_target_dir()
+                .without_apple_deployment_targets(),
             fixture,
             &args,
         )?;
@@ -549,7 +551,8 @@ mod tests {
         // The fixture is built with plain `cargo`, so the deployment targets
         // its `Water.toml` declares reach the build the way they reach a
         // project's own `cargo` commands: through the generated
-        // `.cargo/config.toml`.
+        // `.cargo/config.toml`, which `built_lib_fixture` keeps the enclosing
+        // workspace's inherited targets from overriding.
         let manifest = crate::project::Manifest::parse(
             &std::fs::read_to_string(staged.join("Water.toml")).expect("the fixture Water.toml"),
         )

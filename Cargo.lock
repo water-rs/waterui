@@ -4636,6 +4636,7 @@ dependencies = [
  "keyboard-types",
  "kurbo",
  "libc",
+ "libtest-mimic",
  "lru 0.19.0",
  "nami",
  "native-executor",
@@ -6728,7 +6729,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -11948,6 +11949,7 @@ dependencies = [
  "glifo",
  "hashbrown 0.17.1",
  "ordered-channel",
+ "png",
  "rayon",
  "thread_local",
  "vello_common",
@@ -12623,6 +12625,7 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
+ "blocking",
  "cfg_aliases",
  "cherenkov-oracle",
  "cocoa-ui",
@@ -12758,7 +12761,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#240a45b8fc47550e823c200b443df6680ac57308"
+source = "git+https://github.com/water-rs/browsers?branch=dev#cbc29527d8a74b123bd3588a271e927dc9730937"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12777,6 +12780,8 @@ dependencies = [
  "num-traits",
  "objc2 0.6.5",
  "objc2-core-foundation",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
  "objc2-security",
  "serde",
  "serde_json",
@@ -12796,9 +12801,8 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#240a45b8fc47550e823c200b443df6680ac57308"
+source = "git+https://github.com/water-rs/browsers?branch=dev#cbc29527d8a74b123bd3588a271e927dc9730937"
 dependencies = [
- "bytemuck",
  "cookie",
  "executor-core",
  "futures",
@@ -13949,7 +13953,7 @@ dependencies = [
 [[package]]
 name = "wgpu"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -14047,9 +14051,7 @@ version = "0.4.0"
 source = "git+https://github.com/water-rs/wgpu-external-frame?branch=dev#33021021690beb411fbe75a31e44a0b27dffe238"
 dependencies = [
  "ash",
- "glow",
  "libc",
- "libloading 0.9.0",
  "ndk",
  "objc2 0.6.5",
  "objc2-core-foundation",
@@ -14064,7 +14066,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
 dependencies = [
  "android_system_properties",
  "arrayvec",

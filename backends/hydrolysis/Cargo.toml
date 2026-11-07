@@ -406,6 +406,9 @@ tempfile = "3.27"
 approx = "0.5"
 executor-core = { workspace = true, features = ["async-executor"] }
 tiny_http = "0.12"
+# The macOS real-engine suite's harness: it lists its scenarios the way
+# nextest asks and runs each one on the process main thread.
+libtest-mimic = "0.8.2"
 # The macOS real-engine suite drives the shared mirrored-state case.
 waterui-webview = { workspace = true, features = ["conformance"] }
 # Two crates that only exist to let the segmentation test see what it asserts
@@ -433,7 +436,6 @@ required-features = ["webview-system", "winit"]
 
 [features]
 default = ["gpu"]
-gles = ["gpu", "wgpu/gles", "cherenkov-gpu/gles", "waterui/gles", "waterui-graphics/gles"]
 accessibility = ["dep:accesskit"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the

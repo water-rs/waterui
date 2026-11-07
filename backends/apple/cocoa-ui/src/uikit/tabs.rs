@@ -149,10 +149,7 @@ impl TabContentController {
     pub fn apply_spec(&self, spec: &TabSpec) {
         let mtm = MainThreadMarker::from(self);
         let title = NSString::from_str(&spec.label);
-        let image = spec
-            .symbol
-            .as_ref()
-            .and_then(|symbol| UIImage::systemImageNamed(&NSString::from_str(symbol)));
+        let image = spec.symbol.as_deref().and_then(tab_symbol_image);
         if spec.is_search {
             let item = objc2_ui_kit::UITabBarItem::initWithTabBarSystemItem_tag(
                 mtm.alloc(),
@@ -174,6 +171,16 @@ impl TabContentController {
             item.setEnabled(spec.enabled);
         }
     }
+}
+
+/// The image a tab bar item draws for the SF Symbol `name`: the symbol's
+/// `.fill` variant where it has one, as the platform's tab bars present
+/// symbols (`SwiftUI`'s tab items default to `symbolVariant(.fill)`), and
+/// the symbol itself where it has none. `UITabBarItem` draws exactly the
+/// image it is given, so the variant is resolved here.
+fn tab_symbol_image(name: &str) -> Option<Retained<UIImage>> {
+    UIImage::systemImageNamed(&NSString::from_str(&format!("{name}.fill")))
+        .or_else(|| UIImage::systemImageNamed(&NSString::from_str(name)))
 }
 
 /// The tab bar controller's selection state.

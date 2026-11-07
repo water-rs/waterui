@@ -386,12 +386,13 @@ impl filtrate::Effect for YieldingEffect {
         encoder: &mut wgpu::CommandEncoder,
     ) -> filtrate::EffectRenderResult {
         self.frames.set(self.frames.get() + 1);
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );

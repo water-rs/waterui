@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, vec, vec::Vec};
+use core::cell::RefCell;
 
 use nami::Computed;
 
@@ -46,12 +47,27 @@ impl SubView for RangeLeaf {
     }
 }
 
+/// A container node as a backend retains one.
+///
+/// `measure_layout` dedups child measures only within one call; a backend
+/// node memoizes its own answers across calls, without which nested stacks
+/// re-measure exponentially in depth. Every leaf under a node here is
+/// immutable, so the memo never goes stale.
 struct LayoutNode {
     layout: Box<dyn Layout>,
     children: Vec<Box<dyn SubView>>,
+    measured: RefCell<Vec<(ProposalSize, ViewDimensions)>>,
 }
 
 impl LayoutNode {
+    fn new(layout: Box<dyn Layout>, children: Vec<Box<dyn SubView>>) -> Self {
+        Self {
+            layout,
+            children,
+            measured: RefCell::new(Vec::new()),
+        }
+    }
+
     fn child_refs(&self) -> Vec<&dyn SubView> {
         self.children.iter().map(AsRef::as_ref).collect()
     }
@@ -66,7 +82,19 @@ impl SubView for LayoutNode {
         resolve_layout_extent(self.layout.as_ref(), bounds, proposal, &self.child_refs())
     }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        measure_layout(self.layout.as_ref(), proposal, &self.child_refs())
+        if let Some((_, dimensions)) = self
+            .measured
+            .borrow()
+            .iter()
+            .find(|(measured, _)| *measured == proposal)
+        {
+            return dimensions.clone();
+        }
+        let dimensions = measure_layout(self.layout.as_ref(), proposal, &self.child_refs());
+        self.measured
+            .borrow_mut()
+            .push((proposal, dimensions.clone()));
+        dimensions
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -157,9 +185,9 @@ fn sections(axis: Axis) -> Vec<Box<dyn SubView>> {
     [40.0, 120.0]
         .into_iter()
         .map(|extent| {
-            Box::new(LayoutNode {
-                layout: stack(axis),
-                children: vec![
+            Box::new(LayoutNode::new(
+                stack(axis),
+                vec![
                     Box::new(RangeLeaf {
                         axis,
                         minimum: extent,
@@ -175,7 +203,7 @@ fn sections(axis: Axis) -> Vec<Box<dyn SubView>> {
                         cross: 0.0,
                     }),
                 ],
-            }) as Box<dyn SubView>
+            )) as Box<dyn SubView>
         })
         .collect()
 }
@@ -353,14 +381,14 @@ fn nested_rigid_stacks_preserve_mixed_axis_probe_responses() {
         cross: 20.0,
     });
     for depth in 0..8 {
-        node = Box::new(LayoutNode {
-            layout: stack(if depth % 2 == 0 {
+        node = Box::new(LayoutNode::new(
+            stack(if depth % 2 == 0 {
                 Axis::Horizontal
             } else {
                 Axis::Vertical
             }),
-            children: vec![node],
-        });
+            vec![node],
+        ));
     }
     for width in [
         None,
@@ -793,18 +821,18 @@ impl SubView for BaselineLeaf {
 /// baseline hung on the wrapped one's.
 #[test]
 fn an_alignment_guide_modifier_forwards_unrelated_guides() {
-    let wrapped = LayoutNode {
-        layout: Box::new(HorizontalAlignmentGuideLayout {
+    let wrapped = LayoutNode::new(
+        Box::new(HorizontalAlignmentGuideLayout {
             alignment: HorizontalAlignment::Leading,
             compute: |dimensions: &ViewDimensions| {
                 dimensions.horizontal(HorizontalAlignment::Leading) - 4.0
             },
         }),
-        children: vec![Box::new(BaselineLeaf {
+        vec![Box::new(BaselineLeaf {
             size: Size::new(20.0, 20.0),
             baseline: 12.0,
         })],
-    };
+    );
     let sibling = BaselineLeaf {
         size: Size::new(20.0, 20.0),
         baseline: 4.0,
@@ -1073,16 +1101,16 @@ fn a_non_member_exports_neither_guides_nor_stretch() {
 
     // Guide leg: the empty child's -100 top guide must stay out of the inner
     // stack's exported guide and the outer envelope.
-    let inner = LayoutNode {
-        layout: top_stack(),
-        children: vec![
+    let inner = LayoutNode::new(
+        top_stack(),
+        vec![
             Box::new(rigid()),
             Box::new(EmptyGuideLeaf {
                 top: -100.0,
                 stretch: StretchAxis::None,
             }),
         ],
-    };
+    );
     let sibling = rigid();
     let children: [&dyn SubView; 2] = [&inner, &sibling];
     let measured = measure_layout(&outer, ProposalSize::UNSPECIFIED, &children);
@@ -1107,16 +1135,16 @@ fn a_non_member_exports_neither_guides_nor_stretch() {
 
     // Stretch leg: the non-member's `Both` must not make its stack greedy —
     // under a finite offer the outer row stays content-sized.
-    let inner = LayoutNode {
-        layout: top_stack(),
-        children: vec![
+    let inner = LayoutNode::new(
+        top_stack(),
+        vec![
             Box::new(rigid()),
             Box::new(EmptyGuideLeaf {
                 top: 0.0,
                 stretch: StretchAxis::Both,
             }),
         ],
-    };
+    );
     let sibling = rigid();
     let children: [&dyn SubView; 2] = [&inner, &sibling];
     let measured = measure_layout(
@@ -1903,10 +1931,7 @@ fn declined_space_inside_a_nested_stack_stays_nested_on_both_axes() {
             cross: 10.0,
             priority: 0,
         });
-        let inner = LayoutNode {
-            layout: stack(axis),
-            children: vec![leaf],
-        };
+        let inner = LayoutNode::new(stack(axis), vec![leaf]);
         let children: Vec<Box<dyn SubView>> = vec![
             Box::new(inner),
             Box::new(FillLeaf {

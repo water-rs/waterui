@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use wgpu::{Adapter, Device, Instance, Queue, TextureFormat};
 
-use super::external::{ExternalFrameStream, FrameReceiver};
+use super::external::{ExternalFrameStream, FrameReceiver, PresentedSize};
 use super::{GpuContent, GpuContentView, RedrawHandle, Shared};
 use crate::draw::kurbo::Affine;
 use crate::offscreen::{OffscreenImage, OffscreenSize};
@@ -33,6 +33,11 @@ pub enum GpuRuntimeError {
     /// No adapter satisfied the request.
     #[error("no compatible GPU adapter: {0}")]
     Adapter(#[from] wgpu::RequestAdapterError),
+    /// A Vulkan-only target (Linux, Android) has no usable Vulkan adapter.
+    #[error(
+        "unsupported device: no Vulkan adapter is available ({0}); GPU rendering on Linux and Android requires a Vulkan driver, so install or update the device's Vulkan driver"
+    )]
+    VulkanUnavailable(#[source] wgpu::RequestAdapterError),
     /// The adapter refuses passthrough shaders, which the precompiled
     /// shaders this device loads require on Vulkan, Metal and Direct3D 12
     /// (cherenkov issue #57; shaderloom native artifacts).
@@ -215,7 +220,10 @@ impl SharedGpuContext {
     )]
     pub async fn new(generation: u64) -> Result<Self, GpuRuntimeError> {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-        descriptor.backends &= cherenkov_gpu::GpuConfig::default().backends;
+        let enabled = cherenkov_gpu::GpuConfig::default().backends;
+        // Validates `WGPU_BACKEND` against the target: a non-Vulkan request
+        // on a Vulkan-only target panics instead of leaving no backend.
+        descriptor.backends = cherenkov_gpu::backends_from_env().unwrap_or(enabled) & enabled;
         let instance = Instance::new(descriptor);
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -224,7 +232,14 @@ impl SharedGpuContext {
                 compatible_surface: None,
                 apply_limit_buckets: false,
             })
-            .await?;
+            .await
+            .map_err(|error| {
+                if cherenkov_gpu::VULKAN_ONLY {
+                    GpuRuntimeError::VulkanUnavailable(error)
+                } else {
+                    GpuRuntimeError::Adapter(error)
+                }
+            })?;
         // cherenkov's fixed shaders are precompiled and load through wgpu's
         // passthrough API on Vulkan and Metal (cherenkov issue #57), and
         // shaderloom-compiled component shaders load native artifacts the
@@ -299,6 +314,18 @@ impl SharedGpuContext {
     #[must_use]
     pub const fn queue(&self) -> &Queue {
         &self.queue
+    }
+
+    /// The generation's whole device-creation chain, as the engine and
+    /// external-frame importers take it.
+    #[must_use]
+    pub fn shared_device(&self) -> SharedDevice {
+        SharedDevice {
+            instance: self.instance().clone(),
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+        }
     }
 
     /// The device-lost reason recorded by the callback, once the driver reports
@@ -861,12 +888,7 @@ impl GpuRuntime {
         context: &SharedGpuContext,
     ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
         Engine::new(GpuConfig {
-            device: Some(SharedDevice {
-                instance: context.instance().clone(),
-                adapter: context.adapter().clone(),
-                device: context.device().clone(),
-                queue: context.queue().clone(),
-            }),
+            device: Some(context.shared_device()),
             ..GpuConfig::default()
         })
     }
@@ -889,12 +911,7 @@ impl GpuRuntime {
         context: &SharedGpuContext,
     ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
         Engine::new(GpuConfig {
-            device: Some(SharedDevice {
-                instance: context.instance().clone(),
-                adapter: context.adapter().clone(),
-                device: context.device().clone(),
-                queue: context.queue().clone(),
-            }),
+            device: Some(context.shared_device()),
             ..GpuConfig::default()
         })
         .await
@@ -1463,7 +1480,7 @@ impl ExternalFrameRenderer {
         host.surface.update(|tx| {
             tx[host.surface.root()].push(&layer);
         });
-        let frames = stream.start(host.context.device(), host.context.queue(), redraw);
+        let frames = stream.start(&host.context.shared_device(), redraw);
         Self {
             host,
             layer,
@@ -1484,13 +1501,18 @@ impl ExternalFrameRenderer {
         self.host.context.generation()
     }
 
-    /// Resizes the surface, installs the newest published frame, and keeps
-    /// the frame stretched to the surface.
+    /// Resizes the surface, reports the size it presents at for `display`
+    /// to the source, installs the newest published frame, and keeps the
+    /// frame stretched to the surface.
     ///
     /// # Errors
     /// When the engine rejects the size.
-    fn prepare(&mut self, size: OffscreenSize) -> Result<(), HostedLayerError> {
+    fn prepare(&mut self, size: OffscreenSize, display: Display) -> Result<(), HostedLayerError> {
         let resized = self.host.resize(size)?;
+        self.frames.report_presented(PresentedSize {
+            pixels: size,
+            scale: display.scale,
+        });
         let frame = self.frames.take();
         if frame.is_none() && !resized {
             return Ok(());
@@ -1529,7 +1551,7 @@ impl ExternalFrameRenderer {
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
         let _frame = self.host.surface.begin_frame();
-        self.prepare(size)?;
+        self.prepare(size, display)?;
         self.host.render(display, target_time)
     }
 
@@ -1549,7 +1571,7 @@ impl ExternalFrameRenderer {
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
         let _frame = self.host.surface.begin_frame();
-        self.prepare(size)?;
+        self.prepare(size, display)?;
         self.host.render(display, target_time).await
     }
 

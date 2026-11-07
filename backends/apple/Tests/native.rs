@@ -80,6 +80,19 @@ fn main() {
     #[cfg(catalyst)]
     let _background_application =
         (!args.list).then(|| cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm()));
+    // A host display asleep at run start leaves the simulator's Metal
+    // path stalled inside the process while it resumes — the runner's
+    // `caffeinate` wakes the display but cannot observe the stall, so the
+    // suite gates on one real GPU trip before its first case (#3529).
+    #[cfg(all(
+        target_os = "ios",
+        not(catalyst),
+        feature = "native-test",
+        feature = "gpu_surface"
+    ))]
+    if !args.list {
+        waterui_apple::native_test_support::await_gpu(90.0);
+    }
     libtest_mimic::run(&args, trials()).exit();
 }
 
@@ -3400,6 +3413,10 @@ mod gpu_surface {
                 external_capture_submission_completes_ok,
             ),
             Trial::test(
+                "gpu_surface::a_watchdog_terminated_submission_settles_failed",
+                a_watchdog_terminated_submission_settles_failed,
+            ),
+            Trial::test(
                 "gpu_surface::failure_inside_a_capture_scope_still_balances",
                 failure_inside_a_capture_scope_still_balances,
             ),
@@ -3519,6 +3536,101 @@ mod gpu_surface {
             mounted.first_paint_participation(),
             "the capture scope restored the presenting surface"
         );
+        Ok(())
+    }
+
+    /// A compute dispatch the GPU watchdog terminates settles
+    /// `Err(SubmissionFailed)` and the context's `DeviceLoss` records the
+    /// reason: Metal retires the errored command buffer, wgpu reports the
+    /// loss before it fires the work-done callback, and
+    /// `submit_with_completion` turns that order into the failure. The
+    /// workload is wgpu's `WAIT_INDEFINITELY_LONG_RUNNING` dispatch. Should
+    /// the driver let it finish, the loss never happens and the completion
+    /// must be `Ok`. The test owns its `GpuRuntime`, so the lost device
+    /// touches no other case.
+    pub fn a_watchdog_terminated_submission_settles_failed() -> Result<(), libtest_mimic::Failed> {
+        use std::sync::mpsc;
+
+        use waterui_apple::native_test_support::gpu_surface::{
+            SubmissionFailed, submit_with_completion,
+        };
+        use waterui_apple::native_test_support::view_renderer::GpuRuntime;
+        use waterui_graphics::wgpu;
+
+        const THREADS: u32 = 1024 * 64;
+        const SECONDS: f64 = 120.0;
+
+        let mtm = mtm();
+        let runtime = waterui_apple::native_test_support::block_on_main(30.0, GpuRuntime::new())
+            .map_err(|error| format!("a GPU runtime: {error}"))?;
+        let context = runtime.context();
+        let device = context.device();
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("watchdog workload"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_watchdog.wgsl").into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("watchdog workload"),
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("watchdog output"),
+            size: u64::from(THREADS) * 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("watchdog output"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("watchdog workload"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("watchdog workload"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(THREADS / 64, 1, 1);
+        }
+
+        let (settled, outcome) = mpsc::channel::<Result<(), SubmissionFailed>>();
+        submit_with_completion(mtm, encoder, &context, move |result| {
+            let _ = settled.send(result);
+        });
+        let result = std::cell::OnceCell::new();
+        waterui_apple::native_test_support::pump_main_until(SECONDS, || {
+            if let Ok(settled) = outcome.try_recv() {
+                let _ = result.set(settled);
+            }
+            result.get().is_some()
+        });
+        let result = result.into_inner().ok_or("the submission never settled")?;
+        let reason = context.device_lost_reason();
+        match (&result, &reason) {
+            (Err(failed), Some(reason)) => {
+                tracing::info!(%failed, reason, "the watchdog terminated the dispatch");
+            }
+            (Ok(()), None) => {
+                tracing::info!("the driver let the dispatch finish; no loss to report");
+            }
+            (Err(failed), None) => {
+                return Err(format!("a failed settle without a recorded loss: {failed}").into());
+            }
+            (Ok(()), Some(reason)) => {
+                return Err(format!("an Ok settle despite a recorded loss: {reason}").into());
+            }
+        }
         Ok(())
     }
 
@@ -4010,10 +4122,12 @@ mod gpu_surface {
             ),
         )
         .map_err(|error| format!("a render over the healthy GPU child resolves Ok: {error}"))?;
-        // The rendered leaf is measured detached, so the capture rasters
-        // at the backing scale a windowless view reports.
-        let scale =
-            cocoa_ui::view::backing_scale_factor(&cocoa_ui::PlatformView::new(super::mtm()));
+        // The rendered leaf joins a never-ordered capture window before it
+        // is measured, so the capture rasters at the backing scale AppKit
+        // reports for that window — the screen's, not a detached view's
+        // `1.0`.
+        let scale = cocoa_ui::bitmap::capture_window(super::mtm(), cocoa_ui::Size::new(64.0, 64.0))
+            .backingScaleFactor();
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
