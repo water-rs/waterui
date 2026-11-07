@@ -1135,6 +1135,12 @@ fn delayed_timeline_signal_stays_on_gpu() {
     // The frame lives on the producer: the last clone's drop retires it.
     drop(surface);
     drop(video);
+    // The layer handle keeps the surface's `Shared` alive — and the
+    // bound content keeps a clone of the producer, so the frame never
+    // retires while it lives. Under parallel load that surviving clone
+    // either trips `all_hidden` here or stalls the release submission
+    // past the semaphore wait (water-rs/waterui#1691).
+    drop(layer);
     let next = engine.render(FrameTime::now());
     assert!(matches!(next, Ok(Next::Idle)), "render returned {next:?}");
     // SAFETY: `semaphore` is live; the call only waits on it with a
