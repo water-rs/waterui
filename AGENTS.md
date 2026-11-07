@@ -38,6 +38,8 @@ Intel macOS (`x86_64-apple-darwin`) and Intel iOS simulators (`x86_64-apple-ios`
 - **Tier 2** — built and tested in CI, failures fixed promptly: Windows, Linux. Windows does not support dynamic linking; development builds link statically.
 - **Tier 3** — experimental: the GTK, WinUI and TUI backends.
 
+GPU rendering on Linux and Android is Vulkan-only, to keep the package small: no GL/GLES backend is selected, enabled, compiled in or fallen back to there, and a device without Vulkan fails with a clear unsupported-device error. GL serves only web browsers without WebGPU, for compatibility: it is not covered by the nightly end-to-end suite, gets no significant investment, and is removed once WebGPU is widespread.
+
 ESP32 is not supported; water-rs/waterui#3060 tracks bringing it back.
 
 ## Framework design principles
