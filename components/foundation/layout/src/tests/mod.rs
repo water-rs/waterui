@@ -534,7 +534,8 @@ fn test_hstack_multiple_children_total_exceeds_bounds_bounded_proposal() {
         );
     }
 
-    // ... the row overflows by the difference ...
+    // ... the row overflows both edges by half the difference (block 170
+    // centred in 100: starts at -35, ends at 135) ...
     let overflow = placements
         .last()
         .expect("three children were placed")
@@ -542,8 +543,8 @@ fn test_hstack_multiple_children_total_exceeds_bounds_bounded_proposal() {
         .max_x()
         - bounds.max_x();
     assert!(
-        (overflow - 70.0).abs() < 0.001,
-        "170pt of rigid content in 100pt must overflow by 70pt, got {overflow}"
+        (overflow - 35.0).abs() < 0.001,
+        "170pt of rigid content in 100pt must overflow the trailing edge by 35pt, got {overflow}"
     );
 
     // ... and overflowing must not pile children on top of each other.
@@ -812,9 +813,10 @@ fn test_vstack_child_width_exceeds_bounds_bounded_proposal() {
     let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     assert_eq!(placements.len(), 1);
+    // Block 30 centred in 50 starts at 10; the cross axis centres 200 in 100.
     assert_eq!(
         placements[0].frame,
-        Rect::new(Point::new(-50.0, 0.0), Size::new(200.0, 30.0))
+        Rect::new(Point::new(-50.0, 10.0), Size::new(200.0, 30.0))
     );
 }
 
@@ -1188,8 +1190,8 @@ fn test_bounds_with_offset_bounded_proposal() {
 
     let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
-    // First child should start at bounds origin
-    assert_eq!(placements[0].frame.x(), 50.0);
+    // Block 30 + 10 + 40 = 80 centred in 200 from x = 50: starts at 50 + 60.
+    assert_eq!(placements[0].frame.x(), 110.0);
 
     // All children should be within bounds
     for (i, placement) in placements.iter().enumerate() {

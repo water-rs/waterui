@@ -29,7 +29,7 @@ use waterui_graphics::{
 };
 use waterui_layout::LazyContainer;
 use waterui_layout::stack::hstack;
-use waterui_layout::{Divider, ProposalSize, Rect, Size, SubView};
+use waterui_layout::{Divider, ProposalSize, Size, SubView};
 
 use super::{test_environment, test_renderer};
 use crate::renderer::HydroState;

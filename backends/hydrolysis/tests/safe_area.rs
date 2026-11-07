@@ -79,13 +79,15 @@ fn env_with_keyboard(
 }
 
 /// §7.1 "Layout avoids the regions": the root lays out inside the deepest
-/// region on every edge.
+/// region on every edge. The root fixtures here end in a spacer that fills
+/// the column, so their first child starts at the region's top edge instead
+/// of in a block centred in it (`docs/layout-spec.md` §4.2).
 #[test]
 fn root_content_stays_inside_the_safe_area() {
     let insets = waterui::binding(SAFE_INSETS);
     let mut app = mount_rendered(
         env_with_insets(&insets),
-        move || vstack((card("inbox"),)).alignment(HorizontalAlignment::Leading),
+        move || vstack((card("inbox"), spacer())).alignment(HorizontalAlignment::Leading),
         390,
         844,
     );
@@ -108,7 +110,7 @@ fn ignore_safe_area_all_reaches_the_window_origin() {
     let mut app = mount_rendered(
         env_with_insets(&insets),
         move || {
-            vstack((card("chrome"),))
+            vstack((card("chrome"), spacer()))
                 .alignment(HorizontalAlignment::Leading)
                 .ignore_safe_area(EdgeSet::ALL)
         },
@@ -131,7 +133,7 @@ fn ignore_safe_area_releases_only_the_flagged_edges() {
     let mut app = mount_rendered(
         env_with_insets(&insets),
         move || {
-            vstack((card("header"),))
+            vstack((card("header"), spacer()))
                 .alignment(HorizontalAlignment::Leading)
                 .ignore_safe_area(EdgeSet::TOP)
         },
@@ -220,6 +222,7 @@ fn an_ignore_releases_only_on_an_edge_the_frame_touches() {
             vstack((
                 card("top-touches").ignore_safe_area(EdgeSet::TOP),
                 card("below").ignore_safe_area(EdgeSet::TOP),
+                spacer(),
             ))
             .alignment(HorizontalAlignment::Leading)
         },
@@ -250,7 +253,7 @@ fn a_safe_area_change_relays_out_the_root() {
     let insets = waterui::binding(SAFE_INSETS);
     let mut app = mount_rendered(
         env_with_insets(&insets),
-        move || vstack((card("inbox"),)).alignment(HorizontalAlignment::Leading),
+        move || vstack((card("inbox"), spacer())).alignment(HorizontalAlignment::Leading),
         390,
         844,
     );
@@ -291,11 +294,13 @@ fn navigation_page_targets_follow_the_safe_area() {
     let insets = waterui::binding(SAFE_INSETS);
     let mut app = mount_rendered(env_with_insets(&insets), stack, 390, 844);
     let shifted = node_bounds_with_role(app.tree(), Role::Button, "Open Detail");
-    // The link is centred in the page, so the horizontal insets move it by
-    // half their difference; the top inset moves it down whole.
+    // The link is centred in the page on both axes — the page's column
+    // centres its block (`docs/layout-spec.md` §4.2) — so each pair of
+    // opposite insets moves it by half their difference.
     let expected_x =
         unshifted.x0 + (f64::from(SAFE_INSETS.leading()) - f64::from(SAFE_INSETS.trailing())) / 2.0;
-    let expected_y = unshifted.y0 + f64::from(SAFE_INSETS.top());
+    let expected_y =
+        unshifted.y0 + (f64::from(SAFE_INSETS.top()) - f64::from(SAFE_INSETS.bottom())) / 2.0;
     assert!(
         (shifted.x0 - expected_x).abs() <= 1.0 && (shifted.y0 - expected_y).abs() <= 1.0,
         "the page's link should sit inside the safe area at ({expected_x}, {expected_y}): \
@@ -1148,7 +1153,13 @@ fn an_ignore_top_inside_navigation_content_stays_below_the_bar() {
         move || {
             NavigationView::new(
                 "Hero",
-                vstack((card("hero").ignore_safe_area(EdgeSet::TOP), card("below"))),
+                // The trailing spacer fills the page column, so the hero's
+                // frame ends on the page's top edge.
+                vstack((
+                    card("hero").ignore_safe_area(EdgeSet::TOP),
+                    card("below"),
+                    spacer(),
+                )),
             )
         },
         390,

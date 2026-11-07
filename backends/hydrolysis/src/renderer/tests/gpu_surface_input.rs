@@ -47,12 +47,14 @@ const HEADER_HEIGHT: f32 = 100.0;
 const SURFACE_WIDTH: f32 = 200.0;
 const SURFACE_HEIGHT: f32 = 150.0;
 
-/// Where the surface lands, in window coordinates: the column is anchored at
-/// the window's top, so the 200-wide surface is centred across the 400-wide
-/// window (`(400 - 200) / 2`) and sits under the full-width 100-high header
-/// plus the stack's 10-point default spacing.
+/// Where the surface lands, in window coordinates. The 200-wide surface is
+/// centred across the 400-wide window (`(400 - 200) / 2`). The root column's
+/// block — the 100-high header, the stack's 10-point default spacing and the
+/// 150-high surface, 260 in all — is centred in the 640-high window
+/// (`docs/layout-spec.md` §4.2), so it starts at `(640 - 260) / 2 = 190` and
+/// the surface sits 110 below that.
 const SURFACE_ORIGIN_X: f64 = 100.0;
-const SURFACE_ORIGIN_Y: f64 = 110.0;
+const SURFACE_ORIGIN_Y: f64 = 300.0;
 
 const POINTER_ID: u64 = 7;
 

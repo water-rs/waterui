@@ -927,7 +927,12 @@ fn a_child_that_renders_nothing_is_not_a_stack_member() {
         children.len(),
         "place answers one placement per child, members or not"
     );
-    assert_extent(placements[0].frame.y(), 0.0, "first member at the top");
+    // Block 20 + 10 + 20 = 50 centred in 400: starts at 175.
+    assert_extent(
+        placements[0].frame.y(),
+        175.0,
+        "first member opens the block",
+    );
     assert_extent(
         placements[1].frame.height(),
         0.0,
@@ -935,7 +940,7 @@ fn a_child_that_renders_nothing_is_not_a_stack_member() {
     );
     assert_extent(
         placements[2].frame.y(),
-        sibling.height + spacing,
+        175.0 + sibling.height + spacing,
         "second member one spacing below the first",
     );
 
@@ -962,9 +967,10 @@ fn a_child_that_renders_nothing_is_not_a_stack_member() {
         "shown conditional: stack height is three members and two gaps",
     );
     let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
+    // Block 3 * 20 + 2 * 10 = 80 centred in 400: starts at 160.
     assert_extent(
         placements[2].frame.y(),
-        sibling.height * 2.0 + spacing * 2.0,
+        160.0 + sibling.height * 2.0 + spacing * 2.0,
         "second member two spacings below the first",
     );
 }
@@ -998,9 +1004,10 @@ fn a_zero_sized_child_is_still_a_member() {
         "a zero-size member still counts for spacing",
     );
     let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
+    // Block 20 + 10 + 0 + 10 + 20 = 60 centred in 400: starts at 170.
     assert_extent(
         placements[2].frame.y(),
-        20.0 + spacing * 2.0,
+        170.0 + 20.0 + spacing * 2.0,
         "the last member keeps both gaps around the zero-size one",
     );
 }
@@ -1516,8 +1523,21 @@ fn assert_negotiation(
     spacing: f32,
     expected: &[(f32, f32)],
 ) {
+    assert_negotiation_from(axis, 0.0, placements, spacing, expected);
+}
+
+/// [`assert_negotiation`] for a negotiated block that does not fill its
+/// bounds: `start` is the main origin of the first member, where the
+/// centred block begins.
+fn assert_negotiation_from(
+    axis: Axis,
+    start: f32,
+    placements: &[SubviewPlacement],
+    spacing: f32,
+    expected: &[(f32, f32)],
+) {
     assert_eq!(placements.len(), expected.len(), "one placement per member");
-    let mut cursor = 0.0;
+    let mut cursor = start;
     for (placement, &(extent, proposal)) in placements.iter().zip(expected) {
         assert_extent(
             main_origin(axis, placement.frame),
@@ -1970,7 +1990,9 @@ fn declined_space_without_a_stretcher_stays_unused_on_both_axes() {
             100.0,
             "the stack answers the reported extents",
         );
-        assert_negotiation(axis, &placements, 0.0, &[(80.0, 83.0), (20.0, 20.0)]);
+        // Block 80 + 20 = 100 centred in 103: starts at 1.5.
+        assert_negotiation_from(axis, 1.5, &placements, 0.0, &[(80.0, 83.0), (20.0, 20.0)]);
+        // The block fills the 100 bounds: starts at 0.
         let (_, own_placements) = place_after_proposal(axis, 0.0, 103.0, 100.0, &refs);
         assert_negotiation(axis, &own_placements, 0.0, &[(80.0, 80.0), (20.0, 20.0)]);
     }
@@ -2086,7 +2108,9 @@ fn minima_that_overflow_the_budget_are_offered_verbatim_on_both_axes() {
         let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
         let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
         assert_extent(main_extent(axis, size), 110.0, "the overflow is reported");
-        assert_negotiation(axis, &placements, 0.0, &[(90.0, 90.0), (20.0, 20.0)]);
+        // Block 90 + 20 = 110 centred in 100: overflows both edges by 5, so
+        // it starts at -5.
+        assert_negotiation_from(axis, -5.0, &placements, 0.0, &[(90.0, 90.0), (20.0, 20.0)]);
     }
 }
 
@@ -2255,8 +2279,11 @@ fn an_oversized_answer_overflows_without_stealing_minima_on_both_axes() {
         let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
         let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
         assert_extent(main_extent(axis, size), 110.0, "the refusal overflows");
-        assert_negotiation(
+        // Block 90 + 0 + 20 = 110 centred in 100: overflows both edges by 5,
+        // so it starts at -5.
+        assert_negotiation_from(
             axis,
+            -5.0,
             &placements,
             0.0,
             &[(90.0, 80.0), (0.0, 0.0), (20.0, 20.0)],
