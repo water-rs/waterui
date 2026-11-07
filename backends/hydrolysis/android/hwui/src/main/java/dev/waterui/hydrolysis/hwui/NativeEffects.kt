@@ -3,8 +3,6 @@ package dev.waterui.hydrolysis.hwui
 import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
 import android.graphics.Shader
-import android.os.Build
-import androidx.annotation.RequiresApi
 
 /**
  * Builds the platform `RenderEffect` chain a `DefineEffect` record describes:
@@ -18,7 +16,6 @@ private const val LINEAR_COLOR_SHADER = "dev/waterui/hydrolysis/hwui/linear_colo
 internal class NativeEffects {
     private var source: String? = null
 
-    @RequiresApi(33)
     private fun linearShader(): RuntimeShader {
         val cached = source ?: NativeEffects::class.java.classLoader
             .getResourceAsStream(LINEAR_COLOR_SHADER)
@@ -29,9 +26,6 @@ internal class NativeEffects {
     }
 
     fun build(effect: Int, count: Int, kinds: IntArray, values: FloatArray): RenderEffect {
-        if (Build.VERSION.SDK_INT < 33 && (0 until count).any { kinds[it] == EffectKind.LINEAR_COLOR }) {
-            throw CommandBufferException("HWUI replay: colour effect $effect needs API 33")
-        }
         var chain: RenderEffect? = null
         for (i in 0 until count) {
             val stage: RenderEffect? = when (kinds[i]) {

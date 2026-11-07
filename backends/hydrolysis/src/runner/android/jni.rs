@@ -42,7 +42,7 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// level) and logging init moves out of the app cdylib's `JNI_OnLoad`; 7 =
 /// `nativeSetMetrics` carries the `ViewConfiguration` touch-scroll
 /// parameters (slop, min/max fling velocity, scroll friction); 8 =
-/// `nativeCreateSession` drops `sdkInt`. The API floor is 31, so
+/// `nativeCreateSession` drops `sdkInt`. The API floor is 33, so
 /// `ANativeWindow_setFrameRate` is linked directly; 9 = `nativeBackEvent`
 /// and `onNativeBackAvailable` carry system back into the navigation stack
 /// and report whether a back target is registered; 10 = `nativeSetMetrics`

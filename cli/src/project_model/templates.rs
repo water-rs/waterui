@@ -1877,7 +1877,7 @@ mod tests {
                 project_root: "..".to_owned(),
                 painter_dependency: painter.gradle_dependency(),
                 painter_module: painter.host_module().to_owned(),
-                min_api_level: 31,
+                min_api_level: 33,
                 painter_band_import: painter.band_import(),
                 painter_band_class: painter.band_class(),
                 painter_region_band_import: painter.region_band_import(),
@@ -2378,7 +2378,7 @@ mod tests {
                 project_root: "..".to_string(),
                 painter_dependency: "dev.waterui.hydrolysis:gpu".to_string(),
                 painter_module: "gpu".to_string(),
-                min_api_level: 31,
+                min_api_level: 33,
                 painter_band_import: None,
                 painter_band_class: None,
                 painter_region_band_import: None,
@@ -2833,7 +2833,7 @@ mod tests {
         let ctx =
             project_ctx().with_hydrolysis_android_preview(HydrolysisAndroidPreviewTemplateEntry {
                 host_project_dir: "../hydrolysis-android-host".to_string(),
-                min_api_level: 31,
+                min_api_level: 33,
                 version_code: 42,
             });
         let outputs = crate::templates::hydrolysis_android_preview::rendered_outputs(&ctx)
@@ -2896,7 +2896,7 @@ mod tests {
                     project_root: "..".to_string(),
                     painter_dependency: "dev.waterui.hydrolysis:gpu".to_string(),
                     painter_module: "gpu".to_string(),
-                    min_api_level: 31,
+                    min_api_level: 33,
                     painter_band_import: None,
                     painter_band_class: None,
                     painter_region_band_import: None,

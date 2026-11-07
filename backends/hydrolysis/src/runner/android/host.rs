@@ -383,7 +383,7 @@ impl HostBridge {
 /// (water-rs/waterui#2225).
 ///
 /// # Panics
-/// For a space API 31's `ColorSpace.Named` cannot name: the band would
+/// For a space `ColorSpace.Named` cannot name: the band would
 /// show its pixels in the wrong space.
 #[cfg(hydrolysis_gpu_painter)]
 fn color_space_name(space: wgpu::SurfaceColorSpace) -> &'static str {
@@ -397,7 +397,7 @@ fn color_space_name(space: wgpu::SurfaceColorSpace) -> &'static str {
         | wgpu::SurfaceColorSpace::Bt2100Hlg
         | wgpu::SurfaceColorSpace::ExtendedDisplayP3 => panic!(
             "a band's swapchain negotiated {space:?}, which android.graphics.ColorSpace.Named \
-             cannot name on API 31"
+             cannot name"
         ),
     }
 }

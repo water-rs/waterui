@@ -1925,7 +1925,7 @@ mod tests {
             crate::assets::assert_settings_plugin_markers(settings);
 
             let gradle = files["app/build.gradle.kts"].as_str();
-            assert!(gradle.contains("minSdk = 31"), "gpu api floor: {gradle}");
+            assert!(gradle.contains("minSdk = 33"), "gpu api floor: {gradle}");
             crate::assets::assert_module_plugin_markers(gradle);
             assert!(
                 gradle.contains("\"dev.waterui.hydrolysis:host\""),
@@ -2329,7 +2329,7 @@ mod tests {
 
             let gradle = files["app/build.gradle.kts"].as_str();
             assert!(
-                gradle.contains("minSdk = 31"),
+                gradle.contains("minSdk = 33"),
                 "framework api floor: {gradle}"
             );
             assert!(
