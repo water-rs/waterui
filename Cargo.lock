@@ -11948,6 +11948,7 @@ dependencies = [
  "glifo",
  "hashbrown 0.17.1",
  "ordered-channel",
+ "png",
  "rayon",
  "thread_local",
  "vello_common",
