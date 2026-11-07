@@ -664,6 +664,12 @@ fn apply_alignment(label: &Label, alignment: HorizontalAlignment) {
     crate::measure_memo::invalidate();
 }
 
+/// The half point `SwiftUI` draws a text run right of a view's leading
+/// edge, where the cell's alignment insets would land it flush on the
+/// leaf's bounds.
+#[cfg(target_os = "macos")]
+const SWIFTUI_TEXT_EDGE_INSET: f64 = 0.5;
+
 /// Builds a label leaf around `styled` at `line_limit`/`alignment`, sharing
 /// `WuiTextBase`'s shape: the leaf is a container whose measured size is the
 /// bare text bounds while the label inside keeps its cell-fitting width, so
@@ -698,8 +704,14 @@ fn label_leaf(
             #[cfg(target_os = "macos")]
             let frame = {
                 let insets = label.alignment_rect_insets();
+                // `SwiftUI` draws a text run half a point right of a view's
+                // leading edge, where the cell draws it flush at the
+                // alignment inset; without the shift the label's ink sits
+                // half a point (one device pixel at 2x) left of the twin's
+                // (#2647). The frame slides right by that half point but
+                // keeps its width, so the cell's wrap width is untouched.
                 cocoa_ui::geometry::Rect::new(
-                    bounds.origin.x - insets.left,
+                    bounds.origin.x - insets.left + SWIFTUI_TEXT_EDGE_INSET,
                     bounds.origin.y - insets.top,
                     bounds.size.width + insets.left + insets.right,
                     bounds.size.height + insets.top + insets.bottom,
