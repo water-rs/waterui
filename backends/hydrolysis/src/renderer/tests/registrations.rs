@@ -510,6 +510,65 @@ fn only_an_interactive_target_above_a_platform_view_takes_its_press() {
     );
 }
 
+/// The GPU band's ordered hit test answers a host-pixel touch against the
+/// window-space frames the views are placed at: on a density-3 window a
+/// touch on the first of two stacked views — the second moved below it by
+/// a render offset, a button card painted between them — belongs to the
+/// first view, a touch on the offset view's drawn frame to the second, and
+/// the card's button keeps its own press.
+#[test]
+fn a_host_pixel_touch_reaches_the_platform_view_drawn_under_it() {
+    const SCALE: f64 = 3.0;
+    let mut env = test_environment();
+    env.insert(PlatformViewSink::new());
+    let builder = AnyViewBuilder::<AnyView>::new(|| {
+        AnyView::new(zstack((
+            AnyView::new(Native::new(PlatformView::new("first"))).size(300.0, 200.0),
+            zstack((Color::srgb(200, 40, 40), button("Card")))
+                .size(120.0, 120.0)
+                .offset(0.0, 60.0),
+            AnyView::new(Native::new(PlatformView::new("second")))
+                .size(300.0, 200.0)
+                .offset(0.0, 200.0),
+        )))
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        builder,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let (button_x, button_y) = midpoint(bounds_of(&mut runtime, "Card"));
+    let renderer = runtime.renderer();
+    let [first, second] = renderer.materialized_platform_views.as_slice() else {
+        panic!("both probe views are placed exactly once");
+    };
+    let (first, second) = (&first.placement, &second.placement);
+    assert!(
+        (f64::from(second.y()) - f64::from(first.y()) - 200.0).abs() < 1e-3,
+        "the second view is placed where its offset draws it, got {} and {}",
+        first.y(),
+        second.y()
+    );
+    let host = |x: f32, y: f32| kurbo::Point::new(f64::from(x) * SCALE, f64::from(y) * SCALE);
+    assert_eq!(
+        renderer.platform_view_hit_gpu(host(first.x() + 10.0, first.y() + 10.0), SCALE),
+        Some(first.id()),
+        "a touch on the first view outside the card belongs to the first view"
+    );
+    assert_eq!(
+        renderer.platform_view_hit_gpu(host(second.x() + 10.0, second.y() + 10.0), SCALE),
+        Some(second.id()),
+        "a touch on the offset view's drawn frame belongs to the second view"
+    );
+    assert_eq!(
+        renderer.platform_view_hit_gpu(host(button_x, button_y), SCALE),
+        None,
+        "the card's button painted above the first view takes its press"
+    );
+}
+
 /// The materialized paint order keeps dev's per-frame registration ranking:
 /// the scroll gutter — registered after the scroll's content — outranks
 /// every content target it can overlap, and a `.on_tap` inside a List row
