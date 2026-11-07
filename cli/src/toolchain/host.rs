@@ -466,6 +466,22 @@ impl Host {
             .without_env("CARGO_BUILD_TARGET_DIR")
     }
 
+    /// A host whose environment carries no Apple deployment target: every
+    /// `*_DEPLOYMENT_TARGET` variable an Apple platform reads is removed.
+    ///
+    /// Test fixtures that build a project with plain `cargo` strip these so
+    /// the project's own `.cargo/config.toml` decides the target, as it does
+    /// in a user's shell. A test process inherits the enclosing workspace's
+    /// `[env]` deployment targets from the `cargo` that runs it, and Cargo's
+    /// `[env]` never overrides an inherited variable, so the fixture would
+    /// otherwise build at the workspace's targets instead of its own. The
+    /// real CLI sets these explicitly on every cargo process it starts.
+    #[must_use]
+    pub fn without_apple_deployment_targets(&self) -> Self {
+        crate::platform::apple_deployment_target_settings()
+            .fold(self.clone(), |host, key| host.without_env(key))
+    }
+
     /// A host whose environment carries no compiler wrapper: `RUSTC_WRAPPER`
     /// and its config spelling `CARGO_BUILD_RUSTC_WRAPPER` are both removed.
     ///
