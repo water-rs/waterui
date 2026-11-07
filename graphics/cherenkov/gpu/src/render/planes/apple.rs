@@ -539,7 +539,10 @@ fn hosted_planes(planes: &[Plane<'_>]) -> Vec<(LayerId, HostedLayer, Size)> {
             PlaneContent::Hosted { object, extent } => {
                 Some((plane.placement.layer, (*object).clone(), *extent))
             }
-            PlaneContent::Raster { .. } | PlaneContent::Frame { .. } => None,
+            // A host-window mark shows nothing itself — no view to own.
+            PlaneContent::Raster { .. } | PlaneContent::Frame { .. } | PlaneContent::HostWindow => {
+                None
+            }
         })
         .collect()
 }
@@ -666,7 +669,10 @@ fn hosted_planes(planes: &[Plane<'_>]) -> Vec<(LayerId, HostedView, Size)> {
             PlaneContent::Hosted { object, extent } => {
                 Some((plane.placement.layer, (*object).clone(), *extent))
             }
-            PlaneContent::Raster { .. } | PlaneContent::Frame { .. } => None,
+            // A host-window mark shows nothing itself — no view to own.
+            PlaneContent::Raster { .. } | PlaneContent::Frame { .. } | PlaneContent::HostWindow => {
+                None
+            }
         })
         .collect()
 }
