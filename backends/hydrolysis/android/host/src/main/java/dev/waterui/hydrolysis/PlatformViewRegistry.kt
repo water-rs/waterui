@@ -82,8 +82,7 @@ class PlatformViewRegistry internal constructor(
                 hostView?.requestFrame()
             }
 
-            override fun dispatchDraw(canvas: Canvas) {
-                val content = orderedContent ?: return super.dispatchDraw(canvas)
+            private fun drawOrdered(canvas: Canvas, content: OrderedContent) {
                 // The painter re-records every bound view's portal before the
                 // root draws — the views themselves draw through their
                 // owning RenderNode's place in the retained tree.
@@ -109,7 +108,27 @@ class PlatformViewRegistry internal constructor(
              *  stays with it through MOVE/UP even when the order changes. */
             private var nativeTarget: View? = null
 
+            /** Set while `super.dispatchDraw` runs: drawing is paint order. */
+            private var drawingChildren = false
+
+            override fun dispatchDraw(canvas: Canvas) {
+                val content = orderedContent
+                if (content != null) return drawOrdered(canvas, content)
+                // Without a painter the children are the paint order — the
+                // GPU band's views and bands interleave by child index — so
+                // the touch reorder below must not reach them. ViewGroup asks
+                // `getChildDrawingOrder` for both drawing and its reversed
+                // touch dispatch, and the draw runs inside this call.
+                drawingChildren = true
+                try {
+                    super.dispatchDraw(canvas)
+                } finally {
+                    drawingChildren = false
+                }
+            }
+
             override fun getChildDrawingOrder(childCount: Int, drawingPosition: Int): Int {
+                if (drawingChildren) return drawingPosition
                 val target = nativeTarget
                 val chosen = target?.let { indexOfChild(it) } ?: -1
                 if (chosen < 0) return drawingPosition
