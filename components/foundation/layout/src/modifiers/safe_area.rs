@@ -235,9 +235,23 @@ impl SafeAreaRegions {
 #[non_exhaustive]
 pub struct IgnoreSafeArea {
     /// Which safe-area regions are ignored.
-    pub regions: SafeAreaRegions,
+    regions: SafeAreaRegions,
     /// Which edges ignore the named regions.
-    pub edges: EdgeSet,
+    edges: EdgeSet,
+}
+
+impl IgnoreSafeArea {
+    /// Which safe-area regions are ignored.
+    #[must_use]
+    pub const fn regions(&self) -> SafeAreaRegions {
+        self.regions
+    }
+
+    /// Which edges ignore the named regions.
+    #[must_use]
+    pub const fn edges(&self) -> EdgeSet {
+        self.edges
+    }
 }
 
 impl MetadataKey for IgnoreSafeArea {}

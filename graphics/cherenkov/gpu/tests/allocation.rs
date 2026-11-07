@@ -428,7 +428,7 @@ fn stale_bind_groups_retire_at_capture_regen() -> Result<(), Box<dyn std::error:
         "no bind groups retired at capture regen: {drops:?}"
     );
     assert_eq!(
-        wait!(engine.memory()).backdrop_captures,
+        wait!(engine.memory())?.backdrop_captures,
         Bytes(64 * 64 * 8),
         "the capture retained its largest frame size (grow-only)"
     );
@@ -439,7 +439,7 @@ fn stale_bind_groups_retire_at_capture_regen() -> Result<(), Box<dyn std::error:
     });
     wait!(engine.render(FrameTime::at(start + Duration::from_millis(32))))?;
     assert_eq!(
-        wait!(engine.memory()).backdrop_captures,
+        wait!(engine.memory())?.backdrop_captures,
         Bytes(64 * 64 * 8),
         "a smaller clip shrank the capture inside the frame path"
     );
@@ -485,9 +485,9 @@ fn small_big_small_with_work_in_flight() -> Result<(), Box<dyn std::error::Error
     wait!(render(false, 2))?;
     wait!(render(true, 3))?;
     wait!(render(false, 4))?;
-    let before_trim = wait!(engine.memory());
+    let before_trim = wait!(engine.memory())?;
     engine.trim(Pressure::Moderate);
-    let after_trim = wait!(engine.memory());
+    let after_trim = wait!(engine.memory())?;
     assert!(
         after_trim.gpu < before_trim.gpu,
         "trim did not release the retired scratch/capture textures: \
@@ -495,7 +495,7 @@ fn small_big_small_with_work_in_flight() -> Result<(), Box<dyn std::error::Error
     );
     // The surface still renders after its scratch was trimmed.
     wait!(render(true, 5))?;
-    assert_eq!(wait!(engine.memory()).backdrop_captures, Bytes(256 * 256 * 8));
+    assert_eq!(wait!(engine.memory())?.backdrop_captures, Bytes(256 * 256 * 8));
     Ok(())
 }
 }

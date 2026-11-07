@@ -554,7 +554,7 @@ impl Run {
                 now,
                 scene.spec,
                 self.decisions.decision(scene.layers[0].id().raw()),
-                || self.engine.memory(),
+                || self.engine.memory().expect("memory query"),
             );
         }
         let pause = idle
@@ -569,7 +569,7 @@ impl Run {
         if now >= self.next_log || pause {
             self.next_log = now + Duration::from_secs(1);
             if let Some(scene) = &self.recorded {
-                let memory = self.engine.memory();
+                let memory = self.engine.memory().expect("memory query");
                 for layer in &scene.layers {
                     log::line(&format!(
                         "scenario={} side={} count={} lifetime={} engine={} frame={} layer=LayerId({}) decision={} gpu_bytes={} cpu_bytes={} passes={} idle={} thermal={}",

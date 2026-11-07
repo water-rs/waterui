@@ -199,10 +199,13 @@ impl<B: Backend> Engine<B> {
 
     /// The engine's current memory usage.
     ///
-    #[must_use]
-    pub fn memory(&self) -> MemoryUsage {
+    /// # Errors
+    /// [`RenderError::Thread`] when the render thread cannot answer — a
+    /// reply it already lost marks it gone — so an unmeasurable engine is
+    /// an error, never a fabricated zero usage.
+    pub fn memory(&self) -> Result<MemoryUsage, RenderError> {
         let Some(reply_sender) = self.memory_reply.borrow_mut().take() else {
-            return MemoryUsage::default();
+            return Err(RenderError::Thread);
         };
         if let Err(error) = self.tx.send(Message::Memory {
             reply: reply_sender,
@@ -210,13 +213,13 @@ impl<B: Backend> Engine<B> {
             if let Message::Memory { reply } = error.0 {
                 *self.memory_reply.borrow_mut() = Some(reply);
             }
-            return MemoryUsage::default();
+            return Err(RenderError::Thread);
         }
         let Ok(reply) = self.memory_reply_rx.recv() else {
-            return MemoryUsage::default();
+            return Err(RenderError::Thread);
         };
         *self.memory_reply.borrow_mut() = Some(reply.sender);
-        reply.usage
+        Ok(reply.usage)
     }
 
     /// Reports system memory pressure. `Critical` drops every cache.
@@ -1120,5 +1123,30 @@ mod tests {
         drop(surface);
         let _ = engine.render(FrameTime::now()).unwrap();
         assert!(matches!(peer.next_frame(), Next::At { .. }));
+    }
+
+    /// A memory query distinguishes a failed measurement from a successful
+    /// zero: the `Null` renderer owns nothing and answers an all-zero
+    /// [`MemoryUsage`] through `Ok`, while an engine whose render thread is
+    /// gone reports [`RenderError::Thread`] — never a fabricated zero —
+    /// and the reply channel stays unusable after the loss.
+    #[test]
+    fn memory_distinguishes_failure_from_zero_usage() {
+        let (events, _rx) = std::sync::mpsc::channel();
+        let mut engine = Engine::<Null>::new(NullConfig {
+            events,
+            reject: std::collections::HashSet::default(),
+            image_limits: crate::ImageLimits::UNLIMITED,
+        })
+        .unwrap();
+
+        let usage = engine.memory().unwrap();
+        assert_eq!(usage, MemoryUsage::default());
+
+        engine.tx.send(Message::Shutdown).unwrap();
+        engine.thread.take().unwrap().join().unwrap();
+
+        assert!(matches!(engine.memory(), Err(RenderError::Thread)));
+        assert!(matches!(engine.memory(), Err(RenderError::Thread)));
     }
 }

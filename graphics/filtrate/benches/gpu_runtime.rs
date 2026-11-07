@@ -25,12 +25,8 @@ struct GpuBench {
     queue: wgpu::Queue,
     pipelines: PipelineCache,
     input_texture: wgpu::Texture,
-    input_view: wgpu::TextureView,
     output_texture: wgpu::Texture,
-    output_view: wgpu::TextureView,
     format: wgpu::TextureFormat,
-    width: u32,
-    height: u32,
 }
 
 impl GpuBench {
@@ -89,13 +85,9 @@ impl GpuBench {
             device,
             queue,
             pipelines: PipelineCache::new(),
-            input_view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
-            output_view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             input_texture,
             output_texture,
             format,
-            width,
-            height,
         }
     }
 
@@ -111,30 +103,18 @@ impl GpuBench {
     }
 
     fn render_filter<F: Effect>(&self, filter: &mut F) {
-        let input = EffectInput {
-            length_scale: 1.0,
-            device: &self.device,
-            queue: &self.queue,
-            texture: &self.input_texture,
-            view: self.input_view.clone(),
-            format: self.format,
-            width: self.width,
-            height: self.height,
-            timing: filtrate::EffectFrameTiming::new(
+        let input = EffectInput::new(
+            &self.device,
+            &self.queue,
+            &self.input_texture,
+            filtrate::EffectFrameTiming::new(
                 std::time::Duration::ZERO,
                 std::time::Duration::ZERO,
                 0,
             ),
-        };
-        let output = EffectOutput {
-            device: &self.device,
-            queue: &self.queue,
-            texture: &self.output_texture,
-            view: self.output_view.clone(),
-            format: self.format,
-            width: self.width,
-            height: self.height,
-        };
+            1.0,
+        );
+        let output = EffectOutput::new(&self.device, &self.queue, &self.output_texture);
 
         filter
             .render(&input, &output)

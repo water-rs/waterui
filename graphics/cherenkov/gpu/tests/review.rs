@@ -175,13 +175,13 @@ fn dropped_surfaces_do_not_leak() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine(GpuConfig::default())) else {
         return Ok(());
     };
-    let before = wait!(engine.memory()).gpu;
+    let before = wait!(engine.memory())?.gpu;
     for _ in 0..200 {
         drop(wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?);
     }
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert_eq!(engine.live_surfaces(), 0, "surfaces still live");
-    assert_eq!(wait!(engine.memory()).gpu, before, "gpu memory grew");
+    assert_eq!(wait!(engine.memory())?.gpu, before, "gpu memory grew");
     Ok(())
 }
 }
@@ -385,7 +385,7 @@ fn dropping_a_font_frees_its_renderer_state() -> Result<(), Box<dyn std::error::
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     solid(&surface);
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    let without_glyphs = wait!(engine.memory()).glyph_cache;
+    let without_glyphs = wait!(engine.memory())?.glyph_cache;
     // A is created after the baseline: everything it allocates is what
     // dropping it must give back.
     let font = engine.font(font())?;
@@ -400,18 +400,18 @@ fn dropping_a_font_frees_its_renderer_state() -> Result<(), Box<dyn std::error::
     };
     text(&surface);
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    assert!(wait!(engine.memory()).glyph_cache > without_glyphs, "glyph cells cached");
+    assert!(wait!(engine.memory())?.glyph_cache > without_glyphs, "glyph cells cached");
     drop(font);
     // Dirty the surface so the next frame re-lowers and consults the font.
     surface.clear_color(WorkingColor::new([0.0, 0.0, 0.0, 1.0]));
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert!(
-        wait!(engine.memory()).glyph_cache > without_glyphs,
+        wait!(engine.memory())?.glyph_cache > without_glyphs,
         "the installed content still draws the font"
     );
     solid(&surface);
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    assert_eq!(wait!(engine.memory()).glyph_cache, without_glyphs, "font cells released");
+    assert_eq!(wait!(engine.memory())?.glyph_cache, without_glyphs, "font cells released");
     text(&surface);
     assert!(
         matches!(
@@ -574,9 +574,9 @@ fn trim_releases_cached_memory() -> Result<(), Box<dyn std::error::Error>> {
         tx[surface.root()].content(surface.record(|c| scene(c)));
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    let before = wait!(engine.memory());
+    let before = wait!(engine.memory())?;
     engine.trim(cherenkov::Pressure::Moderate);
-    let moderate = wait!(engine.memory());
+    let moderate = wait!(engine.memory())?;
     assert!(
         moderate.gpu.0 + moderate.cpu.0 < before.gpu.0 + before.cpu.0,
         "Moderate evicts temporary textures and plans: {} → {}",
@@ -589,7 +589,7 @@ fn trim_releases_cached_memory() -> Result<(), Box<dyn std::error::Error>> {
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     engine.trim(cherenkov::Pressure::Critical);
-    let critical = wait!(engine.memory());
+    let critical = wait!(engine.memory())?;
     assert!(
         critical.gpu.0 <= moderate.gpu.0,
         "Critical also frees buffers: {} → {}",

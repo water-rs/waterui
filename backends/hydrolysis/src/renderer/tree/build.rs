@@ -618,13 +618,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<ScrollView>>() {
             Ok(scroll) => {
-                let ScrollViewParts {
-                    axis,
-                    content,
-                    controller,
-                    offset,
-                    ..
-                } = (*scroll).into_inner().into_inner();
+                let (axis, content, controller, offset) =
+                    (*scroll).into_inner().into_inner().into_parts();
                 let content = normalize_layout_view(content, env);
                 // A scroll surface owns §7.1 for its subtree: the layout
                 // pass hands the surface its facts and the child lays out

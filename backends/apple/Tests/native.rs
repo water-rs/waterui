@@ -348,7 +348,13 @@ fn trials() -> Vec<Trial> {
         tests.extend(tabs::trials());
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
+        // A Catalyst window carries no container bands, so the suite's
+        // mount precondition cannot hold there (#3556). Its own Catalyst
+        // title-bar case runs instead.
+        #[cfg(not(catalyst))]
         tests.extend(safe_area::trials());
+        #[cfg(catalyst)]
+        tests.extend(safe_area::catalyst_trials());
         tests.extend(offset::trials());
     }
     tests.extend(migration::trials());
@@ -4306,7 +4312,10 @@ mod filtered {
         let lost = filtered.current_generation();
 
         // The link has demand again when the loss lands, so the next
-        // delivered frame hits `render_frame`'s lost-context arm.
+        // delivered frame hits `render_frame`'s lost-context arm. The
+        // rebuild publication is held so the loss cannot already be
+        // replaced when the frame arrives.
+        let hold = filtered.hold_rebuild();
         filtered.request_render();
         filtered.lose_device("test device loss");
         assert!(
@@ -4333,6 +4342,7 @@ mod filtered {
         // The rebuild's publication wakes the parked wait: the hold
         // clears, the link re-arms, and the owed frame renders on the
         // new generation — the encode count is the render's own record.
+        drop(hold);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.current_generation() > lost
                 && !filtered.parked()
@@ -5340,6 +5350,77 @@ mod safe_area {
         .into_iter()
         .flatten()
         .collect()
+    }
+
+    /// The Catalyst `safe_area::` trials — a Catalyst window's own
+    /// safe-area shape rather than the iPhone container bands.
+    #[cfg(catalyst)]
+    pub fn catalyst_trials() -> Vec<libtest_mimic::Trial> {
+        vec![t(
+            "a_catalyst_window_reports_its_titlebar_band",
+            a_catalyst_window_reports_its_titlebar_band,
+        )]
+    }
+
+    /// A Catalyst window carries no device container bands — the notch
+    /// and home indicator do not exist there — so the suite's `mount`
+    /// precondition can never hold (#3556). The band a Catalyst window
+    /// does carry is its title bar, docked by frame rather than
+    /// `safeAreaInsets`: the navigation bar covers the window top and
+    /// the content starts at the bar's bottom edge, reaching the
+    /// window's own bottom edge with no band reserved.
+    #[cfg(catalyst)]
+    fn a_catalyst_window_reports_its_titlebar_band() {
+        let env = render_environment();
+        let mount = mount_uikit(
+            mtm(),
+            AnyView::new(NavigationView::new(
+                "Home",
+                vstack((card("content"), spacer()))
+                    .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
+            )),
+            &env,
+        );
+        let bar_mounted = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            find_view::<UINavigationBar>(&mount.host).is_some()
+        });
+        assert!(bar_mounted, "the page must mount its navigation bar");
+        let bar = find_view::<UINavigationBar>(&mount.host).unwrap();
+        let bar_frame = window_frame(&bar);
+        let bar_bottom = bar_frame.origin.y + bar_frame.size.height;
+        let insets = mount.host.safeAreaInsets();
+        assert!(
+            insets.top == 0.0 && insets.bottom == 0.0 && insets.left == 0.0 && insets.right == 0.0,
+            "a Catalyst window reports no device container bands: {insets:?}"
+        );
+        assert!(
+            bar_frame.origin.y <= TOLERANCE,
+            "the title bar docks at the window top: {bar_frame:?}"
+        );
+        // The content's host is the sibling of the bar inside the
+        // root container; it must start at the bar's bottom edge and
+        // reach the window bottom — the band is paid by frame alone.
+        let container = view::subviews(&mount.host)
+            .into_iter()
+            .next()
+            .expect("the window hosts the page");
+        let content = view::subviews(&container)
+            .into_iter()
+            .find(|sub| sub.downcast_ref::<UINavigationBar>().is_none())
+            .expect("the bar has a content sibling");
+        let content_frame = window_frame(&content);
+        assert!(
+            (content_frame.origin.y - bar_bottom).abs() <= TOLERANCE,
+            "the content starts at the title bar's bottom edge: {content_frame:?} vs {bar_bottom}"
+        );
+        assert!(
+            (content_frame.origin.y + content_frame.size.height
+                - mount.window.bounds().size.height)
+                .abs()
+                <= TOLERANCE,
+            "the content reaches the window bottom: {content_frame:?}"
+        );
     }
 
     /// The keyboard band's height — the layout-spec's worked examples
@@ -11339,9 +11420,10 @@ mod gesture_events {
     }
 
     /// `AppKit`: `NSRotationGestureRecognizer.rotation` reports radians
-    /// natively — the event's angle is the raw getter value, and each
-    /// `Updated`'s velocity is the wall-clock delta rate, never a
-    /// second conversion (#2757).
+    /// counter-clockwise like `NSEvent.rotation` — the event's angle is
+    /// the getter's negation in the contract's clockwise convention, and
+    /// each `Updated`'s velocity is the wall-clock delta rate, never a
+    /// second conversion (#2757, #3706).
     #[cfg(target_os = "macos")]
     fn a_rotation_gesture_reports_native_radians() {
         let rotations = Rc::new(RefCell::new(Vec::new()));
@@ -11375,30 +11457,30 @@ mod gesture_events {
         let e = fire(NSGestureRecognizerState::Changed, 0.75);
         assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle() - 0.75).abs() < 1e-6,
-            "angle must be the raw radians getter, saw {}",
+            (e.angle() + 0.75).abs() < 1e-6,
+            "AppKit's counter-clockwise getter negates into the contract's clockwise angle, saw {}",
             e.angle()
         );
         assert!(
-            e.velocity().is_finite() && e.velocity() > 0.0,
-            "rotation progressed: {}",
+            e.velocity().is_finite() && e.velocity() < 0.0,
+            "a growing counter-clockwise getter reports a negative clockwise velocity: {}",
             e.velocity()
         );
         let e = fire(NSGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle() - 1.25).abs() < 1e-6);
+        assert!((e.angle() + 1.25).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Ended, 1.25);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
-        assert!((e.angle() - 1.25).abs() < 1e-6);
+        assert!((e.angle() + 1.25).abs() < 1e-6);
 
         // A second gesture reseeds at zero; a negative update and a
         // cancel keep the last angle with zero velocity.
         let e = fire(NSGestureRecognizerState::Began, 0.0);
         assert_eq!(e.phase(), GesturePhase::Started);
         let e = fire(NSGestureRecognizerState::Changed, -0.5);
-        assert!((e.angle() + 0.5).abs() < 1e-6);
+        assert!((e.angle() - 0.5).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Cancelled, -0.5);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Cancelled, 0.0));
-        assert!((e.angle() + 0.5).abs() < 1e-6);
+        assert!((e.angle() - 0.5).abs() < 1e-6);
     }
 
     /// `AppKit`: `NSMagnificationGestureRecognizer.magnification` is the

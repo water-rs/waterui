@@ -882,7 +882,7 @@ fn the_last_image_drop_frees_its_memory() {
                 // A first render settles one-off allocations so the
                 // baseline is stable.
                 $crate::__engine_wait!(engine.render(FrameTime::at(Instant::now()))).expect("render");
-                let before = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let before = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 let data = vec![255u8; 64 * 64 * 4];
                 let image = engine
                     .image(ImageData::<Rgba8>::new(64, 64, data).expect("image data"))
@@ -891,14 +891,14 @@ fn the_last_image_drop_frees_its_memory() {
                 $crate::__engine_wait!(engine
                     .render(FrameTime::at(Instant::now() + TICK)))
                     .expect("render");
-                let with_image = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let with_image = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(with_image > before, "memory {with_image} <= {before}");
                 drop(image);
                 drop(clone);
                 $crate::__engine_wait!(engine
                     .render(FrameTime::at(Instant::now() + TICK * 2)))
                     .expect("render");
-                let after = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let after = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(after < with_image, "memory {after} >= {with_image}");
             }
             }
@@ -948,10 +948,10 @@ fn replace_redraws_the_recorded_image(width: u32, height: u32) {
 
                 drop(layer);
                 $crate::__engine_wait!(engine.render(FrameTime::at(t0 + TICK * 2))).expect("render");
-                let with_image = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let with_image = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 drop(image);
                 $crate::__engine_wait!(engine.render(FrameTime::at(t0 + TICK * 3))).expect("render");
-                let after = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let after = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(after < with_image, "memory {after} >= {with_image}");
             }
             }

@@ -1276,55 +1276,19 @@ fn readback_f32_image(gpu: &TestGpu, texture: &wgpu::Texture, size: (u32, u32)) 
 fn frame_input<'a>(
     gpu: &'a TestGpu,
     texture: &'a wgpu::Texture,
-    size: (u32, u32),
     delta: Duration,
 ) -> EffectInput<'a> {
-    frame_input_format(gpu, texture, size, delta, FORMAT)
-}
-
-fn frame_input_format<'a>(
-    gpu: &'a TestGpu,
-    texture: &'a wgpu::Texture,
-    size: (u32, u32),
-    delta: Duration,
-    format: wgpu::TextureFormat,
-) -> EffectInput<'a> {
-    EffectInput {
-        length_scale: 1.0,
-        device: &gpu.device,
-        queue: &gpu.queue,
+    EffectInput::new(
+        &gpu.device,
+        &gpu.queue,
         texture,
-        view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-        format,
-        width: size.0,
-        height: size.1,
-        timing: EffectFrameTiming::new(Duration::ZERO, delta, 0),
-    }
+        EffectFrameTiming::new(Duration::ZERO, delta, 0),
+        1.0,
+    )
 }
 
-fn frame_output<'a>(
-    gpu: &'a TestGpu,
-    texture: &'a wgpu::Texture,
-    size: (u32, u32),
-) -> EffectOutput<'a> {
-    frame_output_format(gpu, texture, size, FORMAT)
-}
-
-fn frame_output_format<'a>(
-    gpu: &'a TestGpu,
-    texture: &'a wgpu::Texture,
-    size: (u32, u32),
-    format: wgpu::TextureFormat,
-) -> EffectOutput<'a> {
-    EffectOutput {
-        device: &gpu.device,
-        queue: &gpu.queue,
-        texture,
-        view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-        format,
-        width: size.0,
-        height: size.1,
-    }
+fn frame_output<'a>(gpu: &'a TestGpu, texture: &'a wgpu::Texture) -> EffectOutput<'a> {
+    EffectOutput::new(&gpu.device, &gpu.queue, texture)
 }
 
 fn setup<E: Effect>(gpu: &TestGpu, executor: &mut E) {
@@ -1394,8 +1358,8 @@ fn render_rgba8<F: Filter>(
     );
     executor
         .render(
-            &frame_input(gpu, &input, size, Duration::ZERO),
-            &frame_output(gpu, &output, size),
+            &frame_input(gpu, &input, Duration::ZERO),
+            &frame_output(gpu, &output),
         )
         .expect("test render should succeed");
     readback_rgba8_image(gpu, &output, size)
@@ -1547,14 +1511,8 @@ fn shape_sdf(gpu: &TestGpu, size: (u32, u32), coverage: &[f32]) -> Vec<f32> {
     );
     executor
         .render(
-            &frame_input_format(
-                gpu,
-                &input,
-                size,
-                Duration::ZERO,
-                wgpu::TextureFormat::Rgba32Float,
-            ),
-            &frame_output_format(gpu, &output, size, wgpu::TextureFormat::Rgba32Float),
+            &frame_input(gpu, &input, Duration::ZERO),
+            &frame_output(gpu, &output),
         )
         .expect("test render should succeed");
     readback_f32_image(gpu, &output, size)
@@ -1821,14 +1779,8 @@ fn gpu_filtered_samples_work_on_rgba32f_input() {
     );
     executor
         .render(
-            &frame_input_format(
-                &gpu,
-                &input,
-                size,
-                Duration::ZERO,
-                wgpu::TextureFormat::Rgba32Float,
-            ),
-            &frame_output_format(&gpu, &output, size, wgpu::TextureFormat::Rgba32Float),
+            &frame_input(&gpu, &input, Duration::ZERO),
+            &frame_output(&gpu, &output),
         )
         .expect("test render should succeed");
     let readback = readback_f32_image(&gpu, &output, size);
@@ -1873,8 +1825,8 @@ fn gpu_float_aux_upload_keeps_its_precision() {
     );
     executor
         .render(
-            &frame_input(&gpu, &input, size, Duration::ZERO),
-            &frame_output_format(&gpu, &output, size, wgpu::TextureFormat::Rgba32Float),
+            &frame_input(&gpu, &input, Duration::ZERO),
+            &frame_output(&gpu, &output),
         )
         .expect("test render should succeed");
     metrics::assert_close(
@@ -1911,8 +1863,8 @@ fn gpu_texture_aux_binds_at_native_format() {
     );
     executor
         .render(
-            &frame_input(&gpu, &input, size, Duration::ZERO),
-            &frame_output_format(&gpu, &output, size, wgpu::TextureFormat::Rgba32Float),
+            &frame_input(&gpu, &input, Duration::ZERO),
+            &frame_output(&gpu, &output),
         )
         .expect("test render should succeed");
     metrics::assert_close(
@@ -1986,8 +1938,8 @@ fn gpu_mismatched_sizes_fail_the_frame() {
     let target = texture(&gpu, (11, 7), wgpu::TextureUsages::RENDER_ATTACHMENT);
     assert_eq!(
         executor.render(
-            &frame_input(&gpu, &input, (6, 4), Duration::ZERO,),
-            &frame_output(&gpu, &target, (11, 7)),
+            &frame_input(&gpu, &input, Duration::ZERO),
+            &frame_output(&gpu, &target),
         ),
         Err(EffectRenderError::SizeMismatch {
             input: (6, 4),
@@ -2033,8 +1985,8 @@ fn gpu_declared_output_size_maps_the_whole_input() {
     );
     executor
         .render(
-            &frame_input(&gpu, &input, (2, 2), Duration::ZERO),
-            &frame_output(&gpu, &target, size),
+            &frame_input(&gpu, &input, Duration::ZERO),
+            &frame_output(&gpu, &target),
         )
         .expect("declared output size renders");
     let actual = readback_rgba8_image(&gpu, &target, size);
@@ -2050,8 +2002,8 @@ fn gpu_declared_output_size_maps_the_whole_input() {
     let wrong = texture(&gpu, (2, 2), wgpu::TextureUsages::RENDER_ATTACHMENT);
     assert_eq!(
         executor.render(
-            &frame_input(&gpu, &input, (2, 2), Duration::ZERO,),
-            &frame_output(&gpu, &wrong, (2, 2)),
+            &frame_input(&gpu, &input, Duration::ZERO),
+            &frame_output(&gpu, &wrong),
         ),
         Err(EffectRenderError::SizeMismatch {
             input: (2, 2),
@@ -2087,8 +2039,8 @@ fn gpu_declared_output_size_preserves_spatial_sampling() {
         );
         executor
             .render(
-                &frame_input(&gpu, &input, (4, 1), Duration::ZERO),
-                &frame_output(&gpu, &target, size),
+                &frame_input(&gpu, &input, Duration::ZERO),
+                &frame_output(&gpu, &target),
             )
             .expect("resized spatial pass renders");
         // SampleHalf reads the left half at output pixel centres: exactly the
@@ -2130,8 +2082,8 @@ fn gpu_reactive_output_sizes_keep_each_encodes_uniforms() {
             );
             executor
                 .encode_render(
-                    &frame_input(&gpu, &input, (2, 1), Duration::ZERO),
-                    &frame_output(&gpu, &target, declared),
+                    &frame_input(&gpu, &input, Duration::ZERO),
+                    &frame_output(&gpu, &target),
                     &mut encoder,
                 )
                 .expect("each declared size encodes");
@@ -2181,8 +2133,8 @@ fn gpu_params_animate_between_frames() {
     let render = |executor: &mut Executor<_>, delta| {
         executor
             .render(
-                &frame_input(&gpu, &input, size, delta),
-                &frame_output(&gpu, &output, size),
+                &frame_input(&gpu, &input, delta),
+                &frame_output(&gpu, &output),
             )
             .expect("render should succeed")
     };
@@ -2322,14 +2274,8 @@ fn assert_f16_matches_cpu<F: Filter + CpuFilter>(
     );
     executor
         .render(
-            &frame_input_format(
-                gpu,
-                &input_texture,
-                size,
-                Duration::ZERO,
-                wgpu::TextureFormat::Rgba16Float,
-            ),
-            &frame_output_format(gpu, &output, size, wgpu::TextureFormat::Rgba16Float),
+            &frame_input(gpu, &input_texture, Duration::ZERO),
+            &frame_output(gpu, &output),
         )
         .expect("f16 filter render should succeed");
     let actual = readback_f16_image(gpu, &output, size);
@@ -2578,16 +2524,14 @@ fn gpu_params_rewrite_buffers_across_frames() {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         executor
             .encode_render(
-                &EffectInput {
-                    length_scale: 1.0,
-                    timing: EffectFrameTiming::new(
-                        Duration::ZERO,
-                        Duration::ZERO,
-                        frame as u64 + 1,
-                    ),
-                    ..frame_input(&gpu, &input, size, Duration::ZERO)
-                },
-                &frame_output(&gpu, &output, size),
+                &EffectInput::new(
+                    &gpu.device,
+                    &gpu.queue,
+                    &input,
+                    EffectFrameTiming::new(Duration::ZERO, Duration::ZERO, frame as u64 + 1),
+                    1.0,
+                ),
+                &frame_output(&gpu, &output),
                 &mut encoder,
             )
             .expect("encode should succeed");
@@ -2897,15 +2841,15 @@ fn gpu_one_effect_two_sizes_one_encoder() {
         });
     executor
         .encode_render(
-            &frame_input(&gpu, &input_a, size_a, Duration::ZERO),
-            &frame_output(&gpu, &output_a, size_a),
+            &frame_input(&gpu, &input_a, Duration::ZERO),
+            &frame_output(&gpu, &output_a),
             &mut encoder,
         )
         .expect("first encode should succeed");
     executor
         .encode_render(
-            &frame_input(&gpu, &input_b, size_b, Duration::ZERO),
-            &frame_output(&gpu, &output_b, size_b),
+            &frame_input(&gpu, &input_b, Duration::ZERO),
+            &frame_output(&gpu, &output_b),
             &mut encoder,
         )
         .expect("second encode should succeed");
@@ -2945,12 +2889,14 @@ fn gpu_intermediates_evicted_when_size_unused() {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         executor
             .encode_render(
-                &EffectInput {
-                    length_scale: 1.0,
-                    timing: EffectFrameTiming::new(Duration::ZERO, Duration::ZERO, sequence),
-                    ..frame_input(gpu, &input, size, Duration::ZERO)
-                },
-                &frame_output(gpu, &output, size),
+                &EffectInput::new(
+                    &gpu.device,
+                    &gpu.queue,
+                    &input,
+                    EffectFrameTiming::new(Duration::ZERO, Duration::ZERO, sequence),
+                    1.0,
+                ),
+                &frame_output(gpu, &output),
                 &mut encoder,
             )
             .expect("encode should succeed");
@@ -3054,12 +3000,8 @@ fn render_shader_effect(
     );
     effect
         .render(
-            &EffectInput {
-                length_scale: 1.0,
-                timing,
-                ..frame_input(gpu, input, size, Duration::ZERO)
-            },
-            &frame_output(gpu, &output, size),
+            &EffectInput::new(&gpu.device, &gpu.queue, input, timing, 1.0),
+            &frame_output(gpu, &output),
         )
         .expect("shader effect render should succeed");
     readback_rgba8_image(gpu, &output, size)
@@ -3103,16 +3045,14 @@ fn gpu_shader_effect_reads_input_time_and_params() {
     );
     let needs_redraw = effect
         .render(
-            &EffectInput {
-                length_scale: 1.0,
-                timing: EffectFrameTiming::new(
-                    Duration::from_millis(1500),
-                    Duration::from_millis(16),
-                    90,
-                ),
-                ..frame_input(&gpu, &input, size, Duration::ZERO)
-            },
-            &frame_output(&gpu, &output, size),
+            &EffectInput::new(
+                &gpu.device,
+                &gpu.queue,
+                &input,
+                EffectFrameTiming::new(Duration::from_millis(1500), Duration::from_millis(16), 90),
+                1.0,
+            ),
+            &frame_output(&gpu, &output),
         )
         .expect("shader effect render should succeed");
     assert!(needs_redraw, "an animated shader asks for the next frame");
@@ -3141,12 +3081,7 @@ fn gpu_shader_effect_two_sizes_one_encoder() {
     setup_shader_effect(&gpu, &mut effect, FORMAT);
 
     let sizes = [(8, 8), (16, 4)];
-    // The host keeps one input view per size across frames.
-    let inputs = sizes.map(|size| {
-        let texture = upload(&gpu, size, &test_pixels(size.0 * size.1));
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        (texture, view)
-    });
+    let inputs = sizes.map(|size| upload(&gpu, size, &test_pixels(size.0 * size.1)));
     let outputs = sizes.map(|size| {
         texture(
             &gpu,
@@ -3160,16 +3095,17 @@ fn gpu_shader_effect_two_sizes_one_encoder() {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("two-size shader effect encode"),
             });
-        for ((size, (texture, view)), output) in sizes.iter().zip(&inputs).zip(&outputs) {
+        for (texture, output) in inputs.iter().zip(&outputs) {
             effect
                 .encode_render(
-                    &EffectInput {
-                        length_scale: 1.0,
-                        view: view.clone(),
-                        timing: EffectFrameTiming::new(time, Duration::ZERO, sequence),
-                        ..frame_input(&gpu, texture, *size, Duration::ZERO)
-                    },
-                    &frame_output(&gpu, output, *size),
+                    &EffectInput::new(
+                        &gpu.device,
+                        &gpu.queue,
+                        texture,
+                        EffectFrameTiming::new(time, Duration::ZERO, sequence),
+                        1.0,
+                    ),
+                    &frame_output(&gpu, output),
                     &mut encoder,
                 )
                 .expect("encode should succeed");
@@ -3241,8 +3177,8 @@ fn gpu_shader_effect_sampling_requires_a_filterable_input() {
     );
     loading
         .render(
-            &frame_input_format(&gpu, &input, size, Duration::ZERO, unfilterable),
-            &frame_output(&gpu, &output, size),
+            &frame_input(&gpu, &input, Duration::ZERO),
+            &frame_output(&gpu, &output),
         )
         .expect("a texel-loading shader renders an unfilterable input");
     metrics::assert_unorm8_close(
