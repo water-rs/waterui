@@ -339,7 +339,7 @@ impl AndroidCherenkovSurface {
     /// # Errors
     /// [`SurfaceError::Lost`] when the render thread is gone.
     pub(crate) fn set_top_root(
-        &mut self,
+        &self,
         target: Option<cherenkov_gpu::interop::android::SurfaceControlTarget>,
     ) -> Result<(), cherenkov::SurfaceError> {
         self.core.engine.set_top_root(&self.core.surface, target)

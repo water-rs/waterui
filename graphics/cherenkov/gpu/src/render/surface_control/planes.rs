@@ -547,7 +547,7 @@ pub struct Planes {
     root: SurfaceControl,
     /// The second presentation root for entries above an external host
     /// window's mark — a container under a surface the host places above
-    /// the embedded windows (`water-rs/waterui#2225). `None` sends
+    /// the embedded windows (water-rs/waterui#2225). `None` sends
     /// those entries to `root`, which draws them under the windows again.
     top_root: Option<SurfaceControl>,
     root_shown: bool,
@@ -1351,7 +1351,7 @@ impl Planes {
         self.top_root =
             match target {
                 Some(target) => Some(target.parent.child(c"cherenkov top").map_err(|e| {
-                    SurfaceError::UnsupportedTarget(format!("surface control: {}", e))
+                    SurfaceError::UnsupportedTarget(format!("surface control: {e}"))
                 })?),
                 None => None,
             };

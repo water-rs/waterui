@@ -407,10 +407,10 @@ impl AndroidSurface {
     /// those entries to this window's own root, beneath the views.
     /// No-ops until the engine window exists.
     pub(crate) fn set_top_root(
-        &mut self,
+        &self,
         target: Option<cherenkov_gpu::interop::android::SurfaceControlTarget>,
     ) {
-        if let Some(window) = self.engine_window.as_mut() {
+        if let Some(window) = self.engine_window.as_ref() {
             window
                 .surface
                 .set_top_root(target)
