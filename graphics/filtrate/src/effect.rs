@@ -75,6 +75,15 @@ pub enum EffectSetupError {
         /// The full wgpu validation diagnostic.
         message: String,
     },
+    /// A pipeline building the shape's signed distance field hit a wgpu
+    /// validation error.
+    #[error("shape field {pass} pipeline validation failed: {message}")]
+    ShapeFieldValidation {
+        /// The field pass: `seed`, `step` or `resolve`.
+        pass: &'static str,
+        /// The full wgpu validation diagnostic.
+        message: String,
+    },
     /// The device cannot render to the `Rgba16Float` intermediates.
     #[error("the device cannot render to Rgba16Float intermediates: {message}")]
     IntermediateFormatUnsupported {
@@ -131,9 +140,6 @@ pub enum EffectRenderError {
         /// The output's width and height.
         output: (u32, u32),
     },
-    /// A stage reads the clip shape, but the input carries no texture for it.
-    #[error("a stage reads the clip shape's {0:?}, but the input provides none")]
-    MissingShape(filtrate_core::ShapeInput),
 }
 
 /// Result returned by filter setup.
@@ -266,17 +272,6 @@ impl fmt::Debug for EffectContext<'_> {
             .field("output_format", &self.output_format)
             .finish_non_exhaustive()
     }
-}
-
-/// The clip shape of the content being filtered, for stages that declare a
-/// [`ShapeInput`](filtrate_core::ShapeInput). Both textures have the input's
-/// size.
-#[derive(Debug, Clone, Default)]
-pub struct ShapeTextures {
-    /// The clip shape's signed distance field, in pixels, negative inside.
-    pub sdf: Option<wgpu::TextureView>,
-    /// The clip shape's coverage mask, in the red channel.
-    pub mask: Option<wgpu::TextureView>,
 }
 
 /// Input texture provided during effect rendering.

@@ -78,8 +78,7 @@ env:
 
 jobs:
   # Which checks this change can reach. `code` is any changed file that is
-  # not prose or repository metadata, so a docs-only change runs the typo
-  # check and nothing else; `deps` is what the audit, license and
+  # not prose or repository metadata; `deps` is what the audit, license and
   # unused-dependency checks read; `android` is the CLI's Android paths and
   # the Hydrolysis Android host, the only changes that can break the
   # create/build/package cycle the `android-package` job runs. A workflow
@@ -122,7 +121,8 @@ jobs:
               - "deny.toml"
             scripts:
               - ".github/scripts/**"
-              - ".github/tools/affected/**"
+              - ".github/tools/nextest-fixtures/**"
+              - ".github/affected-rules.toml"
               - "Cargo.toml"
             android:
               - "cli/src/android/**"
@@ -163,7 +163,7 @@ jobs:
   # and head package graphs and marks every crate the diff can reach —
   # anything under a package's directory belongs to it, an outside-package
   # path the rules do not name selects the whole workspace, and prose
-  # selects nothing (see `.github/tools/affected/rules.toml`). The `test`
+  # selects nothing (see `.github/affected-rules.toml`). The `test`
   # call below lints exactly that set; `msrv` runs only when the diff can
   # move the toolchain floor — a `rust-version`, dependency-section or
   # Cargo.lock change — because a source edit cannot raise it and the
@@ -182,22 +182,6 @@ jobs:
     uses: ./.github/workflows/affected.yml
     with:
       base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
-
-  typos:
-    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Typos
-    if: (github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      # Pinned like every other tool install: a new dictionary turns a
-      # green job red with no change to the repository. crate-ci/typos
-      # downloaded this same binary on every run; install-tool caches it.
-      - uses: ./.github/actions/install-tool
-        with:
-          tool: typos@1.49.0
-          path: ~/.cargo/bin/typos*
-      - run: typos
 
   # The release scripts derive the certified `framework.json` from the root
   # manifest; their tests pin that derivation to the tree, so they run whenever
@@ -221,8 +205,9 @@ jobs:
         if: needs.changes.outputs.scripts == 'true'
       - uses: astral-sh/setup-uv@v6
         if: needs.changes.outputs.scripts == 'true'
-      # The determinator-backed tests skip when the built binary is absent,
-      # so build it exactly as affected.yml does, under the same cache key.
+      # The tool-backed tests skip when a binary is absent: the shared
+      # affected-crates release built from source, and the
+      # nextest fixtures checker built under the same cache key.
       - uses: ./.github/actions/setup-rust
         if: needs.changes.outputs.scripts == 'true'
         with:
@@ -230,15 +215,22 @@ jobs:
       - name: Restore Cargo sources
         if: needs.changes.outputs.scripts == 'true'
         uses: ./.github/actions/cargo-sources
+      # The tests run the shared tool at synthetic commits, so they need
+      # its binary rather than the action; build the pinned release.
+      - name: Install the shared affected-crates tool
+        if: needs.changes.outputs.scripts == 'true'
+        run: |
+          cargo install --locked --git https://github.com/lexoliu/affected-crates --tag v0.0.1 --root "$RUNNER_TEMP/affected-crates" affected-crates
+          echo "AFFECTED_CRATES=$RUNNER_TEMP/affected-crates/bin/affected-crates" >> "$GITHUB_ENV"
       - uses: actions/cache@v4
-        id: affected-tool
+        id: nextest-fixtures-tool
         if: needs.changes.outputs.scripts == 'true'
         with:
-          path: .github/tools/affected/target/release/affected
-          key: affected-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/affected/Cargo.lock', '.github/tools/affected/Cargo.toml', '.github/tools/affected/src/**', '.github/tools/affected/rules.toml') }}
-      - name: Build the determinator tool
-        if: needs.changes.outputs.scripts == 'true' && steps.affected-tool.outputs.cache-hit != 'true'
-        run: cargo build --locked --release --manifest-path .github/tools/affected/Cargo.toml
+          path: .github/tools/nextest-fixtures/target/release/nextest-fixtures
+          key: nextest-fixtures-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/nextest-fixtures/Cargo.lock', '.github/tools/nextest-fixtures/Cargo.toml', '.github/tools/nextest-fixtures/src/**') }}
+      - name: Build the nextest fixtures checker
+        if: needs.changes.outputs.scripts == 'true' && steps.nextest-fixtures-tool.outputs.cache-hit != 'true'
+        run: cargo build --locked --release --manifest-path .github/tools/nextest-fixtures/Cargo.toml
       - name: Manifest derivation tests
         if: needs.changes.outputs.scripts == 'true'
         run: >

@@ -36,13 +36,22 @@ pub enum ParamSource {
     Constant(&'static [f32]),
 }
 
-/// Which representation of the clip shape a spatial stage reads through the
-/// snippet's `shape` argument.
+/// Which representation of the filtered content's shape a spatial stage
+/// reads through the snippet's `shape` argument.
+///
+/// The shape is the coverage of the filter's input — its alpha — whichever
+/// stage of the chain reads it, so a stage after a blur still sees the
+/// content's outline rather than the blurred one. Both representations have
+/// the input's size and are read with `textureLoad`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShapeInput {
-    /// The clip shape's signed distance field, in pixels: negative inside.
+    /// The signed distance, in pixels, to the contour where the input's
+    /// alpha is one half: negative inside, in the red channel. An input
+    /// with nothing covered is farther than any distance the field holds
+    /// everywhere.
     Sdf,
-    /// The clip shape's coverage mask, in the red channel.
+    /// The input's coverage, in the alpha channel: the filter's input
+    /// itself.
     Mask,
 }
 

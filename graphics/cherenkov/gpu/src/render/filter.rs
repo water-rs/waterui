@@ -11,7 +11,6 @@ use cherenkov::{CompletionWaker, RenderError, SurfaceWakes};
 
 use filtrate::{
     Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput, RetainedMemory,
-    ShapeTextures,
 };
 
 /// An effect moved to the render thread before its device resources exist.

@@ -2686,9 +2686,9 @@ mod tests {
         let rejected = engine.surface(offscreen(), || {}).expect("surface");
         let unrelated = engine.surface(offscreen(), || {}).expect("surface");
         let rect = kurbo::Rect::new(0., 0., 8., 8.);
-        let fill = |surface: &crate::Surface<Null>| {
+        let fill = |surface: &crate::Surface<Null>, color| {
             surface.update(|tx| {
-                tx[surface.root()].record(|c| c.fill(rect, crate::WorkingColor::WHITE));
+                tx[surface.root()].record(|c| c.fill(rect, color));
             });
         };
         let drawn = || -> Vec<SurfaceId> {
@@ -2705,8 +2705,8 @@ mod tests {
         rejected.update(|tx| {
             tx[rejected.root()].record(|c| c.image(image.id(), rect, Sampling::Nearest));
         });
-        fill(&unrelated);
-        for _ in 0..2 {
+        fill(&unrelated, crate::WorkingColor::WHITE);
+        for color in [crate::WorkingColor::BLACK, crate::WorkingColor::WHITE] {
             match engine.render(FrameTime::now()) {
                 Err(RenderError::Rejected { surfaces, .. }) => {
                     let [rejection] = surfaces.as_slice() else {
@@ -2722,11 +2722,11 @@ mod tests {
                 "the surface drawing the rejected image is left out"
             );
             // The unrelated surface keeps rendering its changes.
-            fill(&unrelated);
+            fill(&unrelated, color);
         }
         assert_eq!(rejected.next_frame(), crate::Next::Idle);
 
-        fill(&rejected);
+        fill(&rejected, crate::WorkingColor::WHITE);
         engine
             .render(FrameTime::now())
             .expect("content that no longer draws the image renders");

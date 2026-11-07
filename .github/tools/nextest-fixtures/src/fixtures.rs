@@ -1,4 +1,4 @@
-//! `affected nextest-fixtures [--root <dir>]`: checks the nextest setup
+//! `nextest-fixtures [--root <dir>]`: checks the nextest setup
 //! script rules in `<root>/.config/nextest.toml` against the package graph.
 //!
 //! The `test-fonts` setup script installs the font families that the
