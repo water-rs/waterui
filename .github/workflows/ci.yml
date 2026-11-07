@@ -31,8 +31,7 @@ on:
     branches: [main, dev]
   pull_request:
     branches: ["**"]
-    # edited covers retargeting the pull request between dev and main.
-    types: [opened, reopened, synchronize, edited]
+    types: [opened, reopened, synchronize]
 
 # A pull request cancels its superseded run. A `main` push queues instead:
 # its lint job is the cache writer for that ref, and a writer cancelled
