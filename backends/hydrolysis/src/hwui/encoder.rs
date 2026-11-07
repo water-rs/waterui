@@ -385,7 +385,7 @@ impl Encoder {
         let tree = SurfaceTree::new();
         let root = tree.root();
         let registry = SharedRegistry::new();
-        let effects = Effects::new(registry.clone(), api_level);
+        let effects = Effects::new(registry.clone());
         let mut encoder = Self {
             tree,
             buffer: CommandBuffer::new(),

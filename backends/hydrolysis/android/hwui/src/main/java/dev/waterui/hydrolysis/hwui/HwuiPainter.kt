@@ -174,7 +174,7 @@ class HwuiPainter : OrderedContent, SessionPainter {
 
 /**
  * The high-refresh override for the bound host: public platform APIs only.
- * API 35+ writes `View.requestedFrameRate`; API 31–34 writes the host
+ * API 35+ writes `View.requestedFrameRate`; API 33–34 writes the host
  * activity window's `preferredRefreshRate`. The demand survives detach but
  * the override does not — an unbound painter restores the previous rate.
  */

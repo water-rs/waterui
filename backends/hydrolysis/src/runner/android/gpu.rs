@@ -571,7 +571,7 @@ impl AndroidSurface {
         };
         let rate = lease.refresh.requested(&self.refresh_demand);
         // `ANativeWindow_setFrameRate` is API 30. The framework floor is API
-        // 31, so the symbol is a direct link, not a run-time lookup.
+        // 33, so the symbol is a direct link, not a run-time lookup.
         lease
             .window
             .set_frame_rate(rate, ndk::native_window::FrameRateCompatibility::Default)

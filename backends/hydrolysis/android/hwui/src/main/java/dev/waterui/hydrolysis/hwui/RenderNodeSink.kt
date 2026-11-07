@@ -112,8 +112,6 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
     private val nodes = Table<RenderNode>("node")
     private val paths = Table<Path>("path")
     private val shaders = Table<Shader>("shader")
-    /** Each shader's [SamplingKind] below API 33, or [NO_SAMPLING]. */
-    private var shaderSampling = IntArray(16) { NO_SAMPLING }
     /** The program each runtime shader definition draws from. */
     private val runtimeOwners = Table<RuntimeShaderProgram>("runtime shader definition")
     private val fonts = Table<Font>("font")
@@ -245,9 +243,6 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
      */
     @CalledFromNative
     fun registerRuntimeShader(id: Int, source: String, uniformNames: Array<String>, uniformSizes: IntArray) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            throw CommandBufferException("HWUI registration: runtime shaders need API 33; this device is API ${Build.VERSION.SDK_INT}")
-        }
         val program = RuntimeShaderProgram(source, uniformNames, uniformSizes)
         program.idle.add(RuntimeShader(source))
         programs.put(id, program)
@@ -282,7 +277,6 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
         nodes.clear()
         paths.clear()
         shaders.clear()
-        shaderSampling.fill(NO_SAMPLING)
         runtimeOwners.clear()
         fonts.clear()
         bitmaps.clear()
@@ -634,31 +628,17 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
 
     override fun defineBitmapShader(shader: Int, matrix: FloatArray, bitmap: Int, tileX: Int, tileY: Int, sampling: Int) {
         val built = BitmapShader(bitmaps[bitmap], tileMode(tileX), tileMode(tileY))
-        if (Build.VERSION.SDK_INT >= 33) {
-            built.filterMode =
-                if (sampling == SamplingKind.LINEAR) BitmapShader.FILTER_MODE_LINEAR else BitmapShader.FILTER_MODE_NEAREST
-        } else {
-            // Below API 33 the paint's filter flag samples the shader's bitmap.
-            if (shader >= shaderSampling.size) {
-                val grown = IntArray(maxOf(shaderSampling.size * 2, shader + 1)) { NO_SAMPLING }
-                shaderSampling.copyInto(grown)
-                shaderSampling = grown
-            }
-            shaderSampling[shader] = sampling
-        }
+        built.filterMode =
+            if (sampling == SamplingKind.LINEAR) BitmapShader.FILTER_MODE_LINEAR else BitmapShader.FILTER_MODE_NEAREST
         putShader(shader, matrix, built)
     }
 
     override fun defineRuntimeShader(shader: Int, matrix: FloatArray, runtimeShader: Int, uniformCount: Int, uniforms: FloatArray) {
-        if (Build.VERSION.SDK_INT < 33) {
-            throw CommandBufferException("HWUI replay: a runtime shader needs API 33; the device runs ${Build.VERSION.SDK_INT}")
-        }
         val program = programs[runtimeShader]
         putShader(shader, matrix, runtimeShader(program, uniformCount, uniforms))
         runtimeOwners.put(shader, program)
     }
 
-    @RequiresApi(33)
     private fun runtimeShader(program: RuntimeShaderProgram, uniformCount: Int, uniforms: FloatArray): Shader {
         if (uniformCount != program.floats) {
             throw CommandBufferException("HWUI replay: a runtime shader carries $uniformCount uniform floats; its program declares ${program.floats}")
@@ -682,11 +662,8 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
 
     override fun releaseShader(shader: Int) {
         val released = shaders.remove(shader)
-        if (shader < shaderSampling.size) shaderSampling[shader] = NO_SAMPLING
         if (runtimeOwners.contains(shader)) runtimeOwners.remove(shader).idle.add(released)
     }
-
-    private fun shaderSamplingOf(shader: Int): Int = if (shader < shaderSampling.size) shaderSampling[shader] else NO_SAMPLING
 
     override fun releaseFont(font: Int) {
         fonts.remove(font)
@@ -739,11 +716,6 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
             return
         }
         paint.shader = shaders[wire.shader]
-        val sampling = shaderSamplingOf(wire.shader)
-        // API 33+ samples through the shader's own filter mode (`shaderOf`).
-        if (sampling != NO_SAMPLING && Build.VERSION.SDK_INT < 33) {
-            paint.isFilterBitmap = sampling == SamplingKind.LINEAR
-        }
         paint.setColor(Color.pack(0f, 0f, 0f, wire.alpha, extendedSrgb))
     }
 
@@ -796,7 +768,6 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
     }
 
     private companion object {
-        const val NO_SAMPLING = -1
         /** Position, the patch's four corners and its four colours. */
         const val MESH_STRIDE = 104
         val MESH_TRIANGLES = intArrayOf(0, 1, 3, 0, 3, 2)
