@@ -265,9 +265,10 @@ fn assert_fixture_declarations(fixture: &WidgetFixture) {
         );
     }
     #[cfg(not(target_vendor = "apple"))]
-    symbols
-        .meta_record(SWIFT_SOURCES_RECORD)
-        .expect_err("only Apple targets carry the widget sources record");
+    assert!(
+        symbols.meta_record(SWIFT_SOURCES_RECORD).is_err(),
+        "only Apple targets carry the widget sources record"
+    );
 }
 
 /// The record `waterui-widgets` locates its shipped Swift sources through.
