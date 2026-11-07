@@ -330,22 +330,32 @@ pub struct EffectInput<'a> {
     queue: &'a wgpu::Queue,
     texture: &'a wgpu::Texture,
     timing: EffectFrameTiming,
+    /// The display scale the input texture renders at — device pixels per
+    /// point. Parameters a stage declares as lengths
+    /// ([`ParamSource::Length`](filtrate_core::ParamSource::Length)) arrive
+    /// at the shader multiplied by it: a blur radius or offset declared in
+    /// points lands in device pixels.
+    length_scale: f32,
 }
 
 impl<'a> EffectInput<'a> {
-    /// Reads `texture` this frame, at `timing`.
+    /// Reads `texture` this frame, at `timing`, with `length_scale`
+    /// device pixels per point for the parameters a stage declares as
+    /// lengths.
     #[must_use]
     pub const fn new(
         device: &'a wgpu::Device,
         queue: &'a wgpu::Queue,
         texture: &'a wgpu::Texture,
         timing: EffectFrameTiming,
+        length_scale: f32,
     ) -> Self {
         Self {
             device,
             queue,
             texture,
             timing,
+            length_scale,
         }
     }
 
@@ -353,6 +363,13 @@ impl<'a> EffectInput<'a> {
     #[must_use]
     pub const fn timing(&self) -> EffectFrameTiming {
         self.timing
+    }
+
+    /// The display scale the input texture renders at — device pixels
+    /// per point.
+    #[must_use]
+    pub const fn length_scale(&self) -> f32 {
+        self.length_scale
     }
 }
 

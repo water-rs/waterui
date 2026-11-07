@@ -26,6 +26,11 @@ pub enum ParamSource {
     /// [`Filter::Params`](crate::Filter::Params): one for an `f32` member, and
     /// `N` consecutive ones for a `vecN<f32>` member.
     Param(usize),
+    /// A length member, sourced like [`Param`](Self::Param) but in points:
+    /// the value the member receives is the parameter scaled by the frame's
+    /// `EffectInput::length_scale` — the host's display scale — so a radius
+    /// or offset declared in points lands on the shader in device pixels.
+    Length(usize),
     /// A constant. The composer specializes it into the shader, so it costs
     /// no uniform space. Its length is the member's component count.
     Constant(&'static [f32]),

@@ -112,6 +112,7 @@ impl GpuBench {
                 std::time::Duration::ZERO,
                 0,
             ),
+            1.0,
         );
         let output = EffectOutput::new(&self.device, &self.queue, &self.output_texture);
 

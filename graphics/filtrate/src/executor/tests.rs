@@ -630,7 +630,9 @@ fn evaluate(stage: &ColorStage, params: &[f32], colour: [f32; 4]) -> [f32; 4] {
                     .params
                     .iter()
                     .map(|source| match *source {
-                        ParamSource::Param(index) => Value::Float(params[index]),
+                        ParamSource::Param(index) | ParamSource::Length(index) => {
+                            Value::Float(params[index])
+                        }
                         ParamSource::Constant(&[value]) => Value::Float(value),
                         ParamSource::Constant(values) => Value::vec(values),
                     })
@@ -965,6 +967,30 @@ impl Interpolator for LinearRamp {
 }
 
 #[test]
+fn a_point_length_scales_to_device_pixels_once() {
+    // 8pt at a 3x display reads 24 device pixels. The flattened length
+    // indices are unique, so the horizontal and vertical passes each
+    // convert exactly once — never `8 · 3 · 3` (water-rs/waterui#3513).
+    let mut executor = Executor::new(filters::Blur(ScriptedParam::constant(8.0)));
+    executor.set_length_scale(3.0);
+    let mut dedup = executor.length_indices.clone();
+    dedup.sort_unstable();
+    dedup.dedup();
+    assert_eq!(
+        dedup.len(),
+        executor.length_indices.len(),
+        "every length index converts exactly once"
+    );
+    let values = executor.pixel_params(executor.animated_values());
+    for &index in &executor.length_indices {
+        assert_eq!(values[index], 24.0);
+    }
+    // The planning side reads the same scaled lengths the frame encodes:
+    // parameter bounds and the backdrop footprint land in device pixels.
+    assert_eq!(executor.footprint((256.0, 128.0)), 24.0);
+}
+
+#[test]
 fn the_footprint_covers_every_running_animation() {
     let size = (256.0, 128.0);
     let radius = ScriptedParam::constant(2.0);
@@ -1257,6 +1283,7 @@ fn frame_input<'a>(
         &gpu.queue,
         texture,
         EffectFrameTiming::new(Duration::ZERO, delta, 0),
+        1.0,
     )
 }
 
@@ -2502,6 +2529,7 @@ fn gpu_params_rewrite_buffers_across_frames() {
                     &gpu.queue,
                     &input,
                     EffectFrameTiming::new(Duration::ZERO, Duration::ZERO, frame as u64 + 1),
+                    1.0,
                 ),
                 &frame_output(&gpu, &output),
                 &mut encoder,
@@ -2866,6 +2894,7 @@ fn gpu_intermediates_evicted_when_size_unused() {
                     &gpu.queue,
                     &input,
                     EffectFrameTiming::new(Duration::ZERO, Duration::ZERO, sequence),
+                    1.0,
                 ),
                 &frame_output(gpu, &output),
                 &mut encoder,
@@ -2971,7 +3000,7 @@ fn render_shader_effect(
     );
     effect
         .render(
-            &EffectInput::new(&gpu.device, &gpu.queue, input, timing),
+            &EffectInput::new(&gpu.device, &gpu.queue, input, timing, 1.0),
             &frame_output(gpu, &output),
         )
         .expect("shader effect render should succeed");
@@ -3021,6 +3050,7 @@ fn gpu_shader_effect_reads_input_time_and_params() {
                 &gpu.queue,
                 &input,
                 EffectFrameTiming::new(Duration::from_millis(1500), Duration::from_millis(16), 90),
+                1.0,
             ),
             &frame_output(&gpu, &output),
         )
@@ -3073,6 +3103,7 @@ fn gpu_shader_effect_two_sizes_one_encoder() {
                         &gpu.queue,
                         texture,
                         EffectFrameTiming::new(time, Duration::ZERO, sequence),
+                        1.0,
                     ),
                     &frame_output(&gpu, output),
                     &mut encoder,

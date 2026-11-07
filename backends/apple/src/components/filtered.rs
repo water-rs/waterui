@@ -1086,6 +1086,10 @@ fn render_transparent(
 /// a frozen transition input is smaller than the output — intermediates
 /// chain the rest at `output`'s size, the last pass lands in `output`. All
 /// textures are `PRESENTATION_FORMAT`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the window's backing scale factor fits f32"
+)]
 fn encode_effects(
     state: &FilteredState,
     context: &SharedGpuContext,
@@ -1141,7 +1145,13 @@ fn encode_effects(
         // Effect 0 sees the input texture's own dimensions — a frozen
         // transition input is the captured slot, not the output frame —
         // and every later pass sees the output-sized intermediate.
-        let input = EffectInput::new(device, queue, input_source, timing);
+        let input = EffectInput::new(
+            device,
+            queue,
+            input_source,
+            timing,
+            state.current_scale.get() as f32,
+        );
         let output = EffectOutput::new(device, queue, output_target);
         needs_redraw |= effect
             .encode_render(&input, &output, &mut encoder)

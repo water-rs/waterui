@@ -107,6 +107,10 @@ where
         ))
     }
 
+    fn set_length_scale(&mut self, scale: f32) {
+        self.0.set_length_scale(scale);
+    }
+
     fn retained_memory(&self) -> RetainedMemory {
         Effect::retained_memory(&self.0)
     }
@@ -137,6 +141,11 @@ pub trait Runnable {
     fn footprint_bound(&mut self) -> Option<filtrate_core::Footprint> {
         None
     }
+
+    /// The display scale the next [`Runnable::footprint_bound`] answer
+    /// applies — planning runs ahead of encode, so the current frame's
+    /// scale arrives through this, not only through `EffectInput`.
+    fn set_length_scale(&mut self, _scale: f32) {}
 
     #[cfg(not(target_arch = "wasm32"))]
     fn setup(&mut self, ctx: &EffectContext<'_>) -> Result<(), filtrate::EffectSetupError>;
@@ -335,6 +344,9 @@ pub(super) struct Scope<'a> {
     pub cache: &'a super::PipelineCache,
     pub target: &'a super::ScratchTarget,
     pub size: (u32, u32),
+    /// The display scale the frame encodes at — device pixels per point,
+    /// handed to the effect as its `EffectInput::length_scale`.
+    pub length_scale: f32,
     pub encoded: Option<&'a mut super::space_convert::Pipelines>,
 }
 
@@ -575,6 +587,14 @@ impl Registry {
             .and_then(|entry| entry.effect.footprint_bound())
     }
 
+    /// The display scale the registered filter's footprint answers apply —
+    /// set from the frame's own scale before planning asks.
+    pub fn set_length_scale(&mut self, key: FilterKey, scale: f32) {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.effect.set_length_scale(scale);
+        }
+    }
+
     pub(super) fn apply(
         &mut self,
         id: FilterKey,
@@ -620,7 +640,7 @@ impl Registry {
         let targets_index = entry.targets_index(device, size, format, timing.sequence());
         let targets = &mut entry.io[targets_index].1;
         targets.load(device, encoder, &mut scope, format);
-        let input = EffectInput::new(device, queue, &targets.input.0, timing);
+        let input = EffectInput::new(device, queue, &targets.input.0, timing, scope.length_scale);
         let output = EffectOutput::new(device, queue, &targets.output.0);
         entry.again |= entry
             .effect
