@@ -1247,8 +1247,9 @@ jobs:
 
   # The competitor-engine corpus renders: every generated scene rendered on
   # the Vello and Skia adapters against the oracle's f64 reference. They
-  # compare Cherenkov with other projects' engines, so a panic inside one of
-  # those engines is not a framework defect. Neither job is in `promote.needs`
+  # compare Cherenkov with other projects' engines, so their result does not
+  # decide whether a framework revision is certified; an adapter defect is
+  # still fixed here. Neither job is in `promote.needs`
   # or `report.needs`, and `continue-on-error` keeps a failure from turning
   # the run red: the job still shows as failed on the run, and its last step
   # files the tracking issue. The adapter clippy and the Cherenkov checks stay
