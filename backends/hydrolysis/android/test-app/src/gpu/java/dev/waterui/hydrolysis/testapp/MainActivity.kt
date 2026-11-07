@@ -10,8 +10,11 @@ class MainActivity : TestActivity() {
     override fun createContentView(session: HydrolysisSession): View =
         createHost(session).apply {
             addView(HydrolysisGpuBand(this@MainActivity, session), 0)
-            // Above the platform-view overlay: entries a frame paints over its
-            // embedded views present into the top band (water-rs/waterui#2225).
-            addView(HydrolysisGpuTopBand(this@MainActivity, session))
+            // Each embedded platform view gets the band its above-mark
+            // entries present onto: the registry interleaves a band after
+            // every ordered platform view (water-rs/waterui#2225).
+            platformViewRegistry.bandFactory = { region ->
+                HydrolysisGpuTopBand(this@MainActivity, session, region)
+            }
         }
 }

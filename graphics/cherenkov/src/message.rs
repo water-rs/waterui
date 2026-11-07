@@ -224,6 +224,9 @@ pub enum Message<B: Backend> {
     SetTopRoot {
         /// The surface id.
         id: SurfaceId,
+        /// The host-window boundary this root presents above — region
+        /// `r` is above the `r`-th mark, 1-based.
+        region: usize,
         /// The new second root's target, or `None` to clear.
         target: Option<B::Target>,
     },

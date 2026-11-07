@@ -366,11 +366,13 @@ impl<B: Backend> Engine<B> {
     pub fn set_top_root(
         &self,
         surface: &Surface<B>,
+        region: usize,
         target: Option<impl Into<B::Target>>,
     ) -> Result<(), SurfaceError> {
         self.tx
             .send(Message::SetTopRoot {
                 id: surface.id(),
+                region,
                 target: target.map(Into::into),
             })
             .map_err(|_| SurfaceError::Lost)

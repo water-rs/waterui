@@ -545,11 +545,13 @@ pub struct Planes {
     /// The engine's container under the host's parent: every part and plane
     /// is its child, so their z-orders never interleave with the host's.
     root: SurfaceControl,
-    /// The second presentation root for entries above an external host
-    /// window's mark — a container under a surface the host places above
-    /// the embedded windows (water-rs/waterui#2225). `None` sends
-    /// those entries to `root`, which draws them under the windows again.
-    top_root: Option<SurfaceControl>,
+    /// One presentation root per host-window boundary: `top_roots[r - 1]`
+    /// presents the entries paint order places above the `r`-th external
+    /// host window's mark — above that window, beneath any later ones —
+    /// a container under the surface the host places at that boundary
+    /// (water-rs/waterui#2225). `None` defers that region's entries to the
+    /// nearest lower band, then to `root` beneath every window.
+    top_roots: Vec<Option<SurfaceControl>>,
     root_shown: bool,
     extended_range: Option<ExtendedRangeBrightness>,
     size: (u32, u32),
@@ -624,7 +626,7 @@ impl Planes {
             waker,
             presenting: None,
             root,
-            top_root: None,
+            top_roots: Vec::new(),
             root_shown: false,
             extended_range: ExtendedRangeBrightness::load(),
             size: target.size(),
@@ -1129,24 +1131,29 @@ impl Planes {
         });
         let mut part = 0;
         let mut seen = Vec::new();
-        // Entries after the last external host window's mark present under
-        // the second root — above the embedded windows — when the host set
-        // one; anything earlier stays under `root`, beneath the windows it
-        // precedes in paint order (water-rs/waterui#2225).
-        let last_mark = stack
-            .iter()
-            .rposition(|entry| matches!(entry, Entry::HostWindow));
+        // Every external host window's mark is its own boundary: entries
+        // above the `marks`-th one present under that boundary's root —
+        // above the windows before it, beneath the ones after — when the
+        // host set one. A boundary with no attached band defers to the
+        // nearest lower band, then to `root` beneath everything
+        // (water-rs/waterui#2225).
+        let mut marks = 0usize;
         for (index, entry) in stack.iter().enumerate() {
             let z = plan::z_order(index);
-            let root = if last_mark.is_some_and(|mark| index > mark) {
-                self.top_root.as_ref().unwrap_or(&self.root)
-            } else {
+            let root = if marks == 0 {
                 &self.root
+            } else {
+                self.top_roots[..marks.min(self.top_roots.len())]
+                    .iter()
+                    .rev()
+                    .flatten()
+                    .next()
+                    .unwrap_or(&self.root)
             };
             match entry {
                 // An external host window's mark shows nothing: it is the
                 // paint-order boundary between the roots.
-                Entry::HostWindow => {}
+                Entry::HostWindow => marks += 1,
                 Entry::Engine {
                     raster, properties, ..
                 } => {
@@ -1345,9 +1352,14 @@ impl Planes {
     /// surface control.
     pub fn set_top_root(
         &mut self,
+        region: usize,
         target: Option<&SurfaceControlTarget>,
     ) -> Result<(), SurfaceError> {
-        self.top_root =
+        assert!(region > 0, "the base root already presents region zero");
+        if self.top_roots.len() < region {
+            self.top_roots.resize_with(region, || None);
+        }
+        self.top_roots[region - 1] =
             match target {
                 Some(target) => Some(target.parent.child(c"cherenkov top").map_err(|e| {
                     SurfaceError::UnsupportedTarget(format!("surface control: {e}"))

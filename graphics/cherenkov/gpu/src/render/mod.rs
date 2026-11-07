@@ -3919,13 +3919,13 @@ impl Renderer for GpuRenderer {
     /// ignored: nothing outside a `SurfaceControl` hierarchy can hold the
     /// root.
     #[cfg(target_os = "android")]
-    fn set_top_root(&mut self, id: SurfaceId, target: Option<Self::Target>) {
+    fn set_top_root(&mut self, id: SurfaceId, region: usize, target: Option<Self::Target>) {
         let target = target.and_then(|target| match target {
             crate::GpuTarget::SurfaceControl(target) => Some(target),
             _ => None,
         });
         if let Some(system) = self.planes.get_mut(&id) {
-            let _ = system.set_top_root(target.as_ref());
+            let _ = system.set_top_root(region, target.as_ref());
         }
     }
 

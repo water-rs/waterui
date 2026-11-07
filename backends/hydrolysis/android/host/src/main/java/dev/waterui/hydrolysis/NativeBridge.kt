@@ -249,6 +249,7 @@ object NativeBridge {
     @JvmStatic
     external fun nativeTopSurfaceAttached(
         sessionPtr: Long,
+        region: Int,
         surface: Surface,
         width: Int,
         height: Int,
@@ -258,12 +259,14 @@ object NativeBridge {
     @JvmStatic
     external fun nativeTopSurfaceChanged(
         sessionPtr: Long,
+        region: Int,
         width: Int,
         height: Int,
         generation: Long,
     )
 
-    @JvmStatic external fun nativeTopSurfaceDestroyed(sessionPtr: Long, generation: Long)
+    @JvmStatic
+    external fun nativeTopSurfaceDestroyed(sessionPtr: Long, region: Int, generation: Long)
 
     /**
      * The Activity's started state (`onStart`/`onStop`) — drives the frame
