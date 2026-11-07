@@ -457,12 +457,13 @@ impl filtrate::Effect for CallbackEffect {
         output: &filtrate::EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> filtrate::EffectRenderResult {
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );

@@ -620,27 +620,8 @@ impl Registry {
         let targets_index = entry.targets_index(device, size, format, timing.sequence());
         let targets = &mut entry.io[targets_index].1;
         targets.load(device, encoder, &mut scope, format);
-        let (input_texture, input_view) = &targets.input;
-        let (output_texture, output_view) = &targets.output;
-        let input = EffectInput {
-            device,
-            queue,
-            texture: input_texture,
-            view: input_view.clone(),
-            format,
-            width: size.0,
-            height: size.1,
-            timing,
-        };
-        let output = EffectOutput {
-            device,
-            queue,
-            texture: output_texture,
-            view: output_view.clone(),
-            format,
-            width: size.0,
-            height: size.1,
-        };
+        let input = EffectInput::new(device, queue, &targets.input.0, timing);
+        let output = EffectOutput::new(device, queue, &targets.output.0);
         entry.again |= entry
             .effect
             .encode(&input, &output, encoder)

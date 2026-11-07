@@ -275,16 +275,17 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Effect for Executor<F, 
         if let Some(error) = &self.setup_error {
             return Err(EffectRenderError::SetupFailed(error.clone()));
         }
-        let expected = self.output_size(input.width, input.height);
-        if expected != (output.width, output.height) {
+        let (width, height) = input.size();
+        let expected = self.output_size(width, height);
+        if expected != output.size() {
             return Err(EffectRenderError::SizeMismatch {
-                input: (input.width, input.height),
+                input: input.size(),
                 expected,
-                output: (output.width, output.height),
+                output: output.size(),
             });
         }
         let gpu = self.gpu.as_mut().ok_or(EffectRenderError::NotSetUp)?;
-        let needs_redraw = self.animator.update(input.timing.delta());
+        let needs_redraw = self.animator.update(input.timing().delta());
         gpu.encode(input, output, encoder, self.animator.current_values())?;
         self.animator.mark_rendered();
         Ok(needs_redraw)
