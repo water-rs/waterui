@@ -77,6 +77,9 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// 23 = `nativeCreateSession` carries the configuration's night-mode flag so
 /// the colour-scheme signal starts on the real `uiMode`, and
 /// `nativeSetColorScheme` reports every later change (water-rs/waterui#3544).
+/// 25 = the GPU band edge: `nativeBandAttached` / `nativeBandDetached` carry
+/// each band `View`'s `ImageReader` surface, and `onNativeBandLatch` tells a
+/// band to show its newest image (water-rs/waterui#2225).
 pub const JNI_SCHEMA: jint = 25;
 
 /// A failure crossing the JNI boundary as an exception.
@@ -661,14 +664,27 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDes
     });
 }
 
-/// The top band's surface — the `SurfaceView` above the platform-view
-/// overlay that carries the self-drawn entries a frame paints above its
-/// embedded platform views (water-rs/waterui#2225). Display rates do not
-/// cross this edge: the base band's attachment owns the frame cadence and
-/// the top band shares its display.
+/// A band region from the JNI edge: 1-based, the region above the
+/// `region`-th ordered platform view.
+#[cfg(hydrolysis_gpu_painter)]
+fn band_region(region: jint) -> Result<u32, JniError> {
+    u32::try_from(region)
+        .ok()
+        .filter(|&region| region > 0)
+        .ok_or_else(|| {
+            JniError(format!(
+                "hydrolysis android: band region {region} is not 1-based"
+            ))
+        })
+}
+
+/// A band `View` created the `ImageReader` behind it — the surface the
+/// engine presents the self-drawn content above the `region`-th embedded
+/// platform view into (water-rs/waterui#2225). The band's own counter
+/// numbers each reader, so a stale detach never clears a newer one.
 #[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurfaceAttached<'local>(
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBandAttached<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
@@ -677,60 +693,42 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurface
     width: jint,
     height: jint,
     generation: jlong,
-) -> jboolean {
-    guard_val(&mut env, false, |env| {
+) {
+    guard(&mut env, |env| {
+        let region = band_region(region)?;
+        let (Ok(width @ 1..), Ok(height @ 1..)) = (u32::try_from(width), u32::try_from(height))
+        else {
+            return Err(JniError(format!(
+                "hydrolysis android: band {region} reader is {width}x{height}"
+            )));
+        };
         let window = unsafe {
             // SAFETY: env is a live JNI environment and `surface` is the
-            // android.view.Surface the top band just produced; the call
-            // acquires the reference the attachment owns. See the matching
-            // cast in `nativeSurfaceAttached`.
+            // band's `ImageReader` surface; the call acquires the reference
+            // the attachment owns. See the matching cast in
+            // `nativeSurfaceAttached`.
             ndk::native_window::NativeWindow::from_surface(env.get_raw().cast(), surface.as_raw())
         };
         let Some(window) = window else {
             return Err(JniError(
-                "hydrolysis android: top band ANativeWindow_fromSurface returned null".to_owned(),
+                "hydrolysis android: band ANativeWindow_fromSurface returned null".to_owned(),
             ));
         };
-        session(session_ptr)
-            .top_surface_attached_with_generation(
-                crate::num_cast::i32_as_u32(region.max(1)),
-                window,
-                crate::num_cast::i32_as_u32(width.max(0)),
-                crate::num_cast::i32_as_u32(height.max(0)),
-                crate::num_cast::i64_as_u64(generation),
-            )
-            .map_err(JniError)?;
-        Ok(true)
-    })
-}
-
-#[cfg(hydrolysis_gpu_painter)]
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurfaceChanged<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    session_ptr: jlong,
-    region: jint,
-    width: jint,
-    height: jint,
-    generation: jlong,
-) {
-    guard(&mut env, |_env| {
-        session(session_ptr).top_surface_resized(
-            crate::num_cast::i32_as_u32(region.max(1)),
-            crate::num_cast::i32_as_u32(width.max(0)),
-            crate::num_cast::i32_as_u32(height.max(0)),
+        session(session_ptr).band_attached(
+            region,
+            window,
+            width,
+            height,
             crate::num_cast::i64_as_u64(generation),
         );
         Ok(())
     });
 }
 
+/// A band `View`'s reader `generation` is about to close.
 #[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurfaceDestroyed<
-    'local,
->(
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBandDetached<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
@@ -738,8 +736,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurface
     generation: jlong,
 ) {
     guard(&mut env, |_env| {
-        session(session_ptr).top_surface_detached(
-            crate::num_cast::i32_as_u32(region.max(1)),
+        session(session_ptr).band_detached(
+            band_region(region)?,
             crate::num_cast::i64_as_u64(generation),
         );
         Ok(())

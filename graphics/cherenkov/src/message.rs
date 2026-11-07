@@ -217,17 +217,16 @@ pub enum Message<B: Backend> {
         /// The surface id.
         id: SurfaceId,
     },
-    /// Set or clear the surface's second presentation root: entries above
-    /// an external host window's mark present under it
-    /// (water-rs/waterui#2225). `None` returns those entries to the
-    /// surface's own root.
-    SetTopRoot {
+    /// Set or clear the band presenting one region of the surface: the
+    /// content above an external host window's mark
+    /// (water-rs/waterui#2225). `None` leaves the region unshown.
+    SetBand {
         /// The surface id.
         id: SurfaceId,
-        /// The host-window boundary this root presents above — region
-        /// `r` is above the `r`-th mark, 1-based.
+        /// The region the band presents — region `r` is above the `r`-th
+        /// mark, 1-based.
         region: usize,
-        /// The new second root's target, or `None` to clear.
+        /// The band's presentation target, or `None` to clear.
         target: Option<B::Target>,
     },
     /// An opaque render-thread operation that cannot fail: font, filter

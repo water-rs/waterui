@@ -16,8 +16,8 @@ import dev.waterui.hydrolysis.hwui.HwuiPainter
 {%- if ctx.hydrolysis_android_has_painter_band() %}
 import {{ ctx.hydrolysis_android_painter_band_import() }}
 {%- endif %}
-{%- if ctx.hydrolysis_android_has_top_band() %}
-import {{ ctx.hydrolysis_android_top_band_import() }}
+{%- if ctx.hydrolysis_android_has_region_band() %}
+import {{ ctx.hydrolysis_android_region_band_import() }}
 {%- endif %}
 
 /**

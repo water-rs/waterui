@@ -151,8 +151,8 @@ pub enum LayerOp {
     Backdrop(LayerId, Option<BackdropSample>),
     /// Set or clear the layer's host-window marker: a marked layer shows
     /// no recorded content — an external host window occupies its frame
-    /// — and promotes to a compositor plane so content painted above the
-    /// topmost mark can be routed to a second presentation target
+    /// — and every mark splits the surface's paint order into regions,
+    /// each presented in its own band stacked above that window
     /// (water-rs/waterui#2225).
     HostWindow(LayerId, bool),
     /// Set the layer content, or clear it.

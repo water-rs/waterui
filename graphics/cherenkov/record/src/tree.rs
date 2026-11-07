@@ -285,8 +285,8 @@ impl LayerNode {
     }
 
     /// Whether the layer marks an external host window's frame — the
-    /// promotion a system compositor uses to split the surface's
-    /// presentation bands (water-rs/waterui#2225).
+    /// paint-order boundary where the surface's next presentation band
+    /// starts (water-rs/waterui#2225).
     #[must_use]
     pub const fn host_window(&self) -> bool {
         self.host_window

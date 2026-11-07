@@ -310,6 +310,20 @@ impl HostBridge {
         self.call(HostMethodId::PlatformViewsChanged, &[]);
     }
 
+    /// `session.onNativeBandLatch(region, image)` — the band `View` of
+    /// `region` shows the newest image its `ImageReader` holds, or nothing
+    /// when `image` is false (water-rs/waterui#2225).
+    #[cfg(hydrolysis_gpu_painter)]
+    fn band_latch(&self, region: u32, image: bool) {
+        self.call(
+            HostMethodId::BandLatch,
+            &[
+                JValue::Int(i32::try_from(region).expect("band regions fit jint")),
+                JValue::Bool(image),
+            ],
+        );
+    }
+
     /// The window's content asked to close — the host finishes the activity.
     fn close_requested(&self) {
         self.call(HostMethodId::CloseRequested, &[]);
@@ -351,17 +365,12 @@ pub struct AndroidHostWindow {
     host_attached: bool,
     #[cfg(hydrolysis_gpu_painter)]
     pub(crate) surface: AndroidSurface,
-    /// The top band's attachment: the `SurfaceView` above the platform-view
-    /// overlay, carrying the self-drawn entries a frame paints above its
-    /// embedded platform views (water-rs/waterui#2225). Its attach reuses
-    /// the base band's display rates — they share the display.
+    /// The band `View`s' `ImageReader` surfaces, by region: region `r`
+    /// carries the self-drawn content a frame paints above its `r`-th
+    /// embedded platform view and beneath the next one
+    /// (water-rs/waterui#2225).
     #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) top_surfaces: std::collections::BTreeMap<u32, AndroidSurface>,
-    /// The refresh values the last base-band attach carried — the top
-    /// band's attach borrows them since rate discovery lives on the base
-    /// band's edge.
-    #[cfg(hydrolysis_gpu_painter)]
-    surface_refresh: Option<super::gpu::DisplayRefresh>,
+    pub(crate) bands: std::collections::BTreeMap<u32, super::gpu::BandAttachment>,
     /// Shared with the installed frame wake, which posts its own
     /// Choreographer request through it, and with the GPU-surface redraw
     /// handle, whose queued post calls it from the executor's drain.
@@ -1235,9 +1244,7 @@ impl AndroidSession {
             #[cfg(hydrolysis_gpu_painter)]
             surface: AndroidSurface::new(gpu.clone()),
             #[cfg(hydrolysis_gpu_painter)]
-            top_surfaces: std::collections::BTreeMap::new(),
-            #[cfg(hydrolysis_gpu_painter)]
-            surface_refresh: None,
+            bands: std::collections::BTreeMap::new(),
             bridge: Arc::new(bridge),
             ui_poster: executor.poster(),
             redraw_pending: Arc::new(AtomicBool::new(false)),
@@ -1563,14 +1570,7 @@ impl AndroidSession {
         #[cfg(hydrolysis_gpu_painter)]
         let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
         #[cfg(hydrolysis_gpu_painter)]
-        for (region, band) in &self.runtime.platform.top_surfaces {
-            if self.runtime.platform.surface.has_pending_top_root(*region) && band.is_attached() {
-                // The engine window was (re)created under a pending
-                // top-root request — replay this band's target onto it.
-                let target = band.top_root_target();
-                self.runtime.platform.surface.set_top_root(*region, target);
-            }
-        }
+        self.commit_bands();
         #[cfg(hydrolysis_hwui)]
         let presented = self
             .hwui
@@ -1603,7 +1603,6 @@ impl AndroidSession {
             height,
             "wake posted: surface attached"
         );
-        self.runtime.platform.surface_refresh = Some(refresh);
         let attached =
             self.runtime
                 .platform
@@ -1658,61 +1657,16 @@ impl AndroidSession {
         self.runtime.sync_occlusion();
     }
 
-    /// The top band's surface was created or replaced. Its refresh values
-    /// come from the base band's last attach — the pair shares a display
-    /// and rate discovery lives on the base edge.
+    /// A band `View` created its `ImageReader` — on attach and on every
+    /// resize, each with a new `generation` from the band's own counter.
+    /// The band takes over its region from the next frame: the engine
+    /// presents that region's content into the reader's surface
+    /// (water-rs/waterui#2225).
     #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) fn top_surface_attached_with_generation(
+    pub(crate) fn band_attached(
         &mut self,
         region: u32,
         native_window: ndk::native_window::NativeWindow,
-        width: u32,
-        height: u32,
-        generation: u64,
-    ) -> Result<(), String> {
-        tracing::debug!(
-            target: "waterui::hydrolysis::android",
-            region,
-            generation,
-            width,
-            height,
-            "wake posted: top surface attached"
-        );
-        let refresh = self
-            .runtime
-            .platform
-            .surface_refresh
-            .unwrap_or(super::gpu::DisplayRefresh {
-                peak: 60.0,
-                normal: 60.0,
-                high: 60.0,
-            });
-        let gpu = self.runtime.platform.surface.gpu_handle();
-        let band = self
-            .runtime
-            .platform
-            .top_surfaces
-            .entry(region)
-            .or_insert_with(|| AndroidSurface::new(gpu));
-        band.attach(native_window, refresh, width, height, generation)
-            .map_err(|error| error.to_string())?;
-        // The base window's entries above this boundary's mark present
-        // under this root — the band's container sits above the platform
-        // view it follows (water-rs/waterui#2225).
-        let target = band.top_root_target();
-        self.runtime.platform.surface.set_top_root(region, target);
-        // Above-band content lives on the same frames as the base band —
-        // the attach can un-hide only an already-visible window, so the
-        // refresh request keeps the next frame honest either way.
-        self.runtime.request_refresh();
-        Ok(())
-    }
-
-    /// The top band's size changed on the live surface generation.
-    #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) fn top_surface_resized(
-        &mut self,
-        region: u32,
         width: u32,
         height: u32,
         generation: u64,
@@ -1723,37 +1677,62 @@ impl AndroidSession {
             generation,
             width,
             height,
-            "wake posted: top surface resized"
+            "wake posted: band attached"
         );
-        if let Some(band) = self.runtime.platform.top_surfaces.get_mut(&region) {
-            band.resize_for(width, height, generation);
-        }
+        let band = super::gpu::BandAttachment::new(native_window, width, height, generation);
+        let platform = &mut self.runtime.platform;
+        platform.surface.set_band(region, Some(&band));
+        platform.bands.insert(region, band);
+        self.runtime.request_refresh();
     }
 
-    /// The top band's surface is going away; `generation` names which one.
-    /// Content above embedded views simply has nowhere above-band to draw
-    /// until a new surface attaches.
+    /// A band `View`'s reader is about to close; `generation` names which
+    /// one, so a stale detach never clears a newer reader. Until a band
+    /// attaches again its region is not shown — never drawn beneath the
+    /// platform view the paint order puts it above.
     #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) fn top_surface_detached(&mut self, region: u32, generation: u64) {
+    pub(crate) fn band_detached(&mut self, region: u32, generation: u64) {
         tracing::debug!(
             target: "waterui::hydrolysis::android",
             region,
             generation,
-            "wake posted: top surface detached"
+            "wake posted: band detached"
         );
-        // This boundary's entries defer to the next lower root until a
-        // new surface attaches (water-rs/waterui#2225). A stale
-        // `surfaceDestroyed` naming an old generation must not clear the
-        // live top root, so the generation check runs before the unbind.
-        if self
-            .runtime
-            .platform
-            .top_surfaces
-            .get_mut(&region)
-            .is_some_and(|band| band.detach_for(generation))
+        let platform = &mut self.runtime.platform;
+        if platform
+            .bands
+            .get(&region)
+            .is_some_and(|band| band.is(generation))
         {
-            self.runtime.platform.surface.set_top_root(region, None);
-            self.runtime.platform.top_surfaces.remove(&region);
+            platform.surface.set_band(region, None);
+            platform.bands.remove(&region);
+        }
+    }
+
+    /// Hands the bands their part of the frames the engine finished: a
+    /// rebuilt engine window first receives every band, then each band
+    /// commit's images are latched by their `View`s and the commit is
+    /// applied in this same UI-thread turn — ahead of the next traversal,
+    /// so the band `View`s draw their new images in the view frame that
+    /// accompanies the base surface's transaction (water-rs/waterui#2225).
+    #[cfg(hydrolysis_gpu_painter)]
+    fn commit_bands(&mut self) {
+        let platform = &mut self.runtime.platform;
+        let delivered = platform.surface.deliver_bands(&platform.bands);
+        let commits: Vec<_> = platform.surface.take_band_commits().collect();
+        for commit in commits {
+            for update in commit.updates() {
+                let region = u32::try_from(update.region).expect("band regions fit u32");
+                // A band that detached since the frame has no `View` left
+                // to latch into; its region is not shown.
+                if platform.bands.contains_key(&region) {
+                    platform.bridge.band_latch(region, update.image);
+                }
+            }
+            commit.apply();
+        }
+        if delivered {
+            self.runtime.request_refresh();
         }
     }
 

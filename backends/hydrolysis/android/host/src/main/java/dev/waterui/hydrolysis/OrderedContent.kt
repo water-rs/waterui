@@ -28,7 +28,7 @@ fun interface PlatformViewRecorder {
  * The paint-order hit query the touch paths ask: the platform view the
  * retained tree places under host pixel (`x`, `y`), `null` when none is
  * drawn there or an interactive target above it takes the point. Split
- * from [OrderedContent] so the GPU band — whose surfaces draw outside the
+ * from [OrderedContent] so the GPU painter — whose base surface draws outside the
  * container — still answers gesture ownership (water-rs/waterui#2225).
  */
 fun interface OrderedHitTest {

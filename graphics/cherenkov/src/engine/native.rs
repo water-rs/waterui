@@ -357,23 +357,25 @@ impl<B: Backend> Engine<B> {
         Ok(surface)
     }
 
-    /// Sets or clears `surface`'s second presentation root: entries above
-    /// an external host window's mark present under `target` — above the
-    /// embedded windows — where the platform's compositor can place one
-    /// surface's content above another's (water-rs/waterui#2225).
-    /// Backends with no second-root realization ignore it; `None` returns
-    /// the above-mark entries to the surface's own root.
+    /// Sets or clears the band presenting region `region` of `surface`:
+    /// the content painted above the `region`-th external host window's
+    /// mark (1-based) and beneath the next one presents into `target`,
+    /// which the host stacks between those windows
+    /// (water-rs/waterui#2225). `None` leaves the region with no band,
+    /// and its content is not shown. A renderer without a band
+    /// realization panics on the render thread
+    /// ([`Renderer::set_band`](crate::Renderer::set_band)).
     ///
     /// # Errors
     /// [`SurfaceError::Lost`] when the render thread is gone.
-    pub fn set_top_root(
+    pub fn set_band(
         &self,
         surface: &Surface<B>,
         region: usize,
         target: Option<impl Into<B::Target>>,
     ) -> Result<(), SurfaceError> {
         self.tx
-            .send(Message::SetTopRoot {
+            .send(Message::SetBand {
                 id: surface.id(),
                 region,
                 target: target.map(Into::into),

@@ -3,18 +3,21 @@ package dev.waterui.hydrolysis.testapp
 import android.view.View
 import dev.waterui.hydrolysis.HydrolysisSession
 import dev.waterui.hydrolysis.gpu.HydrolysisGpuBand
-import dev.waterui.hydrolysis.gpu.HydrolysisGpuTopBand
+import dev.waterui.hydrolysis.gpu.HydrolysisGpuRegionBand
 
-/** The GPU test app: Cherenkov paints through the bands beneath and above the host. */
+/**
+ * The GPU test app: Cherenkov paints through the band beneath the host and
+ * the region bands interleaved with its platform views.
+ */
 class MainActivity : TestActivity() {
     override fun createContentView(session: HydrolysisSession): View =
         createHost(session).apply {
             addView(HydrolysisGpuBand(this@MainActivity, session), 0)
-            // Each embedded platform view gets the band its above-mark
-            // entries present onto: the registry interleaves a band after
-            // every ordered platform view (water-rs/waterui#2225).
+            // The self-drawn content above each embedded platform view
+            // draws in the region band the registry stacks right after it
+            // (water-rs/waterui#2225).
             platformViewRegistry.bandFactory = { region ->
-                HydrolysisGpuTopBand(this@MainActivity, session, region)
+                HydrolysisGpuRegionBand(this@MainActivity, session, region)
             }
         }
 }

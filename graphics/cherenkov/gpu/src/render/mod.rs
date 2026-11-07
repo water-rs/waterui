@@ -3922,20 +3922,39 @@ impl Renderer for GpuRenderer {
         diag::set_surface(None);
     }
 
-    /// The second presentation root for surface `id`: entries above an
-    /// external host window's mark present under it — above the embedded
-    /// windows (water-rs/waterui#2225). Any non-surface-control target is
-    /// ignored: nothing outside a `SurfaceControl` hierarchy can hold the
-    /// root.
+    /// The band presenting region `region` of surface `id` — the content
+    /// above the `region`-th external host window's mark
+    /// (water-rs/waterui#2225). The target is an ordinary window: its
+    /// swapchain is the band's presentation surface, which the surface's
+    /// plane system fills with that region's engine composition.
+    ///
+    /// # Panics
+    /// When the target is not a window, when the surface presents through
+    /// no `SurfaceControl` plane system, or when the band's swapchain
+    /// cannot be created.
     #[cfg(target_os = "android")]
-    fn set_top_root(&mut self, id: SurfaceId, region: usize, target: Option<Self::Target>) {
-        let target = target.and_then(|target| match target {
-            crate::GpuTarget::SurfaceControl(target) => Some(target),
-            _ => None,
+    fn set_band(&mut self, id: SurfaceId, region: usize, target: Option<Self::Target>) {
+        let band = target.map(|target| {
+            let crate::GpuTarget::Window(window) = target else {
+                panic!("surface {id:?}: a band presents through a window target");
+            };
+            surface_control::planes::Band::new(
+                present::WindowSurface::new(
+                    &self.instance,
+                    &self.adapter,
+                    &self.device,
+                    window.handle,
+                    window.size,
+                    window.output,
+                    None,
+                )
+                .unwrap_or_else(|error| panic!("surface {id:?}: band {region} swapchain: {error}")),
+            )
         });
-        if let Some(system) = self.planes.get_mut(&id) {
-            let _ = system.set_top_root(region, target.as_ref());
-        }
+        self.planes
+            .get_mut(&id)
+            .unwrap_or_else(|| panic!("surface {id:?} has no plane system to present bands"))
+            .set_band(region, band);
     }
 
     fn destroy_surface(&mut self, id: SurfaceId) {

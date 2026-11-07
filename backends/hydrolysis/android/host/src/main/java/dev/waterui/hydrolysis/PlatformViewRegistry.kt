@@ -413,16 +413,19 @@ class PlatformViewRegistry internal constructor(
     }
 
     /**
-     * Creates the band [View] a GPU host inserts after the `region`-th
-     * ordered platform view — the boundary that region's above-mark
-     * entries present onto (water-rs/waterui#2225). `null` on hosts
-     * without second surfaces: platform views keep their contiguous
-     * child order.
+     * Creates the [RegionBand] a GPU host inserts after the `region`-th
+     * ordered platform view — the View that shows the self-drawn content
+     * painted above it (water-rs/waterui#2225). `null` on hosts whose
+     * painter draws that content in order itself: platform views keep
+     * their contiguous child order.
      */
-    var bandFactory: ((Int) -> View)? = null
+    var bandFactory: ((Int) -> RegionBand)? = null
 
-    /** The live boundary bands, keyed by the region they follow. */
-    private val bands = mutableMapOf<Int, View>()
+    /** The live bands, keyed by the region they show. */
+    private val bands = mutableMapOf<Int, RegionBand>()
+
+    /** The band showing `region`, while one is mounted. */
+    internal fun band(region: Int): RegionBand? = bands[region]
 
     private fun orderChanged(wanted: List<Placement>): Boolean {
         val step = if (bandFactory != null) 2 else 1
@@ -437,9 +440,9 @@ class PlatformViewRegistry internal constructor(
 
     private fun orderSlots(wanted: List<Placement>) {
         // Platform view `i` sits at index `2i` under a band factory, its
-        // following boundary band at `2i + 1` — a band's surface
-        // composites above the platform views before it and beneath the
-        // ones after, which is exactly what region `i + 1` presents over
+        // following band at `2i + 1` — a View drawing in child order,
+        // above the platform views before it and beneath the ones after,
+        // which is exactly where region `i + 1` paints
         // (water-rs/waterui#2225).
         val factory = bandFactory
         var index = 0

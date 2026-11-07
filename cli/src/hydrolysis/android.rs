@@ -117,24 +117,25 @@ impl HydrolysisAndroidPainter {
         }
     }
 
-    /// The band `View` this painter mounts above the platform-view
-    /// overlay — the GPU painter's `HydrolysisGpuTopBand` carries the
-    /// self-drawn entries a frame paints over its embedded views
-    /// (water-rs/waterui#2225). A painter that draws in-order ships none.
+    /// The region band `View` this painter's platform-view registry stacks
+    /// after each embedded platform view — the GPU painter's
+    /// `HydrolysisGpuRegionBand` shows the self-drawn content a frame
+    /// paints above that view (water-rs/waterui#2225). A painter that
+    /// draws in order ships none.
     #[must_use]
-    pub fn top_band_import(self) -> Option<String> {
+    pub fn region_band_import(self) -> Option<String> {
         match self {
-            Self::Gpu => Some("dev.waterui.hydrolysis.gpu.HydrolysisGpuTopBand".to_string()),
+            Self::Gpu => Some("dev.waterui.hydrolysis.gpu.HydrolysisGpuRegionBand".to_string()),
             Self::Hwui => None,
         }
     }
 
-    /// The top band class name [`Self::top_band_import`] supplies, when
-    /// set.
+    /// The region band class name [`Self::region_band_import`] supplies,
+    /// when set.
     #[must_use]
-    pub fn top_band_class(self) -> Option<String> {
+    pub fn region_band_class(self) -> Option<String> {
         match self {
-            Self::Gpu => Some("HydrolysisGpuTopBand".to_string()),
+            Self::Gpu => Some("HydrolysisGpuRegionBand".to_string()),
             Self::Hwui => None,
         }
     }
@@ -630,8 +631,8 @@ async fn template_entry(
         min_api_level: framework_min.max(painter.min_api_level()),
         painter_band_import: painter.band_import(),
         painter_band_class: painter.band_class(),
-        painter_top_band_import: painter.top_band_import(),
-        painter_top_band_class: painter.top_band_class(),
+        painter_region_band_import: painter.region_band_import(),
+        painter_region_band_class: painter.region_band_class(),
     })
 }
 

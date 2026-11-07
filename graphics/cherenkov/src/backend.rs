@@ -134,14 +134,21 @@ pub trait Renderer: 'static {
     /// that asked for a redraw while it was hidden is drawn then.
     fn set_visibility(&mut self, id: SurfaceId, visibility: Visibility);
 
-    /// Sets or clears the second presentation root for surface `id`:
-    /// entries above an external host window's mark present under it —
-    /// above the embedded windows — where the platform's compositor can
-    /// place one surface's content above another's
-    /// (water-rs/waterui#2225). Backends without a second-root
-    /// realization ignore it: the above-mark entries keep presenting
-    /// under the surface's own root, beneath the windows.
-    fn set_top_root(&mut self, _id: SurfaceId, _region: usize, _target: Option<Self::Target>) {}
+    /// Sets or clears the band that presents region `region` of surface
+    /// `id` — the content painted above the `region`-th external host
+    /// window's mark (1-based) and beneath the next one
+    /// (water-rs/waterui#2225). The host stacks the band's presentation
+    /// target between those windows; `None` leaves the region with no
+    /// band, and its content is not shown rather than drawn beneath a
+    /// window it covers.
+    ///
+    /// # Panics
+    /// The default: the renderer has no band realization, so a host that
+    /// splits a surface into bands is using the wrong renderer.
+    fn set_band(&mut self, id: SurfaceId, region: usize, target: Option<Self::Target>) {
+        let _ = target;
+        panic!("surface {id:?}: this renderer cannot present region {region} in a band");
+    }
 
     /// Destroys a surface's render-side state.
     fn destroy_surface(&mut self, id: SurfaceId);

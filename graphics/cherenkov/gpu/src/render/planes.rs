@@ -125,6 +125,15 @@ pub trait Compositor {
     /// observes static layers nor offers them as candidates.
     const CAPTURES: bool = true;
 
+    /// Whether each region above a host-window mark presents as one
+    /// engine-composited band buffer the host stacks above that window
+    /// (water-rs/waterui#2225): no system layer can sit between the
+    /// host's windows, so nothing painted above the first mark promotes
+    /// — frames and captures composite into their region's band, and
+    /// hosted content there is unplaceable
+    /// ([`Ineligible::AboveHostWindow`]).
+    const HOST_WINDOW_BANDS: bool = false;
+
     /// Whether a system layer shows `frame` itself, with the colour the
     /// frame declares: its planes are a buffer the system compositor can
     /// scan out. Only such frames are candidates.
@@ -192,6 +201,11 @@ pub enum Ineligible {
     /// The surface's plane budget is spent.
     #[error("the plane budget of {0} per surface is spent")]
     Budget(usize),
+    /// A host window's mark is painted beneath it: its region presents
+    /// as one engine-composited band buffer above that window, which no
+    /// system layer can join ([`Compositor::HOST_WINDOW_BANDS`]).
+    #[error("host window {0:?} is painted beneath it, and its band shows engine pixels only")]
+    AboveHostWindow(LayerId),
 }
 
 /// One level of the path from the root to a promoted layer: the sampled
@@ -499,6 +513,19 @@ fn verdicts<'a, C: Compositor>(
         );
         Some((i, verdict))
     }));
+    if C::HOST_WINDOW_BANDS {
+        // Everything after the first offered mark lies in a band region:
+        // only further marks split it, nothing else reaches a plane.
+        let mut mark = None;
+        for (i, verdict) in decisions.iter_mut() {
+            let id = order[*i].id;
+            if candidates[&id].source == Source::HostWindow {
+                mark.get_or_insert(id);
+            } else if let Some(mark) = mark {
+                *verdict = Err(Ineligible::AboveHostWindow(mark));
+            }
+        }
+    }
     let mut promoted = 0;
     for source in Source::BUDGET_ORDER {
         for (i, verdict) in decisions.iter_mut() {

@@ -992,10 +992,28 @@ impl WindowSurface {
         Ok(())
     }
 
+    /// The presentation conventions of `texture`, one of this swapchain's
+    /// images, for a frame on a display with `headroom`.
+    pub(crate) const fn output<'a>(
+        &self,
+        texture: &'a wgpu::Texture,
+        headroom: f32,
+    ) -> TextureOutput<'a> {
+        TextureOutput {
+            texture,
+            color: self.selection.output_color(),
+            alpha: surface_output_alpha(self.config.alpha_mode),
+            headroom: self.selection.effective_headroom(headroom),
+        }
+    }
+
     /// Acquires the next swapchain image, reconfiguring once when the
     /// swapchain is outdated or lost. `None` skips the frame: the window is
     /// occluded or the acquire timed out.
-    fn acquire(&self, device: &wgpu::Device) -> Result<Option<wgpu::SurfaceTexture>, RenderError> {
+    pub(crate) fn acquire(
+        &self,
+        device: &wgpu::Device,
+    ) -> Result<Option<wgpu::SurfaceTexture>, RenderError> {
         use wgpu::CurrentSurfaceTexture as Current;
         let acquired = match self.surface.get_current_texture() {
             Current::Outdated | Current::Lost => {
@@ -1153,17 +1171,11 @@ impl Presenter {
         let Some(frame) = window.acquire(device)? else {
             return Ok(None);
         };
-        let alpha = surface_output_alpha(window.config.alpha_mode);
         self.texture(
             device,
             queue,
             source,
-            TextureOutput {
-                texture: &frame.texture,
-                color: window.selection.output_color(),
-                alpha,
-                headroom: window.selection.effective_headroom(headroom),
-            },
+            window.output(&frame.texture, headroom),
         );
         Ok(Some(frame))
     }

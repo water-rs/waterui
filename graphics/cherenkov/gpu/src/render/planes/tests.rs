@@ -1085,3 +1085,85 @@ fn the_first_hosted_layer_in_paint_order_is_found() {
     );
     assert_eq!(super::first_in_paint_order(&tree, |_| false), None);
 }
+
+/// A compositor whose regions above a host-window mark present as
+/// engine-composited bands, as Android's does.
+struct Bands;
+
+impl Compositor for Bands {
+    const BUDGET: usize = 4;
+    const HOSTS_OPACITY: bool = true;
+    const HOST_WINDOW_BANDS: bool = true;
+    fn expresses_transform(transform: Affine) -> bool {
+        axis_aligned(transform)
+    }
+    fn expresses_clip(clip: &ShapeData) -> bool {
+        matches!(clip, ShapeData::Rect(_) | ShapeData::RoundedRect(_))
+    }
+    fn shows(_: &crate::interop::ExternalFrame) -> bool {
+        true
+    }
+}
+
+fn host_window() -> Candidate {
+    Candidate {
+        size: (0, 0),
+        raster: Affine::IDENTITY,
+        source: Source::HostWindow,
+    }
+}
+
+/// With band regions, `BELOW` as a host window's mark puts the video in
+/// the band above it: the frame composites into that band, a hosted
+/// layer there is unplaced, and the mark alone splits the surface.
+/// Painted beneath the mark, the video still promotes.
+#[test]
+fn nothing_above_a_host_window_mark_reaches_a_plane() {
+    let tree = scene();
+    let frame: FxHashMap<LayerId, Candidate> = [(BELOW, host_window()), (VIDEO, SIZE.into())]
+        .into_iter()
+        .collect();
+    let banded = plan::<Bands>(&tree, &frame, &all_ready(&frame));
+    assert_eq!(
+        banded.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [BELOW]
+    );
+    assert_eq!(
+        banded.rejected,
+        [(VIDEO, Ineligible::AboveHostWindow(BELOW))]
+    );
+    assert_eq!(
+        banded.parts(),
+        2,
+        "the base part and the band region above the mark"
+    );
+    // The same tree on a compositor without bands promotes both.
+    let unbanded = plan::<Test>(&tree, &frame, &all_ready(&frame));
+    assert_eq!(
+        unbanded.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [BELOW, VIDEO]
+    );
+
+    let hosted: FxHashMap<LayerId, Candidate> =
+        [(BELOW, host_window()), (VIDEO, hosted_candidate())]
+            .into_iter()
+            .collect();
+    let hosted_plan = plan::<Bands>(&tree, &hosted, &FxHashSet::default());
+    assert_eq!(
+        hosted_plan.unplaced,
+        [(VIDEO, Ineligible::AboveHostWindow(BELOW))]
+    );
+
+    let above: FxHashMap<LayerId, Candidate> = [(ABOVE, host_window()), (VIDEO, SIZE.into())]
+        .into_iter()
+        .collect();
+    let beneath = plan::<Bands>(&tree, &above, &all_ready(&above));
+    assert_eq!(
+        beneath.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [VIDEO, ABOVE]
+    );
+    assert!(
+        !beneath.trailing,
+        "nothing is painted above the topmost mark"
+    );
+}
