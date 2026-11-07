@@ -97,7 +97,7 @@ pub use aux_image::{FilterImage, LutImage};
 pub use effect::{
     Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRedrawCallback, EffectRenderError, EffectRenderResult, EffectSetupError,
-    EffectSetupResult, RetainedMemory,
+    EffectSetupResult, RetainedMemory, TextureViews,
 };
 #[cfg(feature = "gpu")]
 pub use executor::Executor;

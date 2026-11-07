@@ -23,7 +23,7 @@ use crate::{
     aux_image::TextureImage,
     effect::{
         EffectContext, EffectInput, EffectOutput, EffectRenderError, EffectSetupError,
-        RetainedMemory,
+        RetainedMemory, TextureViews,
     },
     pipeline_cache::{self, PassCompile, PassKey, PassPipeline},
 };
@@ -164,6 +164,8 @@ pub(super) struct Gpu {
     /// Intermediate slots per input size, capped; a frame can encode one
     /// effect against several sizes (backdrop capture regions).
     pub(super) intermediates: Vec<Intermediates>,
+    /// Views of the host's input and output textures.
+    views: TextureViews,
     input_format: wgpu::TextureFormat,
     output_format: wgpu::TextureFormat,
 }
@@ -305,6 +307,7 @@ impl Gpu {
             },
             shape,
             intermediates: Vec::new(),
+            views: TextureViews::new(),
             input_format: ctx.input_format,
             output_format: ctx.output_format,
         })
@@ -356,16 +359,16 @@ impl Gpu {
         encoder: &mut wgpu::CommandEncoder,
         values: &[f32],
     ) -> Result<(), EffectRenderError> {
-        if input.format != self.input_format || output.format != self.output_format {
+        if input.format() != self.input_format || output.format() != self.output_format {
             return Err(EffectRenderError::FormatMismatch {
-                input: input.format,
-                output: output.format,
+                input: input.format(),
+                output: output.format(),
                 setup_input: self.input_format,
                 setup_output: self.output_format,
             });
         }
-        let size = (input.width, input.height);
-        let sequence = input.timing.sequence();
+        let size = input.size();
+        let sequence = input.timing().sequence();
         // A used size is live this frame: mark it before stale sizes are
         // dropped so steady state reuses its slots.
         if let Some(index) = self
@@ -399,13 +402,15 @@ impl Gpu {
                 self.intermediates.len() - 1
             });
 
+        let input_view = self.views.view(input.texture(), sequence);
+        let output_view = self.views.view(output.texture(), sequence);
         let Intermediates {
             views: slots,
             shape: field,
             ..
         } = &self.intermediates[intermediates_index];
         if let (Some(builder), Some(field)) = (&self.shape, field) {
-            builder.encode(input.device, encoder, &input.view, field);
+            builder.encode(input.device(), encoder, &input_view, field);
         }
         let sdf = field.as_ref().map(FieldTargets::field);
         let slot_of = &self.slot_of;
@@ -413,14 +418,14 @@ impl Gpu {
         for (index, pass) in self.passes.iter_mut().enumerate() {
             let output_scale = pass.output_scale.as_mut().map(|buffers| {
                 buffers.select(
-                    input.device,
-                    input.queue,
-                    scale_words(size, (output.width, output.height)),
+                    input.device(),
+                    input.queue(),
+                    scale_words(size, output.size()),
                     sequence,
                 )
             });
             let params = pass
-                .params_index(input.device, input.queue, values, size, sequence)
+                .params_index(input.device(), input.queue(), values, size, sequence)
                 .map(|index| pass.params.buffer(index));
 
             let output_scale = output_scale.map(|index| {
@@ -431,7 +436,8 @@ impl Gpu {
             });
             let bind_group = pass.bind_group(
                 index,
-                input,
+                input.device(),
+                &input_view,
                 &self.shared,
                 slots,
                 slot_of,
@@ -443,7 +449,7 @@ impl Gpu {
             );
 
             let target = if index == last {
-                &output.view
+                &output_view
             } else {
                 &slots[slot_of[index]]
             };
@@ -538,9 +544,10 @@ impl GpuPass {
         })
     }
 
-    /// Binds the pass's inputs for one frame. `params` is the uniform
-    /// buffer [`Self::params_index`] selected for this encode; `sdf` is this
-    /// frame's shape field, present whenever a pass reads it.
+    /// Binds the pass's inputs for one frame. `input` is the view of the
+    /// chain's input, `params` the uniform buffer [`Self::params_index`]
+    /// selected for this encode, and `sdf` this frame's shape field,
+    /// present whenever a pass reads it.
     #[expect(
         clippy::too_many_arguments,
         reason = "each argument is a distinct per-frame binding source of the pass"
@@ -548,7 +555,8 @@ impl GpuPass {
     fn bind_group(
         &self,
         index: usize,
-        input: &EffectInput<'_>,
+        device: &wgpu::Device,
+        input: &wgpu::TextureView,
         shared: &Shared,
         slots: &[wgpu::TextureView],
         slot_of: &[usize],
@@ -588,7 +596,7 @@ impl GpuPass {
         }
         if let Some(shape) = self.plan.shape {
             let view = match shape {
-                ShapeInput::Mask => &input.view,
+                ShapeInput::Mask => input,
                 ShapeInput::Sdf => {
                     sdf.expect("setup builds the shape field whenever a pass reads it")
                 }
@@ -608,7 +616,7 @@ impl GpuPass {
                 resource: wgpu::BindingResource::TextureView(view),
             });
         }
-        input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("filtrate pass bindings"),
             layout: &self.layout,
             entries: &entries,
@@ -761,12 +769,12 @@ fn layout_entries(plan: &PassPlan, resizes_output: bool) -> Vec<wgpu::BindGroupL
 /// The texture pass `pass` reads as its input.
 fn input_view<'a>(
     pass: usize,
-    input: &'a EffectInput<'_>,
+    input: &'a wgpu::TextureView,
     slots: &'a [wgpu::TextureView],
     slot_of: &[usize],
 ) -> &'a wgpu::TextureView {
     pass.checked_sub(1)
-        .map_or(&input.view, |previous| &slots[slot_of[previous]])
+        .map_or(input, |previous| &slots[slot_of[previous]])
 }
 
 /// Assigns every intermediate (the output of every pass but the last) a
@@ -818,11 +826,11 @@ impl Intermediates {
             last_used,
             views: (0..count)
                 .map(|_| {
-                    intermediate_texture(input.device, size)
+                    intermediate_texture(input.device(), size)
                         .create_view(&wgpu::TextureViewDescriptor::default())
                 })
                 .collect(),
-            shape: shape.map(|shape| shape.targets(input.device, input.queue, size)),
+            shape: shape.map(|shape| shape.targets(input.device(), input.queue(), size)),
         }
     }
 }

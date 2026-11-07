@@ -30,15 +30,14 @@ impl Effect for CopyEffect {
         output: &EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult {
-        assert_eq!(input.texture.width(), input.width);
-        assert_eq!(input.texture.height(), input.height);
-        self.0.send(input.timing).expect("timing receiver alive");
+        self.0.send(input.timing()).expect("timing receiver alive");
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -240,13 +239,14 @@ impl Effect for ObservedEffect {
         output: &EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult {
-        self.timings.send(input.timing).expect("timing receiver");
+        self.timings.send(input.timing()).expect("timing receiver");
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
