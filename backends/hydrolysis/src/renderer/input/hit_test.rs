@@ -514,6 +514,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             placement: crate::platform_view::PlatformViewPlacement,
             frame: kurbo::Rect,
             clip: kurbo::Rect,
+            /// The overscroll stretches warping the view and the window
+            /// region it draws into while they show.
+            stretches: Vec<crate::platform_view::PlacementStretch>,
+            stretch_region: Option<kurbo::Rect>,
             #[cfg(any(test, hydrolysis_hwui))]
             owner: Weak<mount::NodeCell<E>>,
             #[cfg(any(test, hydrolysis_hwui))]
@@ -801,6 +805,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 let (transform, clip, _alpha) = entry.region.placement.resolved_chain(false);
                 let frame = crate::renderer::transformed_rect(transform, entry.region.local);
                 let clipped = clip.map_or(frame, |clip| frame.intersect(clip));
+                // The warp moves the view's content past its frame, inside
+                // the stretching viewports: the host lays the view out in
+                // the frame joined with them, cut by the paint chain's clip.
+                let resolved = entry.region.placement.resolved_stretches();
+                let stretch_region = (!resolved.is_empty()).then(|| {
+                    let joined = resolved
+                        .iter()
+                        .fold(frame, |joined, stretch| joined.union(stretch.viewport));
+                    clip.map_or(joined, |clip| joined.intersect(clip))
+                });
+                let stretches = resolved
+                    .into_iter()
+                    .map(|stretch| crate::platform_view::PlacementStretch {
+                        params: stretch.params,
+                        strength: stretch.strength,
+                    })
+                    .collect();
                 orders.push(entry.order.clone());
                 staged_platform.push(StagedPlatform {
                     order: entry.order.clone(),
@@ -808,6 +829,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     placement: entry.payload.placement.clone(),
                     frame,
                     clip: clipped,
+                    stretches,
+                    stretch_region,
                     #[cfg(any(test, hydrolysis_hwui))]
                     owner: entry.owner.clone(),
                     #[cfg(any(test, hydrolysis_hwui))]
@@ -972,6 +995,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     placement.set_order(rank(&staged.order) as u32);
                 }
                 placement.set_visible(!clipped.is_zero_area());
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "window coordinates fit f32 — same cast as the frame above"
+                )]
+                placement.set_stretch(
+                    staged.stretches,
+                    staged.stretch_region.map(|region| {
+                        [
+                            region.x0 as f32,
+                            region.y0 as f32,
+                            region.width() as f32,
+                            region.height() as f32,
+                        ]
+                    }),
+                );
                 crate::renderer::MaterializedPlatformView {
                     table: staged.table,
                     placement,
@@ -1056,6 +1094,43 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
+    /// The topmost placed platform view whose frame and clip cover `point`
+    /// (window logical coordinates, the space the placements are in) —
+    /// `None` when no view is drawn there. The
+    /// GPU band's ordered hit test asks this instead of an encoder record.
+    #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
+    // Alive only on Android's GPU painter — HWUI asks its encoder instead.
+    #[cfg_attr(
+        not(all(target_os = "android", hydrolysis_gpu_painter)),
+        allow(dead_code)
+    )]
+    pub(crate) fn platform_view_at(&self, point: kurbo::Point) -> Option<u64> {
+        self.materialized_platform_views
+            .iter()
+            .filter(|staged| {
+                let placement = &staged.placement;
+                let (x, y, w, h) = (
+                    f64::from(placement.x()),
+                    f64::from(placement.y()),
+                    f64::from(placement.width()),
+                    f64::from(placement.height()),
+                );
+                let inside = kurbo::Rect::new(x, y, x + w, y + h).contains(point)
+                    && placement.clip().is_none_or(|clip| {
+                        let (cx, cy, cw, ch) = (
+                            f64::from(clip[0]),
+                            f64::from(clip[1]),
+                            f64::from(clip[2]),
+                            f64::from(clip[3]),
+                        );
+                        kurbo::Rect::new(cx, cy, cx + cw, cy + ch).contains(point)
+                    });
+                placement.visible() && inside
+            })
+            .max_by_key(|staged| staged.placement.order())
+            .map(|staged| staged.placement.id())
+    }
+
     /// Whether Hydrolysis takes the hit at `point` (window hit-test space)
     /// over the platform view placed as `view` — an interactive target
     /// painted above the view covers the point. The same rule hosted planes
@@ -1065,7 +1140,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ///
     /// When this frame placed no platform view `view`: the caller names a
     /// view the same frame's placements bound.
-    #[cfg(any(test, hydrolysis_hwui))]
+    #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
+    #[cfg_attr(all(not(target_os = "android"), not(test)), expect(dead_code))]
     pub(crate) fn platform_view_occluded(&self, view: u64, point: kurbo::Point) -> bool {
         let placed = self
             .materialized_platform_views
@@ -1211,7 +1287,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
     /// of them covers. Self-drawn content that registered no target never
     /// blocks a native view. Embedded targets answer their transformed
     /// bounding box, as every rect here is axis-aligned.
-    #[cfg(any(hydrolysis_hosted, test))]
+    #[cfg(any(hydrolysis_hosted, hydrolysis_gpu_painter, test))]
     fn interactive_regions_above<'a>(
         &'a self,
         order: usize,

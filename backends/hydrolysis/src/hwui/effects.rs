@@ -8,7 +8,7 @@
 //! working space — and conjugated before upload (`P3→sRGB · M · sRGB→P3`)
 //! because the platform shader's `toLinearSrgb`/`fromLinearSrgb` pair bounds
 //! the matrix to sRGB primaries. Registration validates the whole chain
-//! before allocating an id: an unsupported link or API level rejects without
+//! before allocating an id: an unsupported link rejects without
 //! consuming a registration.
 
 use std::cell::RefCell;
@@ -97,7 +97,6 @@ impl std::fmt::Debug for Effects {
 
 struct EffectStore {
     registry: SharedRegistry,
-    api_level: u32,
     /// Initial definitions not yet emitted; an entry here outlives its
     /// registration, so a register+drop still defines before it releases.
     pending: Vec<(u32, Vec<EffectStage>)>,
@@ -128,11 +127,10 @@ impl Drop for EffectRegistration {
 }
 
 impl Effects {
-    /// Effect state sharing `registry`'s tables, on a device at `api_level`.
-    pub(crate) fn new(registry: SharedRegistry, api_level: u32) -> Self {
+    /// Effect state sharing `registry`'s tables.
+    pub(crate) fn new(registry: SharedRegistry) -> Self {
         Self(Rc::new(RefCell::new(EffectStore {
             registry,
-            api_level,
             pending: Vec::new(),
             entries: BTreeMap::new(),
             last: None,
@@ -147,8 +145,7 @@ impl Effects {
     /// # Errors
     ///
     /// [`HwuiError::Unsupported`] for a GPU effect, an output-size override
-    /// or a link no native stage covers; [`HwuiError::RequiresApi`] for a
-    /// blur below API 31 or a colour stage below API 33.
+    /// or a link no native stage covers.
     pub(crate) fn register(
         &self,
         source: AnyEffect,
@@ -169,19 +166,6 @@ impl Effects {
                 "an effect chain of {} stages exceeds the {MAX_EFFECT_STAGES}-stage record limit",
                 plan.0.len()
             )));
-        }
-        let api = self.0.borrow().api_level;
-        // The whole chain must fit the device before the id is allocated.
-        for step in &plan.0 {
-            match step {
-                PlanStep::Blur { .. } if api < 31 => {
-                    return Err(requires_api("a blur filter", 31, api));
-                }
-                PlanStep::ColorRun(_) if api < 33 => {
-                    return Err(requires_api("a colour filter", 33, api));
-                }
-                _ => {}
-            }
         }
         let params = description.params();
         if params.iter().any(|p| !p.is_finite()) {
@@ -289,15 +273,6 @@ fn unsupported(what: impl Into<String>) -> HwuiError {
     HwuiError::Unsupported {
         layer: 0,
         what: what.into(),
-    }
-}
-
-const fn requires_api(what: &'static str, needs: u32, device: u32) -> HwuiError {
-    HwuiError::RequiresApi {
-        layer: 0,
-        what,
-        needs,
-        device,
     }
 }
 
@@ -752,16 +727,14 @@ mod tests {
 
     use waterui_graphics::filtrate::{FilterExt, Interpolator};
 
-    fn fixture(
-        api: u32,
-    ) -> (
+    fn fixture() -> (
         SharedRegistry,
         Effects,
         std::sync::Arc<AtomicUsize>,
         EffectWake,
     ) {
         let registry = SharedRegistry::new();
-        let effects = Effects::new(registry.clone(), api);
+        let effects = Effects::new(registry.clone());
         let wakes = std::sync::Arc::new(AtomicUsize::new(0));
         let wake: EffectWake = {
             let wakes = std::sync::Arc::clone(&wakes);
@@ -778,26 +751,6 @@ mod tests {
     }
 
     #[test]
-    fn api_levels_gate_blur_and_colour_at_registration() {
-        let blur = || AnyEffect::filter(filters::Blur(2.0f32));
-        let color = || AnyEffect::filter(filters::Brightness(0.5f32));
-        let (_, e30, _, w30) = fixture(30);
-        assert!(matches!(
-            e30.register(blur(), w30),
-            Err(HwuiError::RequiresApi { needs: 31, .. })
-        ));
-        let (_, e31, _, w31) = fixture(31);
-        assert!(e31.register(blur(), w31).is_ok());
-        let (_, e32, _, w32) = fixture(32);
-        assert!(matches!(
-            e32.register(color(), w32),
-            Err(HwuiError::RequiresApi { needs: 33, .. })
-        ));
-        let (_, e33, _, w33) = fixture(33);
-        assert!(e33.register(color(), w33).is_ok());
-    }
-
-    #[test]
     fn unsupported_links_name_their_declared_stages() {
         let cases = [
             ("Gamma", AnyEffect::filter(filters::Gamma(0.5f32))),
@@ -807,7 +760,7 @@ mod tests {
             ),
         ];
         for (name, source) in cases {
-            let (_, effects, _, wake) = fixture(34);
+            let (_, effects, _, wake) = fixture();
             let error = effects.register(source, wake).map(|_| ()).unwrap_err();
             let message = error.to_string();
             assert!(message.contains(name), "{message}");
@@ -816,7 +769,7 @@ mod tests {
 
     #[test]
     fn a_late_unknown_link_rejects_before_any_id_allocates() {
-        let (_registry, effects, _, wake) = fixture(34);
+        let (_registry, effects, _, wake) = fixture();
         // A supported link followed by an unsupported one: the whole
         // registration must fail before an id is consumed.
         let chain = AnyEffect::filter(filters::Brightness(0.2f32).then(filters::Gamma(0.5f32)));
@@ -834,7 +787,7 @@ mod tests {
 
     #[test]
     fn failed_registrations_consume_no_ids() {
-        let (_, effects, _, wake) = fixture(34);
+        let (_, effects, _, wake) = fixture();
         // A finite parameter producing an infinite matrix fails at sample,
         // before acquire — like an unsupported stage, it leaves no id.
         let infinite = AnyEffect::filter(filters::Exposure(1000f32));
@@ -999,7 +952,7 @@ mod tests {
             },
         ];
         for case in cases {
-            let (_registry, effects, _, wake) = fixture(34);
+            let (_registry, effects, _, wake) = fixture();
             let mut guards = fv::ParamGuards::default();
             let registration = effects.register((case.build)(&mut guards), wake);
             let registration =
@@ -1027,7 +980,7 @@ mod tests {
         let binding = nami::binding::<f32>(0.2f32);
         let mut guards = fv::ParamGuards::default();
         let source = AnyEffect::filter(filters::Brightness(guards.bind(binding.clone())));
-        let (_registry, effects, wakes, wake) = fixture(34);
+        let (_registry, effects, wakes, wake) = fixture();
         let registration = effects.register(source, wake).unwrap();
         let mut buffer = CommandBuffer::new();
         buffer.begin_frame();
@@ -1061,7 +1014,7 @@ mod tests {
 
     #[test]
     fn register_and_drop_before_the_first_frame_still_defines_first() {
-        let (registry, effects, _, wake) = fixture(34);
+        let (registry, effects, _, wake) = fixture();
         let registration = effects
             .register(
                 AnyEffect::filter(filters::Brightness(0.5f32)),
@@ -1108,7 +1061,7 @@ mod tests {
     #[test]
     fn parameter_animations_sample_deterministically() {
         use waterui_graphics::filtrate::AnimatedTarget;
-        let (_registry, effects, _, wake) = fixture(34);
+        let (_registry, effects, _, wake) = fixture();
         let registration = effects
             .register(AnyEffect::filter(filters::Brightness(0.0f32)), wake)
             .unwrap();
@@ -1211,7 +1164,7 @@ mod tests {
         });
         let fv::FilteredView { effect, guards, .. } = view;
         assert!(effect.output_size().is_some());
-        let (_registry, effects, _, wake) = fixture(34);
+        let (_registry, effects, _, wake) = fixture();
         assert!(effects.register(effect, Arc::clone(&wake)).is_err());
         drop(guards);
         // The rejection consumed no id: the next registration gets slot 0.
@@ -1249,7 +1202,7 @@ mod tests {
         impl waterui_graphics::filtrate::ColorFilter for Custom {
             const LINEAR: bool = true;
         }
-        let (_, effects, _, wake) = fixture(34);
+        let (_, effects, _, wake) = fixture();
         let error = effects
             .register(AnyEffect::filter(Custom), wake)
             .map(|_| ())

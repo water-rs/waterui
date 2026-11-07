@@ -10,7 +10,7 @@ android {
         // The framework floor (`android-min-api-level` in the workspace
         // metadata). Mesh draws (34) and runtime shaders (33) check the
         // device level on the Rust side before they are encoded.
-        minSdk = 31
+        minSdk = 33
     }
 
     testOptions {

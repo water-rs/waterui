@@ -426,6 +426,12 @@ impl<E: crate::text::TextEngine> ProgramBuilder<E> {
             self.scopes.is_empty() && self.program.inner.is_none(),
             "hydrolysis program: the inner layer opens once, outside every scope"
         );
+        // The viewport's placement states the stretch too, so a platform
+        // view inside resolves the warp its host applies to it.
+        anchor.set_stretch(stretch.map(|direction| super::stretch::ShownStretch {
+            viewport,
+            direction,
+        }));
         self.program.inner = Some(InnerProgram {
             viewport,
             offset,

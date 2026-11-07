@@ -1825,6 +1825,9 @@ pub struct EngineAndroidTarget<'a> {
     /// Whether the window's planes composite with what lies behind it —
     /// `SurfaceControlTarget::transparent` when the engine surface is created.
     pub transparent: bool,
+    /// Where the engine surface hands frames that changed its bands
+    /// (water-rs/waterui#2225).
+    pub band_commits: &'a std::sync::mpsc::Sender<cherenkov_gpu::interop::android::BandCommit>,
 }
 
 /// The window's platform safe area in logical units.

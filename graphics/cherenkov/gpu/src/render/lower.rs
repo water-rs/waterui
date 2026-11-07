@@ -1731,12 +1731,18 @@ struct Isolation {
 }
 
 impl Isolation {
-    /// Whether the scope composites identically to drawing its items
-    /// under the intersected coverage — opacity 1, `Normal` blend,
-    /// linear storage, no filter: the scopes `run_clipped` opens, whose
-    /// segments a part boundary may split across engine parts.
-    fn clip_only(&self) -> bool {
-        self.filter.is_none()
+    /// Whether a part boundary may split the scope's segments across
+    /// engine parts: opacity 1, `Normal` blend, linear storage, and either
+    /// no filter — the scopes `run_clipped` opens, which composite
+    /// identically to drawing their items under the intersected coverage —
+    /// or a pure coordinate remap, which commutes with the source-over of
+    /// the segments: the filtered whole is the filtered segments composed
+    /// in paint order, up to edge filtering. Each segment's scope filters
+    /// in the same device space (the filter's parameters are device-space
+    /// and the scratch covers the surface).
+    fn splittable(&self) -> bool {
+        self.filter
+            .is_none_or(cherenkov::FilterId::is_coordinate_remap)
             && self.opacity >= 1.0
             && self.blend == cherenkov::BlendMode::Normal
             && self.storage == cherenkov::BlendSpace::Linear
@@ -2565,15 +2571,17 @@ impl<'a> Lowering<'a> {
     /// Ends the current engine part at a promoted layer's paint position and
     /// starts the next one, transparent, for everything painted above it.
     ///
-    /// A part boundary inside clip-only isolations splits each enclosing
+    /// A part boundary inside splittable isolations splits each enclosing
     /// scope: its already-drawn segment composites into the current part,
     /// and the scope reopens over the new part with a fresh scratch pass,
     /// so its tail composites the second segment there. A clip-only
     /// composite is identical to drawing each item under the intersected
-    /// coverage, so the split is exact.
+    /// coverage, so that split is exact; a coordinate-remap filter scope
+    /// filters each segment in the same device space, which composes to the
+    /// filtered whole up to edge filtering ([`Isolation::splittable`]).
     ///
     /// # Panics
-    /// When lowering is inside an isolation that is not clip-only or a
+    /// When lowering is inside an isolation that is not splittable or a
     /// projective local image: eligibility keeps every promoted layer at
     /// the surface level, so this is an engine defect.
     fn next_part(&mut self) {
@@ -2586,7 +2594,7 @@ impl<'a> Lowering<'a> {
             let innermost = self
                 .isolations
                 .last()
-                .filter(|entry| entry.scratch == self.depth - 1 && entry.clip_only());
+                .filter(|entry| entry.scratch == self.depth - 1 && entry.splittable());
             assert!(
                 innermost.is_some(),
                 "a promoted layer must composite at the surface level"
@@ -8676,15 +8684,76 @@ mod tests {
         );
     }
 
-    /// A promoted layer under an isolation that is not clip-only still
-    /// fails the lowering: neither a translucent ancestor nor a blended
-    /// one can straddle a part boundary.
+    /// A promoted layer under a coordinate-remap filter splits the filter
+    /// scope at its part boundary: the content beneath it is filtered into
+    /// part 0, the content above it into part 1, each by its own scratch
+    /// pass carrying the same filter.
+    #[test]
+    fn a_promoted_layer_inside_a_remap_filter_splits_the_filtered_scope() {
+        use cherenkov::testing::LayerOp;
+        let [holder, below, video, overlay, above] = [1, 2, 3, 4, 5].map(LayerId::new);
+        let mut tree = tree_of(
+            &[holder, below, video, overlay, above],
+            &[
+                (None, holder),
+                (Some(holder), below),
+                (Some(holder), video),
+                (Some(holder), overlay),
+                (None, above),
+            ],
+        );
+        let filter = cherenkov::FilterId::new(7).with_coordinate_remap(true);
+        tree.apply(LayerOp::Filter(holder, Some(filter)));
+        let Some(frame) = lower_promoted(
+            &tree,
+            [
+                (below, square(0.0, 0.0)),
+                (overlay, square(8.0, 0.0)),
+                (above, square(16.0, 0.0)),
+            ],
+            video,
+        ) else {
+            return;
+        };
+        assert_eq!(
+            frame
+                .passes
+                .iter()
+                .map(|p| (p.target, p.clear, p.ranges.len()))
+                .collect::<Vec<_>>(),
+            [
+                (Target::Part(0), Some([0.0, 0.0, 0.0, 1.0]), 0),
+                (Target::Scratch(0), Some([0.0; 4]), 1),
+                (Target::Part(0), None, 1),
+                (Target::Part(1), Some([0.0; 4]), 0),
+                (Target::Scratch(0), Some([0.0; 4]), 1),
+                (Target::Part(1), None, 2),
+            ]
+        );
+        let filtered: Vec<(usize, FilterKey)> = frame
+            .passes
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.target == Target::Scratch(0))
+            .map(|(index, _)| (index, FilterKey::Layer(7)))
+            .collect();
+        assert_eq!(
+            frame.filters, filtered,
+            "every region's scratch runs the same filter"
+        );
+    }
+
+    /// A promoted layer under an isolation that is not splittable still
+    /// fails the lowering: neither a translucent ancestor, a blended one
+    /// nor a filter that is not a coordinate remap can straddle a part
+    /// boundary.
     #[test]
     fn a_promoted_layer_inside_a_non_clip_isolation_still_panics() {
         use cherenkov::Prop;
         use cherenkov::testing::LayerOp;
         let [holder, video, above] = [1, 2, 3].map(LayerId::new);
         for style in [
+            LayerOp::Filter(holder, Some(cherenkov::FilterId::new(7))),
             LayerOp::Opacity(
                 holder,
                 Prop {

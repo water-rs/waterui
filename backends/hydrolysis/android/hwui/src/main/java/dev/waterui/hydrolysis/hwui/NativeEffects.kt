@@ -3,24 +3,23 @@ package dev.waterui.hydrolysis.hwui
 import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
 import android.graphics.Shader
-import android.os.Build
-import androidx.annotation.RequiresApi
 
 /**
  * Builds the platform `RenderEffect` chain a `DefineEffect` record describes:
  * `createBlurEffect` stages plus one linear-light matrix shader per colour
- * run, chained inner-to-outer in application order. Registration on the Rust
- * side already rejects a chain the device's API level cannot run; the checks
- * here keep a malformed replay honest rather than second-guessing it.
+ * run, chained inner-to-outer in application order. Every stage runs on the
+ * API floor; the checks here keep a malformed replay honest.
  */
 private const val LINEAR_COLOR_SHADER = "dev/waterui/hydrolysis/hwui/linear_color.agsl"
 
 internal class NativeEffects {
     private var source: String? = null
 
-    @RequiresApi(33)
     private fun linearShader(): RuntimeShader {
-        val cached = source ?: NativeEffects::class.java.classLoader
+        val loader = checkNotNull(NativeEffects::class.java.classLoader) {
+            "HWUI replay: NativeEffects has no class loader to read its AGSL resource"
+        }
+        val cached = source ?: loader
             .getResourceAsStream(LINEAR_COLOR_SHADER)
             ?.use { it.readBytes().toString(Charsets.UTF_8) }
             ?: throw CommandBufferException("HWUI replay: the linear-color AGSL resource is missing")
@@ -29,9 +28,6 @@ internal class NativeEffects {
     }
 
     fun build(effect: Int, count: Int, kinds: IntArray, values: FloatArray): RenderEffect {
-        if (Build.VERSION.SDK_INT < 33 && (0 until count).any { kinds[it] == EffectKind.LINEAR_COLOR }) {
-            throw CommandBufferException("HWUI replay: colour effect $effect needs API 33")
-        }
         var chain: RenderEffect? = null
         for (i in 0 until count) {
             val stage: RenderEffect? = when (kinds[i]) {
