@@ -4013,10 +4013,12 @@ mod gpu_surface {
             ),
         )
         .map_err(|error| format!("a render over the healthy GPU child resolves Ok: {error}"))?;
-        // The rendered leaf is measured detached, so the capture rasters
-        // at the backing scale a windowless view reports.
-        let scale =
-            cocoa_ui::view::backing_scale_factor(&cocoa_ui::PlatformView::new(super::mtm()));
+        // The rendered leaf joins a never-ordered capture window before it
+        // is measured, so the capture rasters at the backing scale AppKit
+        // reports for that window — the screen's, not a detached view's
+        // `1.0`.
+        let scale = cocoa_ui::bitmap::capture_window(super::mtm(), cocoa_ui::Size::new(64.0, 64.0))
+            .backingScaleFactor();
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
