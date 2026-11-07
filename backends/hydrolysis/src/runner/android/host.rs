@@ -356,7 +356,7 @@ pub struct AndroidHostWindow {
     /// embedded platform views (water-rs/waterui#2225). Its attach reuses
     /// the base band's display rates — they share the display.
     #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) top_surface: AndroidSurface,
+    pub(crate) top_surfaces: std::collections::BTreeMap<u32, AndroidSurface>,
     /// The refresh values the last base-band attach carried — the top
     /// band's attach borrows them since rate discovery lives on the base
     /// band's edge.
@@ -1235,7 +1235,7 @@ impl AndroidSession {
             #[cfg(hydrolysis_gpu_painter)]
             surface: AndroidSurface::new(gpu.clone()),
             #[cfg(hydrolysis_gpu_painter)]
-            top_surface: AndroidSurface::new(gpu.clone()),
+            top_surfaces: std::collections::BTreeMap::new(),
             #[cfg(hydrolysis_gpu_painter)]
             surface_refresh: None,
             bridge: Arc::new(bridge),
@@ -1563,13 +1563,13 @@ impl AndroidSession {
         #[cfg(hydrolysis_gpu_painter)]
         let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
         #[cfg(hydrolysis_gpu_painter)]
-        if self.runtime.platform.surface.has_pending_top_root()
-            && self.runtime.platform.top_surface.is_attached()
-        {
-            // The engine window was (re)created under a pending
-            // top-root request — replay the top band's target onto it.
-            let target = self.runtime.platform.top_surface.top_root_target();
-            self.runtime.platform.surface.set_top_root(target);
+        for (region, band) in &self.runtime.platform.top_surfaces {
+            if self.runtime.platform.surface.has_pending_top_root(*region) && band.is_attached() {
+                // The engine window was (re)created under a pending
+                // top-root request — replay this band's target onto it.
+                let target = band.top_root_target();
+                self.runtime.platform.surface.set_top_root(*region, target);
+            }
         }
         #[cfg(hydrolysis_hwui)]
         let presented = self
@@ -1664,6 +1664,7 @@ impl AndroidSession {
     #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn top_surface_attached_with_generation(
         &mut self,
+        region: u32,
         native_window: ndk::native_window::NativeWindow,
         width: u32,
         height: u32,
@@ -1671,6 +1672,7 @@ impl AndroidSession {
     ) -> Result<(), String> {
         tracing::debug!(
             target: "waterui::hydrolysis::android",
+            region,
             generation,
             width,
             height,
@@ -1685,19 +1687,20 @@ impl AndroidSession {
                 normal: 60.0,
                 high: 60.0,
             });
-        let attached = self.runtime.platform.top_surface.attach(
-            native_window,
-            refresh,
-            width,
-            height,
-            generation,
-        );
-        attached.map_err(|error| error.to_string())?;
-        // The base window's above-mark entries present under this root —
-        // the top band's container sits above the embedded platform views
-        // (water-rs/waterui#2225).
-        let target = self.runtime.platform.top_surface.top_root_target();
-        self.runtime.platform.surface.set_top_root(target);
+        let gpu = self.runtime.platform.surface.gpu_handle();
+        let band = self
+            .runtime
+            .platform
+            .top_surfaces
+            .entry(region)
+            .or_insert_with(|| AndroidSurface::new(gpu));
+        band.attach(native_window, refresh, width, height, generation)
+            .map_err(|error| error.to_string())?;
+        // The base window's entries above this boundary's mark present
+        // under this root — the band's container sits above the platform
+        // view it follows (water-rs/waterui#2225).
+        let target = band.top_root_target();
+        self.runtime.platform.surface.set_top_root(region, target);
         // Above-band content lives on the same frames as the base band —
         // the attach can un-hide only an already-visible window, so the
         // refresh request keeps the next frame honest either way.
@@ -1707,36 +1710,50 @@ impl AndroidSession {
 
     /// The top band's size changed on the live surface generation.
     #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) fn top_surface_resized(&mut self, width: u32, height: u32, generation: u64) {
+    pub(crate) fn top_surface_resized(
+        &mut self,
+        region: u32,
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) {
         tracing::debug!(
             target: "waterui::hydrolysis::android",
+            region,
             generation,
             width,
             height,
             "wake posted: top surface resized"
         );
-        self.runtime
-            .platform
-            .top_surface
-            .resize_for(width, height, generation);
+        if let Some(band) = self.runtime.platform.top_surfaces.get_mut(&region) {
+            band.resize_for(width, height, generation);
+        }
     }
 
     /// The top band's surface is going away; `generation` names which one.
     /// Content above embedded views simply has nowhere above-band to draw
     /// until a new surface attaches.
     #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) fn top_surface_detached(&mut self, generation: u64) {
+    pub(crate) fn top_surface_detached(&mut self, region: u32, generation: u64) {
         tracing::debug!(
             target: "waterui::hydrolysis::android",
+            region,
             generation,
             "wake posted: top surface detached"
         );
-        // Above-mark entries return to the base root — beneath the views —
-        // until a new top surface attaches (water-rs/waterui#2225). A stale
+        // This boundary's entries defer to the next lower root until a
+        // new surface attaches (water-rs/waterui#2225). A stale
         // `surfaceDestroyed` naming an old generation must not clear the
         // live top root, so the generation check runs before the unbind.
-        if self.runtime.platform.top_surface.detach_for(generation) {
-            self.runtime.platform.surface.set_top_root(None);
+        if self
+            .runtime
+            .platform
+            .top_surfaces
+            .get_mut(&region)
+            .is_some_and(|band| band.detach_for(generation))
+        {
+            self.runtime.platform.surface.set_top_root(region, None);
+            self.runtime.platform.top_surfaces.remove(&region);
         }
     }
 

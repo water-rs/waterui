@@ -672,6 +672,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurface
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
+    region: jint,
     surface: JObject<'local>,
     width: jint,
     height: jint,
@@ -692,6 +693,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurface
         };
         session(session_ptr)
             .top_surface_attached_with_generation(
+                crate::num_cast::i32_as_u32(region.max(1)),
                 window,
                 crate::num_cast::i32_as_u32(width.max(0)),
                 crate::num_cast::i32_as_u32(height.max(0)),
@@ -708,12 +710,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurface
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
+    region: jint,
     width: jint,
     height: jint,
     generation: jlong,
 ) {
     guard(&mut env, |_env| {
         session(session_ptr).top_surface_resized(
+            crate::num_cast::i32_as_u32(region.max(1)),
             crate::num_cast::i32_as_u32(width.max(0)),
             crate::num_cast::i32_as_u32(height.max(0)),
             crate::num_cast::i64_as_u64(generation),
@@ -730,10 +734,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeTopSurface
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
+    region: jint,
     generation: jlong,
 ) {
     guard(&mut env, |_env| {
-        session(session_ptr).top_surface_detached(crate::num_cast::i64_as_u64(generation));
+        session(session_ptr).top_surface_detached(
+            crate::num_cast::i32_as_u32(region.max(1)),
+            crate::num_cast::i64_as_u64(generation),
+        );
         Ok(())
     });
 }

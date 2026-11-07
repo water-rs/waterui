@@ -412,23 +412,58 @@ class PlatformViewRegistry internal constructor(
         container.invalidate()
     }
 
+    /**
+     * Creates the band [View] a GPU host inserts after the `region`-th
+     * ordered platform view — the boundary that region's above-mark
+     * entries present onto (water-rs/waterui#2225). `null` on hosts
+     * without second surfaces: platform views keep their contiguous
+     * child order.
+     */
+    var bandFactory: ((Int) -> View)? = null
+
+    /** The live boundary bands, keyed by the region they follow. */
+    private val bands = mutableMapOf<Int, View>()
+
     private fun orderChanged(wanted: List<Placement>): Boolean {
+        val step = if (bandFactory != null) 2 else 1
         var i = 0
         for (placement in wanted) {
             val slot = slots[placement.id] ?: continue
-            if (container.indexOfChild(slot.view) != i) return true
+            if (container.indexOfChild(slot.view) != i * step) return true
             i++
         }
-        return container.childCount != i
+        return container.childCount != i * step
     }
 
     private fun orderSlots(wanted: List<Placement>) {
-        for ((index, placement) in wanted.withIndex()) {
+        // Platform view `i` sits at index `2i` under a band factory, its
+        // following boundary band at `2i + 1` — a band's surface
+        // composites above the platform views before it and beneath the
+        // ones after, which is exactly what region `i + 1` presents over
+        // (water-rs/waterui#2225).
+        val factory = bandFactory
+        var index = 0
+        for ((i, placement) in wanted.withIndex()) {
             val slot = slots[placement.id] ?: continue
             if (container.indexOfChild(slot.view) != index) {
                 container.removeView(slot.view)
                 container.addView(slot.view, index)
             }
+            index++
+            if (factory != null) {
+                val region = i + 1
+                val band = bands.getOrPut(region) { factory(region) }
+                if (container.indexOfChild(band) != index) {
+                    container.removeView(band)
+                    container.addView(band, index)
+                }
+                index++
+            }
+        }
+        // Boundaries the placement list no longer reaches are stale.
+        val stale = bands.keys.filter { it > wanted.size }
+        for (region in stale) {
+            bands.remove(region)?.let(container::removeView)
         }
     }
 

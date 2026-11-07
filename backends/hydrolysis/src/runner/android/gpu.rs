@@ -215,10 +215,10 @@ pub struct AndroidSurface {
     >,
     /// GPU pipelines survive `SurfaceHolder` teardown while this host stays alive.
     engine_state: Option<std::rc::Rc<crate::engine::SharedEngineState>>,
-    /// The latest top-root request not yet delivered to a live engine
-    /// window — a target that arrived before the window existed, or whose
+    /// The boundaries whose top-root request a rebuilt engine window must
+    /// replay — a target that arrived before the window existed, or whose
     /// window has since been rebuilt (water-rs/waterui#2225).
-    top_root_pending: std::cell::Cell<bool>,
+    top_root_pending: std::cell::RefCell<std::collections::BTreeSet<u32>>,
     native_window: Option<WindowLease>,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// engine surface — valid while between surface generations too.
@@ -283,7 +283,7 @@ impl AndroidSurface {
             generation: 0,
             engine_window: None,
             engine_state: None,
-            top_root_pending: std::cell::Cell::new(false),
+            top_root_pending: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             native_window: None,
             width: 0,
             height: 0,
@@ -414,26 +414,37 @@ impl AndroidSurface {
     /// replays it once one exists.
     pub(crate) fn set_top_root(
         &self,
+        region: u32,
         target: Option<cherenkov_gpu::interop::android::SurfaceControlTarget>,
     ) {
         // `pending` records that a top root was requested, not that one
         // delivery is still owed — a rebuilt engine window must replay it,
-        // so the flag stays set until `set_top_root(None)` arrives
-        // (water-rs/waterui#2225).
-        self.top_root_pending.set(target.is_some());
+        // so the boundary stays listed until `set_top_root(region, None)`
+        // arrives (water-rs/waterui#2225).
+        if target.is_some() {
+            self.top_root_pending.borrow_mut().insert(region);
+        } else {
+            self.top_root_pending.borrow_mut().remove(&region);
+        }
         if let Some(window) = self.engine_window.as_ref() {
             window
                 .surface
-                .set_top_root(target)
+                .set_top_root(usize::try_from(region).expect("region fits usize"), target)
                 .expect("hydrolysis android: engine render thread is gone");
         }
     }
 
-    /// Whether a top-root request still waits for a live engine window —
-    /// the host re-pushes the top surface's target when this and
-    /// `top_surface.is_attached()` both hold.
-    pub(crate) const fn has_pending_top_root(&self) -> bool {
-        self.top_root_pending.get() && self.engine_window.is_some()
+    /// Whether a top-root request for `region` still waits for a live
+    /// engine window — the host re-pushes that band's target when this
+    /// and its attachment both hold.
+    pub(crate) fn has_pending_top_root(&self, region: u32) -> bool {
+        self.top_root_pending.borrow().contains(&region) && self.engine_window.is_some()
+    }
+
+    /// The GPU context a new band's `AndroidSurface` shares — the bands
+    /// and the base surface render on one device.
+    pub(crate) fn gpu_handle(&self) -> AndroidGpuContext {
+        self.gpu.clone()
     }
 
     /// The `SurfaceControlTarget` the base window presents above-mark

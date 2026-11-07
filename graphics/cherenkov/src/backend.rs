@@ -141,7 +141,7 @@ pub trait Renderer: 'static {
     /// (water-rs/waterui#2225). Backends without a second-root
     /// realization ignore it: the above-mark entries keep presenting
     /// under the surface's own root, beneath the windows.
-    fn set_top_root(&mut self, _id: SurfaceId, _target: Option<Self::Target>) {}
+    fn set_top_root(&mut self, _id: SurfaceId, _region: usize, _target: Option<Self::Target>) {}
 
     /// Destroys a surface's render-side state.
     fn destroy_surface(&mut self, id: SurfaceId);

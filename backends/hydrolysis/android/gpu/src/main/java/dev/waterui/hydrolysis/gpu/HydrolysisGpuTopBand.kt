@@ -40,6 +40,11 @@ class HydrolysisGpuTopBand
 constructor(
     context: Context,
     private val session: HydrolysisSession,
+    /**
+     * The host-window boundary this band presents above: the entries a
+     * frame paints above the `region`-th embedded platform view.
+     */
+    private val region: Int = 1,
 ) : SurfaceView(context), SurfaceHolder.Callback {
 
     /** The host's attachment-generation counter, owned on the UI thread. */
@@ -66,6 +71,7 @@ constructor(
             check(
                 NativeBridge.nativeTopSurfaceAttached(
                     ptr,
+                    region,
                     holder.surface,
                     width,
                     height,
@@ -77,13 +83,13 @@ constructor(
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         session.withNativePtr(NativeBridge::nativeTopSurfaceChanged.name) { ptr ->
-            NativeBridge.nativeTopSurfaceChanged(ptr, width, height, generation)
+            NativeBridge.nativeTopSurfaceChanged(ptr, region, width, height, generation)
         }
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         session.withNativePtr(NativeBridge::nativeTopSurfaceDestroyed.name) { ptr ->
-            NativeBridge.nativeTopSurfaceDestroyed(ptr, generation)
+            NativeBridge.nativeTopSurfaceDestroyed(ptr, region, generation)
         }
     }
 }

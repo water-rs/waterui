@@ -429,7 +429,7 @@ fn apply_message<B: Backend>(
         }
         Message::Display { id, display } => set_display(surfaces, id, display),
         Message::DisplayMoved { id } => set_display_moved(surfaces, id),
-        Message::SetTopRoot { id, target } => renderer.set_top_root(id, target),
+        Message::SetTopRoot { id, region, target } => renderer.set_top_root(id, region, target),
         Message::Visibility { id, visibility } => {
             set_visibility::<B>(renderer, surfaces, id, visibility);
         }
@@ -1259,7 +1259,7 @@ impl<B: Backend> LocalState<B> {
             }
             Message::Display { id, display } => set_display(surfaces, id, display),
             Message::DisplayMoved { id } => set_display_moved(surfaces, id),
-            Message::SetTopRoot { id, target } => renderer.set_top_root(id, target),
+            Message::SetTopRoot { id, region, target } => renderer.set_top_root(id, region, target),
             Message::Visibility { id, visibility } => {
                 set_visibility::<B>(renderer, surfaces, id, visibility);
             }
