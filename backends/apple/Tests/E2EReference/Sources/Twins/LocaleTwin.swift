@@ -48,12 +48,12 @@ struct LocaleTwin: View {
   private var languageBooth: some View {
     VStack(spacing: 10) {
       Text("Language Booth").font(.system(size: 16)).fontWeight(.bold)
-      HStack {
+      HStack(spacing: 10) {
         Text("Detected Locale:")
         Spacer(minLength: 0)
         Text(detectedLocale)
       }
-      HStack {
+      HStack(spacing: 10) {
         Text("Chosen Language:")
         Spacer(minLength: 0)
         Picker("", selection: $selection) {
@@ -82,8 +82,8 @@ struct LocaleTwin: View {
       wuiDivider()
       VStack(spacing: 10) {
         Text("Local Flavor").font(.system(size: 16)).fontWeight(.bold)
-        HStack { Spacer(minLength: 0); Text("Color"); Spacer(minLength: 0) }
-        HStack { Spacer(minLength: 0); Text("Favorite"); Spacer(minLength: 0) }
+        HStack(spacing: 10) { Spacer(minLength: 0); Text("Color"); Spacer(minLength: 0) }
+        HStack(spacing: 10) { Spacer(minLength: 0); Text("Favorite"); Spacer(minLength: 0) }
       }
       wuiDivider()
       VStack(spacing: 10) {
@@ -107,22 +107,22 @@ struct LocaleTwin: View {
     VStack(spacing: 10) {
       VStack(spacing: 10) {
         Text("Festival Date (2006-03-20)").font(.system(size: 16)).fontWeight(.bold)
-        HStack {
+        HStack(spacing: 10) {
           Text("Short:")
           Spacer(minLength: 0)
           Text(festivalDateString(.short))
         }
-        HStack {
+        HStack(spacing: 10) {
           Text("Long:")
           Spacer(minLength: 0)
           Text(festivalDateString(.long))
         }
-        HStack {
+        HStack(spacing: 10) {
           Text("Timezone:")
           Spacer(minLength: 0)
           Text(TimeZone.current.identifier)
         }
-        HStack {
+        HStack(spacing: 10) {
           Text("Kickoff (TZ):")
           Spacer(minLength: 0)
           Text(kickoffString)
@@ -131,7 +131,7 @@ struct LocaleTwin: View {
       wuiDivider()
       VStack(spacing: 10) {
         Text("Distance Guide").font(.system(size: 16)).fontWeight(.bold)
-        HStack {
+        HStack(spacing: 10) {
           Text("City Walk:")
           Spacer(minLength: 0)
           Text(
@@ -139,7 +139,7 @@ struct LocaleTwin: View {
               .formatted(.measurement(width: .abbreviated, usage: .road))
           )
         }
-        HStack {
+        HStack(spacing: 10) {
           Text("Marathon Route:")
           Spacer(minLength: 0)
           Text(

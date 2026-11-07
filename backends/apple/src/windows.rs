@@ -105,6 +105,16 @@ mod imp {
         HOSTS.with(|hosts| hosts.borrow_mut().push(host));
     }
 
+    /// Releases every open window and the view tree it owns. The quit path
+    /// calls it from `applicationWillTerminate:`, while the main thread is
+    /// still alive: the process exit that follows would otherwise drop the
+    /// windows in thread-local teardown, where the GPU objects they own
+    /// can no longer reach their own thread-locals.
+    pub fn close_all() {
+        let hosts = HOSTS.with(|hosts| core::mem::take(&mut *hosts.borrow_mut()));
+        drop(hosts);
+    }
+
     /// Realizes `declaration` as a platform window and returns its host. The
     /// window is ordered front at full transparency and revealed when its
     /// content reports ready — the same path the Swift host took, so a GPU
@@ -343,12 +353,10 @@ mod imp {
         apply_state(&window, declaration.state.snapshot());
         // `alphaValue` is already 0 from construction — ordering in stays
         // invisible until the first presented frame says otherwise.
+        // The leaf tree is mounted before the window becomes key, so AppKit
+        // picks the first key view as first responder, as it does for any
+        // window whose content exists when it is shown.
         window.make_key_and_order_front();
-        // The leaf tree is mounted before the window becomes key, so AppKit's
-        // automatic first-responder pick lands on the first editable field;
-        // the Swift backend showed its windows before content mounted, so
-        // none was ever picked. Clear the pick to match that launch state.
-        window.clear_first_responder();
         window.display_if_needed();
         #[cfg(feature = "gpu_surface")]
         {
@@ -1165,7 +1173,7 @@ pub use imp::{Pending, WindowHost, realize};
 #[cfg(target_os = "ios")]
 pub use imp::{Scenes, connect, connect_embedded, declare};
 #[cfg(target_os = "macos")]
-pub use imp::{bind_background, realize, track};
+pub use imp::{bind_background, close_all, realize, track};
 
 /// A waterui layout rect, as the kit sees it.
 #[cfg(target_os = "macos")]

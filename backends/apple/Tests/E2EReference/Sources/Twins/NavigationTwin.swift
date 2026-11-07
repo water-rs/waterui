@@ -186,8 +186,13 @@ struct NavigationTwin: View {
       .searchable(text: $query, prompt: "Search mail")
       .toolbar {
         ToolbarItem(placement: .navigation) {
+          // iOS draws the example's titled bar button as UIKit's native
+          // titled item (#3594); SwiftUI's `.plain` toolbar realization is a
+          // narrower capsule, so the iOS twin keeps the default style.
           Button(editing ? "Done" : "Edit") {}
-            .buttonStyle(.plain)
+            #if os(macOS)
+              .buttonStyle(.plain)
+            #endif
         }
         ToolbarItem(placement: .primaryAction) {
           Button {} label: {

@@ -18,11 +18,13 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityElement, NSAccessibilityFrameInView, NSAccessibilityLinkRole,
-    NSLineBreakMode, NSScreen, NSTextAlignment, NSTextField, NSTextFieldCell, NSView,
+    NSFontAttributeName, NSLineBreakMode, NSScreen, NSTextAlignment, NSTextField, NSTextFieldCell,
+    NSView,
 };
 use objc2_core_foundation::{CGPoint, CGRect};
 use objc2_foundation::{
-    NSArray, NSAttributedString, NSEdgeInsets, NSObjectProtocol, NSString, NSUnionRect,
+    NSArray, NSAttributedString, NSDictionary, NSEdgeInsets, NSObjectProtocol, NSString,
+    NSUnionRect,
 };
 
 use crate::callback::guarded;
@@ -137,7 +139,14 @@ impl Label {
     ///
     /// The factory's own `alloc` zero-fills the ivar storage, which is
     /// exactly the state `LabelIvars` starts in, so no `set_ivars` step is
-    /// needed.
+    /// needed. The title becomes the label's [`source_text`](Self::source_text)
+    /// in the factory's font, so measurement and hit tests see the text the
+    /// label draws.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `AppKit` hands back a label without a font, which
+    /// `labelWithString:` never does.
     #[must_use]
     pub fn label_with_string(mtm: MainThreadMarker, title: &str) -> Retained<Self> {
         let _ = mtm;
@@ -146,6 +155,20 @@ impl Label {
         // allocates through `self`, so the result is a `Label`.
         let this: Retained<Self> = unsafe { msg_send![Self::class(), labelWithString: &*title] };
         crate::defined_class::mark_ivars_initialized(&*this);
+        // The factory draws `title` in the label font it sets; measurement
+        // and hit tests read the same string through `source_text`.
+        let font = this
+            .font()
+            .expect("labelWithString: gives the label its system font");
+        // SAFETY: `NSFontAttributeName` is a static the platform exports and
+        // its value is the `NSFont` it documents.
+        let attributed = unsafe {
+            NSAttributedString::new_with_attributes(
+                &title,
+                &NSDictionary::from_slices(&[NSFontAttributeName], &[font.as_ref()]),
+            )
+        };
+        this.ivars().source_text.replace(Some(attributed));
         this.setEditable(false);
         this.setSelectable(false);
         this.setBordered(false);

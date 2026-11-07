@@ -2,7 +2,7 @@
 //! validates and translates them once at build time instead of wgpu doing it
 //! per pipeline at runtime. Each module produces
 //!
-//! - `<name>.spv` — naga SPIR-V as emitted, on the non-Apple, non-wasm
+//! - `<name>.spv` — naga SPIR-V as emitted, on the Linux and Android
 //!   targets only (issue #241). spirv-opt ran here until #124 measured it
 //!   on the Pixel 9 Pro (Mali-G715): ~0.64 s faster cold pipeline creation
 //!   but the effects scene's GPU time ~78% slower at p50 and ~2.7x at p99;
@@ -775,16 +775,15 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
 /// Whether the `.spv` artifacts are emitted.
 ///
 /// SPIR-V is the passthrough format of wgpu's Vulkan backend only, and
-/// wgpu compiles that backend on exactly the non-Apple, non-wasm targets
-/// (`windows`, `linux`, `android`, `freebsd`, `netbsd` in its
-/// `wgpu-core-deps-windows-linux-android` manifest entry): Apple targets
-/// get `.metallib`s and wgpu has no Vulkan backend for them unless the
-/// non-default `vulkan-portability` feature is on (issue #241). This
-/// crate's `wgpu` dependency is default-features, so `.spv` bytes are
-/// unreachable on Apple and wasm.
+/// GPU rendering is Vulkan-only on exactly the Linux and Android targets
+/// (the `cherenkov_gpu::REQUIRED_BACKEND` table): Apple targets get
+/// `.metallib`s, Windows gets DXIL, and wasm keeps WGSL, so none of them
+/// embeds `.spv` bytes (issue #241).
 fn emits_spirv() -> bool {
-    env::var("CARGO_CFG_TARGET_ARCH").unwrap() != "wasm32"
-        && env::var("CARGO_CFG_TARGET_VENDOR").unwrap() != "apple"
+    matches!(
+        env::var("CARGO_CFG_TARGET_OS").unwrap().as_str(),
+        "linux" | "android"
+    )
 }
 
 /// Parses, validates and compiles one module; with `dxil`, emits its

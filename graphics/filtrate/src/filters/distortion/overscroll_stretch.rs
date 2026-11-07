@@ -44,6 +44,7 @@ pub const STRETCH_INTERPOLATION_STRENGTH: f32 = 0.7;
     spatial,
     shader = "distortion/overscroll_stretch.wgsl",
     footprint_fn = crate::filters::footprint::overscroll_stretch,
+    coordinate_remap = true,
     constants = [STRETCH_INTERPOLATION_STRENGTH]
 )]
 pub struct OverscrollStretch<T> {
@@ -53,4 +54,17 @@ pub struct OverscrollStretch<T> {
     pub size: [T; 2],
     /// The stretch direction per axis, HWUI's `mStretchDirection`.
     pub stretch: [T; 2],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OverscrollStretch;
+    use crate::filters::{GaussianBlur, Sepia};
+
+    #[test]
+    fn only_the_stretch_declares_a_coordinate_remap() {
+        const { assert!(<OverscrollStretch<f32> as crate::Filter>::COORDINATE_REMAP) };
+        const { assert!(!<GaussianBlur<f32> as crate::Filter>::COORDINATE_REMAP) };
+        const { assert!(!<Sepia<f32> as crate::Filter>::COORDINATE_REMAP) };
+    }
 }

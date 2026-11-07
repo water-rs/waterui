@@ -99,10 +99,30 @@ fn declared_mask(view: &PlatformView) -> u16 {
     }
 }
 
-/// `view`'s bounds in its window's coordinate space.
+/// `view`'s bounds in its window's coordinate space as laid out: each view
+/// on the way up contributes its frame under the identity transform, so a
+/// visual `transform` — an `offset`, `scale` or `rotation` wrapper's — never
+/// moves the boundary a view is laid out against (§7.1 judges the laid-out
+/// frame "before scroll offsets and visual transforms"). Each ancestor's
+/// `bounds.origin`, a scroll view's content offset included, still applies,
+/// as it did through `convertRect:toView:`.
+/// `convertRect:toView:` would apply every ancestor's transform: an offset
+/// that carries its content past the window edge would clip that content's
+/// safe rect, and the content would be laid out against the window edge it
+/// only visually crosses.
 #[cfg(target_os = "ios")]
 fn window_frame(view: &PlatformView) -> CGRect {
-    view.convertRect_toView(view.bounds(), None)
+    let mut rect = view.bounds();
+    let mut current = view::retain_base(view);
+    while let Some(superview) = current.superview() {
+        let bounds = current.bounds();
+        let center = current.center();
+        let anchor = current.layer().anchorPoint();
+        rect.origin.x += bounds.size.width.mul_add(-anchor.x, center.x) - bounds.origin.x;
+        rect.origin.y += bounds.size.height.mul_add(-anchor.y, center.y) - bounds.origin.y;
+        current = superview;
+    }
+    rect
 }
 
 /// The keyboard's frame in the view's window coordinates — the frame the

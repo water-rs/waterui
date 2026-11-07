@@ -1085,3 +1085,306 @@ fn the_first_hosted_layer_in_paint_order_is_found() {
     );
     assert_eq!(super::first_in_paint_order(&tree, |_| false), None);
 }
+
+/// A compositor whose regions above a host-window mark present as
+/// engine-composited bands, as Android's does, with a budget of `N`
+/// planes.
+struct Bands<const N: usize = 4>;
+
+impl<const N: usize> Compositor for Bands<N> {
+    const BUDGET: usize = N;
+    const HOSTS_OPACITY: bool = true;
+    const HOST_WINDOW_BANDS: bool = true;
+    fn expresses_transform(transform: Affine) -> bool {
+        axis_aligned(transform)
+    }
+    fn expresses_clip(clip: &ShapeData) -> bool {
+        matches!(clip, ShapeData::Rect(_) | ShapeData::RoundedRect(_))
+    }
+    fn shows(_: &crate::interop::ExternalFrame) -> bool {
+        true
+    }
+}
+
+fn host_window() -> Candidate {
+    Candidate {
+        size: (0, 0),
+        raster: Affine::IDENTITY,
+        source: Source::HostWindow,
+    }
+}
+
+/// With band regions, `BELOW` as a host window's mark puts the video in
+/// the band above it: the frame composites into that band, a hosted
+/// layer there is unplaced, and the mark alone splits the surface.
+/// Painted beneath the mark, the video still promotes.
+#[test]
+fn nothing_above_a_host_window_mark_reaches_a_plane() {
+    let tree = scene();
+    let frame: FxHashMap<LayerId, Candidate> = [(BELOW, host_window()), (VIDEO, SIZE.into())]
+        .into_iter()
+        .collect();
+    let banded = plan::<Bands>(&tree, &frame, &all_ready(&frame));
+    assert_eq!(
+        banded.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [BELOW]
+    );
+    assert_eq!(
+        banded.rejected,
+        [(VIDEO, Ineligible::AboveHostWindow(BELOW))]
+    );
+    assert_eq!(
+        banded.parts(),
+        2,
+        "the base part and the band region above the mark"
+    );
+    // The same tree on a compositor without bands promotes both.
+    let unbanded = plan::<Test>(&tree, &frame, &all_ready(&frame));
+    assert_eq!(
+        unbanded.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [BELOW, VIDEO]
+    );
+
+    let hosted: FxHashMap<LayerId, Candidate> =
+        [(BELOW, host_window()), (VIDEO, hosted_candidate())]
+            .into_iter()
+            .collect();
+    let hosted_plan = plan::<Bands>(&tree, &hosted, &FxHashSet::default());
+    assert_eq!(
+        hosted_plan.unplaced,
+        [(VIDEO, Ineligible::AboveHostWindow(BELOW))]
+    );
+
+    let above: FxHashMap<LayerId, Candidate> = [(ABOVE, host_window()), (VIDEO, SIZE.into())]
+        .into_iter()
+        .collect();
+    let beneath = plan::<Bands>(&tree, &above, &all_ready(&above));
+    assert_eq!(
+        beneath.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [VIDEO, ABOVE]
+    );
+    assert!(
+        !beneath.trailing,
+        "nothing is painted above the topmost mark"
+    );
+}
+
+/// A mark under a clip that encloses nothing opens no region, while its
+/// host still orders the window: the region above the next mark is named
+/// by that mark's own window id, never by its position among the planned
+/// marks, so its band is the one the host stacks above that window.
+#[test]
+fn a_band_region_is_named_by_its_marks_window() {
+    const HIDDEN: u64 = 7;
+    const SHOWN: u64 = 9;
+    let mut tree = scene();
+    tree.apply(LayerOp::HostWindow(VIDEO, Some(HIDDEN)));
+    tree.apply(LayerOp::HostWindow(BELOW, Some(SHOWN)));
+    tree.apply(LayerOp::Clip(
+        PARENT,
+        Some(ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 0.0))),
+    ));
+    let marks: FxHashMap<LayerId, Candidate> = [(VIDEO, host_window()), (BELOW, host_window())]
+        .into_iter()
+        .collect();
+    let banded = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+    let windows: Vec<_> = banded
+        .planes
+        .iter()
+        .map(|p| tree.layer(p.layer).host_window())
+        .collect();
+    assert_eq!(
+        windows,
+        [Some(SHOWN)],
+        "the clipped-away mark opens no region"
+    );
+    assert_eq!(
+        banded.parts(),
+        2,
+        "the base part and the region above the shown mark"
+    );
+    // Unclipped, both marks open regions, each named by its own window.
+    tree.apply(LayerOp::Clip(PARENT, None));
+    let both = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+    let windows: Vec<_> = both
+        .planes
+        .iter()
+        .map(|p| tree.layer(p.layer).host_window())
+        .collect();
+    assert_eq!(windows, [Some(SHOWN), Some(HIDDEN)]);
+}
+
+/// Two platform views stacked with interactive content between and above
+/// them, on a surface with one plane: the marks only split the paint
+/// order, so neither they nor their bands spend the budget, and the video
+/// beneath the first mark still promotes (water-rs/waterui#2225).
+#[test]
+fn host_window_marks_take_no_plane_budget() {
+    const FIRST: LayerId = LayerId::new(5);
+    const CARD: LayerId = LayerId::new(6);
+    const SECOND: LayerId = LayerId::new(7);
+    const OVERLAY: LayerId = LayerId::new(8);
+    let mut tree = SurfaceTree::new();
+    for id in [VIDEO, FIRST, CARD, SECOND, OVERLAY] {
+        tree.apply(LayerOp::Create(id));
+        tree.apply(LayerOp::Push {
+            parent: ROOT,
+            child: id,
+        });
+    }
+    tree.apply(LayerOp::HostWindow(FIRST, Some(1)));
+    tree.apply(LayerOp::HostWindow(SECOND, Some(2)));
+    let candidates: FxHashMap<LayerId, Candidate> = [
+        (VIDEO, SIZE.into()),
+        (FIRST, host_window()),
+        (SECOND, host_window()),
+    ]
+    .into_iter()
+    .collect();
+    let banded = plan::<Bands<1>>(&tree, &candidates, &all_ready(&candidates));
+    assert_eq!(banded.unplaced, []);
+    assert_eq!(banded.rejected, []);
+    assert_eq!(
+        banded.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [VIDEO, FIRST, SECOND]
+    );
+    assert_eq!(
+        banded.parts(),
+        4,
+        "the parts beneath and above the video, then each mark's band"
+    );
+}
+
+/// A scroll view's inner layer as the Android renderer lowers it while the
+/// overscroll stretch shows — clipped to the viewport, offset by its scroll
+/// position and filtered with `filter` — holding two host-window marks with
+/// content between and above them.
+fn stretched_scroll(filter: FilterId) -> (SurfaceTree, FxHashMap<LayerId, Candidate>) {
+    const INNER: LayerId = LayerId::new(10);
+    const FIRST: LayerId = LayerId::new(11);
+    const CARD: LayerId = LayerId::new(12);
+    const SECOND: LayerId = LayerId::new(13);
+    const TAIL: LayerId = LayerId::new(15);
+    let mut tree = SurfaceTree::new();
+    for id in [INNER, FIRST, CARD, SECOND, TAIL] {
+        tree.apply(LayerOp::Create(id));
+    }
+    for (parent, child) in [
+        (ROOT, INNER),
+        (INNER, FIRST),
+        (INNER, CARD),
+        (INNER, SECOND),
+        (INNER, TAIL),
+    ] {
+        tree.apply(LayerOp::Push { parent, child });
+    }
+    tree.apply(LayerOp::Clip(
+        INNER,
+        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 300.0))),
+    ));
+    tree.apply(LayerOp::ScrollOffset(INNER, prop(Vec2::new(0.0, 40.0))));
+    tree.apply(LayerOp::Filter(INNER, Some(filter)));
+    tree.apply(LayerOp::HostWindow(FIRST, Some(1)));
+    tree.apply(LayerOp::HostWindow(SECOND, Some(2)));
+    let marks = [(FIRST, host_window()), (SECOND, host_window())]
+        .into_iter()
+        .collect();
+    (tree, marks)
+}
+
+const STRETCH: LayerId = LayerId::new(10);
+
+/// The overscroll stretch is a pure coordinate remap, so a mark inside the
+/// stretched inner layer is placed: the lowering renders the layer once for
+/// the base and once per band, each under the same device-space stretch.
+/// Before, the filter made the layer an isolating ancestor and the mark
+/// failed with `Isolated`.
+#[test]
+fn a_mark_under_a_coordinate_remap_filter_is_placed() {
+    let (tree, marks) = stretched_scroll(FilterId::new(1).with_coordinate_remap(true));
+    let plan = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+    assert_eq!(plan.unplaced, []);
+    assert_eq!(plan.rejected, []);
+    assert_eq!(
+        plan.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [LayerId::new(11), LayerId::new(13)]
+    );
+    // Both marks keep the inner layer's clip and scroll on their path, so
+    // the host places each platform view in the scrolled viewport.
+    for plane in &plan.planes {
+        let inner = &plane.path[1];
+        assert_eq!(inner.layer, STRETCH);
+        assert_eq!(inner.scroll, Vec2::new(0.0, 40.0));
+        assert!(inner.clip.is_some());
+    }
+    assert_eq!(
+        plan.parts(),
+        3,
+        "the base part beneath the first mark and one band per mark"
+    );
+}
+
+/// A filter that is not a coordinate remap changes the pixels around it,
+/// so it still keeps the mark from the surface level.
+#[test]
+fn a_mark_under_a_filter_that_is_not_a_remap_stays_unplaced() {
+    let (tree, marks) = stretched_scroll(FilterId::new(1));
+    let plan = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+    assert_eq!(
+        plan.unplaced,
+        [
+            (LayerId::new(11), Ineligible::Isolated(STRETCH)),
+            (LayerId::new(13), Ineligible::Isolated(STRETCH)),
+        ]
+    );
+    assert_eq!(plan.planes, []);
+}
+
+/// Splitting needs the group to composite as the plain filtered whole: a
+/// group opacity, a blend or a projective pose on the filtered layer still
+/// fail, and so does a compositor without bands, whose marks are planes.
+#[test]
+fn a_remap_filter_splits_only_a_plain_group_on_a_band_compositor() {
+    let remap = FilterId::new(1).with_coordinate_remap(true);
+    for style in [
+        LayerOp::Opacity(STRETCH, prop(0.5)),
+        LayerOp::Blend(STRETCH, BlendMode::Multiply),
+    ] {
+        let (mut tree, marks) = stretched_scroll(remap);
+        tree.apply(style);
+        let plan = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+        assert_eq!(plan.planes, []);
+        assert_eq!(plan.unplaced.len(), 2);
+        assert!(
+            plan.unplaced
+                .iter()
+                .all(|(_, cause)| *cause == Ineligible::Isolated(STRETCH))
+        );
+    }
+    let (tree, marks) = stretched_scroll(remap);
+    let plan = plan::<Test>(&tree, &marks, &FxHashSet::default());
+    assert_eq!(plan.planes, []);
+    assert_eq!(plan.unplaced.len(), 2);
+}
+
+/// A child blending within the stretched group would read only its own
+/// region's content once the group splits, so the group is not split.
+#[test]
+fn a_blended_child_keeps_the_stretched_group_whole() {
+    const GLOW: LayerId = LayerId::new(14);
+    let (mut tree, marks) = stretched_scroll(FilterId::new(1).with_coordinate_remap(true));
+    tree.apply(LayerOp::Create(GLOW));
+    tree.apply(LayerOp::Push {
+        parent: STRETCH,
+        child: GLOW,
+    });
+    tree.apply(LayerOp::Blend(GLOW, BlendMode::Multiply));
+    let plan = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+    assert_eq!(plan.planes, []);
+    assert_eq!(plan.unplaced.len(), 2);
+    assert!(
+        plan.unplaced
+            .iter()
+            .all(|(_, cause)| *cause == Ineligible::Isolated(STRETCH))
+    );
+}

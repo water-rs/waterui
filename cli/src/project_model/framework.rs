@@ -3454,7 +3454,7 @@ pub(crate) mod test_fixtures {
             metadata: toml::toml! {
                 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
                 web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -3558,7 +3558,7 @@ pub(crate) mod test_fixtures {
             metadata: toml::toml! {
                 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
                 web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -5432,7 +5432,7 @@ mod tests {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -5618,7 +5618,7 @@ mod tests {
 
     #[test]
     fn android_min_api_level_is_required_framework_metadata() {
-        assert_eq!(stable_framework().android_min_api_level().unwrap(), 31);
+        assert_eq!(stable_framework().android_min_api_level().unwrap(), 33);
 
         let mut missing = stable_framework();
         missing.metadata.remove("android-min-api-level");
@@ -6003,7 +6003,7 @@ mod tests {
         let repository = framework_repository();
         let revision = "a".repeat(40);
         let lock_sha256 = "f".repeat(64);
-        let metadata = toml::toml! { android-min-api-level = 31 android-gradle-version = "9.7.1" };
+        let metadata = toml::toml! { android-min-api-level = 33 android-gradle-version = "9.7.1" };
         let mut scaffold = BTreeMap::from([
             ("waterui-version".to_owned(), "0.4.1".to_owned()),
             ("waterui-winui-version".to_owned(), "0.1.0".to_owned()),
@@ -6795,7 +6795,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             scaffold: BTreeMap::new(),
             experimental_packages: BTreeMap::new(),
             metadata: toml::toml! {
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -6917,7 +6917,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             },
             "metadata": {
                 "minimum-cli-version": "0.1.0",
-                "android-min-api-level": 31,
+                "android-min-api-level": 33,
                 "android-gradle-version": "9.7.1",
                 "apple-backend-path": "backends/apple",
                 "hydrolysis-path": "backends/hydrolysis",

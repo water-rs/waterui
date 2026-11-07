@@ -313,6 +313,7 @@ impl AndroidCherenkovSurface {
         size: (u32, u32),
         wake: impl Fn() + Send + Sync + 'static,
         transparent: bool,
+        band_commits: std::sync::mpsc::Sender<cherenkov_gpu::interop::android::BandCommit>,
     ) -> Self {
         use cherenkov_gpu::interop::android::{SurfaceControl, SurfaceControlTarget};
         // SAFETY: the host holds the live SurfaceView's ANativeWindow lease.
@@ -322,13 +323,35 @@ impl AndroidCherenkovSurface {
             .expect("hydrolysis android: surface creation requires the host Looper");
         let surface = engine
             .surface(
-                SurfaceControlTarget::new(parent, size, looper).transparent(transparent),
+                SurfaceControlTarget::new(parent, size, looper)
+                    .transparent(transparent)
+                    .band_commits(band_commits),
                 wake,
             )
             .expect("hydrolysis android: failed to create the compositor surface");
         Self {
             core: SurfaceCore::new(engine, surface, size),
         }
+    }
+
+    /// The engine surface's identity — which window a band was delivered
+    /// to.
+    pub(crate) fn id(&self) -> cherenkov::SurfaceId {
+        self.core.surface.id()
+    }
+
+    /// Sets or clears the band above the embedded platform view whose
+    /// placement id is `view`: `target` is the swapchain window of the
+    /// band `View` the host stacks above it (water-rs/waterui#2225).
+    ///
+    /// # Errors
+    /// [`SurfaceError::Lost`] when the render thread is gone.
+    pub(crate) fn set_band(
+        &self,
+        view: u64,
+        target: Option<cherenkov_gpu::WindowTarget>,
+    ) -> Result<(), cherenkov::SurfaceError> {
+        self.core.engine.set_band(&self.core.surface, view, target)
     }
 
     pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {

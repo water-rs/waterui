@@ -124,6 +124,11 @@ pub struct LayerNode {
     /// Recorded or installed content of its own exists — a pure container,
     /// which only composites children, has none.
     has_content: bool,
+    /// The layer marks an external host window's frame: the engine draws
+    /// nothing for it, and its paint-order position splits the surface's
+    /// presentation bands (water-rs/waterui#2225). The host's id for the
+    /// window.
+    host_window: Option<u64>,
     parent: Option<LayerId>,
     transform_track: Option<Track<Affine>>,
     components: Option<Box<components::Components>>,
@@ -241,6 +246,7 @@ impl LayerNode {
             content_blends: false,
             content_translucent: false,
             has_content: false,
+            host_window: None,
             parent: None,
             transform_track: None,
             components: None,
@@ -277,6 +283,14 @@ impl LayerNode {
     #[must_use]
     pub const fn content_translucent(&self) -> bool {
         self.content_translucent
+    }
+
+    /// The host's id for the external host window whose frame the layer
+    /// marks — the paint-order boundary where that window's presentation
+    /// band starts (water-rs/waterui#2225) — `None` for an unmarked layer.
+    #[must_use]
+    pub const fn host_window(&self) -> Option<u64> {
+        self.host_window
     }
 
     /// Whether the layer has recorded or installed content of its own —
@@ -795,6 +809,7 @@ impl SurfaceTree {
             | LayerOp::Clip(id, _)
             | LayerOp::Filter(id, _)
             | LayerOp::Backdrop(id, _)
+            | LayerOp::HostWindow(id, _)
             | LayerOp::Content(id, _) => Some((*id, true)),
             LayerOp::Push { parent, .. }
             | LayerOp::Insert { parent, .. }
@@ -878,6 +893,11 @@ impl SurfaceTree {
             LayerOp::Blend(id, blend) => self.set_blend(id, blend),
             LayerOp::Filter(id, filter) => self.node_mut(id).filter = filter,
             LayerOp::Backdrop(id, backdrop) => self.node_mut(id).backdrop = backdrop,
+            LayerOp::HostWindow(id, window) => {
+                let node = self.node_mut(id);
+                node.host_window = window;
+                node.has_content |= window.is_some();
+            }
             LayerOp::Content(id, _) => {
                 // Validated here; forwarded to the renderer by the loop.
                 assert!(

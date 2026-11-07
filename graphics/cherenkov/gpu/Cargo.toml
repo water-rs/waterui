@@ -19,6 +19,14 @@ bench = []
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = { version = "1.12.0", default-features = false, optional = true }
 
+# Each native target renders through its one backend, the target table of
+# `cherenkov_gpu::REQUIRED_BACKEND` (see the workspace `wgpu` entry).
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { workspace = true, features = ["dx12"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+wgpu = { workspace = true, features = ["vulkan"] }
+
 [dependencies]
 filtrate = { version = "0.2.1", path = "../../filtrate" }
 filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
@@ -41,6 +49,7 @@ naga = { version = "30.0.1", features = ["wgsl-in"] }
 # Retained external frames: IOSurface/CVPixelBuffer import and
 # MTLSharedEvent waits on the shared device and queue (#165).
 [target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu = { workspace = true, features = ["metal"] }
 objc2 = "0.6"
 objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
 objc2-io-surface = "0.3"

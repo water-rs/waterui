@@ -187,25 +187,82 @@ pub enum ScratchFormat {
     Rgba8Unorm,
 }
 
-/// Whether GPU rendering on this target is Vulkan-only. Linux and Android
-/// compile no GL backend and never select one; a device without a Vulkan
-/// driver is unsupported.
-pub const VULKAN_ONLY: bool = cfg!(any(target_os = "android", target_os = "linux"));
+/// The one wgpu backend GPU rendering uses on a native target: no other
+/// backend is compiled in, selected or fallen back to, and a device without
+/// it is unsupported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequiredBackend {
+    /// The backend as an instance mask.
+    pub backends: wgpu::Backends,
+    /// The backend's name; `WGPU_BACKEND` reads it case-insensitively.
+    pub name: &'static str,
+    /// The platforms the requirement covers.
+    pub platform: &'static str,
+    /// What a device must offer, as a remedy for the user.
+    pub requirement: &'static str,
+}
+
+impl std::fmt::Display for RequiredBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unsupported device: no {} adapter is available; GPU rendering on {} requires {}",
+            self.name, self.platform, self.requirement
+        )
+    }
+}
+
+/// The backend GPU rendering requires on this target: Vulkan on Linux and
+/// Android, DX12 on Windows, Metal on Apple platforms. `None` on the web,
+/// which keeps WebGPU and WebGL.
+pub const REQUIRED_BACKEND: Option<RequiredBackend> = if cfg!(any(
+    target_os = "android",
+    target_os = "linux"
+)) {
+    Some(RequiredBackend {
+        backends: wgpu::Backends::VULKAN,
+        name: "Vulkan",
+        platform: "Linux and Android",
+        requirement: "a Vulkan driver, so install or update the device's Vulkan driver",
+    })
+} else if cfg!(target_os = "windows") {
+    Some(RequiredBackend {
+        backends: wgpu::Backends::DX12,
+        name: "DX12",
+        platform: "Windows",
+        requirement: "a DirectX 12 adapter and the DXC runtime (`dxcompiler.dll`), so update the \
+                      GPU driver and run `water doctor` to install DXC",
+    })
+} else if cfg!(target_vendor = "apple") {
+    Some(RequiredBackend {
+        backends: wgpu::Backends::METAL,
+        name: "Metal",
+        platform: "Apple platforms",
+        requirement: "a Metal device",
+    })
+} else {
+    None
+};
 
 /// The backends `WGPU_BACKEND` names, if it is set.
 ///
 /// # Panics
-/// On a [`VULKAN_ONLY`] target when the variable names anything but Vulkan:
-/// no other backend exists there, so honouring the request is impossible and
-/// ignoring it would hide the misconfiguration.
+/// When the target has a [`REQUIRED_BACKEND`] and the variable names anything
+/// but it: no other backend exists there, so honouring the request is
+/// impossible and ignoring it would hide the misconfiguration.
 #[must_use]
 pub fn backends_from_env() -> Option<wgpu::Backends> {
     let requested = wgpu::Backends::from_env()?;
-    assert!(
-        !VULKAN_ONLY || requested == wgpu::Backends::VULKAN,
-        "WGPU_BACKEND names {requested:?}, but GPU rendering on Linux and Android is Vulkan-only: \
-         unset WGPU_BACKEND or set it to `vulkan`"
-    );
+    if let Some(required) = REQUIRED_BACKEND {
+        assert!(
+            requested == required.backends,
+            "WGPU_BACKEND names {requested:?}, but GPU rendering on {} is {}-only: \
+             unset WGPU_BACKEND or set it to `{}`",
+            required.platform,
+            required.name,
+            required.name
+        );
+    }
     Some(requested)
 }
 
@@ -218,8 +275,8 @@ pub struct GpuConfig {
     /// Uses an existing host device. Handles must share one creation chain.
     /// Device limits and enabled features govern engine capabilities.
     pub device: Option<interop::SharedDevice>,
-    /// Which wgpu backends may be used. Defaults to all, and to Vulkan alone
-    /// where [`VULKAN_ONLY`].
+    /// Which wgpu backends may be used. Defaults to the target's
+    /// [`REQUIRED_BACKEND`] alone, and to all on the web.
     pub backends: wgpu::Backends,
     /// Adapter power preference. Defaults to high performance.
     pub power_preference: wgpu::PowerPreference,
@@ -270,11 +327,8 @@ impl Default for GpuConfig {
             #[cfg(test)]
             coverage_route: None,
             device: None,
-            backends: if VULKAN_ONLY {
-                wgpu::Backends::VULKAN
-            } else {
-                wgpu::Backends::all()
-            },
+            backends: REQUIRED_BACKEND
+                .map_or_else(wgpu::Backends::all, |required| required.backends),
             power_preference: wgpu::PowerPreference::HighPerformance,
             timestamps: false,
             wait_timeout: std::time::Duration::from_secs(30),

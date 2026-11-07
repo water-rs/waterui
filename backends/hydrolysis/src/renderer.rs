@@ -452,11 +452,12 @@ pub struct MaterializedPlatformView<E: crate::text::TextEngine> {
     /// The retained node that emitted the view.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) owner: Weak<crate::renderer::mount::NodeCell<E>>,
-    /// The view's bounds in `owner`'s local coordinates.
+    /// The view's bounds in `owner`'s local coordinates — the HWUI
+    /// portal's binding datum; the GPU band split needs only `owner`.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) local: kurbo::Rect,
-    /// `E` reaches the record only through `owner`; where the HWUI portal
-    /// does not compile, the parameter is phantom.
+    /// `E` reaches the record only through `owner`; where neither painter
+    /// binds the node, the parameter is phantom.
     #[cfg(not(any(test, hydrolysis_hwui)))]
     _phantom: std::marker::PhantomData<fn() -> E>,
 }
@@ -1934,6 +1935,22 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// [`SemanticCore::record_platform_views`].
     pub(crate) fn record_platform_views(&self) {
         self.core.record_platform_views();
+    }
+
+    /// The platform view that owns a touch at host pixel `point`: the
+    /// topmost view placed there, unless an interactive target painted
+    /// above it covers the point — the GPU band's ordered hit test, the
+    /// same rule the HWUI `platform_view_hit` applies (water-rs/waterui#2225).
+    /// `scale` is the density the touch edge divides host pixels by: the
+    /// placed frames and the interactive targets are both in window logical
+    /// coordinates.
+    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
+    pub(crate) fn platform_view_hit_gpu(&self, point: kurbo::Point, scale: f64) -> Option<u64> {
+        let logical = kurbo::Point::new(point.x / scale, point.y / scale);
+        self.core
+            .platform_view_at(logical)
+            .filter(|view| !self.core.platform_view_occluded(*view, logical))
     }
 
     /// [`SemanticCore::current_placement`].

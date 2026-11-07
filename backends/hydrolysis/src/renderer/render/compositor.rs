@@ -301,6 +301,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             window: native_window,
             window_slot,
             transparent,
+            band_commits,
         } = engine_target;
         if !window_slot
             .as_ref()
@@ -316,6 +317,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 (target.width, target.height),
                 self.host_wake(),
                 transparent,
+                band_commits.clone(),
             );
             *window_slot = Some(CherenkovWindow::new(
                 surface,

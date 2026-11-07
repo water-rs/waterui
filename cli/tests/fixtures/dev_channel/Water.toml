@@ -12,7 +12,7 @@ rust-version = "1.95.0"
 
 [framework.metadata]
 android-gradle-version = "9.7.1"
-android-min-api-level = 31
+android-min-api-level = 33
 apple-backend-path = "backends/apple"
 hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
 hydrolysis-path = "backends/hydrolysis"

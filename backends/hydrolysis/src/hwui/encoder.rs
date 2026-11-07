@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use waterui_graphics::draw::color::WorkingColor;
-use waterui_graphics::draw::kurbo::{Affine, Rect, Vec2};
+use waterui_graphics::draw::kurbo::{Affine, Point, Rect, Vec2};
 use waterui_graphics::draw::tree::Sampling;
 use waterui_graphics::draw::{
     BlendMode, ChangeSet, ContentOp, LayerId, LayerNode, LayerOp, Op as TreeOp, Picture, Realize,
@@ -385,7 +385,7 @@ impl Encoder {
         let tree = SurfaceTree::new();
         let root = tree.root();
         let registry = SharedRegistry::new();
-        let effects = Effects::new(registry.clone(), api_level);
+        let effects = Effects::new(registry.clone());
         let mut encoder = Self {
             tree,
             buffer: CommandBuffer::new(),
@@ -682,6 +682,7 @@ impl Encoder {
         pending.reset();
         self.pending = pending;
         layers?;
+        self.resolve_effect_origins(time)?;
         self.registry.drain_releases(&mut self.buffer)?;
         let layers = &self.layers;
         self.text_layouts.drain_releases(&mut self.buffer, |raw| {
@@ -847,6 +848,50 @@ impl Encoder {
         };
         let scroll = affine_rows(Affine::translate(-self.layers[&parent.raw()].scroll));
         Ok(multiply(multiply(self.world_rows(parent)?, scroll), local))
+    }
+
+    /// Tells every effect that draws in window device pixels (the overscroll
+    /// stretch) where its node's top-left corner sits there, and redefines
+    /// the effects that moved: the node's origin is the layer's extent
+    /// origin carried through the layer's world transform, which only the
+    /// encoder knows once the frame's layers are settled.
+    ///
+    /// # Errors
+    ///
+    /// [`HwuiError::Unsupported`] when the world transform is not a
+    /// translation and scale: the platform filters in a scale-only layer
+    /// space, in which the stretch's device-space frame no longer holds.
+    fn resolve_effect_origins(
+        &mut self,
+        time: waterui_graphics::draw::Instant,
+    ) -> Result<(), HwuiError> {
+        let mut moved = false;
+        for (&raw, state) in &self.layers {
+            let Some(wire) = state.sent.effect.filter(|wire| *wire != u32::MAX) else {
+                continue;
+            };
+            if !self.effects.takes_origin(wire) {
+                continue;
+            }
+            let world = flat_affine(self.world_rows(LayerId::new(raw))?)
+                .filter(|world| {
+                    let [_, b, c, _, _, _] = world.as_coeffs();
+                    b == 0.0 && c == 0.0
+                })
+                .ok_or_else(|| HwuiError::Unsupported {
+                    layer: raw,
+                    what: "draws an overscroll stretch under a rotated, skewed or projective pose"
+                        .to_owned(),
+                })?;
+            let origin = world * Point::new(f64::from(state.origin[0]), f64::from(state.origin[1]));
+            moved |= self
+                .effects
+                .set_origin(wire, [f32_of(origin.x), f32_of(origin.y)]);
+        }
+        if moved {
+            self.content_animating |= self.effects.encode(time, &mut self.buffer)?;
+        }
+        Ok(())
     }
 
     /// Emits a `BindPlatformView` for every binding whose

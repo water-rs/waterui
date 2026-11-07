@@ -32,7 +32,9 @@
 //!   an omitted component is zero) or `footprint_fn = <path>`
 //!   (`fn([f32; N]) -> Footprint`), and optionally `shape = sdf` or
 //!   `shape = mask` when the snippet reads the input's shape (see
-//!   [`ShapeInput`](filtrate_core::ShapeInput)).
+//!   [`ShapeInput`](filtrate_core::ShapeInput)), and
+//!   `coordinate_remap = true` when the stage is a pure coordinate remap
+//!   (`Filter::COORDINATE_REMAP`; the default is `false`).
 //!
 //! Both kinds accept `space = srgb` for a stage that operates in sRGB (the
 //! default is the linear working space), and `constants = [<f32>, …]`.
@@ -139,6 +141,7 @@ enum KindAttrs {
     Spatial {
         footprint: Footprint,
         shape: Option<Ident>,
+        coordinate_remap: bool,
     },
 }
 
@@ -229,15 +232,23 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         KindAttrs::Color { linear, cpu } => {
             stage.color(*linear, cpu.as_ref(), conversion, &impl_for)
         }
-        KindAttrs::Spatial { footprint, shape } => {
-            stage.spatial(footprint, shape.as_ref(), &impl_for)
-        }
+        KindAttrs::Spatial {
+            footprint, shape, ..
+        } => stage.spatial(footprint, shape.as_ref(), &impl_for),
     };
+    let coordinate_remap = matches!(
+        &attrs.kind,
+        KindAttrs::Spatial {
+            coordinate_remap: true,
+            ..
+        }
+    );
 
     Ok(quote! {
         impl #impl_generics #core::Filter for #ident #ty_generics #where_clause {
             type Kind = #kind;
             type Params = [f32; #total_params];
+            const COORDINATE_REMAP: bool = #coordinate_remap;
 
             #[inline]
             fn params(&self) -> [f32; #total_params] {
@@ -430,6 +441,7 @@ struct RawAttrs {
     footprint_extent: Option<Expr>,
     footprint_fn: Option<Path>,
     shape: Option<Ident>,
+    coordinate_remap: Option<bool>,
     srgb: Option<bool>,
     constants: Option<Vec<Expr>>,
 }
@@ -487,6 +499,10 @@ impl RawAttrs {
                 }
                 set_once(meta, &mut self.shape, value)?;
             }
+            "coordinate_remap" => {
+                let value: syn::LitBool = meta.value()?.parse()?;
+                set_once(meta, &mut self.coordinate_remap, value.value)?;
+            }
             "space" => {
                 let value: Ident = meta.value()?.parse()?;
                 let srgb = if value == "srgb" {
@@ -507,7 +523,7 @@ impl RawAttrs {
             }
             _ => {
                 return Err(meta.error(
-                    "unknown #[filter(...)] argument; expected `color`, `spatial`, `shader`, `linear`, `cpu`, `footprint`, `footprint_extent`, `footprint_fn`, `shape`, `space` or `constants`",
+                    "unknown #[filter(...)] argument; expected `color`, `spatial`, `shader`, `linear`, `cpu`, `footprint`, `footprint_extent`, `footprint_fn`, `shape`, `coordinate_remap`, `space` or `constants`",
                 ));
             }
         }
@@ -556,8 +572,12 @@ impl RawAttrs {
             KindAttrs::Spatial {
                 footprint,
                 shape: self.shape,
+                coordinate_remap: self.coordinate_remap.unwrap_or(false),
             }
         } else {
+            if self.coordinate_remap.is_some() {
+                return Err(misplaced("coordinate_remap", "spatial"));
+            }
             if self.footprint.is_some()
                 || self.footprint_extent.is_some()
                 || self.footprint_fn.is_some()
