@@ -451,11 +451,12 @@ pub struct MaterializedPlatformView<E: crate::text::TextEngine> {
     /// The retained node that emitted the view.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) owner: Weak<crate::renderer::mount::NodeCell<E>>,
-    /// The view's bounds in `owner`'s local coordinates.
+    /// The view's bounds in `owner`'s local coordinates — the HWUI
+    /// portal's binding datum; the GPU band split needs only `owner`.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) local: kurbo::Rect,
-    /// `E` reaches the record only through `owner`; where the HWUI portal
-    /// does not compile, the parameter is phantom.
+    /// `E` reaches the record only through `owner`; where neither painter
+    /// binds the node, the parameter is phantom.
     #[cfg(not(any(test, hydrolysis_hwui)))]
     _phantom: std::marker::PhantomData<fn() -> E>,
 }

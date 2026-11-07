@@ -357,6 +357,28 @@ impl<B: Backend> Engine<B> {
         Ok(surface)
     }
 
+    /// Sets or clears `surface`'s second presentation root: entries above
+    /// an external host window's mark present under `target` — above the
+    /// embedded windows — where the platform's compositor can place one
+    /// surface's content above another's (water-rs/waterui#2225).
+    /// Backends with no second-root realization ignore it; `None` returns
+    /// the above-mark entries to the surface's own root.
+    ///
+    /// # Errors
+    /// [`SurfaceError::Lost`] when the render thread is gone.
+    pub fn set_top_root(
+        &self,
+        surface: &Surface<B>,
+        target: Option<impl Into<B::Target>>,
+    ) -> Result<(), SurfaceError> {
+        self.tx
+            .send(Message::SetTopRoot {
+                id: surface.id(),
+                target: target.map(Into::into),
+            })
+            .map_err(|_| SurfaceError::Lost)
+    }
+
     /// The number of surfaces still alive, for leak testing.
     #[doc(hidden)]
     pub fn live_surfaces(&self) -> usize {

@@ -149,6 +149,12 @@ pub enum LayerOp {
     /// Set or clear the backdrop sample (group and optional per-member
     /// effect).
     Backdrop(LayerId, Option<BackdropSample>),
+    /// Set or clear the layer's host-window marker: a marked layer shows
+    /// no recorded content — an external host window occupies its frame
+    /// — and promotes to a compositor plane so content painted above the
+    /// topmost mark can be routed to a second presentation target
+    /// (water-rs/waterui#2225).
+    HostWindow(LayerId, bool),
     /// Set the layer content, or clear it.
     Content(LayerId, Option<ContentOp>),
     /// Append a child.
@@ -199,6 +205,7 @@ impl LayerOp {
             | Self::Blend(id, _)
             | Self::Filter(id, _)
             | Self::Backdrop(id, _)
+            | Self::HostWindow(id, _)
             | Self::Content(id, _)
             | Self::Push { parent: id, .. }
             | Self::Insert { parent: id, .. }

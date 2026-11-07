@@ -1763,6 +1763,16 @@ impl<T: Target> LayerEdit<T> {
         self
     }
 
+    /// Marks or unmarks the layer as an external host window's frame:
+    /// the engine draws nothing for a marked layer, and its paint-order
+    /// position splits the surface's presentation bands so the content
+    /// above the topmost mark can be routed to a second target
+    /// (water-rs/waterui#2225).
+    pub fn host_window(&mut self, marked: bool) -> &mut Self {
+        self.queue(Op::Layer(LayerOp::HostWindow(self.layer, marked)));
+        self
+    }
+
     /// Overrides the animation of the last property op this handle
     /// recorded — its own last edit, not whatever the shared stream
     /// holds last.
