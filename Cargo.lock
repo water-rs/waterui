@@ -12624,6 +12624,7 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
+ "blocking",
  "cfg_aliases",
  "cherenkov-oracle",
  "cocoa-ui",
