@@ -632,6 +632,64 @@ fn a_filtered_layer_defines_binds_and_updates_without_remount() {
     );
 }
 
+/// The stretch's frame is given in device pixels; the node it draws is
+/// found through its ancestors' scale and its own extent origin, so the
+/// definition the platform runs carries the frame in the node's space.
+#[test]
+fn a_stretched_layer_defines_its_frame_in_the_nodes_space() {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::filter_view::AnyEffect;
+    use waterui_graphics::filtrate::filters::OverscrollStretch;
+
+    let mut surface =
+        HwuiSurface::new(SurfaceId::new(11), 34, || {}).expect("an empty root encodes");
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let parent = Shared::layer(&shared);
+    let child = Shared::layer(&shared);
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(OverscrollStretch {
+                frame: [2.0f32, 0.0, 0.0, 2.0, 50.0, 70.0],
+                size: [50.0, 60.0],
+                stretch: [0.0, 0.1],
+            }),
+            std::sync::Arc::new(|| {}),
+        )
+        .expect("the stretch registers");
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&parent);
+        tx[&parent].transform(kurbo::Affine::translate((5.0, 7.0)) * kurbo::Affine::scale(2.0));
+        tx[&parent].push(&child);
+        tx[&child]
+            .layout_size(kurbo::Size::new(50.0, 60.0))
+            .filter(registration.filter_id())
+            .record(|c| {
+                c.fill(
+                    kurbo::Rect::new(10.0, 20.0, 60.0, 80.0),
+                    color(1.0, 0.0, 0.0, 1.0),
+                );
+            });
+    });
+    let _ = surface
+        .frame(Instant::now(), 2.0)
+        .expect("the stretched frame encodes");
+    let log = surface.take_log();
+    // The child's extent starts at (10, 20); the world maps it to
+    // (5 + 2·10, 7 + 2·20) = (25, 47), so the frame's offset (50, 70)
+    // becomes (25, 23) in the node's space.
+    let define = log
+        .iter()
+        .rfind(|line| line.starts_with("DefineEffect"))
+        .unwrap_or_else(|| panic!("{log:?}"));
+    for (name, value) in [("v4", 25.0f32), ("v5", 23.0)] {
+        let field = format!(" {name}={:08x}", value.to_bits());
+        assert!(define.contains(&field), "{field}: {define}");
+    }
+}
+
 #[test]
 fn a_filtered_recording_group_keeps_its_effect_node() {
     use crate::renderer::mount::target::FilterRegistration;

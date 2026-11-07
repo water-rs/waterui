@@ -1,6 +1,5 @@
 package dev.waterui.hydrolysis
 
-import android.content.Context
 import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
 import android.view.View
@@ -155,11 +154,26 @@ internal class OverscrollStretchEffect(private val source: String) {
         view.setRenderEffect(null)
     }
 
-    companion object {
-        /** The AGSL source, an asset of this library. */
-        fun loadSource(context: Context): String =
-            context.assets.open(ASSET).bufferedReader().use { it.readText() }
+}
 
-        private const val ASSET = "hydrolysis/overscroll_stretch.agsl"
+/**
+ * The AGSL source of the engine's stretch stage, the one copy both the
+ * platform-view warp and the HWUI painter's `RenderEffect` run: a Java
+ * resource of this library.
+ */
+object OverscrollStretchShader {
+    private const val RESOURCE = "hydrolysis/overscroll_stretch.agsl"
+
+    /** The source text; read on every call, so callers keep the result. */
+    fun source(): String {
+        val loader =
+            checkNotNull(OverscrollStretchShader::class.java.classLoader) {
+                "hydrolysis: no class loader to read the overscroll stretch AGSL resource"
+            }
+        val stream =
+            checkNotNull(loader.getResourceAsStream(RESOURCE)) {
+                "hydrolysis: the overscroll stretch AGSL resource $RESOURCE is missing"
+            }
+        return stream.use { it.readBytes().toString(Charsets.UTF_8) }
     }
 }

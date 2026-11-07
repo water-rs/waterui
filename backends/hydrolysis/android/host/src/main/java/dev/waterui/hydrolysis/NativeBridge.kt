@@ -67,9 +67,10 @@ object NativeBridge {
      * (water-rs/waterui#3544). 25 = the GPU band edge —
      * [nativeBandAttached] / [nativeBandDetached] carry each band View's
      * `ImageReader` surface, and `onNativeBandLatch` shows a band's newest
-     * image (water-rs/waterui#2225).
+     * image (water-rs/waterui#2225). 26 = the HWUI `DefineEffect` wire
+     * carries the overscroll stretch stage kind.
      */
-    private const val SCHEMA: Int = 25
+    private const val SCHEMA: Int = 26
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0

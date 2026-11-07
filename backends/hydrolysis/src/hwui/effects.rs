@@ -47,6 +47,9 @@ enum PlanStep {
     Blur { param: usize },
     /// Contiguous colour links composed into one matrix stage.
     ColorRun(Vec<ColorLink>),
+    /// The overscroll stretch; `param_base` indexes its ten flattened
+    /// parameters.
+    Stretch { param_base: usize },
 }
 
 /// The fixed native shape of a chain, shared across samples.
@@ -71,6 +74,10 @@ struct EffectEntry {
     /// The param watches: dropping them ends wakes.
     _guards: Vec<WatchGuard>,
     plan: Plan,
+    /// Where the drawn node's top-left corner sits in device pixels: the
+    /// stretch stage's frame is carried from device pixels to the node's
+    /// own space by it. Zero until the encoder resolves the node.
+    origin: [f32; 2],
     /// The declared stage names sampled errors carry.
     names: Vec<&'static str>,
     tracks: Vec<AnimationTrack>,
@@ -176,7 +183,7 @@ impl Effects {
         // Every fallible check precedes the id's allocation and the
         // subscriptions: a rejected registration leaves nothing behind.
         let tracks: Vec<AnimationTrack> = params.iter().map(|&v| AnimationTrack::new(v)).collect();
-        let stages = sample(&plan, &tracks, &names)?;
+        let stages = sample(&plan, &tracks, &names, [0.0; 2])?;
         let mut store = self.0.borrow_mut();
         let wire = store.registry.lock().acquire(Kind::Effect)?;
         let dropped = store.registry.dropped();
@@ -198,6 +205,7 @@ impl Effects {
                 _source: source,
                 _guards: guards,
                 plan,
+                origin: [0.0; 2],
                 names: names.clone(),
                 tracks,
                 events: rx,
@@ -255,13 +263,38 @@ impl Effects {
             for track in &mut entry.tracks {
                 animating |= track.is_active();
             }
-            let stages = sample(&entry.plan, &entry.tracks, &entry.names)?;
+            let stages = sample(&entry.plan, &entry.tracks, &entry.names, entry.origin)?;
             if entry.emitted.as_ref() != Some(&stages) {
                 emit_effect(buffer, wire, &stages)?;
                 entry.emitted = Some(stages);
             }
         }
         Ok(animating)
+    }
+
+    /// Whether the effect `wire` draws in window device pixels, so its
+    /// node's [origin](Self::set_origin) is part of its definition.
+    pub(crate) fn takes_origin(&self, wire: u32) -> bool {
+        self.0.borrow().entries.get(&wire).is_some_and(|entry| {
+            entry
+                .plan
+                .0
+                .iter()
+                .any(|step| matches!(step, PlanStep::Stretch { .. }))
+        })
+    }
+
+    /// Records where the node drawing effect `wire` has its top-left
+    /// corner in device pixels; `true` when that moved the node, so the
+    /// next [`encode`](Self::encode) redefines the effect.
+    pub(crate) fn set_origin(&self, wire: u32, origin: [f32; 2]) -> bool {
+        let mut store = self.0.borrow_mut();
+        let Some(entry) = store.entries.get_mut(&wire) else {
+            return false;
+        };
+        let moved = entry.origin.map(f32::to_bits) != origin.map(f32::to_bits);
+        entry.origin = origin;
+        moved
     }
 }
 
@@ -317,6 +350,14 @@ fn plan(
                     param: link.param_base,
                 });
             }
+            Some(Mapped::Stretch) => {
+                if !run.is_empty() {
+                    steps.push(PlanStep::ColorRun(std::mem::take(&mut run)));
+                }
+                steps.push(PlanStep::Stretch {
+                    param_base: link.param_base,
+                });
+            }
             None => {
                 if failure.is_none() {
                     failure = Some(unsupported(format!(
@@ -338,6 +379,7 @@ fn plan(
 enum Mapped {
     Color(fn(&[f32]) -> [[f32; 4]; 4]),
     Blur,
+    Stretch,
 }
 
 /// `link`'s native step: each colour mapping names a concrete `LINEAR`
@@ -413,6 +455,15 @@ fn map_link(link: &FilterLink<'_>) -> Option<Mapped> {
         || link.downcast_ref::<filters::Blur<f32>>().is_some()
     {
         return Some(Mapped::Blur);
+    }
+    if link
+        .downcast_ref::<filters::OverscrollStretch<fv::Reactive>>()
+        .is_some()
+        || link
+            .downcast_ref::<filters::OverscrollStretch<f32>>()
+            .is_some()
+    {
+        return Some(Mapped::Stretch);
     }
     None
 }
@@ -600,11 +651,25 @@ fn conjugate(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     mul(&mul(&extend(P3_TO_SRGB), m), &extend(SRGB_TO_P3))
 }
 
-/// The current sample as wire stages.
+/// The stretch stage's wire values: the ten filter parameters with the
+/// frame carried from device pixels to the drawn node's own space (the
+/// shader runs in it), then HWUI's interpolation strength.
+fn stretch_values(params: &[f32], origin: [f32; 2]) -> [f32; 12] {
+    let mut values = [0f32; 12];
+    values[..10].copy_from_slice(&params[..10]);
+    values[4] -= origin[0];
+    values[5] -= origin[1];
+    values[10] = filters::STRETCH_INTERPOLATION_STRENGTH;
+    values
+}
+
+/// The current sample as wire stages, for a node whose top-left corner is
+/// at `origin` device pixels.
 fn sample(
     plan: &Plan,
     tracks: &[AnimationTrack],
     names: &[&'static str],
+    origin: [f32; 2],
 ) -> Result<Vec<EffectStage>, HwuiError> {
     let params: Vec<f32> = tracks.iter().map(AnimationTrack::value).collect();
     if params.iter().any(|p| !p.is_finite()) {
@@ -624,6 +689,10 @@ fn sample(
                     values,
                 });
             }
+            PlanStep::Stretch { param_base } => stages.push(EffectStage {
+                kind: effect_kind::OVERSCROLL_STRETCH,
+                values: stretch_values(&params[*param_base..], origin),
+            }),
             PlanStep::ColorRun(links) => {
                 // Links compose in application order: the next link's matrix
                 // left-multiplies the accumulated product.
@@ -718,7 +787,7 @@ mod tests {
     fn blur_radius_is_clamped_nonnegative() {
         let plan = Plan(vec![PlanStep::Blur { param: 0 }]);
         let tracks = vec![AnimationTrack::new(-2.0)];
-        let stages = sample(&plan, &tracks, &[]).unwrap();
+        let stages = sample(&plan, &tracks, &[], [0.0; 2]).unwrap();
         assert_eq!(stages[0].kind, effect_kind::BLUR);
         assert_eq!(stages[0].values[0], 0.0);
     }
@@ -1221,13 +1290,59 @@ mod tests {
         };
         let plan = Plan(vec![run(0), PlanStep::Blur { param: 0 }, run(1)]);
         let tracks = vec![AnimationTrack::new(0.5), AnimationTrack::new(0.25)];
-        let stages = sample(&plan, &tracks, &[]).unwrap();
+        let stages = sample(&plan, &tracks, &[], [0.0; 2]).unwrap();
         assert_eq!(
             stages.iter().map(|s| s.kind).collect::<Vec<_>>(),
             vec![
                 effect_kind::LINEAR_COLOR,
                 effect_kind::BLUR,
                 effect_kind::LINEAR_COLOR
+            ]
+        );
+    }
+
+    /// The stretch registers from the same parameters the GPU painter
+    /// draws with; its frame reaches the wire in the node's own space.
+    #[test]
+    fn the_stretch_carries_its_frame_to_the_nodes_space() {
+        let (_, effects, _, wake) = fixture();
+        let stretch = filters::OverscrollStretch {
+            frame: [2.0, 0.0, 0.0, 2.0, 30.0, 54.0],
+            size: [100.0, 200.0],
+            stretch: [0.0, -0.02],
+        };
+        let registration = effects
+            .register(AnyEffect::filter(stretch), wake)
+            .expect("the stretch lowers to a RenderEffect stage");
+        let wire = u32::try_from(wire_of(&registration)).unwrap();
+        assert!(effects.takes_origin(wire));
+        assert!(effects.set_origin(wire, [10.0, 4.0]));
+        assert!(!effects.set_origin(wire, [10.0, 4.0]));
+
+        let mut buffer = CommandBuffer::new();
+        buffer.begin_frame();
+        effects
+            .encode(cherenkov_record::Instant::now(), &mut buffer)
+            .unwrap();
+        let store = effects.0.borrow();
+        let stages = store.entries[&wire].emitted.as_ref().unwrap();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].kind, effect_kind::OVERSCROLL_STRETCH);
+        assert_eq!(
+            stages[0].values,
+            [
+                2.0,
+                0.0,
+                0.0,
+                2.0,
+                20.0,
+                50.0,
+                100.0,
+                200.0,
+                0.0,
+                -0.02,
+                filters::STRETCH_INTERPOLATION_STRENGTH,
+                0.0
             ]
         );
     }
