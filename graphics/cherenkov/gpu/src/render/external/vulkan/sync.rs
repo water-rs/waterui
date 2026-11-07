@@ -747,8 +747,8 @@ impl Generation {
     /// # Panics
     /// When the generation already has a hook, or has already retired.
     pub(crate) fn on_release(&self, release: crate::interop::ReleaseFn) {
-        let mut parts = self.parts.lock().expect("release parts");
-        let parts = parts
+        let mut guard = self.parts.lock().expect("release parts");
+        let parts = guard
             .as_mut()
             .expect("ExternalFrame::on_release on a native frame the engine already retired");
         assert!(
@@ -756,6 +756,7 @@ impl Generation {
             "ExternalFrame::on_release called twice: a frame has one release hook"
         );
         parts.hook = Some(ReleaseHook(release));
+        drop(guard);
     }
 
     /// Drops one engine-side reference; the last one retires the frame.
