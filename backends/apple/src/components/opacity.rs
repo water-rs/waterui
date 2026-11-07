@@ -64,6 +64,14 @@ impl core::fmt::Debug for OpacitySubView {
 }
 
 impl SubView for OpacitySubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }

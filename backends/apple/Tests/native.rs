@@ -823,6 +823,15 @@ mod leaf {
     pub struct TestSubView;
 
     impl SubView for TestSubView {
+        fn resolve_extent(
+            &self,
+            bounds: waterui_core::layout::Rect,
+            proposal: ProposalSize,
+        ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError>
+        {
+            waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(Size::new(40.0, 20.0))
         }
@@ -10831,6 +10840,16 @@ mod embedding {
         fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
             self.seen.borrow_mut().push(proposal);
             Size::new(17.0, 23.0)
+        }
+        fn resolve_extent(
+            &self,
+            input: waterui_core::layout::PlacementInput,
+            _children: &[&dyn SubView],
+        ) -> Result<Rect, waterui_core::layout::LayoutError> {
+            Ok(input.bounds.align(
+                input.extent()?,
+                waterui_core::layout::UnitPoint::TOP_LEADING,
+            ))
         }
         fn place(
             &self,

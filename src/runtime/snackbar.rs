@@ -59,7 +59,8 @@ use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{Alignment, hstack};
 use waterui_layout::{
-    AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
+    AbsoluteLayout, Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, StretchAxis,
+    SubView, SubviewPlacement, UnitPoint,
 };
 use waterui_macros::state;
 use waterui_text::{font::Font, text::text};
@@ -1022,6 +1023,15 @@ impl Layout for HugWidth {
             child.measure(ProposalSize::new(None, proposal.height)).size
         });
         Size::new(child.width.clamp(self.min, self.max), child.height)
+    }
+
+    /// Anchored top-leading: `place` hands the row `bounds` from its origin.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(

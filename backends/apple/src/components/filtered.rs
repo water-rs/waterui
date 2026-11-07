@@ -1684,6 +1684,24 @@ impl FilteredSubView {
 }
 
 impl SubView for FilteredSubView {
+    /// Forwards to the hidden content with the same bounds and proposal; no
+    /// content answers a zero size centred in `bounds`, as `measure` does.
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        self.mounted().map_or_else(
+            || {
+                waterui_core::layout::ResolvedExtent::centred(
+                    bounds,
+                    waterui_core::layout::Size::zero(),
+                )
+            },
+            |m| m.layout().resolve_extent(bounds, proposal),
+        )
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.mounted().map_or_else(
             || ViewDimensions::new(Size::new(0.0, 0.0)),

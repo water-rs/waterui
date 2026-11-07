@@ -101,6 +101,24 @@ impl core::fmt::Debug for DynamicSubView {
 }
 
 impl SubView for DynamicSubView {
+    /// Forwards to the mounted child with the same bounds and proposal; an
+    /// absent child answers a zero size centred in `bounds`, as `measure` does.
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        self.state.borrow().child.as_ref().map_or_else(
+            || {
+                waterui_core::layout::ResolvedExtent::centred(
+                    bounds,
+                    waterui_core::layout::Size::zero(),
+                )
+            },
+            |child| child.layout().resolve_extent(bounds, proposal),
+        )
+    }
+
     /// `measure(_:)`: the child owns the full measurement packet — its
     /// alignment guides ride along inside stacks.
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {

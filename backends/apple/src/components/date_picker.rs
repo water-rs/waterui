@@ -396,6 +396,14 @@ impl core::fmt::Debug for DatePickerSubView {
 }
 
 impl SubView for DatePickerSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the layout contract is f32; measured points always fit"

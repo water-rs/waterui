@@ -1,11 +1,14 @@
 use crate::renderer::lazy::{LazyStackAxisConfig, lazy_stack_axis_config};
 use crate::renderer::{
     HydroNativeView, HydroState, estimate_layout_intrinsic, measure_layout_dimensions,
-    measure_transient_view_with_proposal, normalize_layout_view,
+    measure_transient_view_with_proposal, normalize_layout_view, resolve_layout_view_extent,
 };
 use std::rc::Rc;
 use waterui::views::Views;
-use waterui_core::layout::{ProposalSize, Size as LayoutSize};
+use waterui_core::layout::{
+    LayoutError, PlacementInput, ProposalSize, Rect as LayoutRect, ResolvedExtent,
+    Size as LayoutSize,
+};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::container::{FixedContainer, LazyContainer};
@@ -141,6 +144,52 @@ fn lazy_stack_sample_size<E: crate::text::TextEngine>(
             )
         }
     }
+}
+
+/// The response geometry (water-rs/waterui#1323) of a lazy container the
+/// estimator measures, following the split
+/// [`HydroNativeView::dimensions`] makes: a virtualized stack answers its stack
+/// rule from the lazy sample alone (it enumerates no children), and a
+/// non-virtualized collection answers its layout's rule over its whole
+/// materialized membership.
+///
+/// # Errors
+///
+/// A [`LayoutError`] when the answer or `bounds` is not valid geometry, or a
+/// layout broke the response-extent identity.
+pub fn resolve_lazy_container_extent<E: crate::text::TextEngine>(
+    state: &mut HydroState<E>,
+    view: &Native<LazyContainer>,
+    env: &Environment,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
+    bounds: LayoutRect,
+    proposal: ProposalSize,
+) -> Result<ResolvedExtent, LayoutError> {
+    let (layout, children) = view.as_inner().as_parts();
+    if let Some(axis) = lazy_stack_axis_config(layout, view.as_inner().direction()) {
+        let answer = <Native<LazyContainer> as HydroNativeView<E>>::dimensions(
+            state, view, env, theme, proposal,
+        )
+        .size;
+        let input = PlacementInput {
+            bounds,
+            proposal,
+            answer,
+        };
+        return ResolvedExtent::checked(input, axis.resolve_extent(input)?);
+    }
+    let views = materialize_all(&children.snapshot(), env);
+    let direction = view.as_inner().direction().snapshot();
+    let state = std::cell::RefCell::new(state);
+    let subviews: Vec<crate::renderer::HydroSubview<'_, E>> = views
+        .iter()
+        .map(|child| crate::renderer::HydroSubview::from_view(child, &state, env, theme))
+        .collect();
+    let refs: Vec<&dyn waterui_core::layout::SubView> = subviews
+        .iter()
+        .map(|view| view as &dyn waterui_core::layout::SubView)
+        .collect();
+    waterui_layout::container::resolve_directional_extent(layout, direction, bounds, proposal, &refs)
 }
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<LazyContainer> {

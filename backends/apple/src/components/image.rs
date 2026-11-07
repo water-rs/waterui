@@ -121,6 +121,14 @@ impl core::fmt::Debug for ImageSubView {
 }
 
 impl SubView for ImageSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // The platform measures in f64; `ViewDimensions` speaks f32 — the
     // narrowing is the layout contract.
     #[expect(

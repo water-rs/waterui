@@ -1429,6 +1429,14 @@ impl fmt::Debug for ListSubView {
 }
 
 impl SubView for ListSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "kit geometry is f64; layout proposals are f32"

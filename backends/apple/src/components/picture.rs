@@ -194,6 +194,14 @@ impl core::fmt::Debug for PictureSubView {
 }
 
 impl SubView for PictureSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(fit(proposal, self.size))
     }

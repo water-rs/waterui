@@ -211,6 +211,14 @@ impl core::fmt::Debug for GradientSubView {
 }
 
 impl SubView for GradientSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         // Greedy: take the whole proposal on every axis.
         ViewDimensions::new(Size::new(

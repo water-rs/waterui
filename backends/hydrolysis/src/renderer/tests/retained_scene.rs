@@ -29,7 +29,9 @@ use nami::collection::List;
 use waterui::graphics::Color;
 use waterui_backend_core::View;
 use waterui_core::dynamic::watch;
-use waterui_core::layout::{Layout, ProposalSize, Rect, Size, SubView, SubviewPlacement};
+use waterui_core::layout::{
+    Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+};
 use waterui_core::transition::PropertyTransition;
 use waterui_core::views::ForEach;
 use waterui_graphics::color::signal_color;
@@ -119,6 +121,14 @@ struct CountingLayout {
 impl Layout for CountingLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         self.inner.size_that_fits(proposal, children)
+    }
+
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        self.inner.resolve_extent(input, children)
     }
 
     fn place(

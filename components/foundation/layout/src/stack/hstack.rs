@@ -8,14 +8,15 @@ use waterui_core::{
 };
 
 use crate::{
-    Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    SubviewPlacement,
+    Layout, LayoutError, LazyContainer, PlacedSubview, PlacementInput, Point, ProposalSize, Rect,
+    Size, StretchAxis, SubView, SubviewPlacement, UnitPoint,
     container::FixedContainer,
     stack::{
         Axis, VerticalAlignment,
         distribute::{
-            ChildMeasurement, LineAnchor, container_line, cross_envelope, empty_placement,
-            measure_stack, place_cross_extent, stack_members, stack_spacing,
+            ChildMeasurement, LineAnchor, centred_block_start, container_line, cross_envelope,
+            empty_placement, main_block, measure_stack, place_cross_extent, stack_members,
+            stack_spacing,
         },
         stack_stretch_axis,
     },
@@ -169,8 +170,9 @@ impl Layout for HStackLayout {
         // answered with a zero-size frame at the cursor so the returned
         // placements still line up one-for-one with `children`.
         let mut placements = Vec::with_capacity(children.len());
+        let block = main_block(measurements.iter().map(|m| m.size().width), spacing);
         let mut measurements = measurements.iter();
-        let mut current_x = bounds.x();
+        let mut current_x = centred_block_start(bounds.x(), bounds.width(), block);
         let mut members_placed = 0usize;
 
         for child in children {
@@ -220,6 +222,19 @@ impl Layout for HStackLayout {
         }
 
         placements
+    }
+
+    /// The row's answer, centred on the main axis and anchored on the cross
+    /// axis by the row's alignment (baselines and custom guides at the top).
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(
+            input.extent()?,
+            UnitPoint::new(0.5, LineAnchor::vertical(self.alignment).response_unit()),
+        ))
     }
 
     fn explicit_vertical(
@@ -365,6 +380,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: crate::Rect,
+            proposal: ProposalSize,
+        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
+            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -384,6 +406,13 @@ mod tests {
     }
 
     impl SubView for ResponsiveSubView {
+        fn resolve_extent(
+            &self,
+            bounds: crate::Rect,
+            proposal: ProposalSize,
+        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
+            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(match proposal.width {
                 Some(width) if width <= self.wrap_at_or_below => {

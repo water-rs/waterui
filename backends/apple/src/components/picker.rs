@@ -233,6 +233,14 @@ impl core::fmt::Debug for PickerSubView {
 }
 
 impl SubView for PickerSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(

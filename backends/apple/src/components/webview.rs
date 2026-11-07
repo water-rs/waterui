@@ -807,6 +807,14 @@ impl core::fmt::Debug for WebViewSubView {
 }
 
 impl SubView for WebViewSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(320.0),

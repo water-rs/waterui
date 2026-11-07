@@ -7,6 +7,7 @@ use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
 use waterui::navigation::tab::TabIcon;
 use waterui_core::handler::BoxedAction;
+use waterui_core::layout::{LayoutError, ResolvedExtent, resolve_layout_extent};
 use waterui_core::views::ViewSnapshot;
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
@@ -342,6 +343,100 @@ fn measure_view_dimensions_with_proposal_with_budget<E: crate::text::TextEngine>
         "hydrolysis dimensions estimation encountered unsupported view type {}",
         view.name()
     );
+}
+
+/// The response geometry (water-rs/waterui#1323) of a view the estimator
+/// measures, dispatched like
+/// [`measure_view_dimensions_with_proposal_with_budget`] so the two cannot
+/// drift: environment scopes and passthrough metadata forward to their
+/// content with the same bounds and proposal, and a container answers its
+/// layout's rule over its children.
+///
+/// `None` means a leaf: the caller answers [`ResolvedExtent::centred`] with its
+/// own measured, stretch-applied answer.
+///
+/// # Errors
+///
+/// A [`LayoutError`] when the answer or `bounds` is not valid geometry, or a
+/// layout broke the response-extent identity.
+pub fn resolve_view_extent<E: crate::text::TextEngine>(
+    view: &AnyView,
+    bounds: LayoutRect,
+    proposal: ProposalSize,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+) -> Result<Option<ResolvedExtent>, LayoutError> {
+    let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
+
+    if let Some(content) = passthrough_content(view) {
+        return resolve_view_extent(content, bounds, proposal, state, &scoped_env, theme);
+    }
+    // A plain `FixedContainer` has not run `body`, which wraps its layout for
+    // the layout direction; resolve it the way that wrapper does. The Native
+    // form already carries the wrapper.
+    if let Some(container) = view.downcast_ref::<FixedContainer>() {
+        let (layout, children) = container.as_parts();
+        let direction = waterui_core::layout::layout_direction(&scoped_env).snapshot();
+        let state = RefCell::new(state);
+        let subviews: Vec<HydroSubview<'_, E>> = children
+            .iter()
+            .map(|child| HydroSubview::from_view(child, &state, &scoped_env, theme))
+            .collect();
+        let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+        return waterui_layout::container::resolve_directional_extent(
+            layout, direction, bounds, proposal, &refs,
+        )
+        .map(Some);
+    }
+    if let Some(container) = view.downcast_ref::<Native<FixedContainer>>() {
+        let (layout, children) = container.as_inner().as_parts();
+        return resolve_layout_view_extent(
+            layout,
+            children.iter(),
+            bounds,
+            proposal,
+            state,
+            &scoped_env,
+            theme,
+        )
+        .map(Some);
+    }
+    if let Some(lazy) = view.downcast_ref::<Native<LazyContainer>>() {
+        return crate::widgets::layout::container::resolve_lazy_container_extent(
+            state,
+            lazy,
+            &scoped_env,
+            theme,
+            bounds,
+            proposal,
+        )
+        .map(Some);
+    }
+    Ok(None)
+}
+
+/// [`resolve_layout_extent`] over `children` seen through [`HydroSubview`]s.
+///
+/// # Errors
+///
+/// As [`resolve_layout_extent`].
+pub fn resolve_layout_view_extent<'a, E: crate::text::TextEngine>(
+    layout: &dyn Layout,
+    children: impl IntoIterator<Item = &'a AnyView>,
+    bounds: LayoutRect,
+    proposal: ProposalSize,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+) -> Result<ResolvedExtent, LayoutError> {
+    let state = RefCell::new(state);
+    let subviews: Vec<HydroSubview<'_, E>> = children
+        .into_iter()
+        .map(|child| HydroSubview::from_view(child, &state, env, theme))
+        .collect();
+    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+    resolve_layout_extent(layout, bounds, proposal, &refs)
 }
 
 pub fn measure_layout_dimensions<'a, E: crate::text::TextEngine>(

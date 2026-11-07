@@ -214,6 +214,14 @@ impl core::fmt::Debug for MenuSubView {
 }
 
 impl SubView for MenuSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let measured = self.label.layout().measure(label_offer(proposal));
         let (horizontal, vertical) = LABEL_PADDING;

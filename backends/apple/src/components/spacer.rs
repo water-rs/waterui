@@ -33,6 +33,14 @@ struct SpacerSubView {
 }
 
 impl SubView for SpacerSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(match self.axis {
             Some(Axis::Horizontal) => Size::new(self.min_length, 0.0),

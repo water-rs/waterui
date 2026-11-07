@@ -69,6 +69,18 @@ impl core::fmt::Debug for DropSubView {
 }
 
 impl SubView for DropSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        self.state
+            .borrow()
+            .child
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.borrow().child.layout().measure(proposal)
     }

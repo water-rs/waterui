@@ -28,6 +28,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
 struct Fill;
 
 impl SubView for Fill {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: waterui_core::layout::ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, _proposal: waterui_core::layout::ProposalSize) -> ViewDimensions {
         ViewDimensions::new(waterui_core::layout::Size::new(0.0, 0.0))
     }

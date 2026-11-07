@@ -107,6 +107,14 @@ impl fmt::Debug for MemoizingSubView {
 }
 
 impl SubView for MemoizingSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        self.inner.resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.memo.measure(proposal, || self.inner.measure(proposal))
     }

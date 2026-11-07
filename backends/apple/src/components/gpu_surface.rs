@@ -2395,6 +2395,14 @@ struct SurfaceSubView {
 }
 
 impl SubView for SurfaceSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.last_proposal.set(Some(proposal));
         let measured = self.state.view.borrow().measure(proposal);

@@ -162,6 +162,20 @@ impl core::fmt::Debug for FixedSubView {
 }
 
 impl SubView for FixedSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        let state = self.state.borrow();
+        waterui_core::layout::resolve_layout_extent(
+            &*state.layout,
+            bounds,
+            proposal,
+            &children_of(&state),
+        )
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         measure(&self.state.borrow(), proposal)
     }

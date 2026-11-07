@@ -36,8 +36,8 @@ use crate::renderer::Recording;
 use kurbo::Affine;
 use peniko::{Brush, Color, Fill};
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions,
+    HorizontalAlignment, Layout, LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent,
+    Size, StretchAxis, SubView, VerticalAlignment, ViewDimensions,
 };
 use waterui_layout::stack::{HStackLayout, VStackLayout};
 
@@ -366,6 +366,13 @@ struct MeasuredSub {
 impl SubView for MeasuredSub {
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
+    }
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
     fn stretch_axis(&self) -> StretchAxis {
         self.stretch

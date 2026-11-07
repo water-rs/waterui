@@ -187,6 +187,13 @@ fn retire_page(leaf: LiveChild, env: &Environment, ghosts: &Ghosts) {
 struct Fill;
 
 impl SubView for Fill {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::new(0.0, 0.0))
     }

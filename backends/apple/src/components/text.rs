@@ -601,6 +601,14 @@ impl core::fmt::Debug for TextSubView {
 }
 
 impl SubView for TextSubView {
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `TextMetrics` measures in f64; `ViewDimensions` speaks f32 — the
     // narrowing is the layout contract.
     #[expect(

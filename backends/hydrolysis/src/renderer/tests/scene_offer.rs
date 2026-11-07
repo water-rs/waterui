@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use waterui::{AnyView, Color, View, ViewExt as _};
 use waterui_core::Environment;
 use waterui_core::id::SelfId;
-use waterui_core::layout::{StretchAxis, ViewDimensions};
+use waterui_core::layout::{LayoutError, Rect, ResolvedExtent, StretchAxis, ViewDimensions};
 use waterui_core::views::ForEach;
 use waterui_graphics::draw::Recorder;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
@@ -192,6 +192,14 @@ impl SubView for OfferProbe<'_> {
             reported: reported.size,
         });
         reported
+    }
+
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
 
     fn stretch_axis(&self) -> StretchAxis {

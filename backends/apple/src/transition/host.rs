@@ -116,6 +116,25 @@ impl core::fmt::Debug for TransitionHostSubView {
 }
 
 impl SubView for TransitionHostSubView {
+    /// Forwards to the live content with the same bounds and proposal; an
+    /// absent content answers a zero size centred in `bounds`, as `measure`
+    /// does.
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        self.0.content.borrow().as_ref().map_or_else(
+            || {
+                waterui_core::layout::ResolvedExtent::centred(
+                    bounds,
+                    waterui_core::layout::Size::zero(),
+                )
+            },
+            |content| content.layout().resolve_extent(bounds, proposal),
+        )
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.0.content.borrow().as_ref().map_or_else(
             || ViewDimensions::new(Size::new(0.0, 0.0)),

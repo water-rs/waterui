@@ -10,7 +10,8 @@ use core::{fmt, time::Duration};
 
 use crate::animation::Animation;
 use crate::layout::{
-    LayoutDirection, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
+    LayoutDirection, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
 };
 use crate::metadata::MetadataKey;
 use crate::{AnyView, Binding, Computed, Metadata, Signal, SignalExt, View};
@@ -773,6 +774,13 @@ impl GhostSlot {
 impl SubView for GhostSlot {
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         self.dimensions.clone()
+    }
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        _proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.dimensions.size)
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None

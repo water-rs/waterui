@@ -1229,6 +1229,38 @@ impl core::fmt::Debug for ContainerSubView {
 }
 
 impl SubView for ContainerSubView {
+    /// A virtualized stack cannot enumerate its children, so it asks its
+    /// layout with none: the stack rule reads no children, and the answer
+    /// from the lazy measurement state is authoritative. Every other
+    /// container answers its layout's rule over its real children.
+    fn resolve_extent(
+        &self,
+        bounds: waterui_core::layout::Rect,
+        proposal: ProposalSize,
+    ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError> {
+        if self.state.borrow().lazy.is_some() {
+            let answer = self.measure(proposal).size;
+            let rect = self.state.borrow().layout.resolve_extent(
+                waterui_core::layout::PlacementInput {
+                    bounds,
+                    proposal,
+                    answer,
+                },
+                &[],
+            )?;
+            return Ok(waterui_core::layout::ResolvedExtent { answer, rect });
+        }
+        with_children_tx(&self.state, &self.pending, || {
+            let state = self.state.borrow();
+            waterui_core::layout::resolve_layout_extent(
+                &*state.layout,
+                bounds,
+                proposal,
+                &children(&state),
+            )
+        })
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         measure(&self.state, &self.pending, proposal)
     }
@@ -1559,6 +1591,15 @@ mod tests {
     }
 
     impl SubView for FixedChild {
+        fn resolve_extent(
+            &self,
+            bounds: waterui_core::layout::Rect,
+            proposal: ProposalSize,
+        ) -> Result<waterui_core::layout::ResolvedExtent, waterui_core::layout::LayoutError>
+        {
+            waterui_core::layout::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.last_proposal.set(Some(proposal));
             ViewDimensions::new(self.size)

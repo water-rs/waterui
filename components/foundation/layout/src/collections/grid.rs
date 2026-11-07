@@ -9,8 +9,8 @@ use waterui_core::{
 };
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
-    ViewDimensions,
+    Layout, LayoutError, PlacedSubview, PlacementInput, Point, ProposalSize, Rect, Size,
+    StretchAxis, SubView, SubviewPlacement, UnitPoint, ViewDimensions,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
@@ -145,6 +145,17 @@ impl Layout for GridLayout {
         // answers the proposal width like a populated one.
         let measurement = self.measure_grid(proposal.width, children);
         Size::new(measurement.total_width, measurement.total_height)
+    }
+
+    /// The grid block anchored top-leading, where `place` starts its rows.
+    /// The grid's alignment aligns cells inside their cells; it never moves
+    /// the block.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -449,7 +460,7 @@ pub fn row(contents: impl TupleViews) -> GridRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StretchAxis;
+    use crate::{LayoutError, ResolvedExtent, StretchAxis};
     use core::num::NonZeroUsize;
 
     struct MockSubView {
@@ -457,6 +468,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -473,6 +491,13 @@ mod tests {
     }
 
     impl SubView for StretchingSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }

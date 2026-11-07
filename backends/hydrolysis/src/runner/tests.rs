@@ -712,13 +712,24 @@ fn an_explicit_maximum_clamps_a_larger_window() {
 
 #[test]
 fn zero_layout_minimum_is_not_replaced_by_ideal_size() {
-    use waterui_core::layout::{Layout, ProposalSize, Rect, Size, SubView, SubviewPlacement};
+    use waterui_core::layout::{
+        Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+        UnitPoint,
+    };
     use waterui_layout::container::FixedContainer;
 
     #[derive(Debug)]
     struct IdealOnlyLayout;
 
     impl Layout for IdealOnlyLayout {
+        fn resolve_extent(
+            &self,
+            input: PlacementInput,
+            _children: &[&dyn SubView],
+        ) -> Result<Rect, LayoutError> {
+            Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+        }
+
         fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
             Size::new(
                 proposal.width.unwrap_or(500.0),

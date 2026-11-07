@@ -8,8 +8,8 @@ use waterui_core::{
 };
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
-    ViewDimensions,
+    Layout, LayoutError, PlacedSubview, PlacementInput, Point, ProposalSize, Rect, Size, SubView,
+    SubviewPlacement, UnitPoint, ViewDimensions,
     container::FixedContainer,
     stack::{
         Alignment, HorizontalAlignment, VerticalAlignment,
@@ -234,6 +234,17 @@ impl Layout for FrameLayout {
             Rect::new(Point::new(child_x, child_y), final_child_size),
             child_proposal,
         )]
+    }
+
+    /// The frame's own answer centred in the bounds. The frame's alignment
+    /// aligns its child, never the frame's own box: a child overflowing the
+    /// frame does not move it.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::CENTER))
     }
 
     fn explicit_horizontal(
@@ -656,6 +667,13 @@ mod tests {
     }
 
     impl<C: SubView> SubView for FramedChild<C> {
+        fn resolve_extent(
+            &self,
+            bounds: crate::Rect,
+            proposal: ProposalSize,
+        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
+            crate::resolve_layout_extent(&self.layout, bounds, proposal, &[&self.child])
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.layout.size_that_fits(proposal, &[&self.child]))
         }
@@ -670,6 +688,13 @@ mod tests {
     struct WrappingChild;
 
     impl SubView for WrappingChild {
+        fn resolve_extent(
+            &self,
+            bounds: crate::Rect,
+            proposal: ProposalSize,
+        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
+            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let width = proposal.width.unwrap_or(200.0).clamp(10.0, 200.0);
             ViewDimensions::new(Size::new(width, (200.0 / width).ceil() * 10.0))
@@ -763,6 +788,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: crate::Rect,
+            proposal: ProposalSize,
+        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
+            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -782,6 +814,13 @@ mod tests {
     }
 
     impl SubView for FillingSubView {
+        fn resolve_extent(
+            &self,
+            bounds: crate::Rect,
+            proposal: ProposalSize,
+        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
+            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(Size::new(
                 proposal.width.unwrap_or(self.intrinsic.width),
@@ -824,6 +863,13 @@ mod tests {
     }
 
     impl<C: SubView> SubView for RecordingSubView<C> {
+        fn resolve_extent(
+            &self,
+            bounds: crate::Rect,
+            proposal: ProposalSize,
+        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
+            self.inner.resolve_extent(bounds, proposal)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.proposals.borrow_mut().push(proposal);
             self.inner.measure(proposal)
@@ -1317,6 +1363,13 @@ mod tests {
     struct HeightCoupledSubView;
 
     impl SubView for HeightCoupledSubView {
+        fn resolve_extent(
+            &self,
+            bounds: crate::Rect,
+            proposal: ProposalSize,
+        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
+            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let offered_height = proposal.height.unwrap_or(20.0);
             ViewDimensions::new(Size::new(offered_height.min(80.0), 20.0))
@@ -1334,6 +1387,13 @@ mod tests {
     struct WidthCoupledSubView;
 
     impl SubView for WidthCoupledSubView {
+        fn resolve_extent(
+            &self,
+            bounds: crate::Rect,
+            proposal: ProposalSize,
+        ) -> Result<crate::ResolvedExtent, crate::LayoutError> {
+            crate::ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let offered_width = proposal.width.unwrap_or(20.0);
             ViewDimensions::new(Size::new(20.0, offered_width.min(80.0)))
