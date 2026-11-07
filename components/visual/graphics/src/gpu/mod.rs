@@ -21,7 +21,7 @@ pub mod external;
 pub mod runtime;
 pub use external::{
     ExternalFrameSource, ExternalFrameStream, ExternalFrameView, FrameOutput, FrameReceiver,
-    RetiredOutput,
+    PresentedSize, RetiredOutput,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::RebuildHold;
@@ -289,7 +289,8 @@ fn measure_by_intrinsic_size(intrinsic: Option<Size>, proposal: ProposalSize) ->
     }))
 }
 
-/// A UI-side handler for input the backend routes to a [`GpuContentView`].
+/// A UI-side handler for input the backend routes to a [`GpuContentView`]
+/// or an [`ExternalFrameView`].
 pub type InputHandler = Rc<dyn Fn(&SurfaceInputEvent)>;
 
 /// A UI-side hook the backend runs once per frame, before the content renders.
@@ -302,6 +303,38 @@ pub type FrameHook = Rc<dyn Fn()>;
 /// A UI-side query for where the content's text caret is, in logical
 /// view-local coordinates, so a host can place its input-method panel.
 pub type CaretQuery = Rc<dyn Fn() -> Option<kurbo::Rect>>;
+
+/// The UI-thread hooks a GPU-backed view carries for its host: input
+/// routing, the per-frame pump and the caret query, shared by
+/// [`GpuContentView`] and [`ExternalFrameView`].
+#[derive(Default)]
+struct SurfaceHooks {
+    input: Option<InputHandler>,
+    frame: Option<FrameHook>,
+    caret: Option<CaretQuery>,
+}
+
+impl SurfaceHooks {
+    const fn wants_input_events(&self) -> bool {
+        self.input.is_some()
+    }
+
+    fn input(&self, event: &SurfaceInputEvent) {
+        if let Some(handler) = &self.input {
+            handler(event);
+        }
+    }
+
+    fn frame(&self) {
+        if let Some(hook) = &self.frame {
+            hook();
+        }
+    }
+
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        self.caret.as_ref().and_then(|query| query())
+    }
+}
 
 /// A view whose pixels come from [`GpuContent`].
 ///
@@ -323,9 +356,7 @@ pub struct GpuContentView {
     intrinsic_size: Option<Size>,
     opaque: bool,
     surface_prefers_hdr: Option<bool>,
-    input: Option<InputHandler>,
-    frame: Option<FrameHook>,
-    caret: Option<CaretQuery>,
+    hooks: SurfaceHooks,
     label: Option<String>,
     value: Option<String>,
 }
@@ -350,9 +381,7 @@ impl GpuContentView {
             content: Some(Box::new(content)),
             content_handle: None,
             surface_prefers_hdr: None,
-            input: None,
-            frame: None,
-            caret: None,
+            hooks: SurfaceHooks::default(),
             label: None,
             value: None,
         }
@@ -362,35 +391,33 @@ impl GpuContentView {
     /// this view.
     #[must_use]
     pub fn on_input(mut self, handler: impl Fn(&SurfaceInputEvent) + 'static) -> Self {
-        self.input = Some(Rc::new(handler));
+        self.hooks.input = Some(Rc::new(handler));
         self
     }
 
     /// Runs `hook` on the UI thread once per frame before the content renders.
     #[must_use]
     pub fn on_frame(mut self, hook: impl Fn() + 'static) -> Self {
-        self.frame = Some(Rc::new(hook));
+        self.hooks.frame = Some(Rc::new(hook));
         self
     }
 
     /// Answers where the content's text caret is, for input-method panels.
     #[must_use]
     pub fn on_ime_caret(mut self, query: impl Fn() -> Option<kurbo::Rect> + 'static) -> Self {
-        self.caret = Some(Rc::new(query));
+        self.hooks.caret = Some(Rc::new(query));
         self
     }
 
     /// The content's text caret, if it has one right now.
     #[must_use]
     pub fn ime_caret(&self) -> Option<kurbo::Rect> {
-        self.caret.as_ref().and_then(|query| query())
+        self.hooks.ime_caret()
     }
 
     /// Runs the per-frame UI hook, if any.
     pub fn frame(&self) {
-        if let Some(hook) = &self.frame {
-            hook();
-        }
+        self.hooks.frame();
     }
 
     /// The accessibility name of the content.
@@ -410,14 +437,12 @@ impl GpuContentView {
     /// Whether this view takes input events.
     #[must_use]
     pub const fn wants_input_events(&self) -> bool {
-        self.input.is_some()
+        self.hooks.wants_input_events()
     }
 
     /// Routes an input event to the content's handler.
     pub fn input(&self, event: &SurfaceInputEvent) {
-        if let Some(handler) = &self.input {
-            handler(event);
-        }
+        self.hooks.input(event);
     }
 
     /// The natural size of the content, if it has one.

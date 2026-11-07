@@ -3778,7 +3778,6 @@ mod winit_impl {
                 crate::renderer::FrameRenderTarget {
                     adapter: &context.shared_device.adapter,
                     device: &context.shared_device.device,
-                    queue: &context.shared_device.queue,
                     device_loss: self.handles.clone(),
                     gpu_context_id: context.context_id,
                     shared_device: context.shared_device.clone(),

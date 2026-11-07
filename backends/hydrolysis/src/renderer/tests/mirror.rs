@@ -154,6 +154,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
         tx: &mut Transaction<'_, Self>,
         layer: &Layer,
         runtime: &mut ExternalFrameRuntime,
+        _presented: waterui_graphics::gpu::PresentedSize,
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         let pixels = runtime.frame_pixels?;
@@ -551,6 +552,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
         _tx: &mut Transaction<'_, Self>,
         _layer: &Layer,
         _runtime: &mut ExternalFrameRuntime,
+        _presented: waterui_graphics::gpu::PresentedSize,
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         None

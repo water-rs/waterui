@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use wgpu::{Adapter, Device, Instance, Queue, TextureFormat};
 
-use super::external::{ExternalFrameStream, FrameReceiver};
+use super::external::{ExternalFrameStream, FrameReceiver, PresentedSize};
 use super::{GpuContent, GpuContentView, RedrawHandle, Shared};
 use crate::draw::kurbo::Affine;
 use crate::offscreen::{OffscreenImage, OffscreenSize};
@@ -299,6 +299,18 @@ impl SharedGpuContext {
     #[must_use]
     pub const fn queue(&self) -> &Queue {
         &self.queue
+    }
+
+    /// The generation's whole device-creation chain, as the engine and
+    /// external-frame importers take it.
+    #[must_use]
+    pub fn shared_device(&self) -> SharedDevice {
+        SharedDevice {
+            instance: self.instance().clone(),
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+        }
     }
 
     /// The device-lost reason recorded by the callback, once the driver reports
@@ -861,12 +873,7 @@ impl GpuRuntime {
         context: &SharedGpuContext,
     ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
         Engine::new(GpuConfig {
-            device: Some(SharedDevice {
-                instance: context.instance().clone(),
-                adapter: context.adapter().clone(),
-                device: context.device().clone(),
-                queue: context.queue().clone(),
-            }),
+            device: Some(context.shared_device()),
             ..GpuConfig::default()
         })
     }
@@ -889,12 +896,7 @@ impl GpuRuntime {
         context: &SharedGpuContext,
     ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
         Engine::new(GpuConfig {
-            device: Some(SharedDevice {
-                instance: context.instance().clone(),
-                adapter: context.adapter().clone(),
-                device: context.device().clone(),
-                queue: context.queue().clone(),
-            }),
+            device: Some(context.shared_device()),
             ..GpuConfig::default()
         })
         .await
@@ -1463,7 +1465,7 @@ impl ExternalFrameRenderer {
         host.surface.update(|tx| {
             tx[host.surface.root()].push(&layer);
         });
-        let frames = stream.start(host.context.device(), host.context.queue(), redraw);
+        let frames = stream.start(&host.context.shared_device(), redraw);
         Self {
             host,
             layer,
@@ -1484,13 +1486,18 @@ impl ExternalFrameRenderer {
         self.host.context.generation()
     }
 
-    /// Resizes the surface, installs the newest published frame, and keeps
-    /// the frame stretched to the surface.
+    /// Resizes the surface, reports the size it presents at for `display`
+    /// to the source, installs the newest published frame, and keeps the
+    /// frame stretched to the surface.
     ///
     /// # Errors
     /// When the engine rejects the size.
-    fn prepare(&mut self, size: OffscreenSize) -> Result<(), HostedLayerError> {
+    fn prepare(&mut self, size: OffscreenSize, display: Display) -> Result<(), HostedLayerError> {
         let resized = self.host.resize(size)?;
+        self.frames.report_presented(PresentedSize {
+            pixels: size,
+            scale: display.scale,
+        });
         let frame = self.frames.take();
         if frame.is_none() && !resized {
             return Ok(());
@@ -1529,7 +1536,7 @@ impl ExternalFrameRenderer {
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
         let _frame = self.host.surface.begin_frame();
-        self.prepare(size)?;
+        self.prepare(size, display)?;
         self.host.render(display, target_time)
     }
 
@@ -1549,7 +1556,7 @@ impl ExternalFrameRenderer {
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
         let _frame = self.host.surface.begin_frame();
-        self.prepare(size)?;
+        self.prepare(size, display)?;
         self.host.render(display, target_time).await
     }
 
