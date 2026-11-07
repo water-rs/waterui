@@ -1317,7 +1317,11 @@ pub fn await_gpu(seconds: f64) {
     );
     // The stage the run is waiting on, for the timeout panic's name.
     let stage = std::cell::Cell::new("GPU runtime");
-    await_gpu_stage(seconds, &stage, gpu_readiness_trip(&stage));
+    // One absolute deadline bounds the whole gate — the pool witness and
+    // every stage inside the trip spend from the same clock, never a
+    // fresh `seconds` each.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
+    await_gpu_stage(seconds, &stage, gpu_readiness_trip(&stage, deadline));
 }
 
 /// The trip `await_gpu` blocks on: runtime → pipeline compile → one real
@@ -1327,7 +1331,7 @@ pub fn await_gpu(seconds: f64) {
     clippy::future_not_send,
     reason = "the gate polls the future by hand on the main thread; the MetalPresenter it holds across the wait is single-threaded"
 )]
-async fn gpu_readiness_trip(stage: &std::cell::Cell<&'static str>) {
+async fn gpu_readiness_trip(stage: &std::cell::Cell<&'static str>, deadline: std::time::Instant) {
     use waterui_graphics::wgpu;
     {
         let runtime = waterui_graphics::gpu::GpuRuntime::new()
@@ -1391,7 +1395,7 @@ async fn gpu_readiness_trip(stage: &std::cell::Cell<&'static str>) {
         // drawable — `present_readiness_frame` drives the real
         // render → present → completion loop against a visible layer.
         stage.set("frame presentation");
-        present_readiness_frame(&context).await;
+        present_readiness_frame(&context, deadline).await;
         // One queue-completion trip proves the GPU side of the frame
         // settled too — `submit_with_completion` carries the error a dead
         // device would surface instead of letting the case discover it.
@@ -1426,7 +1430,10 @@ async fn gpu_readiness_trip(stage: &std::cell::Cell<&'static str>) {
     clippy::future_not_send,
     reason = "the gate polls the future by hand on the main thread; the MetalPresenter and UIWindow it holds across the wait are single-threaded"
 )]
-async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuContext) {
+async fn present_readiness_frame(
+    context: &waterui_graphics::gpu::SharedGpuContext,
+    deadline: std::time::Instant,
+) {
     use cocoa_ui::objc2::Message;
     use cocoa_ui::objc2_metal::{
         MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
@@ -1530,6 +1537,42 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
         .await
         .expect("the readiness present delivers its frame or the sender drops")
         .unwrap_or_else(|reason| panic!("the readiness frame failed: {reason}"));
+    pool_display_witness(
+        context,
+        probe_layer.frame(),
+        &host.layer(),
+        &pool_queue,
+        deadline,
+    )
+    .await;
+    drop(presenter);
+    drop(present_window);
+}
+/// The display-side witness `CATransaction` completion cannot give: a
+/// bounded drawable pool recycles a slot only when Core Animation has
+/// finished displaying it, so blocking on `nextDrawable` resolves exactly
+/// when a frame went on screen. Runs on a sibling layer:
+/// `CAMetalDisplayLink`-driven layers forbid `nextDrawable` outright
+/// (water-rs/waterui#3529).
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the gate polls the future by hand on the main thread; the ObjC objects it holds across the wait are single-threaded"
+)]
+async fn pool_display_witness(
+    context: &waterui_graphics::gpu::SharedGpuContext,
+    frame: cocoa_ui::objc2_core_foundation::CGRect,
+    host_layer: &cocoa_ui::objc2_quartz_core::CALayer,
+    queue: &cocoa_ui::Retained<
+        cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandQueue>,
+    >,
+    deadline: std::time::Instant,
+) {
+    use cocoa_ui::objc2_metal::{
+        MTLClearColor, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLCommandQueue as _,
+        MTLLoadAction, MTLRenderPassDescriptor, MTLStoreAction,
+    };
+    use cocoa_ui::objc2_quartz_core::CAMetalDrawable as _;
     // The display-side witness `CATransaction` completion cannot give:
     // a one-slot drawable pool recycles its drawable only when Core
     // Animation has finished displaying it, so blocking on
@@ -1542,22 +1585,40 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
     pool_layer.setDevice(Some(&crate::gpu_runtime::raw_metal_device(context)));
     pool_layer.setMaximumDrawableCount(2);
     pool_layer.setPresentsWithTransaction(true);
-    pool_layer.setFrame(probe_layer.frame());
+    pool_layer.setFrame(frame);
     pool_layer.setDrawableSize(cocoa_ui::objc2_core_foundation::CGSize::new(
-        probe_layer.frame().size.width,
-        probe_layer.frame().size.height,
+        frame.size.width,
+        frame.size.height,
     ));
-    host.layer().addSublayer(&pool_layer);
+    host_layer.addSublayer(&pool_layer);
     let pool_drawable = pool_layer
         .nextDrawable()
         .expect("a fresh pool hands its drawable");
     // The second slot is held too: with every drawable outstanding, the
     // probe's `nextDrawable` below unblocks only when this one presents.
-    let _pool_spare = pool_layer
+    let pool_spare = pool_layer
         .nextDrawable()
         .expect("a fresh pool hands its spare drawable");
-    use cocoa_ui::objc2_quartz_core::CAMetalDrawable as _;
-    let pool_buffer = pool_queue
+    // Negative control: unpresented drawables never hold the pool —
+    // `nextDrawable` vends a fresh one while both stay outstanding, so a
+    // block can come only from drawables the compositor took to display
+    // (water-rs/waterui#3529).
+    assert!(
+        pool_layer.nextDrawable().is_some(),
+        "an unpresented pool must still vend — the control isolates presented-outstanding as the blocker"
+    );
+    let spare_buffer = queue
+        .commandBuffer()
+        .expect("the readiness queue hands the spare buffer");
+    arm_present_witness(
+        &spare_buffer,
+        cocoa_ui::objc2::runtime::ProtocolObject::<
+            dyn cocoa_ui::objc2_metal::MTLDrawable,
+        >::from_retained(pool_spare.clone()),
+        futures::channel::oneshot::channel::<Result<(), String>>().0,
+    );
+    spare_buffer.commit();
+    let pool_buffer = queue
         .commandBuffer()
         .expect("the readiness queue hands the pool buffer");
     let pool_pass = MTLRenderPassDescriptor::renderPassDescriptor();
@@ -1593,11 +1654,10 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
         .expect("the pool present delivers or the sender drops")
         .unwrap_or_else(|reason| panic!("the pool frame failed: {reason}"));
     // `allowsNextDrawableTimeout` bounds every single `nextDrawable`
-    // call to about a second, so the worker retries until the shared
-    // readiness deadline while the main thread keeps its run loop
-    // turning — presentation needs main-thread transactions committed.
+    // call to about a second, so the worker retries until the gate's
+    // shared deadline while the main thread keeps its run loop turning —
+    // presentation needs main-thread transactions committed.
     let layer_ptr = cocoa_ui::Retained::as_ptr(&pool_layer) as usize;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
     let worker = std::thread::spawn(move || {
         let layer = unsafe {
             // SAFETY: `pool_layer` is retained by this test and released
@@ -1612,16 +1672,15 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
         }
         false
     });
-    let _ = pump_main_until(90.0, || worker.is_finished());
-    let presented = worker
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    let _ = pump_main_until(remaining.as_secs_f64(), || worker.is_finished());
+    let pool_presented = worker
         .join()
         .expect("the readiness pool worker always exits at the deadline");
     assert!(
-        presented,
+        pool_presented,
         "the readiness drawable's slot never recycled — it never presented"
     );
-    drop(presenter);
-    drop(present_window);
 }
 
 /// The witness tally the two completion paths share — the Metal buffer
