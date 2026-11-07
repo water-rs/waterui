@@ -17,8 +17,9 @@ name: Nightly
 # ci.yml requires on a pull request into `main`: a red nightly blocks the
 # release, not integration on `dev`. A red scheduled run opens one tracking
 # issue and keeps it current instead of failing a run nobody is watching.
-# The competitor-engine corpus renders (Vello, Skia) are informational: they
-# neither certify nor fail the run, and file an issue of their own.
+# The competitor-engine corpus renders (Vello, Skia) and the Windows leg
+# (tier 2) are informational: they neither certify nor fail the run, and file
+# an issue of their own.
 
 on:
   # Off-peak UTC, after the backend nightlies (02:00–06:47 UTC) have left
@@ -75,11 +76,14 @@ jobs:
   windows:
     name: Windows
     uses: ./.github/workflows/windows.yml
-    # The Windows source writer's cache-retirement step needs actions:write
-    # on its own family; nothing else in the called workflow gains it.
+    # Informational (tier 2): windows.yml's jobs are `continue-on-error` and
+    # file their own issue, so this job never fails the run and certification
+    # does not wait on it. The source writer's cache-retirement step needs
+    # actions:write on its own family; the failure report needs issues:write.
     permissions:
       contents: read
       actions: write
+      issues: write
 
   # The in-tree Apple backend's packaged-example suite — group packaging on
   # iOS simulator and macOS, the capture shards and the packaged-app/native
@@ -1398,7 +1402,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-ignored, cli-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1442,7 +1446,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-ignored, cli-e2e]
     if: failure() && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 5

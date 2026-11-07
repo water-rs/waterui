@@ -3,9 +3,15 @@ name: Windows
 # The Windows test leg is split out of `test.yml` because it needs platform-
 # specific exclusions and compile-only coverage. It is a nightly platform
 # (#379): `nightly.yml` calls it once a day against `dev`, beside the full
-# `test.yml` matrix, and every verification command in it is gating there.
+# `test.yml` matrix.
 # It left the pull-request path because its three jobs were 43-65 minutes of
 # cold build on the scarcest runners for every change, whatever it touched.
+#
+# Windows is tier 2, so the leg is informational in the nightly: each job is
+# `continue-on-error`, which keeps a failure from failing the run or blocking
+# certification (a job that calls a reusable workflow cannot set it, so it
+# lives here), and its last step files one tracking issue on `dev`. The jobs
+# still show as failed on the run.
 
 on:
   workflow_call:
@@ -13,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: windows-${{ github.ref }}
@@ -44,8 +51,10 @@ jobs:
       # Saves the replacement, then retires the superseded generations of
       # only this job's cache family (cargo-sources-Windows-*) on its own ref.
       actions: write
+      issues: write
+    continue-on-error: true
     # Windows is the slowest platform and needs additional headroom for cold
-    # hosted-runner builds while remaining a hard gate.
+    # hosted-runner builds.
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -166,6 +175,16 @@ jobs:
           families: cargo-sources-${{ runner.os }}-
           primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Report failure
+        if: failure() && github.ref == 'refs/heads/dev'
+        uses: JasonEtco/create-an-issue@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          filename: .github/WINDOWS_FAILURE.md
+          update_existing: true
+          search_existing: open
 
   # Every crate's own optional features, in its own job so the test tarball
   # above holds one feature variant of the dependency graph instead of two
@@ -193,6 +212,10 @@ jobs:
   all-features:
     name: windows-latest (all features)
     runs-on: windows-latest
+    permissions:
+      contents: read
+      issues: write
+    continue-on-error: true
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -257,10 +280,24 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - name: Report failure
+        if: failure() && github.ref == 'refs/heads/dev'
+        uses: JasonEtco/create-an-issue@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          filename: .github/WINDOWS_FAILURE.md
+          update_existing: true
+          search_existing: open
 
   lint:
     name: windows-latest (lint)
     runs-on: windows-latest
+    permissions:
+      contents: read
+      issues: write
+    continue-on-error: true
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -294,3 +331,13 @@ jobs:
       # nobody.
       - name: Clippy
         run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --all-targets -- -D warnings
+      - name: Report failure
+        if: failure() && github.ref == 'refs/heads/dev'
+        uses: JasonEtco/create-an-issue@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          filename: .github/WINDOWS_FAILURE.md
+          update_existing: true
+          search_existing: open
