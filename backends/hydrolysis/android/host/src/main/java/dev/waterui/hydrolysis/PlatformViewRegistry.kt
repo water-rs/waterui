@@ -520,17 +520,22 @@ class PlatformViewRegistry internal constructor(
             params.topMargin = top
             view.layoutParams = params
         }
-        view.clipBounds =
-            placement.clip?.let { clip ->
-                Rect(
-                    px(clip[0]) - left,
-                    px(clip[1]) - top,
-                    px(clip[2]) - left,
-                    px(clip[3]) - top,
-                )
-            }
+        view.clipBounds = placement.clip?.let { slotClip(it, density, left, top) }
         view.visibility = if (placement.visible) View.VISIBLE else View.INVISIBLE
     }
+
+    /**
+     * The slot-local `clipBounds` of a placement `clip` — window logical
+     * `[x, y, width, height]` — for a slot whose origin sits at host pixel
+     * (`left`, `top`).
+     */
+    private fun slotClip(clip: FloatArray, density: Float, left: Int, top: Int): Rect =
+        Rect(
+            (clip[0] * density).toInt() - left,
+            (clip[1] * density).toInt() - top,
+            ((clip[0] + clip[2]) * density).toInt() - left,
+            ((clip[1] + clip[3]) * density).toInt() - top,
+        )
 
     /**
      * Lays the slot out in the binding's pixel space. A translation-only
@@ -565,14 +570,8 @@ class PlatformViewRegistry internal constructor(
         // NativeSlot's override compares and copies — no allocation here.
         view.animationMatrix = if (translationOnly) null else slot.nativeTransform
         view.clipBounds =
-            slot.placement.clip?.let { clip ->
-                val density = context.resources.displayMetrics.density
-                Rect(
-                    (clip[0] * density).toInt() - offsetX,
-                    (clip[1] * density).toInt() - offsetY,
-                    ((clip[0] + clip[2]) * density).toInt() - offsetX,
-                    ((clip[1] + clip[3]) * density).toInt() - offsetY,
-                )
+            slot.placement.clip?.let {
+                slotClip(it, context.resources.displayMetrics.density, offsetX, offsetY)
             }
         if (view.isLayoutRequested || view.width != width ||
             view.height != height || view.left != offsetX || view.top != offsetY
@@ -629,6 +628,7 @@ class PlatformViewRegistry internal constructor(
         val y: Float,
         val width: Float,
         val height: Float,
+        /** The clip cutting the frame, in window logical units: `[x, y, width, height]`. */
         val clip: FloatArray?,
         val order: Long,
         val visible: Boolean,
