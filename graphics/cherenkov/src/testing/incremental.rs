@@ -97,11 +97,15 @@ where
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
         let _ = tree.sample(time, 1.0);
-        let _ = renderer.set_content(
-            ids[1],
-            layer,
-            Some(ContentOp::Replace(crate::Picture::from_list(list.clone()))),
-        );
+        // An identical replacement keeps the lowered content, so the full
+        // surface first takes a different picture to lower the whole list
+        // from scratch, as its reference role needs.
+        for picture in [
+            Picture::record(|_| {}),
+            crate::Picture::from_list(list.clone()),
+        ] {
+            let _ = renderer.set_content(ids[1], layer, Some(ContentOp::Replace(picture)));
+        }
         let incremental = render(renderer, &mut frames, ids[0], &tree, size, time);
         let full = render(renderer, &mut frames, ids[1], &tree, size, time);
         if step > 0 {
@@ -206,11 +210,15 @@ where
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
         let _ = tree.sample(time, 1.0);
-        let _ = renderer.set_content(
-            ids[1],
-            layer,
-            Some(ContentOp::Replace(crate::Picture::from_list(list.clone()))),
-        );
+        // An identical replacement keeps the lowered content, so the full
+        // surface first takes a different picture to lower the whole list
+        // from scratch, as its reference role needs.
+        for picture in [
+            Picture::record(|_| {}),
+            crate::Picture::from_list(list.clone()),
+        ] {
+            let _ = renderer.set_content(ids[1], layer, Some(ContentOp::Replace(picture)));
+        }
         let incremental = render(renderer, &mut frames, ids[0], &tree, size, time).await;
         let full = render(renderer, &mut frames, ids[1], &tree, size, time).await;
         if step > 0 {
