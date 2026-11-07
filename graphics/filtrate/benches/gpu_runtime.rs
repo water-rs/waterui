@@ -13,7 +13,7 @@ use divan::Bencher;
 use filtrate::filters::{BlendMode, BlendWithImage, Bloom, Blur, Brightness, Saturation};
 use filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, Executor, FilterExt, FilterImage,
-    PipelineCache, ShapeTextures,
+    PipelineCache,
 };
 
 fn main() {
@@ -124,7 +124,6 @@ impl GpuBench {
                 std::time::Duration::ZERO,
                 0,
             ),
-            shape: ShapeTextures::default(),
         };
         let output = EffectOutput {
             device: &self.device,

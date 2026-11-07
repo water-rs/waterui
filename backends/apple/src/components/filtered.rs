@@ -27,7 +27,7 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensi
 use waterui_graphics::filter_view::{AnyEffect, ErasedEffect, FilteredView, ParamGuards};
 use waterui_graphics::filtrate::{
     EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
-    EffectRedrawCallback, ShapeTextures,
+    EffectRedrawCallback,
 };
 use waterui_graphics::gpu::{GpuRuntime, SharedGpuContext};
 use waterui_graphics::wgpu;
@@ -1156,7 +1156,6 @@ fn encode_effects(
             width: input_width,
             height: input_height,
             timing,
-            shape: ShapeTextures::default(),
         };
         let output = EffectOutput {
             device,

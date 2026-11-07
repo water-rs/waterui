@@ -36,7 +36,7 @@ pub(super) mod binding {
     pub const PARAMS: u32 = 2;
     /// The working-space constants.
     pub const SPACE: u32 = 3;
-    /// The clip shape.
+    /// The input's shape (see [`filtrate_core::ShapeInput`]).
     pub const SHAPE: u32 = 4;
     /// Auxiliary image `n` binds at `AUX + n`.
     pub const AUX: u32 = 5;
