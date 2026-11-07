@@ -1739,7 +1739,7 @@ mod tabs {
     };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{Label, NavContentController};
-    use cocoa_ui::{PlatformView, Retained, view};
+    use cocoa_ui::{MainThreadMarker, PlatformView, Retained, view};
     use waterui::layout::scroll_both;
     use waterui::navigation::{NavigationStack, NavigationView, Tab, TabBarMinimizeBehavior, Tabs};
     use waterui::prelude::{label, scroll, text, vstack};
@@ -1923,10 +1923,11 @@ mod tabs {
     pub fn unmounting_before_the_commit_installs_no_accessory() {
         let (_pane, leaf) = tabs(text("Now Playing"));
         let controller = tab_bar_controller(&leaf);
-        // Registered after the tabs' own completion, so it runs after it
-        // in the same commit.
+        // Registered after the tabs' own install, so it runs after it
+        // following the same commit.
         let committed = std::rc::Rc::new(std::cell::Cell::new(false));
-        cocoa_ui::core_animation::on_commit({
+        let mtm = MainThreadMarker::new().expect("native cases run on the main thread");
+        cocoa_ui::core_animation::on_commit(mtm, {
             let committed = std::rc::Rc::clone(&committed);
             move || committed.set(true)
         });

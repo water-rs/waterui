@@ -71,7 +71,9 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
     "CFString",
     "CFStringTokenizer",
     "CFLocale",
+    "CFRunLoop",
     "CFURL",
+    "block2",
 ] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "std",
