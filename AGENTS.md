@@ -138,6 +138,7 @@ A case the document does not decide is not a licence to pick a behaviour in code
 - `Type::new(...)` is the general constructor, accepting the most general shape the component renders; free functions such as `button(...)` are ergonomic entry points that may take narrower semantic inputs. `Button::new(...)` takes arbitrary label views while `button(...)` takes `IntoLabel`, so literals, i18n-friendly text and default accessibility semantics compose. Never add parallel constructors like `Type::custom(...)`. Semantic text and label APIs take `IntoText` / `IntoLabel`, not raw `impl View`, unless they are for arbitrary visual composition.
 - Shaders and large text assets live in separate files, never string literals.
 - No duplicated code; factor it into a shared function or module.
+- Import items with `use` and refer to them by their bare names wherever possible; spelled-out absolute paths belong only in macro-generated code.
 - Runtime render paths never read GPU render targets or textures back to CPU memory.
 - Import maintained third-party crates rather than write your own implementation.
 - `GpuContent`-based components are visually tested through `OffscreenRenderer`, which renders `GpuContent` and scenes without a surface.
