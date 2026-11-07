@@ -2672,13 +2672,13 @@ mod position_tests {
         handle.set_position_report(Some(position_report(sink.clone(), 100.0, 300.0)));
         assert_eq!(writes.get(), 1);
         let position = sink.snapshot().expect("attach reports at once");
-        assert!(position.at_start && !position.at_end);
-        assert_eq!(position.offset, Point::zero());
+        assert!(position.at_start() && !position.at_end());
+        assert_eq!(position.offset(), Point::zero());
 
         assert!(handle.scroll_to(0.0, 200.0));
         let position = sink.snapshot().unwrap();
-        assert!(!position.at_start && position.at_end);
-        assert_eq!(position.offset.y, 200.0);
+        assert!(!position.at_start() && position.at_end());
+        assert_eq!(position.offset().y, 200.0);
     }
 
     #[test]
@@ -2697,7 +2697,7 @@ mod position_tests {
 
         // Trackpad pixel delta.
         assert!(handle.apply_scroll_delta(0.0, -40.0, false));
-        assert_eq!(sink.snapshot().unwrap().offset.y, 40.0);
+        assert_eq!(sink.snapshot().unwrap().offset().y, 40.0);
 
         // Wheel glide lands on its eased target through ticks on a
         // synthetic clock — one 8ms frame step per tick, bounded.
@@ -2710,8 +2710,8 @@ mod position_tests {
             now += core::time::Duration::from_millis(8);
         }
         let position = sink.snapshot().unwrap();
-        assert_eq!(position.offset.y, 80.0);
-        assert!(!position.at_start && !position.at_end);
+        assert_eq!(position.offset().y, 80.0);
+        assert!(!position.at_start() && !position.at_end());
 
         // A programmatic animation lands on its target and reports it.
         let run = handle
@@ -2725,13 +2725,13 @@ mod position_tests {
             now += core::time::Duration::from_millis(8);
         }
         assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Landed);
-        assert_eq!(sink.snapshot().unwrap().offset.y, 200.0);
-        assert!(sink.snapshot().unwrap().at_end);
+        assert_eq!(sink.snapshot().unwrap().offset().y, 200.0);
+        assert!(sink.snapshot().unwrap().at_end());
 
         // User jumps: scrollbar drag / accessibility route.
         assert!(handle.user_scroll_to(0.0, 0.0));
         let position = sink.snapshot().unwrap();
-        assert!(position.at_start && !position.at_end);
+        assert!(position.at_start() && !position.at_end());
     }
 
     #[test]
@@ -2766,7 +2766,7 @@ mod position_tests {
         );
         assert_eq!(writes.get(), 2);
         let position = sink.snapshot().unwrap();
-        assert!(position.at_start && position.at_end);
+        assert!(position.at_start() && position.at_end());
     }
 
     /// The resize-rebind publishes the offset clamp and the new extents in
@@ -2800,10 +2800,10 @@ mod position_tests {
             "the clamp publishes one coherent report, got {reports:?}"
         );
         let last = reports[0];
-        assert_eq!(last.offset.y, 150.0);
-        assert_eq!(last.content_size, Size::new(100.0, 250.0));
-        assert_eq!(last.viewport_size, Size::new(100.0, 100.0));
-        assert!(!last.at_start && last.at_end);
+        assert_eq!(last.offset().y, 150.0);
+        assert_eq!(last.content_size(), Size::new(100.0, 250.0));
+        assert_eq!(last.viewport_size(), Size::new(100.0, 100.0));
+        assert!(!last.at_start() && last.at_end());
     }
 
     /// An offset watcher that scrolls must not let the outer flush publish
@@ -2831,7 +2831,7 @@ mod position_tests {
 
         assert!(handle.scroll_to(0.0, 50.0));
         assert_eq!(
-            position_sink.snapshot().unwrap().offset.y,
+            position_sink.snapshot().unwrap().offset().y,
             90.0,
             "the position sink must report the offset the watcher left, not the queued one"
         );
@@ -2878,8 +2878,8 @@ mod position_tests {
             Some(position_report(sink.clone(), 100.0, 300.0)),
         );
         let position = sink.snapshot().expect("measured rebind reattached");
-        assert_eq!(position.offset.y, 200.0);
-        assert!(position.at_end);
+        assert_eq!(position.offset().y, 200.0);
+        assert!(position.at_end());
     }
 
     #[test]
@@ -2911,6 +2911,6 @@ mod position_tests {
         assert!(reentered.get());
         // The watcher's scroll is the newest write: the sink ends on the
         // offset it landed, not the one that woke the watcher.
-        assert_eq!(sink.snapshot().unwrap().offset.y, 10.0);
+        assert_eq!(sink.snapshot().unwrap().offset().y, 10.0);
     }
 }
