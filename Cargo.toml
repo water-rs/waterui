@@ -450,8 +450,6 @@ locale-list = ["waterui-internal/locale-list", "waterui-dylib?/locale-list"]
 # it to cross-compile a lean WaterUI app for embedded targets without the GPU
 # stack.
 gpu = ["effects", "waterui-internal/gpu", "waterui-dylib?/gpu"]
-# Native GLES is opt-in; Android and Linux default to Vulkan.
-gles = ["gpu", "waterui-internal/gles", "waterui-dylib?/gles"]
 # Filters on views and their portable description, without the GPU stack.
 # Implied by `gpu`.
 effects = ["waterui-internal/effects", "waterui-dylib?/effects"]

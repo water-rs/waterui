@@ -12,7 +12,6 @@ workspace = true
 
 [features]
 default = []
-gles = ["wgpu?/gles", "cherenkov-gpu?/gles", "filtrate?/gles"]
 vello-classic = ["dep:vello", "dep:vello_common", "dep:wgpu", "dep:pollster", "dep:ash", "dep:objc2", "dep:objc2-metal"]
 vello-hybrid = ["dep:vello_gpu", "dep:vello_common", "dep:wgpu", "dep:pollster", "dep:glifo", "dep:ash", "dep:objc2", "dep:objc2-metal"]
 vello-cpu = ["dep:vello_cpu", "dep:vello_common", "vello_cpu/multithreading"]
