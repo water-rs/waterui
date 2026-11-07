@@ -1087,11 +1087,12 @@ fn the_first_hosted_layer_in_paint_order_is_found() {
 }
 
 /// A compositor whose regions above a host-window mark present as
-/// engine-composited bands, as Android's does.
-struct Bands;
+/// engine-composited bands, as Android's does, with a budget of `N`
+/// planes.
+struct Bands<const N: usize = 4>;
 
-impl Compositor for Bands {
-    const BUDGET: usize = 4;
+impl<const N: usize> Compositor for Bands<N> {
+    const BUDGET: usize = N;
     const HOSTS_OPACITY: bool = true;
     const HOST_WINDOW_BANDS: bool = true;
     fn expresses_transform(transform: Affine) -> bool {
@@ -1211,4 +1212,45 @@ fn a_band_region_is_named_by_its_marks_window() {
         .map(|p| tree.layer(p.layer).host_window())
         .collect();
     assert_eq!(windows, [Some(SHOWN), Some(HIDDEN)]);
+}
+
+/// Two platform views stacked with interactive content between and above
+/// them, on a surface with one plane: the marks only split the paint
+/// order, so neither they nor their bands spend the budget, and the video
+/// beneath the first mark still promotes (water-rs/waterui#2225).
+#[test]
+fn host_window_marks_take_no_plane_budget() {
+    const FIRST: LayerId = LayerId::new(5);
+    const CARD: LayerId = LayerId::new(6);
+    const SECOND: LayerId = LayerId::new(7);
+    const OVERLAY: LayerId = LayerId::new(8);
+    let mut tree = SurfaceTree::new();
+    for id in [VIDEO, FIRST, CARD, SECOND, OVERLAY] {
+        tree.apply(LayerOp::Create(id));
+        tree.apply(LayerOp::Push {
+            parent: ROOT,
+            child: id,
+        });
+    }
+    tree.apply(LayerOp::HostWindow(FIRST, Some(1)));
+    tree.apply(LayerOp::HostWindow(SECOND, Some(2)));
+    let candidates: FxHashMap<LayerId, Candidate> = [
+        (VIDEO, SIZE.into()),
+        (FIRST, host_window()),
+        (SECOND, host_window()),
+    ]
+    .into_iter()
+    .collect();
+    let banded = plan::<Bands<1>>(&tree, &candidates, &all_ready(&candidates));
+    assert_eq!(banded.unplaced, []);
+    assert_eq!(banded.rejected, []);
+    assert_eq!(
+        banded.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [VIDEO, FIRST, SECOND]
+    );
+    assert_eq!(
+        banded.parts(),
+        4,
+        "the parts beneath and above the video, then each mark's band"
+    );
 }
