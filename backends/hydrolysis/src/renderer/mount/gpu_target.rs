@@ -9,6 +9,7 @@ use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
 use rustc_hash::FxHashMap;
 use waterui_graphics::Reactive;
 use waterui_graphics::filtrate::filters::OverscrollStretch;
+use waterui_graphics::gpu::PresentedSize;
 
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
@@ -68,8 +69,9 @@ pub struct CherenkovHost {
     /// The theme's material terms resolved on this engine at attach
     /// (water-rs/waterui#1788).
     pub materials: MaterialTerms<cherenkov::BackdropShader>,
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
+    /// The window's device-creation chain, which external-frame sources
+    /// import their planes onto.
+    pub shared_device: cherenkov_gpu::interop::SharedDevice,
 }
 
 impl std::fmt::Debug for CherenkovHost {
@@ -129,20 +131,20 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         tx: &mut Transaction<'_, Self>,
         layer: &Layer,
         runtime: &mut ExternalFrameRuntime,
+        presented: PresentedSize,
         wake: ProducerWake,
     ) -> Option<(u32, u32)> {
-        if runtime.receiver.is_none() {
+        let receiver = runtime.receiver.get_or_insert_with(|| {
             let redraw = waterui_graphics::gpu::RedrawHandle::new(move || wake.request_redraw());
             let (producer, sink) = host.engine.frame_producer();
             runtime.producer = Some(producer);
             runtime.sink = Some(sink);
-            runtime.receiver = Some(
-                runtime
-                    .view
-                    .stream()
-                    .start(&host.device, &host.queue, redraw),
-            );
-        }
+            runtime.view.stream().start(&host.shared_device, redraw)
+        });
+        receiver.report_presented(presented);
+        // The UI-side pump runs before the drain, so a frame it hands the
+        // source this pass is installed this pass.
+        runtime.view.frame();
         if let Some(frame) = runtime
             .receiver
             .as_ref()
