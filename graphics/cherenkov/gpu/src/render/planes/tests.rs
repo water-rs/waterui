@@ -1167,3 +1167,48 @@ fn nothing_above_a_host_window_mark_reaches_a_plane() {
         "nothing is painted above the topmost mark"
     );
 }
+
+/// A mark under a clip that encloses nothing opens no region, while its
+/// host still orders the window: the region above the next mark is named
+/// by that mark's own window id, never by its position among the planned
+/// marks, so its band is the one the host stacks above that window.
+#[test]
+fn a_band_region_is_named_by_its_marks_window() {
+    const HIDDEN: u64 = 7;
+    const SHOWN: u64 = 9;
+    let mut tree = scene();
+    tree.apply(LayerOp::HostWindow(VIDEO, Some(HIDDEN)));
+    tree.apply(LayerOp::HostWindow(BELOW, Some(SHOWN)));
+    tree.apply(LayerOp::Clip(
+        PARENT,
+        Some(ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 0.0))),
+    ));
+    let marks: FxHashMap<LayerId, Candidate> = [(VIDEO, host_window()), (BELOW, host_window())]
+        .into_iter()
+        .collect();
+    let banded = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+    let windows: Vec<_> = banded
+        .planes
+        .iter()
+        .map(|p| tree.layer(p.layer).host_window())
+        .collect();
+    assert_eq!(
+        windows,
+        [Some(SHOWN)],
+        "the clipped-away mark opens no region"
+    );
+    assert_eq!(
+        banded.parts(),
+        2,
+        "the base part and the region above the shown mark"
+    );
+    // Unclipped, both marks open regions, each named by its own window.
+    tree.apply(LayerOp::Clip(PARENT, None));
+    let both = plan::<Bands>(&tree, &marks, &FxHashSet::default());
+    let windows: Vec<_> = both
+        .planes
+        .iter()
+        .map(|p| tree.layer(p.layer).host_window())
+        .collect();
+    assert_eq!(windows, [Some(SHOWN), Some(HIDDEN)]);
+}

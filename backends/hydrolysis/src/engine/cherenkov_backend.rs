@@ -340,20 +340,18 @@ impl AndroidCherenkovSurface {
         self.core.surface.id()
     }
 
-    /// Sets or clears the band presenting region `region`: `target` is the
-    /// swapchain window of the band `View` the host stacks above the
-    /// `region`-th embedded platform view (water-rs/waterui#2225).
+    /// Sets or clears the band above the embedded platform view whose
+    /// placement id is `view`: `target` is the swapchain window of the
+    /// band `View` the host stacks above it (water-rs/waterui#2225).
     ///
     /// # Errors
     /// [`SurfaceError::Lost`] when the render thread is gone.
     pub(crate) fn set_band(
         &self,
-        region: usize,
+        view: u64,
         target: Option<cherenkov_gpu::WindowTarget>,
     ) -> Result<(), cherenkov::SurfaceError> {
-        self.core
-            .engine
-            .set_band(&self.core.surface, region, target)
+        self.core.engine.set_band(&self.core.surface, view, target)
     }
 
     pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {

@@ -85,13 +85,12 @@ impl BandAttachment {
     }
 
     /// The band's presentation target: a transparent swapchain whose
-    /// images the band `View` draws as sRGB hardware bitmaps.
+    /// colour space the engine selects as for any window; each image it
+    /// delivers reports that space, which the band `View` tags its
+    /// hardware bitmap with.
     fn target(&self) -> cherenkov_gpu::WindowTarget {
         cherenkov_gpu::WindowTarget::new(BandWindow(self.window.clone()), (self.width, self.height))
             .transparent(true)
-            .color_space(cherenkov_gpu::interop::ColorSpaceRequest::Exact(
-                wgpu::SurfaceColorSpace::Srgb,
-            ))
     }
 }
 
@@ -281,10 +280,11 @@ pub struct AndroidSurface {
     >,
     /// GPU pipelines survive `SurfaceHolder` teardown while this host stays alive.
     engine_state: Option<std::rc::Rc<crate::engine::SharedEngineState>>,
-    /// The band regions the engine knows of, each with the engine surface
-    /// it was delivered to: a rebuilt engine window gets every band again
+    /// The bands the engine knows of, by the placement id of the platform
+    /// view each sits above, each with the engine surface it was delivered
+    /// to: a rebuilt engine window gets every band again
     /// (water-rs/waterui#2225).
-    bands_delivered: std::collections::BTreeMap<u32, cherenkov::SurfaceId>,
+    bands_delivered: std::collections::BTreeMap<u64, cherenkov::SurfaceId>,
     /// Frames that changed bands, as the engine hands them over once
     /// their GPU work finished; the sender goes to every engine window.
     band_commits: (
@@ -479,21 +479,21 @@ impl AndroidSurface {
         )
     }
 
-    /// Sets or clears the band presenting `region`, the content above the
-    /// `region`-th embedded platform view (water-rs/waterui#2225). With no
-    /// live engine window the band waits for [`Self::deliver_bands`].
-    pub(crate) fn set_band(&mut self, region: u32, band: Option<&BandAttachment>) {
-        self.bands_delivered.remove(&region);
+    /// Sets or clears the band presenting the content above the embedded
+    /// platform view whose placement id is `view` (water-rs/waterui#2225).
+    /// With no live engine window the band waits for
+    /// [`Self::deliver_bands`].
+    pub(crate) fn set_band(&mut self, view: u64, band: Option<&BandAttachment>) {
+        self.bands_delivered.remove(&view);
         let Some(window) = self.engine_window.as_ref() else {
             return;
         };
-        let index = usize::try_from(region).expect("region fits usize");
         window
             .surface
-            .set_band(index, band.map(BandAttachment::target))
+            .set_band(view, band.map(BandAttachment::target))
             .expect("hydrolysis android: engine render thread is gone");
         if band.is_some() {
-            self.bands_delivered.insert(region, window.surface.id());
+            self.bands_delivered.insert(view, window.surface.id());
         }
     }
 
@@ -502,7 +502,7 @@ impl AndroidSurface {
     /// host renders a frame that fills them.
     pub(crate) fn deliver_bands(
         &mut self,
-        bands: &std::collections::BTreeMap<u32, BandAttachment>,
+        bands: &std::collections::BTreeMap<u64, BandAttachment>,
     ) -> bool {
         let Some(live) = self
             .engine_window
@@ -512,9 +512,9 @@ impl AndroidSurface {
             return false;
         };
         let mut delivered = false;
-        for (&region, band) in bands {
-            if self.bands_delivered.get(&region) != Some(&live) {
-                self.set_band(region, Some(band));
+        for (&view, band) in bands {
+            if self.bands_delivered.get(&view) != Some(&live) {
+                self.set_band(view, Some(band));
                 delivered = true;
             }
         }

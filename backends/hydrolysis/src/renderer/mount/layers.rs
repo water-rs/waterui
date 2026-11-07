@@ -236,10 +236,10 @@ pub struct NodeLayers<E: crate::text::TextEngine> {
     scopes: Vec<ScopeLayer<E>>,
     committed: Committed<E>,
     inner_committed: Committed<E>,
-    /// The frame's external-host-window mark, set while the cell hosts a
-    /// platform-view sink — the compositor splits presentation bands at
-    /// the topmost marked layer (water-rs/waterui#2225).
-    host_window: bool,
+    /// The frame's external-host-window mark: the placement id of the
+    /// platform view the cell hosts — the compositor opens a presentation
+    /// band above each marked layer (water-rs/waterui#2225).
+    host_window: Option<u64>,
     content_held: Option<HeldResources>,
     /// The frame's material request as last lowered — the terms a
     /// no-program commit re-keys its membership by (the mount's display
@@ -934,7 +934,7 @@ pub fn commit_cell<T: LayerTarget<E>, E: crate::text::TextEngine>(
                 scopes: Vec::new(),
                 committed: Vec::new(),
                 inner_committed: Vec::new(),
-                host_window: false,
+                host_window: None,
                 content_held: None,
                 install_gpu: false,
                 material_request: None,
@@ -1051,14 +1051,22 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
             scroll: kurbo::Vec2::ZERO,
         },
     );
-    // A platform-view sink's frame marks where an external host window
-    // sits in the committed tree — the compositor routes the paint tail
-    // above it to the second presentation root (water-rs/waterui#2225).
-    let host_window = cell
-        .registrations
-        .borrow()
-        .as_ref()
-        .is_some_and(|regs| !regs.platform_view_placements.is_empty());
+    // A platform-view leaf's frame marks where its external host window
+    // sits in the committed tree, named by the placement id the host
+    // orders and identifies the window by, so the band above it is the
+    // one the host stacks above that window (water-rs/waterui#2225). A
+    // cell holds at most one placement: the leaf is its own layer node
+    // and registers once per record, and each record purges the cell's
+    // previous registrations.
+    let host_window = cell.registrations.borrow().as_ref().and_then(|regs| {
+        let placements = &regs.platform_view_placements;
+        assert!(
+            placements.len() <= 1,
+            "a cell holds one platform-view placement, found {}",
+            placements.len()
+        );
+        placements.first().map(|entry| entry.payload.placement.id())
+    });
     if layers.host_window != host_window {
         cx.tx[&layers.frame].host_window(host_window);
         layers.host_window = host_window;

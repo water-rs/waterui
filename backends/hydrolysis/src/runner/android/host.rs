@@ -310,17 +310,43 @@ impl HostBridge {
         self.call(HostMethodId::PlatformViewsChanged, &[]);
     }
 
-    /// `session.onNativeBandLatch(region, image)` — the band `View` of
-    /// `region` shows the newest image its `ImageReader` holds, or nothing
-    /// when `image` is false (water-rs/waterui#2225).
+    /// `session.onNativeBandShow(view, colorSpace)` — the band `View` above
+    /// the platform view whose placement id is `view` shows the newest
+    /// image its `ImageReader` holds, its pixels encoded in the
+    /// `android.graphics.ColorSpace.Named` constant `color_space`
+    /// (water-rs/waterui#2225).
     #[cfg(hydrolysis_gpu_painter)]
-    fn band_latch(&self, region: u32, image: bool) {
+    fn band_show(&self, view: u64, color_space: &str) {
+        let result: Result<(), jni::errors::Error> = self.vm.with_top_local_frame(|env| {
+            let name = env.new_string(color_space)?;
+            self.call_with_env(
+                env,
+                HostMethodId::BandShow,
+                &[
+                    JValue::Long(crate::num_cast::u64_as_i64(view)),
+                    JValue::Object(name.as_ref()),
+                ],
+            );
+            Ok(())
+        });
+        if let Err(error) = result {
+            tracing::error!(
+                target: "waterui::hydrolysis::android",
+                method = HOST_METHODS[HostMethodId::BandShow as usize].name,
+                %error,
+                "host callback could not attach a JNI env"
+            );
+        }
+    }
+
+    /// `session.onNativeBandClear(view)` — the band `View` above the
+    /// platform view whose placement id is `view` shows nothing
+    /// (water-rs/waterui#2225).
+    #[cfg(hydrolysis_gpu_painter)]
+    fn band_clear(&self, view: u64) {
         self.call(
-            HostMethodId::BandLatch,
-            &[
-                JValue::Int(i32::try_from(region).expect("band regions fit jint")),
-                JValue::Bool(image),
-            ],
+            HostMethodId::BandClear,
+            &[JValue::Long(crate::num_cast::u64_as_i64(view))],
         );
     }
 
@@ -352,6 +378,30 @@ impl HostBridge {
     }
 }
 
+/// The `android.graphics.ColorSpace.Named` constant a band's hardware
+/// bitmap is tagged with for images its swapchain encoded in `space`
+/// (water-rs/waterui#2225).
+///
+/// # Panics
+/// For a space API 31's `ColorSpace.Named` cannot name: the band would
+/// show its pixels in the wrong space.
+#[cfg(hydrolysis_gpu_painter)]
+fn color_space_name(space: wgpu::SurfaceColorSpace) -> &'static str {
+    match space {
+        wgpu::SurfaceColorSpace::Srgb => "SRGB",
+        wgpu::SurfaceColorSpace::DisplayP3 => "DISPLAY_P3",
+        wgpu::SurfaceColorSpace::ExtendedSrgb => "EXTENDED_SRGB",
+        wgpu::SurfaceColorSpace::ExtendedSrgbLinear => "LINEAR_EXTENDED_SRGB",
+        wgpu::SurfaceColorSpace::Auto
+        | wgpu::SurfaceColorSpace::Bt2100Pq
+        | wgpu::SurfaceColorSpace::Bt2100Hlg
+        | wgpu::SurfaceColorSpace::ExtendedDisplayP3 => panic!(
+            "a band's swapchain negotiated {space:?}, which android.graphics.ColorSpace.Named \
+             cannot name on API 31"
+        ),
+    }
+}
+
 /// The Kotlin host's window on the runner's side: host services only. The
 /// GPU attachment is a separate object — this type's [`PlatformWindow`] impl
 /// never touches it, and [`GpuSurfaceWindow::surface`] is the only path that
@@ -365,12 +415,12 @@ pub struct AndroidHostWindow {
     host_attached: bool,
     #[cfg(hydrolysis_gpu_painter)]
     pub(crate) surface: AndroidSurface,
-    /// The band `View`s' `ImageReader` surfaces, by region: region `r`
-    /// carries the self-drawn content a frame paints above its `r`-th
-    /// embedded platform view and beneath the next one
-    /// (water-rs/waterui#2225).
+    /// The band `View`s' `ImageReader` surfaces, by the placement id of
+    /// the embedded platform view each sits above: a band carries the
+    /// self-drawn content a frame paints above that view and beneath the
+    /// next one (water-rs/waterui#2225).
     #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) bands: std::collections::BTreeMap<u32, super::gpu::BandAttachment>,
+    pub(crate) bands: std::collections::BTreeMap<u64, super::gpu::BandAttachment>,
     /// Shared with the installed frame wake, which posts its own
     /// Choreographer request through it, and with the GPU-surface redraw
     /// handle, whose queued post calls it from the executor's drain.
@@ -1659,13 +1709,13 @@ impl AndroidSession {
 
     /// A band `View` created its `ImageReader` — on attach and on every
     /// resize, each with a new `generation` from the band's own counter.
-    /// The band takes over its region from the next frame: the engine
-    /// presents that region's content into the reader's surface
-    /// (water-rs/waterui#2225).
+    /// The band above the platform view whose placement id is `view`
+    /// takes over its region from the next frame: the engine presents that
+    /// region's content into the reader's surface (water-rs/waterui#2225).
     #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn band_attached(
         &mut self,
-        region: u32,
+        view: u64,
         native_window: ndk::native_window::NativeWindow,
         width: u32,
         height: u32,
@@ -1673,7 +1723,7 @@ impl AndroidSession {
     ) {
         tracing::debug!(
             target: "waterui::hydrolysis::android",
-            region,
+            view,
             generation,
             width,
             height,
@@ -1681,8 +1731,8 @@ impl AndroidSession {
         );
         let band = super::gpu::BandAttachment::new(native_window, width, height, generation);
         let platform = &mut self.runtime.platform;
-        platform.surface.set_band(region, Some(&band));
-        platform.bands.insert(region, band);
+        platform.surface.set_band(view, Some(&band));
+        platform.bands.insert(view, band);
         self.runtime.request_refresh();
     }
 
@@ -1691,21 +1741,21 @@ impl AndroidSession {
     /// attaches again its region is not shown — never drawn beneath the
     /// platform view the paint order puts it above.
     #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) fn band_detached(&mut self, region: u32, generation: u64) {
+    pub(crate) fn band_detached(&mut self, view: u64, generation: u64) {
         tracing::debug!(
             target: "waterui::hydrolysis::android",
-            region,
+            view,
             generation,
             "wake posted: band detached"
         );
         let platform = &mut self.runtime.platform;
         if platform
             .bands
-            .get(&region)
+            .get(&view)
             .is_some_and(|band| band.is(generation))
         {
-            platform.surface.set_band(region, None);
-            platform.bands.remove(&region);
+            platform.surface.set_band(view, None);
+            platform.bands.remove(&view);
         }
     }
 
@@ -1722,11 +1772,16 @@ impl AndroidSession {
         let commits: Vec<_> = platform.surface.take_band_commits().collect();
         for commit in commits {
             for update in commit.updates() {
-                let region = u32::try_from(update.region).expect("band regions fit u32");
                 // A band that detached since the frame has no `View` left
                 // to latch into; its region is not shown.
-                if platform.bands.contains_key(&region) {
-                    platform.bridge.band_latch(region, update.image);
+                if !platform.bands.contains_key(&update.window) {
+                    continue;
+                }
+                match update.image {
+                    Some(space) => platform
+                        .bridge
+                        .band_show(update.window, color_space_name(space)),
+                    None => platform.bridge.band_clear(update.window),
                 }
             }
             commit.apply();

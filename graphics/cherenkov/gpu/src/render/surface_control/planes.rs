@@ -372,7 +372,7 @@ fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderErro
             }
             // The base stack ends at the first host window: the stack's
             // surface controls cannot sit between the host's windows.
-            PlaneContent::HostWindow => break,
+            PlaneContent::HostWindow { .. } => break,
         };
         let FramePlanes::Native(native) = &frame.planes else {
             return Err(cannot_show(layer, &Ineligible::NotABuffer));
@@ -420,20 +420,19 @@ const fn full(size: (u32, u32)) -> Placement {
     })
 }
 
-/// The engine part each band region of `composition` shows, region 1
-/// first: the entry `r - 1` is the part painted above the `r`-th
-/// host-window mark and beneath the next one, `None` where nothing is
-/// painted there.
+/// The band regions of `composition` in paint order: each host window's
+/// id with the engine part painted above its mark and beneath the next
+/// one, `None` where nothing is painted there.
 ///
 /// # Panics
 /// When a promoted plane lies above the first mark: the planner keeps
 /// everything there in the engine ([`Compositor::HOST_WINDOW_BANDS`]).
-fn band_regions(composition: &Composition<'_>) -> Vec<Option<usize>> {
-    let mut regions: Vec<Option<usize>> = Vec::new();
+fn band_regions(composition: &Composition<'_>) -> Vec<(u64, Option<usize>)> {
+    let mut regions: Vec<(u64, Option<usize>)> = Vec::new();
     for slot in plan::stack_order(composition.parts.len(), composition.planes.len()) {
         match slot {
             Slot::Plane(n) => match composition.planes[n].content {
-                PlaneContent::HostWindow => regions.push(None),
+                PlaneContent::HostWindow { window } => regions.push((window, None)),
                 _ => assert!(
                     regions.is_empty(),
                     "layer {:?} was promoted above a host window's mark",
@@ -441,8 +440,8 @@ fn band_regions(composition: &Composition<'_>) -> Vec<Option<usize>> {
                 ),
             },
             Slot::Part(n) => {
-                if let Some(region) = regions.last_mut() {
-                    *region = Some(n);
+                if let Some((_, part)) = regions.last_mut() {
+                    *part = Some(n);
                 }
             }
         }
@@ -465,8 +464,20 @@ pub struct Band {
 impl Band {
     /// A band presenting through `window`'s swapchain, showing nothing
     /// yet.
+    ///
+    /// # Panics
+    /// When the swapchain's negotiated format is not 8-bit RGBA: the
+    /// band's `ImageReader` holds `RGBA_8888` buffers.
     #[must_use]
-    pub const fn new(window: WindowSurface) -> Self {
+    pub fn new(window: WindowSurface) -> Self {
+        let format = window.selection().format;
+        assert!(
+            matches!(
+                format,
+                wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
+            ),
+            "a band's RGBA_8888 reader cannot hold the swapchain's {format:?} images"
+        );
         Self {
             window,
             shown: None,
@@ -478,11 +489,13 @@ impl Band {
 /// [`BandCommit`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BandUpdate {
-    /// The region the band presents, 1-based.
-    pub region: usize,
-    /// `true`: show the newest image the band's swapchain delivered.
-    /// `false`: the region is empty — show nothing.
-    pub image: bool,
+    /// The host's id for the window whose band changed.
+    pub window: u64,
+    /// `Some(space)`: show the newest image the band's swapchain
+    /// delivered, whose pixels are encoded in `space` — the colour space
+    /// the swapchain negotiated. `None`: the region is empty — show
+    /// nothing.
+    pub image: Option<wgpu::SurfaceColorSpace>,
 }
 
 /// A frame that changed bands, handed to the host once the GPU finished
@@ -503,7 +516,7 @@ pub struct BandCommit {
 }
 
 impl BandCommit {
-    /// The bands this frame changed, by region.
+    /// The bands this frame changed, by host window.
     #[must_use]
     pub fn updates(&self) -> &[BandUpdate] {
         &self.updates
@@ -674,12 +687,12 @@ pub struct Planes {
     /// The engine's container under the host's parent: every part and plane
     /// is its child, so their z-orders never interleave with the host's.
     root: SurfaceControl,
-    /// One band per host-window region: `bands[r - 1]` presents the
-    /// content painted above the `r`-th external host window's mark and
-    /// beneath the next one (water-rs/waterui#2225). `None` means no band
-    /// presents that region: its content is not shown, never drawn
-    /// beneath a window the paint order places it above.
-    bands: Vec<Option<Band>>,
+    /// The bands by the host's id for the window whose mark opens their
+    /// region: each presents the content painted above that window's mark
+    /// and beneath the next one (water-rs/waterui#2225). A region with no
+    /// band is not shown, never drawn beneath a window the paint order
+    /// places it above.
+    bands: FxHashMap<u64, Band>,
     /// Where a frame that changed bands goes once its GPU work finished;
     /// `None` on a host that presents no bands.
     band_commits: Option<mpsc::Sender<BandCommit>>,
@@ -759,7 +772,7 @@ impl Planes {
             waker,
             presenting: None,
             root,
-            bands: Vec::new(),
+            bands: FxHashMap::default(),
             band_commits: target.band_commits.clone(),
             committing: None,
             root_shown: false,
@@ -1081,11 +1094,12 @@ impl Planes {
         // so a swapchain that cannot give one retries the whole frame.
         let mut band_images = Vec::new();
         let mut band_clears = Vec::new();
-        for (index, band) in self.bands.iter().enumerate() {
-            let Some(band) = band else {
-                continue;
-            };
-            match regions.get(index).copied().flatten() {
+        for (&window, band) in &self.bands {
+            let part = regions
+                .iter()
+                .find(|&&(marked, _)| marked == window)
+                .and_then(|&(_, part)| part);
+            match part {
                 Some(part) => {
                     if band.shown == Some(part) && composition.parts[part].damage.is_empty() {
                         continue;
@@ -1093,18 +1107,18 @@ impl Planes {
                     let Some(image) = band.window.acquire(device)? else {
                         return Ok(Presentation::Retry);
                     };
-                    band_images.push((index, part, image));
+                    band_images.push((window, part, image));
                 }
-                None if band.shown.is_some() => band_clears.push(index),
+                None if band.shown.is_some() => band_clears.push(window),
                 None => {}
             }
         }
         let mut band_updates = Vec::with_capacity(band_images.len() + band_clears.len());
-        for index in band_clears {
-            self.bands[index].as_mut().expect("listed above").shown = None;
+        for window in band_clears {
+            self.bands.get_mut(&window).expect("listed above").shown = None;
             band_updates.push(BandUpdate {
-                region: index + 1,
-                image: false,
+                window,
+                image: None,
             });
         }
         // Parts the plan no longer splits off leave in this frame's
@@ -1236,8 +1250,8 @@ impl Planes {
             // queued image — so the completion it reports covers them,
             // and the host never samples a band image the GPU is still
             // writing.
-            for (index, part, image) in band_images {
-                let band = self.bands[index].as_mut().expect("acquired above");
+            for (window, part, image) in band_images {
+                let band = self.bands.get_mut(&window).expect("acquired above");
                 presenter.texture(
                     device,
                     queue,
@@ -1247,8 +1261,8 @@ impl Planes {
                 queue.present(image);
                 band.shown = Some(part);
                 band_updates.push(BandUpdate {
-                    region: index + 1,
-                    image: true,
+                    window,
+                    image: Some(band.window.selection().color_space),
                 });
             }
             // SAFETY: `queue` is the engine's Vulkan queue, and the waits
@@ -1553,25 +1567,27 @@ impl Planes {
         });
     }
 
-    /// Sets or clears the band presenting region `region`, 1-based — the
-    /// content above the `region`-th host-window mark
-    /// (water-rs/waterui#2225). A new band shows its region from the next
-    /// frame on; `None` leaves the region unshown.
+    /// Sets or clears the band presenting the region above host window
+    /// `window`'s mark — `window` is the host's own id for it, the id the
+    /// mark carries (water-rs/waterui#2225). A new band shows its region
+    /// from the next frame on; `None` leaves the region unshown.
     ///
     /// # Panics
-    /// For region zero, which the base stack presents, and for a band on a
-    /// surface whose target registered no band-commit sink
-    /// ([`SurfaceControlTarget::band_commits`]).
-    pub fn set_band(&mut self, region: usize, band: Option<Band>) {
-        assert!(region > 0, "the base stack presents region zero");
-        assert!(
-            band.is_none() || self.band_commits.is_some(),
-            "a surface presenting bands needs a band-commit sink"
-        );
-        if self.bands.len() < region {
-            self.bands.resize_with(region, || None);
+    /// For a band on a surface whose target registered no band-commit
+    /// sink ([`SurfaceControlTarget::band_commits`]).
+    pub fn set_band(&mut self, window: u64, band: Option<Band>) {
+        match band {
+            Some(band) => {
+                assert!(
+                    self.band_commits.is_some(),
+                    "a surface presenting bands needs a band-commit sink"
+                );
+                self.bands.insert(window, band);
+            }
+            None => {
+                self.bands.remove(&window);
+            }
         }
-        self.bands[region - 1] = band;
     }
 
     /// Presents only `frames`: one transaction that sets each promoted
@@ -1628,7 +1644,7 @@ impl Planes {
                     continue;
                 }
                 // A host-window mark carries no buffer to refresh.
-                PlaneContent::HostWindow => continue,
+                PlaneContent::HostWindow { .. } => continue,
             };
             let FramePlanes::Native(native) = &frame.planes else {
                 return Err(cannot_show(layer, &Ineligible::NotABuffer));

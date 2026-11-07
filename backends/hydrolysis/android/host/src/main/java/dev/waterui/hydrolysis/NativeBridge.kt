@@ -242,23 +242,23 @@ object NativeBridge {
     /**
      * A band View created the `ImageReader` it shows — `surface` is the
      * reader's, which the engine presents the self-drawn content above the
-     * `region`-th ordered platform view into. A resize creates a new reader
-     * under a new [generation][nativeBandDetached]; the base band's
-     * attachment drives the frame cadence.
+     * platform view whose placement id is `view` into. A resize creates a
+     * new reader under a new [generation][nativeBandDetached]; the base
+     * band's attachment drives the frame cadence.
      */
     @JvmStatic
     external fun nativeBandAttached(
         sessionPtr: Long,
-        region: Int,
+        view: Long,
         surface: Surface,
         width: Int,
         height: Int,
         generation: Long,
     )
 
-    /** Band `region`'s reader `generation` is about to close. */
+    /** The reader `generation` of the band above `view` is about to close. */
     @JvmStatic
-    external fun nativeBandDetached(sessionPtr: Long, region: Int, generation: Long)
+    external fun nativeBandDetached(sessionPtr: Long, view: Long, generation: Long)
 
     /**
      * The Activity's started state (`onStart`/`onStop`) — drives the frame

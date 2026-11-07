@@ -78,8 +78,10 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// the colour-scheme signal starts on the real `uiMode`, and
 /// `nativeSetColorScheme` reports every later change (water-rs/waterui#3544).
 /// 25 = the GPU band edge: `nativeBandAttached` / `nativeBandDetached` carry
-/// each band `View`'s `ImageReader` surface, and `onNativeBandLatch` tells a
-/// band to show its newest image (water-rs/waterui#2225).
+/// each band `View`'s `ImageReader` surface, keyed by the placement id of the
+/// platform view it sits above; `onNativeBandShow` tells a band to show its
+/// newest image in a named colour space and `onNativeBandClear` to show
+/// nothing (water-rs/waterui#2225).
 pub const JNI_SCHEMA: jint = 25;
 
 /// A failure crossing the JNI boundary as an exception.
@@ -664,42 +666,29 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDes
     });
 }
 
-/// A band region from the JNI edge: 1-based, the region above the
-/// `region`-th ordered platform view.
-#[cfg(hydrolysis_gpu_painter)]
-fn band_region(region: jint) -> Result<u32, JniError> {
-    u32::try_from(region)
-        .ok()
-        .filter(|&region| region > 0)
-        .ok_or_else(|| {
-            JniError(format!(
-                "hydrolysis android: band region {region} is not 1-based"
-            ))
-        })
-}
-
 /// A band `View` created the `ImageReader` behind it — the surface the
-/// engine presents the self-drawn content above the `region`-th embedded
-/// platform view into (water-rs/waterui#2225). The band's own counter
-/// numbers each reader, so a stale detach never clears a newer one.
+/// engine presents the self-drawn content above the embedded platform view
+/// whose placement id is `view` into (water-rs/waterui#2225). The band's
+/// own counter numbers each reader, so a stale detach never clears a
+/// newer one.
 #[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBandAttached<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
-    region: jint,
+    view: jlong,
     surface: JObject<'local>,
     width: jint,
     height: jint,
     generation: jlong,
 ) {
     guard(&mut env, |env| {
-        let region = band_region(region)?;
+        let view = crate::num_cast::i64_as_u64(view);
         let (Ok(width @ 1..), Ok(height @ 1..)) = (u32::try_from(width), u32::try_from(height))
         else {
             return Err(JniError(format!(
-                "hydrolysis android: band {region} reader is {width}x{height}"
+                "hydrolysis android: the band above view {view} has a {width}x{height} reader"
             )));
         };
         let window = unsafe {
@@ -715,7 +704,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBandAttach
             ));
         };
         session(session_ptr).band_attached(
-            region,
+            view,
             window,
             width,
             height,
@@ -732,12 +721,12 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBandDetach
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
-    region: jint,
+    view: jlong,
     generation: jlong,
 ) {
     guard(&mut env, |_env| {
         session(session_ptr).band_detached(
-            band_region(region)?,
+            crate::num_cast::i64_as_u64(view),
             crate::num_cast::i64_as_u64(generation),
         );
         Ok(())

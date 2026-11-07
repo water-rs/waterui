@@ -15,20 +15,21 @@ import dev.waterui.hydrolysis.NativeBridge
 import dev.waterui.hydrolysis.RegionBand
 
 /**
- * The GPU painter's band for one region: the self-drawn content a frame
- * paints above the `region`-th embedded platform view and beneath the next
- * one — a popover, sheet or menu over a web page (water-rs/waterui#2225).
+ * The GPU painter's band above one embedded platform view: the self-drawn
+ * content a frame paints above that view and beneath the next one — a
+ * popover, sheet or menu over a web page (water-rs/waterui#2225).
  *
  * It is an ordinary View, not a surface: the platform-view registry stacks
  * it right after its platform view, and HWUI composites it in child order,
  * so `WebView A → popover → WebView B` draws in that order. Behind it is an
  * [ImageReader] the engine presents the region into as a plain swapchain;
- * [latch] takes the newest image and [onDraw] draws its hardware buffer as
- * a bitmap, without a copy.
+ * [show] takes the newest image and [onDraw] draws its hardware buffer as
+ * a bitmap, without a copy, tagged with the colour space the swapchain
+ * rendered it in.
  *
- * The engine only latches a band once the GPU finished the frame's images,
- * and latches every band a frame changed in one UI-thread turn, so they all
- * draw in one view frame. A latched image stays open until the next latch:
+ * The engine only updates a band once the GPU finished the frame's images,
+ * and updates every band a frame changed in one UI-thread turn, so they all
+ * draw in one view frame. A shown image stays open until the next update:
  * the view frame that drew it may still be reading it on the render thread
  * when its successor arrives.
  *
@@ -43,8 +44,8 @@ import dev.waterui.hydrolysis.RegionBand
 class HydrolysisGpuRegionBand(
     context: Context,
     private val session: HydrolysisSession,
-    /** The region this band shows, 1-based. */
-    private val region: Int,
+    /** The placement id of the platform view this band sits above. */
+    private val view: Long,
 ) : RegionBand(context) {
 
     /** The band's reader-generation counter, owned on the UI thread. */
@@ -88,7 +89,7 @@ class HydrolysisGpuRegionBand(
     }
 
     private fun open(width: Int, height: Int) {
-        check(reader == null) { "hydrolysis: band $region opened a second reader" }
+        check(reader == null) { "hydrolysis: the band above view $view opened a second reader" }
         val next =
             ImageReader.newInstance(
                 width,
@@ -100,7 +101,7 @@ class HydrolysisGpuRegionBand(
         reader = next
         generation += 1
         session.withNativePtr(NativeBridge::nativeBandAttached.name) { ptr ->
-            NativeBridge.nativeBandAttached(ptr, region, next.surface, width, height, generation)
+            NativeBridge.nativeBandAttached(ptr, view, next.surface, width, height, generation)
         }
     }
 
@@ -108,7 +109,7 @@ class HydrolysisGpuRegionBand(
     private fun close() {
         val open = reader ?: return
         session.withNativePtr(NativeBridge::nativeBandDetached.name) { ptr ->
-            NativeBridge.nativeBandDetached(ptr, region, generation)
+            NativeBridge.nativeBandDetached(ptr, view, generation)
         }
         bitmap = null
         previous?.close()
@@ -120,32 +121,33 @@ class HydrolysisGpuRegionBand(
         invalidate()
     }
 
-    override fun latch(image: Boolean) {
-        val open = checkNotNull(reader) { "hydrolysis: band $region latched without a reader" }
-        if (!image) {
-            show(null)
-            return
-        }
+    override fun show(colorSpace: ColorSpace) {
+        val open = checkNotNull(reader) { "hydrolysis: the band above view $view showed without a reader" }
         // `null` only when the frame presented into a reader this band has
         // since replaced on a resize: the new reader's first frame follows.
-        open.acquireLatestImage()?.let(::show)
+        val image = open.acquireLatestImage() ?: return
+        val buffer = checkNotNull(image.hardwareBuffer) { "hydrolysis: band image has no buffer" }
+        val wrapped =
+            try {
+                checkNotNull(Bitmap.wrapHardwareBuffer(buffer, colorSpace)) {
+                    "hydrolysis: the band above view $view cannot wrap its RGBA_8888 buffer as $colorSpace"
+                }
+            } finally {
+                buffer.close()
+            }
+        replace(image, wrapped)
     }
 
-    private fun show(image: Image?) {
+    override fun clear() {
+        checkNotNull(reader) { "hydrolysis: the band above view $view cleared without a reader" }
+        replace(null, null)
+    }
+
+    private fun replace(image: Image?, wrapped: Bitmap?) {
         previous?.close()
         previous = current
         current = image
-        bitmap =
-            image?.let {
-                val buffer = checkNotNull(it.hardwareBuffer) { "hydrolysis: band image has no buffer" }
-                try {
-                    checkNotNull(
-                        Bitmap.wrapHardwareBuffer(buffer, ColorSpace.get(ColorSpace.Named.SRGB)),
-                    ) { "hydrolysis: band $region cannot wrap its RGBA_8888 buffer" }
-                } finally {
-                    buffer.close()
-                }
-            }
+        bitmap = wrapped
         invalidate()
     }
 

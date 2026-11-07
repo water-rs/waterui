@@ -16,8 +16,8 @@ class MainActivity : TestActivity() {
             // The self-drawn content above each embedded platform view
             // draws in the region band the registry stacks right after it
             // (water-rs/waterui#2225).
-            platformViewRegistry.bandFactory = { region ->
-                HydrolysisGpuRegionBand(this@MainActivity, session, region)
+            platformViewRegistry.bandFactory = { view ->
+                HydrolysisGpuRegionBand(this@MainActivity, session, view)
             }
         }
 }

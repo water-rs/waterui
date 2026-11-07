@@ -1766,9 +1766,11 @@ impl<T: Target> LayerEdit<T> {
     /// Marks or unmarks the layer as an external host window's frame:
     /// the engine draws nothing for a marked layer, and its paint-order
     /// position starts a new region of the surface, presented in a band
-    /// the host stacks above that window (water-rs/waterui#2225).
-    pub fn host_window(&mut self, marked: bool) -> &mut Self {
-        self.queue(Op::Layer(LayerOp::HostWindow(self.layer, marked)));
+    /// the host stacks above that window (water-rs/waterui#2225). `window`
+    /// is the host's id for the window — the band's key — and `None`
+    /// unmarks the layer.
+    pub fn host_window(&mut self, window: Option<u64>) -> &mut Self {
+        self.queue(Op::Layer(LayerOp::HostWindow(self.layer, window)));
         self
     }
 

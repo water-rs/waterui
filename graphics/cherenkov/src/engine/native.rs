@@ -357,13 +357,13 @@ impl<B: Backend> Engine<B> {
         Ok(surface)
     }
 
-    /// Sets or clears the band presenting region `region` of `surface`:
-    /// the content painted above the `region`-th external host window's
-    /// mark (1-based) and beneath the next one presents into `target`,
-    /// which the host stacks between those windows
-    /// (water-rs/waterui#2225). `None` leaves the region with no band,
-    /// and its content is not shown. A renderer without a band
-    /// realization panics on the render thread
+    /// Sets or clears the band of host window `window` on `surface`: the
+    /// content painted above the mark naming that window
+    /// ([`LayerEdit::host_window`](crate::LayerEdit::host_window)) and
+    /// beneath the next mark presents into `target`, which the host stacks
+    /// right above the window (water-rs/waterui#2225). `None` leaves the
+    /// region with no band, and its content is not shown. A renderer
+    /// without a band realization panics on the render thread
     /// ([`Renderer::set_band`](crate::Renderer::set_band)).
     ///
     /// # Errors
@@ -371,13 +371,13 @@ impl<B: Backend> Engine<B> {
     pub fn set_band(
         &self,
         surface: &Surface<B>,
-        region: usize,
+        window: u64,
         target: Option<impl Into<B::Target>>,
     ) -> Result<(), SurfaceError> {
         self.tx
             .send(Message::SetBand {
                 id: surface.id(),
-                region,
+                window,
                 target: target.map(Into::into),
             })
             .map_err(|_| SurfaceError::Lost)
