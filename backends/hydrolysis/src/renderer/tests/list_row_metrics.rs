@@ -13,6 +13,7 @@ use accesskit::{Rect, Role, TreeUpdate};
 use nami::Binding;
 use nami::collection::SignalCollection;
 use waterui::ViewExt as _;
+use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
 use waterui_core::AnyView;
@@ -90,7 +91,13 @@ fn metrics_list(
         let insets_of = insets_of.clone();
         let list = List::for_each(SignalCollection::new(rows.clone()), move |id| {
             let index = id.into_inner();
-            let item = ListItem::new(text(format!("Row {index}")).size(LABEL_SIZE));
+            // These tests pin the content rect the row allots, so the label
+            // reports its allocation rather than the text's own box.
+            let item = ListItem::new(
+                text(format!("Row {index}"))
+                    .size(LABEL_SIZE)
+                    .a11y_geometry(AccessibilityGeometry::Allocation),
+            );
             match insets_of(index) {
                 Some(insets) => item.insets(insets),
                 None => item,

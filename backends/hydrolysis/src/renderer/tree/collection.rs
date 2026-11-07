@@ -2,9 +2,8 @@
 //! reconciled by id) and [`LazyStackNode`] (viewport-virtualized lazy stack).
 
 #[cfg(feature = "accessibility")]
-use super::layout::kurbo_rect;
-#[cfg(feature = "accessibility")]
-use super::layout::resolved_content_rect;
+use super::layout::accessibility_rect;
+use super::layout::placed_layout;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -147,12 +146,13 @@ pub struct CollectionNode<E: crate::text::TextEngine> {
     /// a transition each frame holds the entry's full extent at its re-stacked
     /// position; flush clips it to the presence factor.
     pub(super) placed: Vec<Rect>,
-    /// The extent this collection resolved at layout — the size it answered to
-    /// the selected proposal, centred on the assigned frame — kept beside
-    /// `placed` so a naming-scope owner reports its own extent when the
-    /// parent assigned more than it answered (water-rs/hydrolysis#51).
+    /// The geometry this collection was committed with at its last layout,
+    /// its response resolved by `place_layout` — kept beside `placed` so a
+    /// naming-scope owner reports its response rectangle when the parent
+    /// assigned more than it answered (water-rs/hydrolysis#51). `None` until
+    /// the first layout.
     #[cfg(feature = "accessibility")]
-    pub(super) resolved: Rect,
+    pub(super) geometry: Option<PlacedGeometry>,
     /// Detached removals still animating out, each anchored after the live id
     /// it followed (`None` = before the first live entry). A ghost's node is
     /// out of semantics, accessibility, focus and hit-testing — it only keeps
@@ -209,6 +209,11 @@ pub struct LazyStackNode<E: crate::text::TextEngine> {
     /// storage, so a stack inside an unchanged retained sub-view still hands
     /// each materialized item its context at flush.
     pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
+    /// The geometry this stack was committed with at its last layout, its
+    /// response resolved by the stack rule from the lazy measurement; read
+    /// by the naming scope it owns. `None` until the first layout.
+    #[cfg(feature = "accessibility")]
+    pub(super) geometry: Option<PlacedGeometry>,
     /// The unshielded environment when this stack carries accessibility naming
     /// metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -375,12 +380,12 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
         renderer: &mut HydrolysisRenderer<E>,
         safe_area: Option<&safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
-        size: Size,
+        bounds: Rect,
     ) {
         let env = self.env.clone();
         let theme = renderer.theme();
         let order = self.slot_order();
-        let (placements, mut frozen, priorities) = {
+        let (placement, mut frozen, priorities) = {
             let cell = RefCell::new(&mut renderer.state);
             let subs: Vec<NodeSubView<E>> = self
                 .entries
@@ -392,51 +397,53 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
             // the container's membership only reflows when a ghost's clock
             // completes and its slot is released.
             let refs = slot_refs(&order, &subs, &self.ghosts);
-            // Only the accessibility scope reads `resolved` — skip the measure
-            // in builds without it.
-            #[cfg(feature = "accessibility")]
-            {
-                self.resolved =
-                    resolved_content_rect(self.layout.size_that_fits(proposal, &refs), size);
-            }
-            let placed = self.layout.place(Rect::from_size(size), proposal, &refs);
+            let placement = placed_layout(&*self.layout, bounds, proposal, &refs);
             // Freeze each live entry's placed dimensions (size plus explicit
             // guides at the placed proposal) while `subs` is still borrowed —
             // the removal ghost keeps them fixed afterward.
             let mut frozen: Vec<Option<ViewDimensions>> = vec![None; self.entries.len()];
-            for (slot, placement) in order.iter().zip(&placed) {
+            for (slot, child) in order.iter().zip(&placement.children) {
                 if let CollectionSlot::Entry(index) = *slot {
-                    frozen[index] = Some(frozen_placement_dimensions(&subs[index], placement));
+                    frozen[index] = Some(frozen_placement_dimensions(&subs[index], child));
                 }
             }
-            (placed, frozen, priorities)
+            (placement, frozen, priorities)
         };
+        #[cfg(feature = "accessibility")]
+        {
+            self.geometry = Some(PlacedGeometry {
+                proposal,
+                answer: placement.answer,
+                allocation: Rect::from_size(*bounds.size()),
+                response_rect: placement.response_rect,
+            });
+        }
         let mut entry_frames = vec![None; self.entries.len()];
         let mut ghost_frames = vec![None; self.ghosts.len()];
-        for (slot, placement) in order.iter().zip(&placements) {
+        for (slot, child) in order.iter().zip(&placement.children) {
             match *slot {
-                CollectionSlot::Entry(index) => entry_frames[index] = Some(placement),
-                CollectionSlot::Ghost(index) => ghost_frames[index] = Some(placement),
+                CollectionSlot::Entry(index) => entry_frames[index] = Some(child),
+                CollectionSlot::Ghost(index) => ghost_frames[index] = Some(child),
             }
         }
-        for (index, (entry, placement)) in self.entries.iter_mut().zip(&entry_frames).enumerate() {
-            let Some(placement) = placement else { continue };
+        for (index, (entry, child)) in self.entries.iter_mut().zip(&entry_frames).enumerate() {
+            let Some(child) = child else { continue };
             if let Some(dimensions) = frozen[index].take() {
                 entry.last_measured.replace((dimensions, priorities[index]));
             }
-            let child_area = safe_area.map(|area| area.child(placement.frame));
+            let child_area = safe_area.map(|area| area.child(child.frame));
             entry.node.layout(
                 renderer,
                 &env,
                 child_area,
-                placement.proposal,
-                *placement.frame.size(),
+                child.proposal,
+                *child.frame.size(),
             );
         }
         let empty_frame = Rect::from_size(Size::new(0.0, 0.0));
         self.placed = entry_frames
             .into_iter()
-            .map(|placement| placement.map_or(empty_frame, |p| p.frame))
+            .map(|child| child.map_or(empty_frame, |p| p.frame))
             .collect();
         self.ghost_placed = ghost_frames
             .into_iter()
@@ -448,11 +455,11 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
-            let (bounds, extent) = (
-                ctx.bounds(),
-                renderer.resolve_window_rect(kurbo_rect(self.resolved)),
-            );
-            let scope = renderer.begin_accessibility_container(bounds, Some(extent), env);
+            let geometry = self
+                .geometry
+                .expect("hydrolysis collection flushed before its layout");
+            let scope =
+                renderer.begin_accessibility_container(accessibility_rect(env, &geometry), env);
             renderer.pop_accessibility_owner();
             scope
         });
@@ -1429,11 +1436,11 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
-            // A lazy stack places its items at flush (offset-dependent), so no
-            // resolved extent is cached for it — `None` keeps the surviving
-            // child's own bounds on collapse.
-            let bounds = ctx.bounds();
-            let scope = renderer.begin_accessibility_container(bounds, None, env);
+            let geometry = self
+                .geometry
+                .expect("hydrolysis lazy stack flushed before its layout");
+            let scope =
+                renderer.begin_accessibility_container(accessibility_rect(env, &geometry), env);
             renderer.pop_accessibility_owner();
             scope
         });

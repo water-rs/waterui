@@ -122,8 +122,9 @@ use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 use waterui::accessibility::{
-    AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier, AccessibilityLabel,
-    AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
+    AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden, AccessibilityIdentifier,
+    AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+    AccessibilityValue,
 };
 use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground, MaterialGroup};

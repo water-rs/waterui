@@ -14,6 +14,7 @@
 
 use std::time::Duration;
 
+use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
 use waterui::graphics::color::Srgb;
 use waterui::id::SelfId;
@@ -54,13 +55,16 @@ fn card(label: &'static str) -> impl View {
 /// A labelled probe carrying an `.ignore_safe_area` release: the label's
 /// bounds land on the released boundary only when the edge its frame
 /// touches is reachable — a covered edge releases nothing, so the frame
-/// discriminates the two.
+/// discriminates the two. The probe reports its allocation, the frame the
+/// release moves, not the answer-sized response inside it.
 fn edge_probe(
     view: impl View,
     label: impl signal::IntoComputed<Str>,
     ignore: impl Into<IgnoreSafeArea>,
 ) -> impl View {
-    view.ignore_safe_area(ignore).a11y_label(label)
+    view.ignore_safe_area(ignore)
+        .a11y_label(label)
+        .a11y_geometry(AccessibilityGeometry::Allocation)
 }
 
 fn env_with_insets(insets: &Binding<EdgeInsets>) -> Environment {
@@ -220,8 +224,12 @@ fn an_ignore_releases_only_on_an_edge_the_frame_touches() {
         env_with_insets(&insets),
         move || {
             vstack((
-                card("top-touches").ignore_safe_area(EdgeSet::TOP),
-                card("below").ignore_safe_area(EdgeSet::TOP),
+                card("top-touches")
+                    .ignore_safe_area(EdgeSet::TOP)
+                    .a11y_geometry(AccessibilityGeometry::Allocation),
+                card("below")
+                    .ignore_safe_area(EdgeSet::TOP)
+                    .a11y_geometry(AccessibilityGeometry::Allocation),
                 spacer(),
             ))
             .alignment(HorizontalAlignment::Leading)

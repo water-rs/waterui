@@ -37,6 +37,7 @@ fn text_node<E: crate::text::TextEngine>(content: &'static str) -> RenderNode<E>
         alignment,
         line_limit: None,
         layout_dirty: Rc::new(Cell::new(false)),
+        geometry: None,
         tap_span_targets: RefCell::default(),
     }))
 }
@@ -60,7 +61,7 @@ fn render_node_container_lays_out_and_flushes_text() {
         accessibility_child_env: None,
         placed: Vec::new(),
         #[cfg(feature = "accessibility")]
-        resolved: waterui_core::layout::Rect::from_size(Size::zero()),
+        geometry: None,
         layout_dirty: Rc::new(Cell::new(false)),
         _guards: Vec::new(),
     }));
@@ -122,7 +123,7 @@ fn geometry_static_flush_reuses_cached_placement() {
         accessibility_child_env: None,
         placed: Vec::new(),
         #[cfg(feature = "accessibility")]
-        resolved: waterui_core::layout::Rect::from_size(Size::zero()),
+        geometry: None,
         layout_dirty: Rc::new(Cell::new(false)),
         _guards: Vec::new(),
     }));

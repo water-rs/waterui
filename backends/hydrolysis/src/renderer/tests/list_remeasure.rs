@@ -12,6 +12,8 @@ use accesskit::{Rect, Role, TreeUpdate};
 use nami::Binding;
 use nami::SignalExt as _;
 use nami::collection::SignalCollection;
+use waterui::ViewExt as _;
+use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
 use waterui_core::AnyView;
@@ -88,7 +90,15 @@ fn size_driven_list(tall: &Binding<bool>, label: &'static str) -> AnyViewBuilder
             .map(move |tall| if tall { TALL_SIZE } else { SHORT_SIZE });
         AnyView::new(List::for_each(
             SignalCollection::new(rows.clone()),
-            move |_| ListItem::new(text(label).size(size.clone())),
+            // The label reports the slot the row allots it, which is what
+            // these tests pin; the text's own wrapped box is not the subject.
+            move |_| {
+                ListItem::new(
+                    text(label)
+                        .size(size.clone())
+                        .a11y_geometry(AccessibilityGeometry::Allocation),
+                )
+            },
         ))
     })
 }
