@@ -1434,11 +1434,7 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
     };
     let (present_tx, present_rx) = futures::channel::oneshot::channel::<Result<(), String>>();
     let present_tx = std::cell::RefCell::new(Some(present_tx));
-    let held_drawables = std::rc::Rc::new(std::cell::RefCell::new(std::vec::Vec::<
-        cocoa_ui::Retained<
-            cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLDrawable>,
-        >,
-    >::new()));
+    let armed = std::rc::Rc::new(std::cell::Cell::new(false));
     let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
     // A scene-attached window when the host connects one —
     // `drawViewHierarchy` only captures composited content under a real
@@ -1473,41 +1469,41 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
     let render_queue = crate::gpu_runtime::raw_metal_device(context)
         .newCommandQueue()
         .expect("the readiness device creates a command queue");
-    let drawable_slot = held_drawables.clone();
+    let armed_slot = armed.clone();
     let pool_queue = render_queue.clone();
     let presenter = cocoa_ui::metal_presenter::MetalPresenter::new(
         layer,
         std::rc::Rc::new(move |frame| {
+            // The probe fires exactly once: the first frame encodes,
+            // commits, and presents; every later update returns before
+            // touching a drawable, queue, or buffer.
+            if armed_slot.get() {
+                return;
+            }
             let drawable = cocoa_ui::objc2::runtime::ProtocolObject::<
                 dyn cocoa_ui::objc2_metal::MTLDrawable,
             >::from_retained(frame.drawable());
-            // Every delivered drawable is retained, so an unpresented
-            // one can never return its pool slot — the slot frees only
-            // when a present actually completes, which is what the
-            // display-side witness below reads.
-            drawable_slot.borrow_mut().push(drawable.clone());
             let texture = frame.texture();
-            let buffer = render_queue
-                .commandBuffer()
-                .expect("the readiness queue hands a command buffer");
-            let pass = MTLRenderPassDescriptor::renderPassDescriptor();
-            let attachment = unsafe {
-                // SAFETY: index 0 is the first color attachment every
-                // render pass descriptor answers.
-                pass.colorAttachments().objectAtIndexedSubscript(0)
-            };
-            attachment.setTexture(Some(&texture));
-            attachment.setLoadAction(MTLLoadAction::Clear);
-            attachment.setStoreAction(MTLStoreAction::Store);
-            // A saturated blue the window snapshot can tell apart from
-            // an unpresented frame's emptiness.
-            attachment.setClearColor(MTLClearColor {
-                red: 0.0,
-                green: 0.0,
-                blue: 1.0,
-                alpha: 1.0,
-            });
             if let Some(tx) = present_tx.borrow_mut().take() {
+                armed_slot.set(true);
+                let buffer = render_queue
+                    .commandBuffer()
+                    .expect("the readiness queue hands a command buffer");
+                let pass = MTLRenderPassDescriptor::renderPassDescriptor();
+                let attachment = unsafe {
+                    // SAFETY: index 0 is the first color attachment every
+                    // render pass descriptor answers.
+                    pass.colorAttachments().objectAtIndexedSubscript(0)
+                };
+                attachment.setTexture(Some(&texture));
+                attachment.setLoadAction(MTLLoadAction::Clear);
+                attachment.setStoreAction(MTLStoreAction::Store);
+                attachment.setClearColor(MTLClearColor {
+                    red: 0.0,
+                    green: 0.0,
+                    blue: 1.0,
+                    alpha: 1.0,
+                });
                 let render = buffer
                     .renderCommandEncoderWithDescriptor(&pass)
                     .expect("the readiness pass opens a render encoder");
@@ -1515,9 +1511,6 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
                 arm_present_witness(&buffer, drawable, tx);
                 buffer.commit();
             }
-            // The probe fires exactly once: every later frame leaves the
-            // drawable unpresented without spending a submission on it —
-            // the one-shot lifecycle the witness contract asserts
             // (water-rs/waterui#3529).
         }),
         false,
@@ -1599,21 +1592,30 @@ async fn present_readiness_frame(context: &waterui_graphics::gpu::SharedGpuConte
         .await
         .expect("the pool present delivers or the sender drops")
         .unwrap_or_else(|reason| panic!("the pool frame failed: {reason}"));
-    let (cycle_tx, cycle_rx) = std::sync::mpsc::channel();
+    // `allowsNextDrawableTimeout` bounds every single `nextDrawable`
+    // call to about a second, so the worker retries until the shared
+    // readiness deadline while the main thread keeps its run loop
+    // turning — presentation needs main-thread transactions committed.
     let layer_ptr = cocoa_ui::Retained::as_ptr(&pool_layer) as usize;
-    std::mem::forget(pool_layer.clone());
-    std::thread::spawn(move || {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let worker = std::thread::spawn(move || {
         let layer = unsafe {
-            // SAFETY: the retained layer is leaked for the probe's
-            // lifetime; `nextDrawable` is the documented render-thread
-            // entry point.
+            // SAFETY: `pool_layer` is retained by this test and released
+            // only after the worker joins; `nextDrawable` is the
+            // documented render-thread entry point.
             &*(layer_ptr as *const cocoa_ui::objc2_quartz_core::CAMetalLayer)
         };
-        let _ = cycle_tx.send(layer.nextDrawable().is_some());
+        while std::time::Instant::now() < deadline {
+            if layer.nextDrawable().is_some() {
+                return true;
+            }
+        }
+        false
     });
-    let presented = cycle_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap_or(false);
+    let _ = pump_main_until(90.0, || worker.is_finished());
+    let presented = worker
+        .join()
+        .expect("the readiness pool worker always exits at the deadline");
     assert!(
         presented,
         "the readiness drawable's slot never recycled — it never presented"
