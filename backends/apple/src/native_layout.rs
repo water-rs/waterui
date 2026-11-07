@@ -103,7 +103,9 @@ fn declared_mask(view: &PlatformView) -> u16 {
 /// on the way up contributes its frame under the identity transform, so a
 /// visual `transform` — an `offset`, `scale` or `rotation` wrapper's — never
 /// moves the boundary a view is laid out against (§7.1 judges the laid-out
-/// frame "before scroll offsets and visual transforms").
+/// frame "before scroll offsets and visual transforms"). Each ancestor's
+/// `bounds.origin`, a scroll view's content offset included, still applies,
+/// as it did through `convertRect:toView:`.
 /// `convertRect:toView:` would apply every ancestor's transform: an offset
 /// that carries its content past the window edge would clip that content's
 /// safe rect, and the content would be laid out against the window edge it
