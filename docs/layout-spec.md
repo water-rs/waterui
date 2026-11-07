@@ -533,6 +533,10 @@ sides first; overflow is not clamped.
   extent state their measurement uses, virtualisation estimates included —
   never the union of realised children. Changing realisation or an estimate
   invalidates it.
+- **List rows**: a row allocates its content the whole content rect and
+  positions the content's response at that rect's leading edge, centred
+  vertically. The content keeps the whole rect as its allocation, so the
+  row's hit target spans it; only where the response sits moves.
 - **Layout-transparent wrappers** (metadata, alignment guides, bridge
   hosts): forward the query to the content with the same `B` and `P`.
 
