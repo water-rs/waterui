@@ -131,7 +131,8 @@ class PlatformViewRegistry internal constructor(
             }
 
             override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
-                val content = orderedContent ?: return super.onInterceptTouchEvent(event)
+                val content = (orderedContent ?: orderedHitTest)
+                    ?: return super.onInterceptTouchEvent(event)
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                     // The retained tree answers who owns the point — alpha,
                     // transforms, clips and scroll already composed there;
@@ -145,7 +146,7 @@ class PlatformViewRegistry internal constructor(
 
             @SuppressLint("ClickableViewAccessibility")
             override fun onTouchEvent(event: MotionEvent): Boolean {
-                if (orderedContent != null && !nativeGesture) {
+                if ((orderedContent != null || orderedHitTest != null) && !nativeGesture) {
                     return hostView?.onTouchEvent(event) ?: false
                 }
                 return super.onTouchEvent(event)
@@ -185,6 +186,8 @@ class PlatformViewRegistry internal constructor(
     private var pendingJson: String? = null
     private var appliedJson: String? = null
     private var orderedContent: OrderedContent? = null
+    private var orderedHitTest: OrderedHitTest? = null
+    private var splittingSuppressed = false
     private val slotClip = Rect()
     private val inverse = Matrix()
     private val point = FloatArray(2)
@@ -203,13 +206,9 @@ class PlatformViewRegistry internal constructor(
      * restored when the painter is removed.
      */
     internal fun setOrderedContent(content: OrderedContent?) {
-        if (content != null && orderedContent == null) {
-            savedSplitting = container.isMotionEventSplittingEnabled
-            container.isMotionEventSplittingEnabled = false
-        } else if (content == null && orderedContent != null) {
-            container.isMotionEventSplittingEnabled = savedSplitting
-        }
-        if (content == null && orderedContent != null) {
+        val hadContent = orderedContent != null
+        orderedContent = content
+        if (content == null && hadContent) {
             for (slot in slots.values) {
                 if (slot.nativeGeometry) {
                     slot.nativeGeometry = false
@@ -218,8 +217,40 @@ class PlatformViewRegistry internal constructor(
                 }
             }
         }
-        orderedContent = content
+        syncSplitting()
         container.invalidate()
+    }
+
+    /**
+     * The GPU band's ordered hit test: the gesture-ownership answers the
+     * touch paths need when the surfaces draw outside this container — a
+     * painter that draws entries here installs the richer [OrderedContent]
+     * instead (water-rs/waterui#2225). Splitting stays off for the same
+     * reason: children are not stacked in paint order there either.
+     */
+    internal fun setOrderedHitTest(hitTest: OrderedHitTest?) {
+        orderedHitTest = hitTest
+        syncSplitting()
+    }
+
+    /**
+     * While an ordered answer is installed — a painter's content or the
+     * GPU band's hit test — motion-event splitting is off: with it on,
+     * ViewGroup would route a second pointer's DOWN to the topmost *child*
+     * under it, a slot that can sit behind topmost self-drawn content,
+     * splitting one logical gesture across two owners. The prior value is
+     * restored when the last ordered answer is removed.
+     */
+    private fun syncSplitting() {
+        val suppressed = orderedContent != null || orderedHitTest != null
+        if (suppressed == splittingSuppressed) return
+        splittingSuppressed = suppressed
+        if (suppressed) {
+            savedSplitting = container.isMotionEventSplittingEnabled
+            container.isMotionEventSplittingEnabled = false
+        } else {
+            container.isMotionEventSplittingEnabled = savedSplitting
+        }
     }
 
     /**
@@ -302,7 +333,7 @@ class PlatformViewRegistry internal constructor(
      * path and let the a11y provider own everything else.
      */
     internal fun coversPixel(x: Float, y: Float): Boolean {
-        orderedContent?.let { content ->
+        (orderedContent ?: orderedHitTest)?.let { content ->
             // The retained tree decides: the pixel is a platform hit only
             // when a platform view is drawn there and no interactive target
             // above it takes the point.

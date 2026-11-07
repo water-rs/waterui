@@ -1056,6 +1056,38 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
+    /// The topmost placed platform view whose frame and clip cover `point`
+    /// (window hit-test space) — `None` when no view is drawn there. The
+    /// GPU band's ordered hit test asks this instead of an encoder record.
+    #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
+    #[cfg_attr(not(target_os = "android"), expect(dead_code))]
+    pub(crate) fn platform_view_at(&self, point: kurbo::Point) -> Option<u64> {
+        self.materialized_platform_views
+            .iter()
+            .filter(|staged| {
+                let placement = &staged.placement;
+                let (x, y, w, h) = (
+                    f64::from(placement.x()),
+                    f64::from(placement.y()),
+                    f64::from(placement.width()),
+                    f64::from(placement.height()),
+                );
+                let inside = kurbo::Rect::new(x, y, x + w, y + h).contains(point)
+                    && placement.clip().is_none_or(|clip| {
+                        let (cx, cy, cw, ch) = (
+                            f64::from(clip[0]),
+                            f64::from(clip[1]),
+                            f64::from(clip[2]),
+                            f64::from(clip[3]),
+                        );
+                        kurbo::Rect::new(cx, cy, cx + cw, cy + ch).contains(point)
+                    });
+                placement.visible() && inside
+            })
+            .max_by_key(|staged| staged.placement.order())
+            .map(|staged| staged.placement.id())
+    }
+
     /// Whether Hydrolysis takes the hit at `point` (window hit-test space)
     /// over the platform view placed as `view` — an interactive target
     /// painted above the view covers the point. The same rule hosted planes
@@ -1065,7 +1097,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ///
     /// When this frame placed no platform view `view`: the caller names a
     /// view the same frame's placements bound.
-    #[cfg(any(test, hydrolysis_hwui))]
+    #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
+    #[cfg_attr(all(not(target_os = "android"), not(test)), expect(dead_code))]
     pub(crate) fn platform_view_occluded(&self, view: u64, point: kurbo::Point) -> bool {
         let placed = self
             .materialized_platform_views
