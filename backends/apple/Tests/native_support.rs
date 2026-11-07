@@ -1073,6 +1073,7 @@ pub mod gpu_surface {
     pub use crate::components::gpu_surface::native_test::{
         MountedSceneSurface, WakeProbe, fixture_env, fixture_scene_view,
     };
+    pub use crate::gpu_completion::{SubmissionFailed, submit_with_completion};
 
     /// Performs the once-per-process `startup::initialize` — called
     /// once from the `Tests/native.rs` harness's true main thread
