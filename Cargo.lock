@@ -14049,9 +14049,7 @@ version = "0.4.0"
 source = "git+https://github.com/water-rs/wgpu-external-frame?branch=dev#33021021690beb411fbe75a31e44a0b27dffe238"
 dependencies = [
  "ash",
- "glow",
  "libc",
- "libloading 0.9.0",
  "ndk",
  "objc2 0.6.5",
  "objc2-core-foundation",

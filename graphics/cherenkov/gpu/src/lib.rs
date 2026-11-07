@@ -187,6 +187,28 @@ pub enum ScratchFormat {
     Rgba8Unorm,
 }
 
+/// Whether GPU rendering on this target is Vulkan-only. Linux and Android
+/// compile no GL backend and never select one; a device without a Vulkan
+/// driver is unsupported.
+pub const VULKAN_ONLY: bool = cfg!(any(target_os = "android", target_os = "linux"));
+
+/// The backends `WGPU_BACKEND` names, if it is set.
+///
+/// # Panics
+/// On a [`VULKAN_ONLY`] target when the variable names anything but Vulkan:
+/// no other backend exists there, so honouring the request is impossible and
+/// ignoring it would hide the misconfiguration.
+#[must_use]
+pub fn backends_from_env() -> Option<wgpu::Backends> {
+    let requested = wgpu::Backends::from_env()?;
+    assert!(
+        !VULKAN_ONLY || requested == wgpu::Backends::VULKAN,
+        "WGPU_BACKEND names {requested:?}, but GPU rendering on Linux and Android is Vulkan-only: \
+         unset WGPU_BACKEND or set it to `vulkan`"
+    );
+    Some(requested)
+}
+
 /// Configuration for the GPU engine.
 #[derive(Clone, Debug)]
 pub struct GpuConfig {
@@ -196,7 +218,8 @@ pub struct GpuConfig {
     /// Uses an existing host device. Handles must share one creation chain.
     /// Device limits and enabled features govern engine capabilities.
     pub device: Option<interop::SharedDevice>,
-    /// Which wgpu backends may be used. Defaults to all.
+    /// Which wgpu backends may be used. Defaults to all, and to Vulkan alone
+    /// where [`VULKAN_ONLY`].
     pub backends: wgpu::Backends,
     /// Adapter power preference. Defaults to high performance.
     pub power_preference: wgpu::PowerPreference,
@@ -247,10 +270,7 @@ impl Default for GpuConfig {
             #[cfg(test)]
             coverage_route: None,
             device: None,
-            backends: if cfg!(all(
-                any(target_os = "android", target_os = "linux"),
-                not(feature = "gles")
-            )) {
+            backends: if VULKAN_ONLY {
                 wgpu::Backends::VULKAN
             } else {
                 wgpu::Backends::all()

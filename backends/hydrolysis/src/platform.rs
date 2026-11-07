@@ -2564,14 +2564,14 @@ const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
 
 /// The wgpu backend masks Hydrolysis probes for an adapter, in order.
 ///
-/// Android and Linux default to Vulkan. GLES is available only with `gles`.
-/// Other native hosts probe primary backends before GL. `WGPU_BACKEND` selects
-/// from the backends enabled by the build.
+/// Android and Linux are Vulkan-only: one tier, and a `WGPU_BACKEND` naming
+/// another backend panics. Other native hosts probe primary backends before
+/// GL, and `WGPU_BACKEND` selects from the backends enabled by the build.
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(hydrolysis_gpu_painter)]
 fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
     let enabled = cherenkov_gpu::GpuConfig::default().backends;
-    match wgpu::Backends::from_env() {
+    match cherenkov_gpu::backends_from_env() {
         Some(backends) => vec![backends & enabled],
         None if enabled == wgpu::Backends::VULKAN => vec![enabled],
         None => vec![wgpu::Backends::PRIMARY, wgpu::Backends::GL],
@@ -2673,6 +2673,12 @@ async fn probe_adapters(
 )]
 #[cfg(hydrolysis_gpu_painter)]
 fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu::Backends]) -> ! {
+    assert!(
+        !(cherenkov_gpu::VULKAN_ONLY && inspected_adapters.is_empty()),
+        "{context}: unsupported device: no surface-compatible Vulkan adapter was found. \
+GPU rendering on Linux and Android requires a Vulkan driver; install or update the \
+vendor Vulkan driver (for example Mesa's `vulkan-*` package or the NVIDIA driver)."
+    );
     assert!(
         !inspected_adapters.is_empty(),
         "{context}: failed to find a surface-compatible wgpu adapter across the probed backends {tiers:?}. \

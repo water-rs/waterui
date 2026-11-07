@@ -63,8 +63,6 @@ gpu = [
 # target is a compile error — native and WebGPU devices run the same code
 # without it.
 webgl = ["gpu", "wgpu/webgl"]
-# Native GLES is an explicit opt-in on Android and Linux.
-gles = ["gpu", "wgpu/gles"]
 
 [dependencies]
 bytemuck = "1"
