@@ -1348,6 +1348,19 @@ pub fn await_gpu(seconds: f64) {
                 .as_secs_f64(),
             &stage,
             gpu_readiness_trip(&stage, salt, probe_deadline),
+        ) && poll_gpu_stage(
+            probe_deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs_f64(),
+            &stage,
+            // Instance-level warmth: the gate's own runtime proves
+            // nothing about a *fresh* one — a test still stalls inside
+            // its own `GpuRuntime::new` if instance startup is cold
+            // (#3798). A new instance landing inside the bound is the
+            // honest signal for that path.
+            async {
+                let _fresh = waterui_graphics::gpu::GpuRuntime::new().await;
+            },
         ) {
             return;
         }
@@ -1881,11 +1894,20 @@ fn poll_gpu_stage(
     let _ = stage;
     loop {
         woken.store(false, Ordering::Release);
-        if matches!(gate.as_mut().poll(&mut cx), Poll::Ready(())) {
-            // A `poll` that blocked past the bound and still resolved is
-            // a slow trip, not a warm one — the warmth probe counts only
-            // completion inside the bound (#3798).
-            return start.elapsed().as_secs_f64() < seconds;
+        // `catch_unwind`: a probe's internal timeout is an assert inside
+        // the trip — the panic must fail the probe so the warmth loop
+        // can retry, not fail the suite through `poll` (#3812).
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gate.as_mut().poll(&mut cx)));
+        match outcome {
+            Ok(Poll::Ready(())) => {
+                // A `poll` that blocked past the bound and still resolved
+                // is a slow trip, not a warm one — the warmth probe
+                // counts only completion inside the bound (#3798).
+                return start.elapsed().as_secs_f64() < seconds;
+            }
+            Ok(Poll::Pending) => {}
+            Err(_) => return false,
         }
         if start.elapsed().as_secs_f64() >= seconds {
             return false;
