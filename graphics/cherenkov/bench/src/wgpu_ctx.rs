@@ -65,7 +65,11 @@ impl Gpu {
     /// device creation fails.
     pub fn new(profiler_features: wgpu::Features) -> Result<Self, BenchError> {
         let instance = Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY | wgpu::Backends::GL,
+            backends: if cfg!(any(target_os = "linux", target_os = "android")) {
+                wgpu::Backends::VULKAN
+            } else {
+                wgpu::Backends::PRIMARY | wgpu::Backends::GL
+            },
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
