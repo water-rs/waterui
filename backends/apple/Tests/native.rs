@@ -11339,9 +11339,10 @@ mod gesture_events {
     }
 
     /// `AppKit`: `NSRotationGestureRecognizer.rotation` reports radians
-    /// natively — the event's angle is the raw getter value, and each
-    /// `Updated`'s velocity is the wall-clock delta rate, never a
-    /// second conversion (#2757).
+    /// counter-clockwise like `NSEvent.rotation` — the event's angle is
+    /// the getter's negation in the contract's clockwise convention, and
+    /// each `Updated`'s velocity is the wall-clock delta rate, never a
+    /// second conversion (#2757, #3706).
     #[cfg(target_os = "macos")]
     fn a_rotation_gesture_reports_native_radians() {
         let rotations = Rc::new(RefCell::new(Vec::new()));
@@ -11375,30 +11376,30 @@ mod gesture_events {
         let e = fire(NSGestureRecognizerState::Changed, 0.75);
         assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle() - 0.75).abs() < 1e-6,
-            "angle must be the raw radians getter, saw {}",
+            (e.angle() + 0.75).abs() < 1e-6,
+            "AppKit's counter-clockwise getter negates into the contract's clockwise angle, saw {}",
             e.angle()
         );
         assert!(
-            e.velocity().is_finite() && e.velocity() > 0.0,
-            "rotation progressed: {}",
+            e.velocity().is_finite() && e.velocity() < 0.0,
+            "a growing counter-clockwise getter reports a negative clockwise velocity: {}",
             e.velocity()
         );
         let e = fire(NSGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle() - 1.25).abs() < 1e-6);
+        assert!((e.angle() + 1.25).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Ended, 1.25);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
-        assert!((e.angle() - 1.25).abs() < 1e-6);
+        assert!((e.angle() + 1.25).abs() < 1e-6);
 
         // A second gesture reseeds at zero; a negative update and a
         // cancel keep the last angle with zero velocity.
         let e = fire(NSGestureRecognizerState::Began, 0.0);
         assert_eq!(e.phase(), GesturePhase::Started);
         let e = fire(NSGestureRecognizerState::Changed, -0.5);
-        assert!((e.angle() + 0.5).abs() < 1e-6);
+        assert!((e.angle() - 0.5).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Cancelled, -0.5);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Cancelled, 0.0));
-        assert!((e.angle() + 0.5).abs() < 1e-6);
+        assert!((e.angle() - 0.5).abs() < 1e-6);
     }
 
     /// `AppKit`: `NSMagnificationGestureRecognizer.magnification` is the

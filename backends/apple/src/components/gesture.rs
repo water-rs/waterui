@@ -514,14 +514,18 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             {
                 // `NSRotationGestureRecognizer` reports radians and no
                 // velocity: the angle delta between updates over their
-                // wall-clock interval.
+                // wall-clock interval. Its sign follows `NSEvent.rotation`
+                // — counter-clockwise positive, per Apple's Event
+                // documentation — the opposite of the contract's
+                // clockwise-positive convention, so both the angle and
+                // its derived velocity negate (#3706).
                 vec![kit::rotation(
                     host,
                     rotation_handler!(
                         recognizer,
-                        recognizer.rotation() as f32,
+                        -(recognizer.rotation() as f32),
                         |previous: f32, dt: f32| {
-                            (recognizer.rotation() as f32 - previous) / dt.max(f32::EPSILON)
+                            (-(recognizer.rotation() as f32) - previous) / dt.max(f32::EPSILON)
                         }
                     ),
                 )]
