@@ -7,9 +7,8 @@ import android.graphics.Shader
 /**
  * Builds the platform `RenderEffect` chain a `DefineEffect` record describes:
  * `createBlurEffect` stages plus one linear-light matrix shader per colour
- * run, chained inner-to-outer in application order. Registration on the Rust
- * side already rejects a chain the device's API level cannot run; the checks
- * here keep a malformed replay honest rather than second-guessing it.
+ * run, chained inner-to-outer in application order. Every stage runs on the
+ * API floor; the checks here keep a malformed replay honest.
  */
 private const val LINEAR_COLOR_SHADER = "dev/waterui/hydrolysis/hwui/linear_color.agsl"
 
@@ -17,7 +16,10 @@ internal class NativeEffects {
     private var source: String? = null
 
     private fun linearShader(): RuntimeShader {
-        val cached = source ?: NativeEffects::class.java.classLoader
+        val loader = checkNotNull(NativeEffects::class.java.classLoader) {
+            "HWUI replay: NativeEffects has no class loader to read its AGSL resource"
+        }
+        val cached = source ?: loader
             .getResourceAsStream(LINEAR_COLOR_SHADER)
             ?.use { it.readBytes().toString(Charsets.UTF_8) }
             ?: throw CommandBufferException("HWUI replay: the linear-color AGSL resource is missing")
