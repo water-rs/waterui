@@ -57,6 +57,9 @@ struct RemovalBlur {
     input: RefCell<Option<Rc<crate::transition::pixel::FrozenInput>>>,
     /// The landed effect — `None` until the capture delivers.
     effect: RefCell<Option<crate::components::filtered::FrozenEffect>>,
+    /// The armed effect presented its first frame — with the animation
+    /// end, one of the two conditions `complete` waits on (#3798).
+    first_presented: Cell<bool>,
 }
 
 /// The run behind [`Ghost`]: everything the tick and the completion
@@ -81,6 +84,9 @@ pub struct GhostRun {
     on_complete: RefCell<Option<Box<dyn FnOnce()>>>,
     /// The completion sequence ran — guards it to once.
     completed: Cell<bool>,
+    /// `advance` returned `false` — the other half of the two-condition
+    /// completion a blur effect's first present shares (#3798).
+    animation_finished: Cell<bool>,
     /// The site's environment — the lazy blur effect reads its GPU
     /// services from it.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
@@ -136,6 +142,7 @@ impl Ghost {
                 keep: RefCell::new(None),
                 on_complete: RefCell::new(Some(on_complete)),
                 completed: Cell::new(false),
+                animation_finished: Cell::new(false),
                 #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
                 env: env.clone(),
                 #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
@@ -178,8 +185,16 @@ impl Ghost {
                     run.update_blur(sample.blur());
                     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
                     run.update_pixel();
-                } else if !run.blur_in_flight() {
-                    run.complete();
+                } else {
+                    run.animation_finished.set(true);
+                    if run.blur_in_flight() {
+                        // Keep issuing captures: a `Deferred` retry only
+                        // runs inside `update_blur` (#3798).
+                        let sample = run.state.borrow().properties(run.visual.geometry);
+                        run.update_blur(sample.blur());
+                    } else {
+                        run.complete();
+                    }
                 }
             }
         });
@@ -244,6 +259,7 @@ impl GhostRun {
                     pending: Cell::new(false),
                     input: RefCell::new(None),
                     effect: RefCell::new(None),
+                    first_presented: Cell::new(false),
                 }));
             }
             let Some(blur) = realization.blur.as_ref().map(Rc::clone) else {
@@ -284,14 +300,21 @@ impl GhostRun {
                             // The root hides only once the blurred frame is
                             // on screen — never before, so no frame shows
                             // a gap (§2.6).
+                            let weak_blur_present = weak_blur.clone();
                             let weak_run_present = weak_run.clone();
                             effect.on_first_present(move || {
                                 view::set_hidden(&root, true);
-                                // The first blurred frame is on screen —
-                                // the completion the animation end
-                                // deferred runs now, so the ghost detaches
-                                // after its blurred present (#3798).
-                                if let Some(run) = weak_run_present.upgrade() {
+                                // First present and the animation end are
+                                // two independent conditions — completing
+                                // here would cut a 400ms animation short;
+                                // completing only after both preserves the
+                                // present-then-detach order (#3798).
+                                if let Some(blur) = weak_blur_present.upgrade() {
+                                    blur.first_presented.set(true);
+                                }
+                                if let Some(run) = weak_run_present.upgrade()
+                                    && run.animation_finished.get()
+                                {
                                     run.complete();
                                 }
                             });
@@ -343,16 +366,25 @@ impl GhostRun {
         crate::transition::pixel::PixelRemoval::update(&pixel, self);
     }
 
-    /// A blur effect is armed but has not presented its first frame
-    /// yet — the animation-end completion waits for it, since only that
-    /// present hides the retired root (#3798).
+    /// The blur path still needs the run: a capture is in flight, or an
+    /// effect is armed but has not presented its first frame — the
+    /// animation-end completion waits on it since only that present
+    /// hides the retired root (#3798). A failed capture completes
+    /// through its own explicit path.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     fn blur_in_flight(&self) -> bool {
         self.realization.borrow().as_ref().is_some_and(|r| {
-            r.blur
-                .as_ref()
-                .is_some_and(|blur| blur.effect.borrow().is_some())
+            r.blur.as_ref().is_some_and(|blur| {
+                blur.pending.get()
+                    || (blur.effect.borrow().is_some() && !blur.first_presented.get())
+            })
         })
+    }
+
+    /// Without the filtered pipeline there is no blur to wait on.
+    #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+    fn blur_in_flight(&self) -> bool {
+        false
     }
 
     /// The completion sequence (§1.5): the site's slot release, the
