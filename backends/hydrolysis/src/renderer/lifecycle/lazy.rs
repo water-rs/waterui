@@ -1,7 +1,9 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use waterui_layout::stack::LazyStackAxis;
+use waterui_core::layout::{LayoutError, PlacementInput};
+use waterui_layout::container::directional_response;
+use waterui_layout::stack::{HStackLayout, LazyStackAxis, VStackLayout};
 
 #[derive(Default)]
 pub struct LazyState {
@@ -56,6 +58,36 @@ pub enum LazyStackAxisConfig {
 }
 
 impl LazyStackAxisConfig {
+    /// The stack's own response: the stack layout's rule for the same axis
+    /// and alignment, which reads no children, under the stack's direction.
+    pub(crate) fn resolve_extent(&self, input: PlacementInput) -> Result<LayoutRect, LayoutError> {
+        let direction = self.direction().snapshot();
+        match self {
+            Self::Vertical {
+                spacing, alignment, ..
+            } => directional_response(
+                &VStackLayout {
+                    alignment: *alignment,
+                    spacing: spacing.clone(),
+                },
+                direction,
+                input,
+                &[],
+            ),
+            Self::Horizontal {
+                spacing, alignment, ..
+            } => directional_response(
+                &HStackLayout {
+                    alignment: *alignment,
+                    spacing: spacing.clone(),
+                },
+                direction,
+                input,
+                &[],
+            ),
+        }
+    }
+
     pub(crate) const fn direction(&self) -> &nami::Computed<waterui_core::layout::LayoutDirection> {
         match self {
             Self::Vertical { direction, .. } | Self::Horizontal { direction, .. } => direction,

@@ -11,6 +11,7 @@
 use nami::{Computed, impl_constant, signal::IntoComputed};
 use suiteki::Str;
 
+use crate::layout::{PlacedGeometry, Rect};
 use crate::metadata::MetadataKey;
 use crate::{AnyView, Environment, IgnorableMetadata, View};
 
@@ -231,6 +232,46 @@ impl AccessibilityHidden {
     #[must_use]
     pub const fn is_hidden(&self) -> bool {
         self.0
+    }
+}
+
+/// Which rectangle the accessibility element of the view it names reports.
+///
+/// By default an element reports its geometry owner's response rectangle —
+/// the view's own answer, positioned in the frame its parent assigned
+/// (`docs/layout-spec.md` §2.4, §7.2). Name another source when the element
+/// stands for something else: a canvas whose drawing fills its allocation, an
+/// enlarged target, or a shape drawn inside the view.
+///
+/// The choice changes only accessibility bounds; hit testing, focus and
+/// drawing keep their own geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the three geometry sources the layout contract defines (docs/layout-spec.md §7.2)"
+)]
+pub enum AccessibilityGeometry {
+    /// The owner's response rectangle.
+    #[default]
+    Response,
+    /// The whole frame the owner's parent assigned.
+    Allocation,
+    /// An explicit region in the owner's allocation-local coordinates.
+    Region(Rect),
+}
+
+impl MetadataKey for AccessibilityGeometry {}
+
+impl AccessibilityGeometry {
+    /// The owner-local rectangle this source names, given the owner's
+    /// retained geometry.
+    #[must_use]
+    pub const fn resolve(&self, geometry: &PlacedGeometry) -> Rect {
+        match *self {
+            Self::Response => geometry.response_rect,
+            Self::Allocation => Rect::from_size(*geometry.allocation.size()),
+            Self::Region(region) => region,
+        }
     }
 }
 

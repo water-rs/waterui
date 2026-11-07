@@ -5,8 +5,9 @@ use nami::{Computed, Signal, signal::IntoComputed, watcher::BoxWatcherGuard};
 use waterui_core::{AnyView, View, layout::LayoutInvalidationCallback};
 
 use crate::{
-    HorizontalAlignment, Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis,
-    SubView, SubviewPlacement, VerticalAlignment, container::FixedContainer,
+    HorizontalAlignment, Layout, LayoutError, PlacedSubview, PlacementInput, Point, ProposalSize,
+    Rect, Size, StretchAxis, SubView, SubviewPlacement, VerticalAlignment,
+    container::FixedContainer,
 };
 
 /// Layout that insets its single child by the configured edge values.
@@ -16,6 +17,31 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct PaddingLayout {
     pub(crate) edges: Computed<EdgeInsets>,
+}
+
+/// The proposal a padded child hears: each specified axis less its insets,
+/// never below zero.
+fn shrink_proposal(proposal: ProposalSize, edges: &EdgeInsets) -> ProposalSize {
+    ProposalSize {
+        width: proposal
+            .width
+            .map(|w| (w - edges.leading - edges.trailing).max(0.0)),
+        height: proposal
+            .height
+            .map(|h| (h - edges.top - edges.bottom).max(0.0)),
+    }
+}
+
+/// The region a padded child is placed in: the bounds inset by the edges, at
+/// the inset offset even when a negative inset puts it outside the bounds.
+fn inset_allocation(bounds: Rect, edges: &EdgeInsets) -> Rect {
+    Rect::new(
+        Point::new(bounds.x() + edges.leading, bounds.y() + edges.top),
+        Size::new(
+            (bounds.width() - edges.leading - edges.trailing).max(0.0),
+            (bounds.height() - edges.top - edges.bottom).max(0.0),
+        ),
+    )
 }
 
 impl Layout for PaddingLayout {
@@ -32,10 +58,7 @@ impl Layout for PaddingLayout {
         let vertical_padding = edges.top + edges.bottom;
 
         // Reduce the proposed size for the child by the padding amount.
-        let child_proposal = ProposalSize {
-            width: proposal.width.map(|w| (w - horizontal_padding).max(0.0)),
-            height: proposal.height.map(|h| (h - vertical_padding).max(0.0)),
-        };
+        let child_proposal = shrink_proposal(proposal, &edges);
 
         // Measure the child
         let child_size = children
@@ -77,27 +100,40 @@ impl Layout for PaddingLayout {
             return vec![];
         }
 
-        let edges = self.edges.snapshot();
-        // Create the child's frame by insetting the parent's bound by the padding amount.
-        let child_origin = Point::new(bounds.x() + edges.leading, bounds.y() + edges.top);
-
-        let horizontal_padding = edges.leading + edges.trailing;
-        let vertical_padding = edges.top + edges.bottom;
-
-        let child_size = Size::new(
-            (bounds.width() - horizontal_padding).max(0.0),
-            (bounds.height() - vertical_padding).max(0.0),
-        );
+        let child_frame = inset_allocation(bounds, &self.edges.snapshot());
 
         // Placement proposes the region the child is placed in: the bounds
         // less the insets, so a padded child stretched by its container lays
         // out across the room it actually has.
-        let child_proposal = ProposalSize::new(Some(child_size.width), Some(child_size.height));
+        let child_proposal =
+            ProposalSize::new(Some(child_frame.width()), Some(child_frame.height()));
 
-        vec![SubviewPlacement::new(
-            Rect::new(child_origin, child_size),
-            child_proposal,
-        )]
+        vec![SubviewPlacement::new(child_frame, child_proposal)]
+    }
+
+    /// The child's response, queried with the proposal shrunk by the insets
+    /// inside the inset bounds, out-set by the leading and top edges, at the
+    /// padding's own answer. Negative insets keep this origin; only the
+    /// answer's extent is clamped.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        let edges = self.edges.snapshot();
+        let child = children
+            .first()
+            .expect("PaddingLayout requires exactly one child");
+        let child = child
+            .resolve_extent(
+                inset_allocation(input.bounds, &edges),
+                shrink_proposal(input.proposal, &edges),
+            )?
+            .rect;
+        Ok(Rect::new(
+            Point::new(child.x() - edges.leading, child.y() - edges.top),
+            input.extent()?,
+        ))
     }
 
     fn explicit_horizontal(
@@ -324,6 +360,7 @@ mod tests {
     use crate::StretchAxis;
     use crate::ViewDimensions;
     use crate::measure_layout;
+    use crate::{LayoutError, Rect, ResolvedExtent};
     use alloc::rc::Rc;
     use core::cell::Cell;
     use nami::binding;
@@ -333,6 +370,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -351,6 +395,13 @@ mod tests {
     }
 
     impl SubView for GuidedSubview {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
                 .with_horizontal(HorizontalAlignment::Leading, self.horizontal_guide)

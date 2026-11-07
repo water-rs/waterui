@@ -42,7 +42,8 @@ use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
-    HorizontalAlignment, ProposalSize, Size, StretchAxis, SubView, ViewDimensions,
+    HorizontalAlignment, LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size,
+    StretchAxis, SubView, ViewDimensions,
 };
 
 use crate::contract::{Mounted, NativeLeaf};
@@ -595,6 +596,14 @@ const fn measure_width(_proposal: ProposalSize, _label_width: f64) -> f64 {
 }
 
 impl SubView for TextFieldSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(

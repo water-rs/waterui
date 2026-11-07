@@ -35,6 +35,7 @@ use fmt::Debug;
 use alloc::{rc::Rc, vec::Vec};
 use nami::watcher::BoxWatcherGuard;
 use smallvec::SmallVec;
+use thiserror::Error;
 
 /// The logical horizontal direction used by layout containers.
 ///
@@ -542,6 +543,203 @@ impl SubviewPlacement {
     }
 }
 
+// ============================================================================
+// Response geometry
+// ============================================================================
+
+/// Why a view's response geometry could not be resolved.
+///
+/// Every variant is a broken contract, not a layout outcome: a well-formed tree
+/// never produces one.
+#[derive(Clone, Copy, Debug, PartialEq, Error)]
+#[non_exhaustive]
+pub enum LayoutError {
+    /// An answer had a NaN, negative or negatively infinite extent. Only
+    /// `+INFINITY` is a legal non-finite answer, and only on an axis whose
+    /// placement concretizes it.
+    #[error("answer {answer:?} has an extent that is NaN, negative or negatively infinite")]
+    InvalidAnswer {
+        /// The offending answer.
+        answer: Size,
+    },
+    /// Bounds a view was queried with were not finite, or had a negative
+    /// extent.
+    #[error("bounds {bounds:?} are not finite non-negative geometry")]
+    InvalidBounds {
+        /// The offending bounds.
+        bounds: Rect,
+    },
+    /// A layout positioned a response whose extent is not its answer.
+    #[error("response extent {resolved:?} differs from the concretized answer {answer:?}")]
+    ExtentMismatch {
+        /// The concretized answer the response had to match.
+        answer: Size,
+        /// The extent the layout resolved.
+        resolved: Size,
+    },
+}
+
+/// What a layout is given to position its own response: the frame it was
+/// assigned, the exact proposal it was placed with, and its answer to that
+/// proposal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacementInput {
+    /// The assigned bounds, in the coordinate system of this invocation.
+    pub bounds: Rect,
+    /// The incoming placement proposal, never reconstructed from `bounds`.
+    pub proposal: ProposalSize,
+    /// The layout's raw answer to `proposal`, supplied by the driver. It may be
+    /// `+INFINITY` on an axis where measurement permits it.
+    pub answer: Size,
+}
+
+impl PlacementInput {
+    /// The answer concretized for finite placement: a `+INFINITY` axis takes
+    /// the assigned extent, every other axis keeps the answer.
+    ///
+    /// # Errors
+    ///
+    /// [`LayoutError::InvalidBounds`] when `bounds` is not finite non-negative
+    /// geometry, and [`LayoutError::InvalidAnswer`] when the answer has a NaN,
+    /// negative or negatively infinite extent.
+    pub fn extent(&self) -> Result<Size, LayoutError> {
+        concretize(self.answer, self.bounds)
+    }
+}
+
+/// A view's response geometry: its raw answer and the answer-sized rectangle a
+/// layout rule positioned for it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedExtent {
+    /// The raw answer to the proposal, before finite concretization.
+    pub answer: Size,
+    /// The positioned response, in the coordinate system of the queried
+    /// bounds. Its extent is the concretized answer; it may lie partly or
+    /// wholly outside the bounds.
+    pub rect: Rect,
+}
+
+impl ResolvedExtent {
+    /// The foundation leaf rule: the concretized answer centred in `bounds`.
+    ///
+    /// Every leaf without an explicit content-placement policy answers its
+    /// response query with this.
+    ///
+    /// # Errors
+    ///
+    /// As [`PlacementInput::extent`].
+    pub fn centred(bounds: Rect, answer: Size) -> Result<Self, LayoutError> {
+        let extent = concretize(answer, bounds)?;
+        Ok(Self {
+            answer,
+            rect: bounds.align(extent, UnitPoint::CENTER),
+        })
+    }
+
+    /// Pairs a layout's positioned `rect` with the input it was resolved
+    /// from, enforcing the response-extent identity: `rect`'s extent must be
+    /// exactly [`PlacementInput::extent`].
+    ///
+    /// # Errors
+    ///
+    /// As [`PlacementInput::extent`], and [`LayoutError::ExtentMismatch`] when
+    /// the extents differ.
+    pub fn checked(input: PlacementInput, rect: Rect) -> Result<Self, LayoutError> {
+        let extent = input.extent()?;
+        if *rect.size() != extent {
+            return Err(LayoutError::ExtentMismatch {
+                answer: extent,
+                resolved: *rect.size(),
+            });
+        }
+        Ok(Self {
+            answer: input.answer,
+            rect,
+        })
+    }
+}
+
+/// A container's placement: its own positioned response and one placement per
+/// child. Produced by [`place_layout`], which keeps the two from disagreeing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutPlacement {
+    /// The container's raw answer to its placement proposal.
+    pub answer: Size,
+    /// The container's response, in the coordinate system of its bounds.
+    pub response_rect: Rect,
+    /// One placement per child, in child order, each with its selected
+    /// proposal.
+    pub children: Vec<SubviewPlacement>,
+}
+
+/// The geometry a backend retains for one committed layout node.
+///
+/// `allocation` is the frame the parent assigned; `response_rect` is the view's
+/// own answer-sized box, positioned by its layout rule. They are separate
+/// quantities: drawing, children and hit testing use the allocation, while
+/// accessibility bounds use the response.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacedGeometry {
+    /// The exact incoming placement proposal.
+    pub proposal: ProposalSize,
+    /// The unmodified answer to that proposal; may be `+INFINITY` on an axis.
+    pub answer: Size,
+    /// The parent-assigned frame, in the parent's layout coordinates.
+    pub allocation: Rect,
+    /// The positioned response, in allocation-local coordinates. Finite, with
+    /// non-negative extents; a zero extent is real geometry.
+    pub response_rect: Rect,
+}
+
+impl PlacedGeometry {
+    /// Resolves `view`'s response for the allocation and proposal its parent
+    /// placed it with.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`SubView::resolve_extent`] reports.
+    pub fn resolve(
+        view: &dyn SubView,
+        allocation: Rect,
+        proposal: ProposalSize,
+    ) -> Result<Self, LayoutError> {
+        let resolved = view.resolve_extent(allocation, proposal)?;
+        Ok(Self {
+            proposal,
+            answer: resolved.answer,
+            allocation,
+            response_rect: resolved.rect.translated(-allocation.x(), -allocation.y()),
+        })
+    }
+}
+
+fn concretize(answer: Size, bounds: Rect) -> Result<Size, LayoutError> {
+    let valid_bounds = [bounds.x(), bounds.y(), bounds.width(), bounds.height()]
+        .iter()
+        .all(|value| value.is_finite())
+        && bounds.width() >= 0.0
+        && bounds.height() >= 0.0;
+    if !valid_bounds {
+        return Err(LayoutError::InvalidBounds { bounds });
+    }
+    // `!(v >= 0)` also catches NaN.
+    if !(answer.width >= 0.0 && answer.height >= 0.0) {
+        return Err(LayoutError::InvalidAnswer { answer });
+    }
+    Ok(Size::new(
+        if answer.width.is_infinite() {
+            bounds.width()
+        } else {
+            answer.width
+        },
+        if answer.height.is_infinite() {
+            bounds.height()
+        } else {
+            answer.height
+        },
+    ))
+}
+
 /// A child view together with its placed frame inside a container.
 #[derive(Clone, Copy)]
 pub struct PlacedSubview<'a> {
@@ -714,6 +912,33 @@ pub trait SubView {
     #[must_use]
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions;
 
+    /// Where this view's answer to `proposal` sits when it is assigned
+    /// `bounds`: its response geometry.
+    ///
+    /// A pure query. It does not place the view, install a frame, emit
+    /// accessibility or commit anything, and it may be asked with a proposal
+    /// other than the one the view is actually placed with. The returned
+    /// rectangle is in the coordinates of `bounds`, its extent is the answer
+    /// concretized against `bounds` ([`PlacementInput::extent`]), and
+    /// translating `bounds` translates it by the same amount.
+    ///
+    /// - A leaf without an explicit content-placement policy answers
+    ///   [`ResolvedExtent::centred`].
+    /// - A view driven by a [`Layout`] answers [`resolve_layout_extent`].
+    /// - A layout-transparent wrapper forwards the query to the view it wraps
+    ///   with the same `bounds` and `proposal`; it never adds an origin policy
+    ///   of its own.
+    ///
+    /// # Errors
+    ///
+    /// A [`LayoutError`] when the answer or `bounds` is not valid geometry, or
+    /// a layout broke the response-extent identity.
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError>;
+
     /// Which axis (or axes) this view stretches to fill available space.
     ///
     /// - `StretchAxis::None`: Content-sized, uses intrinsic size
@@ -827,6 +1052,14 @@ impl SubView for MemoizedSubView<'_> {
         dimensions
     }
 
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.inner.resolve_extent(bounds, proposal)
+    }
+
     fn stretch_axis(&self) -> StretchAxis {
         // A non-member contributes nothing, including a stretch claim read
         // before its empty body ran.
@@ -920,6 +1153,30 @@ pub trait Layout: Debug + Any {
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement>;
 
+    /// Positions this layout's own response — its answer to `input.proposal`
+    /// — inside `input.bounds`, by this layout's rule.
+    ///
+    /// The returned rectangle is in the coordinates of `input.bounds` and its
+    /// extent is exactly [`PlacementInput::extent`]; the driver
+    /// ([`resolve_layout_extent`], [`place_layout`]) rejects any other. It is
+    /// not a union of the children's frames or drawing, and it may lie outside
+    /// the bounds.
+    ///
+    /// A pure query: a layout that derives its response from a child's asks
+    /// that child's [`SubView::resolve_extent`], never its placement. A layout
+    /// whose rule does not read its children must not read them here — a lazy
+    /// container asks with no children at all.
+    ///
+    /// # Errors
+    ///
+    /// A [`LayoutError`] when the input or a queried child's geometry is
+    /// invalid.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError>;
+
     /// Returns an explicit horizontal guide for this container, if any.
     fn explicit_horizontal(
         &self,
@@ -1001,6 +1258,79 @@ pub fn measure_layout(
     with_memoized_children(children, |children| {
         measure_layout_memoized(layout, proposal, children)
     })
+}
+
+/// Resolves the response geometry of a view driven by `layout`: the
+/// [`SubView::resolve_extent`] answer of every container.
+///
+/// Measures the layout's answer to `proposal`, has the layout position it in
+/// `bounds`, and checks the result keeps the answer's extent.
+///
+/// # Errors
+///
+/// A [`LayoutError`] when the answer or `bounds` is invalid, or the layout
+/// positioned a response whose extent is not its answer.
+pub fn resolve_layout_extent(
+    layout: &dyn Layout,
+    bounds: Rect,
+    proposal: ProposalSize,
+    children: &[&dyn SubView],
+) -> Result<ResolvedExtent, LayoutError> {
+    with_memoized_children(children, |children| {
+        resolve_layout_extent_memoized(layout, bounds, proposal, children)
+    })
+}
+
+/// Places `layout`'s children in `bounds` and resolves the layout's own
+/// response from the same answer, so the two never disagree.
+///
+/// This is how a backend drives a container's placement. Children are memoized
+/// for the call.
+///
+/// # Errors
+///
+/// As [`resolve_layout_extent`].
+///
+/// # Panics
+///
+/// When the layout returns a different number of placements than children.
+pub fn place_layout(
+    layout: &dyn Layout,
+    bounds: Rect,
+    proposal: ProposalSize,
+    children: &[&dyn SubView],
+) -> Result<LayoutPlacement, LayoutError> {
+    with_memoized_children(children, |children| {
+        let resolved = resolve_layout_extent_memoized(layout, bounds, proposal, children)?;
+        let placements = layout.place(bounds, proposal, children);
+        assert_eq!(
+            placements.len(),
+            children.len(),
+            "{layout:?} returned {} placements for {} children",
+            placements.len(),
+            children.len()
+        );
+        Ok(LayoutPlacement {
+            answer: resolved.answer,
+            response_rect: resolved.rect,
+            children: placements,
+        })
+    })
+}
+
+fn resolve_layout_extent_memoized(
+    layout: &dyn Layout,
+    bounds: Rect,
+    proposal: ProposalSize,
+    children: &[&dyn SubView],
+) -> Result<ResolvedExtent, LayoutError> {
+    let input = PlacementInput {
+        bounds,
+        proposal,
+        answer: layout.size_that_fits(proposal, children),
+    };
+    let rect = layout.resolve_extent(input, children)?;
+    ResolvedExtent::checked(input, rect)
 }
 
 fn measure_layout_memoized(
@@ -1159,6 +1489,29 @@ impl Rect {
     #[must_use]
     pub const fn center(&self) -> Point {
         Point::new(self.mid_x(), self.mid_y())
+    }
+
+    /// A rectangle of `size` aligned inside this one at `anchor`: per axis,
+    /// `min + (extent - size) * anchor`. Overflow is not clamped — a larger
+    /// `size` crosses the edges the anchor puts it across.
+    #[must_use]
+    pub fn align(&self, size: Size, anchor: UnitPoint) -> Self {
+        Self::new(
+            Point::new(
+                (self.size.width - size.width).mul_add(anchor.x, self.origin.x),
+                (self.size.height - size.height).mul_add(anchor.y, self.origin.y),
+            ),
+            size,
+        )
+    }
+
+    /// This rectangle moved by `(dx, dy)`.
+    #[must_use]
+    pub const fn translated(&self, dx: f32, dy: f32) -> Self {
+        Self::new(
+            Point::new(self.origin.x + dx, self.origin.y + dy),
+            self.size,
+        )
     }
 
     /// Inset the rectangle by the given amounts on each edge.
@@ -1681,6 +2034,14 @@ mod tests {
             ViewDimensions::new(Size::new(proposal.width_or(10.0), proposal.height_or(20.0)))
         }
 
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None
         }
@@ -1733,6 +2094,14 @@ mod tests {
             let marker = if proposal.width.is_none() { 1.0 } else { 2.0 };
             ViewDimensions::new(Size::new(160.0, 20.0))
                 .with_horizontal(HorizontalAlignment::Leading, marker)
+        }
+
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
         }
 
         fn stretch_axis(&self) -> StretchAxis {
@@ -1797,6 +2166,14 @@ mod tests {
                 .collect()
         }
 
+        fn resolve_extent(
+            &self,
+            input: PlacementInput,
+            _children: &[&dyn SubView],
+        ) -> Result<Rect, LayoutError> {
+            Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+        }
+
         fn explicit_horizontal(
             &self,
             alignment: HorizontalAlignment,
@@ -1850,6 +2227,145 @@ mod tests {
         ) -> Vec<SubviewPlacement> {
             panic!("an infinite measurement must never reach placement")
         }
+
+        fn resolve_extent(
+            &self,
+            input: PlacementInput,
+            _children: &[&dyn SubView],
+        ) -> Result<Rect, LayoutError> {
+            Ok(input.bounds.align(input.extent()?, UnitPoint::CENTER))
+        }
+    }
+
+    /// A layout whose response rule keeps a fixed 4 × 4 box whatever it
+    /// answered: the driver must reject it.
+    #[derive(Debug)]
+    struct MismatchedLayout;
+
+    impl Layout for MismatchedLayout {
+        fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+            Size::new(10.0, 10.0)
+        }
+
+        fn place(
+            &self,
+            _bounds: Rect,
+            _proposal: ProposalSize,
+            _children: &[&dyn SubView],
+        ) -> Vec<SubviewPlacement> {
+            Vec::new()
+        }
+
+        fn resolve_extent(
+            &self,
+            input: PlacementInput,
+            _children: &[&dyn SubView],
+        ) -> Result<Rect, LayoutError> {
+            Ok(input.bounds.align(Size::new(4.0, 4.0), UnitPoint::CENTER))
+        }
+    }
+
+    #[test]
+    fn leaf_rule_centres_the_answer_in_an_oversized_allocation() {
+        let bounds = Rect::new(Point::new(10.0, 20.0), Size::new(100.0, 50.0));
+        let resolved = ResolvedExtent::centred(bounds, Size::new(40.0, 10.0)).unwrap();
+        assert_eq!(
+            resolved.rect,
+            Rect::new(Point::new(40.0, 40.0), Size::new(40.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn leaf_rule_centres_an_overflowing_answer_across_both_edges() {
+        let bounds = Rect::from_size(Size::new(10.0, 10.0));
+        let resolved = ResolvedExtent::centred(bounds, Size::new(30.0, 10.0)).unwrap();
+        assert_eq!(
+            resolved.rect,
+            Rect::new(Point::new(-10.0, 0.0), Size::new(30.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn unbounded_answer_concretizes_to_the_assigned_extent_and_keeps_the_raw_answer() {
+        let bounds = Rect::new(Point::new(5.0, 5.0), Size::new(80.0, 30.0));
+        let answer = Size::new(f32::INFINITY, 10.0);
+        let resolved = ResolvedExtent::centred(bounds, answer).unwrap();
+        assert_eq!(resolved.answer, answer);
+        assert_eq!(
+            resolved.rect,
+            Rect::new(Point::new(5.0, 15.0), Size::new(80.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn zero_answer_is_real_geometry() {
+        let bounds = Rect::from_size(Size::new(20.0, 20.0));
+        let resolved = ResolvedExtent::centred(bounds, Size::zero()).unwrap();
+        assert_eq!(
+            resolved.rect,
+            Rect::new(Point::new(10.0, 10.0), Size::zero())
+        );
+    }
+
+    #[test]
+    fn invalid_answers_and_bounds_are_errors() {
+        let bounds = Rect::from_size(Size::new(20.0, 20.0));
+        for answer in [
+            Size::new(f32::NAN, 1.0),
+            Size::new(1.0, -1.0),
+            Size::new(f32::NEG_INFINITY, 1.0),
+        ] {
+            assert!(matches!(
+                ResolvedExtent::centred(bounds, answer),
+                Err(LayoutError::InvalidAnswer { .. })
+            ));
+        }
+        let unbounded = Rect::from_size(Size::new(f32::INFINITY, 20.0));
+        assert!(matches!(
+            ResolvedExtent::centred(unbounded, Size::new(1.0, 1.0)),
+            Err(LayoutError::InvalidBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn response_query_is_translation_covariant() {
+        let child = GuideProbe;
+        let children: [&dyn SubView; 1] = [&child];
+        let layout = InfiniteLayout;
+        let bounds = Rect::from_size(Size::new(200.0, 40.0));
+        let moved = bounds.translated(30.0, -7.0);
+        let here = resolve_layout_extent(&layout, bounds, ProposalSize::UNSPECIFIED, &children)
+            .unwrap()
+            .rect;
+        let there = resolve_layout_extent(&layout, moved, ProposalSize::UNSPECIFIED, &children)
+            .unwrap()
+            .rect;
+        assert_eq!(there, here.translated(30.0, -7.0));
+    }
+
+    #[test]
+    fn driver_rejects_a_response_whose_extent_is_not_the_answer() {
+        let bounds = Rect::from_size(Size::new(50.0, 50.0));
+        assert_eq!(
+            resolve_layout_extent(&MismatchedLayout, bounds, ProposalSize::UNSPECIFIED, &[]),
+            Err(LayoutError::ExtentMismatch {
+                answer: Size::new(10.0, 10.0),
+                resolved: Size::new(4.0, 4.0),
+            })
+        );
+    }
+
+    #[test]
+    fn placed_geometry_is_allocation_local() {
+        let allocation = Rect::new(Point::new(100.0, 200.0), Size::new(60.0, 40.0));
+        let geometry =
+            PlacedGeometry::resolve(&GuideProbe, allocation, ProposalSize::UNSPECIFIED).unwrap();
+        assert_eq!(geometry.allocation, allocation);
+        assert_eq!(geometry.answer, Size::new(160.0, 20.0));
+        assert_eq!(
+            geometry.response_rect,
+            Rect::new(Point::new(-50.0, 10.0), Size::new(160.0, 20.0))
+        );
     }
 
     #[test]

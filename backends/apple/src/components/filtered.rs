@@ -23,7 +23,9 @@ use objc2::MainThreadMarker;
 use objc2_metal::{MTLDevice as _, MTLTexture as _};
 use objc2_quartz_core::CAMetalLayer;
 use waterui_backend_core::{AnyView, View};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 use waterui_graphics::filter_view::{AnyEffect, ErasedEffect, FilteredView, ParamGuards};
 use waterui_graphics::filtrate::{
     EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
@@ -1684,6 +1686,19 @@ impl FilteredSubView {
 }
 
 impl SubView for FilteredSubView {
+    /// Forwards to the hidden content with the same bounds and proposal; no
+    /// content answers a zero size centred in `bounds`, as `measure` does.
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.mounted().map_or_else(
+            || ResolvedExtent::centred(bounds, Size::zero()),
+            |m| m.layout().resolve_extent(bounds, proposal),
+        )
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.mounted().map_or_else(
             || ViewDimensions::new(Size::new(0.0, 0.0)),

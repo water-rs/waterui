@@ -16,7 +16,9 @@ use waterui::navigation::{
     tab::{Tab, TabIcon, TabRole},
 };
 use waterui_core::id::Id;
-use waterui_core::layout::{StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
 
 use super::extract_title_text;
 
@@ -28,7 +30,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
 struct Fill;
 
 impl SubView for Fill {
-    fn measure(&self, _proposal: waterui_core::layout::ProposalSize) -> ViewDimensions {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(waterui_core::layout::Size::new(0.0, 0.0))
     }
 

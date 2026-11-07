@@ -18,8 +18,8 @@ use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::layout::container::FixedContainer;
 use waterui_backend_core::{AnyView, View};
 use waterui_core::layout::{
-    Layout, ProposalSize, StretchAxis, SubView, ViewDimensions, measure_layout,
-    with_memoized_children,
+    Layout, LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions, measure_layout, resolve_layout_extent, with_memoized_children,
 };
 
 use crate::contract::{Mounted, NativeLeaf};
@@ -162,6 +162,15 @@ impl core::fmt::Debug for FixedSubView {
 }
 
 impl SubView for FixedSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let state = self.state.borrow();
+        resolve_layout_extent(&*state.layout, bounds, proposal, &children_of(&state))
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         measure(&self.state.borrow(), proposal)
     }

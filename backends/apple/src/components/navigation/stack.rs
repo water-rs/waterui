@@ -26,7 +26,9 @@ use waterui::navigation::{
     AnyNavigationTransition, CustomNavigationController, NativeNavigationTransition,
     NavigationController, NavigationStack, NavigationTransaction, resolve_navigation_root,
 };
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
@@ -187,6 +189,13 @@ fn retire_page(leaf: LiveChild, env: &Environment, ghosts: &Ghosts) {
 struct Fill;
 
 impl SubView for Fill {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::new(0.0, 0.0))
     }

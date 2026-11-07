@@ -2,7 +2,8 @@
 
 This document is normative. It describes the layout protocol that every
 container in `waterui-layout`, every leaf a backend hosts, and every backend
-bridge implements. It is frozen at 0.5.0: the semantics below do not change
+bridge implements. It was frozen at 0.5.0 and amended once, at 0.6.0, by the
+decision below: the semantics do not change
 without a major-version decision recorded by the maintainer, and a pull request
 that changes them is rejected regardless of what it fixes. A difference between
 this document and the code is a bug in the code.
@@ -10,6 +11,17 @@ this document and the code is a bug in the code.
 The reference model is SwiftUI's layout protocol as observed on iOS 26 and
 macOS 26. Where SwiftUI's observable behaviour is known it is the tie-breaker;
 where WaterUI deliberately differs the difference is listed in §8.
+
+**0.6.0 amendment: response geometry.** The 0.6.0 major version adds one
+quantity to the contract (water-rs/waterui#1323). Until 0.5 a view had an
+*allocation* — the frame its parent assigned — and placed its children; it
+had no positioned rectangle of its own answer. From 0.6 every placed view also
+has a *response rectangle*: its answer to its placement proposal, positioned
+inside its allocation by its layout's rule (§2.4, §5, §6). The two are
+separate: children, drawing and hit testing keep using the allocation, and
+accessibility uses the response (§7.2). The same amendment fixes the one
+undecided case it touches, the start of an underfilled stack's main-axis
+block (§4.2). This is a semantic change, not a fix of 0.5 behaviour.
 
 ## 1. Units and coordinates
 
@@ -22,6 +34,15 @@ where WaterUI deliberately differs the difference is listed in §8.
   `f32::INFINITY` means "unbounded". A container's answer may be `INFINITY`
   on an axis only when a child answered `INFINITY` on it — with one narrow
   exception: `Absolute` (§5) answers a maximum probe with the probe itself.
+- Placement geometry is finite. An answer placed in finite bounds is
+  *concretized*: a `+INFINITY` axis takes the assigned extent and every other
+  axis keeps the answer. The raw answer is retained beside it. NaN, negative
+  infinity and negative extents are contract violations (`LayoutError`), never
+  synonyms for "unbounded". A zero extent is real geometry.
+- Within one layout invocation the bounds, the response rectangle and the
+  child frames share one coordinate system, and every geometry query is
+  translation-covariant: translating the bounds by `d` translates the answer
+  by `d`.
 
 ## 2. The proposal protocol
 
@@ -39,6 +60,11 @@ The child answers with `ViewDimensions`: a `Size` plus optional explicit
 alignment guides. The answer is the child's choice; the proposal is advice. On
 each axis the three probe answers satisfy `min <= ideal <= max`.
 
+The *answer* is always the raw answer to a proposal. A container may account
+for a child at a larger *reported extent* (a stack's `max(answer, offer)`,
+§4.2); that promotion decides the child's allocation, and never overwrites
+the answer the child gave.
+
 ### 2.1 The SubView contract
 
 Every child a container measures is a `SubView`:
@@ -52,6 +78,15 @@ Every child a container measures is a `SubView`:
   `MainAxis` / `CrossAxis`. It is read before `body` runs and without an
   environment, so a view with a filling leaf inside declares it here.
 - `priority()` orders the compression bands (§4.3); ties share.
+- `resolve_extent(bounds, proposal)` answers where the view's answer to
+  `proposal` sits when it is assigned `bounds`: a `ResolvedExtent` holding
+  the raw answer and the positioned response rectangle, in the coordinates of
+  `bounds`. It is a pure query with the same purity and caching rules as
+  `measure`: it places nothing, installs no frame, emits no accessibility and
+  commits nothing, and it may be asked with a proposal other than the one the
+  view is placed with. A leaf answers by its leaf rule (§6), a view driven by
+  a `Layout` through `resolve_layout_extent`, and a layout-transparent wrapper
+  forwards the query with the same bounds and proposal.
 
 Measurement is single-threaded and runs on the thread that drives layout; a
 `SubView` is neither `Send` nor `Sync`.
@@ -68,10 +103,25 @@ A container is a `Layout`:
   measured with, available to a container whose rule needs it (§5, Grid).
   Each placement carries the child's frame and the proposal the child is
   placed with; the child's own layout pass receives that proposal verbatim.
+- `resolve_extent(input, children) -> Rect` positions the container's own
+  response. `input` is a `PlacementInput`: the assigned `bounds`, the
+  incoming `proposal` (never reconstructed from the bounds) and the
+  container's `answer` to it, supplied by the driver. The rule is the
+  container's own (§5) and mandatory; there is no default. A container whose
+  rule derives from a child asks that child's `resolve_extent`, never its
+  placement; a container whose rule reads no child reads none, so a lazy
+  container can ask it with no children.
+- The driver owns the pairing. `place_layout(layout, bounds, proposal,
+  children)` measures the answer once, resolves the response and places the
+  children from the same snapshot, returning a `LayoutPlacement` (answer,
+  response rectangle, child placements); `resolve_layout_extent` is the
+  query alone and is what a container's `SubView::resolve_extent` returns.
+  Both reject a response whose extent is not the concretized answer.
 - Explicit alignment guides (`explicit_horizontal` / `explicit_vertical`)
   come from the placed children; a container exposes the alignments it can
   answer. Resolving an explicit guide runs the container's `place`, so a
-  container's guide is always consistent with its placement.
+  container's guide is always consistent with its placement. Guides stay in
+  allocation-local coordinates: the response origin never rebases them.
 
 ### 2.3 Placement is a negotiation against the resolved bounds
 
@@ -100,6 +150,32 @@ that an unshrinkable row has made wider than the viewport lays out on one
 line across the column, as the reference twin does, instead of staying
 wrapped at the proposal the column was measured with.
 
+Resolving a response never replaces this negotiation. A wrapper's response
+query follows the proposal that produced its answer (§2.4), while its child
+is still placed under the bounds-derived proposal above; the two may differ,
+and a geometry query is never a hidden child placement.
+
+### 2.4 Response geometry
+
+Every placed view has a response rectangle. It obeys:
+
+- **Extent identity.** On every axis its extent is the view's concretized
+  answer to its placement proposal (§1). No union, clip, stretch inference or
+  accessibility-child count changes it.
+- **Answer, not content.** It is the view's answer to its incoming proposal,
+  positioned by an explicit rule. It does not promise to enclose the
+  placement-time children or their drawing: under §2.3 a padded child can be
+  placed under a larger proposal and answer more than the padding's own
+  answer allowed for.
+- **No containment.** It may extend outside the allocation, and children and
+  drawing may extend outside it. Neither implies clipping.
+- **Provenance.** It is resolved from the exact proposal and layout snapshot
+  the view was placed with; another probe never overwrites the selected
+  answer.
+- **Owned by the layout.** The rule belongs to the view's layout or leaf
+  contract. A backend never chooses a centre, reconstructs the rectangle from
+  descendants, or substitutes another node's rectangle for a zero one.
+
 ## 3. Stretch
 
 `stretch_axis` is the only way a view claims space beyond its measured size.
@@ -108,7 +184,10 @@ wrapped at the proposal the column was measured with.
   container's allocation rule promotes it: `extent = max(measured, offered)`
   under the rules that promote (a stack's offers in §4.1 and §4.2). The
   promotion is per container, never universal — a `ZStack` proposes the
-  bounds but keeps a stretcher's finite answer (§5).
+  bounds but keeps a stretcher's finite answer (§5). Promotion changes the
+  child's allocation, not its answer: a `Spacer` allocated a 40-pt gap still
+  answers its minimum length, and its response rectangle is that answer.
+  Naming the allocated gap is an explicit choice of geometry source (§7.2).
 - A container claims nothing of its own. Its stretch is the union of its
   children's, resolved against its axis: a `VStack` holding a `Spacer`
   (`MainAxis`) stretches vertically; a `VStack` holding a `Color` (`Both`)
@@ -178,6 +257,12 @@ Nothing is clamped: a child wider than the bounds overflows and the alignment
 decides which edges it crosses (`Center` crosses both equally). Nothing is
 clipped by layout.
 
+The stack's response rectangle has the stack's answer as its extent. On the
+cross axis it is anchored by the same alignment — start for `Top` /
+`Leading`, centre for `Center`, end for `Bottom` / `Trailing`, start for
+baselines and custom guides — using the measured envelope as its extent, not
+the union of the final child frames.
+
 ### 4.2 Main axis: one probe, then allocation
 
 With an unspecified main proposal every child keeps its ideal extent (probe:
@@ -221,10 +306,18 @@ for `n` terms; no visual "close enough" threshold enters child-response
 accounting.
 
 At placement the same negotiation runs afresh with `main = bounds.main` and
-`cross = bounds.cross`. Children are placed in logical member order,
-reversed physically for a right-to-left `HStack`, at their reported extents.
-Each placement carries the proposal that negotiation selected, not a
-proposal reconstructed from its frame.
+`cross = bounds.cross`. The negotiated block — the members' reported extents
+plus member spacing — is centred in `bounds.main`, crossing both edges
+equally when it overflows them; the members are then placed from its start
+in logical member order, reversed physically for a right-to-left `HStack`,
+at their reported extents. Centring moves the block as a whole: it does not
+redistribute unused space or rerun the negotiation. Each placement carries
+the proposal that negotiation selected, not a proposal reconstructed from its
+frame.
+
+On the main axis the stack's response rectangle is centred in the bounds.
+The placement-time block and the response may differ in extent (§2.3); both
+are centred on the same line.
 
 ### 4.3 Priority
 
@@ -235,7 +328,8 @@ reservation. Within a band, §4.2's flexibility order applies. Priority
 determines sizing opportunities; it does not force a child to accept an
 offer or cause a processed child to be reconsidered. Declined space remains
 available to subsequently processed children, including children in lower
-bands.
+bands. A response query never changes the negotiation order or causes a
+processed child to be reconsidered.
 
 An ordinary child's band defaults to `0`, a `Spacer`'s to `i32::MIN` —
 below every ordinary child, so it absorbs only what remains. An explicit
@@ -252,7 +346,9 @@ container's stretch — which is a semantic
 question, not a size answer, since a zero-size `Color` or `Spacer` is still a
 member — and a conditional switching between rendering nothing and rendering
 a view is a membership change, so it invalidates the stack the same way a
-view swap does.
+view swap does. An invalidation invalidates retained response geometry with
+the rest of the layout. How many semantic children a view exposes never
+changes its layout membership or its response.
 
 ### 4.5 Structural transition retention
 
@@ -349,8 +445,13 @@ place of the stack's own transition for that page.
   either, the extent follows the child's answer to the pinned proposal; on
   the origin, `leading` and `top` win when both edges are pinned.
   `leading`/`trailing` are logical edges — the resolved layout direction
-  mirrors them. A window-level overlay layer (snackbar, dialog host) is an
-  `Absolute` with `StretchAxis::Both`, never a content-sized `ZStack`.
+  mirrors them. A `position_in(p)` / `position(x, y)` places the child's
+  anchor point on the target; the anchor is explicit
+  (`position_in_anchor`, `position_anchor`) and defaults to the child's
+  centre when omitted. Leading and trailing in the anchor and the target
+  resolve to physical coordinates before placement. A window-level overlay
+  layer (snackbar, dialog host) is an `Absolute` with `StretchAxis::Both`,
+  never a content-sized `ZStack`.
 - **Grid**: fixed column count. Under a finite width proposal every column
   is `max(0, (width - spacing * (columns - 1)) / columns)` wide and the
   grid answers the proposal width; under an unspecified or infinite width
@@ -392,6 +493,48 @@ place of the stack's own transition for that page.
 - **Lazy containers** (`List`, lazy stacks): virtualised along one axis with
   the same per-child protocol over the realised children; membership diffs by
   identity. Stretch is §3.
+
+### 5.1 Response rectangles
+
+Each container positions its response (§2.4) of extent `S`, its concretized
+answer to the incoming proposal `P`, inside its bounds `B`. `E(child, P, B)`
+is the child's own response query. Leading and trailing resolve to physical
+sides first; overflow is not clamped.
+
+- **HStack / VStack**: §4.1 and §4.2 — centred on the main axis, anchored by
+  the alignment on the cross axis.
+- **ZStack**: anchored by its alignment on both axes, custom guides at the
+  start. A layer overflowing the envelope does not move it.
+- **Overlay**: the base decides it: the origin of `E(base, P, B)`, at
+  `S`. The two coincide whenever the base answers finitely. Decorations
+  contribute nothing. The base is queried with `P`, though it is placed
+  under the bounds-derived proposal.
+- **Background**: `E(content, P, B)`. The background layer, its drawing and
+  `Material` / `Glass` metadata contribute nothing, so adding a background
+  never moves the response.
+- **Padding**: with physical insets `l, t, r, b`,
+  `C = E(child, P shrunk by the insets, B inset by the insets)`, and the
+  response is `S` at `C.origin - (l, t)` — the child's response out-set by
+  the edges, the leading-only inset belonging wholly to the leading side.
+  Negative insets keep this origin and clamp only the extent; a collapsed
+  zero extent keeps its calculated origin.
+- **Frame**: `S` centred in `B`. The frame's alignment aligns its child
+  inside the frame; it never positions the frame's own box, and a child
+  overflowing the frame does not move it.
+- **AspectRatio**: `S` centred in `B`. When `P` and `B` differ, this is not
+  the ratio box `place` resolves against the bounds.
+- **Absolute and positioning wrappers** (`position_in`, `pin`): a canvas —
+  `S` at `B`'s origin, never the union of positioned children. A label on a
+  canvas names the canvas; a label on the positioned child names the child.
+- **Grid**: the grid block at `B`'s top-leading corner, where its rows are
+  placed. The alignment aligns cells inside their cells and never moves the
+  block. A `GridRow` owns no response.
+- **Lazy containers**: the corresponding stack rule, from the same logical
+  extent state their measurement uses, virtualisation estimates included —
+  never the union of realised children. Changing realisation or an estimate
+  invalidates it.
+- **Layout-transparent wrappers** (metadata, alignment guides, bridge
+  hosts): forward the query to the content with the same `B` and `P`.
 
 ## 6. Leaf contracts (backends)
 
@@ -458,6 +601,20 @@ axis it does not stretch is a backend bug: it makes every container above it
 report the proposal, and the failure surfaces as a stretched card or a
 leading-parked column far from the leaf.
 
+**The leaf rule.** Every leaf answers the response query, native leaves
+included. A leaf's response is its concretized answer centred in its
+allocation (`ResolvedExtent::centred`): a text that is the whole content of a
+navigation page or a window root sits in the middle of that slot, at its own
+size. A leaf with an explicit content-placement policy states it through the
+same query, never through backend gravity. A backend draws a leaf's
+intrinsic content in its response rectangle — glyphs, a control's chrome, an
+image's pixels — so drawing and accessibility agree; a metadata or clip
+bridge never gains permission to re-centre its child. `Spacer` and `Divider`
+keep their measurement rules, so a `Spacer`'s response is its minimum length
+even where a stack allocated it more. A `ScrollView`'s response is its own
+answer under the leaf rule; its viewport remains its allocation and its
+content extent a third, separate quantity.
+
 ## 7. Placement on the backends
 
 A backend applies the Rust placement verbatim: the child's frame is the
@@ -472,6 +629,13 @@ window on the axes it declares. Safe-area insets are a backend concern applied
 outside the protocol (§7.1); they never change a
 proposal a Rust container sees. Layout is single-threaded; a backend that
 measures on another thread is outside the contract.
+
+A backend drives a container through `place_layout` and retains, with each
+committed node, its `PlacedGeometry`: the placement proposal, the raw answer,
+the allocation and the allocation-local response rectangle. A node's
+geometry becomes visible atomically with its placement. A layout-transparent
+bridge wrapper forwards the response query with the same bounds and proposal
+however many host views the backend builds for it.
 
 ### 7.1 Safe area
 
@@ -516,10 +680,49 @@ transforms, ends on that boundary.
   keyboard animation frame by frame. A backend never avoids the keyboard by
   resizing the window or its rendering surface.
 
+### 7.2 Accessibility geometry
+
+An accessibility element has a *geometry owner* — the logical view whose
+rectangle it reports — and an *action owner* — the object that performs its
+actions. They may differ: in `button("OK").padding(8).a11y_label("x")` the
+padded view owns the geometry and the button the actions, while
+`button("OK").a11y_label("x").padding(8)` makes the labelled button the
+geometry owner. Modifier order decides.
+
+- An element's bounds are its geometry owner's response rectangle, unless a
+  naming modifier names another source: the owner's allocation, or an
+  explicit owner-local region. Semantic cardinality never chooses the
+  geometry: an explicit element with no semantic children, a scope that
+  collapses onto its one child, and a group that stands over several all
+  report the scope owner's geometry. A collapse may keep the child's
+  identity, actions, state and role; it never replaces the geometry owner.
+- The rectangle is projected through the geometry owner's presentation
+  transform, scroll ancestry, viewport and explicit clips, exactly once, at
+  the platform boundary — never through the action owner's after a collapse.
+  A clip decides exposure and touch exploration; it does not change the
+  logical rectangle, and a smaller group rectangle is not an implicit clip on
+  its descendants.
+- A backend never shrinks or moves a platform view to make its accessibility
+  frame come out right: it reports the projected rectangle through the
+  platform's accessibility-frame API and leaves the Rust-assigned allocation
+  in place. Accessibility activation dispatches the retained action; it does
+  not assume the centre of the rectangle hits the control.
+
+Hit testing uses the interaction owner's region and transform, a focus ring
+the focus owner's shape — its response by default — and drawing the existing
+placements. A naming modifier changes none of them.
+
 ## 8. Divergence register
 
 Behaviour that is deliberately not SwiftUI's. Each entry is a decision, not a
 gap; changing one is a contract change.
+
+The response rules of §5.1 and §6 and the accessibility rules of §7.2 are
+WaterUI's own decisions. They agree with the SwiftUI cases observed — a text
+that is a navigation destination's whole content is centred in the page and
+framed at its own size — but no executable twin establishes every rule, so
+this document does not claim SwiftUI accessibility equivalence beyond those
+cases.
 
 | WaterUI | SwiftUI | why |
 | --- | --- | --- |
@@ -544,5 +747,12 @@ their minimum in small bounds; unbounded answers surviving a maximum query;
 the resolved extent proposed at placement on both axes, under stretch and
 under underfill; the main axis allocated from the bounds; explicit guides
 shaping the envelope on edge alignments; and spacing/membership invalidation
-returning to the original geometry. A pull request that has to weaken one of
-these assertions is changing the contract and is rejected.
+returning to the original geometry. Since 0.6 they also cover: the response
+extent equalling the concretized answer; translation covariance; each
+container's response rule under asymmetric and negative padding, an
+overflowing fixed frame, every alignment, right-to-left layout, and an
+incoming proposal that differs from the bounds; zero-size and lazy
+responses; and an underfilled stack's centred main-axis block. Response
+geometry never changes an allocation or a selected proposal the earlier
+assertions fix. A pull request that has to weaken one of these assertions is
+changing the contract and is rejected.

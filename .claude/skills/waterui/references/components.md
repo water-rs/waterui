@@ -164,7 +164,7 @@ absolute((
         UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING,       // anchor on child, position in parent
         16.0, 16.0,                                           // offsets — these are signal slots
     ),
-    controls().position_in(UnitPoint::BOTTOM_TRAILING),
+    controls().position_in_anchor(UnitPoint::BOTTOM_TRAILING, UnitPoint::BOTTOM_TRAILING),
 ))
 ```
 

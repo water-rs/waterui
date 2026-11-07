@@ -8,9 +8,11 @@ use super::layout::resolved_content_rect;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::WidgetTheme;
 use std::rc::Rc;
 
 use nami::collection::CollectionChange;
+use waterui_core::layout::{LayoutError, PlacementInput, ResolvedExtent, resolve_layout_extent};
 use waterui_core::transition::{Ghost, GhostSlot, TransitionSpec};
 use waterui_core::views::ViewSnapshot;
 
@@ -346,6 +348,26 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
         let order = self.slot_order();
         let refs = slot_refs(&order, &subs, &self.ghosts);
         ViewDimensions::new(self.layout.size_that_fits(proposal, &refs))
+    }
+
+    /// The collection's response geometry: its layout's rule over the same
+    /// members [`Self::measure`] hands it, ghost slots included.
+    pub(super) fn resolve_extent(
+        &self,
+        state: &mut HydroState<E>,
+        theme: &Rc<dyn WidgetTheme>,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let cell = RefCell::new(state);
+        let subs: Vec<NodeSubView<E>> = self
+            .entries
+            .iter()
+            .map(|entry| NodeSubView::new(&entry.node, &cell, &self.env, theme))
+            .collect();
+        let order = self.slot_order();
+        let refs = slot_refs(&order, &subs, &self.ghosts);
+        resolve_layout_extent(&*self.layout, bounds, proposal, &refs)
     }
 
     pub(super) fn layout(
@@ -1368,6 +1390,25 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         ViewDimensions::new(size)
     }
 
+    /// The stack's response geometry: the stack rule for its axis and
+    /// alignment, which reads no children, over the answer [`Self::measure`]
+    /// derives from the lazy measurement state.
+    pub(super) fn resolve_extent(
+        &self,
+        state: &mut HydroState<E>,
+        theme: &Rc<dyn WidgetTheme>,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let answer = self.measure(state, theme, proposal).size;
+        let rect = self.axis.resolve_extent(PlacementInput {
+            bounds,
+            proposal,
+            answer,
+        })?;
+        Ok(ResolvedExtent { answer, rect })
+    }
+
     /// Resolves the visible window from the enclosing scroll's pushed viewport and
     /// re-dispatches only those items at their placed rects. Bounded by visible rows.
     pub(super) fn flush(
@@ -1679,6 +1720,14 @@ mod tests {
     struct GuidedSubView;
 
     impl SubView for GuidedSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             // Distinguishes measuring at the placed proposal from measuring
             // at the parent's container proposal.

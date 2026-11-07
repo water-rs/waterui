@@ -8,6 +8,7 @@
 //! window is titled.
 
 use waterui::navigation::NavigationView;
+use waterui_core::layout::{LayoutError, ProposalSize, Rect, ResolvedExtent};
 
 use crate::dispatch::Dispatcher;
 
@@ -19,6 +20,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
 struct Fill;
 
 impl waterui_core::layout::SubView for Fill {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(
         &self,
         _proposal: waterui_core::layout::ProposalSize,

@@ -8,14 +8,15 @@ use waterui_core::{
 };
 
 use crate::{
-    HorizontalAlignment, Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size,
-    StretchAxis, SubView, SubviewPlacement,
+    HorizontalAlignment, Layout, LayoutError, LazyContainer, PlacedSubview, PlacementInput, Point,
+    ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement, UnitPoint,
     container::FixedContainer,
     stack::{
         Axis,
         distribute::{
-            ChildMeasurement, LineAnchor, container_line, cross_envelope, empty_placement,
-            measure_stack, place_cross_extent, stack_members, stack_spacing,
+            ChildMeasurement, LineAnchor, centred_block_start, container_line, cross_envelope,
+            empty_placement, main_block, measure_stack, place_cross_extent, stack_members,
+            stack_spacing,
         },
         stack_stretch_axis,
     },
@@ -117,8 +118,9 @@ impl Layout for VStackLayout {
         // answered with a zero-size frame at the cursor so the returned
         // placements still line up one-for-one with `children`.
         let mut placements = Vec::with_capacity(children.len());
+        let block = main_block(measurements.iter().map(|m| m.size().height), spacing);
         let mut measurements = measurements.iter();
-        let mut current_y = bounds.y();
+        let mut current_y = centred_block_start(bounds.y(), bounds.height(), block);
         let mut members_placed = 0usize;
 
         for child in children {
@@ -173,6 +175,20 @@ impl Layout for VStackLayout {
         }
 
         placements
+    }
+
+    /// The column's answer, centred on the main axis and anchored on the
+    /// cross axis by the column's alignment (custom guides at the leading
+    /// edge).
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(
+            input.extent()?,
+            UnitPoint::new(LineAnchor::horizontal(self.alignment).response_unit(), 0.5),
+        ))
     }
 
     fn explicit_horizontal(
@@ -355,8 +371,8 @@ impl<C: TupleViews + 'static> View for VStack<(C,)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ViewDimensions;
     use crate::tests::CompressibleHeightView;
+    use crate::{LayoutError, Rect, ResolvedExtent, ViewDimensions};
 
     struct MockSubView {
         size: Size,
@@ -364,6 +380,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }

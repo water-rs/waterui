@@ -38,11 +38,13 @@ const DRIVER_HEIGHT: f32 = 100.0;
 const PROBE_WIDTH: f32 = 120.0;
 const PROBE_HEIGHT: f32 = 90.0;
 
-/// Where the probe lands in window coordinates: the column anchors at the
-/// window's top, so the probe sits under the full-width 100-high driver plus
-/// the stack's 10-point default spacing, centred across the 320-wide window.
+/// Where the probe lands in window coordinates, centred across the 320-wide
+/// window. The column's block — the full-width 100-high driver, the stack's
+/// 10-point default spacing and the 90-high probe, 200 in all — is centred in
+/// the 320-high window (`docs/layout-spec.md` §4.2), so it starts at
+/// `(320 - 200) / 2 = 60` and the probe sits 110 below that.
 const PROBE_ORIGIN_X: f64 = 100.0;
-const PROBE_ORIGIN_Y: f64 = 110.0;
+const PROBE_ORIGIN_Y: f64 = 170.0;
 
 const POINTER_ID: u64 = 3;
 
