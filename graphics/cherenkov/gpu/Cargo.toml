@@ -12,7 +12,6 @@ categories = ["graphics", "rendering"]
 
 [features]
 default = ["parallel"]
-gles = ["wgpu/gles", "filtrate/gles"]
 parallel = ["dep:rayon", "cherenkov/workers"]
 # Harness-only YUV decode uniform and shader. Not part of `interop`.
 bench = []

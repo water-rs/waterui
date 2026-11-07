@@ -1495,7 +1495,6 @@ crate::engine::cfg_async_fn! {
         crate::renderer::FrameRenderTarget {
             adapter: surface.adapter(),
             device: surface.device(),
-            queue: surface.queue(),
             device_loss: surface.device_loss().clone(),
             gpu_context_id: context_id,
             shared_device: context.shared_device.clone(),

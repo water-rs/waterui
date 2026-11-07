@@ -198,22 +198,22 @@ impl<B: Backend> Engine<B> {
 
     /// The engine's current memory usage.
     ///
-    /// # Panics
-    /// Panics if the reply channel drops without answering, which cannot
-    /// happen while the render thread is alive.
-    #[must_use]
+    /// # Errors
+    /// [`RenderError::Thread`] when the executor or its reply channel is
+    /// gone — an unmeasurable engine is an error, never a fabricated zero
+    /// usage.
     #[expect(
         clippy::future_not_send,
         reason = "the browser engine is single-threaded and its futures run on the page's event loop"
     )]
-    pub async fn memory(&self) -> MemoryUsage {
+    pub async fn memory(&self) -> Result<MemoryUsage, RenderError> {
         let (reply, rx) = crate::local::channel();
         if self.tx.send(Message::Memory { reply }).is_err() {
-            return MemoryUsage::default();
+            return Err(RenderError::Thread);
         }
         rx.recv()
             .await
-            .map_or_else(|_| MemoryUsage::default(), |reply| reply.usage)
+            .map_or_else(|_| Err(RenderError::Thread), |reply| Ok(reply.usage))
     }
 
     /// Reports system memory pressure. `Critical` drops every cache.

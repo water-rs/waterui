@@ -160,7 +160,7 @@ fn unfiltered_member_samples_what_is_behind_it() {
     assert_pixel(pixel(&readback, 20, 12), [0.5, 0.5, 1.0, 1.0], 1e-5);
     // Outside the member's clip the surface is untouched.
     assert_pixel(pixel(&readback, 4, 4), [1.0, 0.0, 0.0, 1.0], 1e-5);
-    let memory = engine.memory();
+    let memory = engine.memory().unwrap();
     assert_eq!(memory.backdrop_capture_format, Some("linear-f32"));
 }
 
@@ -692,7 +692,7 @@ fn capture_memory_is_bounded_by_bands_not_capture_height() {
                 .backdrop(group.sample());
         });
         engine.render(FrameTime::now()).expect("render");
-        let memory = engine.memory();
+        let memory = engine.memory().unwrap();
         assert_eq!(memory.backdrop_capture_format, Some("linear-f32"));
         memory.backdrop_captures.0
     };
@@ -776,7 +776,7 @@ fn two_members_share_one_capture() {
     // Both members sample the one capture: the green surface behind them.
     assert_pixel(pixel(&readback, 4, 4), [0.0, 1.0, 0.0, 1.0], 1e-5);
     assert_pixel(pixel(&readback, 28, 4), [0.0, 1.0, 0.0, 1.0], 1e-5);
-    let memory = engine.memory();
+    let memory = engine.memory().unwrap();
     assert_eq!(memory.backdrop_capture_format, Some("linear-f32"));
     assert!(memory.backdrop_captures.0 > 0);
 }
@@ -1156,7 +1156,7 @@ fn a_bound_refraction_change_rerenders_the_member() {
     // red/blue boundary at 52, so red mixes in.
     let displaced = pixel(&readback, 54, 32);
     assert!(displaced[0] > 0.25, "displaced pixel {displaced:?}");
-    let captures = engine.memory().backdrop_captures;
+    let captures = engine.memory().unwrap().backdrop_captures;
 
     // Over a depth of 1 the pixel is past the rim: the unshifted blue.
     depth.set(1.0);
@@ -1165,7 +1165,7 @@ fn a_bound_refraction_change_rerenders_the_member() {
     assert_pixel(pixel(&readback, 54, 32), [0.0, 0.0, 1.0, 1.0], 1e-5);
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
     assert_eq!(
-        engine.memory().backdrop_captures,
+        engine.memory().unwrap().backdrop_captures,
         captures,
         "the group keeps its capture"
     );
@@ -1405,7 +1405,7 @@ fn two_groups_anchored_at_one_layer_capture_the_same_canvas() {
     // Inside B1 and A2: A2 samples the same blue — not B1's
     // [0.5, 0.5, 1.0] composite — then 50% green over it.
     assert_pixel(pixel(&readback, 24, 24), [0.0, 0.5, 0.5, 1.0], 1e-5);
-    let memory = engine.memory();
+    let memory = engine.memory().unwrap();
     assert_eq!(memory.backdrop_capture_format, Some("linear-f32"));
     assert!(memory.backdrop_captures.0 > 0, "the anchored capture ran");
 }

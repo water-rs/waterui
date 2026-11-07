@@ -24,7 +24,9 @@ use waterui_core::Binding;
 use waterui_core::View;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::draw::Recorder;
-use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+use waterui_graphics::gpu::{
+    Context as GpuContext, ExternalFrameSource, ExternalFrameView, Frame as GpuFrame, FrameOutput,
+};
 use waterui_graphics::input::{
     Code, Key, Modifiers as W3cModifiers, NamedKey, ScrollUnit, SurfaceInputEvent,
     SurfacePointerButton,
@@ -722,6 +724,110 @@ fn scene_content_that_wants_input_is_routed_like_a_surface() {
     assert!(
         *builds.borrow() > builds_before,
         "content that invalidated on input is drawn again"
+    );
+}
+
+/// A source that keeps every output it is started with, so a test reads
+/// what the host reports back through it.
+struct OutputProbe(Rc<RefCell<Vec<FrameOutput>>>);
+
+impl ExternalFrameSource for OutputProbe {
+    fn start(&mut self, output: FrameOutput) {
+        self.0.borrow_mut().push(output);
+    }
+}
+
+/// An `ExternalFrameView` with an input handler is an embedded input surface
+/// exactly like a `GpuContentView`: a press focuses it and lands in its own
+/// logical coordinates, the keyboard reaches it on later frames, it places
+/// the input-method panel at its caret, its frame hook runs on every pass,
+/// and its source learns the pixel extent the layer presents at.
+#[test]
+fn an_external_frame_view_is_routed_like_a_gpu_surface() {
+    let log = ProbeLog::default();
+    let outputs = Rc::new(RefCell::new(Vec::new()));
+    let passes = Rc::new(core::cell::Cell::new(0_usize));
+    let view = {
+        let log = log.clone();
+        let passes = Rc::clone(&passes);
+        ExternalFrameView::new(OutputProbe(Rc::clone(&outputs)))
+            .on_input(move |event| log.0.borrow_mut().push(event.clone()))
+            .on_ime_caret(|| Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0)))
+            .on_frame(move || passes.set(passes.get() + 1))
+    };
+    let mut runtime = runtime_with(view);
+    let start = Instant::now();
+    settled(&mut runtime, start);
+    assert_eq!(log.drain(), Vec::new(), "nothing reaches an unfocused view");
+    assert!(passes.get() > 0, "the frame hook runs on the host's passes");
+
+    let output = outputs
+        .borrow()
+        .last()
+        .cloned()
+        .expect("the host started the source");
+    let presented = output
+        .presented_size()
+        .expect("the host reports its presented size every pass");
+    assert_eq!(
+        (presented.pixels.width(), presented.pixels.height()),
+        (200, 150),
+        "the layer presents at its laid-out extent in physical pixels"
+    );
+    assert!(
+        (presented.scale - 1.0).abs() < f64::EPSILON,
+        "the headless window's display scale reaches the source, got {}",
+        presented.scale
+    );
+
+    press_at(&mut runtime, 12.0, 34.0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(100));
+    assert_eq!(
+        log.drain(),
+        vec![
+            SurfaceInputEvent::Focus(true),
+            SurfaceInputEvent::PointerMove {
+                position: kurbo::Point::new(12.0, 34.0),
+            },
+            SurfaceInputEvent::PointerButton {
+                pressed: true,
+                button: SurfacePointerButton::Primary,
+                position: kurbo::Point::new(12.0, 34.0),
+            },
+        ],
+        "a press lands on the view in its own logical coordinates and focuses it"
+    );
+    let state = runtime
+        .focused_text_input_state()
+        .expect("a focused view publishes its caret");
+    assert!(
+        (state.x() - (SURFACE_ORIGIN_X + 10.0)).abs() < 0.01
+            && (state.y() - (SURFACE_ORIGIN_Y + 20.0)).abs() < 0.01,
+        "the view's caret is projected into the window (got {}, {})",
+        state.x(),
+        state.y()
+    );
+
+    for frame in 8..12 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame * 16));
+    }
+    let passes_before = passes.get();
+    runtime.push_input_event(key_event("a", Code::KeyA, KeyState::Pressed));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(300));
+    assert_eq!(
+        log.drain(),
+        vec![SurfaceInputEvent::Key {
+            pressed: true,
+            key: Key::Character("a".to_owned()),
+            code: Code::KeyA,
+            modifiers: W3cModifiers::empty(),
+            repeat: false,
+        }],
+        "the keyboard still reaches the focused view frames later"
+    );
+    assert!(
+        passes.get() > passes_before,
+        "the frame hook keeps running while the view is shown"
     );
 }
 

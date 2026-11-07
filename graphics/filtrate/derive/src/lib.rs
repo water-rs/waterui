@@ -31,7 +31,8 @@
 //!   pixel and extent components of a [`Footprint`](filtrate_core::Footprint);
 //!   an omitted component is zero) or `footprint_fn = <path>`
 //!   (`fn([f32; N]) -> Footprint`), and optionally `shape = sdf` or
-//!   `shape = mask` when the snippet reads the clip shape, and
+//!   `shape = mask` when the snippet reads the input's shape (see
+//!   [`ShapeInput`](filtrate_core::ShapeInput)), and
 //!   `coordinate_remap = true` when the stage is a pure coordinate remap
 //!   (`Filter::COORDINATE_REMAP`; the default is `false`).
 //!

@@ -386,12 +386,13 @@ impl filtrate::Effect for YieldingEffect {
         encoder: &mut wgpu::CommandEncoder,
     ) -> filtrate::EffectRenderResult {
         self.frames.set(self.frames.get() + 1);
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -1301,7 +1302,7 @@ async fn web_import_copies_no_pixels() {
         1024,
         &fill(&[200, 40, 40, 255], 256, 256),
     );
-    let before = engine.memory().await.gpu.0;
+    let before = engine.memory().await.unwrap().gpu.0;
     let imported = cherenkov_gpu::interop::web::import_texture(
         &device,
         &queue,
@@ -1318,7 +1319,7 @@ async fn web_import_copies_no_pixels() {
         (2.0, 2.0),
     );
     engine.render(FrameTime::now()).await.expect("render");
-    let after = engine.memory().await.gpu.0;
+    let after = engine.memory().await.unwrap().gpu.0;
     assert!(
         after - before < 8 * 1024,
         "import allocated {} bytes against a 256 KiB plane",

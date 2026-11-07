@@ -38,6 +38,37 @@ impl std::fmt::Debug for GpuContentRuntime {
     }
 }
 
+/// What a flush reads off a GPU-backed view's runtime every pass: the
+/// view's accessibility name and value, and whether it takes input. Both
+/// [`GpuContentRuntime`] and [`ExternalFrameRuntime`] answer it, and
+/// both route input and the caret through the renderer's
+/// `SurfaceInputReceiver`.
+pub trait HostedGpuView {
+    /// The accessibility label, the accessibility value, and whether the
+    /// view takes input events.
+    fn semantics(&self) -> (Option<String>, Option<String>, bool);
+}
+
+impl HostedGpuView for GpuContentRuntime {
+    fn semantics(&self) -> (Option<String>, Option<String>, bool) {
+        (
+            self.view.accessibility_label().map(str::to_owned),
+            self.view.accessibility_value().map(str::to_owned),
+            self.view.wants_input_events(),
+        )
+    }
+}
+
+impl HostedGpuView for ExternalFrameRuntime {
+    fn semantics(&self) -> (Option<String>, Option<String>, bool) {
+        (
+            self.view.accessibility_label().map(str::to_owned),
+            self.view.accessibility_value().map(str::to_owned),
+            self.view.wants_input_events(),
+        )
+    }
+}
+
 impl GpuContentRuntime {
     pub(crate) const fn new(view: GpuContentView) -> Self {
         Self {

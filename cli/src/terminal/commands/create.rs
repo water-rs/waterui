@@ -393,8 +393,12 @@ mod tests {
             // The scaffold's `cargo check` compiles the pinned framework into
             // a scratch target dir; pointing it under `target/` lets a nextest
             // retry — and the next cached CI run — resume instead of
-            // restarting a cold graph every attempt.
+            // restarting a cold graph every attempt. The project's generated
+            // `.cargo/config.toml` decides its Apple deployment targets, as
+            // it does in a user's shell, so the enclosing workspace's
+            // inherited targets are stripped.
             let status = waterui_cli::toolchain::Host::current()
+                .without_apple_deployment_targets()
                 .command("cargo")?
                 .arg("check")
                 .current_dir(&project_path)

@@ -80,6 +80,19 @@ fn main() {
     #[cfg(catalyst)]
     let _background_application =
         (!args.list).then(|| cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm()));
+    // A host display asleep at run start leaves the simulator's Metal
+    // path stalled inside the process while it resumes — the runner's
+    // `caffeinate` wakes the display but cannot observe the stall, so the
+    // suite gates on one real GPU trip before its first case (#3529).
+    #[cfg(all(
+        target_os = "ios",
+        not(catalyst),
+        feature = "native-test",
+        feature = "gpu_surface"
+    ))]
+    if !args.list {
+        waterui_apple::native_test_support::await_gpu(90.0);
+    }
     libtest_mimic::run(&args, trials()).exit();
 }
 
@@ -348,7 +361,13 @@ fn trials() -> Vec<Trial> {
         tests.extend(tabs::trials());
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
+        // A Catalyst window carries no container bands, so the suite's
+        // mount precondition cannot hold there (#3556). Its own Catalyst
+        // title-bar case runs instead.
+        #[cfg(not(catalyst))]
         tests.extend(safe_area::trials());
+        #[cfg(catalyst)]
+        tests.extend(safe_area::catalyst_trials());
         tests.extend(offset::trials());
     }
     tests.extend(migration::trials());
@@ -3384,6 +3403,10 @@ mod gpu_surface {
                 external_capture_submission_completes_ok,
             ),
             Trial::test(
+                "gpu_surface::a_watchdog_terminated_submission_settles_failed",
+                a_watchdog_terminated_submission_settles_failed,
+            ),
+            Trial::test(
                 "gpu_surface::failure_inside_a_capture_scope_still_balances",
                 failure_inside_a_capture_scope_still_balances,
             ),
@@ -3503,6 +3526,101 @@ mod gpu_surface {
             mounted.first_paint_participation(),
             "the capture scope restored the presenting surface"
         );
+        Ok(())
+    }
+
+    /// A compute dispatch the GPU watchdog terminates settles
+    /// `Err(SubmissionFailed)` and the context's `DeviceLoss` records the
+    /// reason: Metal retires the errored command buffer, wgpu reports the
+    /// loss before it fires the work-done callback, and
+    /// `submit_with_completion` turns that order into the failure. The
+    /// workload is wgpu's `WAIT_INDEFINITELY_LONG_RUNNING` dispatch. Should
+    /// the driver let it finish, the loss never happens and the completion
+    /// must be `Ok`. The test owns its `GpuRuntime`, so the lost device
+    /// touches no other case.
+    pub fn a_watchdog_terminated_submission_settles_failed() -> Result<(), libtest_mimic::Failed> {
+        use std::sync::mpsc;
+
+        use waterui_apple::native_test_support::gpu_surface::{
+            SubmissionFailed, submit_with_completion,
+        };
+        use waterui_apple::native_test_support::view_renderer::GpuRuntime;
+        use waterui_graphics::wgpu;
+
+        const THREADS: u32 = 1024 * 64;
+        const SECONDS: f64 = 120.0;
+
+        let mtm = mtm();
+        let runtime = waterui_apple::native_test_support::block_on_main(30.0, GpuRuntime::new())
+            .map_err(|error| format!("a GPU runtime: {error}"))?;
+        let context = runtime.context();
+        let device = context.device();
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("watchdog workload"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_watchdog.wgsl").into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("watchdog workload"),
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("watchdog output"),
+            size: u64::from(THREADS) * 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("watchdog output"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("watchdog workload"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("watchdog workload"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(THREADS / 64, 1, 1);
+        }
+
+        let (settled, outcome) = mpsc::channel::<Result<(), SubmissionFailed>>();
+        submit_with_completion(mtm, encoder, &context, move |result| {
+            let _ = settled.send(result);
+        });
+        let result = std::cell::OnceCell::new();
+        waterui_apple::native_test_support::pump_main_until(SECONDS, || {
+            if let Ok(settled) = outcome.try_recv() {
+                let _ = result.set(settled);
+            }
+            result.get().is_some()
+        });
+        let result = result.into_inner().ok_or("the submission never settled")?;
+        let reason = context.device_lost_reason();
+        match (&result, &reason) {
+            (Err(failed), Some(reason)) => {
+                tracing::info!(%failed, reason, "the watchdog terminated the dispatch");
+            }
+            (Ok(()), None) => {
+                tracing::info!("the driver let the dispatch finish; no loss to report");
+            }
+            (Err(failed), None) => {
+                return Err(format!("a failed settle without a recorded loss: {failed}").into());
+            }
+            (Ok(()), Some(reason)) => {
+                return Err(format!("an Ok settle despite a recorded loss: {reason}").into());
+            }
+        }
         Ok(())
     }
 
@@ -3994,10 +4112,12 @@ mod gpu_surface {
             ),
         )
         .map_err(|error| format!("a render over the healthy GPU child resolves Ok: {error}"))?;
-        // The rendered leaf is measured detached, so the capture rasters
-        // at the backing scale a windowless view reports.
-        let scale =
-            cocoa_ui::view::backing_scale_factor(&cocoa_ui::PlatformView::new(super::mtm()));
+        // The rendered leaf joins a never-ordered capture window before it
+        // is measured, so the capture rasters at the backing scale AppKit
+        // reports for that window — the screen's, not a detached view's
+        // `1.0`.
+        let scale = cocoa_ui::bitmap::capture_window(super::mtm(), cocoa_ui::Size::new(64.0, 64.0))
+            .backingScaleFactor();
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -4306,7 +4426,10 @@ mod filtered {
         let lost = filtered.current_generation();
 
         // The link has demand again when the loss lands, so the next
-        // delivered frame hits `render_frame`'s lost-context arm.
+        // delivered frame hits `render_frame`'s lost-context arm. The
+        // rebuild publication is held so the loss cannot already be
+        // replaced when the frame arrives.
+        let hold = filtered.hold_rebuild();
         filtered.request_render();
         filtered.lose_device("test device loss");
         assert!(
@@ -4333,6 +4456,7 @@ mod filtered {
         // The rebuild's publication wakes the parked wait: the hold
         // clears, the link re-arms, and the owed frame renders on the
         // new generation — the encode count is the render's own record.
+        drop(hold);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.current_generation() > lost
                 && !filtered.parked()
@@ -5340,6 +5464,77 @@ mod safe_area {
         .into_iter()
         .flatten()
         .collect()
+    }
+
+    /// The Catalyst `safe_area::` trials — a Catalyst window's own
+    /// safe-area shape rather than the iPhone container bands.
+    #[cfg(catalyst)]
+    pub fn catalyst_trials() -> Vec<libtest_mimic::Trial> {
+        vec![t(
+            "a_catalyst_window_reports_its_titlebar_band",
+            a_catalyst_window_reports_its_titlebar_band,
+        )]
+    }
+
+    /// A Catalyst window carries no device container bands — the notch
+    /// and home indicator do not exist there — so the suite's `mount`
+    /// precondition can never hold (#3556). The band a Catalyst window
+    /// does carry is its title bar, docked by frame rather than
+    /// `safeAreaInsets`: the navigation bar covers the window top and
+    /// the content starts at the bar's bottom edge, reaching the
+    /// window's own bottom edge with no band reserved.
+    #[cfg(catalyst)]
+    fn a_catalyst_window_reports_its_titlebar_band() {
+        let env = render_environment();
+        let mount = mount_uikit(
+            mtm(),
+            AnyView::new(NavigationView::new(
+                "Home",
+                vstack((card("content"), spacer()))
+                    .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
+            )),
+            &env,
+        );
+        let bar_mounted = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            find_view::<UINavigationBar>(&mount.host).is_some()
+        });
+        assert!(bar_mounted, "the page must mount its navigation bar");
+        let bar = find_view::<UINavigationBar>(&mount.host).unwrap();
+        let bar_frame = window_frame(&bar);
+        let bar_bottom = bar_frame.origin.y + bar_frame.size.height;
+        let insets = mount.host.safeAreaInsets();
+        assert!(
+            insets.top == 0.0 && insets.bottom == 0.0 && insets.left == 0.0 && insets.right == 0.0,
+            "a Catalyst window reports no device container bands: {insets:?}"
+        );
+        assert!(
+            bar_frame.origin.y <= TOLERANCE,
+            "the title bar docks at the window top: {bar_frame:?}"
+        );
+        // The content's host is the sibling of the bar inside the
+        // root container; it must start at the bar's bottom edge and
+        // reach the window bottom — the band is paid by frame alone.
+        let container = view::subviews(&mount.host)
+            .into_iter()
+            .next()
+            .expect("the window hosts the page");
+        let content = view::subviews(&container)
+            .into_iter()
+            .find(|sub| sub.downcast_ref::<UINavigationBar>().is_none())
+            .expect("the bar has a content sibling");
+        let content_frame = window_frame(&content);
+        assert!(
+            (content_frame.origin.y - bar_bottom).abs() <= TOLERANCE,
+            "the content starts at the title bar's bottom edge: {content_frame:?} vs {bar_bottom}"
+        );
+        assert!(
+            (content_frame.origin.y + content_frame.size.height
+                - mount.window.bounds().size.height)
+                .abs()
+                <= TOLERANCE,
+            "the content reaches the window bottom: {content_frame:?}"
+        );
     }
 
     /// The keyboard band's height — the layout-spec's worked examples
@@ -11339,9 +11534,10 @@ mod gesture_events {
     }
 
     /// `AppKit`: `NSRotationGestureRecognizer.rotation` reports radians
-    /// natively — the event's angle is the raw getter value, and each
-    /// `Updated`'s velocity is the wall-clock delta rate, never a
-    /// second conversion (#2757).
+    /// counter-clockwise like `NSEvent.rotation` — the event's angle is
+    /// the getter's negation in the contract's clockwise convention, and
+    /// each `Updated`'s velocity is the wall-clock delta rate, never a
+    /// second conversion (#2757, #3706).
     #[cfg(target_os = "macos")]
     fn a_rotation_gesture_reports_native_radians() {
         let rotations = Rc::new(RefCell::new(Vec::new()));
@@ -11375,30 +11571,30 @@ mod gesture_events {
         let e = fire(NSGestureRecognizerState::Changed, 0.75);
         assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle() - 0.75).abs() < 1e-6,
-            "angle must be the raw radians getter, saw {}",
+            (e.angle() + 0.75).abs() < 1e-6,
+            "AppKit's counter-clockwise getter negates into the contract's clockwise angle, saw {}",
             e.angle()
         );
         assert!(
-            e.velocity().is_finite() && e.velocity() > 0.0,
-            "rotation progressed: {}",
+            e.velocity().is_finite() && e.velocity() < 0.0,
+            "a growing counter-clockwise getter reports a negative clockwise velocity: {}",
             e.velocity()
         );
         let e = fire(NSGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle() - 1.25).abs() < 1e-6);
+        assert!((e.angle() + 1.25).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Ended, 1.25);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
-        assert!((e.angle() - 1.25).abs() < 1e-6);
+        assert!((e.angle() + 1.25).abs() < 1e-6);
 
         // A second gesture reseeds at zero; a negative update and a
         // cancel keep the last angle with zero velocity.
         let e = fire(NSGestureRecognizerState::Began, 0.0);
         assert_eq!(e.phase(), GesturePhase::Started);
         let e = fire(NSGestureRecognizerState::Changed, -0.5);
-        assert!((e.angle() + 0.5).abs() < 1e-6);
+        assert!((e.angle() - 0.5).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Cancelled, -0.5);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Cancelled, 0.0));
-        assert!((e.angle() + 0.5).abs() < 1e-6);
+        assert!((e.angle() - 0.5).abs() < 1e-6);
     }
 
     /// `AppKit`: `NSMagnificationGestureRecognizer.magnification` is the

@@ -120,6 +120,18 @@ impl DrawableFrame {
         self.drawable.texture()
     }
 
+    /// The `CAMetalDrawable` this frame presents — callers that commit
+    /// their own command buffers use it for `presentDrawable:` so the
+    /// frame's presentation rides the same submission as its render work.
+    /// Gate the gate: presenting through the raw drawable bypasses
+    /// [`Self::present`]'s generation and size checks, so the surface is
+    /// exposed only to the native test harness.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn drawable(&self) -> Retained<ProtocolObject<dyn CAMetalDrawable>> {
+        self.drawable.clone()
+    }
+
     /// The update's target presentation timestamp, `CACurrentMediaTime`
     /// seconds.
     #[must_use]

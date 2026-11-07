@@ -1176,7 +1176,7 @@ fn report_counts_and_timings() {
     );
     eprintln!("fds: before={} during={}", before.len(), during.len());
     fd_report("opened by import + renders", &before, &during);
-    eprintln!("memory: {:?}", engine.memory());
+    eprintln!("memory: {:?}", engine.memory().unwrap());
     drop(engine);
     // The surface handle is the test's; dropping it releases its
     // retained frame content so the sample measures the engine's whole

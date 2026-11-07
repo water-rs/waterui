@@ -696,7 +696,10 @@ impl ContentData {
     }
 
     pub fn replace(&mut self, list: cherenkov::Picture) -> cherenkov::Picture {
-        let previous = self.retained.replace(list);
+        let (previous, changed) = self.retained.replace(list);
+        if !changed {
+            return previous;
+        }
         self.range = None;
         self.storage.instances.clear();
         self.storage.stops.clear();
@@ -7054,6 +7057,12 @@ mod tests {
         };
         assert_eq!(draw(&mut caches), 256 * 256);
         assert_eq!(draw(&mut caches), 0, "retained command stays clean");
+        caches
+            .get_mut(&root)
+            .expect("root content")
+            .replace(picture(10.0));
+        assert!(!caches[&root].retained.realizations().is_empty());
+        assert_eq!(draw(&mut caches), 0, "equivalent replacement stays clean");
         caches
             .get_mut(&root)
             .expect("root content")

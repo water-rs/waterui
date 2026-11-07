@@ -624,70 +624,29 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => {
-                renderer.state.counters.recorded_view_contents += 1;
-                // The view's own name and content, read every flush — it is
-                // re-asked after each frame it produces.
-                let (content_label, content_value, wants_input) = {
-                    let view = &node.runtime.borrow().view;
-                    (
-                        view.accessibility_label().map(str::to_owned),
-                        view.accessibility_value().map(str::to_owned),
-                        view.wants_input_events(),
-                    )
-                };
-                renderer.push_render_owner(&node.accessibility_identity);
-                #[allow(
-                    clippy::let_unit_value,
-                    reason = "without the accessibility feature the stub returns (); with it the binding carries the focus id into node.flush below"
-                )]
-                let _focus_node = emit_graphics_image_accessibility(
+                record_hosted_gpu(
                     renderer,
-                    Some(ctx),
+                    ctx,
                     env,
-                    content_label,
-                    content_value,
-                    wants_input,
+                    &node.accessibility_identity,
+                    &node.runtime,
                 );
-                renderer.pop_render_owner();
                 let visible = renderer.record_alpha() != 0.0;
                 renderer.program().program_mut().producer = Some(mount::ProducerContent::Gpu {
                     runtime: Rc::clone(&node.runtime),
                     bounds: ctx.bounds(),
                     visible,
                 });
-                if wants_input {
-                    renderer.register_surface_input_target(
-                        ctx.bounds(),
-                        Rc::clone(&node.runtime),
-                        #[cfg(feature = "accessibility")]
-                        _focus_node,
-                    );
-                }
             }
             #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => {
-                renderer.state.counters.recorded_view_contents += 1;
-                let (content_label, content_value) = {
-                    let view = &node.runtime.borrow().view;
-                    (
-                        view.accessibility_label().map(str::to_owned),
-                        view.accessibility_value().map(str::to_owned),
-                    )
-                };
-                renderer.push_render_owner(&node.accessibility_identity);
-                #[allow(
-                    clippy::let_unit_value,
-                    reason = "without the accessibility feature the stub returns ()"
-                )]
-                let _focus_node = emit_graphics_image_accessibility(
+                record_hosted_gpu(
                     renderer,
-                    Some(ctx),
+                    ctx,
                     env,
-                    content_label,
-                    content_value,
-                    false,
+                    &node.accessibility_identity,
+                    &node.runtime,
                 );
-                renderer.pop_render_owner();
                 let visible = renderer.record_alpha() != 0.0;
                 renderer.program().program_mut().producer =
                     Some(mount::ProducerContent::External {
@@ -1093,51 +1052,21 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => {
-                let (content_label, content_value, wants_input) = {
-                    let view = &node.runtime.borrow().view;
-                    (
-                        view.accessibility_label().map(str::to_owned),
-                        view.accessibility_value().map(str::to_owned),
-                        view.wants_input_events(),
-                    )
-                };
-                renderer.push_accessibility_owner(&node.accessibility_identity);
-                let focus_node = emit_graphics_image_accessibility(
+                emit_hosted_gpu_accessibility(
                     renderer,
-                    None,
                     env,
-                    content_label,
-                    content_value,
-                    wants_input,
+                    &node.accessibility_identity,
+                    &node.runtime,
                 );
-                renderer.pop_accessibility_owner();
-                if wants_input {
-                    renderer.register_surface_input_target(
-                        kurbo::Rect::ZERO,
-                        Rc::clone(&node.runtime),
-                        focus_node,
-                    );
-                }
             }
             #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => {
-                let (content_label, content_value) = {
-                    let view = &node.runtime.borrow().view;
-                    (
-                        view.accessibility_label().map(str::to_owned),
-                        view.accessibility_value().map(str::to_owned),
-                    )
-                };
-                renderer.push_accessibility_owner(&node.accessibility_identity);
-                emit_graphics_image_accessibility(
+                emit_hosted_gpu_accessibility(
                     renderer,
-                    None,
                     env,
-                    content_label,
-                    content_value,
-                    false,
+                    &node.accessibility_identity,
+                    &node.runtime,
                 );
-                renderer.pop_accessibility_owner();
             }
             // The filter is a paint concern: the semantic tree keeps the
             // child exactly as it emits on its own.
@@ -1186,8 +1115,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         // The semantic domain has no frame pump to advance an
                         // animation, so a request lands in place whether or
                         // not it carries one.
-                        let _ = handle
-                            .scroll_to(f64::from(request.target.x), f64::from(request.target.y));
+                        let _ = handle.scroll_to(
+                            f64::from(request.target().x),
+                            f64::from(request.target().y),
+                        );
                         node.applied_scroll_generation.set(generation);
                     }
                 }
@@ -1233,4 +1164,61 @@ fn flush_navigation_transition_element<E: crate::text::TextEngine>(
 ) {
     renderer.note_navigation_element(source, id, ctx.bounds());
     child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+}
+
+/// Records a GPU-backed leaf's per-flush semantics — a `GpuContentView`'s
+/// or an `ExternalFrameView`'s: the accessibility node, read off the view
+/// every flush, and, when the view takes input, the input target that
+/// routes pointer, keyboard and IME events landing on its bounds to it.
+#[cfg(hydrolysis_gpu)]
+fn record_hosted_gpu<E, R>(
+    renderer: &mut HydrolysisRenderer<E>,
+    ctx: RenderContext,
+    env: &Environment,
+    identity: &Rc<()>,
+    runtime: &Rc<core::cell::RefCell<R>>,
+) where
+    E: crate::text::TextEngine,
+    R: crate::gpu_view::HostedGpuView + crate::renderer::SurfaceInputReceiver + 'static,
+{
+    renderer.state.counters.recorded_view_contents += 1;
+    let (label, value, wants_input) = runtime.borrow().semantics();
+    renderer.push_render_owner(identity);
+    #[cfg(feature = "accessibility")]
+    let focus_node =
+        emit_graphics_image_accessibility(renderer, Some(ctx), env, label, value, wants_input);
+    #[cfg(not(feature = "accessibility"))]
+    emit_graphics_image_accessibility(renderer, Some(ctx), env, label, value, wants_input);
+    renderer.pop_render_owner();
+    if wants_input {
+        renderer.register_surface_input_target(
+            ctx.bounds(),
+            Rc::clone(runtime),
+            #[cfg(feature = "accessibility")]
+            focus_node,
+        );
+    }
+}
+
+/// The semantic walk's counterpart of [`record_hosted_gpu`]: the same
+/// accessibility node, and the same input target as a focus-bookkeeping
+/// slot — there is no layout to bound it, so it is not a hit rect.
+#[cfg(all(hydrolysis_gpu, feature = "accessibility"))]
+fn emit_hosted_gpu_accessibility<E, R>(
+    renderer: &mut SemanticCore<E>,
+    env: &Environment,
+    identity: &Rc<()>,
+    runtime: &Rc<core::cell::RefCell<R>>,
+) where
+    E: crate::text::TextEngine,
+    R: crate::gpu_view::HostedGpuView + crate::renderer::SurfaceInputReceiver + 'static,
+{
+    let (label, value, wants_input) = runtime.borrow().semantics();
+    renderer.push_accessibility_owner(identity);
+    let focus_node =
+        emit_graphics_image_accessibility(renderer, None, env, label, value, wants_input);
+    renderer.pop_accessibility_owner();
+    if wants_input {
+        renderer.register_surface_input_target(kurbo::Rect::ZERO, Rc::clone(runtime), focus_node);
+    }
 }

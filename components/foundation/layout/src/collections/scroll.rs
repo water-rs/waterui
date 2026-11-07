@@ -11,7 +11,7 @@ use crate::{Point, Size, StretchAxis};
 #[non_exhaustive]
 pub struct ScrollRequest<T> {
     /// The position the scroll view moves to.
-    pub target: T,
+    target: T,
     /// How the scroll view moves there. `None` jumps in one frame.
     /// [`Animation::Default`] uses the backend's default scroll motion: the
     /// native smooth scroll on a backend that drives a platform scroll view,
@@ -21,7 +21,29 @@ pub struct ScrollRequest<T> {
     /// The C FFI does not carry the animation yet, so the Kotlin Android
     /// runtime, which consumes it, jumps for every request
     /// (water-rs/waterui#2084).
-    pub animation: Option<Animation>,
+    animation: Option<Animation>,
+}
+
+impl<T> ScrollRequest<T> {
+    /// The position the scroll view moves to.
+    #[must_use]
+    pub const fn target(&self) -> &T {
+        &self.target
+    }
+
+    /// How the scroll view moves there. `None` jumps in one frame.
+    /// [`Animation::Default`] uses the backend's default scroll motion: the
+    /// native smooth scroll on a backend that drives a platform scroll view,
+    /// the backend's default animation curve on a self-drawn one. Any other
+    /// animation drives the offset along its own curve and duration.
+    ///
+    /// The C FFI does not carry the animation yet, so the Kotlin Android
+    /// runtime, which consumes it, jumps for every request
+    /// (water-rs/waterui#2084).
+    #[must_use]
+    pub const fn animation(&self) -> Option<&Animation> {
+        self.animation.as_ref()
+    }
 }
 
 /// The scroll viewport's last reported actual position.
@@ -40,15 +62,47 @@ pub struct ScrollRequest<T> {
 #[non_exhaustive]
 pub struct ScrollPosition {
     /// The content offset the viewport's origin sits at, in points.
-    pub offset: Point,
+    offset: Point,
     /// The size of the visible scroll area, in points.
-    pub viewport_size: Size,
+    viewport_size: Size,
     /// The scrollable extent, in points.
-    pub content_size: Size,
+    content_size: Size,
     /// Whether the viewport touches the start of every scrollable axis.
-    pub at_start: bool,
+    at_start: bool,
     /// Whether the viewport touches the end of every scrollable axis.
-    pub at_end: bool,
+    at_end: bool,
+}
+
+impl ScrollPosition {
+    /// The content offset the viewport's origin sits at, in points.
+    #[must_use]
+    pub const fn offset(&self) -> Point {
+        self.offset
+    }
+
+    /// The size of the visible scroll area, in points.
+    #[must_use]
+    pub const fn viewport_size(&self) -> Size {
+        self.viewport_size
+    }
+
+    /// The scrollable extent, in points.
+    #[must_use]
+    pub const fn content_size(&self) -> Size {
+        self.content_size
+    }
+
+    /// Whether the viewport touches the start of every scrollable axis.
+    #[must_use]
+    pub const fn at_start(&self) -> bool {
+        self.at_start
+    }
+
+    /// Whether the viewport touches the end of every scrollable axis.
+    #[must_use]
+    pub const fn at_end(&self) -> bool {
+        self.at_end
+    }
 }
 
 impl ScrollPosition {
@@ -252,14 +306,69 @@ pub struct ScrollView {
 #[non_exhaustive]
 pub struct ScrollViewParts {
     /// The axis or axes the view scrolls along.
-    pub axis: Axis,
+    axis: Axis,
     /// The scrolled content.
-    pub content: AnyView,
+    content: AnyView,
     /// The programmatic scroll controller, if one is connected.
-    pub controller: Option<ScrollController<Point>>,
+    controller: Option<ScrollController<Point>>,
     /// The binding the backend reports the content offset into, if one is
     /// connected.
-    pub offset: Option<Binding<Point>>,
+    offset: Option<Binding<Point>>,
+}
+
+impl ScrollViewParts {
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Axis,
+        AnyView,
+        Option<ScrollController<Point>>,
+        Option<Binding<Point>>,
+    ) {
+        (self.axis, self.content, self.controller, self.offset)
+    }
+
+    /// Creates a `ScrollViewParts` from its parts.
+    #[must_use]
+    pub const fn new(
+        axis: Axis,
+        content: AnyView,
+        controller: Option<ScrollController<Point>>,
+        offset: Option<Binding<Point>>,
+    ) -> Self {
+        Self {
+            axis,
+            content,
+            controller,
+            offset,
+        }
+    }
+
+    /// The axis or axes the view scrolls along.
+    #[must_use]
+    pub const fn axis(&self) -> Axis {
+        self.axis
+    }
+
+    /// The scrolled content.
+    #[must_use]
+    pub const fn content(&self) -> &AnyView {
+        &self.content
+    }
+
+    /// The programmatic scroll controller, if one is connected.
+    #[must_use]
+    pub const fn controller(&self) -> Option<&ScrollController<Point>> {
+        self.controller.as_ref()
+    }
+
+    /// The binding the backend reports the content offset into, if one is
+    /// connected.
+    #[must_use]
+    pub const fn offset(&self) -> Option<&Binding<Point>> {
+        self.offset.as_ref()
+    }
 }
 
 /// Defines the scrolling directions supported by `ScrollView`.

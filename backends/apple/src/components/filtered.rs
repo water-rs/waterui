@@ -27,7 +27,7 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensi
 use waterui_graphics::filter_view::{AnyEffect, ErasedEffect, FilteredView, ParamGuards};
 use waterui_graphics::filtrate::{
     EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
-    EffectRedrawCallback, ShapeTextures,
+    EffectRedrawCallback,
 };
 use waterui_graphics::gpu::{GpuRuntime, SharedGpuContext};
 use waterui_graphics::wgpu;
@@ -1082,20 +1082,22 @@ fn render_transparent(
 }
 
 /// The per-frame effect encode shared by the screen drawable and the
-/// external-capture destination: `input` feeds effect 0 at its own
-/// `input_size` — a frozen transition input is smaller than the output —
-/// intermediates chain the rest at `output` size, the last pass lands in
-/// `output`. All textures are `PRESENTATION_FORMAT`.
+/// external-capture destination: `input` feeds effect 0 at its own size —
+/// a frozen transition input is smaller than the output — intermediates
+/// chain the rest at `output`'s size, the last pass lands in `output`. All
+/// textures are `PRESENTATION_FORMAT`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the window's backing scale factor fits f32"
+)]
 fn encode_effects(
     state: &FilteredState,
     context: &SharedGpuContext,
     input_texture: &wgpu::Texture,
-    input_size: (u32, u32),
     output_texture: &wgpu::Texture,
-    output_size: (u32, u32),
     timing: EffectFrameTiming,
 ) -> (bool, wgpu::CommandEncoder) {
-    let (output_width, output_height) = output_size;
+    let (output_width, output_height) = (output_texture.width(), output_texture.height());
     let device = context.device();
     let queue = context.queue();
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1140,37 +1142,17 @@ fn encode_effects(
         } else {
             &intermediates[index]
         };
-        // Effect 0 sees the input texture's real dimensions — a frozen
+        // Effect 0 sees the input texture's own dimensions — a frozen
         // transition input is the captured slot, not the output frame —
-        // and every later pass sees the output size it renders into.
-        let (input_width, input_height) = if index == 0 { input_size } else { output_size };
-        let input = EffectInput {
+        // and every later pass sees the output-sized intermediate.
+        let input = EffectInput::new(
             device,
             queue,
-            texture: input_source,
-            view: input_source.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("FilteredView Input View"),
-                ..Default::default()
-            }),
-            format: PRESENTATION_FORMAT,
-            width: input_width,
-            height: input_height,
+            input_source,
             timing,
-            shape: ShapeTextures::default(),
-        };
-        let output = EffectOutput {
-            device,
-            queue,
-            texture: output_target,
-            view: output_target.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("FilteredView Output View"),
-                format: Some(PRESENTATION_FORMAT),
-                ..Default::default()
-            }),
-            format: PRESENTATION_FORMAT,
-            width: output_width,
-            height: output_height,
-        };
+            state.current_scale.get() as f32,
+        );
+        let output = EffectOutput::new(device, queue, output_target);
         needs_redraw |= effect
             .encode_render(&input, &output, &mut encoder)
             .unwrap_or_else(|error| panic!("filtered render: {error}"))
@@ -1301,9 +1283,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
         state,
         &context,
         &input_texture,
-        input_size,
         &output_wgpu_texture,
-        (work.width, work.height),
         timing,
     );
     // An armed surface copies the just-written drawable into its frozen
@@ -2030,15 +2010,8 @@ impl CapturableSurface for FilteredCapturable {
                 }
                 frame_clock.tick()
             };
-            let (needs_redraw, mut encoder) = encode_effects(
-                &state,
-                &context,
-                &input,
-                input_size,
-                &output,
-                (width, height),
-                timing,
-            );
+            let (needs_redraw, mut encoder) =
+                encode_effects(&state, &context, &input, &output, timing);
             let frozen = armed
                 .as_ref()
                 .map(|armed| armed.encode_copy(&context, &output, (width, height), &mut encoder));
@@ -2130,15 +2103,8 @@ impl CapturableSurface for FilteredCapturable {
                 }
                 frame_clock.tick()
             };
-            let (needs_redraw, mut encoder) = encode_effects(
-                &state,
-                &context,
-                &input,
-                (width, height),
-                &output,
-                (width, height),
-                timing,
-            );
+            let (needs_redraw, mut encoder) =
+                encode_effects(&state, &context, &input, &output, timing);
             let frozen = armed_for_copy.as_ref().map(|Sendable(armed)| {
                 armed.encode_copy(&context, &output, (width, height), &mut encoder)
             });
@@ -3144,10 +3110,13 @@ pub mod native_test {
             encoder: &mut wgpu::CommandEncoder,
         ) -> EffectRenderResult {
             self.encodes.fetch_add(1, Ordering::SeqCst);
+            let target = output
+                .texture()
+                .create_view(&wgpu::TextureViewDescriptor::default());
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("filtered fixture fill"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output.view,
+                    view: &target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -3686,6 +3655,13 @@ pub mod native_test {
         /// runtime's rebuild publishes its replacement.
         pub fn lose_device(&self, reason: &str) {
             self.runtime.context().mark_device_lost_for_testing(reason);
+        }
+
+        /// Holds the runtime's rebuild publication until the returned
+        /// guard drops, so a test can order a delivered frame against the
+        /// lost generation deterministically.
+        pub fn hold_rebuild(&self) -> waterui_graphics::gpu::RebuildHold {
+            self.runtime.hold_rebuild_for_testing()
         }
 
         /// Issues one real drawable frame through `render_frame` itself

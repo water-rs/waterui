@@ -180,6 +180,7 @@ native-test = [
     "preview",
     "webview",
     "waterui-webview/conformance",
+    "dep:blocking",
 ]
 
 
@@ -229,6 +230,9 @@ waterkit-audio = { workspace = true, default-features = true, features = [
 waterui-video = { workspace = true, optional = true }
 executor-core = { workspace = true }
 async-channel = { workspace = true }
+# `native_test_support`'s readiness gate warms the suite's blocking pool —
+# production code never sees it (native-test only).
+blocking = { workspace = true, optional = true }
 futures = { workspace = true }
 native-executor = { workspace = true }
 kurbo = { workspace = true }

@@ -45,7 +45,6 @@ pub struct HydrolysisRenderTarget<'a> {
 pub struct FrameRenderTarget<'a> {
     pub adapter: &'a wgpu::Adapter,
     pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
     pub device_loss: crate::platform::DeviceLoss,
     /// The device-creation chain the frame's handles belong to — the engine
     /// pool key.
@@ -70,7 +69,6 @@ impl<'a> HydrolysisRenderTarget<'a> {
         FrameRenderTarget {
             adapter: self.adapter,
             device: self.device,
-            queue: self.queue,
             device_loss: device_loss.clone(),
             gpu_context_id: context.context_id,
             shared_device: context.shared_device.clone(),
@@ -359,12 +357,9 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         self.take_applied_filter_metrics();
         #[cfg(feature = "frame-profile")]
         {
-            self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 2);
-            self.finish_gpu_frame_profile_with(
-                window.gpu_profiler.as_ref(),
-                target.device,
-                target.queue,
-            );
+            let queue = &target.shared_device.queue;
+            self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, queue, 2);
+            self.finish_gpu_frame_profile_with(window.gpu_profiler.as_ref(), target.device, queue);
         }
         #[cfg(not(feature = "frame-profile"))]
         let _ = target;
@@ -476,7 +471,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let frame = window.surface.core().begin_frame();
 
         #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 0);
+        self.gpu_profile_mark(
+            window.gpu_profiler.as_ref(),
+            target.device,
+            &target.shared_device.queue,
+            0,
+        );
 
         let surface = window.surface.core_mut();
         surface.resize((target.width, target.height));
@@ -489,7 +489,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         self.commit_mount(&mut window.mount, &window.host, target.display_scale);
 
         #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 1);
+        self.gpu_profile_mark(
+            window.gpu_profiler.as_ref(),
+            target.device,
+            &target.shared_device.queue,
+            1,
+        );
 
         frame
     }
@@ -559,8 +564,7 @@ impl<S: crate::engine::EngineSurface, E: crate::text::TextEngine> CherenkovWindo
             metrics,
             surface: core.engine_surface_weak(),
             materials: mount::MaterialTerms::resolve(&state.engine, materials),
-            device: target.device.clone(),
-            queue: target.queue.clone(),
+            shared_device: target.shared_device.clone(),
         };
         Self {
             surface,

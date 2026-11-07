@@ -31,7 +31,9 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Binding, Str};
 use waterui_form::secure::{Secure, secure};
 use waterui_graphics::draw::Recorder;
-use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+use waterui_graphics::gpu::{
+    Context as GpuContext, ExternalFrameSource, ExternalFrameView, Frame as GpuFrame, FrameOutput,
+};
 use waterui_graphics::input::{Code, Key, NamedKey, SurfaceInputEvent};
 use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent, SceneView};
 use waterui_layout::stack::vstack;
@@ -673,15 +675,38 @@ impl SceneContent for SceneProbe {
     fn rebuild_for_engine(&mut self) {}
 }
 
-fn surface_view(scene: bool, log: ProbeLog) -> AnyView {
-    let surface = if scene {
-        AnyView::new(SceneView::new(SceneProbe { log }))
-    } else {
-        AnyView::new(
+/// A source that publishes nothing: the view's own hooks are under test.
+struct SourceProbe;
+
+impl ExternalFrameSource for SourceProbe {
+    fn start(&mut self, _output: FrameOutput) {}
+}
+
+/// The embedded surfaces that route input through the renderer's
+/// surface-input path.
+#[derive(Clone, Copy, Debug)]
+enum Surface {
+    /// A `GpuContentView` with an input handler.
+    Gpu,
+    /// An `ExternalFrameView` with an input handler.
+    External,
+    /// A `SceneView` whose content wants input.
+    Scene,
+}
+
+fn surface_view(surface: Surface, log: ProbeLog) -> AnyView {
+    let surface = match surface {
+        Surface::Scene => AnyView::new(SceneView::new(SceneProbe { log })),
+        Surface::Gpu => AnyView::new(
             GpuContentView::new(InputProbe)
                 .on_input(move |event| log.0.borrow_mut().push(event.clone()))
                 .on_ime_caret(probe_caret),
-        )
+        ),
+        Surface::External => AnyView::new(
+            ExternalFrameView::new(SourceProbe)
+                .on_input(move |event| log.0.borrow_mut().push(event.clone()))
+                .on_ime_caret(probe_caret),
+        ),
     };
     AnyView::new(vstack((
         vstack((text("header"),)).size(crate::num_cast::u32_as_f32(WINDOW_WIDTH), HEADER_HEIGHT),
@@ -778,11 +803,10 @@ fn expected_surface_events(fixture: &Fixture) -> Vec<SurfaceInputEvent> {
     expected
 }
 
-fn replay_against_surface(loaded: &LoadedFixture, scene: bool) {
+fn replay_against_surface(loaded: &LoadedFixture, receiver: Surface) {
     let name = loaded.name.as_str();
-    let receiver = if scene { "SceneView" } else { "GpuSurface" };
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(surface_view(scene, log.clone()));
+    let mut runtime = runtime_with(surface_view(receiver, log.clone()));
     let start = Instant::now();
     settled(&mut runtime, start);
     let _ = log.drain();
@@ -797,7 +821,7 @@ fn replay_against_surface(loaded: &LoadedFixture, scene: bool) {
     let _ = log.drain();
     assert!(
         runtime.focused_text_input_state().is_some(),
-        "{name} ({receiver}): pressing the surface must focus it"
+        "{name} ({receiver:?}): pressing the surface must focus it"
     );
 
     for step in &loaded.fixture.steps {
@@ -809,7 +833,7 @@ fn replay_against_surface(loaded: &LoadedFixture, scene: bool) {
     assert_eq!(
         log.drain(),
         expected_surface_events(&loaded.fixture),
-        "{name} ({receiver}): the surface must see the composition session, \
+        "{name} ({receiver:?}): the surface must see the composition session, \
          never the platform's composing keystrokes"
     );
 }
@@ -838,14 +862,21 @@ fn fixtures_replay_against_a_secure_field() {
 #[test]
 fn fixtures_replay_against_an_input_wanting_gpu_surface() {
     for loaded in load_fixtures() {
-        replay_against_surface(&loaded, false);
+        replay_against_surface(&loaded, Surface::Gpu);
+    }
+}
+
+#[test]
+fn fixtures_replay_against_an_input_wanting_external_frame_view() {
+    for loaded in load_fixtures() {
+        replay_against_surface(&loaded, Surface::External);
     }
 }
 
 #[test]
 fn fixtures_replay_against_an_input_wanting_scene_view() {
     for loaded in load_fixtures() {
-        replay_against_surface(&loaded, true);
+        replay_against_surface(&loaded, Surface::Scene);
     }
 }
 
@@ -1027,7 +1058,7 @@ fn enter_after_a_direct_commit_still_reaches_the_form() {
 #[test]
 fn a_shortcut_after_a_commit_reaches_the_application() {
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(surface_view(false, log.clone()));
+    let mut runtime = runtime_with(surface_view(Surface::Gpu, log.clone()));
     let start = Instant::now();
     settled(&mut runtime, start);
     let _ = log.drain();

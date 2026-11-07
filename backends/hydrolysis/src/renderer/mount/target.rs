@@ -66,14 +66,18 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
         wake: ProducerWake,
     );
 
-    /// Starts (once) and feeds an external frame stream on `layer`;
-    /// returns the bound frame's pixel size once a frame arrived.
+    /// Starts (once) and feeds an external frame stream on `layer`:
+    /// reports `presented` — the extent and display scale the layer
+    /// presents at — to the source, runs the view's frame hook, and
+    /// installs the newest frame; returns the bound frame's pixel size
+    /// once a frame arrived.
     #[cfg(hydrolysis_gpu)]
     fn mount_external_frame(
         host: &Self::Host,
         tx: &mut Transaction<'_, Self>,
         layer: &Layer,
         runtime: &mut ExternalFrameRuntime,
+        presented: waterui_graphics::gpu::PresentedSize,
         wake: ProducerWake,
     ) -> Option<(u32, u32)>;
 

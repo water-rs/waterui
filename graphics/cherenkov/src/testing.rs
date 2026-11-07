@@ -882,7 +882,7 @@ fn the_last_image_drop_frees_its_memory() {
                 // A first render settles one-off allocations so the
                 // baseline is stable.
                 $crate::__engine_wait!(engine.render(FrameTime::at(Instant::now()))).expect("render");
-                let before = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let before = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 let data = vec![255u8; 64 * 64 * 4];
                 let image = engine
                     .image(ImageData::<Rgba8>::new(64, 64, data).expect("image data"))
@@ -891,14 +891,14 @@ fn the_last_image_drop_frees_its_memory() {
                 $crate::__engine_wait!(engine
                     .render(FrameTime::at(Instant::now() + TICK)))
                     .expect("render");
-                let with_image = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let with_image = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(with_image > before, "memory {with_image} <= {before}");
                 drop(image);
                 drop(clone);
                 $crate::__engine_wait!(engine
                     .render(FrameTime::at(Instant::now() + TICK * 2)))
                     .expect("render");
-                let after = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let after = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(after < with_image, "memory {after} >= {with_image}");
             }
             }
@@ -948,10 +948,10 @@ fn replace_redraws_the_recorded_image(width: u32, height: u32) {
 
                 drop(layer);
                 $crate::__engine_wait!(engine.render(FrameTime::at(t0 + TICK * 2))).expect("render");
-                let with_image = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let with_image = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 drop(image);
                 $crate::__engine_wait!(engine.render(FrameTime::at(t0 + TICK * 3))).expect("render");
-                let after = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let after = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(after < with_image, "memory {after} >= {with_image}");
             }
             }
@@ -2686,9 +2686,9 @@ mod tests {
         let rejected = engine.surface(offscreen(), || {}).expect("surface");
         let unrelated = engine.surface(offscreen(), || {}).expect("surface");
         let rect = kurbo::Rect::new(0., 0., 8., 8.);
-        let fill = |surface: &crate::Surface<Null>| {
+        let fill = |surface: &crate::Surface<Null>, color| {
             surface.update(|tx| {
-                tx[surface.root()].record(|c| c.fill(rect, crate::WorkingColor::WHITE));
+                tx[surface.root()].record(|c| c.fill(rect, color));
             });
         };
         let drawn = || -> Vec<SurfaceId> {
@@ -2705,8 +2705,8 @@ mod tests {
         rejected.update(|tx| {
             tx[rejected.root()].record(|c| c.image(image.id(), rect, Sampling::Nearest));
         });
-        fill(&unrelated);
-        for _ in 0..2 {
+        fill(&unrelated, crate::WorkingColor::WHITE);
+        for color in [crate::WorkingColor::BLACK, crate::WorkingColor::WHITE] {
             match engine.render(FrameTime::now()) {
                 Err(RenderError::Rejected { surfaces, .. }) => {
                     let [rejection] = surfaces.as_slice() else {
@@ -2722,11 +2722,11 @@ mod tests {
                 "the surface drawing the rejected image is left out"
             );
             // The unrelated surface keeps rendering its changes.
-            fill(&unrelated);
+            fill(&unrelated, color);
         }
         assert_eq!(rejected.next_frame(), crate::Next::Idle);
 
-        fill(&rejected);
+        fill(&rejected, crate::WorkingColor::WHITE);
         engine
             .render(FrameTime::now())
             .expect("content that no longer draws the image renders");

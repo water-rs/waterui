@@ -22,6 +22,7 @@ Introduce no warnings or errors, clippy warnings included; fix any you encounter
 Write issues, pull requests, reviews, and commit messages as an open-source maintainer does: for a contributor who has never seen the conversation, the session, or the branch history behind them.
 
 - **Use the template.** `.github/ISSUE_TEMPLATE/` holds forms for a bug, a feature, a maintenance task, and a performance problem. `gh issue create` cannot fill a form, so write the body with the form's fields as `##` headings in the form's order, omit optional fields you have nothing for, and apply the form's label. Titles follow `<area>: <what>`. Pull request descriptions follow `.github/pull_request_template.md`.
+- **A bug issue is filed only with a minimal reproduction you verified yourself.** Reduce the defect to the smallest view code, test, or project that still shows it, run that reproduction, and confirm it exhibits the defect; the `Reproduction` field carries that verified artifact, never steps you did not run. If you cannot produce a reproduction, do not file the issue — report the finding to the user instead.
 - **An issue states the problem, not the work log:** what is wrong or missing, why it matters, the scope, and when it is done; a decided design may be stated as the proposal. No step lists, task checklists, agent instructions, review findings, measurement dumps, or progress reports — findings and results go in comments, the plan in the pull request, review conclusions in the review.
 - **A pull request explains the change to a reviewer:** what changes and why, `Fixes #N`, and a line or two per item on how it was verified. Link CI runs and captures instead of pasting logs; do not narrate commit by commit or restate the issue.
 - **Write as the project.** No assistant signatures, generated-by footers, session links, model or agent names, or narration of who delegated or approved what; no dates or plan labels the content does not need. Cite evidence by commit, run id, or issue number. Keep tool names and paths when they are the subject, and contributors' factual findings and verification results.
@@ -36,6 +37,8 @@ Intel macOS (`x86_64-apple-darwin`) and Intel iOS simulators (`x86_64-apple-ios`
 - **Tier 1** — tested on real devices: macOS, iOS, Android.
 - **Tier 2** — built and tested in CI, failures fixed promptly: Windows, Linux. Windows does not support dynamic linking; development builds link statically.
 - **Tier 3** — experimental: the GTK, WinUI and TUI backends.
+
+GPU rendering on Linux and Android is Vulkan-only, to keep the package small: no GL/GLES backend is selected, enabled, compiled in or fallen back to there, and a device without Vulkan fails with a clear unsupported-device error. GL serves only web browsers without WebGPU, for compatibility: it is not covered by the nightly end-to-end suite, gets no significant investment, and is removed once WebGPU is widespread.
 
 ESP32 is not supported; water-rs/waterui#3060 tracks bringing it back.
 
@@ -135,6 +138,7 @@ A case the document does not decide is not a licence to pick a behaviour in code
 - `Type::new(...)` is the general constructor, accepting the most general shape the component renders; free functions such as `button(...)` are ergonomic entry points that may take narrower semantic inputs. `Button::new(...)` takes arbitrary label views while `button(...)` takes `IntoLabel`, so literals, i18n-friendly text and default accessibility semantics compose. Never add parallel constructors like `Type::custom(...)`. Semantic text and label APIs take `IntoText` / `IntoLabel`, not raw `impl View`, unless they are for arbitrary visual composition.
 - Shaders and large text assets live in separate files, never string literals.
 - No duplicated code; factor it into a shared function or module.
+- Import items with `use` and refer to them by their bare names wherever possible; spelled-out absolute paths belong only in macro-generated code.
 - Runtime render paths never read GPU render targets or textures back to CPU memory.
 - Import maintained third-party crates rather than write your own implementation.
 - `GpuContent`-based components are visually tested through `OffscreenRenderer`, which renders `GpuContent` and scenes without a surface.

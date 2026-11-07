@@ -2567,14 +2567,14 @@ const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
 
 /// The wgpu backend masks Hydrolysis probes for an adapter, in order.
 ///
-/// Android and Linux default to Vulkan. GLES is available only with `gles`.
-/// Other native hosts probe primary backends before GL. `WGPU_BACKEND` selects
-/// from the backends enabled by the build.
+/// Android and Linux are Vulkan-only: one tier, and a `WGPU_BACKEND` naming
+/// another backend panics. Other native hosts probe primary backends before
+/// GL, and `WGPU_BACKEND` selects from the backends enabled by the build.
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(hydrolysis_gpu_painter)]
 fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
     let enabled = cherenkov_gpu::GpuConfig::default().backends;
-    match wgpu::Backends::from_env() {
+    match cherenkov_gpu::backends_from_env() {
         Some(backends) => vec![backends & enabled],
         None if enabled == wgpu::Backends::VULKAN => vec![enabled],
         None => vec![wgpu::Backends::PRIMARY, wgpu::Backends::GL],
@@ -2676,6 +2676,12 @@ async fn probe_adapters(
 )]
 #[cfg(hydrolysis_gpu_painter)]
 fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu::Backends]) -> ! {
+    assert!(
+        !(cherenkov_gpu::VULKAN_ONLY && inspected_adapters.is_empty()),
+        "{context}: unsupported device: no surface-compatible Vulkan adapter was found. \
+GPU rendering on Linux and Android requires a Vulkan driver; install or update the \
+vendor Vulkan driver (for example Mesa's `vulkan-*` package or the NVIDIA driver)."
+    );
     assert!(
         !inspected_adapters.is_empty(),
         "{context}: failed to find a surface-compatible wgpu adapter across the probed backends {tiers:?}. \
@@ -3535,6 +3541,9 @@ mod macos_display_link;
 mod macos_display_moves;
 
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
+mod macos_blur_behind;
+
+#[cfg(all(hydrolysis_winit, target_os = "macos"))]
 pub mod macos_appearance;
 
 // Compiled under `test` on every host: the module's pure mapping seam is
@@ -3778,7 +3787,6 @@ mod winit_impl {
                 crate::renderer::FrameRenderTarget {
                     adapter: &context.shared_device.adapter,
                     device: &context.shared_device.device,
-                    queue: &context.shared_device.queue,
                     device_loss: self.handles.clone(),
                     gpu_context_id: context.context_id,
                     shared_device: context.shared_device.clone(),
@@ -4716,26 +4724,14 @@ mod winit_impl {
             self.window.set_window_icon(icon);
         }
 
-        /// The `AppKit` half of `set_blur_behind`: while the window asks, an
-        /// `NSVisualEffectView` blending behind the window sits in the
-        /// content view's superview directly beneath the content view; when
-        /// it stops, the view is removed and dropped.
-        /// `underWindowBackground` is the material for both behind-window
-        /// levels — Hydrolysis's own tint, cleared to under the content,
-        /// supplies the level's colour, so the effect view only needs to
-        /// blur.
-        ///
-        /// Beneath means beneath: a subview of the content view draws above
-        /// the engine's presentation layers, so the effect view goes in as
-        /// a sibling ordered below the content view instead.
+        /// The `AppKit` half of `set_blur_behind`: while the window asks, the
+        /// effect view [`macos_blur_behind`](super::macos_blur_behind)
+        /// installs blends behind the window from the bottom of the content
+        /// view; when it stops, the view is removed and dropped.
         #[cfg(target_os = "macos")]
         fn macos_apply_blur_behind(&mut self, blur: bool) {
             use objc2::MainThreadMarker;
-            use objc2_app_kit::{
-                NSAutoresizingMaskOptions, NSView, NSVisualEffectBlendingMode,
-                NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-                NSWindowOrderingMode,
-            };
+            use objc2_app_kit::NSView;
 
             if !blur {
                 if let Some(effect_view) = self.blur_effect_view.take() {
@@ -4746,44 +4742,21 @@ mod winit_impl {
             if self.blur_effect_view.is_some() {
                 return;
             }
-            let content_view = {
-                let handle = self
-                    .window
-                    .window_handle()
-                    .expect("Hydrolysis macOS window must expose an AppKit handle");
-                let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-                    panic!("Hydrolysis macOS window returned a non-AppKit handle");
-                };
-                // SAFETY: winit hands out the window's live `NSView` pointer —
-                // the content view — and the borrow does not outlive the
-                // window handle it came from. AppKit calls run on the main
-                // thread, as every window method on this host does.
-                unsafe { appkit.ns_view.cast::<NSView>().as_ref() }
+            let handle = self
+                .window
+                .window_handle()
+                .expect("Hydrolysis macOS window must expose an AppKit handle");
+            let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+                panic!("Hydrolysis macOS window returned a non-AppKit handle");
             };
-            // SAFETY: the view is alive in its window on the AppKit main
-            // thread.
-            let parent = unsafe { content_view.superview() }
-                .expect("a mapped window's content view has the frame view as its superview");
+            // SAFETY: winit hands out the window's live `NSView` pointer —
+            // the content view — and the borrow does not outlive the window
+            // handle it came from. AppKit calls run on the main thread, as
+            // every window method on this host does.
+            let content_view = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
             let mtm = MainThreadMarker::new()
                 .expect("Hydrolysis macOS blur-behind must run on the AppKit main thread");
-            let effect_view = NSVisualEffectView::new(mtm);
-            effect_view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-            effect_view.setState(NSVisualEffectState::Active);
-            effect_view.setMaterial(NSVisualEffectMaterial::UnderWindowBackground);
-            effect_view.setFrame(content_view.frame());
-            effect_view.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewWidthSizable
-                    | NSAutoresizingMaskOptions::ViewHeightSizable,
-            );
-            // Ordered below the content view itself, so the presentation
-            // layers it hosts draw the level's tint and the content above
-            // the blur.
-            parent.addSubview_positioned_relativeTo(
-                &effect_view,
-                NSWindowOrderingMode::Below,
-                Some(content_view),
-            );
-            self.blur_effect_view = Some(effect_view);
+            self.blur_effect_view = Some(super::macos_blur_behind::install(content_view, mtm));
         }
 
         /// Pushes the requested `WindowState` to the window server. Shared

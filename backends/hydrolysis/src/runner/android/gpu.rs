@@ -128,7 +128,8 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
         .await
         .map_err(|error| {
             GpuError::new(format!(
-                "hydrolysis android: no wgpu-capable GPU adapter: {error}"
+                "hydrolysis android: unsupported device: no Vulkan adapter is available \
+                 (the device's Vulkan driver is missing or unusable): {error}"
             ))
         })
 }
@@ -456,7 +457,6 @@ impl AndroidSurface {
             crate::renderer::FrameRenderTarget {
                 adapter: &context.shared_device.adapter,
                 device: &context.shared_device.device,
-                queue: &context.shared_device.queue,
                 device_loss: self.handles.clone(),
                 gpu_context_id: context.context_id,
                 shared_device: context.shared_device.clone(),

@@ -352,7 +352,7 @@ fn a_large_path_clip_masks_content() -> Result<(), Box<dyn std::error::Error>> {
         }));
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    let unmasked = wait!(engine.memory()).gpu.0;
+    let unmasked = wait!(engine.memory())?.gpu.0;
     surface.update(|tx| {
         tx[&layer].content(surface.record(|c| {
             c.clip(large_star(), |c| {
@@ -364,9 +364,9 @@ fn a_large_path_clip_masks_content() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(engine.stats().paths_rasterized, 1);
     // The ~285×272 mask (over 65536 texels) lives on its own texture.
     assert!(
-        wait!(engine.memory()).gpu.0 >= unmasked + 70000,
+        wait!(engine.memory())?.gpu.0 >= unmasked + 70000,
         "gpu {} vs {}",
-        wait!(engine.memory()).gpu.0,
+        wait!(engine.memory())?.gpu.0,
         unmasked
     );
     let readback = wait!(surface.readback())?;
@@ -570,13 +570,13 @@ fn mask_textures_are_evicted_over_budget() -> Result<(), Box<dyn std::error::Err
         tx[&layer].content(surface.record(draw(clip_a.clone())));
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    let one_mask = wait!(engine.memory()).gpu.0;
+    let one_mask = wait!(engine.memory())?.gpu.0;
     surface.update(|tx| {
         tx[&layer].content(surface.record(draw(clip_b)));
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     // Over budget after storing B, so the unreferenced A is evicted.
-    assert!(wait!(engine.memory()).gpu.0 <= one_mask, "A not evicted");
+    assert!(wait!(engine.memory())?.gpu.0 <= one_mask, "A not evicted");
     let rb = wait!(surface.readback())?;
     let [r, ..] = px(&rb, 160, 232);
     assert!(r > 0.9, "frame 2: {r}");
@@ -586,7 +586,7 @@ fn mask_textures_are_evicted_over_budget() -> Result<(), Box<dyn std::error::Err
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     // A was evicted, so it rasterizes again — and renders correctly.
     assert_eq!(engine.stats().paths_rasterized, 1);
-    assert!(wait!(engine.memory()).gpu.0 <= one_mask);
+    assert!(wait!(engine.memory())?.gpu.0 <= one_mask);
     let rb = wait!(surface.readback())?;
     let [r, ..] = px(&rb, 160, 60);
     assert!(r > 0.9, "frame 3: {r}");
@@ -647,7 +647,7 @@ fn a_path_clip_wider_than_the_atlas_cap() -> Result<(), Box<dyn std::error::Erro
         }));
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    let unmasked = wait!(engine.memory()).gpu.0;
+    let unmasked = wait!(engine.memory())?.gpu.0;
     surface.update(|tx| {
         tx[&layer].content(surface.record(|c| {
             c.clip(band, |c| {
@@ -659,9 +659,9 @@ fn a_path_clip_wider_than_the_atlas_cap() -> Result<(), Box<dyn std::error::Erro
     assert_eq!(engine.stats().paths_rasterized, 1);
     // ~4160×76 mask texels on a dedicated texture.
     assert!(
-        wait!(engine.memory()).gpu.0 >= unmasked + 300_000,
+        wait!(engine.memory())?.gpu.0 >= unmasked + 300_000,
         "gpu {} vs {}",
-        wait!(engine.memory()).gpu.0,
+        wait!(engine.memory())?.gpu.0,
         unmasked
     );
     let readback = wait!(surface.readback())?;

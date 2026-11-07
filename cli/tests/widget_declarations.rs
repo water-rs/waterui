@@ -133,6 +133,8 @@ fn build_fixture(profile: &str) -> WidgetFixture {
         let staged = stage_fixture(workspace, &target_dir);
         // Not `--locked`: Cargo prunes the seeded checkout lock to the
         // fixture's graph, which keeps every version the checkout pins.
+        // Plain `json`: rustc's `native-static-libs` note is a diagnostic,
+        // which `json-render-diagnostics` would render to stderr instead.
         let output = host
             .with_cwd(staged.path())
             .with_env("CARGO_TARGET_DIR", &target_dir)
@@ -143,7 +145,7 @@ fn build_fixture(profile: &str) -> WidgetFixture {
                     "--lib",
                     "--profile",
                     profile,
-                    "--message-format=json-render-diagnostics",
+                    "--message-format=json",
                     "--",
                     "--print=native-static-libs",
                 ],
@@ -151,12 +153,26 @@ fn build_fixture(profile: &str) -> WidgetFixture {
             )
             .await
             .expect("build the widget fixture");
-        assert!(output.status.success(), "{output:?}");
+        let messages = Message::parse_stream(output.stdout.as_slice())
+            .map(|message| message.expect("Cargo emits valid messages"))
+            .collect::<Vec<_>>();
+        assert!(
+            output.status.success(),
+            "the widget fixture must build:\n{}{}",
+            messages
+                .iter()
+                .filter_map(|message| match message {
+                    Message::CompilerMessage(message) => message.message.rendered.as_deref(),
+                    _ => None,
+                })
+                .collect::<String>(),
+            String::from_utf8_lossy(&output.stderr)
+        );
         let mut artifact = None;
         #[cfg(target_os = "macos")]
         let mut native_links = None;
-        for message in Message::parse_stream(output.stdout.as_slice()) {
-            match message.expect("Cargo emits valid messages") {
+        for message in messages {
+            match message {
                 Message::CompilerArtifact(message) if message.target.name == "widget_app" => {
                     artifact = message
                         .filenames
@@ -181,12 +197,6 @@ fn build_fixture(profile: &str) -> WidgetFixture {
             target_dir,
             #[cfg(target_os = "macos")]
             native_links: native_links
-                .or_else(|| {
-                    String::from_utf8_lossy(&output.stderr)
-                        .lines()
-                        .find_map(|line| line.split_once("native-static-libs: "))
-                        .map(|(_, flags)| flags.split_whitespace().map(OsString::from).collect())
-                })
                 .expect("rustc reports the fixture's native link requirements"),
         }
     })
@@ -252,20 +262,34 @@ fn assert_fixture_declarations(fixture: &WidgetFixture) {
     assert_eq!(intent.symbol(), format!("waterui_intent_widget_app_{hash}"));
 
     // The `waterui-widgets` static record the extension build locates the
-    // shipped Swift sources through rides the same artifact.
-    let sources = fixture_swift_sources(&symbols);
+    // shipped Swift sources through rides the same artifact on Apple
+    // targets, the only ones that package a `WidgetKit` extension; every
+    // other target carries no record.
+    #[cfg(target_vendor = "apple")]
+    {
+        let sources = fixture_swift_sources(&symbols);
+        assert!(
+            sources.join("FFI.swift").is_file(),
+            "the record points at the crate's Swift sources: {}",
+            sources.display()
+        );
+    }
+    #[cfg(not(target_vendor = "apple"))]
     assert!(
-        sources.join("FFI.swift").is_file(),
-        "the record points at the crate's Swift sources: {}",
-        sources.display()
+        symbols.meta_record(SWIFT_SOURCES_RECORD).is_err(),
+        "only Apple targets carry the widget sources record"
     );
 }
 
+/// The record `waterui-widgets` locates its shipped Swift sources through.
+const SWIFT_SOURCES_RECORD: &str = "waterui_meta_widgets_swift_sources";
+
+#[cfg(target_vendor = "apple")]
 fn fixture_swift_sources(symbols: &ArtifactSymbols) -> PathBuf {
     PathBuf::from(
         String::from_utf8(
             symbols
-                .meta_record("waterui_meta_widgets_swift_sources")
+                .meta_record(SWIFT_SOURCES_RECORD)
                 .expect("the widget sources are declared"),
         )
         .expect("the sources path is UTF-8"),
