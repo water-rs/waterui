@@ -388,8 +388,10 @@ mod platform {
                     view::set_frame(sub, frame);
                 }
             });
-            // The capsule installs when the current transaction commits —
-            // after the first frame, never inside the launch commit. On
+            // The capsule installs once this turn's transaction has
+            // committed — after the first frame, never inside the launch
+            // commit, including when the tabs are built during scene
+            // connection. On
             // iOS 26 an accessory installed during the scene's own
             // presentation can have its materialise transition dropped,
             // leaving the pocket flat and tinting the content's labels for
@@ -400,7 +402,7 @@ mod platform {
             // only strong reference, so tearing the tabs down before the
             // commit makes the upgrade fail and cancels the install.
             let accessory = Rc::new(core::cell::OnceCell::new());
-            cocoa_ui::core_animation::on_commit({
+            cocoa_ui::core_animation::on_commit(mtm, {
                 let tabs = tabs.clone();
                 let accessory_host = accessory_host.clone();
                 let accessory = Rc::downgrade(&accessory);
