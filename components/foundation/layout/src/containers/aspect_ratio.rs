@@ -5,8 +5,8 @@ use nami::{Computed, Signal, SignalExt};
 use waterui_core::{AnyView, IntoSignalF32, View, layout::LayoutInvalidationCallback};
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
-    container::FixedContainer,
+    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    SubviewPlacement, UnitPoint, container::FixedContainer,
 };
 
 /// How a view fills a ratio-constrained box.
@@ -102,6 +102,17 @@ impl Layout for AspectRatioLayout {
         )]
     }
 
+    /// The answer centred in the bounds. It is the ratio box for the
+    /// incoming proposal, which need not be the ratio box `place` resolves
+    /// against the bounds.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::CENTER))
+    }
+
     fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
         // The ratio decides the shape, never how much space is claimed: that is
         // still the child's to ask for — so forward its answer.
@@ -161,11 +172,18 @@ pub fn aspect_ratio(content: impl View, ratio: impl IntoSignalF32 + 'static) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ViewDimensions;
+    use crate::{LayoutError, Rect, ResolvedExtent, ViewDimensions};
 
     struct Content(Size);
 
     impl SubView for Content {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.0)
         }

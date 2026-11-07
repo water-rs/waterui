@@ -25,6 +25,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, View as _};
 use waterui_graphics::Color;
 use waterui_layout::frame::Frame;
+use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
 
 use super::popup_windows::find_by_label;
@@ -143,21 +144,25 @@ fn a_mid_window_anchor_places_the_overlay_below_it_centered() {
 }
 
 /// With `edge: Top` on an anchor at the top of the window the overlay does
-/// not fit above it; `flip` moves it to the bottom edge.
+/// not fit above it; `flip` moves it to the bottom edge. The trailing spacer
+/// fills the column, so the anchor starts at the window's top edge.
 #[test]
 fn an_overlay_too_tall_for_the_top_edge_flips_below() {
     let open = Binding::container(true);
     let open_for_view = open;
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
-        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_content)
-                .edge(AnchorEdge::Top)
-                .alignment(EdgeAlignment::Center)
-                .gap(GAP)
-                .flip(true)
-                .clamp(Clamp::Window { margin: MARGIN }),
-        ),)))
+        AnyView::new(vstack((
+            button("host").action(|| {}).anchored_overlay(
+                AnchoredOverlay::new(&open, overlay_content)
+                    .edge(AnchorEdge::Top)
+                    .alignment(EdgeAlignment::Center)
+                    .gap(GAP)
+                    .flip(true)
+                    .clamp(Clamp::Window { margin: MARGIN }),
+            ),
+            spacer(),
+        )))
     });
     let mut runtime = runtime(view);
     let anchor = bounds_of(&mut runtime, "host");
@@ -835,14 +840,19 @@ fn placed_edge_reports_the_logical_edge_after_a_flip() {
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         let placed = placed_for_view.clone();
-        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_content)
-                .edge(AnchorEdge::Top)
-                .alignment(EdgeAlignment::Center)
-                .gap(GAP)
-                .flip(true)
-                .placed_edge(&placed),
-        ),)))
+        // The trailing spacer fills the column, so the anchor starts at the
+        // window's top edge and has no room above it.
+        AnyView::new(vstack((
+            button("host").action(|| {}).anchored_overlay(
+                AnchoredOverlay::new(&open, overlay_content)
+                    .edge(AnchorEdge::Top)
+                    .alignment(EdgeAlignment::Center)
+                    .gap(GAP)
+                    .flip(true)
+                    .placed_edge(&placed),
+            ),
+            spacer(),
+        )))
     });
     let mut runtime = runtime(view);
     pump_until_settled(&mut runtime);

@@ -27,8 +27,8 @@ use waterui::text::font::{FontDesign, FontWeight, ResolvedFont};
 use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
 use waterui_core::layout::{
-    HorizontalAlignment, ProposalSize, Size, StretchAxis, SubView, VerticalAlignment,
-    ViewDimensions,
+    HorizontalAlignment, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
+    SubView, VerticalAlignment, ViewDimensions,
 };
 
 use crate::contract::{NativeLeaf, RenderContext};
@@ -601,6 +601,14 @@ impl core::fmt::Debug for TextSubView {
 }
 
 impl SubView for TextSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `TextMetrics` measures in f64; `ViewDimensions` speaks f32 — the
     // narrowing is the layout contract.
     #[expect(

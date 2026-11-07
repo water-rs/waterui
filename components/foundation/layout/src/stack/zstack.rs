@@ -5,8 +5,8 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifiable, view::TupleViews, views::ForEach};
 
 use crate::{
-    Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    SubviewPlacement, ViewDimensions,
+    Layout, LayoutError, LazyContainer, PlacedSubview, PlacementInput, Point, ProposalSize, Rect,
+    Size, StretchAxis, SubView, SubviewPlacement, UnitPoint, ViewDimensions,
     container::FixedContainer,
     stack::{
         Alignment, HorizontalAlignment, VerticalAlignment,
@@ -198,6 +198,23 @@ impl Layout for ZStackLayout {
         placements
     }
 
+    /// The stack's answer, anchored on both axes by the stack's alignment
+    /// (custom guides at the start). Layers overflowing the envelope do not
+    /// move it.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(
+            input.extent()?,
+            UnitPoint::new(
+                LineAnchor::horizontal(self.alignment.horizontal()).response_unit(),
+                LineAnchor::vertical(self.alignment.vertical()).response_unit(),
+            ),
+        ))
+    }
+
     fn explicit_horizontal(
         &self,
         alignment: HorizontalAlignment,
@@ -353,13 +370,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StretchAxis;
+    use crate::{LayoutError, Rect, ResolvedExtent, StretchAxis};
 
     struct MockSubView {
         size: Size,
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -402,6 +426,13 @@ mod tests {
     struct ZStackSpacerLeaf;
 
     impl SubView for ZStackSpacerLeaf {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(Size::zero())
         }

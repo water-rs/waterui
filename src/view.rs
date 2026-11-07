@@ -43,8 +43,9 @@ use waterui_navigation::NavigationView;
 
 use crate::{
     accessibility::{
-        self, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
-        AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityValue,
+        self, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
+        AccessibilityIdentifier, AccessibilityLabel, AccessibilityRole, AccessibilityState,
+        AccessibilityValue,
     },
     background::IntoBackground,
     border::Border,
@@ -739,6 +740,21 @@ pub trait ViewExt: View + Sized {
     /// Overrides whether this view is hidden from assistive technologies.
     fn a11y_hidden(self, hidden: bool) -> IgnorableMetadata<AccessibilityHidden> {
         IgnorableMetadata::new(self, accessibility::AccessibilityHidden::new(hidden))
+    }
+
+    /// Chooses which rectangle this view's accessibility element reports.
+    ///
+    /// An element reports the view's own answer, positioned in its assigned
+    /// frame, by default. `AccessibilityGeometry::Allocation` reports the
+    /// whole assigned frame — a canvas whose drawing fills it, or a gap a
+    /// stack allocated to a spacer — and `AccessibilityGeometry::Region`
+    /// an explicit rectangle in the view's own coordinates. Hit testing,
+    /// focus and drawing are unaffected.
+    fn a11y_geometry(
+        self,
+        geometry: AccessibilityGeometry,
+    ) -> IgnorableMetadata<AccessibilityGeometry> {
+        IgnorableMetadata::new(self, geometry)
     }
 
     /// Controls how descendants contribute semantics for this view.

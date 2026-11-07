@@ -69,7 +69,9 @@ use objc2_quartz_core::{
     CATransaction, kCAAnimationLinear, kCAMediaTimingFunctionLinear,
 };
 use waterui_backend_core::{AnyView, Environment};
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
 use waterui_graphics::filter_view::{AnyEffect, ParamGuards};
 use waterui_graphics::filtrate::{FilterLink, Interpolator, WatchGuard, WorkingSpace};
 
@@ -1450,6 +1452,17 @@ impl std::fmt::Debug for NativeFilteredSubView {
 }
 
 impl SubView for NativeFilteredSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.mounted
+            .borrow()
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.mounted.borrow().layout().measure(proposal)
     }

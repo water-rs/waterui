@@ -26,7 +26,10 @@ use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
 use waterui::text::font::{Body, FontDesign, FontWeight, ResolvedFont};
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -201,6 +204,14 @@ const fn measure_width(_proposal: ProposalSize, _label_width: f64) -> f64 {
 }
 
 impl SubView for SecureFieldSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing
     // is the layout contract, as in `text_field`.
     #[expect(

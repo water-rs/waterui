@@ -20,6 +20,7 @@ use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::Color;
 use waterui_layout::frame::Frame;
+use waterui_layout::spacer::spacer as layout_spacer;
 use waterui_layout::stack::vstack;
 
 use super::popup_windows::find_by_label;
@@ -77,12 +78,16 @@ fn host_view_with_spacer(
     spacer: f32,
     menu: impl Fn() -> ContextMenu + 'static,
 ) -> AnyViewBuilder<AnyView> {
+    // The trailing spacer fills the window column, so the host sits `spacer`
+    // points below the window's top edge rather than in a centred block
+    // (`docs/layout-spec.md` §4.2).
     AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((
             ().size(0.0, spacer),
             Frame::new(button("host").action(|| {}).context_menu(menu()))
                 .width(160.0)
                 .height(80.0),
+            layout_spacer(),
         )))
     })
 }

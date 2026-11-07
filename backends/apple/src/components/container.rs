@@ -29,8 +29,9 @@ use waterui::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_backend_core::AnyView;
 use waterui_core::Computed;
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, LayoutDirection, ProposalSize, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions, measure_layout, with_memoized_children,
+    HorizontalAlignment, Layout, LayoutDirection, LayoutError, PlacementInput, ProposalSize,
+    Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView, VerticalAlignment,
+    ViewDimensions, measure_layout, resolve_layout_extent, with_memoized_children,
 };
 use waterui_core::views::AnyViews;
 
@@ -1229,6 +1230,33 @@ impl core::fmt::Debug for ContainerSubView {
 }
 
 impl SubView for ContainerSubView {
+    /// A virtualized stack cannot enumerate its children, so it asks its
+    /// layout with none: the stack rule reads no children, and the answer
+    /// from the lazy measurement state is authoritative. Every other
+    /// container answers its layout's rule over its real children.
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        if self.state.borrow().lazy.is_some() {
+            let answer = self.measure(proposal).size;
+            let rect = self.state.borrow().layout.resolve_extent(
+                PlacementInput {
+                    bounds,
+                    proposal,
+                    answer,
+                },
+                &[],
+            )?;
+            return Ok(ResolvedExtent { answer, rect });
+        }
+        with_children_tx(&self.state, &self.pending, || {
+            let state = self.state.borrow();
+            resolve_layout_extent(&*state.layout, bounds, proposal, &children(&state))
+        })
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         measure(&self.state, &self.pending, proposal)
     }
@@ -1559,6 +1587,14 @@ mod tests {
     }
 
     impl SubView for FixedChild {
+        fn resolve_extent(
+            &self,
+            bounds: LayoutRect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.last_proposal.set(Some(proposal));
             ViewDimensions::new(self.size)

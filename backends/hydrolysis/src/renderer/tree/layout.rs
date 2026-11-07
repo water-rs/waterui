@@ -7,6 +7,8 @@ use super::ContainerNode;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::WidgetTheme;
+use waterui_core::layout::{LayoutError, ResolvedExtent, resolve_layout_extent};
 use waterui_graphics::scene_stretch_axis;
 use waterui_layout::scroll::scroll_stretch_axis;
 
@@ -382,6 +384,89 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Wrapper(node) => node.child.measure(state, &node.env, theme, proposal),
             Self::Fill(node) => node.child.measure(state, env, theme, proposal),
             Self::Widget(node) => node.behavior.measure(state, proposal, &node.env, theme),
+        }
+    }
+
+    /// This node's response geometry (water-rs/waterui#1323), dispatched
+    /// exactly like [`Self::measure_body`] so the two cannot drift: a container
+    /// answers [`resolve_layout_extent`] over its retained children, a lazy
+    /// stack answers its stack rule from the lazy measurement alone, and a
+    /// layout-transparent wrapper forwards to its child with the same bounds,
+    /// proposal and the environment `measure_body` gives that child.
+    ///
+    /// `None` means the node is a leaf: the caller answers
+    /// [`ResolvedExtent::centred`] with its own measured, stretch-applied
+    /// answer, the same size its parent laid it out with.
+    ///
+    /// # Errors
+    ///
+    /// A [`LayoutError`] when the answer or `bounds` is not valid geometry, or
+    /// a layout broke the response-extent identity.
+    pub(crate) fn resolve_extent(
+        &self,
+        state: &mut HydroState<E>,
+        env: &Environment,
+        theme: &Rc<dyn WidgetTheme>,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<Option<ResolvedExtent>, LayoutError> {
+        match self {
+            Self::Container(container) => {
+                let cell = RefCell::new(state);
+                let subs: Vec<NodeSubView<E>> = container
+                    .children
+                    .iter()
+                    .map(|child| NodeSubView::new(child, &cell, env, theme))
+                    .collect();
+                let refs: Vec<&dyn SubView> = subs.iter().map(|sub| sub as &dyn SubView).collect();
+                resolve_layout_extent(&*container.layout, bounds, proposal, &refs).map(Some)
+            }
+            Self::Opacity(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Scale(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Rotation(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Offset(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Retain(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Fill(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Env(node) => node
+                .child
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            Self::Filtered(node) => node
+                .child
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            Self::Wrapper(node) => node
+                .child
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            Self::Dynamic(node) => node
+                .child
+                .borrow()
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::LazyStack(node) => node
+                .resolve_extent(state, theme, bounds, proposal)
+                .map(Some),
+            Self::Collection(node) => node
+                .resolve_extent(state, theme, bounds, proposal)
+                .map(Some),
+            // Leaves: a scroll answers its offer, widgets and text measure
+            // themselves, scene/GPU/external content answers its intrinsic size.
+            Self::Color(_)
+            | Self::Text(_)
+            | Self::Scroll(_)
+            | Self::SceneView(_)
+            | Self::Widget(_) => Ok(None),
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => Ok(None),
         }
     }
 

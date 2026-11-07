@@ -3,11 +3,13 @@ use core::cell::RefCell;
 
 use nami::Computed;
 
+use super::leaf_extent;
 use crate::modifiers::alignment_guide::HorizontalAlignmentGuideLayout;
 use crate::stack::{Axis, HStackLayout, VStackLayout};
 use crate::{
-    HorizontalAlignment, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    SubviewPlacement, VerticalAlignment, ViewDimensions, measure_layout,
+    HorizontalAlignment, Layout, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size,
+    StretchAxis, SubView, SubviewPlacement, VerticalAlignment, ViewDimensions, measure_layout,
+    resolve_layout_extent,
 };
 
 struct RangeLeaf {
@@ -19,6 +21,13 @@ struct RangeLeaf {
 }
 
 impl SubView for RangeLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal)
             .map_or(self.ideal, |value| value.clamp(self.minimum, self.maximum));
@@ -65,6 +74,13 @@ impl LayoutNode {
 }
 
 impl SubView for LayoutNode {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        resolve_layout_extent(self.layout.as_ref(), bounds, proposal, &self.child_refs())
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         if let Some((_, dimensions)) = self
             .measured
@@ -456,6 +472,13 @@ fn spacing_invalidation_and_membership_changes_return_to_original_geometry() {
 struct CrossFillLeaf(Axis);
 
 impl SubView for CrossFillLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let cross = if self.0.is_horizontal() {
             proposal.height
@@ -512,6 +535,13 @@ struct WrappingLeaf {
 }
 
 impl SubView for WrappingLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let cross = cross_proposal(self.axis, proposal)
             .unwrap_or(self.unwrapped)
@@ -616,6 +646,13 @@ fn placement_proposes_the_resolved_extent_on_underfill() {
 struct SquareLeaf(f32);
 
 impl SubView for SquareLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let side = match (proposal.width, proposal.height) {
             (Some(width), Some(height)) if width.is_finite() && height.is_finite() => {
@@ -681,6 +718,13 @@ struct GuidedLeaf {
 }
 
 impl SubView for GuidedLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         let mut dimensions = ViewDimensions::new(self.size);
         dimensions.set_vertical(VerticalAlignment::Top, self.top);
@@ -749,6 +793,13 @@ struct BaselineLeaf {
 }
 
 impl SubView for BaselineLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
             .with_vertical(VerticalAlignment::FirstBaseline, self.baseline)
@@ -839,6 +890,13 @@ struct ConditionalChild {
 }
 
 impl SubView for ConditionalChild {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
     }
@@ -897,7 +955,12 @@ fn a_child_that_renders_nothing_is_not_a_stack_member() {
         children.len(),
         "place answers one placement per child, members or not"
     );
-    assert_extent(placements[0].frame.y(), 0.0, "first member at the top");
+    // Block 20 + 10 + 20 = 50 centred in 400: starts at 175.
+    assert_extent(
+        placements[0].frame.y(),
+        175.0,
+        "first member opens the block",
+    );
     assert_extent(
         placements[1].frame.height(),
         0.0,
@@ -905,7 +968,7 @@ fn a_child_that_renders_nothing_is_not_a_stack_member() {
     );
     assert_extent(
         placements[2].frame.y(),
-        sibling.height + spacing,
+        175.0 + sibling.height + spacing,
         "second member one spacing below the first",
     );
 
@@ -932,9 +995,10 @@ fn a_child_that_renders_nothing_is_not_a_stack_member() {
         "shown conditional: stack height is three members and two gaps",
     );
     let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
+    // Block 3 * 20 + 2 * 10 = 80 centred in 400: starts at 160.
     assert_extent(
         placements[2].frame.y(),
-        sibling.height * 2.0 + spacing * 2.0,
+        160.0 + sibling.height * 2.0 + spacing * 2.0,
         "second member two spacings below the first",
     );
 }
@@ -968,9 +1032,10 @@ fn a_zero_sized_child_is_still_a_member() {
         "a zero-size member still counts for spacing",
     );
     let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
+    // Block 20 + 10 + 0 + 10 + 20 = 60 centred in 400: starts at 170.
     assert_extent(
         placements[2].frame.y(),
-        20.0 + spacing * 2.0,
+        170.0 + 20.0 + spacing * 2.0,
         "the last member keeps both gaps around the zero-size one",
     );
 }
@@ -985,6 +1050,13 @@ struct EmptyGuideLeaf {
 }
 
 impl SubView for EmptyGuideLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::zero()).with_vertical(VerticalAlignment::Top, self.top)
     }
@@ -1107,6 +1179,13 @@ struct DecliningLeaf {
 }
 
 impl SubView for DecliningLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
             if value == 0.0 {
@@ -1140,6 +1219,13 @@ struct FillLeaf {
 }
 
 impl SubView for FillLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(axis_size(self.axis, self.minimum, self.cross))
     }
@@ -1165,6 +1251,13 @@ struct AcceptingLeaf {
 }
 
 impl SubView for AcceptingLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.maximum, |value| {
             value.clamp(self.minimum, self.maximum)
@@ -1192,6 +1285,13 @@ struct RoundDownLeaf {
 }
 
 impl SubView for RoundDownLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
             if value.is_infinite() {
@@ -1221,6 +1321,13 @@ struct PlateauLeaf {
 }
 
 impl SubView for PlateauLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(200.0, |value| {
             if value.is_infinite() {
@@ -1254,6 +1361,13 @@ struct OversizeLeaf {
 }
 
 impl SubView for OversizeLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.answer, |value| {
             if value == 0.0 { 0.0 } else { self.answer }
@@ -1280,6 +1394,13 @@ struct NextDownLeaf {
 }
 
 impl SubView for NextDownLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
             if value.is_infinite() {
@@ -1320,6 +1441,13 @@ struct GuidedFillLeaf {
 }
 
 impl SubView for GuidedFillLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let (cross, guide) = if main_proposal(self.axis, proposal) == Some(0.0) {
             (30.0, 20.0)
@@ -1354,6 +1482,13 @@ struct DecliningGuidedLeaf {
 }
 
 impl SubView for DecliningGuidedLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
             if value == 0.0 {
@@ -1416,8 +1551,21 @@ fn assert_negotiation(
     spacing: f32,
     expected: &[(f32, f32)],
 ) {
+    assert_negotiation_from(axis, 0.0, placements, spacing, expected);
+}
+
+/// [`assert_negotiation`] for a negotiated block that does not fill its
+/// bounds: `start` is the main origin of the first member, where the
+/// centred block begins.
+fn assert_negotiation_from(
+    axis: Axis,
+    start: f32,
+    placements: &[SubviewPlacement],
+    spacing: f32,
+    expected: &[(f32, f32)],
+) {
     assert_eq!(placements.len(), expected.len(), "one placement per member");
-    let mut cursor = 0.0;
+    let mut cursor = start;
     for (placement, &(extent, proposal)) in placements.iter().zip(expected) {
         assert_extent(
             main_origin(axis, placement.frame),
@@ -1867,7 +2015,9 @@ fn declined_space_without_a_stretcher_stays_unused_on_both_axes() {
             100.0,
             "the stack answers the reported extents",
         );
-        assert_negotiation(axis, &placements, 0.0, &[(80.0, 83.0), (20.0, 20.0)]);
+        // Block 80 + 20 = 100 centred in 103: starts at 1.5.
+        assert_negotiation_from(axis, 1.5, &placements, 0.0, &[(80.0, 83.0), (20.0, 20.0)]);
+        // The block fills the 100 bounds: starts at 0.
         let (_, own_placements) = place_after_proposal(axis, 0.0, 103.0, 100.0, &refs);
         assert_negotiation(axis, &own_placements, 0.0, &[(80.0, 80.0), (20.0, 20.0)]);
     }
@@ -1983,7 +2133,9 @@ fn minima_that_overflow_the_budget_are_offered_verbatim_on_both_axes() {
         let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
         let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
         assert_extent(main_extent(axis, size), 110.0, "the overflow is reported");
-        assert_negotiation(axis, &placements, 0.0, &[(90.0, 90.0), (20.0, 20.0)]);
+        // Block 90 + 20 = 110 centred in 100: overflows both edges by 5, so
+        // it starts at -5.
+        assert_negotiation_from(axis, -5.0, &placements, 0.0, &[(90.0, 90.0), (20.0, 20.0)]);
     }
 }
 
@@ -2152,8 +2304,11 @@ fn an_oversized_answer_overflows_without_stealing_minima_on_both_axes() {
         let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
         let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
         assert_extent(main_extent(axis, size), 110.0, "the refusal overflows");
-        assert_negotiation(
+        // Block 90 + 0 + 20 = 110 centred in 100: overflows both edges by 5,
+        // so it starts at -5.
+        assert_negotiation_from(
             axis,
+            -5.0,
             &placements,
             0.0,
             &[(90.0, 80.0), (0.0, 0.0), (20.0, 20.0)],
@@ -2450,6 +2605,13 @@ impl ScrollLeaf {
 }
 
 impl SubView for ScrollLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         if self.scrolls_both {
             return ViewDimensions::new(Size::new(

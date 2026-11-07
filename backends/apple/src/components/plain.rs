@@ -18,7 +18,8 @@ use waterui::resolve::Resolvable;
 use waterui::text::font::{Body, FontDesign, FontWeight, ResolvedFont};
 use waterui::theme::color::Foreground;
 use waterui_core::layout::{
-    ProposalSize, Size, StretchAxis, SubView, VerticalAlignment, ViewDimensions,
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, VerticalAlignment,
+    ViewDimensions,
 };
 
 use crate::contract::NativeLeaf;
@@ -205,6 +206,14 @@ impl core::fmt::Debug for PlainSubView {
 }
 
 impl SubView for PlainSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `TextMetrics` measures in f64; `ViewDimensions` speaks f32 — the
     // narrowing is the layout contract.
     #[expect(

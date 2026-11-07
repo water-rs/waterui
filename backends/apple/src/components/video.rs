@@ -42,7 +42,9 @@ use waterkit_audio::{
     PlaybackStatus as SessionStatus, QueueNavigationControls,
 };
 use waterui::reactive::{Binding, Computed, Signal};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 #[cfg(feature = "video")]
 use waterui_video::video::NativeVideoConfig;
 #[cfg(feature = "video_player")]
@@ -162,6 +164,14 @@ impl core::fmt::Debug for VideoSubView {
 }
 
 impl SubView for VideoSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         measure(self.mode, self.source.get(), proposal)
     }

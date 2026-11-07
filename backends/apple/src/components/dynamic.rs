@@ -28,7 +28,10 @@ use cocoa_ui::{Retained, view};
 use waterui::component::Dynamic;
 use waterui_backend_core::AnyView;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 use waterui_core::metadata::Retain;
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
@@ -101,6 +104,19 @@ impl core::fmt::Debug for DynamicSubView {
 }
 
 impl SubView for DynamicSubView {
+    /// Forwards to the mounted child with the same bounds and proposal; an
+    /// absent child answers a zero size centred in `bounds`, as `measure` does.
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.borrow().child.as_ref().map_or_else(
+            || ResolvedExtent::centred(bounds, Size::zero()),
+            |child| child.layout().resolve_extent(bounds, proposal),
+        )
+    }
+
     /// `measure(_:)`: the child owns the full measurement packet — its
     /// alignment guides ride along inside stacks.
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {

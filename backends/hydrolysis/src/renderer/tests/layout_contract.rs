@@ -11,8 +11,8 @@ use waterui_graphics::filtrate::{
 use waterui_layout::container::FixedContainer;
 use waterui_layout::stack::vstack;
 use waterui_layout::{
-    Layout, Point, ProposalSize, Rect, Size, Spacer, SubView, SubviewPlacement, scroll,
-    scroll_horizontal, spacer, spacer_min,
+    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, Spacer, SubView,
+    SubviewPlacement, UnitPoint, scroll, scroll_horizontal, spacer, spacer_min,
 };
 
 #[derive(Debug)]
@@ -32,6 +32,14 @@ struct ProbeLayout {
 impl Layout for ProbeLayout {
     fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
         axis_size(self.vertical, 160.0, 20.0)
+    }
+
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -420,6 +428,14 @@ struct RecordingRow {
 }
 
 impl Layout for RecordingRow {
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         let sizes = children
             .iter()
@@ -589,6 +605,14 @@ fn transparent_metadata_preserves_the_selected_proposal() {
 struct PriorityProbe(Rc<Cell<Option<i32>>>);
 
 impl Layout for PriorityProbe {
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         children[0].measure(proposal).size
     }

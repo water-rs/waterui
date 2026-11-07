@@ -828,7 +828,9 @@ mod leaf {
 
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
-    use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+    use waterui_core::layout::{
+        LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+    };
 
     use super::{HostView, Label, MainThreadMarker, PlatformView, mtm};
 
@@ -836,6 +838,14 @@ mod leaf {
     pub struct TestSubView;
 
     impl SubView for TestSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(Size::new(40.0, 20.0))
         }
@@ -10702,7 +10712,8 @@ mod embedding {
         HostEnvironment, waterui_apple_measure, waterui_apple_update_environment,
     };
     use waterui_core::layout::{
-        Layout, LayoutDirection, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+        Layout, LayoutDirection, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size,
+        SubView, SubviewPlacement, UnitPoint,
     };
     use waterui_locale::locale_binding;
 
@@ -10985,6 +10996,13 @@ mod embedding {
         fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
             self.seen.borrow_mut().push(proposal);
             Size::new(17.0, 23.0)
+        }
+        fn resolve_extent(
+            &self,
+            input: PlacementInput,
+            _children: &[&dyn SubView],
+        ) -> Result<Rect, LayoutError> {
+            Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
         }
         fn place(
             &self,

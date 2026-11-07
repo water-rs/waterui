@@ -11,7 +11,8 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
+    Layout, LayoutError, PlacedSubview, PlacementInput, Point, ProposalSize, Rect, Size,
+    StretchAxis, SubView, SubviewPlacement,
     container::FixedContainer,
     stack::{
         Alignment, HorizontalAlignment, VerticalAlignment,
@@ -117,6 +118,23 @@ impl Layout for OverlayLayout {
         placements
     }
 
+    /// The base decides the response: its own response origin, with the
+    /// overlay's answer as the extent — the two coincide whenever the base's
+    /// answer is finite. Decorations contribute nothing. The base is queried
+    /// with the overlay's incoming proposal, not the bounds-derived one it is
+    /// placed with.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        let base = children
+            .first()
+            .expect("OverlayLayout requires a base child at index 0");
+        let base = base.resolve_extent(input.bounds, input.proposal)?.rect;
+        Ok(Rect::new(base.origin(), input.extent()?))
+    }
+
     fn explicit_horizontal(
         &self,
         alignment: HorizontalAlignment,
@@ -220,7 +238,7 @@ pub const fn overlay<Base: View, Layer: View>(base: Base, layer: Layer) -> Overl
 mod tests {
     use super::*;
     use crate::container::FixedContainer;
-    use crate::{StretchAxis, ViewDimensions};
+    use crate::{LayoutError, Rect, ResolvedExtent, StretchAxis, ViewDimensions};
     use waterui_core::{AnyView, Environment, View};
 
     struct MockSubView {
@@ -228,6 +246,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }

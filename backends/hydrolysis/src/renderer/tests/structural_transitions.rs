@@ -27,6 +27,7 @@ use waterui_core::layout::HorizontalAlignment;
 use waterui_core::transition::{PropertyTransition, Transition};
 use waterui_core::{AnyView, View};
 use waterui_layout::padding::EdgeInsets;
+use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
 use waterui_shape::ShapeExt as _;
 
@@ -56,10 +57,15 @@ fn transitioned(label: &'static str, color: Srgb, transition: impl Transition) -
         .animation(Animation::linear(CLOCK))
 }
 
+/// Mounts `view` at the window's top edge. A content-sized root column would
+/// centre its block in the window (`docs/layout-spec.md` §4.2) and move every
+/// slot by half of any change in the conditional's size; the trailing spacer
+/// fills the window column instead, so the conditional's slot starts at a
+/// fixed edge and a sibling's move is the slot's change alone.
 fn runtime(view: impl Fn() -> AnyView + 'static) -> HeadlessRuntime {
     HeadlessRuntime::new_for_tests(
         test_environment(),
-        AnyViewBuilder::<AnyView>::new(view),
+        AnyViewBuilder::<AnyView>::new(move || AnyView::new(vstack((view(), spacer())))),
         400,
         300,
         MinimalTestTheme::default(),
