@@ -936,6 +936,30 @@ impl Interpolator for LinearRamp {
 }
 
 #[test]
+fn a_point_length_scales_to_device_pixels_once() {
+    // 8pt at a 3x display reads 24 device pixels. The flattened length
+    // indices are unique, so the horizontal and vertical passes each
+    // convert exactly once — never `8 · 3 · 3` (water-rs/waterui#3513).
+    let mut executor = Executor::new(filters::Blur(ScriptedParam::constant(8.0)));
+    executor.set_length_scale(3.0);
+    let mut dedup = executor.length_indices.clone();
+    dedup.sort_unstable();
+    dedup.dedup();
+    assert_eq!(
+        dedup.len(),
+        executor.length_indices.len(),
+        "every length index converts exactly once"
+    );
+    let values = executor.pixel_params(executor.animated_values());
+    for &index in &executor.length_indices {
+        assert_eq!(values[index], 24.0);
+    }
+    // The planning side reads the same scaled lengths the frame encodes:
+    // parameter bounds and the backdrop footprint land in device pixels.
+    assert_eq!(executor.footprint((256.0, 128.0)), 24.0);
+}
+
+#[test]
 fn the_footprint_covers_every_running_animation() {
     let size = (256.0, 128.0);
     let radius = ScriptedParam::constant(2.0);
