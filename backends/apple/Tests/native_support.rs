@@ -1342,13 +1342,21 @@ pub fn await_gpu(seconds: f64) {
         // pool cannot stretch the "fast" probe to the gate's clock.
         let probe_deadline =
             std::time::Instant::now() + left.min(std::time::Duration::from_secs(5));
-        if poll_gpu_stage(
+        let trip = poll_gpu_stage(
             probe_deadline
                 .saturating_duration_since(std::time::Instant::now())
                 .as_secs_f64(),
             &stage,
             gpu_readiness_trip(&stage, salt, probe_deadline),
-        ) && poll_gpu_stage(
+        );
+        match trip {
+            // A hard error the trip modelled — not a warmup miss: the
+            // suite sees the real failure, never a retry (#3812).
+            ProbeOutcome::Failed(reason) => panic!("{reason}"),
+            ProbeOutcome::TimedOut => continue,
+            ProbeOutcome::Ready => {}
+        }
+        let fresh = poll_gpu_stage(
             probe_deadline
                 .saturating_duration_since(std::time::Instant::now())
                 .as_secs_f64(),
@@ -1357,12 +1365,19 @@ pub fn await_gpu(seconds: f64) {
             // nothing about a *fresh* one — a test still stalls inside
             // its own `GpuRuntime::new` if instance startup is cold
             // (#3798). A new instance landing inside the bound is the
-            // honest signal for that path.
+            // honest signal for that path; its `Err` is a real failure,
+            // not warmth.
             async {
-                let _fresh = waterui_graphics::gpu::GpuRuntime::new().await;
+                waterui_graphics::gpu::GpuRuntime::new()
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| TripFail::Failed(error.to_string()))
             },
-        ) {
-            return;
+        );
+        match fresh {
+            ProbeOutcome::Failed(reason) => panic!("{reason}"),
+            ProbeOutcome::TimedOut => {}
+            ProbeOutcome::Ready => return,
         }
     }
 }
@@ -1378,7 +1393,7 @@ async fn gpu_readiness_trip(
     stage: &std::cell::Cell<&'static str>,
     salt: u32,
     deadline: std::time::Instant,
-) {
+) -> Result<(), TripFail> {
     use waterui_graphics::wgpu;
     {
         let runtime = waterui_graphics::gpu::GpuRuntime::new()
@@ -1446,7 +1461,7 @@ async fn gpu_readiness_trip(
         // drawable — `present_readiness_frame` drives the real
         // render → present → completion loop against a visible layer.
         stage.set("frame presentation");
-        present_readiness_frame(&context, deadline).await;
+        present_readiness_frame(&context, deadline).await?;
         // One queue-completion trip proves the GPU side of the frame
         // settled too — `submit_with_completion` carries the error a dead
         // device would surface instead of letting the case discover it.
@@ -1466,8 +1481,11 @@ async fn gpu_readiness_trip(
         let result = submitted
             .await
             .expect("the readiness submission reports its completion");
-        result.unwrap_or_else(|failure| panic!("the readiness submission failed: {failure}"));
+        result.map_err(|failure| {
+            TripFail::Failed(format!("the readiness submission failed: {failure}"))
+        })?;
         let _ = queue;
+        Ok(())
     }
 }
 
@@ -1484,7 +1502,7 @@ async fn gpu_readiness_trip(
 async fn present_readiness_frame(
     context: &waterui_graphics::gpu::SharedGpuContext,
     deadline: std::time::Instant,
-) {
+) -> Result<(), TripFail> {
     use cocoa_ui::objc2::Message;
     use cocoa_ui::objc2_metal::{
         MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
@@ -1595,9 +1613,10 @@ async fn present_readiness_frame(
         &pool_queue,
         deadline,
     )
-    .await;
+    .await?;
     drop(presenter);
     drop(present_window);
+    Ok(())
 }
 /// The display-side witness `CATransaction` completion cannot give: a
 /// bounded drawable pool recycles a slot only when Core Animation has
@@ -1618,7 +1637,7 @@ async fn pool_display_witness(
         cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandQueue>,
     >,
     deadline: std::time::Instant,
-) {
+) -> Result<(), TripFail> {
     use cocoa_ui::objc2_metal::{
         MTLClearColor, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLCommandQueue as _,
         MTLLoadAction, MTLRenderPassDescriptor, MTLStoreAction,
@@ -1728,10 +1747,10 @@ async fn pool_display_witness(
     let pool_presented = worker
         .join()
         .expect("the readiness pool worker always exits at the deadline");
-    assert!(
-        pool_presented,
-        "the readiness drawable's slot never recycled — it never presented"
-    );
+    if !pool_presented {
+        return Err(TripFail::TimedOut);
+    }
+    Ok(())
 }
 
 /// The witness tally the two completion paths share — the Metal buffer
@@ -1854,17 +1873,39 @@ fn witness_signal(state: &WitnessState, outcome: Result<(), String>) {
     }
 }
 
+/// What a readiness trip answers — the probe retries only `TimedOut`;
+/// `Failed` carries a real error the suite must see, never a warmup
+/// state (#3812).
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+enum TripFail {
+    TimedOut,
+    Failed(String),
+}
+
+/// What a bounded probe reports.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+enum ProbeOutcome {
+    Ready,
+    TimedOut,
+    Failed(String),
+}
+
 #[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
 fn await_gpu_stage(
     seconds: f64,
     stage: &std::cell::Cell<&'static str>,
-    future: impl core::future::Future<Output = ()>,
+    future: impl core::future::Future<Output = Result<(), TripFail>>,
 ) {
-    assert!(
-        poll_gpu_stage(seconds, stage, future),
-        "the GPU readiness {} stage did not settle within {seconds}s",
-        stage.get(),
-    );
+    match poll_gpu_stage(seconds, stage, future) {
+        ProbeOutcome::Ready => {}
+        ProbeOutcome::TimedOut => {
+            panic!(
+                "the GPU readiness {} stage did not settle within {seconds}s",
+                stage.get(),
+            );
+        }
+        ProbeOutcome::Failed(reason) => panic!("{reason}"),
+    }
 }
 
 /// The hand-rolled poll `await_gpu_stage` panics through: `false` at the
@@ -1874,8 +1915,8 @@ fn await_gpu_stage(
 fn poll_gpu_stage(
     seconds: f64,
     stage: &std::cell::Cell<&'static str>,
-    future: impl core::future::Future<Output = ()>,
-) -> bool {
+    future: impl core::future::Future<Output = Result<(), TripFail>>,
+) -> ProbeOutcome {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::{Context, Poll, Wake, Waker};
@@ -1894,23 +1935,39 @@ fn poll_gpu_stage(
     let _ = stage;
     loop {
         woken.store(false, Ordering::Release);
-        // `catch_unwind`: a probe's internal timeout is an assert inside
-        // the trip — the panic must fail the probe so the warmth loop
-        // can retry, not fail the suite through `poll` (#3812).
+        // `catch_unwind` only catches errors the trip did not model —
+        // its own timeout path returns `Err(TimedOut)` so the warmth
+        // loop retries; every real failure lands in `Failed` and
+        // propagates with its message (#3812).
         let outcome =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gate.as_mut().poll(&mut cx)));
         match outcome {
-            Ok(Poll::Ready(())) => {
+            Ok(Poll::Ready(Ok(()))) => {
                 // A `poll` that blocked past the bound and still resolved
                 // is a slow trip, not a warm one — the warmth probe
                 // counts only completion inside the bound (#3798).
-                return start.elapsed().as_secs_f64() < seconds;
+                return if start.elapsed().as_secs_f64() < seconds {
+                    ProbeOutcome::Ready
+                } else {
+                    ProbeOutcome::TimedOut
+                };
+            }
+            Ok(Poll::Ready(Err(TripFail::TimedOut))) => return ProbeOutcome::TimedOut,
+            Ok(Poll::Ready(Err(TripFail::Failed(reason)))) => {
+                return ProbeOutcome::Failed(reason);
             }
             Ok(Poll::Pending) => {}
-            Err(_) => return false,
+            Err(payload) => {
+                let reason = payload
+                    .downcast_ref::<&str>()
+                    .map(|m| (*m).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "the readiness trip panicked".to_string());
+                return ProbeOutcome::Failed(reason);
+            }
         }
         if start.elapsed().as_secs_f64() >= seconds {
-            return false;
+            return ProbeOutcome::TimedOut;
         }
         pump_main_until(0.05, || woken.load(Ordering::Acquire));
     }
