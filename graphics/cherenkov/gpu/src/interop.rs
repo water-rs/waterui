@@ -1169,7 +1169,7 @@ pub mod dmabuf {
 #[cfg(target_os = "android")]
 pub mod android {
     pub use crate::render::surface_control::ffi::{ASurfaceControl, CreateFailed, SurfaceControl};
-    pub use crate::render::surface_control::planes::HostedSurface;
+    pub use crate::render::surface_control::planes::{BandCommit, BandUpdate, HostedSurface};
 
     /// A surface realized as child surface controls of a host's parent
     /// surface control.
@@ -1187,6 +1187,7 @@ pub mod android {
         pub(crate) size: (u32, u32),
         pub(crate) transparent: bool,
         pub(crate) refresh: cherenkov::RefreshRange,
+        pub(crate) band_commits: Option<std::sync::mpsc::Sender<BandCommit>>,
     }
 
     impl SurfaceControlTarget {
@@ -1204,7 +1205,19 @@ pub mod android {
                 size,
                 transparent: false,
                 refresh: cherenkov::DEFAULT_REFRESH,
+                band_commits: None,
             }
+        }
+
+        /// Lets the surface present the regions above its host windows'
+        /// marks in bands (`cherenkov::Engine::set_band`): every frame
+        /// that changes a band reaches `sink` as a [`BandCommit`] once its
+        /// GPU work finished, and the surface presents nothing new until
+        /// the host applies it (water-rs/waterui#2225).
+        #[must_use]
+        pub fn band_commits(mut self, sink: std::sync::mpsc::Sender<BandCommit>) -> Self {
+            self.band_commits = Some(sink);
+            self
         }
 
         /// Lets the host's content show through transparent pixels: the

@@ -64,10 +64,10 @@ object NativeBridge {
      * [nativeCreateSession] carries the configuration's night-mode flag so
      * the session's colour-scheme signal starts on the real `uiMode`, and
      * [nativeSetColorScheme] reports every later change
-     * (water-rs/waterui#3544). 25 = the GPU top-band edge —
-     * [nativeTopSurfaceAttached] and its change/destroy pair — carrying the
-     * self-drawn entries a frame paints above its embedded platform views
-     * (water-rs/waterui#2225).
+     * (water-rs/waterui#3544). 25 = the GPU band edge —
+     * [nativeBandAttached] / [nativeBandDetached] carry each band View's
+     * `ImageReader` surface, and `onNativeBandLatch` shows a band's newest
+     * image (water-rs/waterui#2225).
      */
     private const val SCHEMA: Int = 25
 
@@ -240,33 +240,25 @@ object NativeBridge {
     @JvmStatic external fun nativeSurfaceDestroyed(sessionPtr: Long, generation: Long)
 
     /**
-     * The top band's surface was created — the band that carries the
-     * self-drawn entries above every embedded platform view. Geometry and
-     * generation follow the base band's contract; refresh is irrelevant —
-     * the base band's attachment already drives the frame cadence, and the
-     * top band presents only when a frame has above-band content.
+     * A band View created the `ImageReader` it shows — `surface` is the
+     * reader's, which the engine presents the self-drawn content above the
+     * `region`-th ordered platform view into. A resize creates a new reader
+     * under a new [generation][nativeBandDetached]; the base band's
+     * attachment drives the frame cadence.
      */
     @JvmStatic
-    external fun nativeTopSurfaceAttached(
+    external fun nativeBandAttached(
         sessionPtr: Long,
         region: Int,
         surface: Surface,
         width: Int,
         height: Int,
         generation: Long,
-    ): Boolean
-
-    @JvmStatic
-    external fun nativeTopSurfaceChanged(
-        sessionPtr: Long,
-        region: Int,
-        width: Int,
-        height: Int,
-        generation: Long,
     )
 
+    /** Band `region`'s reader `generation` is about to close. */
     @JvmStatic
-    external fun nativeTopSurfaceDestroyed(sessionPtr: Long, region: Int, generation: Long)
+    external fun nativeBandDetached(sessionPtr: Long, region: Int, generation: Long)
 
     /**
      * The Activity's started state (`onStart`/`onStop`) — drives the frame

@@ -163,13 +163,14 @@ pub struct HydrolysisAndroidTemplateEntry {
     /// The band class [`painter_band_import`](Self::painter_band_import)
     /// supplies, when set.
     pub painter_band_class: Option<String>,
-    /// Import path of the band `View` the painter mounts above the
-    /// platform-view overlay — the GPU painter's top band
-    /// (water-rs/waterui#2225) — `None` for a painter without one.
-    pub painter_top_band_import: Option<String>,
-    /// The top band class [`painter_top_band_import`](Self::painter_top_band_import)
+    /// Import path of the region band `View` the painter's platform-view
+    /// registry stacks after each embedded platform view — the GPU
+    /// painter's (water-rs/waterui#2225) — `None` for a painter without one.
+    pub painter_region_band_import: Option<String>,
+    /// The region band class
+    /// [`painter_region_band_import`](Self::painter_region_band_import)
     /// supplies, when set.
-    pub painter_top_band_class: Option<String>,
+    pub painter_region_band_class: Option<String>,
 }
 
 /// The two `WebView` answers one generated-manifest section gets from the
@@ -1018,33 +1019,33 @@ impl TemplateContext {
             .expect("Hydrolysis Android entry has no painter band")
     }
 
-    /// Whether the selected painter mounts a band `View` above the
-    /// platform-view overlay.
+    /// Whether the selected painter stacks a region band `View` after each
+    /// embedded platform view.
     #[must_use]
-    pub const fn hydrolysis_android_has_top_band(&self) -> bool {
+    pub const fn hydrolysis_android_has_region_band(&self) -> bool {
         self.hydrolysis_android_entry()
-            .painter_top_band_class
+            .painter_region_band_class
             .is_some()
     }
 
-    /// The top band `View`'s import path; only valid when
-    /// [`Self::hydrolysis_android_has_top_band`].
+    /// The region band `View`'s import path; only valid when
+    /// [`Self::hydrolysis_android_has_region_band`].
     #[must_use]
-    pub fn hydrolysis_android_top_band_import(&self) -> &str {
+    pub fn hydrolysis_android_region_band_import(&self) -> &str {
         self.hydrolysis_android_entry()
-            .painter_top_band_import
+            .painter_region_band_import
             .as_deref()
-            .expect("Hydrolysis Android entry has no top band")
+            .expect("Hydrolysis Android entry has no region band")
     }
 
-    /// The top band `View`'s class name; only valid when
-    /// [`Self::hydrolysis_android_has_top_band`].
+    /// The region band `View`'s class name; only valid when
+    /// [`Self::hydrolysis_android_has_region_band`].
     #[must_use]
-    pub fn hydrolysis_android_top_band_class(&self) -> &str {
+    pub fn hydrolysis_android_region_band_class(&self) -> &str {
         self.hydrolysis_android_entry()
-            .painter_top_band_class
+            .painter_region_band_class
             .as_deref()
-            .expect("Hydrolysis Android entry has no top band")
+            .expect("Hydrolysis Android entry has no region band")
     }
 
     /// Whether the app bridges the system `WebView` — the pinned host's
@@ -1879,8 +1880,8 @@ mod tests {
                 min_api_level: 31,
                 painter_band_import: painter.band_import(),
                 painter_band_class: painter.band_class(),
-                painter_top_band_import: painter.top_band_import(),
-                painter_top_band_class: painter.top_band_class(),
+                painter_region_band_import: painter.region_band_import(),
+                painter_region_band_class: painter.region_band_class(),
             };
             let standalone = project_ctx().with_hydrolysis_android(app.clone());
             let embedded_context = project_ctx().with_hydrolysis_android_embedded(
@@ -2380,8 +2381,8 @@ mod tests {
                 min_api_level: 31,
                 painter_band_import: None,
                 painter_band_class: None,
-                painter_top_band_import: None,
-                painter_top_band_class: None,
+                painter_region_band_import: None,
+                painter_region_band_class: None,
             });
         let unsigned = render(&ctx);
         assert!(!unsigned.contains("signingConfigs"));
@@ -2898,8 +2899,8 @@ mod tests {
                     min_api_level: 31,
                     painter_band_import: None,
                     painter_band_class: None,
-                    painter_top_band_import: None,
-                    painter_top_band_class: None,
+                    painter_region_band_import: None,
+                    painter_region_band_class: None,
                 },
             );
             let cargo_toml =

@@ -234,9 +234,9 @@ class HydrolysisSession internal constructor(
         painter?.attach(view)
         // The paint-order hit query every binding needs for gesture
         // ownership — the painter's OrderedContent covers the draw side;
-        // on the GPU band, whose surfaces live outside the platform-view
-        // container, this is the whole ordered answer
-        // (water-rs/waterui#2225).
+        // on the GPU painter, whose bands take no touches and whose base
+        // surface lives outside the platform-view container, this is the
+        // whole ordered answer (water-rs/waterui#2225).
         view.platformViewRegistry.setOrderedHitTest(
             OrderedHitTest { x, y -> platformViewAt(x, y) },
         )
@@ -541,6 +541,23 @@ class HydrolysisSession internal constructor(
         translucency = next
         if (nativeDepth == 0) translucencyListeners.forEach { it(next) }
         else translucencyPending = true
+    }
+
+    /**
+     * A frame that changed the band of `region` finished on the GPU: the
+     * band shows its newest image, or nothing when [image] is false
+     * (water-rs/waterui#2225). The native frame latches every band it
+     * changed in one UI-thread turn and then applies the base surface's
+     * transaction, so all of them draw in the same view frame. Latching
+     * only acquires an image and invalidates — nothing re-enters native.
+     */
+    @CalledFromNative
+    fun onNativeBandLatch(region: Int, image: Boolean) {
+        val band =
+            checkNotNull(hostView?.platformViewRegistry?.band(region)) {
+                "hydrolysis: the native frame latched band $region, which no View shows"
+            }
+        band.latch(image)
     }
 }
 

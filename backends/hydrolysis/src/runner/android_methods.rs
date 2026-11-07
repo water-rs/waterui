@@ -22,12 +22,13 @@ pub enum HostMethodId {
     BackAvailable,
     PlatformViewFocus,
     Translucency,
+    BandLatch,
 }
 
 impl HostMethodId {
     /// Every id, in table order — the per-variant `dead_code` exemption for
     /// non-Android test builds and the test's order check both read it.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::RequestRedraw,
         Self::SoftInput,
         Self::AccessibilityTreeChanged,
@@ -38,6 +39,7 @@ impl HostMethodId {
         Self::BackAvailable,
         Self::PlatformViewFocus,
         Self::Translucency,
+        Self::BandLatch,
     ];
 }
 
@@ -90,6 +92,10 @@ pub const HOST_METHODS: &[HostMethod] = &[
     HostMethod {
         name: "onNativeTranslucency",
         signature: "(ZZI)V",
+    },
+    HostMethod {
+        name: "onNativeBandLatch",
+        signature: "(IZ)V",
     },
 ];
 

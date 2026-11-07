@@ -10,7 +10,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use ndk::native_window::NativeWindow;
-use raw_window_handle::{AndroidDisplayHandle, DisplayHandle, HasDisplayHandle, RawDisplayHandle};
+use raw_window_handle::{
+    AndroidDisplayHandle, AndroidNdkWindowHandle, DisplayHandle, HasDisplayHandle, HasWindowHandle,
+    RawDisplayHandle, RawWindowHandle, WindowHandle,
+};
 
 use crate::platform::{PresentationSurface, SurfaceError};
 
@@ -26,6 +29,69 @@ impl HasDisplayHandle for AndroidDisplay {
         Ok(unsafe {
             DisplayHandle::borrow_raw(RawDisplayHandle::Android(AndroidDisplayHandle::new()))
         })
+    }
+}
+
+/// A band's `ImageReader` surface as the window its swapchain presents
+/// to (water-rs/waterui#2225).
+struct BandWindow(NativeWindow);
+
+impl HasWindowHandle for BandWindow {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, raw_window_handle::HandleError> {
+        let handle = RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(self.0.ptr().cast()));
+        // SAFETY: the wrapper holds its own reference to the native
+        // window, so the pointer stays valid for the borrow.
+        Ok(unsafe { WindowHandle::borrow_raw(handle) })
+    }
+}
+
+impl HasDisplayHandle for BandWindow {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, raw_window_handle::HandleError> {
+        AndroidDisplay.display_handle()
+    }
+}
+
+/// One band's attachment: the `ImageReader` surface behind the host's
+/// band `View` for one region above an embedded platform view
+/// (water-rs/waterui#2225).
+pub struct BandAttachment {
+    window: NativeWindow,
+    width: u32,
+    height: u32,
+    /// The host's generation for this surface; a stale detach is ignored.
+    generation: u64,
+}
+
+impl BandAttachment {
+    /// `window` is the owned lease `ANativeWindow_fromSurface` returned
+    /// for the band's `ImageReader` surface.
+    pub(crate) const fn new(
+        window: NativeWindow,
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) -> Self {
+        Self {
+            window,
+            width,
+            height,
+            generation,
+        }
+    }
+
+    /// Whether `generation` names this attachment.
+    pub(crate) const fn is(&self, generation: u64) -> bool {
+        self.generation == generation
+    }
+
+    /// The band's presentation target: a transparent swapchain whose
+    /// images the band `View` draws as sRGB hardware bitmaps.
+    fn target(&self) -> cherenkov_gpu::WindowTarget {
+        cherenkov_gpu::WindowTarget::new(BandWindow(self.window.clone()), (self.width, self.height))
+            .transparent(true)
+            .color_space(cherenkov_gpu::interop::ColorSpaceRequest::Exact(
+                wgpu::SurfaceColorSpace::Srgb,
+            ))
     }
 }
 
@@ -214,10 +280,16 @@ pub struct AndroidSurface {
     >,
     /// GPU pipelines survive `SurfaceHolder` teardown while this host stays alive.
     engine_state: Option<std::rc::Rc<crate::engine::SharedEngineState>>,
-    /// The boundaries whose top-root request a rebuilt engine window must
-    /// replay — a target that arrived before the window existed, or whose
-    /// window has since been rebuilt (water-rs/waterui#2225).
-    top_root_pending: std::cell::RefCell<std::collections::BTreeSet<u32>>,
+    /// The band regions the engine knows of, each with the engine surface
+    /// it was delivered to: a rebuilt engine window gets every band again
+    /// (water-rs/waterui#2225).
+    bands_delivered: std::collections::BTreeMap<u32, cherenkov::SurfaceId>,
+    /// Frames that changed bands, as the engine hands them over once
+    /// their GPU work finished; the sender goes to every engine window.
+    band_commits: (
+        std::sync::mpsc::Sender<cherenkov_gpu::interop::android::BandCommit>,
+        std::sync::mpsc::Receiver<cherenkov_gpu::interop::android::BandCommit>,
+    ),
     native_window: Option<WindowLease>,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// engine surface — valid while between surface generations too.
@@ -282,7 +354,8 @@ impl AndroidSurface {
             generation: 0,
             engine_window: None,
             engine_state: None,
-            top_root_pending: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            bands_delivered: std::collections::BTreeMap::new(),
+            band_commits: std::sync::mpsc::channel(),
             native_window: None,
             width: 0,
             height: 0,
@@ -401,68 +474,59 @@ impl AndroidSurface {
                     .window,
                 window_slot: &mut self.engine_window,
                 transparent: self.transparent,
+                band_commits: &self.band_commits.0,
             },
         )
     }
 
-    /// Sets or clears the second presentation root for entries above an
-    /// external host window's mark: `target` is the top band's
-    /// `SurfaceControlTarget` — a surface the host places above the
-    /// embedded platform views (water-rs/waterui#2225). `None` returns
-    /// those entries to this window's own root, beneath the views.
-    /// With no live engine window the request stays pending and the host
-    /// replays it once one exists.
-    pub(crate) fn set_top_root(
-        &self,
-        region: u32,
-        target: Option<cherenkov_gpu::interop::android::SurfaceControlTarget>,
-    ) {
-        // `pending` records that a top root was requested, not that one
-        // delivery is still owed — a rebuilt engine window must replay it,
-        // so the boundary stays listed until `set_top_root(region, None)`
-        // arrives (water-rs/waterui#2225).
-        if target.is_some() {
-            self.top_root_pending.borrow_mut().insert(region);
-        } else {
-            self.top_root_pending.borrow_mut().remove(&region);
-        }
-        if let Some(window) = self.engine_window.as_ref() {
-            window
-                .surface
-                .set_top_root(usize::try_from(region).expect("region fits usize"), target)
-                .expect("hydrolysis android: engine render thread is gone");
+    /// Sets or clears the band presenting `region`, the content above the
+    /// `region`-th embedded platform view (water-rs/waterui#2225). With no
+    /// live engine window the band waits for [`Self::deliver_bands`].
+    pub(crate) fn set_band(&mut self, region: u32, band: Option<&BandAttachment>) {
+        self.bands_delivered.remove(&region);
+        let Some(window) = self.engine_window.as_ref() else {
+            return;
+        };
+        let index = usize::try_from(region).expect("region fits usize");
+        window
+            .surface
+            .set_band(index, band.map(BandAttachment::target))
+            .expect("hydrolysis android: engine render thread is gone");
+        if band.is_some() {
+            self.bands_delivered.insert(region, window.surface.id());
         }
     }
 
-    /// Whether a top-root request for `region` still waits for a live
-    /// engine window — the host re-pushes that band's target when this
-    /// and its attachment both hold.
-    pub(crate) fn has_pending_top_root(&self, region: u32) -> bool {
-        self.top_root_pending.borrow().contains(&region) && self.engine_window.is_some()
+    /// Delivers every band of `bands` the live engine window does not
+    /// have yet — after it was (re)built. Answers whether any was, so the
+    /// host renders a frame that fills them.
+    pub(crate) fn deliver_bands(
+        &mut self,
+        bands: &std::collections::BTreeMap<u32, BandAttachment>,
+    ) -> bool {
+        let Some(live) = self
+            .engine_window
+            .as_ref()
+            .map(|window| window.surface.id())
+        else {
+            return false;
+        };
+        let mut delivered = false;
+        for (&region, band) in bands {
+            if self.bands_delivered.get(&region) != Some(&live) {
+                self.set_band(region, Some(band));
+                delivered = true;
+            }
+        }
+        delivered
     }
 
-    /// The GPU context a new band's `AndroidSurface` shares — the bands
-    /// and the base surface render on one device.
-    pub(crate) fn gpu_handle(&self) -> AndroidGpuContext {
-        self.gpu.clone()
-    }
-
-    /// The `SurfaceControlTarget` the base window presents above-mark
-    /// entries under while this attachment is live — `None` while no
-    /// surface is attached. Its parent reparents under the top band's
-    /// `SurfaceView`, which the host stacks above the embedded platform
-    /// views (water-rs/waterui#2225).
-    pub(crate) fn top_root_target(
+    /// The band commits the engine handed over since the last call, oldest
+    /// first.
+    pub(crate) fn take_band_commits(
         &self,
-    ) -> Option<cherenkov_gpu::interop::android::SurfaceControlTarget> {
-        use cherenkov_gpu::interop::android::{SurfaceControl, SurfaceControlTarget};
-        let window = &self.native_window.as_ref()?.window;
-        // SAFETY: the host holds the live SurfaceView's ANativeWindow lease.
-        let parent = unsafe { SurfaceControl::from_window(window.ptr(), c"HydrolysisTop") }
-            .expect("hydrolysis android: failed to create the top-band compositor parent");
-        let looper = ndk::looper::ForeignLooper::for_thread()
-            .expect("hydrolysis android: top-root creation requires the host Looper");
-        Some(SurfaceControlTarget::new(parent, (self.width, self.height), looper).transparent(true))
+    ) -> impl Iterator<Item = cherenkov_gpu::interop::android::BandCommit> + '_ {
+        self.band_commits.1.try_iter()
     }
 
     /// If `generation` names the live attachment, releases it. A stale
