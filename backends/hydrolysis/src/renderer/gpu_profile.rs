@@ -59,7 +59,7 @@ impl FrameStageTimes {
     }
 
     /// Sets the `update`.
-    pub fn set_update(&mut self, update: Duration) {
+    pub const fn set_update(&mut self, update: Duration) {
         self.update = update;
     }
 
@@ -70,7 +70,7 @@ impl FrameStageTimes {
     }
 
     /// Sets the `layout`.
-    pub fn set_layout(&mut self, layout: Duration) {
+    pub const fn set_layout(&mut self, layout: Duration) {
         self.layout = layout;
     }
 
@@ -81,7 +81,7 @@ impl FrameStageTimes {
     }
 
     /// Sets the `encode`.
-    pub fn set_encode(&mut self, encode: Duration) {
+    pub const fn set_encode(&mut self, encode: Duration) {
         self.encode = encode;
     }
 
@@ -116,7 +116,7 @@ impl FrameStageTimes {
     }
 
     /// Sets the `readback`.
-    pub fn set_readback(&mut self, readback: Duration) {
+    pub const fn set_readback(&mut self, readback: Duration) {
         self.readback = readback;
     }
 }
