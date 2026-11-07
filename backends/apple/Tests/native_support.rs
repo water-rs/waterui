@@ -1337,10 +1337,17 @@ pub fn await_gpu(seconds: f64) {
             "the GPU readiness warmth stage did not settle within {seconds}s"
         );
         salt += 1;
+        // The probe's own deadline — inside `poll()` the trip's pool
+        // witness pumps and joins on this bound, so a stalled drawable
+        // pool cannot stretch the "fast" probe to the gate's clock.
+        let probe_deadline =
+            std::time::Instant::now() + left.min(std::time::Duration::from_secs(5));
         if poll_gpu_stage(
-            left.min(std::time::Duration::from_secs(5)).as_secs_f64(),
+            probe_deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs_f64(),
             &stage,
-            gpu_readiness_trip(&stage, salt, deadline),
+            gpu_readiness_trip(&stage, salt, probe_deadline),
         ) {
             return;
         }
@@ -1875,7 +1882,10 @@ fn poll_gpu_stage(
     loop {
         woken.store(false, Ordering::Release);
         if matches!(gate.as_mut().poll(&mut cx), Poll::Ready(())) {
-            return true;
+            // A `poll` that blocked past the bound and still resolved is
+            // a slow trip, not a warm one — the warmth probe counts only
+            // completion inside the bound (#3798).
+            return start.elapsed().as_secs_f64() < seconds;
         }
         if start.elapsed().as_secs_f64() >= seconds {
             return false;
