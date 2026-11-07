@@ -666,7 +666,11 @@ mod real {
     /// reports. The document must get the bridge, and a handler call must
     /// cross it, or the two checks disagree.
     fn a_local_file_document_receives_the_bridge(executor: &TestExecutor) {
-        let path = std::env::temp_dir().join("waterui-hydrolysis-real-engine-local.html");
+        // A directory of this run's own: two runs of the suite at once must
+        // not load, rewrite or remove each other's document.
+        let directory =
+            tempfile::tempdir().expect("a temporary directory for the local test document");
+        let path = directory.path().join("local.html");
         fs::write(&path, LOCAL_HTML).expect("the local test document is writable");
         let url: Url = format!("file://{}", path.display())
             .parse()
@@ -677,7 +681,9 @@ mod real {
         engine.navigate("the local file document to load", || {
             engine.handle.go_to(&url);
         });
-        fs::remove_file(&path).expect("the local test document is removable");
+        directory
+            .close()
+            .expect("the local test document's directory is removable");
 
         assert_eq!(
             engine.bridge_globals(),
