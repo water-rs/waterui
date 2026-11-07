@@ -178,7 +178,7 @@ impl Ghost {
                     run.update_blur(sample.blur());
                     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
                     run.update_pixel();
-                } else {
+                } else if !run.blur_in_flight() {
                     run.complete();
                 }
             }
@@ -284,8 +284,16 @@ impl GhostRun {
                             // The root hides only once the blurred frame is
                             // on screen — never before, so no frame shows
                             // a gap (§2.6).
+                            let weak_run_present = weak_run.clone();
                             effect.on_first_present(move || {
                                 view::set_hidden(&root, true);
+                                // The first blurred frame is on screen —
+                                // the completion the animation end
+                                // deferred runs now, so the ghost detaches
+                                // after its blurred present (#3798).
+                                if let Some(run) = weak_run_present.upgrade() {
+                                    run.complete();
+                                }
                             });
                             effect.request_render();
                         }
@@ -333,6 +341,18 @@ impl GhostRun {
             pixel
         };
         crate::transition::pixel::PixelRemoval::update(&pixel, self);
+    }
+
+    /// A blur effect is armed but has not presented its first frame
+    /// yet — the animation-end completion waits for it, since only that
+    /// present hides the retired root (#3798).
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    fn blur_in_flight(&self) -> bool {
+        self.realization.borrow().as_ref().is_some_and(|r| {
+            r.blur
+                .as_ref()
+                .is_some_and(|blur| blur.effect.borrow().is_some())
+        })
     }
 
     /// The completion sequence (§1.5): the site's slot release, the
