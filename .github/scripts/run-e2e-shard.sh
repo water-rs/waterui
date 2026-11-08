@@ -185,7 +185,6 @@ if [[ "${platform}" == "ios" ]]; then
   # moves the stall out of the budget; it is bounded on its own so a genuinely
   # hung channel still shows up in the command receipts instead of blocking
   # the shard.
-  local warmup_frame warmup_deadline_at
   warmup_frame="$(mktemp "${TMPDIR:-/tmp}/e2e-warmup-shot.XXXXXX.png")"
   warmup_deadline_at="$("${command_deadline}" deadline --seconds 120)"
   "${command_deadline}" run --label "capture:simctl-io-screenshot-warmup" \
