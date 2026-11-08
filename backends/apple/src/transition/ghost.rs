@@ -53,10 +53,16 @@ struct RemovalBlur {
     env: Environment,
     /// A frozen capture is in flight — the next tick waits for it.
     pending: Cell<bool>,
+    /// The capture answered `Deferred` — a retry is owed and the run
+    /// must stay alive for it (#3798).
+    deferred: Cell<bool>,
     /// The in-flight capture — kept alive until it settles.
     input: RefCell<Option<Rc<crate::transition::pixel::FrozenInput>>>,
     /// The landed effect — `None` until the capture delivers.
     effect: RefCell<Option<crate::components::filtered::FrozenEffect>>,
+    /// The armed effect presented its first frame — with the animation
+    /// end, one of the two conditions `complete` waits on (#3798).
+    first_presented: Cell<bool>,
 }
 
 /// The run behind [`Ghost`]: everything the tick and the completion
@@ -81,6 +87,9 @@ pub struct GhostRun {
     on_complete: RefCell<Option<Box<dyn FnOnce()>>>,
     /// The completion sequence ran — guards it to once.
     completed: Cell<bool>,
+    /// `advance` returned `false` — the other half of the two-condition
+    /// completion a blur effect's first present shares (#3798).
+    animation_finished: Cell<bool>,
     /// The site's environment — the lazy blur effect reads its GPU
     /// services from it.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
@@ -136,6 +145,7 @@ impl Ghost {
                 keep: RefCell::new(None),
                 on_complete: RefCell::new(Some(on_complete)),
                 completed: Cell::new(false),
+                animation_finished: Cell::new(false),
                 #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
                 env: env.clone(),
                 #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
@@ -179,7 +189,15 @@ impl Ghost {
                     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
                     run.update_pixel();
                 } else {
-                    run.complete();
+                    run.animation_finished.set(true);
+                    if run.blur_in_flight() {
+                        // Keep issuing captures: a `Deferred` retry only
+                        // runs inside `update_blur` (#3798).
+                        let sample = run.state.borrow().properties(run.visual.geometry);
+                        run.update_blur(sample.blur());
+                    } else {
+                        run.complete();
+                    }
                 }
             }
         });
@@ -242,8 +260,10 @@ impl GhostRun {
                     radius: waterui::reactive::Binding::container(radius),
                     env: self.env.clone(),
                     pending: Cell::new(false),
+                    deferred: Cell::new(false),
                     input: RefCell::new(None),
                     effect: RefCell::new(None),
+                    first_presented: Cell::new(false),
                 }));
             }
             let Some(blur) = realization.blur.as_ref().map(Rc::clone) else {
@@ -258,6 +278,7 @@ impl GhostRun {
             return;
         }
         blur.pending.set(true);
+        blur.deferred.set(false);
         let weak_blur = Rc::downgrade(&blur);
         let weak_run = Rc::downgrade(self);
         let runtime = crate::gpu_runtime::runtime(&blur.env);
@@ -284,16 +305,35 @@ impl GhostRun {
                             // The root hides only once the blurred frame is
                             // on screen — never before, so no frame shows
                             // a gap (§2.6).
+                            let weak_blur_present = weak_blur.clone();
+                            let weak_run_present = weak_run.clone();
                             effect.on_first_present(move || {
                                 view::set_hidden(&root, true);
+                                // First present and the animation end are
+                                // two independent conditions — completing
+                                // here would cut a 400ms animation short;
+                                // completing only after both preserves the
+                                // present-then-detach order (#3798).
+                                if let Some(blur) = weak_blur_present.upgrade() {
+                                    blur.first_presented.set(true);
+                                }
+                                if let Some(run) = weak_run_present.upgrade()
+                                    && run.animation_finished.get()
+                                {
+                                    run.complete();
+                                }
                             });
                             effect.request_render();
                         }
                         *blur.effect.borrow_mut() = Some(effect);
                     }
-                    // Not presented yet — the next tick retries the
-                    // capture (§2.3).
-                    Err(cocoa_ui::capture::CaptureError::Deferred) => {}
+                    // Not presented yet — a retry is owed; the next
+                    // `update_blur` re-issues the capture (§2.3). The
+                    // deferred state keeps `blur_in_flight` true so the
+                    // animation end cannot retire the run first (#3798).
+                    Err(cocoa_ui::capture::CaptureError::Deferred) => {
+                        blur.deferred.set(true);
+                    }
                     Err(cocoa_ui::capture::CaptureError::Failed(error)) => {
                         tracing::error!("a blur removal's frozen capture failed: {error}");
                         if let Some(run) = weak_run.upgrade() {
@@ -333,6 +373,52 @@ impl GhostRun {
             pixel
         };
         crate::transition::pixel::PixelRemoval::update(&pixel, self);
+    }
+
+    /// The blur path still needs the run: a capture is in flight, or an
+    /// effect is armed but has not presented its first frame — the
+    /// animation-end completion waits on it since only that present
+    /// hides the retired root (#3798). A failed capture completes
+    /// through its own explicit path.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    fn blur_in_flight(&self) -> bool {
+        self.realization.borrow().as_ref().is_some_and(|r| {
+            r.blur.as_ref().is_some_and(|blur| {
+                blur.pending.get()
+                    // A deferral is worth retrying only while the retired
+                    // root still has pixels to capture — a zero-size slot
+                    // that never realized is a terminal state, not a
+                    // recoverable one, and must not keep the run alive
+                    // past the clock's end (#3798).
+                    || (blur.deferred.get() && self.retired_has_pixels())
+                    || (blur.effect.borrow().is_some() && !blur.first_presented.get())
+            })
+        })
+    }
+
+    /// Whether the retired root still has pixels a capture could
+    /// produce — the terminal/retryable split for `Deferred` (#3798).
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    fn retired_has_pixels(&self) -> bool {
+        let Some(window) = view::window(&self.visual.host) else {
+            return false;
+        };
+        #[cfg(target_os = "macos")]
+        let scale = window.backingScaleFactor();
+        #[cfg(target_os = "ios")]
+        let scale = window.screen().scale();
+        let (width, height) = crate::components::filtered::pixel_size(&self.visual.root, scale);
+        width != 0 && height != 0
+    }
+
+    /// Without the filtered pipeline there is no blur to wait on.
+    #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+    #[expect(
+        clippy::unused_self,
+        reason = "the filtered sibling reads the realization; both cfgs keep the same signature"
+    )]
+    const fn blur_in_flight(&self) -> bool {
+        false
     }
 
     /// The completion sequence (§1.5): the site's slot release, the
