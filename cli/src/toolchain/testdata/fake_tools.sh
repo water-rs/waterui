@@ -377,6 +377,9 @@ xcrun)
         *--show-sdk-path)
             respond XCRUN_SDK_PATH
             ;;
+        "--find metal")
+            respond XCRUN_FIND_METAL
+            ;;
         "simctl list --json" | "simctl list devices --json")
             respond XCRUN_SIMCTL_DEVICES
             ;;
