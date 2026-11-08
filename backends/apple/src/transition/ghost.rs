@@ -53,6 +53,9 @@ struct RemovalBlur {
     env: Environment,
     /// A frozen capture is in flight — the next tick waits for it.
     pending: Cell<bool>,
+    /// The capture answered `Deferred` — a retry is owed and the run
+    /// must stay alive for it (#3798).
+    deferred: Cell<bool>,
     /// The in-flight capture — kept alive until it settles.
     input: RefCell<Option<Rc<crate::transition::pixel::FrozenInput>>>,
     /// The landed effect — `None` until the capture delivers.
@@ -257,6 +260,7 @@ impl GhostRun {
                     radius: waterui::reactive::Binding::container(radius),
                     env: self.env.clone(),
                     pending: Cell::new(false),
+                    deferred: Cell::new(false),
                     input: RefCell::new(None),
                     effect: RefCell::new(None),
                     first_presented: Cell::new(false),
@@ -274,6 +278,7 @@ impl GhostRun {
             return;
         }
         blur.pending.set(true);
+        blur.deferred.set(false);
         let weak_blur = Rc::downgrade(&blur);
         let weak_run = Rc::downgrade(self);
         let runtime = crate::gpu_runtime::runtime(&blur.env);
@@ -322,9 +327,13 @@ impl GhostRun {
                         }
                         *blur.effect.borrow_mut() = Some(effect);
                     }
-                    // Not presented yet — the next tick retries the
-                    // capture (§2.3).
-                    Err(cocoa_ui::capture::CaptureError::Deferred) => {}
+                    // Not presented yet — a retry is owed; the next
+                    // `update_blur` re-issues the capture (§2.3). The
+                    // deferred state keeps `blur_in_flight` true so the
+                    // animation end cannot retire the run first (#3798).
+                    Err(cocoa_ui::capture::CaptureError::Deferred) => {
+                        blur.deferred.set(true);
+                    }
                     Err(cocoa_ui::capture::CaptureError::Failed(error)) => {
                         tracing::error!("a blur removal's frozen capture failed: {error}");
                         if let Some(run) = weak_run.upgrade() {
@@ -376,6 +385,7 @@ impl GhostRun {
         self.realization.borrow().as_ref().is_some_and(|r| {
             r.blur.as_ref().is_some_and(|blur| {
                 blur.pending.get()
+                    || blur.deferred.get()
                     || (blur.effect.borrow().is_some() && !blur.first_presented.get())
             })
         })
@@ -383,7 +393,11 @@ impl GhostRun {
 
     /// Without the filtered pipeline there is no blur to wait on.
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
-    fn blur_in_flight(&self) -> bool {
+    #[expect(
+        clippy::unused_self,
+        reason = "the filtered sibling reads the realization; both cfgs keep the same signature"
+    )]
+    const fn blur_in_flight(&self) -> bool {
         false
     }
 
