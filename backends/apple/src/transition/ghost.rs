@@ -385,10 +385,30 @@ impl GhostRun {
         self.realization.borrow().as_ref().is_some_and(|r| {
             r.blur.as_ref().is_some_and(|blur| {
                 blur.pending.get()
-                    || blur.deferred.get()
+                    // A deferral is worth retrying only while the retired
+                    // root still has pixels to capture — a zero-size slot
+                    // that never realized is a terminal state, not a
+                    // recoverable one, and must not keep the run alive
+                    // past the clock's end (#3798).
+                    || (blur.deferred.get() && self.retired_has_pixels())
                     || (blur.effect.borrow().is_some() && !blur.first_presented.get())
             })
         })
+    }
+
+    /// Whether the retired root still has pixels a capture could
+    /// produce — the terminal/retryable split for `Deferred` (#3798).
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    fn retired_has_pixels(&self) -> bool {
+        let Some(window) = view::window(&self.visual.host) else {
+            return false;
+        };
+        #[cfg(target_os = "macos")]
+        let scale = window.backingScaleFactor();
+        #[cfg(target_os = "ios")]
+        let scale = window.screen().scale();
+        let (width, height) = crate::components::filtered::pixel_size(&self.visual.root, scale);
+        width != 0 && height != 0
     }
 
     /// Without the filtered pipeline there is no blur to wait on.
