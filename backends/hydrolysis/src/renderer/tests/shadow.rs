@@ -64,7 +64,7 @@ fn floating_caster() -> impl View {
 /// The padded block fills the 120×120 window exactly, so the caster lands at
 /// (20,20)–(76,76) no matter how the content is distributed.
 fn scene(view: impl View) -> impl View {
-    Padding::new(EdgeInsets::new(20.0, 44.0, 20.0, 44.0), view)
+    Padding::new(EdgeInsets::new(20.0, 20.0, 44.0, 44.0), view)
 }
 
 fn pixel(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {

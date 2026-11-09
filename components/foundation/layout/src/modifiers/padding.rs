@@ -167,8 +167,8 @@ impl Layout for PaddingLayout {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EdgeInsets {
     top: f32,
-    bottom: f32,
     leading: f32,
+    bottom: f32,
     trailing: f32,
 }
 
@@ -222,15 +222,15 @@ macro_rules! from_pair {
 
 from_pair!(f32, f64);
 
-/// `[top, bottom, leading, trailing]` — the [`EdgeInsets::new`] order:
-/// `.padding_with([4.0, 12.0, 16.0, 16.0])`.
+/// `[top, leading, bottom, trailing]` — the [`EdgeInsets::new`] order:
+/// `.padding_with([4.0, 16.0, 12.0, 16.0])`.
 macro_rules! from_quad {
     ($($ty:ty),+ $(,)?) => {
         $(
             #[allow(clippy::cast_possible_truncation)]
             impl From<[$ty; 4]> for EdgeInsets {
-                fn from([top, bottom, leading, trailing]: [$ty; 4]) -> Self {
-                    Self::new(top as f32, bottom as f32, leading as f32, trailing as f32)
+                fn from([top, leading, bottom, trailing]: [$ty; 4]) -> Self {
+                    Self::new(top as f32, leading as f32, bottom as f32, trailing as f32)
                 }
             }
         )+
@@ -246,8 +246,8 @@ impl core::ops::Add for EdgeInsets {
     fn add(self, rhs: Self) -> Self {
         Self {
             top: self.top + rhs.top,
-            bottom: self.bottom + rhs.bottom,
             leading: self.leading + rhs.leading,
+            bottom: self.bottom + rhs.bottom,
             trailing: self.trailing + rhs.trailing,
         }
     }
@@ -260,13 +260,15 @@ impl Default for EdgeInsets {
 }
 
 impl EdgeInsets {
-    /// Creates an [`EdgeInsets`] value with explicit edges.
+    /// Creates an [`EdgeInsets`] value with explicit edges, in
+    /// `top, leading, bottom, trailing` order — the same order as
+    /// `SwiftUI`'s `EdgeInsets(top:leading:bottom:trailing:)`.
     #[must_use]
-    pub const fn new(top: f32, bottom: f32, leading: f32, trailing: f32) -> Self {
+    pub const fn new(top: f32, leading: f32, bottom: f32, trailing: f32) -> Self {
         Self {
             top,
-            bottom,
             leading,
+            bottom,
             trailing,
         }
     }
@@ -438,7 +440,7 @@ mod tests {
     #[test]
     fn test_padding_placement_bounded_proposal() {
         let layout = PaddingLayout {
-            edges: EdgeInsets::new(10.0, 20.0, 15.0, 25.0).into_computed(),
+            edges: EdgeInsets::new(10.0, 15.0, 20.0, 25.0).into_computed(),
         };
 
         let mut child = MockSubView {
@@ -497,7 +499,7 @@ mod tests {
     #[test]
     fn test_padding_offsets_explicit_guides() {
         let layout = PaddingLayout {
-            edges: EdgeInsets::new(10.0, 0.0, 15.0, 0.0).into_computed(),
+            edges: EdgeInsets::new(10.0, 15.0, 0.0, 0.0).into_computed(),
         };
         let child = GuidedSubview {
             size: Size::new(50.0, 30.0),

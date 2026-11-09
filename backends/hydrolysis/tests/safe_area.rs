@@ -36,11 +36,11 @@ use support::{
 
 /// The window insets these tests publish — a status bar at the top, a
 /// navigation bar at the bottom and a small cutout on the leading edge.
-const SAFE_INSETS: EdgeInsets = EdgeInsets::new(48.0, 34.0, 8.0, 8.0);
+const SAFE_INSETS: EdgeInsets = EdgeInsets::new(48.0, 8.0, 34.0, 8.0);
 
 /// A keyboard region on the bottom edge, published separately from the
 /// container insets the way an Android host reports `ime` next to `system_bars`.
-const KEYBOARD_INSETS: EdgeInsets = EdgeInsets::new(0.0, 336.0, 0.0, 0.0);
+const KEYBOARD_INSETS: EdgeInsets = EdgeInsets::new(0.0, 0.0, 336.0, 0.0);
 
 /// The window-space y where the keyboard band starts for the test viewport.
 const KEYBOARD_TOP: f64 = 508.0;
@@ -162,7 +162,7 @@ fn ignore_safe_area_releases_only_the_flagged_edges() {
 /// the left under left-to-right (water-rs/waterui#1827).
 #[test]
 fn a_leading_inset_sits_on_the_right_under_right_to_left() {
-    let insets = waterui::binding(EdgeInsets::new(0.0, 0.0, 30.0, 0.0));
+    let insets = waterui::binding(EdgeInsets::new(0.0, 30.0, 0.0, 0.0));
     let mut env = env_with_insets(&insets);
     env.insert(LayoutDirection::RightToLeft);
     let mut app = mount_rendered(
@@ -187,7 +187,7 @@ fn a_leading_inset_sits_on_the_right_under_right_to_left() {
 /// the released edge is discriminable from the untouched trailing one.
 #[test]
 fn a_leading_release_reaches_the_right_edge_under_right_to_left() {
-    let insets = waterui::binding(EdgeInsets::new(0.0, 0.0, 30.0, 10.0));
+    let insets = waterui::binding(EdgeInsets::new(0.0, 30.0, 0.0, 10.0));
     let mut env = env_with_insets(&insets);
     env.insert(LayoutDirection::RightToLeft);
     let mut app = mount_rendered(
@@ -267,7 +267,7 @@ fn a_safe_area_change_relays_out_the_root() {
     );
     let first = node_bounds(app.tree(), "inbox");
 
-    insets.set(EdgeInsets::new(80.0, 34.0, 24.0, 8.0));
+    insets.set(EdgeInsets::new(80.0, 24.0, 34.0, 8.0));
     app.settle();
 
     let moved = node_bounds(app.tree(), "inbox");
@@ -736,7 +736,7 @@ fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
         "the field's bottom lands exactly on the keyboard boundary, got {cleared:?}"
     );
 
-    keyboard.set(EdgeInsets::new(0.0, 400.0, 0.0, 0.0));
+    keyboard.set(EdgeInsets::new(0.0, 0.0, 400.0, 0.0));
     app.pump_for(Duration::from_millis(500));
 
     let tracked = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
@@ -925,7 +925,7 @@ fn a_fractional_geometry_still_touches_the_boundary() {
     // 2.75x-density container insets: nothing in this geometry is an
     // integer — not the boundary (844 - 24.38), not the release amounts,
     // not the composer's measured text height.
-    const FRACTIONAL_INSETS: EdgeInsets = EdgeInsets::new(47.24, 24.38, 8.2, 8.6);
+    const FRACTIONAL_INSETS: EdgeInsets = EdgeInsets::new(47.24, 8.2, 24.38, 8.6);
     let container = waterui::binding(FRACTIONAL_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let mut app = {
@@ -1407,7 +1407,7 @@ fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
     app.pump_for(Duration::from_millis(500));
     app.pump_for(Duration::from_secs(1));
 
-    keyboard.set(EdgeInsets::new(0.0, 400.0, 0.0, 0.0));
+    keyboard.set(EdgeInsets::new(0.0, 0.0, 400.0, 0.0));
     // One frame — not a settle. The clearance must already be painted.
     app.pump_for(Duration::from_millis(16));
 
@@ -1579,7 +1579,7 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
     for (bottom_inset, keyboard_top, covers_band) in
         [(60.0_f32, 784.0, false), (336.0, KEYBOARD_TOP, true)]
     {
-        keyboard.set(EdgeInsets::new(0.0, bottom_inset, 0.0, 0.0));
+        keyboard.set(EdgeInsets::new(0.0, 0.0, bottom_inset, 0.0));
         app.settle();
 
         let bar = node_bounds_only_role(app.tree(), Role::TabList);
@@ -1958,8 +1958,8 @@ fn a_lazy_stack_outside_a_scroll_gives_items_a_context() {
     let laid = node_bounds(app.tree(), "lazy-3");
     keyboard.set(EdgeInsets::new(
         0.0,
-        f64_as_f32(844.0 - (laid.y0 + laid.height())),
         0.0,
+        f64_as_f32(844.0 - (laid.y0 + laid.height())),
         0.0,
     ));
     app.pump_for(Duration::from_millis(500));

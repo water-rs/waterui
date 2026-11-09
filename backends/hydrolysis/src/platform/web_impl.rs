@@ -803,8 +803,8 @@ impl Viewport {
         let inset = |property: &str| crate::num_cast::f64_as_f32(length(property));
         waterui_layout::padding::EdgeInsets::new(
             inset("padding-top"),
-            crate::num_cast::f64_as_f32(length("padding-bottom") + extension),
             inset("padding-left"),
+            crate::num_cast::f64_as_f32(length("padding-bottom") + extension),
             inset("padding-right"),
         )
     }

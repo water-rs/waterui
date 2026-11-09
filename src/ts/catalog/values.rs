@@ -242,7 +242,7 @@ impl EdgeValues {
             .zip(&leading)
             .zip(&trailing)
             .map(|(((top, bottom), leading), trailing)| {
-                EdgeInsets::new(top, bottom, leading, trailing)
+                EdgeInsets::new(top, leading, bottom, trailing)
             })
             .computed()
     }

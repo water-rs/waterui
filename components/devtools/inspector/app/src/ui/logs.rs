@@ -111,7 +111,7 @@ fn row_view(row: LogRow) -> ListItem {
                 .spacing(2.0),
         ))
         .spacing(10.0)
-        .padding_with(EdgeInsets::new(6.0, 6.0, 12.0, 12.0)),
+        .padding_with(EdgeInsets::new(6.0, 12.0, 6.0, 12.0)),
     )
 }
 

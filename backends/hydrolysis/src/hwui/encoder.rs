@@ -371,17 +371,16 @@ pub struct Encoder {
     platform_scale: f64,
     clear: Option<WorkingColor>,
     content_animating: bool,
-    api_level: u32,
     effects: Effects,
 }
 
 impl Encoder {
-    /// An encoder for a device at `api_level`, mirroring an empty tree.
+    /// An encoder mirroring an empty tree.
     ///
     /// # Errors
     ///
     /// [`HwuiError::Encoding`] if the root node cannot be created.
-    pub fn new(api_level: u32) -> Result<Self, HwuiError> {
+    pub fn new() -> Result<Self, HwuiError> {
         let tree = SurfaceTree::new();
         let root = tree.root();
         let registry = SharedRegistry::new();
@@ -404,7 +403,6 @@ impl Encoder {
             host_dirty: true,
             clear: None,
             content_animating: false,
-            api_level,
             effects,
         };
         encoder.create_layer(root)?;
@@ -490,7 +488,6 @@ impl Encoder {
             registry: &self.registry,
             text_layouts: &self.text_layouts,
             scratch: &mut self.scratch,
-            api_level: self.api_level,
             layer,
         }
     }
@@ -1043,7 +1040,6 @@ impl Encoder {
                 registry: &self.registry,
                 text_layouts: &self.text_layouts,
                 scratch: &mut self.scratch,
-                api_level: self.api_level,
                 layer: raw,
             };
             let inner = if needs_inner {
@@ -1320,7 +1316,6 @@ impl Encoder {
             registry,
             text_layouts,
             scratch,
-            api_level,
             platform_scale,
             ..
         } = self;
@@ -1333,7 +1328,6 @@ impl Encoder {
             registry,
             text_layouts,
             scratch,
-            api_level: *api_level,
             layer: raw,
         };
         let mut owned = Owned::default();

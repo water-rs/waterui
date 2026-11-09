@@ -65,7 +65,7 @@ pub enum HydrolysisAndroidPainter {
     #[default]
     Gpu,
     /// The `RenderNode` painter drawing through the host view hierarchy.
-    /// Its own minimum is API 29; the generated app uses the maximum of
+    /// Its own minimum is API 34, `Canvas.drawMesh`; the generated app uses the maximum of
     /// that and the framework floor.
     Hwui,
 }
@@ -93,7 +93,7 @@ impl HydrolysisAndroidPainter {
             // Painter minimums, not the framework floor. `template_entry`
             // takes the maximum of these and `android-min-api-level`.
             Self::Gpu => 26,
-            Self::Hwui => 29,
+            Self::Hwui => 34,
         }
     }
 
@@ -2298,10 +2298,10 @@ mod tests {
     }
 
     /// The hwui painter renders its module and dependency coordinates and
-    /// ships no GPU band view. Its own API 29 requirement sits under the
-    /// framework floor, so the generated `minSdk` is the framework's.
+    /// ships no GPU band view. Its own API 34 requirement sits above the
+    /// framework floor, so the generated `minSdk` is the painter's.
     #[test]
-    fn the_hwui_painter_renders_at_the_framework_floor_and_mounts_no_band() -> std::io::Result<()> {
+    fn the_hwui_painter_renders_at_its_own_floor_and_mounts_no_band() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["hwui"]);
             let (_temporary, project) = fixture_project(&host, "").await?;
@@ -2329,8 +2329,8 @@ mod tests {
 
             let gradle = files["app/build.gradle.kts"].as_str();
             assert!(
-                gradle.contains("minSdk = 33"),
-                "framework api floor: {gradle}"
+                gradle.contains("minSdk = 34"),
+                "hwui painter api floor: {gradle}"
             );
             assert!(
                 gradle.contains("\"dev.waterui.hydrolysis:hwui\""),

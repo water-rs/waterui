@@ -1160,7 +1160,7 @@ fn ts_padding_takes_every_shape_the_rust_chain_takes() {
                 children: "Inset",
             })"#,
         ),
-        text("Inset").padding_with(EdgeInsets::new(4.0, 0.0, 16.0, 16.0)),
+        text("Inset").padding_with(EdgeInsets::new(4.0, 16.0, 0.0, 16.0)),
     );
     assert_same(
         "a bare padding",

@@ -193,20 +193,6 @@ pub enum HwuiError {
         /// What it asks for.
         what: String,
     },
-    /// The layer needs a newer Android than the device runs.
-    #[error(
-        "HWUI target: layer {layer} draws {what}, which needs API {needs}; the device runs API {device}"
-    )]
-    RequiresApi {
-        /// The layer.
-        layer: u64,
-        /// The feature.
-        what: &'static str,
-        /// The API level it needs.
-        needs: u32,
-        /// The device's API level.
-        device: u32,
-    },
     /// The layer names a resource not registered with this target.
     #[error(
         "HWUI target: layer {layer} draws {kind} {id}, which is not registered with the HWUI target"

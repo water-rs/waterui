@@ -46,6 +46,18 @@ use platform::{ColorWell, HostView};
 /// The gap between the leading label and the well.
 const LABEL_SPACING: f64 = 8.0;
 
+/// How the row claims space. `AppKit` hugs — the label, the gap and the
+/// well at its intrinsic size, the component's "never stretches" — as
+/// `SwiftUI` hosts `NSColorWell`. `UIKit` keeps the row filling its width
+/// with the well pinned trailing.
+#[cfg(target_os = "macos")]
+const STRETCH: StretchAxis = StretchAxis::None;
+#[cfg(target_os = "ios")]
+const STRETCH: StretchAxis = StretchAxis::Horizontal;
+
+/// Whether the row fills the width it is offered.
+const FILLS_WIDTH: bool = matches!(STRETCH, StretchAxis::Horizontal);
+
 /// A styled string as spoken text: plain text with the bidi control
 /// characters interpolation inserts for layout stripped, as
 /// `WuiControlAccessibility.apply` does.
@@ -173,10 +185,27 @@ struct ColorPickerState {
     _action: cocoa_ui::ActionTarget,
 }
 
+/// The label's measured size, empty when it is hidden or absent.
+fn label_size(state: &ColorPickerState) -> Size {
+    state.label.as_ref().map_or_else(Size::default, |label| {
+        label.layout().measure(ProposalSize::UNSPECIFIED).size
+    })
+}
+
+/// Where the well starts: after the label and the gap, or at the leading
+/// edge when no label shows — measure and layout share the one rule.
+fn well_x(label: Size) -> f64 {
+    if label.width > 0.0 && label.height > 0.0 {
+        f64::from(label.width) + LABEL_SPACING
+    } else {
+        0.0
+    }
+}
+
 /// Lays out the children inside the `response` rectangle: the label
-/// leading and vertically centered, then the well spanning the rest of the
-/// row, centered on its intrinsic height — `configureSubviews`'
-/// constraints. RTL mirrors the row.
+/// leading and vertically centered, then the well — at its intrinsic width
+/// on `AppKit`, spanning the rest of the row on `UIKit` — centered on its
+/// intrinsic height. RTL mirrors the row.
 fn layout_children(view: &PlatformView, response: Rect, state: &ColorPickerState) {
     let width = response.size.width;
     let height = response.size.height;
@@ -187,19 +216,20 @@ fn layout_children(view: &PlatformView, response: Rect, state: &ColorPickerState
         view::set_frame(child, Rect::new(x, y, w, h).translated(response.origin));
     };
 
-    let label_size = state.label.as_ref().map_or_else(Size::default, |label| {
-        label.layout().measure(ProposalSize::UNSPECIFIED).size
-    });
+    let label_size = label_size(state);
     let well_size = state.well.intrinsic_size();
-    // `WuiColorPicker` pins the well to `labelView.trailing + spacing`
-    // unconditionally — a hidden label still leaves the 8pt gap.
-    let well_x = f64::from(label_size.width) + LABEL_SPACING;
+    let well_x = well_x(label_size);
+    let well_w = if FILLS_WIDTH {
+        (width - well_x).max(0.0)
+    } else {
+        well_size.width
+    };
 
     place(
         state.well.view(),
         well_x,
         (height - well_size.height) / 2.0,
-        (width - well_x).max(0.0),
+        well_w,
         well_size.height,
     );
     if let Some(label) = &state.label {
@@ -243,28 +273,21 @@ impl SubView for ColorPickerSubView {
     )]
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let state = self.state.borrow();
-        let label_size = state.label.as_ref().map_or_else(Size::default, |label| {
-            label.layout().measure(ProposalSize::UNSPECIFIED).size
-        });
+        let label_size = label_size(&state);
         let well_size = state.well.intrinsic_size();
-        let has_label = label_size.width > 0.0 && label_size.height > 0.0;
-        let intrinsic_width = well_size.width
-            + if has_label {
-                LABEL_SPACING + f64::from(label_size.width)
-            } else {
-                0.0
-            };
+        let intrinsic_width = well_x(label_size) + well_size.width;
         let intrinsic_height = f64::from(label_size.height).max(well_size.height);
-        // The well's trailing edge is pinned, so the row stretches
-        // horizontally to whatever it's offered.
-        let width = proposal
-            .width
-            .map_or(intrinsic_width, |w| f64::from(w).max(intrinsic_width));
+        // A filling row answers whatever width it's offered; a hugging
+        // row answers its content.
+        let width = match proposal.width {
+            Some(offered) if FILLS_WIDTH => f64::from(offered).max(intrinsic_width),
+            _ => intrinsic_width,
+        };
         ViewDimensions::new(Size::new(width as f32, intrinsic_height as f32))
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Horizontal
+        STRETCH
     }
 
     fn priority(&self) -> i32 {

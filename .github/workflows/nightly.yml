@@ -164,6 +164,7 @@ jobs:
       # nextest's fixture setup scripts produce their fonts and media
       # through `uv run` (`.config/nextest.toml`).
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # The instrumented nextest run executes the Cherenkov tests that
       # read the generated fonts and scenes/corpus. Neither is committed.
       - name: Generate Cherenkov scene assets
@@ -274,15 +275,18 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The nextest run's `cli-roboto` setup script invokes `uv run`.
+      # The nextest runs' `cli-roboto` and `test-fonts` setup scripts invoke
+      # `uv run`; the hydrolysis step's fonts come from the shared cache.
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # The `create --template web` tests scaffold and build a Vite frontend.
       - uses: oven-sh/setup-bun@v2
       - run: cargo nextest run --timings --locked --profile ci -p waterui-cli --run-ignored ignored-only
-      # The hydrolysis ignored suite — the Android WebView bridge's
-      # composed-script round trip through a real JS engine. `bun` is on
-      # PATH from the step above.
-      - run: cargo nextest run --timings --locked --profile ci -p hydrolysis --run-ignored ignored-only
+      # The Android WebView bridge's composed-script round trip through a
+      # real JS engine. `bun` is on PATH from the step above. Named, not
+      # `ignored-only`: hydrolysis's other ignored test is a report-only
+      # perf probe that stays out of CI (#4012).
+      - run: cargo nextest run --timings --locked --profile ci -p hydrolysis --run-ignored ignored-only -E 'test(=widgets::platform::webview::android_protocol::tests::the_composed_async_call_survives_a_real_js_round_trip)'
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
         with:

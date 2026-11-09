@@ -76,9 +76,9 @@ fn response(layout: &dyn Layout, bounds: Rect, children: &[&dyn SubView]) -> Rec
         .rect
 }
 
-fn padding(top: f32, bottom: f32, leading: f32, trailing: f32) -> PaddingLayout {
+fn padding(top: f32, leading: f32, bottom: f32, trailing: f32) -> PaddingLayout {
     PaddingLayout {
-        edges: Computed::constant(EdgeInsets::new(top, bottom, leading, trailing)),
+        edges: Computed::constant(EdgeInsets::new(top, leading, bottom, trailing)),
     }
 }
 
@@ -214,7 +214,7 @@ fn a_leading_only_padding_belongs_wholly_to_the_leading_side() {
     // and the padded response is centred in the slot (centre 80).
     let child = Leaf(Size::new(10.0, 10.0));
     let children: [&dyn SubView; 1] = [&child];
-    let layout = padding(0.0, 0.0, 20.0, 0.0);
+    let layout = padding(0.0, 20.0, 0.0, 0.0);
     let bounds = rect(0.0, 0.0, 160.0, 10.0);
     let padded = response(&layout, bounds, &children);
     assert_eq!(padded, rect(65.0, 0.0, 30.0, 10.0));
@@ -231,7 +231,7 @@ fn a_leading_only_padding_belongs_wholly_to_the_leading_side() {
 fn a_padding_that_exactly_fills_its_allocation_responds_at_the_allocation() {
     let child = Leaf(Size::new(10.0, 10.0));
     let children: [&dyn SubView; 1] = [&child];
-    let layout = padding(0.0, 0.0, 20.0, 0.0);
+    let layout = padding(0.0, 20.0, 0.0, 0.0);
     let bounds = rect(0.0, 0.0, 30.0, 10.0);
     assert_eq!(response(&layout, bounds, &children), bounds);
 }
@@ -241,7 +241,7 @@ fn padding_responds_at_its_answer_not_at_the_padded_placement() {
     // Proposed 100 but placed in 200: the answer is 20 + 8 + 8 = 36, while
     // the child, placed under the bounds-derived 184, lays out 40 wide.
     let children: [&dyn SubView; 1] = [&Reflowing];
-    let layout = padding(0.0, 0.0, 8.0, 8.0);
+    let layout = padding(0.0, 8.0, 0.0, 8.0);
     let bounds = rect(0.0, 0.0, 200.0, 10.0);
     let proposal = ProposalSize::new(Some(100.0), Some(10.0));
     let resolved = resolve_layout_extent(&layout, bounds, proposal, &children).unwrap();
@@ -259,7 +259,7 @@ fn padding_responds_at_its_answer_not_at_the_padded_placement() {
 fn negative_padding_keeps_its_origin_and_clamps_only_the_extent() {
     let child = Leaf(Size::new(10.0, 10.0));
     let children: [&dyn SubView; 1] = [&child];
-    let layout = padding(0.0, 0.0, -20.0, 0.0);
+    let layout = padding(0.0, -20.0, 0.0, 0.0);
     let bounds = rect(0.0, 0.0, 100.0, 10.0);
     let resolved =
         resolve_layout_extent(&layout, bounds, ProposalSize::UNSPECIFIED, &children).unwrap();
@@ -337,7 +337,7 @@ fn every_container_response_is_translation_covariant() {
         alignment: Alignment::BottomLeading,
     };
     let overlay = OverlayLayout::default();
-    let pad = padding(3.0, 1.0, 7.0, 2.0);
+    let pad = padding(3.0, 7.0, 1.0, 2.0);
     let cases: Vec<(&dyn Layout, &[&dyn SubView])> = vec![
         (&hstack, &pair),
         (&zstack, &pair),
