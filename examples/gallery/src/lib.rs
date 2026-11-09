@@ -324,8 +324,8 @@ where
     .max_width(f32::INFINITY)
     .padding_with([
         0.0,
-        0.0,
         DRAWER_ITEM_LEADING_SPACE,
+        0.0,
         DRAWER_ITEM_TRAILING_SPACE,
     ])
     .background(pill)
@@ -365,8 +365,8 @@ where
         .max_width(f32::INFINITY)
         .padding_with([
             0.0,
-            0.0,
             DRAWER_ITEM_LEADING_SPACE,
+            0.0,
             DRAWER_ITEM_TRAILING_SPACE,
         ])
         .on_tap(action)
@@ -417,7 +417,7 @@ fn sidebar(
                 .sub_headline()
                 .bold()
                 .foreground(Foreground)
-                .padding_with([20.0, 12.0, 28.0, 16.0]),
+                .padding_with([20.0, 28.0, 12.0, 16.0]),
             drawer,
         ))
         .spacing(4.0)

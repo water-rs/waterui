@@ -72,7 +72,7 @@ impl TransitionDeclaration {
 
 /// The declaration a node carries when the node itself is a
 /// `.transition(...)`.
-fn declaration(node: &RenderNode) -> Option<&TransitionDeclaration> {
+fn declaration<E: crate::text::TextEngine>(node: &RenderNode<E>) -> Option<&TransitionDeclaration> {
     match node {
         RenderNode::Wrapper(wrapper) => match &wrapper.effect {
             WrapperEffect::Transition(declaration) => Some(declaration),
@@ -85,7 +85,9 @@ fn declaration(node: &RenderNode) -> Option<&TransitionDeclaration> {
 /// Claims the transition declared at a structural instance's root. Only the
 /// root is looked at: a declaration beneath any other node stays unowned and
 /// fails with [`TransitionDeclaration::assert_owned`]'s message.
-pub fn claim_transition(node: &RenderNode) -> Option<TransitionSpec> {
+pub fn claim_transition<E: crate::text::TextEngine>(
+    node: &RenderNode<E>,
+) -> Option<TransitionSpec> {
     declaration(node).map(TransitionDeclaration::take_ownership)
 }
 
@@ -94,7 +96,9 @@ pub fn claim_transition(node: &RenderNode) -> Option<TransitionSpec> {
 /// content ([`WidgetBehavior::claim_page_transition`]). Only the stack calls
 /// this — a navigation view anywhere else is not a structural instance, so a
 /// declaration on its content stays unowned.
-pub fn claim_page_transition(page: &RenderNode) -> Option<TransitionSpec> {
+pub fn claim_page_transition<E: crate::text::TextEngine>(
+    page: &RenderNode<E>,
+) -> Option<TransitionSpec> {
     match page {
         RenderNode::Widget(widget) => widget.behavior.claim_page_transition(),
         _ => claim_transition(page),
@@ -107,7 +111,10 @@ pub fn claim_page_transition(page: &RenderNode) -> Option<TransitionSpec> {
 /// it; anything else leaves the declaration unowned. A watched conditional
 /// is built as the host under the `Retain` node holding its watcher guard —
 /// both are the conditional itself, not a modifier over it.
-pub fn adopt_by_dynamic(child: &RenderNode, declaration: &TransitionDeclaration) {
+pub fn adopt_by_dynamic<E: crate::text::TextEngine>(
+    child: &RenderNode<E>,
+    declaration: &TransitionDeclaration,
+) {
     let host = match child {
         RenderNode::Dynamic(host) => host,
         RenderNode::Retain(retain) => match &retain.child {
@@ -165,12 +172,12 @@ pub fn start_ghost<T>(
 /// delta that puts it back: what [`flush_transitioned`] scopes an instance
 /// that is already placed at `ctx`.
 pub fn slot_context(ctx: RenderContext) -> (RenderContext, kurbo::Affine) {
-    let delta = kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
+    let delta = kurbo::Affine::translate((ctx.bounds().x0, ctx.bounds().y0));
     (
-        RenderContext {
-            local: ctx.local * delta,
-            bounds: kurbo::Rect::new(0.0, 0.0, ctx.bounds.width(), ctx.bounds.height()),
-        },
+        RenderContext::new(
+            ctx.local() * delta,
+            kurbo::Rect::new(0.0, 0.0, ctx.bounds().width(), ctx.bounds().height()),
+        ),
         delta,
     )
 }
@@ -199,8 +206,8 @@ impl TransitionClock {
 
 /// The blur realization of one transition instance: a filter layer host
 /// wrapping the instance's node, whose engine `Blur` reads `radius` live.
-struct TransitionBlur {
-    core: NodeCore,
+struct TransitionBlur<E: crate::text::TextEngine> {
+    core: NodeCore<E>,
     radius: nami::Binding<f32>,
     runtime: Rc<RefCell<FilteredRuntime>>,
 }
@@ -209,15 +216,15 @@ struct TransitionBlur {
 /// [`TransitionState`]: its clock, the identity its paint scope is keyed by,
 /// and — created on the first frame that samples a nonzero blur radius — the
 /// blur filter host.
-pub struct TransitionRuntime {
+pub struct TransitionRuntime<E: crate::text::TextEngine> {
     clock: TransitionClock,
     /// Identity of this instance's paint scope: unique among every live
     /// instance, so two sites recording into one program never share a key.
     marker: Rc<()>,
-    blur: RefCell<Option<TransitionBlur>>,
+    blur: RefCell<Option<TransitionBlur<E>>>,
 }
 
-impl TransitionRuntime {
+impl<E: crate::text::TextEngine> TransitionRuntime<E> {
     pub fn new(now: Instant) -> Self {
         Self {
             clock: TransitionClock::new(now),
@@ -241,12 +248,12 @@ impl TransitionRuntime {
 
 /// One instance's transition in flight: the state and the runtime that drives
 /// it, so a state cannot exist without the clock that advances it.
-pub struct TransitionRun {
+pub struct TransitionRun<E: crate::text::TextEngine> {
     pub state: TransitionState,
-    pub runtime: TransitionRuntime,
+    pub runtime: TransitionRuntime<E>,
 }
 
-impl TransitionRun {
+impl<E: crate::text::TextEngine> TransitionRun<E> {
     /// Starts the insertion of a new instance — timestamped at the frame
     /// instant of the structural change, never a previous frame.
     pub fn insertion(spec: &TransitionSpec, reduce_motion: bool, now: Instant) -> Self {
@@ -281,17 +288,17 @@ impl TransitionRun {
 /// presence when the gesture is cancelled. Reduce Motion and the capture
 /// rejection resolve exactly as [`TransitionSpec::start`] and
 /// [`checked_transition`] resolve them for a clock-driven removal.
-pub struct ScrubbedRemoval {
+pub struct ScrubbedRemoval<E: crate::text::TextEngine> {
     transition: AnyTransition,
-    runtime: TransitionRuntime,
+    runtime: TransitionRuntime<E>,
 }
 
-impl ScrubbedRemoval {
+impl<E: crate::text::TextEngine> ScrubbedRemoval<E> {
     pub fn new(spec: &TransitionSpec, reduce_motion: bool, now: Instant) -> Self {
         let transition = if reduce_motion {
-            AnyTransition::new(Transition::reduced(&spec.transition))
+            AnyTransition::new(Transition::reduced(spec.transition()))
         } else {
-            spec.transition.clone()
+            spec.transition().clone()
         };
         assert_property_transition(transition.captures_content(TransitionPhase::Removal));
         Self {
@@ -306,8 +313,8 @@ impl ScrubbedRemoval {
         progress: f32,
         geometry: TransitionGeometry,
         hit: bool,
-        owner: &'a Rc<NodeCell>,
-    ) -> TransitionPaint<'a> {
+        owner: &'a Rc<NodeCell<E>>,
+    ) -> TransitionPaint<'a, E> {
         TransitionPaint {
             properties: self
                 .transition
@@ -322,22 +329,22 @@ impl ScrubbedRemoval {
 /// One instance painted under its sampled transition: the properties,
 /// whether it takes input, and the runtime and owning cell its paint scope and
 /// blur host belong to.
-pub struct TransitionPaint<'a> {
+pub struct TransitionPaint<'a, E: crate::text::TextEngine> {
     pub properties: TransitionProperties,
     pub hit: bool,
-    pub runtime: &'a TransitionRuntime,
-    pub owner: &'a Rc<NodeCell>,
+    pub runtime: &'a TransitionRuntime<E>,
+    pub owner: &'a Rc<NodeCell<E>>,
 }
 
-impl<'a> TransitionPaint<'a> {
+impl<'a, E: crate::text::TextEngine> TransitionPaint<'a, E> {
     /// Samples `state` for a slot of `size`.
     pub fn sample(
         state: &TransitionState,
         size: Size,
         direction: waterui_core::layout::LayoutDirection,
         hit: bool,
-        runtime: &'a TransitionRuntime,
-        owner: &'a Rc<NodeCell>,
+        runtime: &'a TransitionRuntime<E>,
+        owner: &'a Rc<NodeCell<E>>,
     ) -> Self {
         Self {
             properties: state.properties(TransitionGeometry::new(size, direction)),
@@ -365,21 +372,21 @@ impl<'a> TransitionPaint<'a> {
 /// for a site that records into its enclosing layer's program — a `Dynamic`
 /// host placed at an offset inside a stack paints its instances at that
 /// offset.
-pub fn flush_transitioned(
-    renderer: &mut HydrolysisRenderer,
+pub fn flush_transitioned<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     child_ctx: RenderContext,
     delta: kurbo::Affine,
-    paint: &TransitionPaint<'_>,
-    flush: impl FnOnce(&mut HydrolysisRenderer, RenderContext),
+    paint: &TransitionPaint<'_, E>,
+    flush: impl FnOnce(&mut HydrolysisRenderer<E>, RenderContext),
 ) {
     let properties = paint.properties;
-    let bounds = child_ctx.bounds;
+    let bounds = child_ctx.bounds();
     let local = transition_transform(&properties, bounds);
-    let paint_space = child_ctx.local * local;
+    let paint_space = child_ctx.local() * local;
     let layer = renderer.program().origin().inverse() * paint_space;
     let scope = crate::renderer::ScopeDelta {
         transform: delta * local,
-        hit_alpha: properties.opacity,
+        hit_alpha: properties.opacity(),
     };
     let key = crate::renderer::mount::ScopeKey {
         role: "transition",
@@ -388,7 +395,7 @@ pub fn flush_transitioned(
     renderer.open_scope_with(
         key,
         layer,
-        properties.opacity,
+        properties.opacity(),
         Some(&crate::renderer::frame::ScopeClip::Rect(kurbo::Rect::new(
             0.0,
             0.0,
@@ -415,13 +422,13 @@ pub fn transition_transform(
         bounds.y0 + bounds.height() / 2.0,
     );
     kurbo::Affine::translate((
-        f64::from(properties.translation[0]),
-        f64::from(properties.translation[1]),
+        f64::from(properties.translation()[0]),
+        f64::from(properties.translation()[1]),
     )) * kurbo::Affine::translate(centre)
-        * kurbo::Affine::rotate(f64::from(properties.rotation))
+        * kurbo::Affine::rotate(f64::from(properties.rotation()))
         * kurbo::Affine::scale_non_uniform(
-            f64::from(properties.scale[0]),
-            f64::from(properties.scale[1]),
+            f64::from(properties.scale()[0]),
+            f64::from(properties.scale()[1]),
         )
         * kurbo::Affine::translate((-centre.0, -centre.1))
 }
@@ -429,24 +436,24 @@ pub fn transition_transform(
 /// Records one instance at `ctx` — through a Gaussian blur filter layer
 /// while the sampled radius is nonzero, directly otherwise. The caller has
 /// already opened the scope carrying the instance's other properties.
-pub fn record_blurred(
-    renderer: &mut HydrolysisRenderer,
+pub fn record_blurred<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     ctx: RenderContext,
-    paint: &TransitionPaint<'_>,
-    flush: impl FnOnce(&mut HydrolysisRenderer, RenderContext),
+    paint: &TransitionPaint<'_, E>,
+    flush: impl FnOnce(&mut HydrolysisRenderer<E>, RenderContext),
 ) {
     let properties = paint.properties;
-    let bounds = ctx.bounds;
+    let bounds = ctx.bounds();
     assert!(
-        properties.blur.is_finite() && properties.blur >= 0.0,
+        properties.blur().is_finite() && properties.blur() >= 0.0,
         "Hydrolysis: a transition sampled the blur radius {}, which is not a finite \
          non-negative logical-pixel radius",
-        properties.blur
+        properties.blur()
     );
-    if properties.blur > 0.0 {
+    if properties.blur() > 0.0 {
         let mut slot = paint.runtime.blur.borrow_mut();
         let blur = slot.get_or_insert_with(|| {
-            let radius = nami::Binding::container(properties.blur);
+            let radius = nami::Binding::container(properties.blur());
             let mut guards = ParamGuards::default();
             let filter = waterui_graphics::filtrate::filters::Blur(guards.bind(radius.clone()));
             let core = renderer.new_core();
@@ -464,8 +471,8 @@ pub fn record_blurred(
             clippy::float_cmp,
             reason = "an unchanged sample skips the parameter write; any change is written"
         )]
-        if nami::Signal::snapshot(&blur.radius) != properties.blur {
-            blur.radius.set(properties.blur);
+        if nami::Signal::snapshot(&blur.radius) != properties.blur() {
+            blur.radius.set(properties.blur());
         }
         // The filtered layer host records the instance exactly as a
         // `FilteredView` node records its child: the engine filter covers

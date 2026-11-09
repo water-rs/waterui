@@ -33,7 +33,10 @@ enum AndroidCheckScope {
     Run,
 }
 
-fn toolchain_check_message<I: Installation>(component: &str, error: &ToolchainError<I>) -> String {
+pub(crate) fn toolchain_check_message<I: Installation>(
+    component: &str,
+    error: &ToolchainError<I>,
+) -> String {
     match error {
         ToolchainError::Fixable(_) => format!(
             "{component} toolchain check failed: missing dependencies can be fixed automatically with `water doctor --fix`."
@@ -100,12 +103,13 @@ async fn android_doctor_summary(host: &Host, scope: AndroidCheckScope) -> String
     let mut lines = vec!["Relevant doctor diagnostics:".to_string()];
 
     for item in doctor(host).await {
-        if item.status != CheckStatus::Missing || !android_doctor_item_in_scope(item.id, scope) {
+        if item.status() != CheckStatus::Missing || !android_doctor_item_in_scope(item.id(), scope)
+        {
             continue;
         }
         let is_fixable = item.is_fixable();
-        let message = item.message;
-        lines.push(format_doctor_missing_item(item.name, message, is_fixable));
+        let message = item.message().map(ToOwned::to_owned);
+        lines.push(format_doctor_missing_item(item.name(), message, is_fixable));
     }
 
     if lines.len() == 1 {

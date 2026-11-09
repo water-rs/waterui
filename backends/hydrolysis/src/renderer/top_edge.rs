@@ -10,7 +10,7 @@ use super::HydrolysisRenderer;
 use super::mount::layers::{LayerVisitor, visit};
 use super::recording::{SolidRect, axis_aligned};
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The colour the committed frame shows along the top edge of a window
     /// `width` points wide whose surface clears to `base`: every
     /// single-colour fill that covers the whole edge, composited in paint
@@ -59,7 +59,7 @@ impl TopEdge {
     }
 }
 
-impl LayerVisitor for TopEdge {
+impl<E: crate::text::TextEngine> LayerVisitor<E> for TopEdge {
     fn solid_rects(&mut self, world: Affine, alphas: &[f32], rects: &[SolidRect]) {
         if self.filters > 0 || !axis_aligned(world) || !self.edge_unclipped() {
             return;
@@ -73,9 +73,9 @@ impl LayerVisitor for TopEdge {
         }
     }
 
-    fn open_clip(&mut self, world: Affine, clip: &cherenkov::ShapeData) {
+    fn open_clip(&mut self, world: Affine, clip: &cherenkov_record::ShapeData) {
         self.clips.push(match clip {
-            cherenkov::ShapeData::Rect(rect) if axis_aligned(world) => {
+            cherenkov_record::ShapeData::Rect(rect) if axis_aligned(world) => {
                 Some(world.transform_rect_bbox(*rect))
             }
             _ => None,

@@ -4,9 +4,9 @@
 //! Mirrors `WuiLifecycleHook`: a transparent `HostView` container —
 //! measure, stretch, priority and the placement proposal all answer for the
 //! mounted child — that watches its window membership. `Disappear` fires
-//! inside the move-out-of-window callback; `Appear` instead waits for the
-//! current implicit transaction's completion block, the commit boundary the
-//! Swift leaf documented: a hook that animates a property away from its
+//! inside the move-out-of-window callback; `Appear` instead waits until the
+//! turn's transaction has committed, the boundary the Swift leaf
+//! documented: a hook that animates a property away from its
 //! initial value must not run before the first frame, or the view lands on
 //! screen already at the animation's end state. The handler is one-shot —
 //! consumed on firing, dropped unfired with the leaf.
@@ -15,11 +15,14 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::view;
-use cocoa_ui::{PlatformView, Rect};
+use cocoa_ui::{MainThreadMarker, PlatformView, Rect};
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
 use waterui_core::event::{LifeCycle, LifeCycleHook};
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -70,9 +73,9 @@ fn fire(state: &HookState, event: LifeCycle) {
 }
 
 /// `scheduleAppear`: `Appear` means presented, so it fires after the
-/// transaction that inserted the view commits — the completion block of the
-/// current implicit transaction is that boundary.
-fn schedule_appear(state: &Rc<HookState>, host: &HostView) {
+/// transaction that inserted the view commits —
+/// [`cocoa_ui::core_animation::on_commit`] is that boundary.
+fn schedule_appear(mtm: MainThreadMarker, state: &Rc<HookState>, host: &HostView) {
     let is_appear = state
         .hook
         .borrow()
@@ -83,13 +86,13 @@ fn schedule_appear(state: &Rc<HookState>, host: &HostView) {
     }
     let state = Rc::downgrade(state);
     let host = view::retain_base(host);
-    cocoa_ui::core_animation::on_commit(move || {
+    cocoa_ui::core_animation::on_commit(mtm, move || {
         let Some(state) = state.upgrade() else {
             return;
         };
-        // The Swift leaf re-checked `window != nil` inside the completion
-        // block: a view that left its window before commit is a disappear,
-        // not an appear.
+        // The Swift leaf re-checked `window != nil` after the commit: a
+        // view that left its window before commit is a disappear, not an
+        // appear.
         if view::has_window(&host) {
             fire(&state, LifeCycle::Appear);
         }
@@ -109,6 +112,14 @@ impl core::fmt::Debug for LifecycleSubView {
 }
 
 impl SubView for LifecycleSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }
@@ -163,7 +174,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let hook = Rc::clone(&hook);
             move |host| {
                 if view::has_window(host) {
-                    schedule_appear(&hook, host);
+                    schedule_appear(mtm, &hook, host);
                 } else {
                     fire(&hook, LifeCycle::Disappear);
                 }

@@ -34,10 +34,6 @@ use crate::{
 
 /// Configuration for a table component.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole table configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct TableConfig {
     /// Columns that make up the table.
     pub columns: Computed<Vec<TableColumn>>,

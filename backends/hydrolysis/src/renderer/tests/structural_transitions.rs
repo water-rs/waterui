@@ -27,6 +27,7 @@ use waterui_core::layout::HorizontalAlignment;
 use waterui_core::transition::{PropertyTransition, Transition};
 use waterui_core::{AnyView, View};
 use waterui_layout::padding::EdgeInsets;
+use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
 use waterui_shape::ShapeExt as _;
 
@@ -56,10 +57,15 @@ fn transitioned(label: &'static str, color: Srgb, transition: impl Transition) -
         .animation(Animation::linear(CLOCK))
 }
 
+/// Mounts `view` at the window's top edge. A content-sized root column would
+/// centre its block in the window (`docs/layout-spec.md` §4.2) and move every
+/// slot by half of any change in the conditional's size; the trailing spacer
+/// fills the window column instead, so the conditional's slot starts at a
+/// fixed edge and a sibling's move is the slot's change alone.
 fn runtime(view: impl Fn() -> AnyView + 'static) -> HeadlessRuntime {
     HeadlessRuntime::new_for_tests(
         test_environment(),
-        AnyViewBuilder::<AnyView>::new(view),
+        AnyViewBuilder::<AnyView>::new(move || AnyView::new(vstack((view(), spacer())))),
         400,
         300,
         MinimalTestTheme::default(),
@@ -81,7 +87,7 @@ fn bounds(runtime: &mut HeadlessRuntime, label: &str) -> Option<Rect> {
 fn frame(runtime: &mut HeadlessRuntime, at: Instant) -> HeadlessSnapshot {
     runtime
         .pump_at(true, at)
-        .snapshot
+        .into_snapshot()
         .expect("a pumped frame must be capturable")
 }
 
@@ -89,8 +95,8 @@ fn frame(runtime: &mut HeadlessRuntime, at: Instant) -> HeadlessSnapshot {
 fn centre_pixel(snapshot: &HeadlessSnapshot, rect: Rect) -> [u8; 4] {
     let x = crate::num_cast::f64_as_u32(f64::midpoint(rect.x0, rect.x1));
     let y = crate::num_cast::f64_as_u32(f64::midpoint(rect.y0, rect.y1));
-    let index = usize::try_from((y * snapshot.width + x) * 4).expect("a pixel index fits usize");
-    snapshot.rgba8[index..index + 4]
+    let index = usize::try_from((y * snapshot.width() + x) * 4).expect("a pixel index fits usize");
+    snapshot.rgba8()[index..index + 4]
         .try_into()
         .expect("four channels per pixel")
 }
@@ -104,10 +110,14 @@ pub(super) fn save(snapshot: &HeadlessSnapshot, case: &str, name: &str) {
     let path = crate::testing::artifact_snapshot_path("hydrolysis", case, name);
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");
-    image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8.clone())
-        .expect("snapshot dimensions must match the rgba buffer")
-        .save(&path)
-        .expect("the frame must be writable");
+    image::RgbaImage::from_raw(
+        snapshot.width(),
+        snapshot.height(),
+        snapshot.rgba8().to_vec(),
+    )
+    .expect("snapshot dimensions must match the rgba buffer")
+    .save(&path)
+    .expect("the frame must be writable");
 }
 
 /// A `when` branch that turns false: its instance leaves the accessibility

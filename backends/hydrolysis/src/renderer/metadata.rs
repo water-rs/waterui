@@ -30,7 +30,7 @@ pub(super) struct GestureA11yClaim {
     pub(super) synthesized: bool,
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Apply a clip-shape prop on the recording node's own frame layer (§A.1):
     /// the wrapper's `frame` carries the clip, not a `("clip", 0)` scope layer.
     /// Callers must be layer nodes — a pass-through would clip the enclosing
@@ -45,10 +45,10 @@ impl HydrolysisRenderer {
         // does, and fall back to the unit-space commands only for a custom path.
         // The commands are normalized per axis, so resolving them against a
         // non-square rect makes every circular corner elliptical.
-        let clip_path = shape_kind_path(value.kind(), ctx.bounds)
-            .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds));
-        let clip = if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds)
-            .or_else(|| regular_clip_shape(value.commands(), ctx.bounds))
+        let clip_path = shape_kind_path(value.kind(), ctx.bounds())
+            .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds()));
+        let clip = if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds())
+            .or_else(|| regular_clip_shape(value.commands(), ctx.bounds()))
         {
             match regular_clip {
                 RegularClipShape::Rect(rect) => ScopeClip::Rect(rect),
@@ -83,66 +83,66 @@ impl HydrolysisRenderer {
     ) {
         render_content(renderer);
 
-        if border.width <= 0.0 {
+        if border.width() <= 0.0 {
             return;
         }
 
-        let paint = || Paint::Solid(border.color.resolve(env).snapshot());
-        let width = f64::from(border.width);
+        let paint = || Paint::Solid(border.color().resolve(env).snapshot());
+        let width = f64::from(border.width());
 
-        if border.edges.all() && border.corner_radius > 0.0 {
+        if border.get_edges().all() && border.get_corner_radius() > 0.0 {
             let rounded =
-                kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
+                kurbo::RoundedRect::from_rect(ctx.bounds(), f64::from(border.get_corner_radius()));
             let stroke = kurbo::Stroke::new(width);
             renderer
                 .scene_mut()
-                .stroke_paint(&stroke, ctx.local, paint(), &rounded);
+                .stroke_paint(&stroke, ctx.local(), paint(), &rounded);
             return;
         }
 
-        if border.edges.top {
+        if border.get_edges().top {
             let top = kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y0,
-                ctx.bounds.x1,
-                ctx.bounds.y0 + width,
+                ctx.bounds().x0,
+                ctx.bounds().y0,
+                ctx.bounds().x1,
+                ctx.bounds().y0 + width,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &top);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &top);
         }
-        if border.edges.bottom {
+        if border.get_edges().bottom {
             let bottom = kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y1 - width,
-                ctx.bounds.x1,
-                ctx.bounds.y1,
+                ctx.bounds().x0,
+                ctx.bounds().y1 - width,
+                ctx.bounds().x1,
+                ctx.bounds().y1,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &bottom);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &bottom);
         }
-        if border.edges.leading {
+        if border.get_edges().leading {
             let leading = kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y0,
-                ctx.bounds.x0 + width,
-                ctx.bounds.y1,
+                ctx.bounds().x0,
+                ctx.bounds().y0,
+                ctx.bounds().x0 + width,
+                ctx.bounds().y1,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &leading);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &leading);
         }
-        if border.edges.trailing {
+        if border.get_edges().trailing {
             let trailing = kurbo::Rect::new(
-                ctx.bounds.x1 - width,
-                ctx.bounds.y0,
-                ctx.bounds.x1,
-                ctx.bounds.y1,
+                ctx.bounds().x1 - width,
+                ctx.bounds().y0,
+                ctx.bounds().x1,
+                ctx.bounds().y1,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &trailing);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &trailing);
         }
     }
 
@@ -156,22 +156,22 @@ impl HydrolysisRenderer {
         shadow: &Shadow,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let blur = f64::from(shadow.radius.max(0.0));
-        let offset_x = f64::from(shadow.offset.x);
-        let offset_y = f64::from(shadow.offset.y);
+        let blur = f64::from(shadow.radius().max(0.0));
+        let offset_x = f64::from(shadow.offset().x);
+        let offset_y = f64::from(shadow.offset().y);
         let shadow_rect = kurbo::Rect::new(
-            ctx.bounds.x0 + offset_x,
-            ctx.bounds.y0 + offset_y,
-            ctx.bounds.x1 + offset_x,
-            ctx.bounds.y1 + offset_y,
+            ctx.bounds().x0 + offset_x,
+            ctx.bounds().y0 + offset_y,
+            ctx.bounds().x1 + offset_x,
+            ctx.bounds().y1 + offset_y,
         );
-        let shadow_color = shadow.color.resolve(env).snapshot();
+        let shadow_color = shadow.color().resolve(env).snapshot();
 
         // The silhouette states the caster's shape. `kind_clip_shape` — the
         // same resolver a clip uses to decide between the uniform rounded-rect
         // fast path and the general path route — answers whether the shadow can
         // feed the engine's blurred-rounded-rect primitive directly.
-        let silhouette = &shadow.silhouette;
+        let silhouette = &shadow.silhouette();
         let uniform_radius = match kind_clip_shape(silhouette.kind(), shadow_rect) {
             Some(RegularClipShape::RoundedRect { corner_width, .. }) => Some(corner_width),
             Some(RegularClipShape::Rect(_)) => Some(0.0),
@@ -179,7 +179,7 @@ impl HydrolysisRenderer {
         };
         match uniform_radius {
             Some(corner_radius) => renderer.scene_mut().blurred_rounded_rect(
-                ctx.local,
+                ctx.local(),
                 shadow_rect,
                 shadow_color,
                 corner_radius,
@@ -187,7 +187,7 @@ impl HydrolysisRenderer {
             ),
             None => Self::draw_blurred_silhouette(
                 renderer,
-                ctx.local,
+                ctx.local(),
                 silhouette,
                 shadow_rect,
                 shadow_color,
@@ -255,8 +255,8 @@ impl HydrolysisRenderer {
     ) {
         {
             let theme = renderer.theme();
-            renderer.scene_mut().record_picture(ctx.local, |draw| {
-                theme.draw_text_context_menu_panel(&mut *draw, ctx.bounds);
+            renderer.scene_mut().record_picture(ctx.local(), |draw| {
+                theme.draw_text_context_menu_panel(&mut *draw, ctx.bounds());
             });
         }
         render_content(renderer);
@@ -287,9 +287,9 @@ impl HydrolysisRenderer {
     /// registered, with no renderer in hand.
     #[cfg(feature = "accessibility")]
     pub(super) fn apply_focused_semantic(
-        renderer: &mut SemanticCore,
+        renderer: &mut SemanticCore<E>,
         value: &Focused,
-        render_content: impl FnOnce(&mut SemanticCore),
+        render_content: impl FnOnce(&mut SemanticCore<E>),
     ) {
         let should_focus = renderer.read_signal(&value.0);
         let scope = renderer
@@ -318,7 +318,7 @@ impl HydrolysisRenderer {
         value: &Hittable,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let enabled = renderer.read_signal(&value.enabled);
+        let enabled = renderer.read_signal(value.enabled());
         if enabled {
             render_content(renderer);
             return;
@@ -340,8 +340,8 @@ impl HydrolysisRenderer {
         value: &Cursor,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let style = renderer.read_signal(&value.style);
-        let bounds = ctx.bounds;
+        let style = renderer.read_signal(value.style());
+        let bounds = ctx.bounds();
         renderer.register_cursor_target(bounds, style);
         render_content(renderer);
     }
@@ -353,11 +353,11 @@ impl HydrolysisRenderer {
     fn tap_accessibility_activation(
         env: &Environment,
         action: &Rc<RefCell<BoxedAction<()>>>,
-    ) -> AccessibilityActivation {
+    ) -> AccessibilityActivation<E> {
         let captured_env = env.clone();
         let action = Rc::clone(action);
         Rc::new(RefCell::new(
-            move |_renderer: &mut crate::renderer::SemanticCore, runtime_env: &Environment| {
+            move |_renderer: &mut crate::renderer::SemanticCore<E>, runtime_env: &Environment| {
                 let action_env = captured_env.layered_on(runtime_env);
                 action.borrow_mut()(&action_env);
                 true
@@ -396,7 +396,7 @@ impl HydrolysisRenderer {
         // modifier chain. Every dispatch arm — a11y Activate, `layered_action`,
         // the press slot, keyboard activation, hover — applies this same
         // `captured_env.layered_on(runtime_env)` rule.
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         let disabled = env
             .get::<waterui_core::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
@@ -416,7 +416,7 @@ impl HydrolysisRenderer {
                 .is_some_and(AccessibilityHidden::is_hidden)
         {
             let has_role = env.get::<AccessibilityRole>().is_some();
-            let has_scope = env.get::<ScopedAccessibilitySemantics>().is_some();
+            let has_scope = env.get::<ScopedAccessibilitySemantics<E>>().is_some();
             if !renderer.accessibility_scope_is_claimed(env) && (has_role || !has_scope) {
                 // A tap with no naming scope to claim is the wrapped view's
                 // own representative: it synthesizes `Button`'s role and a
@@ -432,11 +432,11 @@ impl HydrolysisRenderer {
                     if !has_role {
                         env_for_claim.insert(AccessibilityRole::Button);
                     }
-                    env_for_claim.insert(ScopedAccessibilitySemantics::new());
+                    env_for_claim.insert(ScopedAccessibilitySemantics::<E>::new());
                     env_for_claim
                 };
                 let mut node = AccessibilityNode::new(
-                    crate::renderer::SemanticCore::resolve_accessibility_role(
+                    crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                         &env_for_claim,
                         AccessibilityNodeRole::Button,
                     ),
@@ -475,7 +475,7 @@ impl HydrolysisRenderer {
                 if claimed_naming_node.is_some() {
                     claim_env = Some(env_for_claim);
                 }
-            } else if !disabled && let Some(scope) = env.get::<ScopedAccessibilitySemantics>() {
+            } else if !disabled && let Some(scope) = env.get::<ScopedAccessibilitySemantics<E>>() {
                 // The scope names this view's representative — registering a
                 // second node would emit a silenced duplicate — so the tap
                 // delegates its activation to the scope instead, which the
@@ -578,7 +578,7 @@ impl HydrolysisRenderer {
                 local_interaction_state(interaction, renderer.current_hit_transform());
             {
                 let theme = renderer.theme();
-                let layer_bounds = style.state_layer_bounds(ctx.bounds);
+                let layer_bounds = style.state_layer_bounds(ctx.bounds());
                 let radii = *style.state_layer_radii.resolve(state);
                 let ring =
                     interaction_focus_ring(renderer, env, layer_bounds, radii, &style, state);
@@ -692,7 +692,7 @@ impl HydrolysisRenderer {
     /// delegated to the scope's representative instead, and `None` returns.
     #[cfg(feature = "accessibility")]
     pub(super) fn emit_gesture_observer_accessibility(
-        renderer: &mut SemanticCore,
+        renderer: &mut SemanticCore<E>,
         env: &Environment,
         effect: &GestureObserverEffect,
     ) -> Option<GestureA11yClaim> {
@@ -710,7 +710,7 @@ impl HydrolysisRenderer {
             return None;
         }
         let has_role = env.get::<AccessibilityRole>().is_some();
-        let has_scope = env.get::<ScopedAccessibilitySemantics>().is_some();
+        let has_scope = env.get::<ScopedAccessibilitySemantics<E>>().is_some();
         if !renderer.accessibility_scope_is_claimed(env) && (has_role || !has_scope) {
             // The claim's env is what the content walk and the scope drain
             // resolve against: the view's own scope when it carries one, a
@@ -723,14 +723,15 @@ impl HydrolysisRenderer {
                 if !has_role {
                     claim_env.insert(AccessibilityRole::Button);
                 }
-                claim_env.insert(ScopedAccessibilitySemantics::new());
+                claim_env.insert(ScopedAccessibilitySemantics::<E>::new());
                 (claim_env, true)
             };
-            let mut node =
-                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+            let mut node = AccessibilityNode::new(
+                crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     &claim_env,
                     AccessibilityNodeRole::Button,
-                ));
+                ),
+            );
             if let Some(label) =
                 renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
             {
@@ -757,7 +758,7 @@ impl HydrolysisRenderer {
                     synthesized,
                 });
         }
-        if !disabled && let Some(scope) = env.get::<ScopedAccessibilitySemantics>() {
+        if !disabled && let Some(scope) = env.get::<ScopedAccessibilitySemantics<E>>() {
             // Claimed or not, the scope's representative drains the donation
             // when its subtree ends — the same contract the rendered arm of
             // `apply_gesture_observer` holds. The semantic walk has no
@@ -785,7 +786,7 @@ impl HydrolysisRenderer {
     ) {
         let event = handler.borrow().event();
         let interaction_key = InteractionKey::for_rc(&handler, 0);
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         match event {
             Event::HoverEnter => {
                 let captured_env = env.clone();
@@ -835,10 +836,10 @@ impl HydrolysisRenderer {
         renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
-        value: &ContextMenuEffect,
+        value: &ContextMenuEffect<E>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         renderer.register_context_menu_target(
             bounds,
             value.items.clone(),
@@ -861,10 +862,10 @@ impl HydrolysisRenderer {
         renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
-        value: &AnchoredOverlayEffect,
+        value: &AnchoredOverlayEffect<E>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = renderer.resolve_window_rect(ctx.bounds);
+        let bounds = renderer.resolve_window_rect(ctx.bounds());
         let presented = renderer.read_signal(&value.is_presented);
         renderer
             .popup_menu
@@ -893,7 +894,7 @@ impl HydrolysisRenderer {
     pub(super) fn apply_dialog(
         renderer: &mut Self,
         env: &Environment,
-        value: &DialogEffect,
+        value: &DialogEffect<E>,
         render_content: impl FnOnce(&mut Self),
     ) {
         let presented = renderer.read_signal(value.dialog.is_presented());
@@ -921,7 +922,7 @@ impl HydrolysisRenderer {
         value: &Rc<Draggable>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         renderer.register_draggable_target(bounds, Rc::clone(value));
         render_content(renderer);
     }
@@ -937,7 +938,7 @@ impl HydrolysisRenderer {
         handles: &DropDestinationHandles,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         renderer.register_drop_destination_handles(bounds, handles, env);
         render_content(renderer);
     }

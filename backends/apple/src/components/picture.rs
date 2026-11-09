@@ -17,10 +17,13 @@ use cocoa_ui::objc2::AllocAnyThread;
 use waterui::graphics::picture::{Picture, PictureRecording};
 use waterui::graphics::raster::Rasterizer;
 use waterui::reactive::Signal;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -158,11 +161,12 @@ struct RasterState {
     pixels: Option<(u32, u32)>,
 }
 
-/// Re-rasterizes when the laid-out bounds change the pixel size the
-/// bitmap needs — the layout, window-move and backing-change hooks all
-/// land here.
+/// Re-rasterizes when the response rectangle the picture draws in changes
+/// the pixel size the bitmap needs — the layout, window-move and
+/// backing-change hooks all land here. The image view draws the bitmap
+/// unscaled in that rectangle (docs/layout-spec.md §6).
 fn repaint(picture: &Picture, view: &ImageView, state: &Rc<RefCell<RasterState>>) {
-    let bounds = cocoa_ui::view::bounds(view).size;
+    let bounds = proposal::content_rect(view).size;
     let scale = view
         .backing_scale()
         .unwrap_or_else(picture_display_scale)
@@ -194,6 +198,14 @@ impl core::fmt::Debug for PictureSubView {
 }
 
 impl SubView for PictureSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(fit(proposal, self.size))
     }

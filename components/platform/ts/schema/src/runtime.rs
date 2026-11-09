@@ -67,9 +67,29 @@ impl RuntimePart {
 #[non_exhaustive]
 pub struct RuntimeHalf {
     /// Which half this is.
-    pub part: RuntimePart,
+    part: RuntimePart,
     /// The hash that half carries.
-    pub hash: u64,
+    hash: u64,
+}
+
+impl RuntimeHalf {
+    /// Creates a `RuntimeHalf` from its parts.
+    #[must_use]
+    pub const fn new(part: RuntimePart, hash: u64) -> Self {
+        Self { part, hash }
+    }
+
+    /// Which half this is.
+    #[must_use]
+    pub const fn part(&self) -> RuntimePart {
+        self.part
+    }
+
+    /// The hash that half carries.
+    #[must_use]
+    pub const fn hash(&self) -> u64 {
+        self.hash
+    }
 }
 
 /// Write the whole half into `buf`, returning the length.

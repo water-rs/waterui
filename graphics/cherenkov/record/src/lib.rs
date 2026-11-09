@@ -22,7 +22,6 @@
 //!   the recording comes back split at each one for its host to realize.
 #![expect(
     clippy::exhaustive_enums,
-    clippy::exhaustive_structs,
     reason = "publish = false: no semver surface until #2687 makes the crate publishable"
 )]
 
@@ -97,7 +96,7 @@ pub use crate::record::{
     Animating, Binding, Content, ContentChange, ContentSpare, Draw, Fixed, Live, LiveOwner,
     Recorder, SampleFlag, SharedLive, StaticRecorder,
 };
-pub use crate::resource::{BackdropShaderId, ImageLimits, ResourceId};
+pub use crate::resource::{BackdropShaderId, ImageLimits, ImageStorage, ResourceId};
 pub use crate::shape::{
     ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,
 };

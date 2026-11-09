@@ -48,10 +48,6 @@ impl<T> VectorArithmetic for T where
 ///
 /// Useful when you need to animate multiple related values as a unit.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a pair is exactly its two components, built and destructured positionally"
-)]
 pub struct AnimatablePair<A, B>(pub A, pub B);
 
 impl<A: Add<Output = A>, B: Add<Output = B>> Add for AnimatablePair<A, B> {
@@ -86,10 +82,6 @@ impl<A: Mul<f64, Output = A>, B: Mul<f64, Output = B>> Mul<f64> for AnimatablePa
 ///
 /// Wraps `[f32; 2]` to provide `VectorArithmetic` implementation.
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "newtype over `[f32; 2]`: the wrapped array is the whole value"
-)]
 pub struct Point2(pub [f32; 2]);
 
 impl Point2 {

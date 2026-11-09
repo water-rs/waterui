@@ -38,6 +38,9 @@ belong to water-rs/waterui.
   headroom, extended output), and that pass is measured against the oracle
   too (#100). An engine or target that cannot carry the colours is reported
   as unsupported, never compared on a clipped image.
+- **Blend inputs keep float precision.** An intermediate image a
+  non-`Normal` blend reads is never stored in a compact 8-bit format, and
+  no memory or performance optimisation overrides this (water-rs/waterui#3458).
 - **Visual review is done by eye.** Images are reviewed by looking at them,
   never by pixel-count, brightness or dominant-colour heuristics.
 - **Fail fast.** An unsupported case returns an explicit `Unsupported` error,
@@ -54,6 +57,11 @@ belong to water-rs/waterui.
   same harness, on every scene and on the devices of each stage (#1).
 - **Frames** target 120fps: 8.33 ms at p99. 60fps is accepted only where no
   renderer can fit the budget in theory.
+- **Worker pools size to `std::thread::available_parallelism()` on every
+  platform.** No code discriminates between core classes (big.LITTLE,
+  performance/efficiency); the scheduler and work-stealing place work,
+  not the pool. An explicit count is accepted through the public knob
+  (`RasterConfig::threads`, `RAYON_NUM_THREADS`) only.
 - **CPU-side changes are accepted on deterministic Callgrind instruction
   counts:** Ir for `lower` and `encode` at the second steady frame of the
   perf scenes, sampled by frame index (`bench/scripts/ir_gate.py`, which runs

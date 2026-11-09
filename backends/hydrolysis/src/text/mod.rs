@@ -2,18 +2,20 @@
 //! engine.
 //!
 //! Everything text in the backend routes through the seam in [`engine`]: the
-//! resolved input in [`input`], the shared service in [`service`], and exactly
-//! one engine binding — [`SessionTextEngine`] — so there is no `dyn` dispatch
-//! and no runtime choice. Each backend names its own shaper behind the same
-//! traits.
+//! resolved input in [`input`], the shared service in [`service`], and the
+//! generic engine `E` each renderer carries — every painter entry point
+//! constructs its own concrete engine ([`ParleyEngine`] today), so there is
+//! no `dyn` dispatch and no runtime choice.
 
 mod declared;
 mod engine;
 mod input;
+#[cfg(hydrolysis_gpu_painter)]
 mod parley_engine;
 mod service;
 #[cfg(test)]
 mod tests;
+pub mod types;
 
 pub use declared::DeclaredFonts;
 #[cfg(test)]
@@ -24,7 +26,12 @@ pub use input::{ResolvedTextLayoutInput, resolve_text_layout_input};
 pub use service::TextScenes;
 pub use service::TextService;
 
-pub use parley_engine::fonts;
+#[cfg(any(test, hydrolysis_hwui))]
+mod hwui_engine;
 
-pub type SessionTextEngine = parley_engine::ParleyEngine;
-pub type SessionTextLayout = <SessionTextEngine as TextEngine>::Layout;
+#[cfg(any(test, hydrolysis_hwui))]
+pub use hwui_engine::HwuiTextEngine;
+#[cfg(hydrolysis_gpu_painter)]
+pub use parley_engine::ParleyEngine;
+#[cfg(hydrolysis_gpu_painter)]
+pub use parley_engine::fonts;

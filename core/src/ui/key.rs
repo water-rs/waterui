@@ -29,13 +29,39 @@ use crate::{
 #[non_exhaustive]
 pub struct KeyPress {
     /// What the key means under the current layout and modifiers.
-    pub key: Key,
+    key: Key,
     /// Where the key sits on the keyboard, independent of layout.
-    pub code: Code,
+    code: Code,
     /// The modifiers held with the key.
-    pub modifiers: Modifiers,
+    modifiers: Modifiers,
     /// Whether this press is an auto-repeat of a held key.
-    pub repeat: bool,
+    repeat: bool,
+}
+
+impl KeyPress {
+    /// What the key means under the current layout and modifiers.
+    #[must_use]
+    pub const fn key(&self) -> &Key {
+        &self.key
+    }
+
+    /// Where the key sits on the keyboard, independent of layout.
+    #[must_use]
+    pub const fn code(&self) -> Code {
+        self.code
+    }
+
+    /// The modifiers held with the key.
+    #[must_use]
+    pub const fn modifiers(&self) -> Modifiers {
+        self.modifiers
+    }
+
+    /// Whether this press is an auto-repeat of a held key.
+    #[must_use]
+    pub const fn repeat(&self) -> bool {
+        self.repeat
+    }
 }
 
 impl KeyPress {

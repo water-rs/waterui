@@ -13,6 +13,8 @@ import android.view.Surface
 object NativeBridge {
     /**
      * Incremented in lock-step with `JNI_SCHEMA` in the Rust runner.
+     * 24 adds `DefineEffect` (`effect, stage_count, kind + 12 float` stages)
+     * for native `RenderEffect` chains (#1750).
      * History: 1 = surface/input/IME events; 2 = `nativeSetVisible`
      * (Activity `onStart`/`onStop` → pump visibility); 3 = the
      * InputConnection range protocol (`nativeEditOp`/`nativeEditingState`,
@@ -27,7 +29,7 @@ object NativeBridge {
      * `JNI_OnLoad`; 7 = `nativeSetMetrics` carries the `ViewConfiguration`
      * touch-scroll parameters (slop, min/max fling velocity, scroll
      * friction); 8 = [nativeCreateSession] drops `sdkInt`. The API floor is
-     * 31, so `ANativeWindow_setFrameRate` is linked directly; 9 =
+     * 33, so `ANativeWindow_setFrameRate` is linked directly; 9 =
      * [nativeBackEvent] and `onNativeBackAvailable` carry system back into
      * the navigation stack and report whether a back target is registered;
      * 10 = `nativeSetMetrics` splits the window insets into the container
@@ -49,9 +51,26 @@ object NativeBridge {
      * session, and a recreation that exhausts its loss budget already
      * reaches the host as the frame call's `IllegalStateException`;
      * 17 = [nativeSetFrameDemand] separates continuous work and touch, and
-     * surface attachment carries the display's suggested ARR rates.
+     * surface attachment carries the display's suggested ARR rates; 18 =
+     * the frame carries the HWUI command buffer (`src/hwui` on the Rust
+     * side, `dev.waterui.hydrolysis.hwui` here) decoded onto retained
+     * `RenderNode`s (water-rs/waterui#1811); 19 = the HWUI text wire
+     * carries a default-style row: row zero of every packed shape request
+     * is the paragraph's base paint; 20 = [nativeCreateSession] takes the
+     * session-owned painter and [nativeSetHostAttached] reports the host
+     * view's bind state; 21 = the BindPlatformView op binds a platform
+     * view inside its owner's RenderNode; 22 = [nativePlatformViewHitTest]
+     * answers the retained tree's platform view under a host pixel; 23 =
+     * [nativeCreateSession] carries the configuration's night-mode flag so
+     * the session's colour-scheme signal starts on the real `uiMode`, and
+     * [nativeSetColorScheme] reports every later change
+     * (water-rs/waterui#3544). 25 = the GPU band edge —
+     * [nativeBandAttached] / [nativeBandDetached] carry each band View's
+     * `ImageReader` surface, and `onNativeBandLatch` shows a band's newest
+     * image (water-rs/waterui#2225). 26 = the HWUI `DefineEffect` wire
+     * carries the overscroll stretch stage kind.
      */
-    private const val SCHEMA: Int = 17
+    private const val SCHEMA: Int = 26
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -123,14 +142,45 @@ object NativeBridge {
      * `uiThreadServices` is the handle [load] created — every session
      * shares that executor rather than installing its own.
      */
+    /**
+     * `painter` is the session-owned [SessionPainter] — null on the GPU
+     * backend, the HWUI painter object otherwise.
+     *
+     * `nightMode` is `Configuration.uiMode`'s night flag at the moment the
+     * session is created — the colour-scheme signal's initial value, so the
+     * theme tokens never start on a Light default corrected a frame later.
+     */
     @JvmStatic
     external fun nativeCreateSession(
         session: HydrolysisSession,
         context: Context,
+        painter: SessionPainter?,
         uiThreadServices: Long,
+        nightMode: Boolean,
     ): Long
 
     @JvmStatic external fun nativeDestroySession(sessionPtr: Long)
+
+    /**
+     * The configuration's night-mode flag — pushed when a host view binds
+     * and on every `onConfigurationChanged`; the native side re-resolves
+     * the colour-scheme signal only when the value moved.
+     */
+    @JvmStatic external fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean)
+
+    /**
+     * The host bound (`true`) or unbound (`false`) its view — the session's
+     * attach gate; called from [HydrolysisSession.bind] / `unbind`.
+     */
+    @JvmStatic external fun nativeSetHostAttached(sessionPtr: Long, attached: Boolean)
+
+    /**
+     * The retained tree's platform view under host pixel (`x`, `y`) — the
+     * HWUI painter's ordered hit test. `0` means no view is drawn there or
+     * an interactive target painted above it takes the point; any other
+     * value is a placement id.
+     */
+    @JvmStatic external fun nativePlatformViewHitTest(sessionPtr: Long, x: Float, y: Float): Long
 
     @JvmStatic
     external fun nativeSetMetrics(
@@ -189,6 +239,27 @@ object NativeBridge {
     )
 
     @JvmStatic external fun nativeSurfaceDestroyed(sessionPtr: Long, generation: Long)
+
+    /**
+     * A band View created the `ImageReader` it shows — `surface` is the
+     * reader's, which the engine presents the self-drawn content above the
+     * platform view whose placement id is `view` into. A resize creates a
+     * new reader under a new [generation][nativeBandDetached]; the base
+     * band's attachment drives the frame cadence.
+     */
+    @JvmStatic
+    external fun nativeBandAttached(
+        sessionPtr: Long,
+        view: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+        generation: Long,
+    )
+
+    /** The reader `generation` of the band above `view` is about to close. */
+    @JvmStatic
+    external fun nativeBandDetached(sessionPtr: Long, view: Long, generation: Long)
 
     /**
      * The Activity's started state (`onStart`/`onStop`) — drives the frame

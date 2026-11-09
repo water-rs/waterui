@@ -39,10 +39,6 @@ const ELEVATED_ENABLE: &str = "Start-Process reg.exe -Verb RunAs -Wait -Argument
 
 /// The `LongPathsEnabled` setting on a Windows host.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct WindowsLongPaths;
 
 /// `reg query` for `LongPathsEnabled`.
@@ -90,10 +86,6 @@ impl Toolchain for WindowsLongPaths {
 /// prompt already fails the powershell run, and a write that did not land
 /// is still an error rather than a reported success.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct LongPathsInstallation;
 
 /// Errors that can occur while enabling Windows long paths.

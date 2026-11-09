@@ -714,7 +714,9 @@ impl SystemPlanes for DomPlanes {
                     PlaneContent::Hosted { object, extent } => {
                         (index, plane.placement, *object, *extent)
                     }
-                    PlaneContent::Frame { .. } | PlaneContent::Raster { .. } => {
+                    PlaneContent::Frame { .. }
+                    | PlaneContent::Raster { .. }
+                    | PlaneContent::HostWindow { .. } => {
                         unreachable!("the DOM realization is offered only hosted candidates")
                     }
                 }),

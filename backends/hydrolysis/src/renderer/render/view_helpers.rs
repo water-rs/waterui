@@ -63,19 +63,19 @@ pub fn a11y_scoped_env<T: MetadataKey + Clone + 'static>(
 /// usual `.a11y_label(..).a11y_role(..)` pair) is harmless: only the innermost is
 /// visible below, and it is the one every consumer resolves against.
 #[cfg(feature = "accessibility")]
-pub fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
+pub fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static, E: crate::text::TextEngine>(
     env: &Environment,
     value: &T,
 ) -> Environment {
     let mut scoped = a11y_scoped_env(env, value);
-    scoped.insert(ScopedAccessibilitySemantics::new());
+    scoped.insert(ScopedAccessibilitySemantics::<E>::new());
     scoped
 }
 
 /// Without an accessibility tree there is no naming scope to grow, so naming
 /// metadata scopes the environment like every other value.
 #[cfg(not(feature = "accessibility"))]
-pub fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
+pub fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static, E: crate::text::TextEngine>(
     env: &Environment,
     value: &T,
 ) -> Environment {
@@ -105,7 +105,10 @@ pub fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
 /// Only what the snapshot does not already carry is restored, so a snapshot
 /// taken *below* a naming scope still speaks for itself.
 #[cfg(feature = "accessibility")]
-pub fn restore_a11y_naming_scope(outer: &Environment, mut snapshot: Environment) -> Environment {
+pub fn restore_a11y_naming_scope<E: crate::text::TextEngine>(
+    outer: &Environment,
+    mut snapshot: Environment,
+) -> Environment {
     macro_rules! restore {
         ($($ty:ty),+ $(,)?) => {
             $(
@@ -122,11 +125,12 @@ pub fn restore_a11y_naming_scope(outer: &Environment, mut snapshot: Environment)
         AccessibilityValue,
         AccessibilityRole,
         AccessibilityChildren,
+        AccessibilityGeometry,
         ScopedAccessibilityIdentifier,
         // The claim identity travels with the name: carrying the label without
         // it would let the leaf render the name that a container above still
         // believes nobody spoke for, and both would emit it.
-        ScopedAccessibilitySemantics,
+        ScopedAccessibilitySemantics<E>,
         // The same goes for text the claim consumes as its name: a snapshot
         // that drops the marker would let the leaf emit a `Label` the
         // container's name already repeats.
@@ -137,7 +141,10 @@ pub fn restore_a11y_naming_scope(outer: &Environment, mut snapshot: Environment)
 
 /// Without an accessibility tree there is no naming scope to carry.
 #[cfg(not(feature = "accessibility"))]
-pub const fn restore_a11y_naming_scope(_outer: &Environment, snapshot: Environment) -> Environment {
+pub const fn restore_a11y_naming_scope<E: crate::text::TextEngine>(
+    _outer: &Environment,
+    snapshot: Environment,
+) -> Environment {
     snapshot
 }
 
@@ -177,7 +184,7 @@ fn a11y_scoped_identifier_env(env: &Environment, _value: &AccessibilityIdentifie
 /// build's `Env` arms and the List-row hoist both peel through this, so
 /// registering a new accessibility scope touches one place. `Err` hands the
 /// view back untouched when the outer wrapper is not one of these scopes.
-pub fn a11y_scoped_env_for_view(
+pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
     view: AnyView,
     env: &Environment,
 ) -> Result<(AnyView, Environment), AnyView> {
@@ -199,15 +206,18 @@ pub fn a11y_scoped_env_for_view(
     }
     try_scope!(
         view,
-        AccessibilityLabel => a11y_naming_scoped_env::<AccessibilityLabel>,
+        AccessibilityLabel => a11y_naming_scoped_env::<AccessibilityLabel, E>,
         // `.a11y_value(..)` is naming metadata like the label: the node that
         // represents the wrapped view owns the semantic payload — once — and a
         // container that no control spoke for synthesizes the node carrying it.
-        AccessibilityValue => a11y_naming_scoped_env::<AccessibilityValue>,
+        AccessibilityValue => a11y_naming_scoped_env::<AccessibilityValue, E>,
         AccessibilityIdentifier => a11y_scoped_identifier_env,
-        AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole>,
+        AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole, E>,
         AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>,
         AccessibilityChildren => a11y_scoped_env::<AccessibilityChildren>,
+        // The geometry source names the element the way a label does: the
+        // node that represents the wrapped view reads it from the scope.
+        AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>,
         AccessibilityState => a11y_scoped_env_for_state,
         AccessibilityStateSignal => a11y_scoped_env::<AccessibilityStateSignal>,
     )
@@ -232,18 +242,24 @@ pub fn a11y_scoped_env_for_view(
 /// the modifier and the named view) still belongs to the subtree's own build,
 /// so hoisting stops at one.
 #[cfg(feature = "accessibility")]
-pub fn hoist_accessibility_metadata(view: AnyView, env: &Environment) -> (AnyView, Environment) {
+pub fn hoist_accessibility_metadata<E: crate::text::TextEngine>(
+    view: AnyView,
+    env: &Environment,
+) -> (AnyView, Environment) {
     let mut scoped = env.clone();
-    let view = hoist_accessibility_metadata_inner(view, &mut scoped);
+    let view = hoist_accessibility_metadata_inner::<E>(view, &mut scoped);
     (view, scoped)
 }
 
 #[cfg(feature = "accessibility")]
-fn hoist_accessibility_metadata_inner(mut view: AnyView, scoped: &mut Environment) -> AnyView {
+fn hoist_accessibility_metadata_inner<E: crate::text::TextEngine>(
+    mut view: AnyView,
+    scoped: &mut Environment,
+) -> AnyView {
     view = match view.downcast::<Metadata<Environment>>() {
         Ok(metadata) => {
             let Metadata { content, value } = *metadata;
-            let content = hoist_accessibility_metadata_inner(content, scoped);
+            let content = hoist_accessibility_metadata_inner::<E>(content, scoped);
             return AnyView::new(Metadata { content, value });
         }
         Err(view) => view,
@@ -254,15 +270,15 @@ fn hoist_accessibility_metadata_inner(mut view: AnyView, scoped: &mut Environmen
     view = match view.downcast::<IgnorableMetadata<MaterialGroup>>() {
         Ok(metadata) => {
             let IgnorableMetadata { content, value } = *metadata;
-            let content = hoist_accessibility_metadata_inner(content, scoped);
+            let content = hoist_accessibility_metadata_inner::<E>(content, scoped);
             return AnyView::new(IgnorableMetadata { content, value });
         }
         Err(view) => view,
     };
-    match a11y_scoped_env_for_view(view, scoped) {
+    match a11y_scoped_env_for_view::<E>(view, scoped) {
         Ok((content, next)) => {
             *scoped = next;
-            hoist_accessibility_metadata_inner(content, scoped)
+            hoist_accessibility_metadata_inner::<E>(content, scoped)
         }
         Err(view) => view,
     }
@@ -349,6 +365,7 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         AccessibilityRole,
         AccessibilityHidden,
         AccessibilityChildren,
+        AccessibilityGeometry,
         AccessibilityState,
         AccessibilityStateSignal
     );
@@ -524,7 +541,8 @@ fn normalize_layout_view_with_budget(
         AccessibilityLabel,
         AccessibilityValue,
         AccessibilityRole,
-        AccessibilityChildren
+        AccessibilityChildren,
+        AccessibilityGeometry
     );
 
     // Hidden and (reactive) state have *subtree* semantics: every emission
@@ -603,13 +621,7 @@ fn normalize_layout_view_with_budget(
         let native = *view
             .downcast::<Native<ScrollView>>()
             .expect("layout normalization failed to downcast Native<ScrollView>");
-        let waterui_layout::scroll::ScrollViewParts {
-            axis,
-            content,
-            controller,
-            offset,
-            ..
-        } = native.into_inner().into_inner();
+        let (axis, content, controller, offset) = native.into_inner().into_inner().into_parts();
         let normalized_content = normalize_layout_view_with_budget(content, env, remaining);
         let scroll = ScrollView::new(axis, normalized_content);
         let scroll = match controller {
@@ -632,12 +644,15 @@ fn normalize_layout_view_with_budget(
             normalize_layout_view_with_budget(navigation.bar.title, env, remaining);
         navigation.bar.subtitle =
             normalize_layout_view_with_budget(navigation.bar.subtitle, env, remaining);
-        for item in &mut navigation.bar.toolbar.items {
-            item.content = normalize_layout_view_with_budget(
-                core::mem::take(&mut item.content),
+        for item in navigation.bar.toolbar.items_mut() {
+            // Normalization resolves a label against the environment, so the
+            // bar scope has to wrap the item before it runs.
+            let content = normalize_layout_view_with_budget(
+                crate::widgets::nav::navigation::toolbar_item_view(item.take_content(), env),
                 env,
                 remaining,
             );
+            item.set_content(content);
         }
         navigation.content = normalize_layout_view_with_budget(navigation.content, env, remaining);
         return AnyView::new(Native::new(navigation));
@@ -651,10 +666,10 @@ fn normalize_layout_view_with_budget(
     normalize_layout_view_with_budget(view, env, next_remaining)
 }
 
-pub fn estimate_layout_intrinsic<'a>(
+pub fn estimate_layout_intrinsic<'a, E: crate::text::TextEngine>(
     layout: &dyn Layout,
     children: impl IntoIterator<Item = &'a AnyView>,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
@@ -673,8 +688,8 @@ pub fn estimate_layout_intrinsic<'a>(
 /// its inner edge sits `offset` points out — the stroked box and the resolved
 /// radii both grow by `offset + width / 2` — in the ring's color. The caller
 /// strokes it on the draw context it opens after resolving.
-pub fn interaction_focus_ring(
-    renderer: &mut HydrolysisRenderer,
+pub fn interaction_focus_ring<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
     layer_bounds: kurbo::Rect,
     layer_radii: kurbo::RoundedRectRadii,
@@ -712,8 +727,8 @@ pub fn interaction_focus_ring(
 /// into ellipse segments on wide containers, which violates the Material
 /// corner shape (e.g. a 4dp snackbar radius smeared across a 1500px bar).
 pub fn resolved_shape_to_path(shape: &ResolvedShape, bounds: kurbo::Rect) -> kurbo::BezPath {
-    shape_kind_path(shape.kind, bounds)
-        .unwrap_or_else(|| path_commands_to_path(&shape.commands, bounds))
+    shape_kind_path(shape.kind(), bounds)
+        .unwrap_or_else(|| path_commands_to_path(shape.commands(), bounds))
 }
 
 /// Bounds-aware path for the structured shape kinds; `None` for custom paths,
@@ -744,8 +759,8 @@ pub fn resolved_morph_shape_to_path(
     bounds: kurbo::Rect,
 ) -> kurbo::BezPath {
     let min_side = crate::num_cast::f64_as_f32(bounds.width().min(bounds.height()).max(0.0));
-    let from = shape_kind_radii(shape.from, min_side);
-    let to = shape_kind_radii(shape.to, min_side);
+    let from = shape_kind_radii(*shape.from(), min_side);
+    let to = shape_kind_radii(*shape.to(), min_side);
     let progress = progress.clamp(0.0, 1.0);
     let radii = [
         lerp(from[0], to[0], progress),
@@ -995,6 +1010,7 @@ pub fn working_color_to_rgba8(color: waterui_graphics::draw::WorkingColor) -> [u
     ]
 }
 
+#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
 pub fn rgba8_to_peniko(color: [u8; 4]) -> peniko::Color {
     peniko::Color::new([
         f32::from(color[0]) / 255.0,

@@ -743,7 +743,14 @@ impl SurfaceState {
     }
 
     /// The `BackdropGroupInfo` map lowering needs for this surface.
-    fn backdrop_info(&self, filters: &mut filter::Registry) -> FxHashMap<u64, BackdropGroupInfo> {
+    /// `length_scale` is the current frame's display scale: capture planning
+    /// runs ahead of encode, so each group filter hears it here rather than
+    /// reusing the scale its last encode left behind.
+    fn backdrop_info(
+        &self,
+        filters: &mut filter::Registry,
+        length_scale: f32,
+    ) -> FxHashMap<u64, BackdropGroupInfo> {
         self.backdrop_groups
             .iter()
             .map(|(g, state)| {
@@ -751,11 +758,13 @@ impl SurfaceState {
                     *g,
                     BackdropGroupInfo {
                         filter: state.filter,
-                        footprint: state
-                            .filter
-                            .map_or(Some(filtrate_core::Footprint::ZERO), |key| {
+                        footprint: state.filter.map_or(
+                            Some(filtrate_core::Footprint::ZERO),
+                            |key| {
+                                filters.set_length_scale(key, length_scale);
                                 filters.footprint_bound(key)
-                            }),
+                            },
+                        ),
                         spec: state.spec,
                     },
                 )
@@ -1187,6 +1196,8 @@ struct BackdropShaderEntry {
 
 /// All render-thread state.
 pub struct GpuRenderer {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    preparation: rayon::ThreadPool,
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     presenter: Option<present::Presenter>,
@@ -1257,7 +1268,7 @@ pub struct GpuRenderer {
     /// outer-band member, the first GPU-routed draw and the first image
     /// paint with source flags (on wasm, by `prepare_lazy_pipelines`
     /// before the frame that needs them).
-    pipelines: FormatCells<[[Option<wgpu::RenderPipeline>; 9]; 2]>,
+    pipelines: FormatCells<[[Option<wgpu::RenderPipeline>; 12]; 2]>,
     /// `[format slot][module][opaque, partial]` coverage pipelines, same cell policy
     /// as the core set: the simple module's pair is built at init under
     /// `core_pipelines_eager()` (always, on wasm), else created at the
@@ -1279,7 +1290,7 @@ pub struct GpuRenderer {
     #[cfg(all(unix, not(target_vendor = "apple")))]
     tile_mirror: Result<composite::vulkan::Mirror, composite::vulkan::Declined>,
     /// The configured pipeline cache, opened once for the whole set.
-    pipeline_cache: Option<wgpu::PipelineCache>,
+    pipeline_cache: PipelineCache,
     /// Registered backdrop effect shaders, by raw id — see
     /// [`BackdropShaderEntry`].
     backdrop_shaders: FxHashMap<u64, BackdropShaderEntry>,
@@ -1482,10 +1493,10 @@ struct GlyphResources<'a> {
 
 /// Cell origins and raster resolutions produced by one deferred raster.
 enum PendingOrigin {
-    /// Cell origins — one for a glyph, one per cell for a path
-    /// emission — and the shelves the admission's cells live on, so
-    /// patched emissions can reference the bands (#119).
-    Cells(Vec<(u32, u32)>, Vec<u32>),
+    /// A glyph's single origin and optional shelf.
+    Glyph((u32, u32), Option<u32>),
+    /// An admitted path whose cells and shelves remain pinned in the atlas.
+    Path(u64),
     /// A clip mask's cell origin.
     Mask([f32; 2]),
     /// A GPU-routed path: its compute record index (issue #2543).
@@ -1717,7 +1728,7 @@ fn create_device(
         required_features: required,
         required_limits: limits,
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        memory_hints: memory_hints(info.backend),
+        memory_hints: crate::interop::memory_hints(info.backend),
         trace: wgpu::Trace::Off,
     };
     #[cfg(all(unix, not(target_vendor = "apple")))]
@@ -1983,7 +1994,7 @@ async fn create_device(
             // where `Limits::default` asks for 16.
             required_limits: wgpu::Limits::default().or_worse_values_from(&adapter.limits()),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: memory_hints(info.backend),
+            memory_hints: crate::interop::memory_hints(info.backend),
             trace: wgpu::Trace::Off,
         })
         .await
@@ -2269,6 +2280,9 @@ const fn variant_index(variant: ShaderVariant) -> usize {
         ShaderVariant::Union => 3,
         ShaderVariant::LongGradient => 4,
         ShaderVariant::Cell => 5,
+        ShaderVariant::CellSimple => 9,
+        ShaderVariant::CellGlyph => 10,
+        ShaderVariant::CellFull => 11,
         ShaderVariant::Image => 6,
         ShaderVariant::Glyph => 7,
         ShaderVariant::Composite => 8,
@@ -2291,39 +2305,6 @@ const EAGER_CORE_VARIANTS: [usize; 4] = [0, 1, 2, 4];
 #[cfg(not(target_arch = "wasm32"))]
 const fn core_pipelines_eager() -> bool {
     true
-}
-
-/// Allocator policy for the backend a device is opened on (#170).
-///
-/// `Manual { 4 MiB..16 MiB }` was measured only on Vulkan (Mali-G715,
-/// Pixel 9 Pro): 10.4 MiB idle, where `Performance`'s 64 MiB first block
-/// is most of the ~74 MiB idle reservation. The 16 MiB cap bounds a large
-/// scene (map: five blocks for 53 MiB). Vulkan reads the hint in
-/// `AllocationSizes::from_memory_hints`
-/// (`wgpu-hal/src/vulkan/adapter.rs:2951`, rev `4b35d8bc`).
-///
-/// Every other class keeps [`wgpu::MemoryHints::Performance`], the
-/// default (`wgpu-types/src/device.rs:59`). At that revision Metal
-/// (`wgpu-hal/src/metal/adapter.rs:72`) and GLES
-/// (`wgpu-hal/src/gles/adapter.rs:1083`) take `_memory_hints` and never
-/// read it. The WebGPU backend never reads it: `request_device`
-/// (`wgpu/src/backend/webgpu.rs:1772`) copies limits, features, and the
-/// label, and that module has no `memory_hints` use. DX12 does read the
-/// hint (`wgpu-hal/src/dx12/adapter.rs:1062`, through `device.rs:64` into
-/// `AllocationSizes::from_memory_hints` at `suballocation.rs:78`) but that
-/// class is unmeasured, so it stays on the default.
-const fn memory_hints(backend: wgpu::Backend) -> wgpu::MemoryHints {
-    const MIB: u64 = 1024 * 1024;
-    match backend {
-        wgpu::Backend::Vulkan => wgpu::MemoryHints::Manual {
-            suballocated_device_memory_block_size: 4 * MIB..16 * MIB,
-        },
-        wgpu::Backend::Noop
-        | wgpu::Backend::Metal
-        | wgpu::Backend::Dx12
-        | wgpu::Backend::Gl
-        | wgpu::Backend::BrowserWebGpu => wgpu::MemoryHints::Performance,
-    }
 }
 
 /// The pipeline layout every core and backdrop pipeline shares, over
@@ -2362,15 +2343,50 @@ fn open_pipeline_cache(device: &wgpu::Device, config: &GpuConfig) -> Option<wgpu
     })
 }
 
+/// Shared compilation cache and its existing persistence destination.
+#[derive(Clone, Debug, Default)]
+struct PipelineCache {
+    handle: Option<wgpu::PipelineCache>,
+    path: Option<std::path::PathBuf>,
+}
+
+impl PipelineCache {
+    fn new(handle: Option<&wgpu::PipelineCache>, config: &GpuConfig) -> Self {
+        Self {
+            handle: handle.cloned(),
+            path: config.pipeline_cache.clone(),
+        }
+    }
+
+    fn persist(&self) {
+        persist_cache_file(self.handle.as_ref(), self.path.as_deref());
+    }
+}
+
 /// Persists the pipeline cache to its configured path, best effort:
 /// future runs start closer to warm; a failed write only means the next
 /// start recompiles.
 fn persist_pipeline_cache(cache: Option<&wgpu::PipelineCache>, config: &GpuConfig) {
-    if let (Some(cache), Some(path)) = (cache, &config.pipeline_cache)
+    persist_cache_file(cache, config.pipeline_cache.as_deref());
+}
+
+fn persist_cache_file(cache: Option<&wgpu::PipelineCache>, path: Option<&std::path::Path>) {
+    if let (Some(cache), Some(path)) = (cache, path)
         && let Some(data) = cache.get_data()
+        && let Err(error) = write_pipeline_cache(path, &data)
     {
-        let _ = std::fs::write(path, data);
+        tracing::debug!(?path, %error, "could not persist pipeline cache");
     }
+}
+
+fn write_pipeline_cache(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, data)
 }
 
 /// The closed pipeline set: one instanced-quad pipeline from `shader.wgsl`
@@ -2379,6 +2395,20 @@ fn persist_pipeline_cache(cache: Option<&wgpu::PipelineCache>, config: &GpuConfi
 fn create_pipeline(
     device: &wgpu::Device,
     config: &GpuConfig,
+    layout: &wgpu::PipelineLayout,
+    cache: Option<&wgpu::PipelineCache>,
+    programs: &shaders::EnginePrograms,
+    format: wgpu::TextureFormat,
+    mode: CoveragePass,
+) -> Result<wgpu::RenderPipeline, EngineError> {
+    let pipeline = compile_pipeline(device, layout, cache, programs, format, mode)?;
+    persist_pipeline_cache(cache, config);
+    Ok(pipeline)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn compile_pipeline(
+    device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
     programs: &shaders::EnginePrograms,
@@ -2419,7 +2449,6 @@ fn create_pipeline(
     if let Some(error) = pollster::block_on(error_scope.pop()) {
         return Err(EngineError::Backend(format!("{error}")));
     }
-    persist_pipeline_cache(cache, config);
     Ok(pipeline)
 }
 
@@ -2541,7 +2570,7 @@ impl PipelineFactory<'_> {
 /// layers whose formats coincide, and an empty cell is created at first
 /// use so preparation lands inside the frame that needs it (#170).
 fn core_pipeline<'m>(
-    pipelines: &'m mut FormatCells<[[Option<wgpu::RenderPipeline>; 9]; 2]>,
+    pipelines: &'m mut FormatCells<[[Option<wgpu::RenderPipeline>; 12]; 2]>,
     factory: &PipelineFactory<'_>,
     format: wgpu::TextureFormat,
     replace: bool,
@@ -2587,6 +2616,7 @@ fn create_external_pipeline(
     layout1: &wgpu::BindGroupLayout,
     program: &shaders::RenderProgram,
     format: wgpu::TextureFormat,
+    cache: &PipelineCache,
 ) -> wgpu::RenderPipeline {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("cherenkov external"),
@@ -2598,7 +2628,7 @@ fn create_external_pipeline(
         dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
         operation: wgpu::BlendOperation::Add,
     };
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("cherenkov external"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -2628,8 +2658,10 @@ fn create_external_pipeline(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
-        cache: None,
-    })
+        cache: cache.handle.as_ref(),
+    });
+    cache.persist();
+    pipeline
 }
 
 /// A `w` × `h` texture in `format`.
@@ -2719,8 +2751,8 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         )?;
         let scratch_format = scratch_wgpu(config.scratch_format);
         // Specialised fragment shaders from one source file, compiled
-        // at build time: the prepended `VARIANT` constant makes fs_main a
-        // constant-folded dispatch; the union module is not in this eager
+        // at build time with a statically selected fragment entry point;
+        // the union module is not in this eager
         // set (it materializes with the first union member). On Vulkan
         // and Metal these are the embedded passthrough binaries (#57).
         let shader_delivery = shaders::delivery(info.backend, &device)?;
@@ -2760,32 +2792,56 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         // at the first draw that needs it (#170 B3). The coverage pair
         // follows the same policy via `coverage_pipeline`.
         if let Some(modules) = &modules {
-            for format in [WORKING_FORMAT, scratch_format] {
-                let slot = format_slot(format);
-                for replace in [false, true] {
-                    for (variant, module) in EAGER_CORE_VARIANTS.iter().zip(modules) {
-                        let cell = &mut pipelines[slot][usize::from(replace)][*variant];
-                        if cell.is_none() {
-                            *cell = Some(create_pipeline(
-                                &device,
-                                &config,
-                                &pipeline_layout,
-                                pipeline_cache.as_ref(),
-                                module,
-                                format,
-                                CoveragePass::Painter(replace),
-                            )?);
+            // Each shader family compiles independently. Keep formats and blend
+            // modes within a family serial so they reuse the shared driver cache.
+            // The four workers exist only during initialization; drawing never
+            // waits for background compilation or substitutes another pipeline.
+            let compiled = std::thread::scope(|scope| {
+                let workers = std::array::from_fn::<_, 4, _>(|index| {
+                    let variant = EAGER_CORE_VARIANTS[index];
+                    let module = &modules[index];
+                    let (device, layout, cache) =
+                        (&device, &pipeline_layout, pipeline_cache.as_ref());
+                    scope.spawn(move || {
+                        let mut compiled = Vec::new();
+                        for format in [WORKING_FORMAT, scratch_format]
+                            .into_iter()
+                            .enumerate()
+                            .filter_map(|(index, format)| {
+                                (index == 0 || format != WORKING_FORMAT).then_some(format)
+                            })
+                        {
+                            for replace in [false, true] {
+                                let pipeline = compile_pipeline(
+                                    device,
+                                    layout,
+                                    cache,
+                                    module,
+                                    format,
+                                    CoveragePass::Painter(replace),
+                                )?;
+                                compiled.push((format_slot(format), replace, pipeline));
+                            }
                         }
-                    }
+                        Ok::<_, EngineError>((variant, compiled))
+                    })
+                });
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().expect("pipeline compiler panicked"))
+                    .collect::<Result<Vec<_>, EngineError>>()
+            })?;
+            for (variant, compiled) in compiled {
+                for (slot, replace, pipeline) in compiled {
+                    pipelines[slot][usize::from(replace)][variant] = Some(pipeline);
                 }
             }
             for (cell, phase) in coverage_pipelines[format_slot(WORKING_FORMAT)][0]
                 .iter_mut()
                 .zip([CoveragePhase::Opaque, CoveragePhase::Partial])
             {
-                *cell = Some(create_pipeline(
+                *cell = Some(compile_pipeline(
                     &device,
-                    &config,
                     &pipeline_layout,
                     pipeline_cache.as_ref(),
                     &modules[0],
@@ -2793,6 +2849,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                     CoveragePass::Coverage(phase),
                 )?);
             }
+            persist_pipeline_cache(pipeline_cache.as_ref(), &config);
         }
         // The pipelines own their compiled programs. Drop only the temporary
         // compilation cache here; configured disk caches keep their existing
@@ -2950,16 +3007,31 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         // build is an engine failure.
         #[cfg(all(unix, not(target_vendor = "apple")))]
         let tile_mirror = match composite::vulkan::device_eligibility(&device, &adapter) {
-            Ok(eligible) => Ok(composite::vulkan::Mirror::new(&device, &adapter, eligible)
-                .map_err(|e| EngineError::Backend(format!("tile composition: {e}")))?),
+            Ok(eligible) => Ok(composite::vulkan::Mirror::new(
+                &device,
+                &adapter,
+                eligible,
+                config.pipeline_cache.as_deref(),
+            )
+            .map_err(|e| EngineError::Backend(format!("tile composition: {e}")))?),
             Err(declined) => {
                 tracing::info!(?declined, "vulkan tile composition unavailable");
                 Err(declined)
             }
         };
-        let gpu_cov =
-            gpu_cov::GpuCoverage::new(&device, config.budget.gpu.0 / gpu_cov::BUDGET_SHARE);
+        let gpu_cov = gpu_cov::GpuCoverage::new(
+            &device,
+            config.budget.gpu.0 / gpu_cov::BUDGET_SHARE,
+            PipelineCache::new(pipeline_cache.as_ref(), &config),
+        );
+        let pipeline_cache = PipelineCache::new(pipeline_cache.as_ref(), &config);
         let renderer = GpuRenderer {
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            preparation: rayon::ThreadPoolBuilder::new()
+                .num_threads(cherenkov::workers::count(None)?.get())
+                .thread_name(|i| format!("cherenkov-geometry-{i}"))
+                .build()
+                .map_err(|e| EngineError::Backend(format!("geometry pool: {e}")))?,
             instance,
             adapter,
             presenter: None,
@@ -2982,7 +3054,9 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             shaders: paint::Registry::default(),
             backdrop_shaders: FxHashMap::default(),
             filters: filter::Registry::default(),
-            filter_pipelines: filtrate::PipelineCache::new(),
+            filter_pipelines: filtrate::PipelineCache::with_driver_cache(
+                pipeline_cache.handle.clone(),
+            ),
             shadow_blur: None,
             resolve: None,
             reduce: None,
@@ -3114,9 +3188,8 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&device),
     )?;
     let scratch_format = scratch_wgpu(config.scratch_format);
-    // Specialised fragment shaders from one source file: the prepended
-    // `VARIANT` constant makes fs_main a constant-folded dispatch; the
-    // union module is not in this eager set. WebGPU keeps WGSL (#57).
+    // Specialised fragment shaders with statically selected entry points;
+    // the union module is not in this eager set. WebGPU keeps WGSL (#57).
     let shader_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let shader_delivery = shaders::delivery(info.backend, &device)?;
     let modules =
@@ -3317,7 +3390,12 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&adapter),
         Some(&device),
     )?;
-    let gpu_cov = gpu_cov::GpuCoverage::new(&device, config.budget.gpu.0 / gpu_cov::BUDGET_SHARE);
+    let gpu_cov = gpu_cov::GpuCoverage::new(
+        &device,
+        config.budget.gpu.0 / gpu_cov::BUDGET_SHARE,
+        PipelineCache::new(pipeline_cache.as_ref(), &config),
+    );
+    let pipeline_cache = PipelineCache::new(pipeline_cache.as_ref(), &config);
     let renderer = GpuRenderer {
         instance,
         adapter,
@@ -3342,7 +3420,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         backdrop_shaders: FxHashMap::default(),
         lazy_modules: FxHashMap::default(),
         filters: filter::Registry::default(),
-        filter_pipelines: filtrate::PipelineCache::new(),
+        filter_pipelines: filtrate::PipelineCache::with_driver_cache(pipeline_cache.handle.clone()),
         shadow_blur: None,
         resolve: None,
         reduce: None,
@@ -3439,6 +3517,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
 /// layers.
 fn plane_stack<'a, 'p: 'a>(
     surface: &'a SurfaceState,
+    tree: &'a cherenkov::SurfaceTree,
     producers: &'a FxHashMap<ProducerId, &'p external::Slot>,
     updates: Option<&'a FxHashSet<LayerId>>,
 ) -> impl Iterator<Item = planes::Plane<'a>> + 'a {
@@ -3454,6 +3533,17 @@ fn plane_stack<'a, 'p: 'a>(
                     content: planes::PlaneContent::Hosted {
                         object: &hosted.object,
                         extent: hosted.extent,
+                    },
+                };
+            }
+            if placement.source == planes::Source::HostWindow {
+                return planes::Plane {
+                    placement,
+                    content: planes::PlaneContent::HostWindow {
+                        window: tree
+                            .layer(placement.layer)
+                            .host_window()
+                            .expect("a host-window plane is a marked layer"),
                     },
                 };
             }
@@ -3488,6 +3578,7 @@ fn plane_stack<'a, 'p: 'a>(
 /// which keeps its allocation between fills (#90).
 fn plane_candidates<'a>(
     surf: &SurfaceState,
+    tree: &cherenkov::SurfaceTree,
     producers: &FxHashMap<ProducerId, &external::Slot>,
     candidates: &'a mut FxHashMap<LayerId, planes::Candidate>,
 ) -> &'a FxHashMap<LayerId, planes::Candidate> {
@@ -3497,6 +3588,18 @@ fn plane_candidates<'a>(
             .iter()
             .map(|(&layer, hosted)| (layer, hosted.candidate())),
     );
+    candidates.extend(tree.layers().filter_map(|(layer, node)| {
+        node.host_window().map(|_| {
+            (
+                layer,
+                planes::Candidate {
+                    size: (0, 0),
+                    raster: kurbo::Affine::IDENTITY,
+                    source: planes::Source::HostWindow,
+                },
+            )
+        })
+    }));
     candidates.extend(surf.bindings.iter().filter_map(|(layer, binding)| {
         let slot = producers.get(&binding.producer()).copied()?;
         slot.on_plane.then_some((
@@ -3847,6 +3950,43 @@ impl Renderer for GpuRenderer {
         diag::set_surface(None);
     }
 
+    /// The band of host window `window_id` on surface `id` — the content
+    /// above the mark naming that window (water-rs/waterui#2225). The
+    /// target is an ordinary window: its
+    /// swapchain is the band's presentation surface, which the surface's
+    /// plane system fills with that region's engine composition.
+    ///
+    /// # Panics
+    /// When the target is not a window, when the surface presents through
+    /// no `SurfaceControl` plane system, or when the band's swapchain
+    /// cannot be created.
+    #[cfg(target_os = "android")]
+    fn set_band(&mut self, id: SurfaceId, window_id: u64, target: Option<Self::Target>) {
+        let band = target.map(|target| {
+            let crate::GpuTarget::Window(window) = target else {
+                panic!("surface {id:?}: a band presents through a window target");
+            };
+            surface_control::planes::Band::new(
+                present::WindowSurface::new(
+                    &self.instance,
+                    &self.adapter,
+                    &self.device,
+                    window.handle,
+                    window.size,
+                    window.output,
+                    None,
+                )
+                .unwrap_or_else(|error| {
+                    panic!("surface {id:?}: host window {window_id}'s band swapchain: {error}")
+                }),
+            )
+        });
+        self.planes
+            .get_mut(&id)
+            .unwrap_or_else(|| panic!("surface {id:?} has no plane system to present bands"))
+            .set_band(window_id, band);
+    }
+
     fn destroy_surface(&mut self, id: SurfaceId) {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         if let Some(state) = self.surfaces.get(&id) {
@@ -4024,11 +4164,8 @@ impl Renderer for GpuRenderer {
     fn image_limits(&self) -> cherenkov::ImageLimits {
         cherenkov::ImageLimits {
             max_dimension: self.max_texture,
-            // The image budget: every registered image together holds at
-            // most the GPU budget at eight bytes a texel, the largest
-            // storage an image takes (`Rgba16F`); natively stored formats
-            // take less. The engine admits registrations against it.
-            max_texels: self.config.budget.gpu.0 / 8,
+            max_bytes: self.config.budget.gpu.0,
+            storage: image_storage::limits(self.device.features()),
         }
     }
 
@@ -4119,6 +4256,16 @@ impl Renderer for GpuRenderer {
     fn trim(&mut self, pressure: Pressure) {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("trim");
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Free cached encoders now and in-flight storage after retirement.
+            // Normal frames retain their command-buffer reuse.
+            let device = self.device.clone();
+            self.queue.on_submitted_work_done(move || {
+                device.free_unused_command_encoders();
+            });
+            self.device.free_unused_command_encoders();
+        }
         self.gpu_cov.trim();
         if self.gpu_cov.arena_generation() != self.bound_arena_gen {
             let atlas = &self.atlas;
@@ -4388,13 +4535,14 @@ impl Renderer for GpuRenderer {
             .flat_map(|g| &g.captures)
             .map(|c| format_name(c.target.texture.format()))
             .next();
-        let cpu = self.atlas.cpu_bytes()
+        let glyph_cache =
+            self.atlas.cpu_bytes() + self.fonts.values().map(FontData::bounds_bytes).sum::<u64>();
+        let cpu = glyph_cache
             + self
                 .planes
                 .values()
                 .map(planes::SystemPlanes::cpu_bytes)
                 .sum::<u64>()
-            + self.fonts.values().map(FontData::bounds_bytes).sum::<u64>()
             + self.gpu_cov.cpu_bytes()
             + self.commit_writes.heap_bytes()
             + self
@@ -4442,6 +4590,7 @@ impl Renderer for GpuRenderer {
                     + tile_committed.unwrap_or(0),
             ),
             cpu: cherenkov::Bytes(cpu),
+            glyph_cache: cherenkov::Bytes(glyph_cache),
             tile_reserved: cherenkov::Bytes(tile_reserved),
             tile_committed: tile_committed.map(cherenkov::Bytes),
             backdrop_captures: cherenkov::Bytes(captures),
@@ -4871,8 +5020,13 @@ impl GpuRenderer {
             waker,
         )?;
         self.planes.insert(id, system);
-        self.presenter
-            .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
+        self.presenter.get_or_insert_with(|| {
+            present::Presenter::with_cache(
+                &self.device,
+                self.shader_delivery,
+                self.pipeline_cache.clone(),
+            )
+        });
         Ok(target.refresh)
     }
 
@@ -4887,8 +5041,13 @@ impl GpuRenderer {
         let system =
             planes::web::DomPlanes::new(&self.instance, &self.adapter, &self.device, target)?;
         self.planes.insert(id, system);
-        self.presenter
-            .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
+        self.presenter.get_or_insert_with(|| {
+            present::Presenter::with_cache(
+                &self.device,
+                self.shader_delivery,
+                self.pipeline_cache.clone(),
+            )
+        });
         Ok(target.refresh.clone())
     }
 
@@ -4917,8 +5076,13 @@ impl GpuRenderer {
             &target,
         )?;
         self.exports.insert(id, pool);
-        self.presenter
-            .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
+        self.presenter.get_or_insert_with(|| {
+            present::Presenter::with_cache(
+                &self.device,
+                self.shader_delivery,
+                self.pipeline_cache.clone(),
+            )
+        });
         Ok(target.refresh)
     }
 
@@ -5419,7 +5583,8 @@ impl GpuRenderer {
         source: &cherenkov::ShaderSource,
     ) -> Result<(), ResourceError> {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
-        self.shaders.add(&self.device, id.raw(), source)
+        self.shaders
+            .add(&self.device, id.raw(), source, &self.pipeline_cache)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -5432,7 +5597,9 @@ impl GpuRenderer {
         id: cherenkov::ShaderId,
         source: &cherenkov::ShaderSource,
     ) -> Result<(), ResourceError> {
-        self.shaders.add(&self.device, id.raw(), source).await
+        self.shaders
+            .add(&self.device, id.raw(), source, &self.pipeline_cache)
+            .await
     }
 
     /// Compiles `source` into a backdrop effect pipeline per target
@@ -5465,7 +5632,7 @@ impl GpuRenderer {
                     &self.device,
                     &self.config,
                     &self.pipeline_layout,
-                    self.pipeline_cache.as_ref(),
+                    self.pipeline_cache.handle.as_ref(),
                     &shaders::wgsl_engine_programs(module),
                     format,
                     CoveragePass::Painter(false),
@@ -5540,7 +5707,7 @@ impl GpuRenderer {
                         &self.device,
                         &self.config,
                         &self.pipeline_layout,
-                        self.pipeline_cache.as_ref(),
+                        self.pipeline_cache.handle.as_ref(),
                         &shaders::wgsl_engine_programs(&module),
                         format,
                         CoveragePass::Painter(false),
@@ -5768,8 +5935,13 @@ impl GpuRenderer {
             waker,
         );
         self.planes.insert(id, system);
-        self.presenter
-            .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
+        self.presenter.get_or_insert_with(|| {
+            present::Presenter::with_cache(
+                &self.device,
+                self.shader_delivery,
+                self.pipeline_cache.clone(),
+            )
+        });
         None
     }
 
@@ -5791,8 +5963,13 @@ impl GpuRenderer {
             window.output,
             window.probe,
         )?;
-        self.presenter
-            .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
+        self.presenter.get_or_insert_with(|| {
+            present::Presenter::with_cache(
+                &self.device,
+                self.shader_delivery,
+                self.pipeline_cache.clone(),
+            )
+        });
         Ok(Some(surface))
     }
 
@@ -6079,6 +6256,7 @@ impl GpuRenderer {
                     ext_layout,
                     &module,
                     format,
+                    &self.pipeline_cache,
                 ));
             }
         }
@@ -6124,7 +6302,12 @@ impl GpuRenderer {
         #[cfg(not(target_arch = "wasm32"))]
         let error_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let pipelines = self.projective.get_or_insert_with(|| {
-            projective::Pipelines::new(&self.device, self.shader_delivery, &self.layout0)
+            projective::Pipelines::new(
+                &self.device,
+                self.shader_delivery,
+                &self.layout0,
+                self.pipeline_cache.clone(),
+            )
         });
         for &format in formats {
             pipelines.prepare(&self.device, format);
@@ -6504,7 +6687,7 @@ impl GpuRenderer {
                 // part's shown buffer in place (#90).
                 planes::SystemPlanes::refresh(
                     system,
-                    plane_stack(surface, currents, sf.plane_frames),
+                    plane_stack(surface, sf.tree, currents, sf.plane_frames),
                 )?;
                 Ok((planes::Presentation::Presented, PlatformCommit::default()))
             } else {
@@ -6519,7 +6702,7 @@ impl GpuRenderer {
                         },
                     })
                     .collect();
-                let stack: Vec<_> = plane_stack(surface, currents, None).collect();
+                let stack: Vec<_> = plane_stack(surface, sf.tree, currents, None).collect();
                 planes::SystemPlanes::compose(
                     system,
                     planes::Composition {
@@ -6590,6 +6773,10 @@ impl GpuRenderer {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "validated display scale fits f32"
+    )]
     fn lower_all(
         &mut self,
         pending: &mut [SurfaceState],
@@ -6600,9 +6787,12 @@ impl GpuRenderer {
         let coverage_options = self.coverage_options();
         let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
             .iter()
-            .map(|surf| surf.backdrop_info(&mut self.filters))
+            .zip(frames.iter())
+            .map(|(surf, sf)| surf.backdrop_info(&mut self.filters, sf.display.scale as f32))
             .collect();
         self.ready_planes(frames, pending);
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        let preparation = &self.preparation;
         // The workers share the producers' current frames, not the
         // producers: a rendered producer's content is render-thread
         // state (`!Sync`), and a frame slot is all the lowering
@@ -6636,6 +6826,8 @@ impl GpuRenderer {
                         let prepared = prepared.remove(&frame.id).unwrap_or_default();
                         s.spawn(move || {
                             let result = Self::lower_content(
+                                #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+                                preparation,
                                 surf,
                                 frame,
                                 GlyphResources {
@@ -6675,6 +6867,8 @@ impl GpuRenderer {
                 .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
                 .map(|((surf, frame), ((groups, inputs), ready))| {
                     Self::lower_content(
+                        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+                        preparation,
                         surf,
                         frame,
                         GlyphResources {
@@ -6702,6 +6896,10 @@ impl GpuRenderer {
     }
 
     #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "validated display scale fits f32"
+    )]
     fn lower_all(
         &mut self,
         pending: &mut [SurfaceState],
@@ -6712,7 +6910,8 @@ impl GpuRenderer {
         let coverage_options = self.coverage_options();
         let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
             .iter()
-            .map(|surf| surf.backdrop_info(&mut self.filters))
+            .zip(frames.iter())
+            .map(|(surf, sf)| surf.backdrop_info(&mut self.filters, sf.display.scale as f32))
             .collect();
         self.ready_planes(frames, pending);
         let currents: FxHashMap<ProducerId, &external::Slot> = self
@@ -6925,7 +7124,7 @@ impl GpuRenderer {
             .iter()
             .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
             .collect();
-        let candidates = plane_candidates(surface, &currents, &mut self.candidates);
+        let candidates = plane_candidates(surface, sf.tree, &currents, &mut self.candidates);
         let installed = plane_frames(surface, &currents, &mut self.candidate_frames);
         planes::SystemPlanes::prepare(system, candidates, installed, &mut self.ready);
         if let Some(frames) = sf.plane_frames {
@@ -7008,7 +7207,7 @@ impl GpuRenderer {
                 .iter()
                 .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
                 .collect();
-            let candidates = plane_candidates(surface, &currents, &mut self.candidates);
+            let candidates = plane_candidates(surface, sf.tree, &currents, &mut self.candidates);
             let frames = plane_frames(surface, &currents, &mut self.candidate_frames);
             planes::SystemPlanes::groom_with_frames(system, candidates, frames);
             if surface.plan_dirty || planes::SystemPlanes::wants_plan(system) {
@@ -7040,7 +7239,7 @@ impl GpuRenderer {
             if ready_sets.len() == i {
                 ready_sets.push(FxHashSet::default());
             }
-            let candidates = plane_candidates(surf, producers, candidates);
+            let candidates = plane_candidates(surf, sf.tree, producers, candidates);
             let frames = plane_frames(surf, producers, candidate_frames);
             if let Some(system) = planes.get_mut(&sf.id) {
                 planes::SystemPlanes::prepare(system, candidates, frames, &mut ready_sets[i]);
@@ -7082,6 +7281,8 @@ impl GpuRenderer {
         reason = "one surface's prepared inputs and lowering resources"
     )]
     fn lower_content(
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        preparation: &rayon::ThreadPool,
         surf: &mut SurfaceState,
         frame: &SurfaceFrame<'_>,
         resources: GlyphResources<'_>,
@@ -7095,7 +7296,7 @@ impl GpuRenderer {
         surf.plan_dirty = false;
         let mut candidates = FxHashMap::default();
         surf.plan = if surf.promotes {
-            plane_candidates(surf, resources.producers, &mut candidates);
+            plane_candidates(surf, frame.tree, resources.producers, &mut candidates);
             planes::plan::<planes::Platform>(frame.tree, &candidates, ready)
         } else {
             planes::Plan::default()
@@ -7140,6 +7341,8 @@ impl GpuRenderer {
                 &mut surf.raster_scratch,
                 coverage_options.0,
             );
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            let _ = lowering.preparation.insert(preparation);
             lowering.coverage_route = coverage_options.1;
             lowering.pending = std::mem::take(&mut lowered.pending);
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
@@ -7591,6 +7794,23 @@ impl GpuRenderer {
                         ),
                         |slot| touches.push(slot),
                     );
+                    // One stored UV names only the shelf its own quad
+                    // samples, but an emission's band set is wider: a
+                    // region interval widened across cells can span
+                    // shelves. The `(slot, epoch)` refs folded at
+                    // apply hold every band the emission samples, so
+                    // the still-live ones pin too (#2909). A deferred
+                    // `refs` has no pairs yet — apply derives them,
+                    // and every cell they will name is already pinned
+                    // by the UV scan above.
+                    if emission.refs & lower::DEFERRED_REFS == 0 {
+                        touches.extend(
+                            content.storage.refs[emission.refs_range()]
+                                .iter()
+                                .filter(|&&(slot, epoch)| self.atlas.shelf_matches(slot, epoch))
+                                .map(|&(slot, _)| slot),
+                        );
+                    }
                 }
             }
             // Clip masks bound through `uv[2..3]` pin the same way:
@@ -7715,12 +7935,22 @@ impl GpuRenderer {
                 range.gpu = Some(index);
             }
         }
-        let cell_origin = |p: u32, c: u32| {
-            let PendingOrigin::Cells(cells, _) = &origins[p as usize] else {
-                unreachable!("cell patch must reference cell raster");
-            };
-            let (x, y) = cells[c as usize];
-            [x as f32, y as f32]
+        // Admissions can move the atlas's map entries. Borrow only after
+        // the whole batch is placed; its touched shelves remain pinned.
+        let paths: Vec<_> = origins
+            .iter()
+            .map(|origin| match origin {
+                PendingOrigin::Path(key) => Some(self.atlas.path(*key).expect("just stored")),
+                _ => None,
+            })
+            .collect();
+        let cell_origin = |p: u32, c: u32| match &origins[p as usize] {
+            PendingOrigin::Glyph((x, y), _) => [*x as f32, *y as f32],
+            PendingOrigin::Path(_) => {
+                let cell = &paths[p as usize].expect("admitted path").cells[c as usize];
+                [f32::from(cell.x), f32::from(cell.y)]
+            }
+            _ => unreachable!("cell patch must reference cell raster"),
         };
         for content in surf.layers.values_mut() {
             let (_, emissions) = content.retained.prepared();
@@ -7738,19 +7968,30 @@ impl GpuRenderer {
                 // tail (#119).
                 if emission.refs & lower::DEFERRED_REFS != 0 || !emission.pending_cells_empty() {
                     let first = content.storage.refs.len();
+                    let mut previous_pending = None;
                     for i in emission.pending_cells() {
                         let (inst, p, c) = lowered.emission_patches[i];
                         let local = inst - emission.cell_inst_base();
                         content.storage.instances[emission.instances.start + local as usize].uv
                             [..2]
                             .copy_from_slice(&cell_origin(p, c));
-                        if let PendingOrigin::Cells(_, bands) = &origins[p as usize] {
+                        // Path cell patches are consecutive. Register their
+                        // complete shelf set once instead of once per cell.
+                        if previous_pending != Some(p) {
+                            let bands = match &origins[p as usize] {
+                                PendingOrigin::Glyph(_, slot) => slot.as_slice(),
+                                PendingOrigin::Path(_) => self.atlas.emit_slot_arena(
+                                    paths[p as usize].expect("admitted path").slots.clone(),
+                                ),
+                                _ => unreachable!("cell patch must reference cell raster"),
+                            };
                             content.storage.refs.extend(
                                 bands
                                     .iter()
                                     .map(|&slot| (slot, self.atlas.shelf_epoch(slot))),
                             );
                         }
+                        previous_pending = Some(p);
                     }
                     // Glyph cells record no slot at emit time: the shelf
                     // each stored UV samples is recovered here instead
@@ -7816,9 +8057,7 @@ impl GpuRenderer {
                 let out = self
                     .atlas
                     .place_glyph(key, left, top, w, h, texels, writes)
-                    .map(|(origin, shelf)| {
-                        PendingOrigin::Cells(vec![origin], shelf.into_iter().collect())
-                    })
+                    .map(|(origin, shelf)| PendingOrigin::Glyph(origin, shelf))
                     .ok_or(RenderError::AtlasFull)?;
                 if !hit && w == 0 {
                     diag::atlas_cell(&self.device, (0, 0, 0, 0));
@@ -7829,12 +8068,7 @@ impl GpuRenderer {
                 self.atlas
                     .place_path(key, emit, cells, arena, writes)
                     .ok_or(RenderError::AtlasFull)?;
-                Ok(PendingOrigin::Cells(
-                    self.atlas.path_origins(key).expect("just stored"),
-                    self.atlas
-                        .emit_slot_arena(self.atlas.path(key).expect("just stored").slots.clone())
-                        .to_vec(),
-                ))
+                Ok(PendingOrigin::Path(key))
             }
             PendingRaster::Mask {
                 key,
@@ -8818,7 +9052,8 @@ impl GpuRenderer {
     #[expect(
         clippy::too_many_lines,
         clippy::cast_precision_loss,
-        reason = "pixel sizes are well within f32"
+        clippy::cast_possible_truncation,
+        reason = "pixel sizes and the validated display scale fit f32"
     )]
     fn encode_surface(
         &mut self,
@@ -8998,7 +9233,7 @@ impl GpuRenderer {
             device: &self.device,
             config: &self.config,
             layout: &self.pipeline_layout,
-            cache: self.pipeline_cache.as_ref(),
+            cache: self.pipeline_cache.handle.as_ref(),
             delivery: self.shader_delivery,
         };
         surf.painter_replays
@@ -9213,7 +9448,11 @@ impl GpuRenderer {
             // resolve pipelines here, like the shadow blur (#170).
             let resolve_draw = if resolve::of(&surf.frame.passes[i]).is_some() {
                 let pipelines = self.resolve.get_or_insert_with(|| {
-                    resolve::Pipelines::new(&self.device, self.shader_delivery)
+                    resolve::Pipelines::new(
+                        &self.device,
+                        self.shader_delivery,
+                        self.pipeline_cache.clone(),
+                    )
                 });
                 prepare_resolve(&self.device, pipelines, &self.globals, surf, i)?
             } else {
@@ -10179,7 +10418,7 @@ impl GpuRenderer {
                                             &self.device,
                                             &self.config,
                                             &self.pipeline_layout,
-                                            self.pipeline_cache.as_ref(),
+                                            self.pipeline_cache.handle.as_ref(),
                                             &shaders::wgsl_engine_programs(module),
                                             target_format,
                                             CoveragePass::Painter(replace),
@@ -10339,7 +10578,12 @@ impl GpuRenderer {
                 stats.passes += self
                     .shadow_blur
                     .get_or_insert_with(|| {
-                        shadow::Blur::new(&self.device, self.shader_delivery, self.scratch_format)
+                        shadow::Blur::new(
+                            &self.device,
+                            self.shader_delivery,
+                            self.scratch_format,
+                            &self.pipeline_cache,
+                        )
                     })
                     .apply(
                         &self.device,
@@ -10369,7 +10613,11 @@ impl GpuRenderer {
                 // encoded back.
                 let convert = (pass.space == cherenkov::BlendSpace::SrgbEncoded).then(|| {
                     self.space_convert.get_or_insert_with(|| {
-                        space_convert::Pipelines::new(&self.device, self.shader_delivery)
+                        space_convert::Pipelines::new(
+                            &self.device,
+                            self.shader_delivery,
+                            self.pipeline_cache.clone(),
+                        )
                     })
                 });
                 self.filters.apply(
@@ -10382,8 +10630,10 @@ impl GpuRenderer {
                         pipelines: &self.filter_pipelines,
                     },
                     filter::Scope {
+                        cache: &self.pipeline_cache,
                         target: capture,
                         size: (pass.region[2], pass.region[3]),
+                        length_scale: surf.display.scale as f32,
                         encoded: convert,
                     },
                     timing,
@@ -10397,7 +10647,11 @@ impl GpuRenderer {
                 let levels = capture.levels;
                 if levels > 1 {
                     let pipelines = self.reduce.get_or_insert_with(|| {
-                        reduce::Pipelines::new(&self.device, self.shader_delivery)
+                        reduce::Pipelines::new(
+                            &self.device,
+                            self.shader_delivery,
+                            self.pipeline_cache.clone(),
+                        )
                     });
                     let target = &mut surf
                         .backdrop_groups
@@ -10628,10 +10882,9 @@ impl GpuRenderer {
             // it done. Nothing waits on this: a later frame takes a
             // fresh set of pools until one is released (#2191).
             #[cfg(all(unix, not(target_vendor = "apple")))]
-            if let Some(idle) = tile_idle {
-                self.queue.on_submitted_work_done(move || {
-                    idle.store(true, std::sync::atomic::Ordering::Release);
-                });
+            if let Some(completion) = tile_idle {
+                self.queue
+                    .on_submitted_work_done(move || completion.complete());
             }
             #[cfg(all(unix, not(target_vendor = "apple")))]
             if let Some(native) = self.native.as_mut()
@@ -11501,42 +11754,33 @@ impl GpuRenderer {
             // Init builds every eager cell of the working and scratch
             // formats; a surface's own format has none of them.
             let eager = format == WORKING_FORMAT || format == self.scratch_format;
-            if !eager && coverage_order(pass) {
-                coverage.insert(format_i);
+            if coverage_order(pass) {
+                if !eager {
+                    coverage.insert((format_i, false));
+                }
+                if pass.ranges.iter().any(|range| range.gpu.is_some()) {
+                    coverage.insert((format_i, true));
+                }
             }
             for range in &pass.ranges {
                 let union = range.variant == ShaderVariant::Union;
+                let module = variant_index(range.module());
                 if let PipelineKind::Effect { id, replace } = range.pipeline {
                     effects.insert((id, union, replace, format_i));
-                } else if matches!(
-                    range.variant,
-                    ShaderVariant::Union
-                        | ShaderVariant::Image
-                        | ShaderVariant::Glyph
-                        | ShaderVariant::Composite
-                ) {
-                    core.insert((
-                        variant_index(range.variant),
-                        format_i,
-                        range.pipeline == PipelineKind::Replace,
-                    ));
-                } else if !eager
-                    && !matches!(range.pipeline, PipelineKind::Projective { .. })
-                    && !matches!(range.image, Some(lower::ImageSource::Content(_)))
+                } else if !EAGER_CORE_VARIANTS.contains(&module)
+                    || (!eager
+                        && !matches!(range.pipeline, PipelineKind::Projective { .. })
+                        && !matches!(range.image, Some(lower::ImageSource::Content(_))))
                 {
-                    core.insert((
-                        variant_index(range.module()),
-                        format_i,
-                        range.pipeline == PipelineKind::Replace,
-                    ));
+                    core.insert((module, format_i, range.pipeline == PipelineKind::Replace));
                 }
             }
         }
         for (variant, format_i, replace) in core {
             self.prepare_lazy_core(variant, format_i, replace).await?;
         }
-        for format_i in coverage {
-            self.prepare_lazy_coverage(format_i).await?;
+        for (format_i, gpu) in coverage {
+            self.prepare_lazy_coverage(format_i, gpu).await?;
         }
         for (id, union, replace, format_i) in effects {
             let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
@@ -11566,7 +11810,7 @@ impl GpuRenderer {
                 &self.device,
                 &self.config,
                 &self.pipeline_layout,
-                self.pipeline_cache.as_ref(),
+                self.pipeline_cache.handle.as_ref(),
                 &shaders::wgsl_engine_programs(module),
                 RENDER_FORMATS[format_i],
                 CoveragePass::Painter(replace),
@@ -11584,7 +11828,7 @@ impl GpuRenderer {
     }
 
     /// wasm: the demand-built core cell `(variant, format slot, replace)`
-    /// of a union or image range, with its engine module.
+    /// not built at initialization, with its engine module.
     #[cfg(target_arch = "wasm32")]
     #[expect(
         clippy::future_not_send,
@@ -11615,7 +11859,7 @@ impl GpuRenderer {
                 &self.device,
                 &self.config,
                 &self.pipeline_layout,
-                self.pipeline_cache.as_ref(),
+                self.pipeline_cache.handle.as_ref(),
                 module,
                 RENDER_FORMATS[format_i],
                 CoveragePass::Painter(replace),
@@ -11626,37 +11870,45 @@ impl GpuRenderer {
         Ok(())
     }
 
-    /// wasm: the simple-module `[opaque, partial]` coverage pair of a
-    /// surface format init did not build.
+    /// wasm: a `[opaque, partial]` coverage pair not built at initialization.
     #[cfg(target_arch = "wasm32")]
     #[expect(
         clippy::future_not_send,
         reason = "the browser engine is single-threaded and its futures run on the page's event loop"
     )]
-    async fn prepare_lazy_coverage(&mut self, format_i: usize) -> Result<(), RenderError> {
-        if self.coverage_pipelines[format_i][0]
+    async fn prepare_lazy_coverage(
+        &mut self,
+        format_i: usize,
+        gpu: bool,
+    ) -> Result<(), RenderError> {
+        if self.coverage_pipelines[format_i][usize::from(gpu)]
             .iter()
             .all(Option::is_some)
         {
             return Ok(());
         }
+        let variant = variant_index(if gpu {
+            ShaderVariant::Cell
+        } else {
+            ShaderVariant::Simple
+        });
         let module = self
             .lazy_modules
-            .entry((variant_index(ShaderVariant::Simple), format_i))
+            .entry((variant, format_i))
             .or_insert_with(|| {
                 self.shader_delivery.engine_programs(
                     &self.device,
-                    variant_index(ShaderVariant::Simple),
+                    variant,
                     RENDER_FORMATS[format_i],
                 )
             });
         for phase in [CoveragePhase::Opaque, CoveragePhase::Partial] {
-            self.coverage_pipelines[format_i][0][phase as usize] = Some(
+            self.coverage_pipelines[format_i][usize::from(gpu)][phase as usize] = Some(
                 create_pipeline(
                     &self.device,
                     &self.config,
                     &self.pipeline_layout,
-                    self.pipeline_cache.as_ref(),
+                    self.pipeline_cache.handle.as_ref(),
                     module,
                     RENDER_FORMATS[format_i],
                     CoveragePass::Coverage(phase),

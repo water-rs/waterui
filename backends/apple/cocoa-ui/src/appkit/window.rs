@@ -300,18 +300,9 @@ impl Window {
     /// it keyboard focus.
     ///
     /// A window whose key-view loop is already populated picks the first
-    /// valid key view as its first responder when it becomes key. Callers
-    /// that mount content before ordering and want no control focused at
-    /// reveal clear that pick with [`Self::clear_first_responder`].
+    /// valid key view as its first responder when it becomes key.
     pub fn make_key_and_order_front(&self) {
         self.window.makeKeyAndOrderFront(None);
-    }
-
-    /// Hands first responder back to the window itself, undoing the
-    /// automatic pick `AppKit` makes when the window becomes key with a
-    /// populated key-view loop.
-    pub fn clear_first_responder(&self) {
-        self.window.makeFirstResponder(None);
     }
 
     /// Shows the window without giving it keyboard focus.

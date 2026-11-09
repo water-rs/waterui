@@ -187,7 +187,12 @@ async fn prepare_selected_inspector(
         | CliInspectorPlatform::Ios => InspectorTarget::Direct(target),
     };
 
-    let prepared = prepare_inspector(host, &project_path, Some(shell.build_progress())).await?;
+    let prepared = Box::pin(prepare_inspector(
+        host,
+        &project_path,
+        Some(shell.build_progress()),
+    ))
+    .await?;
     Ok((
         prepared,
         InspectorLaunchOptions::new(inspector_target, token),

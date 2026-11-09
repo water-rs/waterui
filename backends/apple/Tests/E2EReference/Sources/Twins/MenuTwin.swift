@@ -1,9 +1,9 @@
 // Twin of examples/menu: menu sections inside a padded scroll stack.
 //
 // Initial bindings render their defaults: "None" for the menu selection and
-// "No action yet" / "No toolbar action yet" for the action logs. Context menus
-// and popup contents never appear in the settled first screen, so only the
-// presenting rows need to exist.
+// "No action yet" / "No toolbar action yet" / "No quit asked yet" for the
+// action logs. Context menus and popup contents never appear in the settled
+// first screen, so only the presenting rows need to exist.
 
 import SwiftUI
 
@@ -21,7 +21,11 @@ struct MenuTwin: View {
         wuiDivider()
         styledMenuSection
         wuiDivider()
-        contextMenuSection
+        VStack(spacing: 10) {
+          contextMenuSection
+          wuiDivider()
+          contextMenuAccessorySection
+        }
         wuiDivider()
         VStack(spacing: 10) {
           contextMenuViewsSection
@@ -29,7 +33,11 @@ struct MenuTwin: View {
           selectionMenuSection
         }
         wuiDivider()
-        toolbarSceneSection
+        VStack(spacing: 10) {
+          toolbarSceneSection
+          wuiDivider()
+          quitSection
+        }
         Spacer().frame(height: 40)
       }
       .padding(16)
@@ -83,7 +91,10 @@ struct MenuTwin: View {
           Button("Delete") {}
         }
       } label: {
-        Text("Actions").fontWeight(.bold)
+        // `.fontWeight` is a text attribute the macOS menu-label path
+        // normalises away; an explicit `Font` value is not — WaterUI keeps
+        // the declared weight, so the twin carries it the same way (#3598).
+        Text("Actions").font(.body.bold())
       }
       Spacer().frame(height: 12)
       Text("No action yet").font(.caption).foregroundStyle(.secondary)
@@ -102,6 +113,28 @@ struct MenuTwin: View {
           Divider()
           Button("Paste") {}
           Button("Select All") {}
+        }
+      Spacer().frame(height: 12)
+      Text("No action yet").font(.caption).foregroundStyle(.secondary)
+    }
+  }
+
+  // The example's preview card and accessory bar appear only while the
+  // context menu is open, so the presenting box is all the first screen shows.
+  private var contextMenuAccessorySection: some View {
+    section("Context Menu with Accessory", "Long press to preview with an inline accessory bar") {
+      Text("Long Press Me")
+        .padding(24)
+        .background(srgbHex(0xFFF3E0))
+        .foregroundStyle(srgbHex(0xE65100))
+        .contextMenu {
+          Button("Copy") {}
+          Button("Share") {}
+          Divider()
+          Menu("More") {
+            Button("Archive") {}
+          }
+          Button("Delete", role: .destructive) {}
         }
       Spacer().frame(height: 12)
       Text("No action yet").font(.caption).foregroundStyle(.secondary)
@@ -163,6 +196,20 @@ struct MenuTwin: View {
     }
   }
 
+  private var quitSection: some View {
+    VStack(spacing: 10) {
+      Text("Quitting").font(.subheadline)
+      Text(
+        "Quit asks the application, which answers after two seconds. Check Quitting > Refuse Quit in the menu bar to make it refuse."
+      )
+      .font(.body)
+      .foregroundStyle(.secondary)
+      Spacer().frame(height: 12)
+      Text("Last quit answer: No quit asked yet").font(.caption).foregroundStyle(.secondary)
+    }
+    .padding(14)
+  }
+
   private func toolbarActions(iconOnly: Bool) -> some View {
     HStack(spacing: 8) {
       toolbarButton("Search", icon: "[S]", iconOnly: iconOnly)
@@ -174,12 +221,12 @@ struct MenuTwin: View {
   private func toolbarButton(_ title: String, icon: String, iconOnly: Bool) -> some View {
     Button {} label: {
       if iconOnly {
-        Text(icon).font(.caption).fontWeight(.bold)
+        Text(icon).font(.caption).bold()
       } else {
         Label {
           Text(title)
         } icon: {
-          Text(icon).font(.caption).fontWeight(.bold)
+          Text(icon).font(.caption).bold()
         }
       }
     }

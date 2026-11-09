@@ -295,7 +295,7 @@ impl SemanticApp {
     pub fn pump(&mut self) {
         self.at += VIRTUAL_FRAME;
         let result = self.runtime.pump_at(self.at);
-        if let Some(update) = result.tree_update {
+        if let Some(update) = result.into_tree_update() {
             self.tree = Some(update);
         }
     }
@@ -319,7 +319,7 @@ impl SemanticApp {
             let step = VIRTUAL_FRAME.min(remaining);
             self.at += step;
             let result = self.runtime.pump_at(self.at);
-            if let Some(update) = result.tree_update {
+            if let Some(update) = result.into_tree_update() {
                 self.tree = Some(update);
             }
             remaining -= step;
@@ -425,7 +425,7 @@ impl RenderedApp {
     pub fn pump(&mut self) {
         self.at += VIRTUAL_FRAME;
         let result = self.runtime.pump_at(false, self.at);
-        if let Some(update) = result.tree_update {
+        if let Some(update) = result.into_tree_update() {
             self.tree = Some(update);
         }
     }
@@ -449,7 +449,7 @@ impl RenderedApp {
             let step = VIRTUAL_FRAME.min(remaining);
             self.at += step;
             let result = self.runtime.pump_at(false, self.at);
-            if let Some(update) = result.tree_update {
+            if let Some(update) = result.into_tree_update() {
                 self.tree = Some(update);
             }
             remaining -= step;
@@ -459,11 +459,11 @@ impl RenderedApp {
     /// Captures a frame snapshot on the next pump and returns it.
     pub fn snapshot(&mut self) -> &HeadlessSnapshot {
         self.at += VIRTUAL_FRAME;
-        let result = self.runtime.pump_at(true, self.at);
-        if let Some(update) = result.tree_update {
+        let mut result = self.runtime.pump_at(true, self.at);
+        self.snapshot = result.take_snapshot();
+        if let Some(update) = result.into_tree_update() {
             self.tree = Some(update);
         }
-        self.snapshot = result.snapshot;
         self.snapshot
             .as_ref()
             .expect("a snapshot pump produces a frame")
@@ -482,10 +482,14 @@ impl RenderedApp {
         let path = hydrolysis::testing::artifact_snapshot_path(suite, case, stage);
         std::fs::create_dir_all(path.parent().expect("a snapshot path has a case directory"))
             .expect("the artifact directory must be creatable");
-        image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8.clone())
-            .expect("snapshot dimensions must match the rgba buffer")
-            .save(&path)
-            .expect("the snapshot png must be writable");
+        image::RgbaImage::from_raw(
+            snapshot.width(),
+            snapshot.height(),
+            snapshot.rgba8().to_vec(),
+        )
+        .expect("snapshot dimensions must match the rgba buffer")
+        .save(&path)
+        .expect("the snapshot png must be writable");
     }
 
     /// The latest merged accessibility tree, pumping the first frame when

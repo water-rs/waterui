@@ -46,13 +46,39 @@ use waterui_layout::EdgeSet;
 #[non_exhaustive]
 pub struct Border {
     /// The color of the border.
-    pub color: Color,
+    color: Color,
     /// The width of the border in points.
-    pub width: f32,
+    width: f32,
     /// The corner radius for rounded borders (0 = square corners).
-    pub corner_radius: f32,
+    corner_radius: f32,
     /// Which edges to draw the border on (default: all edges).
-    pub edges: EdgeSet,
+    edges: EdgeSet,
+}
+
+impl Border {
+    /// The color of the border.
+    #[must_use]
+    pub const fn color(&self) -> &Color {
+        &self.color
+    }
+
+    /// The width of the border in points.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+
+    /// The corner radius for rounded borders (0 = square corners).
+    #[must_use]
+    pub const fn get_corner_radius(&self) -> f32 {
+        self.corner_radius
+    }
+
+    /// Which edges to draw the border on (default: all edges).
+    #[must_use]
+    pub const fn get_edges(&self) -> EdgeSet {
+        self.edges
+    }
 }
 
 impl MetadataKey for Border {}

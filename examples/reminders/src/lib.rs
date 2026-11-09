@@ -368,11 +368,10 @@ fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView
     .background(Material::Regular)
     .title(dest.title())
     .searchable(&search, "Search reminders")
-    .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::new(
+    .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::action(
         NavigationToolbarPlacement::PrimaryAction,
-        button(label("").icon(plus()))
-            .style(ButtonStyle::Borderless)
-            .action(|| {}),
+        label("").icon(plus()),
+        || {},
     )]))
 }
 
@@ -396,7 +395,7 @@ fn content_header(dest: SidebarDestination) -> impl View {
         .foreground(dest.color())
         .max_width(f32::INFINITY)
         .leading()
-        .padding_with([14.0, 12.0, 18.0, 18.0])
+        .padding_with([14.0, 18.0, 12.0, 18.0])
 }
 
 fn reminder_visible(search: Binding<Str>, row: ReminderRow) -> Computed<bool> {
@@ -439,7 +438,7 @@ fn reminder_section(
             .muted()
             .max_width(f32::INFINITY)
             .leading()
-            .padding_with([8.0, 0.0, 18.0, 18.0]),
+            .padding_with([8.0, 18.0, 0.0, 18.0]),
         List::for_each(rows, move |row| {
             let visible = reminder_visible(search.clone(), row.clone());
             ListItem::new(

@@ -17,6 +17,14 @@ import androidx.activity.enableEdgeToEdge
  */
 abstract class HydrolysisActivity : ComponentActivity() {
 
+    /**
+     * The session-owned painter this host uses, or `null` for the GPU
+     * surface path. Subclasses on the HWUI backend return a `HwuiPainter`
+     * here; the same factory reaches a retained session across recreation.
+     */
+    protected open fun createPainter(): SessionPainter? = null
+
+
     private companion object {
         const val LOG_LEVEL_EXTRA = "waterui.log.level"
     }
@@ -61,6 +69,7 @@ abstract class HydrolysisActivity : ComponentActivity() {
                 nativeLibraryName,
                 logLevel = intent.getStringExtra(LOG_LEVEL_EXTRA),
                 prepareEnvironmentOverrides = ::prepareEnvironmentOverrides,
+                createPainter = ::createPainter,
                 createContentView = ::createContentView,
                 onCloseRequested = ::finish,
                 onMounted = ::onSessionMounted,

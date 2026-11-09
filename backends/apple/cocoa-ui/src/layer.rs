@@ -146,6 +146,12 @@ impl ShapeLayer {
         self.0.setLineWidth(width);
     }
 
+    /// How much of the path is stroked, as the `0..=1` fraction of its
+    /// length measured from the start; changing it animates implicitly.
+    pub fn set_stroke_end(&self, end: f64) {
+        self.0.setStrokeEnd(end);
+    }
+
     /// A butt line cap — stroke ends stop at their endpoints.
     pub fn set_line_cap_butt(&self) {
         use objc2_quartz_core::kCALineCapButt;
@@ -164,74 +170,4 @@ impl Default for ShapeLayer {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Lays `content` out for a layer-driven transform.
-///
-/// Frame and bounds fill `container_bounds` while the layer's anchor moves
-/// to `anchor` (normalized `0.0…1.0`), so a transform written on the layer
-/// pivots correctly. `last_bounds_size` carries the container size this was
-/// last applied at; the function answers `true` only when something
-/// actually changed, which is the caller's signal to re-apply the
-/// transform — `AppKit` rewrites a layer-backed view's layer geometry on
-/// every layout pass.
-///
-/// # Panics
-///
-/// Panics when `content` is not layer-backed — call [`ensure_layer`] first.
-#[cfg(target_os = "macos")]
-#[allow(clippy::too_many_lines)]
-pub fn layout_transformed_content(
-    content: &PlatformView,
-    container_bounds: Rect,
-    anchor: Point,
-    last_bounds_size: &mut Size,
-) -> bool {
-    use objc2_quartz_core::CATransaction;
-
-    ensure_layer(content);
-    let layer = layer_of(content).expect("a layer-backed view has a layer");
-
-    let content_bounds = Rect::new(
-        0.0,
-        0.0,
-        container_bounds.size.width,
-        container_bounds.size.height,
-    );
-    let position = Point::new(
-        container_bounds
-            .size
-            .width
-            .mul_add(anchor.x, container_bounds.origin.x),
-        container_bounds
-            .size
-            .height
-            .mul_add(anchor.y, container_bounds.origin.y),
-    );
-    let needs_update = *last_bounds_size != container_bounds.size
-        || crate::view::frame(content) != container_bounds
-        || crate::view::bounds(content) != content_bounds
-        || Rect::from(layer.bounds()) != content_bounds
-        || Point::from(layer.anchorPoint()) != anchor
-        || Point::from(layer.position()) != position;
-
-    if !needs_update {
-        return false;
-    }
-
-    CATransaction::begin();
-    CATransaction::setDisableActions(true);
-    // The view's frame drives where the subtree is laid out; writing only
-    // bounds leaves the frame at its stale (often zero) rect, so children
-    // center on the container's origin instead of filling it.
-    crate::view::set_bounds(content, content_bounds);
-    crate::view::set_frame(content, container_bounds);
-    layer.setBounds(content_bounds.into());
-    layer.setAnchorPoint(anchor.into());
-    layer.setPosition(position.into());
-    CATransaction::commit();
-
-    *last_bounds_size = container_bounds.size;
-    content.setNeedsLayout(true);
-    true
 }

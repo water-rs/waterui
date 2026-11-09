@@ -10,6 +10,15 @@ else
   echo "::error::no Ubuntu archive source file on this runner"
   exit 1
 fi
+# The hosted runner's mirror list selects Azure's archive, whose cold
+# downloads have held setup for over 40 minutes (#3439). Resolve both the
+# index and package archives through Ubuntu's official HTTPS endpoints.
+sudo sed -i \
+  -e 's|mirror+file:/etc/apt/apt-mirrors-security.txt|https://security.ubuntu.com/ubuntu|g' \
+  -e 's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu|g' \
+  -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+  -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+  "$list"
 # A stalled mirror connection otherwise holds the step until the job's own
 # timeout; each fetch gives up after 30 s and the whole refresh after 5 min.
 if ! timeout 300 sudo apt-get update \

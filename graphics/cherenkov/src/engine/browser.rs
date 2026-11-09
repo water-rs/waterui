@@ -152,7 +152,7 @@ impl<B: Backend> Engine<B> {
 
     /// The images the backend admits: the largest image in each
     /// dimension (the device's texture limit) and the image budget, the
-    /// texels every registered image holds together (the backend's memory
+    /// bytes every registered image holds together (the backend's memory
     /// budget). Read once off the live device and budget when the engine
     /// is created; it never changes.
     ///
@@ -198,22 +198,22 @@ impl<B: Backend> Engine<B> {
 
     /// The engine's current memory usage.
     ///
-    /// # Panics
-    /// Panics if the reply channel drops without answering, which cannot
-    /// happen while the render thread is alive.
-    #[must_use]
+    /// # Errors
+    /// [`RenderError::Thread`] when the executor or its reply channel is
+    /// gone — an unmeasurable engine is an error, never a fabricated zero
+    /// usage.
     #[expect(
         clippy::future_not_send,
         reason = "the browser engine is single-threaded and its futures run on the page's event loop"
     )]
-    pub async fn memory(&self) -> MemoryUsage {
+    pub async fn memory(&self) -> Result<MemoryUsage, RenderError> {
         let (reply, rx) = crate::local::channel();
         if self.tx.send(Message::Memory { reply }).is_err() {
-            return MemoryUsage::default();
+            return Err(RenderError::Thread);
         }
         rx.recv()
             .await
-            .map_or_else(|_| MemoryUsage::default(), |reply| reply.usage)
+            .map_or_else(|_| Err(RenderError::Thread), |reply| Ok(reply.usage))
     }
 
     /// Reports system memory pressure. `Critical` drops every cache.
@@ -279,7 +279,7 @@ impl<B: Backend> Engine<B> {
     where
         B: Uploads<F>,
     {
-        let texels = self.images.admit(image.width(), image.height(), 0)?;
+        let bytes = self.images.admit::<F>(image.width(), image.height(), 0)?;
         let id = ImageId::new(Self::alloc(&self.next_image));
         let upload = image.into_upload();
         let resource = ResourceId::Image(id);
@@ -287,12 +287,12 @@ impl<B: Backend> Engine<B> {
             resource,
             Box::new(move |r: &mut B::Renderer| Box::pin(r.add_image(id, upload))),
         )?;
-        self.images.settle(0, texels);
+        self.images.settle(0, bytes);
         Ok(Image::new(
             id,
             Rc::clone(&self.replace_image),
             Rc::clone(&self.images),
-            texels,
+            bytes,
             self.on_release(resource, move |r| r.remove_image(id)),
         ))
     }
@@ -541,7 +541,8 @@ impl<B: Filters> Engine<B> {
     where
         B: Runs<F>,
     {
-        let id = FilterId::new(Self::alloc(&self.next_filter));
+        let id = FilterId::new(Self::alloc(&self.next_filter))
+            .with_coordinate_remap(F::COORDINATE_REMAP);
         (self.post)(Message::Resource(Box::new(move |r: &mut B::Renderer| {
             B::add_filter(r, id, filter);
         })));

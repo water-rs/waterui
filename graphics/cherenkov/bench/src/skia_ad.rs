@@ -6,7 +6,12 @@
 //! colour space is linear Display P3 (CICP primaries 12 / transfer 8) —
 //! the suite working space — so HDR and wide-gamut values are carried
 //! unclamped end to end and the `HdrColor`/`WideGamut` claims are real.
-//! Readback is `f16` premultiplied linear P3 decoded to `f32`.
+//! A scene whose root level composites in encoded sRGB (every root item
+//! an encoded-sRGB group, through ordinary transform layers) renders into
+//! an encoded-sRGB surface instead,
+//! and each group into a layer of its own space, so every composite
+//! happens in the space the scene declares. Readback is `f16`
+//! premultiplied linear P3 decoded to `f32`.
 //!
 //! Prepare/encode/submit split: `prepare` runs once per scene — feature
 //! check, render-target creation, PNG decode, typeface/font creation,
@@ -34,8 +39,8 @@ use std::time::Instant;
 
 use cherenkov_oracle::{F32Image, color as oc};
 use cherenkov_scene::{
-    BlendMode as SBlend, Draw, Extend, Feature, FillRule, GlyphRun, Item, Layer, Paint as SPaint,
-    ResourceHash, Sampling as SSampling, Scene, StrokeStyle,
+    BlendMode as SBlend, BlendSpace, Draw, Extend, Feature, FillRule, GlyphRun, Group, GroupItem,
+    Item, Layer, Paint as SPaint, ResourceHash, Sampling as SSampling, Scene, StrokeStyle,
 };
 use kurbo::{Affine, BezPath, PathEl};
 use read_fonts::TableProvider;
@@ -90,6 +95,9 @@ pub fn skia_features() -> Vec<Feature> {
         Feature::Shadow,
         Feature::Glyphs,
         Feature::FontVariations,
+        // A group composites in its own `SaveLayerRec::color_space` layer,
+        // where its enclosing level stores the same space (`encode_group`).
+        Feature::BlendSpace(BlendSpace::SrgbEncoded),
         Feature::HdrColor,
         Feature::WideGamut,
         // Skia maps `Extend::None` to `SkTileMode::kDecal`.
@@ -134,6 +142,50 @@ fn p3_cs(engine: &'static str) -> Result<ColorSpace, BenchError> {
     })
 }
 
+/// Whether this level contains only encoded-sRGB groups, possibly nested
+/// in non-isolating transform layers such as native-resolution scaling.
+fn encoded_root(layer: &Layer) -> bool {
+    layer.opacity >= 1.0
+        && layer.blend == SBlend::Normal
+        && !layer.items.is_empty()
+        && layer.items.iter().all(|item| match item {
+            Item::Group(group) => group.blend_space == BlendSpace::SrgbEncoded,
+            Item::Layer(child) => child.clip.is_none() && encoded_root(child),
+            Item::Draw(_) => false,
+        })
+}
+
+/// The surface stores encoded sRGB when the root's composites all use
+/// that space. Ordinary transform nesting does not change compositing;
+/// mixed content keeps the linear Display P3 working space.
+fn root_space(scene: &Scene) -> BlendSpace {
+    if encoded_root(&scene.root) {
+        BlendSpace::SrgbEncoded
+    } else {
+        BlendSpace::Linear
+    }
+}
+
+/// The colour space a surface or layer storing `space` is created in.
+///
+/// # Errors
+/// [`BenchError::Gpu`] when Skia rejects the linear-P3 CICP combo.
+fn space_cs(engine: &'static str, space: BlendSpace) -> Result<ColorSpace, BenchError> {
+    match space {
+        BlendSpace::Linear => p3_cs(engine),
+        BlendSpace::SrgbEncoded => Ok(ColorSpace::new_srgb()),
+    }
+}
+
+/// The surface colour space for `scene`: the space its root level
+/// composites in ([`root_space`]). Readback converts it to linear P3.
+///
+/// # Errors
+/// As [`space_cs`].
+fn surface_cs(engine: &'static str, scene: &Scene) -> Result<ColorSpace, BenchError> {
+    space_cs(engine, root_space(scene))
+}
+
 /// One recorded canvas operation.
 enum Cmd {
     /// `canvas.draw_paint(paint)` — paints over the whole clip; a paint
@@ -148,8 +200,9 @@ enum Cmd {
     Concat(Matrix),
     /// `canvas.clip_path(p, Intersect, aa)`.
     Clip(Path),
-    /// `canvas.save_layer(paint)` (blend + alpha).
-    SaveLayer(Paint),
+    /// `canvas.save_layer(paint)` (blend + alpha), in the given colour
+    /// space or, with `None`, the enclosing device's.
+    SaveLayer(Paint, Option<ColorSpace>),
     /// `canvas.draw_path(p, paint)` (fill or stroke paint).
     Draw(Path, Paint),
     /// `canvas.draw_image_rect` with sampling.
@@ -171,7 +224,14 @@ fn build_cmds(
     let mut clear = Paint::default();
     clear.set_color4f(p3_linear4f(&scene.clear), &p3_cs(engine)?);
     let mut cmds = vec![Cmd::DrawPaint(clear)];
-    encode_layer(&mut cmds, blobs, &scene.root, engine, counters)?;
+    encode_layer(
+        &mut cmds,
+        blobs,
+        &scene.root,
+        root_space(scene),
+        engine,
+        counters,
+    )?;
     Ok(cmds)
 }
 
@@ -183,6 +243,7 @@ fn encode_layer(
     cmds: &mut Vec<Cmd>,
     blobs: &Blobs,
     layer: &Layer,
+    space: BlendSpace,
     engine: &'static str,
     counters: &mut Counters,
 ) -> Result<(), BenchError> {
@@ -200,7 +261,7 @@ fn encode_layer(
         let mut lp = Paint::default();
         lp.set_blend_mode(blend(layer.blend));
         lp.set_alpha_f(layer.opacity.clamp(0.0, 1.0) as f32);
-        cmds.push(Cmd::SaveLayer(lp));
+        cmds.push(Cmd::SaveLayer(lp, None));
     }
     // Content and children draw translated by -scroll_offset inside the
     // clip; `motion` is unsupported (not in `skia_features`).
@@ -212,24 +273,77 @@ fn encode_layer(
     }
     for item in &layer.items {
         match item {
-            Item::Layer(l) => encode_layer(cmds, blobs, l, engine, counters)?,
+            Item::Layer(l) => encode_layer(cmds, blobs, l, space, engine, counters)?,
             Item::Draw(d) => {
                 counters.draw_commands += 1;
                 encode_draw(cmds, blobs, d, engine)?;
             }
-            // Unreachable: scenes declaring `blend-space` fail the feature
-            // check; a group with no declared feature needs no support.
-            Item::Group(_) => {
-                return Err(BenchError::Unsupported {
-                    engine,
-                    feature: Feature::BlendSpace(cherenkov_scene::BlendSpace::SrgbEncoded),
-                    api: Some("skia: scoped group compositing"),
-                });
-            }
+            Item::Group(g) => encode_group(cmds, blobs, g, space, engine, counters)?,
         }
     }
     if grouped {
         cmds.push(Cmd::Restore);
+    }
+    cmds.push(Cmd::Restore);
+    Ok(())
+}
+
+/// The upstream API Skia lacks for a group whose blend space differs from
+/// the level it composites onto.
+const GROUP_SPACE_API: &str = "SkCanvas::restore composites a layer in the enclosing device's \
+     colour space, not the layer's own";
+
+/// Encodes a [`Group`] as a `saveLayer` created in the group's blend space
+/// (`SaveLayerRec::color_space`): its members composite with each other in
+/// that space, and the layer composites onto the enclosing level with the
+/// group's opacity and blend.
+///
+/// Skia composites a restored layer in the enclosing device's space, so
+/// the group composites in its declared space only where the enclosing
+/// level stores that same space; a group under a level of another space
+/// is unsupported. Only encoded-sRGB groups are mapped; a linear group
+/// keeps reporting unsupported.
+///
+/// # Errors
+/// [`BenchError::Unsupported`] for a linear group or one whose space
+/// differs from `space`, the enclosing level's; any error encoding its
+/// members.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Skia paint alpha is f32; scene opacity is f64"
+)]
+fn encode_group(
+    cmds: &mut Vec<Cmd>,
+    blobs: &Blobs,
+    group: &Group,
+    space: BlendSpace,
+    engine: &'static str,
+    counters: &mut Counters,
+) -> Result<(), BenchError> {
+    if group.blend_space != BlendSpace::SrgbEncoded || group.blend_space != space {
+        return Err(BenchError::Unsupported {
+            engine,
+            feature: Feature::BlendSpace(group.blend_space),
+            api: Some(GROUP_SPACE_API),
+        });
+    }
+    let mut lp = Paint::default();
+    lp.set_blend_mode(blend(group.blend));
+    lp.set_alpha_f(group.opacity.clamp(0.0, 1.0) as f32);
+    cmds.push(Cmd::SaveLayer(
+        lp,
+        Some(space_cs(engine, group.blend_space)?),
+    ));
+    for item in &group.items {
+        match item {
+            GroupItem::Draw(d) => {
+                counters.draw_commands += 1;
+                encode_draw(cmds, blobs, d, engine)?;
+            }
+            GroupItem::Group(g) => {
+                encode_group(cmds, blobs, g, group.blend_space, engine, counters)?;
+            }
+        }
     }
     cmds.push(Cmd::Restore);
     Ok(())
@@ -345,8 +459,11 @@ fn replay(canvas: &Canvas, cmds: &[Cmd]) {
             Cmd::Clip(p) => {
                 canvas.clip_path(p, ClipOp::Intersect, true);
             }
-            Cmd::SaveLayer(p) => {
+            Cmd::SaveLayer(p, None) => {
                 canvas.save_layer(&SaveLayerRec::default().paint(p));
+            }
+            Cmd::SaveLayer(p, Some(cs)) => {
+                canvas.save_layer(&SaveLayerRec::default().paint(p).color_space(cs));
             }
             Cmd::Draw(p, paint) => {
                 canvas.draw_path(p, paint);
@@ -846,6 +963,8 @@ pub struct SkiaCpu {
     prepared: Option<SkiaPrepared>,
     size: (u32, u32),
     counters: Counters,
+    /// When the last submit began, by which the raster work had ended.
+    completed: crate::ObservedCompletion,
 }
 
 impl std::fmt::Debug for SkiaCpu {
@@ -880,7 +999,9 @@ impl SkiaCpu {
                 crate_version: env!("DEP_SKIA_SAFE_VERSION"),
                 source_rev: option_env!("DEP_SKIA_SAFE_SOURCE_REV").map(String::from),
                 output_format:
-                    "RGBAF16 premultiplied raster surface (linear Display P3, CICP 12/8)".into(),
+                    "RGBAF16 premultiplied raster surface (linear Display P3, CICP 12/8; \
+                     encoded sRGB for a scene whose root composites encoded)"
+                        .into(),
                 precision: "Skia blends in f32 premultiplied; output is f16 (≈11-bit mantissa)",
                 route: "cpu-raster",
                 color_note: "scene colours converted working-space→linear-P3 f32 unclamped; \
@@ -891,6 +1012,7 @@ impl SkiaCpu {
             prepared: None,
             size: (0, 0),
             counters: Counters::default(),
+            completed: crate::ObservedCompletion::default(),
         }
     }
 }
@@ -921,7 +1043,7 @@ impl Engine for SkiaCpu {
             ),
             ColorType::RGBAF16,
             AlphaType::Premul,
-            p3_cs(Self::NAME)?,
+            surface_cs(Self::NAME, input.scene)?,
         );
         let surface = surfaces::raster(&info, None, None)
             .ok_or_else(|| BenchError::Gpu("skia raster surface".into()))?;
@@ -954,6 +1076,7 @@ impl Engine for SkiaCpu {
             .ok_or_else(|| BenchError::Engine("skia-cpu: submit before prepare".into()))?;
         // Rasterization happened inside `encode`'s canvas calls on the
         // raster surface; the submit itself only snapshots and reads.
+        self.completed.record(render_at);
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = Instant::now();
         let image = if readback {
@@ -975,6 +1098,17 @@ impl Engine for SkiaCpu {
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(
+            "the host instant submit began: raster canvas calls run synchronously in encode, so the \
+             frame's raster work has ended by then",
+        )
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        self.completed.take(Self::NAME)
     }
 
     fn wait_idle(&mut self) -> Result<(), BenchError> {
@@ -1015,6 +1149,10 @@ pub struct SkiaVk {
     _bctx: skia_safe::gpu::vk::BackendContext<'static>,
     vk_instance: &'static ash::Instance,
     vk_physical_device: ash::vk::PhysicalDevice,
+    /// The semaphores each frame's completion goes through; `None` when
+    /// the driver cannot export a semaphore as a sync file, and the
+    /// adapter then reports no completion.
+    completion: Option<CompletionSemaphores>,
     /// Prepared scene state: the Ganesh surface and resolved `Cmd` list.
     prepared: Option<SkiaPrepared>,
     size: (u32, u32),
@@ -1088,7 +1226,12 @@ impl SkiaVk {
         let qcis = [vk::DeviceQueueCreateInfo::default()
             .queue_family_index(qfam)
             .queue_priorities(&prios)];
-        let dci = vk::DeviceCreateInfo::default().queue_create_infos(&qcis);
+        let sync_fd = sync_fd_exportable(instance, pd, api)?;
+        let extensions = [ash::khr::external_semaphore_fd::NAME.as_ptr()];
+        let enabled: &[*const std::ffi::c_char] = if sync_fd { &extensions } else { &[] };
+        let dci = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&qcis)
+            .enabled_extension_names(enabled);
         // SAFETY: `pd`/`qfam` are valid; the device is leaked and outlives
         // every user of it.
         let device: &'static ash::Device = Box::leak(Box::new(
@@ -1142,7 +1285,9 @@ impl SkiaVk {
                 crate_version: env!("DEP_SKIA_SAFE_VERSION"),
                 source_rev: option_env!("DEP_SKIA_SAFE_SOURCE_REV").map(String::from),
                 output_format:
-                    "Ganesh Vulkan render target, RGBAF16 premultiplied (linear Display P3)".into(),
+                    "Ganesh Vulkan render target, RGBAF16 premultiplied (linear Display P3; \
+                     encoded sRGB for a scene whose root composites encoded)"
+                        .into(),
                 precision: "Skia blends in f32 premultiplied; output is f16 (≈11-bit mantissa)",
                 route: "vulkan",
                 color_note: "scene colours converted working-space→linear-P3 f32 unclamped; \
@@ -1154,6 +1299,7 @@ impl SkiaVk {
             _bctx: bctx,
             vk_instance: instance,
             vk_physical_device: pd,
+            completion: sync_fd.then(|| CompletionSemaphores::new(instance, device)),
             prepared: None,
             size: (0, 0),
             counters: Counters::default(),
@@ -1170,6 +1316,25 @@ impl Engine for SkiaVk {
 
     fn gpu_timing_unavailable(&self) -> Option<&'static str> {
         Some("This Skia Ganesh Vulkan version does not implement GPU timing statistics")
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        if self.completion.is_some() {
+            crate::CompletionSignal::Measured(
+                "the kernel's signal timestamp (CLOCK_MONOTONIC) of the sync file exported from a \
+                 binary semaphore Ganesh signals once the frame's flush has executed \
+                 (FlushInfo::set_signal_semaphores): the driver's own fence time, read after the run \
+                 drains. The semaphore is created and exported outside the timed submit, which only \
+                 attaches it to the flush. A sync file exported already signaled carries no time; \
+                 that frame's instant is then the export's return, an upper bound",
+            )
+        } else {
+            crate::CompletionSignal::Unavailable(
+                "this Vulkan driver cannot export a semaphore as a sync file \
+                 (VK_KHR_external_semaphore_fd, SYNC_FD), the only host-observable form of the binary \
+                 semaphore Ganesh signals",
+            )
+        }
     }
 
     fn finish_gpu(&mut self) -> Result<Vec<crate::GpuSample>, BenchError> {
@@ -1199,7 +1364,7 @@ impl Engine for SkiaVk {
             ),
             ColorType::RGBAF16,
             AlphaType::Premul,
-            p3_cs(Self::NAME)?,
+            surface_cs(Self::NAME, input.scene)?,
         );
         let surface = skia_safe::gpu::ganesh::surface_ganesh::render_target(
             &mut self.dctx,
@@ -1217,6 +1382,11 @@ impl Engine for SkiaVk {
             surface,
             cmds: build_cmds(input.scene, input.blobs, Self::NAME, &mut self.counters)?,
         });
+        if let Some(semaphores) = &mut self.completion {
+            // The first frame's semaphore, created outside the timed loop;
+            // each completion step creates the next frame's.
+            semaphores.prepare()?;
+        }
         Ok(())
     }
 
@@ -1240,9 +1410,13 @@ impl Engine for SkiaVk {
             ));
         }
         let render_at = Instant::now();
-        self.dctx.flush(None);
-        if !self.dctx.submit(skia_safe::gpu::SyncCpu::No) {
-            return Err(BenchError::Gpu("Skia Vulkan submission failed".into()));
+        if let Some(semaphores) = &mut self.completion {
+            semaphores.flush_signaling(&mut self.dctx)?;
+        } else {
+            self.dctx.flush(None);
+            if !self.dctx.submit(skia_safe::gpu::SyncCpu::No) {
+                return Err(BenchError::Gpu("Skia Vulkan submission failed".into()));
+            }
         }
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = Instant::now();
@@ -1265,6 +1439,13 @@ impl Engine for SkiaVk {
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        self.completion
+            .as_mut()
+            .map(CompletionSemaphores::export_submitted)
+            .transpose()
     }
 
     fn counters(&self) -> Counters {
@@ -1296,6 +1477,349 @@ impl Engine for SkiaVk {
     }
 }
 
+/// Whether `pd` can export a binary semaphore as a sync file, which needs
+/// Vulkan 1.1 on both sides and `VK_KHR_external_semaphore_fd`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn sync_fd_exportable(
+    instance: &ash::Instance,
+    pd: ash::vk::PhysicalDevice,
+    api: u32,
+) -> Result<bool, BenchError> {
+    use ash::vk;
+    // SAFETY: `instance` and `pd` are live handles.
+    let props = unsafe { instance.get_physical_device_properties(pd) };
+    if api < vk::API_VERSION_1_1 || props.api_version < vk::API_VERSION_1_1 {
+        return Ok(false);
+    }
+    // SAFETY: `instance` and `pd` are live handles.
+    let extensions = unsafe { instance.enumerate_device_extension_properties(pd) }
+        .map_err(|e| BenchError::Gpu(format!("vulkan: device extensions: {e}")))?;
+    if !extensions
+        .iter()
+        .any(|e| e.extension_name_as_c_str() == Ok(ash::khr::external_semaphore_fd::NAME))
+    {
+        return Ok(false);
+    }
+    let info = vk::PhysicalDeviceExternalSemaphoreInfo::default()
+        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+    let mut external = vk::ExternalSemaphoreProperties::default();
+    // SAFETY: the instance and the device are Vulkan 1.1, checked above.
+    unsafe { instance.get_physical_device_external_semaphore_properties(pd, &info, &mut external) };
+    Ok(external
+        .external_semaphore_features
+        .contains(vk::ExternalSemaphoreFeatureFlags::EXPORTABLE))
+}
+
+/// The binary semaphores the Skia Vulkan completion signal goes through.
+///
+/// Only attaching a semaphore to Ganesh's flush happens inside the timed
+/// submit ([`Self::flush_signaling`]). Creating it ([`Self::prepare`] for
+/// the first frame, [`Self::export_submitted`] for each next one) and
+/// exporting it as a sync file ([`Self::export_submitted`]) run in the
+/// frame loop's completion step, after the frame's timed intervals.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+struct CompletionSemaphores {
+    device: &'static ash::Device,
+    export: ash::khr::external_semaphore_fd::Device,
+    /// The semaphore the next submit's flush signals, with Skia's handle
+    /// for it.
+    next: Option<(ash::vk::Semaphore, skia_safe::gpu::BackendSemaphore)>,
+    /// The semaphore the last submit's flush signals, awaiting export.
+    /// `Some` only while `next` is `None`.
+    submitted: Option<ash::vk::Semaphore>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl CompletionSemaphores {
+    fn new(instance: &ash::Instance, device: &'static ash::Device) -> Self {
+        Self {
+            device,
+            export: ash::khr::external_semaphore_fd::Device::new(instance, device),
+            next: None,
+            submitted: None,
+        }
+    }
+
+    fn error(e: impl std::fmt::Display) -> BenchError {
+        BenchError::Gpu(format!("skia-vulkan completion: {e}"))
+    }
+
+    /// Readies the first frame's semaphore. A frame submitted without a
+    /// completion step (a single readback render) is drained first and its
+    /// semaphore destroyed.
+    ///
+    /// # Errors
+    /// [`BenchError::Gpu`] when Vulkan fails.
+    fn prepare(&mut self) -> Result<(), BenchError> {
+        if let Some(semaphore) = self.submitted.take() {
+            self.drain_and_destroy(semaphore)?;
+        }
+        self.arm()
+    }
+
+    /// Creates the semaphore the next submit's flush signals, unless one
+    /// is ready.
+    fn arm(&mut self) -> Result<(), BenchError> {
+        use ash::vk::{self, Handle};
+
+        if self.next.is_some() {
+            return Ok(());
+        }
+        let mut export_info = vk::ExportSemaphoreCreateInfo::default()
+            .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+        let create = vk::SemaphoreCreateInfo::default().push_next(&mut export_info);
+        // SAFETY: `device` is the live, leaked device Skia renders on.
+        let semaphore =
+            unsafe { self.device.create_semaphore(&create, None) }.map_err(Self::error)?;
+        // SAFETY: `semaphore` stays alive until this type destroys it, after
+        // every Skia operation on it has completed.
+        let backend = unsafe {
+            skia_safe::gpu::backend_semaphores::make_vk(
+                semaphore.as_raw() as skia_safe::gpu::vk::Semaphore
+            )
+        };
+        self.next = Some((semaphore, backend));
+        Ok(())
+    }
+
+    /// Flushes and submits Ganesh's pending work with the ready semaphore
+    /// for it to signal. It adds no submission and waits for nothing.
+    ///
+    /// # Errors
+    /// [`BenchError::Gpu`] when no semaphore is ready (the previous
+    /// frame's completion step did not run) or Skia does not submit it.
+    fn flush_signaling(
+        &mut self,
+        dctx: &mut skia_safe::gpu::DirectContext,
+    ) -> Result<(), BenchError> {
+        let (semaphore, mut backend) = self.next.take().ok_or_else(|| {
+            Self::error(
+                "submit without a ready semaphore: the previous frame's completion step did not run",
+            )
+        })?;
+        let mut info = skia_safe::gpu::FlushInfo::default();
+        // SAFETY: `backend` outlives the flush below, its only consumer.
+        unsafe { info.set_signal_semaphores(std::slice::from_mut(&mut backend)) };
+        let submitted = dctx.flush(&info) == skia_safe::gpu::SemaphoresSubmitted::Yes
+            && dctx.submit(skia_safe::gpu::SyncCpu::No);
+        if !submitted {
+            return Err(self.discard(
+                semaphore,
+                Self::error("Skia did not submit the frame with its signal semaphore"),
+            ));
+        }
+        self.submitted = Some(semaphore);
+        Ok(())
+    }
+
+    /// The completion step: readies the next frame's semaphore, then
+    /// exports the submitted frame's as a sync file whose kernel signal
+    /// timestamp is the frame's completion.
+    ///
+    /// # Errors
+    /// [`BenchError::Gpu`] when no frame awaits export or Vulkan fails; the
+    /// submitted semaphore is destroyed once the device has drained.
+    fn export_submitted(&mut self) -> Result<crate::Completion, BenchError> {
+        use ash::vk;
+
+        let semaphore = self
+            .submitted
+            .take()
+            .ok_or_else(|| Self::error("completion requested without a submitted frame"))?;
+        if let Err(error) = self.arm() {
+            return Err(self.discard(semaphore, error));
+        }
+        let get = vk::SemaphoreGetFdInfoKHR::default()
+            .semaphore(semaphore)
+            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+        // SAFETY: the semaphore was created exportable as SYNC_FD and its
+        // signal operation was submitted by the last flush.
+        let fd = match unsafe { self.export.get_semaphore_fd(&get) } {
+            Ok(fd) => fd,
+            Err(e) => return Err(self.discard(semaphore, Self::error(e))),
+        };
+        let exported = Instant::now();
+        let device = self.device;
+        let destroy = move || {
+            // SAFETY: runs once, after every operation on `semaphore`
+            // completed.
+            unsafe { device.destroy_semaphore(semaphore, None) };
+        };
+        if fd == -1 {
+            // The signal had already happened, so the driver exported no
+            // fence and the semaphore has no pending operation.
+            destroy();
+            return Ok(crate::Completion::Finished(exported));
+        }
+        // SAFETY: a non-negative fd from vkGetSemaphoreFdKHR is a sync file
+        // the caller owns.
+        let file = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+        Ok(crate::Completion::InFlight(Box::new(move || {
+            let signaled = sync_file::signaled_at(&file);
+            drop(file);
+            destroy();
+            signaled
+        })))
+    }
+
+    /// Waits for the device to finish all submitted work, then destroys
+    /// `semaphore`. A wait that fails for any reason but device loss may
+    /// leave work pending that references the semaphore, which is then
+    /// leaked rather than destroyed while in use.
+    ///
+    /// # Errors
+    /// [`BenchError::Gpu`] when the wait fails.
+    fn drain_and_destroy(&self, semaphore: ash::vk::Semaphore) -> Result<(), BenchError> {
+        // SAFETY: the device is live, and the adapter's thread is the only
+        // one submitting to its queue.
+        let drained = unsafe { self.device.device_wait_idle() };
+        if matches!(drained, Ok(()) | Err(ash::vk::Result::ERROR_DEVICE_LOST)) {
+            // SAFETY: no pending operation references the semaphore: the
+            // device drained, or was lost, which completes all its work.
+            unsafe { self.device.destroy_semaphore(semaphore, None) };
+        }
+        drained.map_err(|e| Self::error(format!("draining the device to destroy a semaphore: {e}")))
+    }
+
+    /// Destroys `semaphore` after a failure and returns `error`, extended
+    /// by the drain's own failure.
+    fn discard(&self, semaphore: ash::vk::Semaphore, error: BenchError) -> BenchError {
+        match self.drain_and_destroy(semaphore) {
+            Ok(()) => error,
+            Err(drain) => BenchError::Gpu(format!("{error}; {drain}")),
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl Drop for CompletionSemaphores {
+    fn drop(&mut self) {
+        if let Some((semaphore, _)) = self.next.take() {
+            // SAFETY: no flush ever received this semaphore.
+            unsafe { self.device.destroy_semaphore(semaphore, None) };
+        }
+        if let Some(semaphore) = self.submitted.take()
+            && let Err(e) = self.drain_and_destroy(semaphore)
+        {
+            tracing::warn!("skia-vulkan: the last submitted completion semaphore leaks: {e}");
+        }
+    }
+}
+
+/// The signal time a Linux sync file's fences record (`linux/sync_file.h`).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod sync_file {
+    use std::os::fd::{AsRawFd, OwnedFd};
+    use std::time::{Duration, Instant};
+
+    use crate::BenchError;
+
+    /// `struct sync_fence_info`.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct FenceInfo {
+        obj_name: [u8; 32],
+        driver_name: [u8; 32],
+        status: i32,
+        flags: u32,
+        timestamp_ns: u64,
+    }
+
+    /// `struct sync_file_info`.
+    #[repr(C)]
+    struct FileInfo {
+        name: [u8; 32],
+        status: i32,
+        flags: u32,
+        num_fences: u32,
+        pad: u32,
+        sync_fence_info: u64,
+    }
+
+    /// `SYNC_IOC_FILE_INFO`.
+    const FILE_INFO: libc::Ioctl = libc::_IOWR::<FileInfo>(SYNC_IOC_MAGIC, 4);
+
+    /// `SYNC_IOC_MAGIC`, the character `'>'`.
+    const SYNC_IOC_MAGIC: u32 = 0x3E;
+
+    const UNSIGNALED: FenceInfo = FenceInfo {
+        obj_name: [0; 32],
+        driver_name: [0; 32],
+        status: 0,
+        flags: 0,
+        timestamp_ns: 0,
+    };
+
+    fn file_info(file: &OwnedFd, fences: &mut [FenceInfo]) -> Result<FileInfo, BenchError> {
+        let mut info = FileInfo {
+            name: [0; 32],
+            status: 0,
+            flags: 0,
+            num_fences: u32::try_from(fences.len()).expect("fence count fits u32"),
+            pad: 0,
+            sync_fence_info: fences.as_mut_ptr() as u64,
+        };
+        // SAFETY: `info` is a valid `sync_file_info` whose array pointer
+        // holds `num_fences` entries; the kernel writes only those.
+        if unsafe { libc::ioctl(file.as_raw_fd(), FILE_INFO, &raw mut info) } != 0 {
+            return Err(BenchError::Engine(format!(
+                "sync file info: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(info)
+    }
+
+    /// The instant the last of `file`'s fences signaled.
+    ///
+    /// # Errors
+    /// The sync file cannot be read, is unsignaled or failed, or records a
+    /// signal time later than now.
+    pub fn signaled_at(file: &OwnedFd) -> Result<Instant, BenchError> {
+        let count = file_info(file, &mut [])?.num_fences as usize;
+        let mut fences = vec![UNSIGNALED; count];
+        let info = file_info(file, &mut fences)?;
+        if info.status != 1 || fences.is_empty() || fences.iter().any(|f| f.status != 1) {
+            return Err(BenchError::Engine(format!(
+                "the frame's sync file is not signaled after the drain (status {})",
+                info.status
+            )));
+        }
+        let signaled_ns = fences
+            .iter()
+            .map(|f| f.timestamp_ns)
+            .max()
+            .expect("fences is non-empty");
+        // Instant reads CLOCK_MONOTONIC on Linux, the clock the kernel
+        // stamps fences with; one reading of each anchors the two.
+        let now = Instant::now();
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a valid out-pointer.
+        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts) } != 0 {
+            return Err(BenchError::Engine(format!(
+                "clock_gettime: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let now_ns = u64::try_from(ts.tv_sec).expect("monotonic seconds are non-negative")
+            * 1_000_000_000
+            + u64::try_from(ts.tv_nsec).expect("nanoseconds are non-negative");
+        let ago = now_ns.checked_sub(signaled_ns).ok_or_else(|| {
+            BenchError::Engine(format!(
+                "the sync file signaled at {signaled_ns} ns, after now ({now_ns} ns)"
+            ))
+        })?;
+        now.checked_sub(Duration::from_nanos(ago)).ok_or_else(|| {
+            BenchError::Engine(format!(
+                "the sync file's signal time ({ago} ns ago) predates the host clock's origin"
+            ))
+        })
+    }
+}
+
 /// `skia-metal`: Skia Graphite on Metal, Apple platforms only.
 #[cfg(all(feature = "skia-metal", target_vendor = "apple"))]
 mod graphite_metal {
@@ -1311,7 +1835,7 @@ mod graphite_metal {
 
     use objc2::rc::Retained;
     use objc2::runtime::ProtocolObject;
-    use objc2_metal::{MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice};
+    use objc2_metal::{MTLCommandBuffer, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice};
     use skia_safe::gpu::graphite::{self, mtl as gmtl};
     use skia_safe::gpu::{Mipmapped, graphite::surfaces};
     use skia_safe::wrapper::PointerWrapper;
@@ -1322,6 +1846,7 @@ mod graphite_metal {
 
     use super::{
         SkiaPrepared, build_cmds, p3_cs, replay_scrolled, skia_features, skia_missing_api,
+        surface_cs,
     };
     use crate::convert;
     use crate::memory::{AdapterMemory, Reading, skia_budget};
@@ -1334,8 +1859,10 @@ mod graphite_metal {
     pub struct SkiaMtl {
         info: EngineInfo,
         device: Retained<ProtocolObject<dyn MTLDevice>>,
-        /// Retained for the lifetime of the Graphite backend context.
-        _queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+        /// The queue Graphite submits on, retained for the lifetime of the
+        /// backend context; each frame's completion marker is committed on
+        /// it after Graphite's submission.
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
         _bctx: gmtl::BackendContext,
         ctx: graphite::Context,
         recorder: graphite::Recorder,
@@ -1346,6 +1873,8 @@ mod graphite_metal {
         recording: Option<graphite::Recording>,
         size: (u32, u32),
         counters: Counters,
+        /// Whether a submitted frame awaits [`Engine::completion`].
+        awaiting_completion: bool,
     }
 
     impl std::fmt::Debug for SkiaMtl {
@@ -1396,7 +1925,8 @@ mod graphite_metal {
                     crate_version: env!("DEP_SKIA_SAFE_VERSION"),
                     source_rev: option_env!("DEP_SKIA_SAFE_SOURCE_REV").map(String::from),
                     output_format: "Graphite Metal render target, RGBAF16 premultiplied \
-                                    (linear Display P3)"
+                                    (linear Display P3; encoded sRGB for a scene whose root \
+                                    composites encoded)"
                         .into(),
                     precision: "Skia blends in f32 premultiplied; output is f16 (≈11-bit mantissa)",
                     route: "metal (graphite)",
@@ -1407,7 +1937,7 @@ mod graphite_metal {
                                    — `submit` inserts it on the shared Metal queue",
                 },
                 device,
-                _queue: queue,
+                queue,
                 _bctx: bctx,
                 ctx,
                 recorder,
@@ -1415,7 +1945,36 @@ mod graphite_metal {
                 recording: None,
                 size: (0, 0),
                 counters: Counters::default(),
+                awaiting_completion: false,
             })
+        }
+
+        /// Commits an empty command buffer on Graphite's queue, after the
+        /// frame's submission, whose completed handler stamps the frame's
+        /// completion. It records no GPU work and nothing waits on it; the
+        /// frame loop calls it outside the timed submit.
+        ///
+        /// # Errors
+        /// [`BenchError::Gpu`] when the queue cannot create the buffer.
+        fn commit_completion_marker(&self) -> Result<crate::Completion, BenchError> {
+            let marker = self.queue.commandBuffer().ok_or_else(|| {
+                BenchError::Gpu(
+                    "skia-metal: commandBuffer returned nil for the completion marker".into(),
+                )
+            })?;
+            let (send, completion) = crate::Completion::deferred_callback();
+            let handler = block2::RcBlock::new(
+                move |_: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                    // A dropped receiver means the run already failed; the
+                    // frame loop reports a missing instant itself.
+                    let _ = send.send(Instant::now());
+                },
+            );
+            // SAFETY: `handler` is a live block; Metal copies it before
+            // `addCompletedHandler:` returns, so dropping ours is sound.
+            unsafe { marker.addCompletedHandler(block2::RcBlock::as_ptr(&handler)) };
+            marker.commit();
+            Ok(completion)
         }
 
         /// Reads the render target as premultiplied `f16` linear-P3
@@ -1486,7 +2045,7 @@ mod graphite_metal {
                 (w as i32, h as i32),
                 ColorType::RGBAF16,
                 AlphaType::Premul,
-                p3_cs(Self::NAME)?,
+                surface_cs(Self::NAME, input.scene)?,
             );
             let surface = surfaces::render_target(
                 &mut self.recorder,
@@ -1555,6 +2114,7 @@ mod graphite_metal {
             } else {
                 None
             };
+            self.awaiting_completion = true;
             Ok(Submit {
                 image,
                 gpu: Vec::new(),
@@ -1568,6 +2128,28 @@ mod graphite_metal {
 
         fn gpu_timing_unavailable(&self) -> Option<&'static str> {
             Some("This Skia Graphite Metal version does not implement GPU timing statistics")
+        }
+
+        fn completion_signal(&self) -> crate::CompletionSignal {
+            crate::CompletionSignal::Measured(
+                "the instant Metal ran the completed handler of an empty command buffer the adapter \
+                 commits on Graphite's queue after each submit, outside the timed submit \
+                 (skia-safe exposes no Graphite finished proc); Metal completes a queue's command \
+                 buffers in commit order, so the instant bounds the frame's completion from above \
+                 by the handler's dispatch latency, at the cost of one empty commit per frame",
+            )
+        }
+
+        fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+            if !std::mem::take(&mut self.awaiting_completion) {
+                return Err(BenchError::Engine(
+                    "skia-metal: completion requested without a submitted frame".into(),
+                ));
+            }
+            // Nothing has been committed on the queue since the frame's
+            // submit returned, so the marker follows the frame's last
+            // command buffer.
+            self.commit_completion_marker().map(Some)
         }
 
         fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
@@ -1616,3 +2198,37 @@ mod graphite_metal {
 
 #[cfg(all(feature = "skia-metal", target_vendor = "apple"))]
 pub use graphite_metal::SkiaMtl;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_effects_prepare_without_changing_group_space() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenes/perf/effects");
+        let scene = Scene::load(&dir).expect("generated effects scene");
+        let (mut scene, _) = crate::transform::at_native(&scene, 480, 960);
+        let blobs = crate::convert::load_blobs(&scene, &dir).expect("scene resources");
+        let mut engine = SkiaCpu::new();
+        let input = EncodeInput {
+            scene: &scene,
+            blobs: &blobs,
+            scroll_offset: None,
+        };
+        engine.prepare(&input).expect("native effects prepare");
+        engine.encode(&input).expect("native effects encode");
+        assert!(engine.submit(0, true).expect("rasterize").image.is_some());
+
+        // An opacity layer really composites into its parent's space;
+        // it cannot be treated as the neutral native-scale wrapper.
+        scene.root.opacity = 0.5;
+        assert!(matches!(
+            engine.prepare(&EncodeInput {
+                scene: &scene,
+                blobs: &blobs,
+                scroll_offset: None,
+            }),
+            Err(BenchError::Unsupported { .. })
+        ));
+    }
+}

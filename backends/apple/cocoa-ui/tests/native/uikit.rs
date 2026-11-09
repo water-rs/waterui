@@ -1,20 +1,23 @@
 //! `UIKit` cases — real `UIKit` objects built through the public API on the
 //! real main thread.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use cocoa_ui::core_animation::on_commit;
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::{AnyObject, Bool, Sel};
 use cocoa_ui::objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, msg_send, sel};
 use cocoa_ui::objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use cocoa_ui::objc2_foundation::ns_string;
+use cocoa_ui::objc2_quartz_core::{CABasicAnimation, CAMediaTiming};
 use cocoa_ui::objc2_ui_kit::{UIGestureRecognizerState, UIPanGestureRecognizer, UIView, UIWindow};
 use cocoa_ui::uikit::input_view::InputView;
 use cocoa_ui::uikit::{HostView, Label};
 use cocoa_ui::{PlatformView, Rect};
 use libtest_mimic::Trial;
 
-use crate::harness::{capture_target, marker};
+use crate::harness::{capture_target, marker, pump_main_turn, pump_main_until};
 
 /// The suite's `UIKit` cases, named after the module and test they moved
 /// from.
@@ -64,6 +67,14 @@ pub fn trials() -> Vec<Trial> {
             "uikit::menu_panel",
             an_unpresented_panel_tracks_its_rows_pages_and_focus
         ),
+        case!(
+            "core_animation",
+            on_commit_runs_once_despite_an_endless_animation_in_its_transaction
+        ),
+        case!(
+            "core_animation",
+            on_commit_runs_registrations_in_order_including_one_made_from_a_body
+        ),
         case!("view", display_immediately_targets_the_layer_not_the_view),
         case!(
             "capture",
@@ -99,6 +110,68 @@ fn extended_linear_display_p3_preserves_space_and_hdr_channels() {
     let channels = unsafe { std::slice::from_raw_parts(CGColor::components(Some(&cg)), 4) };
     assert!((channels[0] - 1.5).abs() < f64::EPSILON);
     assert!((channels[3] - 0.8).abs() < f64::EPSILON);
+}
+
+/// An animation that never finishes on `view`'s layer, added to the open
+/// transaction — the shape of the `CAMatchPropertyAnimation`s a Liquid
+/// Glass tab bar adds while it is built.
+fn add_endless_animation(view: &PlatformView) {
+    let animation = CABasicAnimation::animationWithKeyPath(Some(ns_string!("opacity")));
+    animation.setDuration(f64::INFINITY);
+    view.layer()
+        .addAnimation_forKey(&animation, Some(ns_string!("endless")));
+}
+
+/// `on_commit` means "after this turn's transaction commits", not "after
+/// every animation added to it finishes": the transaction's completion
+/// block waits for the latter, so a body registered before an endless
+/// animation joins the transaction — a tab bar built during scene
+/// connection (#3881) — would never run. It runs once, after the commit.
+fn on_commit_runs_once_despite_an_endless_animation_in_its_transaction() {
+    let mtm = marker();
+    let host = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 100.0));
+    let _window = attach(mtm, &host);
+    let runs = Rc::new(Cell::new(0_u32));
+    on_commit(mtm, {
+        let runs = Rc::clone(&runs);
+        move || runs.set(runs.get() + 1)
+    });
+    add_endless_animation(&host);
+    assert!(
+        pump_main_until(2.0, || runs.get() > 0),
+        "the on_commit body never ran after its transaction committed"
+    );
+    pump_main_turn();
+    assert_eq!(runs.get(), 1, "the on_commit body ran more than once");
+}
+
+/// Bodies registered in one turn run in registration order, and a body
+/// registered while another runs — inside the post-commit callout — runs
+/// after the following commit instead of being lost.
+fn on_commit_runs_registrations_in_order_including_one_made_from_a_body() {
+    let mtm = marker();
+    let order = Rc::new(RefCell::new(Vec::new()));
+    for name in ["first", "second"] {
+        on_commit(mtm, {
+            let order = Rc::clone(&order);
+            move || {
+                order.borrow_mut().push(name);
+                if name == "first" {
+                    on_commit(mtm, {
+                        let order = Rc::clone(&order);
+                        move || order.borrow_mut().push("nested")
+                    });
+                }
+            }
+        });
+    }
+    assert!(
+        pump_main_until(2.0, || order.borrow().len() == 3),
+        "on_commit bodies ran: {:?}",
+        order.borrow()
+    );
+    pump_main_turn();
+    assert_eq!(*order.borrow(), ["first", "second", "nested"]);
 }
 
 /// A `UIWindow` with no scene hosting `content`, kept hidden — the smallest

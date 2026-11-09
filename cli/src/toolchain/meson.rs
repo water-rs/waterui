@@ -10,10 +10,6 @@ use crate::{
 
 /// Toolchain for `meson`.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct Meson;
 
 impl Meson {
@@ -40,10 +36,6 @@ impl Toolchain for Meson {
 
 /// Installation plan for `meson`.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct MesonInstallation;
 
 /// Errors that can occur during `meson` installation.

@@ -5,6 +5,7 @@ use cherenkov_record::{MaterialRegistry, Paint, Recorder};
 use core::time::Duration;
 use kurbo::{BezPath, Point, Rect, RoundedRectRadii};
 use nami::signal::IntoComputed;
+use waterui::navigation::tab::NativeTabStyle;
 use waterui_controls::toggle::ToggleStyle;
 use waterui_controls::{ControlSize, button::ButtonStyle};
 use waterui_core::EasingCurve;
@@ -20,10 +21,6 @@ use waterui_text::font::Font;
 
 /// Button layout metrics.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct ButtonMetrics {
     /// Horizontal content padding.
     pub padding_x: f64,
@@ -58,13 +55,35 @@ impl ButtonMetrics {
 #[non_exhaustive]
 pub struct ButtonSpec {
     /// The button's style.
-    pub style: ButtonStyle,
+    style: ButtonStyle,
     /// The button's control size.
-    pub size: ControlSize,
+    size: ControlSize,
     /// Whether the label resolved to `IconOnly`: the bounds are the theme's
     /// touch target, and the chrome is the icon-button container centred
     /// inside them.
-    pub icon_only: bool,
+    icon_only: bool,
+}
+
+impl ButtonSpec {
+    /// The button's style.
+    #[must_use]
+    pub const fn style(&self) -> ButtonStyle {
+        self.style
+    }
+
+    /// The button's control size.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
+    /// Whether the label resolved to `IconOnly`: the bounds are the theme's
+    /// touch target, and the chrome is the icon-button container centred
+    /// inside them.
+    #[must_use]
+    pub const fn icon_only(&self) -> bool {
+        self.icon_only
+    }
 }
 
 impl ButtonSpec {
@@ -87,10 +106,6 @@ impl ButtonSpec {
 /// packages to supply exact state-layer geometry and colors for composed
 /// controls such as icon buttons, FABs, chips, and navigation destinations.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct InteractionStyle {
     /// Layout metrics used by the semantic button wrapper.
     pub metrics: ButtonMetrics,
@@ -123,10 +138,6 @@ pub struct InteractionStyle {
 /// The ring follows the state layer's shape, grown outward by `offset`, so it
 /// matches the control's current corner radii.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct FocusRing {
     /// Ring color.
     pub color: Color,
@@ -336,10 +347,6 @@ pub const MAX_PRESS_WAVES: usize = 4;
 
 /// One in-flight press ripple wave.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "state snapshot the renderer fills field by field for style packages to draw from; a new field must fail the renderer's build rather than be left unset"
-)]
 pub struct PressWave {
     /// Absolute logical-unit origin of the press that spawned this wave.
     /// `None` centers the wave in the target (synthetic/keyboard presses).
@@ -402,10 +409,6 @@ impl PressWaves {
 
 /// Interactive state snapshot for widget chrome.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "state snapshot the renderer fills field by field for style packages to draw from; a new field must fail the renderer's build rather than be left unset"
-)]
 pub struct WidgetInteractionState {
     /// The widget's interaction flags for this frame — hovered, pressed,
     /// keyboard-focus-visible, dragged, selected, disabled — resolved by the
@@ -442,10 +445,6 @@ impl WidgetInteractionState {
 
 /// Motion policy for interactive widget chrome.
 #[derive(Debug, Clone, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct InteractionMotion {
     /// Hover state-layer opacity.
     pub hover_opacity: f32,
@@ -480,10 +479,6 @@ pub struct InteractionMotion {
 
 /// Motion policy for progress indicators.
 #[derive(Debug, Clone, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct ProgressMotion {
     /// Animation used for linear determinate value changes.
     pub linear_determinate: Animation,
@@ -504,10 +499,6 @@ pub struct ProgressMotion {
 
 /// Motion policy for radio selection indicators.
 #[derive(Debug, Clone, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct RadioSelectionMotion {
     /// Animation used when the selected inner dot grows.
     pub inner_grow: Animation,
@@ -520,10 +511,6 @@ pub struct RadioSelectionMotion {
 
 /// Animated visual state for a radio indicator.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "state snapshot the renderer fills field by field for style packages to draw from; a new field must fail the renderer's build rather than be left unset"
-)]
 pub struct RadioIndicatorState {
     /// Whether the radio option is currently selected semantically.
     pub selected: bool,
@@ -537,10 +524,6 @@ pub struct RadioIndicatorState {
 
 /// Motion policy for text input carets.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct TextCaretMotion {
     /// Full fade cycle duration.
     pub fade_cycle_duration: Duration,
@@ -552,10 +535,6 @@ pub struct TextCaretMotion {
 
 /// Motion policy for backend-rendered navigation transitions.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct NavigationMotion {
     /// Duration for a complete navigation transition.
     pub transition_duration: Duration,
@@ -570,10 +549,6 @@ pub struct NavigationMotion {
 
 /// Toggle layout metrics.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct ToggleMetrics {
     /// Toggle control width.
     pub width: f64,
@@ -614,10 +589,6 @@ pub enum StepperEnd {
 
 /// Stepper layout metrics.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct StepperMetrics {
     /// Minimum size for each stepper button.
     pub button_min_size: f64,
@@ -653,10 +624,6 @@ impl StepperMetrics {
 
 /// Text input layout metrics.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct InputFieldMetrics {
     /// Height reserved for the input label.
     pub label_height: f64,
@@ -692,10 +659,6 @@ impl InputFieldMetrics {
 
 /// Layout metrics for backend-rendered context menus.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct TextContextMenuMetrics {
     /// One-line menu row height.
     pub row_height: f64,
@@ -719,10 +682,6 @@ pub struct TextContextMenuMetrics {
 
 /// Picker layout metrics.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct PickerMetrics {
     /// Minimum picker width.
     pub min_width: f64,
@@ -756,10 +715,6 @@ pub struct PickerMetrics {
 
 /// Slider layout metrics.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct SliderMetrics {
     /// Horizontal slider inset.
     pub horizontal_inset: f64,
@@ -812,10 +767,6 @@ impl SliderMetrics {
 /// Layout metrics of the value indicator a slider shows above its thumb while
 /// the thumb is dragged.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct SliderValueIndicatorMetrics {
     /// Horizontal padding inside the bubble around the value text.
     pub padding_x: f64,
@@ -851,10 +802,6 @@ impl SliderValueIndicatorMetrics {
 
 /// Progress indicator layout metrics.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct ProgressMetrics {
     /// Height reserved for labels.
     pub label_height: f64,
@@ -949,12 +896,27 @@ pub enum TabItemLayout {
     Horizontal,
 }
 
+/// The geometry of one tab item, in the coordinate space of the bar that
+/// holds it: what a style needs to draw the selection indicator wherever and
+/// in whatever shape it wants.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabItemGeometry {
+    /// The item's chrome bounds: the whole button for vertical items, the
+    /// icon and title grown by the button inset for horizontal ones.
+    pub bounds: Rect,
+    /// The icon's rect, `None` for a title-only item.
+    pub icon: Option<Rect>,
+    /// The title's rect.
+    pub title: Rect,
+    /// How the item arranges its icon and title.
+    pub layout: TabItemLayout,
+    /// Whether the item sits in a bar or a sidebar strip; `Automatic` and
+    /// `TabBar` are both a bar.
+    pub placement: NativeTabStyle,
+}
+
 /// Layout metrics for tab containers.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct TabsMetrics {
     /// Tab bar height.
     pub bar_height: f64,
@@ -962,10 +924,6 @@ pub struct TabsMetrics {
     pub button_min_width: f64,
     /// Horizontal label inset inside one tab button.
     pub button_horizontal_inset: f64,
-    /// Selected tab active indicator height.
-    pub active_indicator_height: f64,
-    /// Selected tab active indicator corner radius.
-    pub active_indicator_radius: f64,
     /// Gap between a tab item's icon and its label: vertical space when the
     /// icon sits above the label, horizontal space when it sits beside it.
     pub icon_label_spacing: f64,
@@ -978,16 +936,12 @@ impl TabsMetrics {
         bar_height: f64,
         button_min_width: f64,
         button_horizontal_inset: f64,
-        active_indicator_height: f64,
-        active_indicator_radius: f64,
         icon_label_spacing: f64,
     ) -> Self {
         Self {
             bar_height,
             button_min_width,
             button_horizontal_inset,
-            active_indicator_height,
-            active_indicator_radius,
             icon_label_spacing,
         }
     }
@@ -995,10 +949,6 @@ impl TabsMetrics {
 
 /// Layout metrics for lists.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct ListMetrics {
     /// Minimum one-line row height.
     pub one_line_row_height: f64,
@@ -1026,10 +976,6 @@ pub struct ListMetrics {
 
 /// Row metrics for lists.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct ListRowMetrics {
     /// Minimum one-line row height.
     pub one_line_row_height: f64,
@@ -1053,10 +999,6 @@ impl ListRowMetrics {
 
 /// Divider metrics for lists.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct ListDividerMetrics {
     /// Divider leading inset.
     pub leading_inset: f64,
@@ -1077,10 +1019,6 @@ impl ListDividerMetrics {
 
 /// Trailing control metrics for lists.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct ListTrailingControlMetrics {
     /// Width of the row move affordance.
     pub move_width: f64,
@@ -1137,10 +1075,6 @@ impl ListMetrics {
 
 /// Section chrome metrics for lists.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct ListSectionMetrics {
     /// Height reserved above a row that opens a titled section.
     pub header_height: f64,
@@ -1161,10 +1095,6 @@ impl ListSectionMetrics {
 
 /// Layout metrics for dividers.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct DividerMetrics {
     /// Divider stroke thickness.
     pub thickness: f64,
@@ -1180,10 +1110,6 @@ impl DividerMetrics {
 
 /// Layout metrics for badges.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct BadgeMetrics {
     /// Diameter of a small dot badge.
     pub small_size: f64,
@@ -1233,10 +1159,6 @@ impl BadgeMetrics {
 
 /// Layout metrics for navigation bars.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct NavigationMetrics {
     /// Automatic title-mode bar height.
     pub automatic_bar_height: f64,
@@ -1276,10 +1198,6 @@ pub struct NavigationMetrics {
 
 /// Layout metrics for backend-rendered tables.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct TableMetrics {
     /// Minimum table column width.
     pub min_column_width: f64,
@@ -1736,17 +1654,17 @@ pub trait WidgetTheme {
     /// `divider` is the bar's inner edge: the top row of a bottom bar, the
     /// trailing column of a sidebar strip.
     fn draw_tabs_bar_divider(&self, recorder: &mut Recorder, divider: Rect);
-    /// Draw the selected tab highlight of an item laid out as `layout`.
-    fn draw_tabs_highlight(&self, recorder: &mut Recorder, bounds: Rect, layout: TabItemLayout);
-    /// Draw the state layer of a tab button whose item is laid out as
-    /// `layout`.
+    /// Draw the selected tab's indicator. The style decides its shape and
+    /// placement from the item's geometry.
+    fn draw_tabs_highlight(&self, recorder: &mut Recorder, item: TabItemGeometry);
+    /// Draw the state layer of a tab button. The style decides its shape and
+    /// placement from the item's geometry, like the selection indicator.
     fn draw_tabs_button_state_layer(
         &self,
         _recorder: &mut Recorder,
-        _bounds: Rect,
+        _item: TabItemGeometry,
         _selected: bool,
         _state: WidgetInteractionState,
-        _layout: TabItemLayout,
     ) {
     }
 

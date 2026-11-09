@@ -13,7 +13,9 @@
 //! the one deliberate difference.
 
 use waterui::layout::{Spacer, stack::Axis};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
@@ -33,6 +35,14 @@ struct SpacerSubView {
 }
 
 impl SubView for SpacerSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(match self.axis {
             Some(Axis::Horizontal) => Size::new(self.min_length, 0.0),

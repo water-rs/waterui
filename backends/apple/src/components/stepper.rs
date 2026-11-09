@@ -14,15 +14,19 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::RefCell;
 
-use cocoa_ui::{PlatformView, Rect, Retained};
+use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::component::stepper::StepperConfig;
 use waterui::reactive::Signal;
 use waterui::text::{StyledStr, TextConfig};
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -112,23 +116,26 @@ fn intrinsic_height(sizes: ChildSizes, stepper_height: f64) -> f64 {
         .max(f64::from(sizes.formatted.height))
 }
 
-/// Lays out the children inside `view`'s bounds: label at the leading edge,
-/// stepper at the trailing edge, formatted value immediately before the
-/// buttons — `WuiStepper`'s `AutoLayout` constraints as manual frames, with
-/// the arrangement mirrored when the view is right-to-left.
-fn layout_children(view: &PlatformView, state: &StepperState) {
+/// Lays out the children inside the `response` rectangle: label at the
+/// leading edge, stepper at the trailing edge, formatted value immediately
+/// before the buttons — `WuiStepper`'s `AutoLayout` constraints as manual
+/// frames, with the arrangement mirrored when the view is right-to-left.
+fn layout_children(view: &PlatformView, response: Rect, state: &StepperState) {
     let Some(children) = &state.children else {
         return;
     };
-    let width = cocoa_ui::view::bounds(view).size.width;
-    let height = cocoa_ui::view::bounds(view).size.height;
+    let width = response.size.width;
+    let height = response.size.height;
     let sizes = child_sizes(children);
     let stepper_size = state.stepper.intrinsic_size();
     let rtl = cocoa_ui::view::is_right_to_left(view);
 
     let place = |child: &PlatformView, x: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, (height - h) / 2.0, w, h));
+        view::set_frame(
+            child,
+            Rect::new(x, (height - h) / 2.0, w, h).translated(response.origin),
+        );
     };
 
     let stepper_x = width - stepper_size.width;
@@ -157,8 +164,8 @@ fn layout_children(view: &PlatformView, state: &StepperState) {
     cocoa_ui::view::set_frame(
         &state.stepper,
         Rect::new(
-            stepper_frame_x,
-            (height - stepper_size.height) / 2.0,
+            response.origin.x + stepper_frame_x,
+            response.origin.y + (height - stepper_size.height) / 2.0,
             stepper_size.width,
             stepper_size.height,
         ),
@@ -183,6 +190,14 @@ impl core::fmt::Debug for StepperSubView {
 }
 
 impl SubView for StepperSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(
@@ -248,29 +263,26 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let mtm = ctx.mtm();
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let host = HostView::new(mtm, Rect::ZERO);
+        let (value, step, label, value_formatter, range) = config.into_parts();
         let stepper = Stepper::new(mtm);
-        stepper.set_range(
-            f64::from(*config.range.start()),
-            f64::from(*config.range.end()),
-        );
-        stepper.set_step(f64::from(config.step.snapshot()));
-        stepper.set_value(f64::from(config.value.snapshot()));
+        stepper.set_range(f64::from(*range.start()), f64::from(*range.end()));
+        stepper.set_step(f64::from(step.snapshot()));
+        stepper.set_value(f64::from(value.snapshot()));
         host.add_subview(as_view(&stepper));
 
         let action = stepper.install_action({
-            let binding = config.value.clone();
+            let binding = value.clone();
             move |value| binding.set(stepped(value))
         });
 
         // The label's semantic text is announced on the control itself; the
         // visual children are hidden from the accessibility tree.
-        let accessibility_label = config.label.accessibility_label();
+        let accessibility_label = label.accessibility_label();
 
         let host_view: &PlatformView = &host;
-        let value_formatter = config.value_formatter;
         let children = Children {
             label: ctx
-                .render(waterui_backend_core::AnyView::new(config.label))
+                .render(waterui_backend_core::AnyView::new(label))
                 .mount(host_view),
             formatted: value_formatter.clone().map(|formatter| {
                 ctx.render(waterui_backend_core::AnyView::new(
@@ -293,7 +305,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         host.set_layout_handler({
             let state = Rc::clone(&state);
-            move |view| layout_children(view, &state.borrow())
+            move |view| layout_children(view, proposal::response(view), &state.borrow())
         });
 
         let mut leaf = NativeLeaf::new(
@@ -306,7 +318,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // Signal → control: binding changes land on the stepper and refresh
         // the announced value.
-        leaf.watch(&config.value, {
+        leaf.watch(&value, {
             let state = Rc::clone(&state);
             move |change| {
                 let value = *change.value();
@@ -320,7 +332,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
 
         // The step size is computed: every change re-arms the control.
-        leaf.bind(&config.step, {
+        leaf.bind(&step, {
             let stepper = stepper.clone();
             move |step| stepper.set_step(f64::from(step))
         });

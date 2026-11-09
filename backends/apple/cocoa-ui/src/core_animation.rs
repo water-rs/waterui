@@ -1,7 +1,14 @@
 //! Core Animation, the compositor both frameworks draw through.
 
+use std::cell::Cell;
+
+use block2::RcBlock;
+use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
+use objc2_core_foundation::{
+    CFIndex, CFOptionFlags, CFRunLoop, CFRunLoopActivity, CFRunLoopObserver, kCFRunLoopCommonModes,
+};
 use objc2_quartz_core::CALayer;
 use objc2_quartz_core::CATransaction;
 #[cfg(target_os = "macos")]
@@ -33,46 +40,72 @@ pub fn without_animation(body: impl FnOnce()) {
     CATransaction::commit();
 }
 
-/// Runs `body` when the current implicit transaction commits.
-///
-/// Commit is the boundary after which a layer added this transaction is on
-/// screen, so an animation started then animates from its initial value
-/// instead of landing already at its end state. `CATransaction` holds one
-/// completion block — a second `setCompletionBlock` replaces rather than
-/// appends — so `on_commit` chains onto whatever is already installed: a
-/// second registration this transaction runs after the first instead of
-/// silently dropping it.
-pub fn on_commit(body: impl FnOnce() + 'static) {
-    use std::cell::RefCell;
+/// The order of Core Animation's own commit observer on the main run loop
+/// (`CA::Transaction::observer_callback`, on `BeforeWaiting | Exit`).
+/// [`on_commit`]'s observer sits right after it.
+const CORE_ANIMATION_COMMIT_ORDER: CFIndex = 2_000_000;
 
-    // Retain the completion already installed — an earlier `on_commit`'s
-    // chain, or the framework's own — since `setCompletionBlock` below
-    // releases the transaction's reference to it. The `take` at run time
-    // keeps each link single-shot if the chain is ever re-invoked.
-    // SAFETY: a plain getter on the current transaction — no aliasing,
-    // no lifetime transfer; the pointer's validity is established below.
-    let previous = unsafe { CATransaction::completionBlock() };
-    let previous = RefCell::new(if previous.is_null() {
-        None
-    } else {
-        // SAFETY: `previous` is a live block the transaction retains;
-        // `copy` extends it into an owned `RcBlock`.
-        Some(unsafe { &*previous }.copy())
-    });
-    // The completion block is `Fn`, but Core Animation evaluates it once;
-    // the option still guards a double evaluation.
-    let body = RefCell::new(Some(body));
-    let block = block2::RcBlock::new(move || {
-        if let Some(previous) = previous.borrow_mut().take() {
-            previous.call(());
+/// Runs `body` once, after the main run loop's current turn commits its
+/// Core Animation transaction.
+///
+/// Commit is the boundary after which a layer added this turn is on
+/// screen, so an animation started then animates from its initial value
+/// instead of landing already at its end state.
+///
+/// The boundary is a one-shot main run-loop observer ordered after Core
+/// Animation's commit observer, not the transaction's completion block:
+/// that block waits for every animation added to the transaction after it
+/// to finish, and a Liquid Glass tab bar adds animations of infinite
+/// duration while it is built, so a completion block registered before it
+/// never runs (#3881). Bodies registered in one turn run in registration
+/// order. One registered while that turn's observers are already being
+/// called — from inside the commit, or from another `on_commit` body —
+/// runs after the next turn's commit.
+///
+/// The marker is the proof `body` — which need not be `Send` — is
+/// registered on the thread the main run loop calls it on.
+///
+/// # Panics
+///
+/// If Core Foundation hands back no main run loop or no observer — both
+/// exist for every process with a main thread.
+pub fn on_commit(_mtm: MainThreadMarker, body: impl FnOnce() + 'static) {
+    let run_loop = CFRunLoop::main().expect("the main thread has a run loop");
+    // The handler is `Fn`; the run loop calls a non-repeating observer
+    // once and then invalidates it, releasing the handler and `body`.
+    let body = Cell::new(Some(body));
+    let handler = RcBlock::new({
+        let run_loop = run_loop.clone();
+        move |_: *mut CFRunLoopObserver, _: CFRunLoopActivity| {
+            if let Some(body) = body.take() {
+                body();
+                // Layer changes `body` made join a transaction opened after
+                // this turn's commit; wake the loop so the next turn
+                // commits them instead of leaving them until some other
+                // event arrives.
+                run_loop.wake_up();
+            }
         }
-        if let Some(body) = body.borrow_mut().take() {
-            body();
-        }
     });
-    // SAFETY: the block lives in the transaction, which calls it once on
-    // commit and releases it afterwards.
-    unsafe { CATransaction::setCompletionBlock(Some(&block)) };
+    let activities: CFOptionFlags = (CFRunLoopActivity::BeforeWaiting | CFRunLoopActivity::Exit).0;
+    // SAFETY: the default allocator, a valid activity mask and a live
+    // handler block, which the observer copies.
+    let observer = unsafe {
+        CFRunLoopObserver::with_handler(
+            None,
+            activities,
+            false,
+            CORE_ANIMATION_COMMIT_ORDER + 1,
+            Some(&handler),
+        )
+    }
+    .expect("CFRunLoopObserverCreateWithHandler answers an observer");
+    // SAFETY: `kCFRunLoopCommonModes` is a Core Foundation constant.
+    run_loop.add_observer(Some(&observer), unsafe { kCFRunLoopCommonModes });
+    // A registration made while the run loop is already calling this
+    // turn's observers misses that pass; waking the loop guarantees the
+    // next pass comes instead of the loop sleeping on it.
+    run_loop.wake_up();
 }
 
 /// Runs `body` inside an `NSAnimationContext` group.
@@ -255,25 +288,26 @@ pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
     }
 }
 
-/// Writes `layer`'s transform with implicit actions disabled — an
-/// `NSAnimationContext`-free set, for transforms `AppKit` would otherwise
-/// animate as implicit layer changes.
+/// Writes `layer`'s `sublayerTransform` — the transform it applies to its
+/// children — with implicit actions disabled, for transforms `AppKit`
+/// would otherwise animate as implicit layer changes.
 ///
-/// `AppKit` owns a layer-backed view's layer geometry, so the transform is
-/// set on the layer inside a `CATransaction` that suppresses the implicit
-/// animation.
+/// `AppKit` owns a layer-backed view's layer geometry and rewrites a
+/// subview layer's `transform` at display time; `sublayerTransform` on
+/// the parent is not part of that sync, so a view-level transform lives
+/// here.
 #[cfg(target_os = "macos")]
-pub fn set_layer_transform(layer: &objc2_quartz_core::CALayer, transform: CATransform3D) {
+pub fn set_sublayer_transform(layer: &objc2_quartz_core::CALayer, transform: CATransform3D) {
     use objc2_quartz_core::CATransaction;
 
     CATransaction::begin();
     CATransaction::setDisableActions(true);
-    layer.setTransform(transform);
+    layer.setSublayerTransform(transform);
     CATransaction::commit();
 }
 
-/// Moves `layer`'s transform to `transform`, animating the `transform`
-/// keypath under `timing` — `None` writes it directly.
+/// Moves `layer`'s `sublayerTransform` to `transform`, animating the
+/// `sublayerTransform` keypath under `timing` — `None` writes it directly.
 ///
 /// The explicit `CAAnimation` runs on the compositor so it survives the
 /// layout passes that rewrite the layer's geometry; `key` identifies it so
@@ -281,7 +315,7 @@ pub fn set_layer_transform(layer: &objc2_quartz_core::CALayer, transform: CATran
 /// presentation layer, so a mid-flight change starts from where the screen
 /// actually is.
 #[cfg(target_os = "macos")]
-pub fn animate_layer_transform(
+pub fn animate_sublayer_transform(
     layer: &objc2_quartz_core::CALayer,
     transform: CATransform3D,
     key: &str,
@@ -295,7 +329,7 @@ pub fn animate_layer_transform(
     };
 
     let Some(timing) = timing else {
-        set_layer_transform(layer, transform);
+        set_sublayer_transform(layer, transform);
         return;
     };
 
@@ -304,8 +338,8 @@ pub fn animate_layer_transform(
     // SAFETY: `presentationLayer` is a documented accessor on a live layer.
     let from = unsafe {
         layer.presentationLayer().map_or_else(
-            || layer.transform(),
-            |presentation| presentation.transform(),
+            || layer.sublayerTransform(),
+            |presentation| presentation.sublayerTransform(),
         )
     };
     layer.removeAnimationForKey(&NSString::from_str(key));
@@ -326,7 +360,8 @@ pub fn animate_layer_transform(
             duration,
             control_points: [x1, y1, x2, y2],
         } => {
-            let basic = CABasicAnimation::animationWithKeyPath(Some(ns_string!("transform")));
+            let basic =
+                CABasicAnimation::animationWithKeyPath(Some(ns_string!("sublayerTransform")));
             basic.setDuration(duration);
             let function = CAMediaTimingFunction::functionWithControlPoints(x1, y1, x2, y2);
             basic.setTimingFunction(Some(&function));
@@ -339,7 +374,8 @@ pub fn animate_layer_transform(
             unsafe { Retained::cast_unchecked(basic) }
         }
         Timing::Spring { stiffness, damping } => {
-            let spring = CASpringAnimation::animationWithKeyPath(Some(ns_string!("transform")));
+            let spring =
+                CASpringAnimation::animationWithKeyPath(Some(ns_string!("sublayerTransform")));
             spring.setMass(1.0);
             spring.setStiffness(stiffness);
             spring.setDamping(damping);
@@ -359,7 +395,7 @@ pub fn animate_layer_transform(
     // Animation exports.
     animation.setFillMode(unsafe { kCAFillModeBoth });
 
-    set_layer_transform(layer, transform);
+    set_sublayer_transform(layer, transform);
     layer.addAnimation_forKey(&animation, Some(&NSString::from_str(key)));
 }
 /// Sets a layer's frame — the presentation plane updates

@@ -24,7 +24,9 @@ use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
 use objc2::MainThreadMarker;
 use objc2_metal::{MTLPixelFormat, MTLTexture};
 use waterui_core::NativeView;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 use waterui_graphics::cherenkov::{Display, FrameTime, Next};
 use waterui_graphics::draw::kurbo;
 use waterui_graphics::gpu::{
@@ -286,22 +288,24 @@ impl HostedView for ExternalFrameView {
     }
 
     fn wants_input_events(&self) -> bool {
-        false
+        Self::wants_input_events(self)
     }
 
     fn resolved_hdr_preference(&self) -> Option<bool> {
         Self::resolved_hdr_preference(self)
     }
 
-    fn input(&self, _event: &SurfaceInputEvent) {
-        unreachable!("an ExternalFrameView takes no input; hosts check wants_input_events first");
+    fn input(&self, event: &SurfaceInputEvent) {
+        Self::input(self, event);
     }
 
     fn ime_caret(&self) -> Option<kurbo::Rect> {
-        None
+        Self::ime_caret(self)
     }
 
-    fn before_frame(&self) {}
+    fn before_frame(&self) {
+        self.frame();
+    }
 
     fn renderer(
         &mut self,
@@ -415,6 +419,10 @@ struct SurfaceState {
     /// The last measurement the renderer answered — reused while setup
     /// owns the semantic renderer (`deferredMeasurementInvalidation`).
     last_resolved_size: RefCell<Option<Size>>,
+    /// Armed by `SnapshotDemand` at render: the last presented frame's
+    /// frozen copy for a transition's retirement hand-off (§2.1). `None`
+    /// for an unarmed surface — its drawables stay framebuffer-only.
+    armed: Option<crate::frozen_frame::SharedFrozenFrameSlot>,
 }
 
 /// The presentation lifecycle: the drawable-path epoch and the open
@@ -626,6 +634,9 @@ impl SurfaceState {
             visibility_watch: RefCell::new(None),
             last_proposal: Cell::new(None),
             last_resolved_size: RefCell::new(None),
+            armed: env
+                .get::<crate::transition::SnapshotDemand>()
+                .map(|_| Rc::new(crate::frozen_frame::FrozenFrameSlot::new())),
         }
     }
 
@@ -798,6 +809,10 @@ enum FrameRender {
         /// `None`, when the submission's validity is its exact context
         /// generation alone.
         scene_generation: Option<Rc<EngineGeneration>>,
+        /// The imported view of the frame's target — `Some` only on an
+        /// armed surface, which declares `COPY_SRC` on the import so the
+        /// frozen-frame copy reads what the frame wrote.
+        imported: Option<wgpu::Texture>,
     },
 }
 
@@ -826,6 +841,16 @@ fn render_to_metal_texture(
     }
     // SAFETY: these presentation buffers belong to this device and are
     // handed over as color attachments after their preceding frame completed.
+    // An armed surface also declares `COPY_SRC` so its frozen-frame copy
+    // reads the pixels the frame wrote.
+    let usages = wgpu::TextureUsages::RENDER_ATTACHMENT
+        | if state.armed.is_some() {
+            wgpu::TextureUsages::COPY_SRC
+        } else {
+            wgpu::TextureUsages::empty()
+        };
+    // SAFETY: `metal_texture` is a live drawable/foreign texture owned by
+    // this frame; the import carries the usages the frame itself encodes.
     let wgpu_texture = unsafe {
         cocoa_ui::metal::import_texture(
             context.device(),
@@ -833,7 +858,7 @@ fn render_to_metal_texture(
             format,
             width,
             height,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usages,
             wgpu::TextureUses::COLOR_TARGET,
             "GpuSurface Imported Metal Texture",
         )
@@ -850,6 +875,7 @@ fn render_to_metal_texture(
         needs_redraw,
         wrote_target,
         scene_generation,
+        imported: state.armed.is_some().then_some(wgpu_texture),
     })
 }
 
@@ -1012,23 +1038,28 @@ fn is_effectively_visible(view: &Retained<SurfaceView>) -> bool {
     cocoa_ui::visibility::presentable(view.as_platform_view())
 }
 
-/// Positions the presentation layer and tells Core Animation the frames are
-/// already at device-pixel size — `updatePresentationFrame`.
+/// First-paint demand bypasses reveal alpha only while the view still
+/// participates. Hiding after attachment must suspend that demand too.
+fn can_render_frame(view: &Retained<SurfaceView>, first_paint_owed: bool) -> bool {
+    is_effectively_visible(view) || (first_paint_owed && participates_in_first_paint(view))
+}
+
+/// Positions the presentation layer over the surface's response — where a
+/// leaf draws its content (`docs/layout-spec.md` §6) — and tells Core
+/// Animation the frames are already at device-pixel size —
+/// `updatePresentationFrame`.
 fn update_presentation_frame(state: &SurfaceState, view: &Retained<SurfaceView>) {
     let layer = view.presentation_layer();
-    let bounds = view.bounds_size();
+    let frame = view.presentation_frame();
     cocoa_ui::core_animation::without_animation(|| {
-        cocoa_ui::core_animation::set_frame(
-            &layer,
-            cocoa_ui::Rect::new(0.0, 0.0, bounds.width, bounds.height),
-        );
+        cocoa_ui::core_animation::set_frame(&layer, frame);
         cocoa_ui::core_animation::set_contents_scale(&layer, state.current_scale.get());
     });
 }
 
 /// Geometry + deferred allocation — `initializeGpuIfNeeded`.
 fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
-    let bounds = view.bounds_size();
+    let bounds = view.content_rect().size;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         // A genuinely empty view cannot present at all: the live epoch
         // drops rather than carry a zero size beside a configured
@@ -1076,7 +1107,7 @@ fn prepare_presentation(
     view: &Retained<SurfaceView>,
     scale: f64,
 ) -> bool {
-    let bounds = view.bounds_size();
+    let bounds = view.content_rect().size;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return false;
     }
@@ -1138,7 +1169,7 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
             render_drawable(&state, &frame_view, frame);
         }
     });
-    let presenter = MetalPresenter::new(layer, on_frame);
+    let presenter = MetalPresenter::new(layer, on_frame, state.armed.is_some());
     let context = state.runtime.context();
     let device = crate::gpu_runtime::raw_metal_device(&context);
     presenter.set_device(&device);
@@ -1195,7 +1226,7 @@ fn update_presentation_demand(state: &Rc<SurfaceState>, view: &Retained<SurfaceV
     let slot = state.presentation.borrow();
     if let Epoch::Attached(attached) = &slot.epoch {
         let demand = state.runtime.context().device_lost_reason().is_none()
-            && (is_effectively_visible(view) || attached.demand.first_paint_owed.get())
+            && can_render_frame(view, attached.demand.first_paint_owed.get())
             && attached.demand.any(state.dirty.get());
         attached.presenter.set_paused(!demand);
     }
@@ -1300,7 +1331,7 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
         .borrow()
         .attached()
         .is_some_and(|attached| attached.demand.first_paint_owed.get());
-    if !is_effectively_visible(view) && !first_paint_pending {
+    if !can_render_frame(view, first_paint_pending) {
         owe_frame(state);
         return;
     }
@@ -1337,6 +1368,7 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
         needs_redraw,
         wrote_target,
         scene_generation,
+        imported,
     } = outcome
     else {
         park_unrenderable_frame(state, view, context.generation());
@@ -1355,28 +1387,62 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
     publish_content_accessibility(state, view);
     update_presentation_demand(state, view);
 
+    submit_drawable_frame(
+        state,
+        view,
+        &context,
+        frame,
+        scene_generation,
+        imported.as_ref(),
+    );
+}
+
+/// Encodes the completion-marker submission — with an armed surface's
+/// frozen copy riding the same queue — and registers its main-queue settle.
+fn submit_drawable_frame(
+    state: &Rc<SurfaceState>,
+    view: &Retained<SurfaceView>,
+    context: &Arc<SharedGpuContext>,
+    frame: DrawableFrame,
+    scene_generation: Option<Rc<EngineGeneration>>,
+    imported: Option<&wgpu::Texture>,
+) {
     let weak = Sendable(Rc::downgrade(state));
     let view = Sendable(view.clone());
-    // The owned drawable crosses the completion-driver hop and returns to
-    // the main queue before it is presented or released.
-    let mut frame_slot = Some(Sendable(frame));
     let scene_generation = Sendable(scene_generation);
     let submitted_context = context.clone();
-    let marker = context
+    let mut marker = context
         .device()
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu surface frame completion marker"),
         });
+    // An armed surface copies the just-written drawable into its frozen
+    // slot inside this same submission — GPU→GPU, ordered after the
+    // render on the shared queue. The copy rides the work item and the
+    // settle promotes it only on a real `PresentedFrame` receipt.
+    let frozen = state.armed.as_ref().map(|armed| {
+        armed.encode_copy(
+            context,
+            imported.expect("an armed surface imports its target"),
+            frame.drawable_size(),
+            &mut marker,
+        )
+    });
+    let mut frozen = frozen.map(Sendable);
+    // The owned drawable crosses the completion-driver hop and returns to
+    // the main queue before it is presented or released.
+    let mut frame_slot = Some(Sendable(frame));
     crate::gpu_completion::submit_with_completion(
         MainThreadMarker::new().expect("GpuSurface frames render on the main thread"),
         marker,
-        &context,
+        context,
         move |result| {
             cocoa_ui::main_queue::enqueue(move |_mtm| {
                 let Some(state) = weak.get().upgrade() else {
                     return;
                 };
                 let Sendable(frame) = frame_slot.take().expect("completion fires once");
+                let frozen = frozen.take().map(|Sendable(copy)| copy);
                 settle_submitted_frame(
                     &state,
                     view.get(),
@@ -1384,6 +1450,7 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
                     scene_generation.get().as_ref(),
                     &submitted_context,
                     &result,
+                    frozen,
                 );
             });
         },
@@ -1402,6 +1469,7 @@ fn settle_submitted_frame(
     scene_generation: Option<&Rc<EngineGeneration>>,
     submitted_context: &Arc<SharedGpuContext>,
     result: &Result<(), crate::gpu_completion::SubmissionFailed>,
+    frozen: Option<crate::frozen_frame::FrozenFrame>,
 ) {
     match result {
         Err(_) => {
@@ -1409,11 +1477,23 @@ fn settle_submitted_frame(
             // settled on a dead queue and the drawable holds no ready
             // pixels. Park until publication replays the owed frame on
             // a live context.
+            if let Some(copy) = frozen
+                && let Some(armed) = state.armed.as_ref()
+            {
+                armed.recycle(copy);
+            }
             owe_frame(state);
             park_for_publication(state, view, submitted_context.generation());
         }
         Ok(()) => {
-            settle_frame_completion(state, view, frame, scene_generation, submitted_context);
+            settle_frame_completion(
+                state,
+                view,
+                frame,
+                scene_generation,
+                submitted_context,
+                frozen,
+            );
         }
     }
 }
@@ -1489,15 +1569,25 @@ fn settle_frame_completion(
     frame: DrawableFrame,
     scene_generation: Option<&Rc<EngineGeneration>>,
     submitted_context: &Arc<SharedGpuContext>,
+    frozen: Option<crate::frozen_frame::FrozenFrame>,
 ) {
+    // Every arm but the presented one recycles the copy target — the
+    // frame's pixels never reached the screen.
+    let settle_copy = |frozen: Option<crate::frozen_frame::FrozenFrame>| {
+        if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+            armed.recycle(copy);
+        }
+    };
     match submission_validity(state, scene_generation, submitted_context) {
         CompletionValidity::Obsolete => {
             // Stale: drop the slot — the owed frame replays on the
             // current context; readiness, failure and watch untouched.
+            settle_copy(frozen);
             owe_and_reschedule(state, view);
             return;
         }
         CompletionValidity::Failed { generation, error } => {
+            settle_copy(frozen);
             settle_failed(state, view, generation, error);
             return;
         }
@@ -1513,10 +1603,10 @@ fn settle_frame_completion(
             && matches!(&slot.epoch, Epoch::Attached(attached)
                 if state.capture_suppression.get() == 0
                     && can_present_now(view)
-                    && (is_effectively_visible(view)
-                        || attached.demand.first_paint_owed.get()))
+                    && can_render_frame(view, attached.demand.first_paint_owed.get()))
     };
     if !presentable {
+        settle_copy(frozen);
         owe_and_reschedule(state, view);
         return;
     }
@@ -1529,10 +1619,16 @@ fn settle_frame_completion(
             attached.demand.first_paint_owed.set(false);
             attached.demand.presented_once.set(true);
         }
+        // The frame's pixels reached the screen — the copy becomes the
+        // surface's frozen frame.
+        if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+            armed.promote(copy);
+        }
         complete_ready(state);
     } else {
         // The buffers were replaced while this frame was in flight —
         // owe it again rather than reveal a hole.
+        settle_copy(frozen);
         owe_frame(state);
     }
     update_presentation_demand(state, view);
@@ -1801,8 +1897,8 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         state_format(&self.state)
     }
 
-    fn content_bounds(&self, relative_to: &cocoa_ui::PlatformView) -> cocoa_ui::Rect {
-        self.view.bounds_in(relative_to)
+    fn presentation_layer(&self) -> Option<Retained<objc2_quartz_core::CALayer>> {
+        Some(self.view.presentation_layer().into_super())
     }
 
     fn can_present(&self) -> bool {
@@ -1906,6 +2002,26 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         self.state.park.is_failed()
     }
 
+    /// The armed slot's last presented frame plus the view's
+    /// presentation layer — the retirement hand-off. An unarmed surface
+    /// mounts no frozen stand-in and answers `None`.
+    fn take_frozen_frame(
+        &self,
+    ) -> (
+        Option<cocoa_ui::capture::FrozenSurface>,
+        Retained<objc2_quartz_core::CAMetalLayer>,
+    ) {
+        let armed = self.state.armed.as_ref().expect(
+            "a GPU surface inside a retiring transition subtree renders under SnapshotDemand",
+        );
+        (
+            armed
+                .take()
+                .map(crate::frozen_frame::FrozenFrame::into_surface),
+            self.view.presentation_layer(),
+        )
+    }
+
     fn render_prepared_external_texture(
         &self,
         texture: &objc2::runtime::ProtocolObject<dyn MTLTexture>,
@@ -1955,6 +2071,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         let FrameRender::Submitted {
             wrote_target,
             scene_generation,
+            imported,
             ..
         } = outcome
         else {
@@ -1977,93 +2094,146 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         let view = Sendable(self.view.clone());
         let scene_generation = Sendable(scene_generation);
         let submitted_context = context.clone();
-        let marker = context
+        let mut marker = context
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("gpu surface external completion marker"),
             });
-        crate::gpu_completion::submit_with_completion(
-            MainThreadMarker::new()
-                .expect("GpuSurface external renders complete on the main thread"),
+        // An armed surface copies the external target it just wrote —
+        // an externally rendered surface's screen pixels are what its
+        // capture composed — inside this same submission.
+        let frozen = self.state.armed.as_ref().map(|armed| {
+            armed.encode_copy(
+                &context,
+                imported
+                    .as_ref()
+                    .expect("an armed surface imports its target"),
+                (width, height),
+                &mut marker,
+            )
+        });
+        submit_external_marker(
+            &weak,
+            &view,
+            &scene_generation,
+            submitted_context,
             marker,
-            &context,
-            move |result| {
-                // `on_submitted_work_done` closures can run on any thread
-                // that maintains the device — hop to the main queue before
-                // touching the weak state handle.
-                cocoa_ui::main_queue::enqueue(move |_mtm| {
-                    let Some(state) = weak.get().upgrade() else {
-                        // The capture's own lease retains its texture and
-                        // submission, not this host's `SurfaceState` — a
-                        // released native owner leaves the in-flight
-                        // submission no current epoch to validate against
-                        // and no readiness to settle.
-                        // The pixels may exist, but nothing left can vouch
-                        // for them: the submission settles as deferred —
-                        // never a synthesized success.
+            frozen,
+            completion,
+        );
+    }
+}
+
+/// The external render's marker submission: the fence's completion
+/// answers the capture by the same exact-generation contract the
+/// onscreen settle uses — `Current` + `Ok` promotes, everything else
+/// recycles.
+fn submit_external_marker(
+    weak: &Sendable<std::rc::Weak<SurfaceState>>,
+    view: &Sendable<Retained<SurfaceView>>,
+    scene_generation: &Sendable<Option<Rc<EngineGeneration>>>,
+    submitted_context: Arc<SharedGpuContext>,
+    marker: wgpu::CommandEncoder,
+    frozen: Option<crate::frozen_frame::FrozenFrame>,
+    completion: cocoa_ui::capture::SurfaceCaptureCompletion,
+) {
+    let weak = Sendable(weak.get().clone());
+    let view = Sendable(view.get().clone());
+    let scene_generation = Sendable(scene_generation.get().clone());
+    let mut frozen = frozen.map(Sendable);
+    let context = submitted_context.clone();
+    crate::gpu_completion::submit_with_completion(
+        MainThreadMarker::new().expect("GpuSurface external renders complete on the main thread"),
+        marker,
+        &context,
+        move |result| {
+            // `on_submitted_work_done` closures can run on any thread
+            // that maintains the device — hop to the main queue before
+            // touching the weak state handle.
+            cocoa_ui::main_queue::enqueue(move |_mtm| {
+                let frozen = frozen.take().map(|Sendable(copy)| copy);
+                let Some(state) = weak.get().upgrade() else {
+                    // The capture's own lease retains its texture and
+                    // submission, not this host's `SurfaceState` — a
+                    // released native owner leaves the in-flight
+                    // submission no current epoch to validate against
+                    // and no readiness to settle.
+                    // The pixels may exist, but nothing left can vouch
+                    // for them: the submission settles as deferred —
+                    // never a synthesized success.
+                    completion(Err(cocoa_ui::capture::CaptureError::Deferred));
+                    return;
+                };
+                // Every arm but `Current`/`Ok(())` recycles the copy —
+                // the external render's pixels are what the surface
+                // shows, so its completion is the promotion gate.
+                let settle_copy = |frozen: Option<crate::frozen_frame::FrozenFrame>| {
+                    if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+                        armed.recycle(copy);
+                    }
+                };
+                match result {
+                    Err(_) => {
+                        // The generation that carried this frame died
+                        // in flight: the fence settled on a dead queue,
+                        // so there are no usable pixels to compose.
+                        // Arm publication so the redraw contract wakes
+                        // the parent once a live context lands.
+                        settle_copy(frozen);
+                        complete_ready(&state);
+                        park_for_publication(&state, view.get(), submitted_context.generation());
                         completion(Err(cocoa_ui::capture::CaptureError::Deferred));
-                        return;
-                    };
-                    match result {
-                        Err(_) => {
-                            // The generation that carried this frame died
-                            // in flight: the fence settled on a dead queue,
-                            // so there are no usable pixels to compose.
-                            // Arm publication so the redraw contract wakes
-                            // the parent once a live context lands.
-                            complete_ready(&state);
-                            park_for_publication(
-                                &state,
-                                view.get(),
-                                submitted_context.generation(),
-                            );
-                            completion(Err(cocoa_ui::capture::CaptureError::Deferred));
-                        }
-                        // The same exact-generation contract as the
-                        // onscreen completion: a stale submission releases
-                        // only its own lease — its deferred result replays
-                        // the capture on the current context — and never
-                        // touches a newer epoch's readiness or watch.
-                        Ok(()) => {
-                            match submission_validity(
-                                &state,
-                                scene_generation.get().as_ref(),
-                                &submitted_context,
-                            ) {
-                                CompletionValidity::Obsolete => {
-                                    completion(Err(cocoa_ui::capture::CaptureError::Deferred));
-                                }
-                                CompletionValidity::Failed { generation, error } => {
-                                    settle_failed(&state, view.get(), generation, error);
-                                    // The batch failure this completion
-                                    // carried: the typed `Failed` the
-                                    // freshly-settled hold now answers.
+                    }
+                    // The same exact-generation contract as the
+                    // onscreen completion: a stale submission releases
+                    // only its own lease — its deferred result replays
+                    // the capture on the current context — and never
+                    // touches a newer epoch's readiness or watch.
+                    Ok(()) => {
+                        match submission_validity(
+                            &state,
+                            scene_generation.get().as_ref(),
+                            &submitted_context,
+                        ) {
+                            CompletionValidity::Obsolete => {
+                                settle_copy(frozen);
+                                completion(Err(cocoa_ui::capture::CaptureError::Deferred));
+                            }
+                            CompletionValidity::Failed { generation, error } => {
+                                settle_copy(frozen);
+                                settle_failed(&state, view.get(), generation, error);
+                                // The batch failure this completion
+                                // carried: the typed `Failed` the
+                                // freshly-settled hold now answers.
+                                completion(Err(state.park.capture_error()));
+                            }
+                            CompletionValidity::Current => {
+                                if state.park.is_held() {
+                                    // A hold landed between submission
+                                    // and this completion — the
+                                    // onscreen presentable check's
+                                    // counterpart: a failed surface
+                                    // answers its terminal outcome,
+                                    // a parked one defers to the
+                                    // publication wake.
+                                    settle_copy(frozen);
                                     completion(Err(state.park.capture_error()));
+                                    return;
                                 }
-                                CompletionValidity::Current => {
-                                    if state.park.is_held() {
-                                        // A hold landed between submission
-                                        // and this completion — the
-                                        // onscreen presentable check's
-                                        // counterpart: a failed surface
-                                        // answers its terminal outcome,
-                                        // a parked one defers to the
-                                        // publication wake.
-                                        completion(Err(state.park.capture_error()));
-                                        return;
-                                    }
-                                    // Offscreen pixels are usable, but only a real
-                                    // PresentedFrame receipt settles onscreen readiness
-                                    // and the runtime's productive-generation accounting.
-                                    completion(Ok(()));
+                                // Offscreen pixels are usable, but only a real
+                                // PresentedFrame receipt settles onscreen readiness
+                                // and the runtime's productive-generation accounting.
+                                if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+                                    armed.promote(copy);
                                 }
+                                completion(Ok(()));
                             }
                         }
                     }
-                });
-            },
-        );
-    }
+                }
+            });
+        },
+    );
 }
 
 const fn state_format(state: &SurfaceState) -> MTLPixelFormat {
@@ -2146,14 +2316,14 @@ impl Drop for MountGuard {
         // queue, after the presentation reset below has cleared the scope.
         // Recording the orphaned depth keeps that late end quiet — and
         // still counted, so an end nobody is owed stays a panic.
-        let orphaned = self
+        let open_scope = self
             .state
             .presentation
             .borrow()
             .capture
             .as_ref()
-            .map_or(0, |external| external.depth.get());
-        if orphaned > 0 {
+            .map(|external| (external.depth.get(), external.redraw.clone()));
+        if let Some((orphaned, _)) = &open_scope {
             self.state
                 .orphaned_external_scopes
                 .set(self.state.orphaned_external_scopes.get() + orphaned);
@@ -2172,6 +2342,12 @@ impl Drop for MountGuard {
         self.view.set_backing_changed_handler(|| {});
         self.view.set_visibility_changed_handler(|| {});
         self.view.capturable_slot().clear();
+        // The capture holding that scope has lost content it may have
+        // deferred on: this surface can never redraw again, so its
+        // departure is the wake the capture's retry waits for.
+        if let Some((_, redraw)) = open_scope {
+            redraw();
+        }
     }
 }
 
@@ -2228,6 +2404,14 @@ struct SurfaceSubView {
 }
 
 impl SubView for SurfaceSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.last_proposal.set(Some(proposal));
         let measured = self.state.view.borrow().measure(proposal);
@@ -2742,6 +2926,15 @@ pub mod native_test {
             true
         }
 
+        /// Whether native presentation is paused after a visibility change.
+        pub fn link_paused(&self) -> bool {
+            self.state
+                .presentation
+                .borrow()
+                .attached()
+                .is_some_and(|attached| attached.presenter.is_paused())
+        }
+
         /// Whether the attached epoch still owes a frame — the flag the
         /// unwritten-frame guard re-arms.
         pub fn frame_owed(&self) -> bool {
@@ -2874,14 +3067,15 @@ pub mod native_test {
             );
         }
 
-        /// Sets the view's frame — the logical size `initialize_gpu`
-        /// computes the drawable extent from (bounds follow frame for
-        /// an untransformed view).
+        /// Sets the view's frame and runs the layout pass that follows it,
+        /// which commits the response `initialize_gpu` computes the
+        /// drawable extent from.
         pub fn set_view_frame(&self, width: f64, height: f64) {
             cocoa_ui::view::set_frame(
                 self.view.as_platform_view(),
                 cocoa_ui::Rect::new(0.0, 0.0, width, height),
             );
+            cocoa_ui::view::layout_immediately(self.view.as_platform_view());
         }
 
         /// Drives the production `initialize_gpu` — the geometry and
@@ -2969,9 +3163,15 @@ pub mod native_test {
             condition()
         }
 
-        /// The view's current bounds size — what `initialize_gpu` reads.
+        /// The view's current bounds size.
         pub fn view_bounds(&self) -> cocoa_ui::geometry::Size {
-            self.view.bounds_size()
+            cocoa_ui::view::bounds(self.view.as_platform_view()).size
+        }
+
+        /// Where the surface draws — its committed response — what
+        /// `initialize_gpu` sizes the drawable from.
+        pub fn content_rect(&self) -> cocoa_ui::geometry::Rect {
+            self.view.content_rect()
         }
 
         /// The view's backing scale — the factor `initialize_gpu`

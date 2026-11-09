@@ -61,6 +61,23 @@ pub struct FrameSample {
     /// Encode-to-completion wall time, only when this run waits for each frame.
     /// This is synchronous latency, not inferred pipelined throughput.
     pub latency_seconds: Option<f64>,
+    /// When this frame's rendering completed, in host seconds since the
+    /// measured window opened, from the adapter's completion signal
+    /// ([`MeasureReport::completion_signal`] says which, and how
+    /// precisely); `null` where the adapter has none. The signal is armed
+    /// after every timed interval of the frame, so no stage time and no
+    /// `latency_seconds` includes it. Under `wait_for_completion` it is
+    /// armed only after the frame's latency wait returned: a signal that
+    /// fires on a later callback (wgpu, the Skia Metal marker) then
+    /// reports an instant after that wait, as does a Skia Vulkan sync file
+    /// the driver exports already signaled; a signal observed inside
+    /// submit (CPU engines, Vello classic) or a recorded fence time (Skia
+    /// Vulkan) keeps its own instant.
+    pub completed_seconds: Option<f64>,
+    /// Host seconds from the previous measured frame's completion to this
+    /// one's: the measured pipelined frame time. `null` for the first
+    /// measured frame and where the adapter has no completion signal.
+    pub completion_interval_seconds: Option<f64>,
     /// CPU the measuring thread ran on when the timed phases started
     /// (`sched_getcpu`); `null` where the kernel does not report it.
     pub cpu_start: Option<u32>,
@@ -313,6 +330,14 @@ pub struct MeasureReport {
     /// Why GPU execution time is unavailable for this adapter, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_timing_unavailable: Option<&'static str>,
+    /// The backend signal each sample's `completed_seconds` comes from and
+    /// its precision; omitted where the adapter has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_signal: Option<&'static str>,
+    /// Why this adapter cannot report frame completion; completion fields
+    /// are then `null`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_unavailable: Option<&'static str>,
     /// Whether every frame was explicitly completed before the next encode.
     pub wait_for_completion: bool,
     /// Scene directory name.
@@ -376,6 +401,10 @@ pub struct Percentiles {
     /// `gpu_seconds` percentiles `[p50, p90, p99]`; `null` when the backend
     /// provides no GPU timestamps.
     pub gpu_seconds: Option<[f64; 3]>,
+    /// `completion_interval_seconds` percentiles `[p50, p90, p99]`; `null`
+    /// when the adapter has no completion signal or fewer than two frames
+    /// were measured.
+    pub completion_interval_seconds: Option<[f64; 3]>,
     /// Per-pass GPU percentiles, grouped by pass index within the frame;
     /// omitted when the backend provides no per-pass timings.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]

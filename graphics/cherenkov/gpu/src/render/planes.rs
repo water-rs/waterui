@@ -59,6 +59,10 @@ pub enum Source {
     /// A system layer the host supplies (`cherenkov::HostedLayers`): the
     /// engine has no pixels of it, so it is shown on a plane or not at all.
     Hosted,
+    /// An external host window's frame (`LayerOp::HostWindow`): no buffer
+    /// exists, the mark only splits the surface's presentation bands at
+    /// the window's paint-order position (water-rs/waterui#2225).
+    HostWindow,
     /// An external frame the system layer shows itself.
     Frame,
     /// An immutable capture of a recorded layer.
@@ -67,15 +71,17 @@ pub enum Source {
 
 impl Source {
     /// The budget order: mandatory content, then frames, then captures.
-    const BUDGET_ORDER: [Self; 3] = [Self::Hosted, Self::Frame, Self::Recorded];
+    const BUDGET_ORDER: [Self; 4] = [Self::Hosted, Self::HostWindow, Self::Frame, Self::Recorded];
 
     /// Whether the content can only be shown on a plane: it is judged by
     /// the mandatory-plane rule, is never pending a realization, and a
     /// failed verdict is an error ([`Plan::unplaced`]) rather than
-    /// composition in the engine.
+    /// composition in the engine. A host-window mark must promote: an
+    /// unplaced one would leave the band split unmade and paint the
+    /// above-window content under the window (water-rs/waterui#2225).
     #[must_use]
     pub const fn mandatory(self) -> bool {
-        matches!(self, Self::Hosted)
+        matches!(self, Self::Hosted | Self::HostWindow)
     }
 }
 
@@ -118,6 +124,17 @@ pub trait Compositor {
     /// layer ([`Source::Recorded`]). Without it the renderer neither
     /// observes static layers nor offers them as candidates.
     const CAPTURES: bool = true;
+
+    /// Whether each region above a host-window mark presents as one
+    /// engine-composited band buffer the host stacks above that window
+    /// (water-rs/waterui#2225): no system layer can sit between the
+    /// host's windows, so nothing painted above the first mark promotes
+    /// — frames and captures composite into their region's band, and
+    /// hosted content there is unplaceable
+    /// ([`Ineligible::AboveHostWindow`]). A mark is then a split point
+    /// rather than a plane: it never counts against [`Self::BUDGET`],
+    /// which bounds only the planes beneath the first mark.
+    const HOST_WINDOW_BANDS: bool = false;
 
     /// Whether a system layer shows `frame` itself, with the colour the
     /// frame declares: its planes are a buffer the system compositor can
@@ -186,6 +203,11 @@ pub enum Ineligible {
     /// The surface's plane budget is spent.
     #[error("the plane budget of {0} per surface is spent")]
     Budget(usize),
+    /// A host window's mark is painted beneath it: its region presents
+    /// as one engine-composited band buffer above that window, which no
+    /// system layer can join ([`Compositor::HOST_WINDOW_BANDS`]).
+    #[error("host window {0:?} is painted beneath it, and its band shows engine pixels only")]
+    AboveHostWindow(LayerId),
 }
 
 /// One level of the path from the root to a promoted layer: the sampled
@@ -297,6 +319,25 @@ fn isolates(tree: &SurfaceTree, id: LayerId) -> bool {
         || node.blend != BlendMode::Normal
         || tree.projective_pose(id).is_some()
         || (id != tree.root() && node.blends_within())
+}
+
+/// Whether the lowering splits the layer's isolation at a host-window
+/// mark: the layer filters its subtree by a pure coordinate remap
+/// ([`cherenkov::FilterId::is_coordinate_remap`]) and composites it at
+/// full opacity with the `Normal` blend, unprojected, and no descendant
+/// blends within it (a blended child would read only its own region's
+/// content). Each region of the subtree then renders into its own
+/// offscreen under the same device-space filter and composes in paint
+/// order, which is the filtered whole up to the sampler's edge filtering
+/// (water-rs/waterui#2225).
+fn splits(tree: &SurfaceTree, id: LayerId) -> bool {
+    let node = tree.layer(id);
+    node.filter
+        .is_some_and(cherenkov::FilterId::is_coordinate_remap)
+        && node.opacity >= 1.0
+        && node.blend == BlendMode::Normal
+        && tree.projective_pose(id).is_none()
+        && (id == tree.root() || !node.blends_within())
 }
 
 /// One layer in paint order.
@@ -451,7 +492,8 @@ fn suffixes(
 }
 
 /// Each offered candidate's verdict in paint order as its `order`
-/// index — `Err(Budget)` once `C::BUDGET` promotions are taken. The
+/// index — `Err(Budget)` once `C::BUDGET` promotions are taken, marks
+/// excluded on a band compositor ([`Compositor::HOST_WINDOW_BANDS`]). The
 /// offered set is `candidates` intersected with `ready`, plus every
 /// mandatory candidate: a candidate whose realization is still pending is
 /// absent from the verdicts entirely, not rejected, and mandatory content
@@ -493,8 +535,27 @@ fn verdicts<'a, C: Compositor>(
         );
         Some((i, verdict))
     }));
+    if C::HOST_WINDOW_BANDS {
+        // Everything after the first offered mark lies in a band region:
+        // only further marks split it, nothing else reaches a plane.
+        let mut mark = None;
+        for (i, verdict) in decisions.iter_mut() {
+            let id = order[*i].id;
+            if candidates[&id].source == Source::HostWindow {
+                mark.get_or_insert(id);
+            } else if let Some(mark) = mark {
+                *verdict = Err(Ineligible::AboveHostWindow(mark));
+            }
+        }
+    }
     let mut promoted = 0;
     for source in Source::BUDGET_ORDER {
+        // A band compositor shows no plane for a mark: the mark only cuts
+        // the paint order, and its region presents in the host's band
+        // swapchain, so it takes nothing from the surface's budget.
+        if C::HOST_WINDOW_BANDS && source == Source::HostWindow {
+            continue;
+        }
         for (i, verdict) in decisions.iter_mut() {
             if candidates[&order[*i].id].source == source && verdict.is_ok() {
                 if promoted < C::BUDGET {
@@ -725,11 +786,14 @@ fn mandatory_plane<C: Compositor>(
 ) -> Result<(), Ineligible> {
     let visit = &order[i];
     let node = tree.layer(visit.id);
-    if let Some(&a) = visit
-        .ancestors
-        .iter()
-        .find(|&&a| isolates(tree, order[a].id))
-    {
+    // A host-window mark on a band compositor is a cut in the paint order,
+    // so an ancestor whose isolation the lowering splits at it
+    // ([`splits`]) does not keep it from the surface level.
+    let cuts = C::HOST_WINDOW_BANDS && source == Source::HostWindow;
+    if let Some(&a) = visit.ancestors.iter().find(|&&a| {
+        let id = order[a].id;
+        isolates(tree, id) && !(cuts && splits(tree, id))
+    }) {
         return Err(Ineligible::Isolated(order[a].id));
     }
     if node.filter.is_some() {
@@ -960,6 +1024,21 @@ pub enum PlaneContent<'a> {
         object: &'a Hosted,
         /// Its extent in the layer's content coordinates.
         extent: kurbo::Size,
+    },
+    /// An external host window's frame: nothing is shown — the mark only
+    /// splits the presentation stack at the window's paint-order position
+    /// so the realization can route what follows elsewhere
+    /// (water-rs/waterui#2225).
+    HostWindow {
+        /// The host's id for the window — its band's key.
+        #[cfg_attr(
+            not(target_os = "android"),
+            expect(
+                dead_code,
+                reason = "only Android's realization presents host-window bands"
+            )
+        )]
+        window: u64,
     },
 }
 

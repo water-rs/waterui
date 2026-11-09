@@ -1,13 +1,13 @@
 //! Retained layer pixels and measured admission inputs.
 
-use cherenkov::{Command, DisplayList, GlyphStyle, RenderError};
+use cherenkov::{DisplayList, GlyphStyle, RenderError};
 use kurbo::{Affine, Rect, Shape};
 use rustc_hash::FxHashMap;
 use skrifa::MetadataProvider;
 
 use crate::render::{
     bitmap, glyph,
-    prepared::{Op, Outline, ResolvedPaint},
+    prepared::{Op, ResolvedPaint},
 };
 
 /// A local source domain. Its integer origin and dimensions include the
@@ -179,26 +179,6 @@ fn glyph_bounds(
     Ok(bounds.unwrap_or(Rect::ZERO))
 }
 
-/// Conservative finite bounds from the actual retained display list. A
-/// filter or shader can change without a source edit and is not static.
-fn path_bounds(outline: &Outline, list: &DisplayList) -> Rect {
-    match outline {
-        Outline::Fill { elements, .. } => {
-            kurbo::BezPath::from_vec(elements.to_vec()).bounding_box()
-        }
-        Outline::Stroke { shape, stroke } => shape
-            .bounds()
-            .inflate(stroke_margin(stroke), stroke_margin(stroke)),
-        Outline::Source { command, .. } => match &list.commands()[*command] {
-            Command::Fill { shape, .. } => shape.bounds(),
-            Command::Stroke { shape, stroke, .. } => shape
-                .bounds()
-                .inflate(stroke_margin(stroke), stroke_margin(stroke)),
-            _ => unreachable!("prepared path source"),
-        },
-    }
-}
-
 fn bounds(
     ops: &[Op],
     list: &DisplayList,
@@ -238,7 +218,7 @@ fn bounds(
                 if matches!(paint, ResolvedPaint::Shader(_)) {
                     return Ok(None);
                 }
-                (*local, path_bounds(outline, list))
+                (*local, outline.get(list).bounds())
             }
             Op::Glyphs {
                 local, run, paint, ..

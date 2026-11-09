@@ -35,9 +35,23 @@ pub enum ExpectationKind {
 #[non_exhaustive]
 pub struct WaitOptions {
     /// Maximum time to wait before returning a timeout result.
-    pub timeout: Duration,
+    timeout: Duration,
     /// Whether non-inverted expectations must be fulfilled in list order.
-    pub enforce_order: bool,
+    enforce_order: bool,
+}
+
+impl WaitOptions {
+    /// Maximum time to wait before returning a timeout result.
+    #[must_use]
+    pub const fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// Whether non-inverted expectations must be fulfilled in list order.
+    #[must_use]
+    pub const fn get_enforce_order(&self) -> bool {
+        self.enforce_order
+    }
 }
 
 impl WaitOptions {

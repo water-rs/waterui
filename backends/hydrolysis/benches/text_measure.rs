@@ -6,7 +6,8 @@
 //! regression gate for the ink-extent work that measure performs per glyph
 //! since #237.
 //!
-//! Run with `cargo bench --features testing`.
+//! Run with `cargo bench --features testing`; divan's `--sample-count` and
+//! `--sample-size` shorten a run.
 
 mod support {
     /// Truncates a `u64` index to `usize`; the values are row indices that fit.
@@ -19,9 +20,9 @@ mod support {
     }
 }
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use divan::Bencher;
 use hydrolysis::HeadlessRuntime;
 use hydrolysis::testing::TestStyle;
 use nami::Binding;
@@ -64,7 +65,8 @@ fn row_text(row: u64) -> String {
     text
 }
 
-fn bench_remeasure_at_three_widths(c: &mut Criterion) {
+#[divan::bench]
+fn list200_plus_paragraph_at_3_widths(bencher: Bencher) {
     let width = Binding::container(WIDTHS[0]);
     let driver = width.clone();
     let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -86,21 +88,14 @@ fn bench_remeasure_at_three_widths(c: &mut Criterion) {
     // inside the measured loop.
     runtime.pump_at(false, at);
 
-    c.bench_function("list200_plus_paragraph_at_3_widths", |b| {
-        let mut iter_idx = 0usize;
-        b.iter(|| {
-            driver.set(WIDTHS[iter_idx % WIDTHS.len()]);
-            iter_idx += 1;
-            runtime.pump_at(false, at);
-        });
+    let mut iter_idx = 0usize;
+    bencher.bench_local(|| {
+        driver.set(WIDTHS[iter_idx % WIDTHS.len()]);
+        iter_idx += 1;
+        runtime.pump_at(false, at);
     });
 }
 
-criterion_group! {
-    name = benches;
-    config = Criterion::default()
-        .warm_up_time(Duration::from_secs(2))
-        .measurement_time(Duration::from_secs(8));
-    targets = bench_remeasure_at_three_widths
+fn main() {
+    divan::main();
 }
-criterion_main!(benches);

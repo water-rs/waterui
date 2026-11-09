@@ -3,7 +3,7 @@
 //! `UIKit` drives part of its machinery — the animation behind
 //! `UIScrollView.setContentOffset(_:animated: true)` among it — only from
 //! the application's update cycle, which the bare `simctl spawn`ed `native`
-//! suite never reaches. The `nextest-ios-sim.sh` target runner launches
+//! suite never reaches. The `water test-runner` target runner launches
 //! this binary into a real `UIApplication` with a connected window scene,
 //! one case per launch, from the bundle manifest embedded below;
 //! `cocoa_ui::uikit::native_test::run` refuses to start outside that
@@ -26,6 +26,17 @@ fn main() {
     // `UIKit` objects may only be built on the real main thread; a single
     // runner keeps every trial on the application's main thread.
     arguments.test_threads = Some(1);
+    // The precondition a GPU trial relies on: an awake display — a
+    // sleeping one presents nothing (#3529). `--list` mounts nothing and
+    // skips it.
+    #[cfg(target_os = "macos")]
+    let _display_awake = (!arguments.list).then(cocoa_ui::native_test::DisplayAwake::hold);
+    // A realized window spawns its tasks on the executors the
+    // application entry installs.
+    #[cfg(target_os = "ios")]
+    if !arguments.list {
+        waterui_apple::native_test_support::initialize_process();
+    }
     #[cfg(target_os = "ios")]
     cocoa_ui::uikit::native_test::run(arguments, trials);
     #[cfg(target_os = "macos")]
@@ -77,8 +88,70 @@ fn trials() -> Vec<libtest_mimic::Trial> {
     trials.extend(key_commands::trials());
     trials.extend(embedded_menus::trials());
     trials.extend(gesture_events::trials());
+    trials.extend(navigation::trials());
+    trials.extend(list_spacing::trials());
+    trials.extend(capture_regions::trials());
     trials.extend(text_selection_ios::trials());
+    #[cfg(feature = "gpu_surface")]
+    trials.extend(capture_scale::trials());
     trials
+}
+
+/// A windowless view captured as a template image rasterizes at the
+/// screen's scale, not the detached view's `1.0`.
+#[cfg(all(target_os = "ios", feature = "gpu_surface"))]
+mod capture_scale {
+    use cocoa_ui::{Rect, bitmap, view};
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::capture_template_image;
+
+    use cocoa_ui::PlatformView;
+
+    use super::mtm;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "capture_scale::a_windowless_template_capture_uses_the_screen_scale",
+            || {
+                a_windowless_template_capture_uses_the_screen_scale();
+                Ok(())
+            },
+        )]
+    }
+
+    /// A `40x30` point view with no window: the image is `40x30` points at
+    /// the capture scene's screen scale, so its pixel size is the point size times
+    /// that scale.
+    fn a_windowless_template_capture_uses_the_screen_scale() {
+        let screen_scale = bitmap::any_window_scene()
+            .expect("the simulator host has a window scene")
+            .screen()
+            .scale();
+        let detached = PlatformView::new(mtm());
+        view::set_frame(&detached, Rect::new(0.0, 0.0, 40.0, 30.0));
+        assert!(view::window(&detached).is_none(), "the view is windowless");
+
+        let image = capture_template_image(&detached, 100.0);
+
+        // SAFETY: `size` and `scale` are plain getters on a live `UIImage`.
+        let (size, image_scale) = unsafe { (image.size(), image.scale()) };
+        assert!(
+            (image_scale - screen_scale).abs() < f64::EPSILON,
+            "image scale {image_scale} must be the screen scale {screen_scale}"
+        );
+        assert!(
+            (size.width - 40.0).abs() < 0.01 && (size.height - 30.0).abs() < 0.01,
+            "image keeps its point size, got {}x{}",
+            size.width,
+            size.height
+        );
+        let pixels = (size.width * image_scale, size.height * image_scale);
+        assert!(
+            (pixels.0 - (40.0 * screen_scale).ceil()).abs() < 0.01
+                && (pixels.1 - (30.0 * screen_scale).ceil()).abs() < 0.01,
+            "pixel size {pixels:?} must be the point size times {screen_scale}"
+        );
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -234,7 +307,7 @@ mod embedded_menus {
             assert!(can_with_sender(&foreign, &key, None));
         }
         items.set(vec![command(&fired)]);
-        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || !can(&button, &key));
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || !can(&button, &key));
         assert!(!can(&button, &key));
         assert_eq!(button.armed_command_count(), 1);
         let rebuilt = commands(&button)
@@ -243,7 +316,7 @@ mod embedded_menus {
         fire(&button, &rebuilt);
         assert_eq!(fired.get(), 3);
         items.set(vec![]);
-        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
             button.armed_command_count() == 0
         });
         assert_eq!(button.armed_command_count(), 0);
@@ -253,14 +326,14 @@ mod embedded_menus {
         // The mount owns the widget tree: dropping it retires the scope
         // even while the button and its last command stay retained.
         items.set(vec![command(&fired)]);
-        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
             button.armed_command_count() == 1
         });
         let live = commands(&button)
             .pop()
             .expect("the repopulated shortcut is vended");
         drop(mount);
-        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
             button.armed_command_count() == 0
         });
         assert_eq!(button.armed_command_count(), 0);
@@ -353,7 +426,7 @@ mod embedded_menus {
             .pop()
             .expect("the repopulated shortcut is vended");
         drop(mount);
-        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
             host.armed_command_count() == 0
         });
         assert_eq!(host.armed_command_count(), 0);
@@ -374,8 +447,10 @@ mod embedded_menus {
 /// that counts the builds it receives.
 #[cfg(target_os = "ios")]
 mod main_menu {
-    use cocoa_ui::uikit::native_test::main_menu_builds;
+    use cocoa_ui::uikit::native_test::{main_menu_builds, pump_main_until};
     use libtest_mimic::Trial;
+
+    use waterui_apple::native_test_support::MAIN_QUEUE_DEADLINE;
 
     /// The `main_menu::` trials.
     pub fn trials() -> Vec<Trial> {
@@ -389,11 +464,13 @@ mod main_menu {
     }
 
     /// `build_menus` is the main menu system's build handler: `UIKit` has
-    /// built the main menu through it by the time the application is up.
+    /// built the main menu through it once the application is up. The
+    /// build time is `UIKit`'s, not a launch-time guarantee, so the case
+    /// waits for the build.
     fn the_main_menu_builds_through_the_build_menus_handler() {
         assert!(
-            main_menu_builds() > 0,
-            "`UIKit` built the main menu through the handler as the application launched"
+            pump_main_until(MAIN_QUEUE_DEADLINE, || main_menu_builds() > 0),
+            "`UIKit` built the main menu through the handler"
         );
     }
 }
@@ -571,26 +648,23 @@ mod scroll_animation {
 /// spawn.
 #[cfg(target_os = "ios")]
 mod key_commands {
-    use std::cell::{Cell, RefCell};
-    use std::ptr::NonNull;
+    use std::cell::Cell;
     use std::rc::Rc;
 
-    use block2::StackBlock;
     use cocoa_ui::Rect;
     use cocoa_ui::Retained;
     use cocoa_ui::menu::{Command, KeyModifiers, MenuTreeNode};
-    use cocoa_ui::native_test::pump_main_until;
     use cocoa_ui::objc2_ui_kit::{
-        UIAction, UIApplication, UIButton, UIContextMenuInteraction, UIKeyCommand,
-        UIKeyModifierFlags, UIMenu, UIMenuElement, UIMenuElementAttributes, UIMenuElementState,
-        UITextField, UIView, UIViewController, UIWindow,
+        UIAction, UIApplication, UIButton, UIKeyCommand, UIKeyModifierFlags, UIMenuElement,
+        UIMenuElementAttributes, UIMenuElementState, UITextField, UIView, UIViewController,
+        UIWindow,
     };
     use cocoa_ui::uikit::{
         self, KeyCommands, Menu, MenuAction, MenuButton, MenuElement, native_test,
     };
     use libtest_mimic::Trial;
     use objc2::runtime::AnyObject;
-    use objc2::{MainThreadMarker, sel};
+    use objc2::{MainThreadMarker, Message as _, sel};
 
     /// The trial cases.
     pub fn trials() -> Vec<Trial> {
@@ -809,7 +883,7 @@ mod key_commands {
         let mtm = mtm();
         let scene = ChordScene::new(mtm);
         let fired = Rc::new(Cell::new(""));
-        let build = |label: &'static str| {
+        let build = move |fired: &Rc<Cell<&'static str>>, label: &'static str| {
             let key_commands = KeyCommands::new(mtm);
             let fired = fired.clone();
             let action =
@@ -824,36 +898,46 @@ mod key_commands {
         let trigger = MenuButton::new(mtm);
         scene.add(trigger.view());
         cocoa_ui::view::set_frame(trigger.view(), TRIGGER_FRAME);
-        let (menu, mut key_commands) = build("Old");
+        let (menu, mut key_commands) = build(&fired, "Old");
         trigger.set_menu(&menu);
-        let interaction = open_menu(
-            trigger
-                .view()
-                .downcast_ref::<UIButton>()
-                .expect("a `MenuButton` is a `UIButton`"),
-        );
-        assert_eq!(visible_titles(&interaction), ["Old"]);
+        let button = trigger
+            .view()
+            .downcast_ref::<UIButton>()
+            .expect("a `MenuButton` is a `UIButton`")
+            .retain();
+        with_open_menu(&button, move |open| {
+            assert_eq!(open.titles(), ["Old"]);
 
-        // The `Menu` component's rebuild: the button takes the new menu,
-        // then the previous menu's scope retires.
-        let (menu, rebuilt) = build("New");
-        trigger.set_menu(&menu);
-        drop(std::mem::replace(&mut key_commands, rebuilt));
-        let visible = visible_elements(&interaction);
-        assert_eq!(
-            visible
-                .iter()
-                .map(|element| element.title().to_string())
-                .collect::<Vec<_>>(),
-            ["New"],
-            "the menu stays open and shows the rebuilt command as soon as `setMenu:` returns"
-        );
-        assert!(
-            ChordScene::press(mtm, &visible[0]),
-            "the responder chain takes the visible command's action"
-        );
-        assert_eq!(fired.get(), "New", "picking runs the rebuilt callback");
-        interaction.dismissMenu();
+            // The `Menu` component's rebuild: the button takes the new
+            // menu, then the previous menu's scope retires.
+            let (menu, rebuilt) = build(&fired, "New");
+            trigger.set_menu(&menu);
+            drop(std::mem::replace(&mut key_commands, rebuilt));
+            #[cfg(not(target_abi = "macabi"))]
+            {
+                assert_eq!(
+                    open.titles(),
+                    ["New"],
+                    "the menu stays open and shows the rebuilt command as soon as `setMenu:` returns"
+                );
+                assert!(
+                    open.press(mtm, 0),
+                    "the visible command's action reaches a responder"
+                );
+                assert_eq!(fired.get(), "New", "picking runs the rebuilt callback");
+            }
+            // The `AppKit` popup keeps the rows it had, so the trigger ends
+            // its tracking before replacing the menu: the harness fails the
+            // case if the session is still running after the continuation,
+            // and no retired command fired (a fired one panics the
+            // registry).
+            #[cfg(target_abi = "macabi")]
+            {
+                open.expect_tracking_to_end();
+                assert_eq!(fired.get(), "", "no command fired during the rebuild");
+            }
+            drop(scene);
+        });
     }
 
     /// The `Menu` component's teardown: `Mounted` takes the trigger out of
@@ -877,14 +961,22 @@ mod key_commands {
         scene.window.layoutIfNeeded();
         let button =
             descendant_button(mounted.view()).expect("the `Menu` leaf's trigger is a `UIButton`");
-        let interaction = open_menu(&button);
-        assert_eq!(visible_titles(&interaction), ["Keys"]);
+        with_open_menu(&button, move |open| {
+            assert_eq!(open.titles(), ["Keys"]);
 
-        drop(mounted);
-        assert!(
-            visible_elements(&interaction).is_empty(),
-            "the menu closes as its leaf unmounts, before the leaf's commands retire"
-        );
+            drop(mounted);
+            // The `AppKit` popup ends only when control returns to its
+            // tracking loop; the harness fails the case if the trigger did
+            // not cancel it.
+            #[cfg(target_abi = "macabi")]
+            open.expect_tracking_to_end();
+            #[cfg(not(target_abi = "macabi"))]
+            assert!(
+                open.is_closed(),
+                "the menu closes as its leaf unmounts, before the leaf's commands retire"
+            );
+            drop(scene);
+        });
     }
 
     /// Where the cases place a menu trigger.
@@ -904,18 +996,153 @@ mod key_commands {
         }
     }
 
-    /// Opens `button`'s menu the way a tap does and waits until `UIKit`
-    /// shows it.
-    fn open_menu(button: &UIButton) -> Retained<UIContextMenuInteraction> {
-        button.performPrimaryAction();
-        let interaction = button
-            .contextMenuInteraction()
-            .expect("a button with a menu has a context-menu interaction");
-        assert!(
-            pump_main_until(MENU_DEADLINE, || !visible_elements(&interaction).is_empty()),
-            "the button's primary action opens its menu"
-        );
-        interaction
+    use open_menu::with_open_menu;
+
+    /// How an open menu is observed and driven. `UIKit` presents a button
+    /// menu as a context menu on iOS, and `UIContextMenuInteraction` vends
+    /// its visible elements. Under Mac Catalyst it is an `AppKit` `NSMenu`
+    /// popup whose tracking runs modally on the main thread, so its cases
+    /// run *inside* the tracking session (water-rs/waterui#3560). Either
+    /// way [`with_open_menu`] opens the menu the way a tap does, runs the
+    /// case's continuation against the open menu, and leaves no
+    /// presentation behind.
+    #[cfg(not(target_abi = "macabi"))]
+    mod open_menu {
+        use std::cell::RefCell;
+        use std::ptr::NonNull;
+
+        use block2::StackBlock;
+        use cocoa_ui::Retained;
+        use cocoa_ui::objc2_ui_kit::{UIButton, UIContextMenuInteraction, UIMenu, UIMenuElement};
+        use cocoa_ui::uikit::native_test::pump_main_until;
+        use objc2::MainThreadMarker;
+
+        use super::{ChordScene, MENU_DEADLINE};
+
+        /// A menu `UIKit` shows.
+        pub struct OpenMenu {
+            interaction: Retained<UIContextMenuInteraction>,
+        }
+
+        impl OpenMenu {
+            /// The elements the menu shows; none once it is closed or
+            /// closing.
+            fn elements(&self) -> Vec<Retained<UIMenuElement>> {
+                let elements = RefCell::new(Vec::new());
+                let block = StackBlock::new(|menu: NonNull<UIMenu>| {
+                    // SAFETY: `UIKit` hands the block a live copy of the
+                    // visible menu.
+                    elements
+                        .borrow_mut()
+                        .extend(unsafe { menu.as_ref() }.children().iter());
+                    menu
+                });
+                // SAFETY: the block returns the menu it is given, leaving
+                // the visible menu as it is.
+                unsafe { self.interaction.updateVisibleMenuWithBlock(&block) };
+                elements.into_inner()
+            }
+
+            /// The titles of the elements the menu shows.
+            pub fn titles(&self) -> Vec<String> {
+                self.elements()
+                    .iter()
+                    .map(|element| element.title().to_string())
+                    .collect()
+            }
+
+            /// Whether the menu is closed.
+            pub fn is_closed(&self) -> bool {
+                self.elements().is_empty()
+            }
+
+            /// Picks the element at `index` the way a chord does, and
+            /// answers whether a responder took its action.
+            pub fn press(&self, mtm: MainThreadMarker, index: usize) -> bool {
+                ChordScene::press(mtm, &self.elements()[index])
+            }
+        }
+
+        /// Dismisses the menu when a case ends, however it ends.
+        struct Dismiss(Retained<UIContextMenuInteraction>);
+
+        impl Drop for Dismiss {
+            fn drop(&mut self) {
+                self.0.dismissMenu();
+            }
+        }
+
+        /// Opens `button`'s menu, waits until `UIKit` shows it and runs
+        /// `inside` against it.
+        pub fn with_open_menu(button: &UIButton, inside: impl FnOnce(&OpenMenu) + 'static) {
+            button.performPrimaryAction();
+            let interaction = button
+                .contextMenuInteraction()
+                .expect("a button with a menu has a context-menu interaction");
+            let _dismiss = Dismiss(interaction.clone());
+            let open = OpenMenu { interaction };
+            assert!(
+                pump_main_until(MENU_DEADLINE, || !open.is_closed()),
+                "the button's primary action opens its menu"
+            );
+            inside(&open);
+        }
+    }
+
+    /// The Catalyst realization: the presented `NSMenu`, observed through
+    /// `cocoa_ui::uikit::catalyst_menu`.
+    #[cfg(target_abi = "macabi")]
+    mod open_menu {
+        use cocoa_ui::Retained;
+        use cocoa_ui::objc2_ui_kit::{UIButton, UIContextMenuInteraction};
+        use cocoa_ui::uikit::catalyst_menu::{PresentedMenu, within_presented_menu};
+
+        use super::MENU_DEADLINE;
+
+        /// The `NSMenu` `AppKit` is tracking.
+        pub struct OpenMenu<'a>(&'a PresentedMenu);
+
+        impl OpenMenu<'_> {
+            /// The titles of the menu's items.
+            pub fn titles(&self) -> Vec<String> {
+                self.0.titles()
+            }
+
+            /// Declares that the code under test ends the tracking itself
+            /// once the continuation returns.
+            pub fn expect_tracking_to_end(&self) {
+                self.0.expect_tracking_to_end();
+            }
+        }
+
+        /// Dismisses a presentation `AppKit` has not shown yet when a
+        /// case ends, so it cannot appear inside a later case's pump.
+        struct Dismiss(Option<Retained<UIContextMenuInteraction>>);
+
+        impl Drop for Dismiss {
+            fn drop(&mut self) {
+                if let Some(interaction) = &self.0 {
+                    interaction.dismissMenu();
+                }
+            }
+        }
+
+        /// Opens `button`'s menu, waits until `AppKit` begins tracking it
+        /// and runs `inside` within the tracking session.
+        pub fn with_open_menu(
+            button: &UIButton,
+            inside: impl for<'a> FnOnce(&OpenMenu<'a>) + 'static,
+        ) {
+            let mut dismiss = Dismiss(None);
+            within_presented_menu(
+                MENU_DEADLINE,
+                || {
+                    button.performPrimaryAction();
+                    dismiss.0 = button.contextMenuInteraction();
+                },
+                move |presented| inside(&OpenMenu(presented)),
+            );
+        }
     }
 
     /// The first `UIButton` in `view`'s subtree.
@@ -927,31 +1154,6 @@ mod key_commands {
                 .ok()
                 .or_else(|| descendant_button(&child))
         })
-    }
-
-    /// The elements of the menu `interaction` shows; none once the menu
-    /// is closed or closing.
-    fn visible_elements(interaction: &UIContextMenuInteraction) -> Vec<Retained<UIMenuElement>> {
-        let elements = RefCell::new(Vec::new());
-        let block = StackBlock::new(|menu: NonNull<UIMenu>| {
-            // SAFETY: `UIKit` hands the block a live copy of the visible menu.
-            elements
-                .borrow_mut()
-                .extend(unsafe { menu.as_ref() }.children().iter());
-            menu
-        });
-        // SAFETY: the block returns the menu it is given, leaving the
-        // visible menu as it is.
-        unsafe { interaction.updateVisibleMenuWithBlock(&block) };
-        elements.into_inner()
-    }
-
-    /// The titles of the elements `interaction` shows.
-    fn visible_titles(interaction: &UIContextMenuInteraction) -> Vec<String> {
-        visible_elements(interaction)
-            .iter()
-            .map(|element| element.title().to_string())
-            .collect()
     }
 
     /// A key, visible window whose text field is first responder — the
@@ -1117,8 +1319,8 @@ mod gesture_events {
         let taps = taps.borrow();
         assert_eq!(taps.len(), before + 1, "one completion appends one event");
         let tap = &taps[before];
-        assert_eq!(tap.count, 1);
-        assert_eq!(tap.button, PointerButton::Primary);
+        assert_eq!(tap.count(), 1);
+        assert_eq!(tap.button(), PointerButton::Primary);
     }
 
     /// Driving the pan recognizer's `Began`→`Changed`→`Ended` transitions
@@ -1154,7 +1356,10 @@ mod gesture_events {
         }
         let drags = drags.borrow();
         assert_eq!(
-            drags.iter().map(|e| e.phase).collect::<Vec<_>>(),
+            drags
+                .iter()
+                .map(waterui::gesture::DragEvent::phase)
+                .collect::<Vec<_>>(),
             vec![
                 GesturePhase::Started,
                 GesturePhase::Updated,
@@ -1163,7 +1368,7 @@ mod gesture_events {
             "the pan's transitions are the contract's phase sequence"
         );
         assert!(
-            drags.iter().all(|e| e.button == PointerButton::Primary),
+            drags.iter().all(|e| e.button() == PointerButton::Primary),
             "a touches contact presses as the primary button"
         );
     }
@@ -1204,21 +1409,21 @@ mod gesture_events {
 
         let e = fire(UIGestureRecognizerState::Began, 0.0);
         assert_eq!(
-            (e.phase, e.angle, e.velocity),
+            (e.phase(), e.angle(), e.velocity()),
             (GesturePhase::Started, 0.0, 0.0)
         );
         let e = fire(UIGestureRecognizerState::Changed, 0.75);
-        assert_eq!(e.phase, GesturePhase::Updated);
+        assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle - 0.75).abs() < 1e-6,
+            (e.angle() - 0.75).abs() < 1e-6,
             "raw radians getter, saw {}",
-            e.angle
+            e.angle()
         );
         let e = fire(UIGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle - 1.25).abs() < 1e-6);
+        assert!((e.angle() - 1.25).abs() < 1e-6);
         let e = fire(UIGestureRecognizerState::Ended, 1.25);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
-        assert!((e.angle - 1.25).abs() < 1e-6);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
+        assert!((e.angle() - 1.25).abs() < 1e-6);
     }
 
     /// The shared scale composition clamps at the contract's `.01`
@@ -1252,25 +1457,417 @@ mod gesture_events {
         };
 
         let e = fire(UIGestureRecognizerState::Began, 1.0);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Started, 0.0));
-        assert!((e.scale - 0.001).abs() < 1e-6, "saw {}", e.scale);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Started, 0.0));
+        assert!((e.scale() - 0.001).abs() < 1e-6, "saw {}", e.scale());
         let e = fire(UIGestureRecognizerState::Changed, 1.5);
         assert!(
-            (e.scale - 0.01).abs() < 1e-6,
+            (e.scale() - 0.01).abs() < 1e-6,
             "clamp to .01, saw {}",
-            e.scale
+            e.scale()
         );
         let e = fire(UIGestureRecognizerState::Changed, 3.0);
         assert!(
-            (e.scale - 0.02).abs() < 1e-6,
+            (e.scale() - 0.02).abs() < 1e-6,
             "factor 2 on .01, saw {}",
-            e.scale
+            e.scale()
         );
         let e = fire(UIGestureRecognizerState::Changed, 3.0);
-        assert!((e.scale - 0.02).abs() < 1e-6 && e.velocity == 0.0);
+        assert!((e.scale() - 0.02).abs() < 1e-6 && e.velocity() == 0.0);
         let e = fire(UIGestureRecognizerState::Ended, 3.0);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
-        assert!((e.scale - 0.02).abs() < 1e-6);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
+        assert!((e.scale() - 0.02).abs() < 1e-6);
+    }
+}
+
+/// `NavigationSplitView` chrome inside the real `UIApplication` scene:
+/// the leaf mounts under a `UIViewController` the window adopts, so the
+/// split sees `parentViewController` and a live trait collection — the
+/// shape a bare `initWithFrame` window never gives it.
+#[cfg(target_os = "ios")]
+mod navigation {
+    use cocoa_ui::objc2_ui_kit::{
+        UINavigationController, UISplitViewController, UISplitViewControllerColumn,
+        UITraitEnvironment, UIUserInterfaceSizeClass, UIViewController,
+    };
+    use cocoa_ui::uikit::native_test;
+    use cocoa_ui::uikit::view_controller::enclosing_controller;
+    use cocoa_ui::{PlatformView, Rect, Retained, view};
+    use waterui::background::Material;
+    use waterui::component::{ButtonStyle, button, label};
+    use waterui::icon::SystemIcon;
+    use waterui::navigation::{
+        NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView, ToolbarItemIcon,
+    };
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui::{Str, ViewExt as _};
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, content_frame, pump_main_until, realize_into_shown_scene, render,
+        render_environment,
+    };
+
+    use super::mtm;
+
+    /// The `navigation::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "navigation::a_split_detail_column_carries_navigation_item_chrome",
+                || {
+                    a_split_detail_column_carries_navigation_item_chrome();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_split_realized_into_a_shown_scene_collapses_at_window_size",
+                || {
+                    a_split_realized_into_a_shown_scene_collapses_at_window_size();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// The `UISplitViewController` a leaf's subtree lives under.
+    fn split_controller_in(view: &PlatformView) -> Option<Retained<UISplitViewController>> {
+        if let Some(controller) = enclosing_controller(view)
+            && let Ok(split) = controller.downcast()
+        {
+            return Some(split);
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = split_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The compact split fixture includes both a platform symbol and a hosted SVG label.
+    fn navigation_fixture() -> waterui_apple::contract::NativeLeaf {
+        render(navigation_fixture_view())
+    }
+
+    /// The fixture's view, for a mount that builds it itself.
+    fn navigation_fixture_view() -> impl waterui::View {
+        let selection = binding(Some(0_i32));
+        let query = binding(Str::default());
+        NavigationSplitView::new(
+            &selection,
+            || text("sidebar"),
+            move |_id: i32| {
+                let mut item = NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::PrimaryAction,
+                    button("").style(ButtonStyle::Plain),
+                );
+                item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("plus"))));
+                NavigationView::new("Today", text("detail").background(Material::Regular))
+                    .searchable(&query, "Search reminders")
+                    .navigation_toolbar(NavigationToolbar::new(vec![
+                        item,
+                        NavigationToolbarItem::new(
+                            NavigationToolbarPlacement::PrimaryAction,
+                            button(label("").icon(waterui::svg::Svg::from_path(
+                                "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
+                                24.0,
+                                24.0,
+                            )))
+                            .style(ButtonStyle::Borderless),
+                        ),
+                    ]))
+            },
+        )
+    }
+
+    /// Native chrome must keep hosted icon and page content visible after collapse.
+    fn assert_content_shown(
+        window: &cocoa_ui::objc2_ui_kit::UIWindow,
+        item: &cocoa_ui::objc2_ui_kit::UINavigationItem,
+        page: &UIViewController,
+    ) {
+        let hosted = item
+            .rightBarButtonItems()
+            .expect("the page retains its actions")
+            .iter()
+            .find_map(|item| item.customView())
+            .expect("arbitrary button content remains hosted");
+        let icon = super::find::<cocoa_ui::uikit::ImageView>(&hosted)
+            .expect("the hosted button retains its label icon");
+        assert!(
+            icon.downcast_ref::<cocoa_ui::uikit::ImageView>()
+                .expect("picture image view")
+                .image()
+                .is_some(),
+            "the hosted SVG produces a UIKit image"
+        );
+        let icon_shown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            let bounds = view::bounds(&icon);
+            icon.window().is_some()
+                && view::has_visible_ancestry(&icon)
+                && bounds.size.width > 0.0
+                && bounds.size.height > 0.0
+        });
+        assert!(
+            icon_shown,
+            "the hosted toolbar icon remains visible with a nonempty frame: {:?}; wrapper: {:?}",
+            view::bounds(&icon),
+            view::bounds(&hosted),
+        );
+        let detail = super::find::<cocoa_ui::uikit::Label>(&page.view().expect("page view"))
+            .expect("the detail page retains its rendered label");
+        let content_shown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            let bounds = view::bounds(&detail);
+            detail.window().is_some()
+                && view::has_visible_ancestry(&detail)
+                && bounds.size.width > 0.0
+                && bounds.size.height > 0.0
+        });
+        assert!(
+            content_shown,
+            "the collapsed detail content remains visible with a nonempty frame: {:?}",
+            view::bounds(&detail)
+        );
+    }
+
+    /// A `NavigationSplitView` detail column is a stack-driven
+    /// `UINavigationController`: the page's chrome lands on
+    /// `navigationItem` — the `searchable` controller attaches, the
+    /// action's symbol is a real bar image, the large-title gate is open —
+    /// and `hidesBackButton` stays off, so a collapse onto compact pushes
+    /// the page with the platform's own back affordance. The bare
+    /// `NavContentController` column it replaces left the page drawing a
+    /// standalone in-content bar: no back button, a stacked search field,
+    /// an inline title and a hosted action drawn as an empty capsule
+    /// (water-rs/waterui#2717).
+    fn a_split_detail_column_carries_navigation_item_chrome() {
+        let leaf = navigation_fixture();
+        let mtm = mtm();
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let controller = UIViewController::new(mtm);
+        window.setRootViewController(Some(&controller));
+        let root_view = controller.view().expect("the controller's view is loaded");
+        let mounted = leaf.mount(&root_view);
+        view::set_frame(mounted.view(), view::bounds(&root_view));
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let split =
+            split_controller_in(&root_view).expect("the leaf mounts a UISplitViewController");
+        assert!(
+            split.parentViewController().is_some(),
+            "the mounted scene adopts the split controller"
+        );
+        let detail_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Secondary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the detail column is a UINavigationController");
+        assert!(
+            detail_nav.navigationBar().prefersLargeTitles(),
+            "the column's bar leaves the large-title gate open"
+        );
+        let page = detail_nav
+            .topViewController()
+            .expect("the column stack has a root page");
+        let item = page.navigationItem();
+        assert!(
+            !item.hidesBackButton(),
+            "the column's root keeps the back affordance for the compact push"
+        );
+        assert!(
+            item.searchController().is_some(),
+            "the searchable field attaches as the item's search controller"
+        );
+        let trailing = item
+            .rightBarButtonItems()
+            .expect("the primary action is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            trailing.image().is_some() && trailing.customView().is_none(),
+            "the action's symbol is the bar item's image, not a hosted view"
+        );
+
+        // The real scene's compact width already reports Compact: the
+        // split collapses through the same trait transition production
+        // responds to — no `traitOverrides` needed.
+        // SAFETY: the trait collection is read on the main thread the
+        // harness guarantees.
+        let size_class = unsafe { split.traitCollection().horizontalSizeClass() };
+        assert_eq!(
+            size_class,
+            UIUserInterfaceSizeClass::Compact,
+            "the mounted scene carries compact width traits"
+        );
+        let collapsed = pump_main_until(MAIN_QUEUE_DEADLINE, || split.isCollapsed());
+        assert!(collapsed, "compact traits collapse the split");
+        let sidebar_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Primary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the sidebar column stays a nav controller");
+        let pushed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            sidebar_nav.viewControllers().count() == 2
+        });
+        assert!(
+            pushed,
+            "the collapsed split pushes the detail column onto the compact stack"
+        );
+        let top = sidebar_nav.topViewController().expect("a pushed column");
+        assert!(
+            core::ptr::eq(
+                Retained::as_ptr(&top).cast::<u8>(),
+                Retained::as_ptr(&detail_nav).cast::<u8>(),
+            ),
+            "the pushed column is the detail's own navigation stack"
+        );
+        assert!(
+            !top.navigationItem().hidesBackButton(),
+            "the pushed detail keeps the platform back button"
+        );
+        let bar_shown =
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !sidebar_nav.isNavigationBarHidden());
+        assert!(
+            bar_shown,
+            "the pushed column unhides the compact stack's bar for the back button"
+        );
+        assert!(
+            sidebar_nav.navigationBar().prefersLargeTitles(),
+            "the compact stack's visible bar keeps the large-title gate open"
+        );
+        assert_content_shown(&window, &item, &page);
+    }
+
+    /// The page root of the collapsed fixture under `split`, once the
+    /// compact stack holds the pushed column and the page is in a window.
+    fn collapsed_page(split: &UISplitViewController) -> Retained<UIViewController> {
+        let sidebar_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Primary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the sidebar column is a nav controller");
+        let detail_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Secondary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the detail column is a UINavigationController");
+        let page = detail_nav
+            .topViewController()
+            .expect("the column stack has a root page");
+        let settled = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            split.isCollapsed()
+                && sidebar_nav.viewControllers().count() == 2
+                && page.view().is_some_and(|view| view.window().is_some())
+        });
+        assert!(
+            settled,
+            "the split collapses onto the compact stack with its page in the window"
+        );
+        page
+    }
+
+    /// The page root's safe area when the fixture is mounted before its
+    /// window shows: the frame is set, then the window appears.
+    fn reference_page_insets() -> cocoa_ui::objc2_ui_kit::UIEdgeInsets {
+        let leaf = navigation_fixture();
+        let mtm = mtm();
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let controller = UIViewController::new(mtm);
+        window.setRootViewController(Some(&controller));
+        let root_view = controller.view().expect("the controller's view is loaded");
+        let mounted = leaf.mount(&root_view);
+        view::set_frame(mounted.view(), view::bounds(&root_view));
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let split =
+            split_controller_in(&root_view).expect("the leaf mounts a UISplitViewController");
+        let page = collapsed_page(&split);
+        let insets = page.view().expect("page view").safeAreaInsets();
+        window.setHidden(true);
+        window.setRootViewController(None);
+        insets
+    }
+
+    /// Window content never sits in a live window unplaced
+    /// (water-rs/waterui#3744).
+    ///
+    /// A launch whose declaration lands after the scene's window displayed
+    /// realizes the content into a window that is already key, visible and
+    /// appeared. `windows::realize` used to add the content leaf and adopt
+    /// its controllers before the root host could place it, so the whole
+    /// tree — the split's collapse, the nested navigation stacks and the
+    /// search bar — laid out at 0x0 and `UIKit` kept the bottom inset it
+    /// derived there, leaving the page with an empty safe region. The
+    /// leaf must hold its content frame as soon as `realize` returns, and
+    /// the page must end with the safe area the same fixture gets when it
+    /// is mounted before the window shows.
+    fn a_split_realized_into_a_shown_scene_collapses_at_window_size() {
+        let reference = reference_page_insets();
+
+        let mtm = mtm();
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let declaration = waterui::window::Window::new(
+            "Shown scene",
+            binding(waterui::window::WindowState::Normal),
+            navigation_fixture_view,
+        )
+        .background(waterui::window::WindowBackground::Color(
+            waterui::color::Color::srgb(255, 255, 255),
+        ));
+        let scene =
+            realize_into_shown_scene(mtm, &declaration, &render_environment(), window.clone());
+
+        // The invariant itself: before any run-loop turn, the leaf already
+        // holds the frame the root host resolves for it.
+        let root_view = view::retain_base(&*scene.root);
+        let leaf = view::subviews(&root_view)
+            .into_iter()
+            .next()
+            .expect("realize adds the content leaf to the root host");
+        let expected = content_frame(&scene.root, &leaf);
+        let frame = view::frame(&leaf);
+        assert!(
+            expected.size.width > 0.0 && expected.size.height > 0.0,
+            "the root host resolves a nonempty content frame: {expected:?}"
+        );
+        // The pre-join placement aligns to the 1x grid of a view with no
+        // window, so the comparison allows the half point that costs.
+        let near = |a: f64, b: f64| (a - b).abs() <= 0.5;
+        assert!(
+            near(frame.origin.x, expected.origin.x)
+                && near(frame.origin.y, expected.origin.y)
+                && near(frame.size.width, expected.size.width)
+                && near(frame.size.height, expected.size.height),
+            "the content leaf holds its content frame {expected:?} when realize returns, \
+             not {frame:?}"
+        );
+
+        let split =
+            split_controller_in(&root_view).expect("the leaf holds a UISplitViewController");
+        let page = collapsed_page(&split);
+        let page_view = page.view().expect("page view");
+        window.layoutIfNeeded();
+        let insets = page_view.safeAreaInsets();
+        let bounds = view::bounds(&page_view);
+        assert!(
+            insets.top + insets.bottom < bounds.size.height,
+            "the page root keeps a nonempty safe region: {insets:?} in {bounds:?}"
+        );
+        let near = |a: f64, b: f64| (a - b).abs() <= 0.5;
+        assert!(
+            near(insets.top, reference.top)
+                && near(insets.bottom, reference.bottom)
+                && near(insets.left, reference.left)
+                && near(insets.right, reference.right),
+            "the realized page's safe area {insets:?} matches the one the fixture gets \
+             mounted before its window shows: {reference:?}"
+        );
+
+        let detail_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Secondary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the detail column is a UINavigationController");
+        let top = detail_nav
+            .topViewController()
+            .expect("the column stack has a root page");
+        assert_content_shown(&window, &top.navigationItem(), &page);
     }
 }
 
@@ -1295,9 +1892,9 @@ mod text_selection_ios {
     use waterui::text::StyledStr;
 
     use cocoa_ui::geometry::Rect;
-    use cocoa_ui::native_test::pump_main_until;
     use cocoa_ui::objc2::MainThreadMarker;
     use cocoa_ui::uikit::native_test;
+    use cocoa_ui::uikit::native_test::pump_main_until;
     use waterui_apple::native_test_support::{
         MAIN_QUEUE_DEADLINE, mount_uikit_window, render_environment,
     };
@@ -1757,5 +2354,181 @@ mod text_selection_ios {
                 },
             ),
         ]
+    }
+}
+
+/// Independent lists retain their own header spacing within a navigation page.
+#[cfg(target_os = "ios")]
+mod list_spacing {
+    use super::mtm;
+    use cocoa_ui::Retained;
+    use cocoa_ui::objc2_ui_kit::{NSIndexPathUIKitAdditions, UITableView};
+    use waterui::component::list::{List, ListItem};
+    use waterui::id::SelfId;
+    use waterui::prelude::*;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, drain_main_queue, mount_uikit_window, pump_main_until,
+        render_environment,
+    };
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "list_spacing::navigation_lists_keep_distinct_header_spacing_with_search",
+                || {
+                    check_spacing(true);
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "list_spacing::navigation_lists_keep_distinct_header_spacing_without_search",
+                || {
+                    check_spacing(false);
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn tables(view: &cocoa_ui::PlatformView, out: &mut Vec<Retained<UITableView>>) {
+        if let Some(table) = view.downcast_ref::<UITableView>() {
+            out.push(Retained::from(table));
+            return;
+        }
+        for child in cocoa_ui::view::subviews(view) {
+            tables(&child, out);
+        }
+    }
+
+    fn check_spacing(searchable: bool) {
+        let list = || List::for_each(vec![SelfId::new(0_u32)], |_| ListItem::new(text("Row")));
+        let query = binding(Str::default());
+        let page = NavigationView::new(
+            "Lists",
+            vstack((list(), list())).background(waterui::background::Material::Regular),
+        );
+        let page = if searchable {
+            page.searchable(&query, "Search")
+        } else {
+            page
+        };
+        let mount = mount_uikit_window(
+            mtm(),
+            AnyView::new(NavigationStack::new(page)),
+            &render_environment(),
+            cocoa_ui::uikit::native_test::window(
+                mtm(),
+                cocoa_ui::Rect::new(0.0, 0.0, 390.0, 844.0),
+            ),
+        );
+        let row = cocoa_ui::objc2_foundation::NSIndexPath::indexPathForRow_inSection(0, 0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                mount.window.layoutIfNeeded();
+                let mut found = Vec::new();
+                tables(&mount.host, &mut found);
+                found.len() == 2
+                    && found.iter().all(|t| {
+                        t.bounds().size.height > 0.0
+                            && t.rectForRowAtIndexPath(&row).size.height > 0.0
+                    })
+            }),
+            "both lists must finish their native row layout"
+        );
+        assert!(drain_main_queue(mtm()), "pending row updates must finish");
+        mount.window.layoutIfNeeded();
+        let mut found = Vec::new();
+        tables(&mount.host, &mut found);
+        let expected = [0.0, 35.0];
+        for (index, (table, expected)) in found.iter().zip(expected).enumerate() {
+            let actual = table.rectForRowAtIndexPath(&row).origin.y;
+            assert!(
+                (actual - expected).abs() < 0.5,
+                "list {index} with searchable={searchable}: first row begins at {actual}, expected {expected}"
+            );
+        }
+    }
+}
+
+/// A view rehosted for capture lays out under the capture contract: the
+/// capture window has no device regions, so a fixed container's child is
+/// placed exactly as it is when the container is detached (#3704).
+#[cfg(target_os = "ios")]
+mod capture_regions {
+    use cocoa_ui::objc2_ui_kit::UIEdgeInsets;
+    use cocoa_ui::uikit::ImageView;
+    use cocoa_ui::{Rect, view};
+    use kurbo::Shape;
+    use waterui::graphics::color::WorkingColor;
+    use waterui::graphics::draw::Draw;
+    use waterui::graphics::picture::Picture;
+    use waterui::layout::frame::Frame;
+    use waterui::reactive::constant;
+    use waterui_apple::native_test_support::{render, with_capture_rehost};
+    use waterui_core::layout::Size;
+
+    use super::{find, mtm};
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![libtest_mimic::Trial::test(
+            "capture_regions::a_rehosted_fixed_container_places_its_child_at_full_size",
+            || {
+                a_rehosted_fixed_container_places_its_child_at_full_size();
+                Ok(())
+            },
+        )]
+    }
+
+    fn a_rehosted_fixed_container_places_its_child_at_full_size() {
+        let mtm = mtm();
+        let picture = Picture::new(
+            Size::new(24.0, 24.0),
+            constant(Picture::record(|scene| {
+                scene.fill(
+                    kurbo::Rect::new(0.0, 0.0, 24.0, 24.0).to_path(0.1),
+                    WorkingColor::BLACK,
+                );
+            })),
+        );
+        let leaf = render(
+            Frame::new(picture)
+                .ideal_width(24.0)
+                .ideal_height(24.0)
+                .max_width(24.0)
+                .max_height(24.0),
+        );
+        let host = view::retain_base(leaf.view());
+        // The detached state `tabs.rs` leaves a bar icon in: sized by its
+        // parent-less owner, never laid out.
+        view::set_frame(&host, Rect::new(0.0, 0.0, 24.0, 24.0));
+
+        // The status-bar and home-indicator bands of a Dynamic Island
+        // iPhone, as the iOS 27 runtimes that propagate them report them.
+        let device_band = UIEdgeInsets {
+            top: 62.0,
+            left: 0.0,
+            bottom: 34.0,
+            right: 0.0,
+        };
+        with_capture_rehost(mtm, &host, device_band, |safe| {
+            assert!(
+                (host.safeAreaInsets().top - device_band.top).abs() < 0.01,
+                "precondition: the device band reaches the rehosted host"
+            );
+            let image =
+                find::<ImageView>(&host).expect("the picture leaf mounts the kit image view");
+            let frame = view::frame(&image);
+            assert!(
+                (frame.size.width - 24.0).abs() < 0.01 && (frame.size.height - 24.0).abs() < 0.01,
+                "the rehosted picture's image view is {:?}, not the 24x24 its container proposed",
+                frame.size
+            );
+            assert_eq!(
+                safe,
+                view::bounds(&host),
+                "a capture window has no regions: the host's safe rect is its bounds"
+            );
+        });
     }
 }

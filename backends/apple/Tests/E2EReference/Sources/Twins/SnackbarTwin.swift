@@ -8,7 +8,7 @@ struct SnackbarTwin: View {
   var body: some View {
     ScrollView {
       VStack(spacing: 10) {
-        Text("Snackbar Demo").font(.title).fontWeight(.bold)
+        Text("Snackbar Demo").font(.title).bold()
         Spacer(minLength: 0)
         Button("Simple Snackbar") {}
         Button("With Icon") {}

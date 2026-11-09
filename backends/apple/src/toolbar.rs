@@ -99,7 +99,6 @@ fn toolbar_child(view: &Retained<NSView>, index: usize, jobs: &Rc<IconJobs>) -> 
             view: hosted(view),
             icon: None,
             label: String::new(),
-            bordered: false,
             action: None,
         };
     };
@@ -138,7 +137,6 @@ fn toolbar_child(view: &Retained<NSView>, index: usize, jobs: &Rc<IconJobs>) -> 
         view: hosted(view),
         icon,
         label,
-        bordered: true,
         action: Some(action),
     }
 }

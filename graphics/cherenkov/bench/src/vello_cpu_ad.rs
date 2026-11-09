@@ -37,6 +37,8 @@ pub struct VelloCpu {
     prepared: Option<Prepared>,
     lowered: Option<Lowered<PaintType>>,
     counters: Counters,
+    /// When the last submit's raster work ended.
+    completed: crate::ObservedCompletion,
 }
 
 /// The `RenderContext` and prepared scene state do not format.
@@ -97,6 +99,7 @@ impl VelloCpu {
             prepared: None,
             lowered: None,
             counters: Counters::default(),
+            completed: crate::ObservedCompletion::default(),
         })
     }
 }
@@ -297,7 +300,9 @@ impl Engine for VelloCpu {
         ctx.flush();
         let mut pixmap = Pixmap::new(ctx.width(), ctx.height());
         ctx.render(PixmapMut::from(&mut pixmap), &mut self.res);
-        let render_seconds = render_at.elapsed().as_secs_f64();
+        let rendered = Instant::now();
+        let render_seconds = rendered.duration_since(render_at).as_secs_f64();
+        self.completed.record(rendered);
         let readback_at = Instant::now();
         let image = readback.then(|| {
             let rgba8: &[u8] = bytemuck::cast_slice(pixmap.data());
@@ -316,6 +321,16 @@ impl Engine for VelloCpu {
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(
+            "the host instant RenderContext::render returned, after the CPU raster work it ran ended",
+        )
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        self.completed.take(Self::NAME)
     }
 
     fn wait_idle(&mut self) -> Result<(), BenchError> {

@@ -22,15 +22,15 @@ use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 /// The retained render state of a toggle: the cloneable [`ToggleConfig`] drives the
 /// control + accessibility, and its main label is held as a [`RetainedSubview`]
 /// built once and re-flushed each frame so reactive label content stays live.
-pub struct ToggleRenderState {
+pub struct ToggleRenderState<E: crate::text::TextEngine> {
     config: ToggleConfig,
-    label_view: RetainedSubview,
+    label_view: RetainedSubview<E>,
 }
 
-impl ToggleRenderState {
+impl<E: crate::text::TextEngine> ToggleRenderState<E> {
     pub(crate) fn from_config(config: ToggleConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
         }
     }
@@ -39,7 +39,7 @@ impl ToggleRenderState {
     /// `&mut HydroState`, no renderer, so it must be built before then).
     pub(crate) fn prebuild(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.label_view.ensure_built(renderer, env);
@@ -53,9 +53,9 @@ impl ToggleRenderState {
     }
 }
 
-impl HydroNativeView for Native<ToggleConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ToggleConfig> {
     fn intrinsic(
-        state: &mut crate::renderer::HydroState,
+        state: &mut crate::renderer::HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -69,8 +69,8 @@ impl HydroNativeView for Native<ToggleConfig> {
 /// emission walk (which passes `None` — a semantic node carries no bounds).
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn toggle_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn toggle_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     toggle: &ToggleConfig,
     env: &Environment,
@@ -78,18 +78,19 @@ pub fn toggle_accessibility(
 ) {
     #[cfg(feature = "accessibility")]
     {
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
-                match toggle.style {
+                match toggle.style() {
                     ToggleStyle::Switch => AccessibilityNodeRole::Switch,
                     ToggleStyle::Checkbox => AccessibilityNodeRole::CheckBox,
                     ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
                     _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
                 },
-            ));
+            ),
+        );
         let default_label =
-            crate::renderer::SemanticCore::accessibility_label_from_label(&toggle.label, env);
+            crate::renderer::SemanticCore::<E>::accessibility_label_from_label(toggle.label(), env);
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
@@ -97,7 +98,7 @@ pub fn toggle_accessibility(
         if let Some(value) = renderer.resolve_accessibility_value(env, None) {
             node.set_value(value);
         }
-        let checked = renderer.read_signal(&toggle.toggle);
+        let checked = renderer.read_signal(toggle.toggle());
         node.set_toggled(AccessibilityToggled::from(checked));
         node.add_action(AccessibilityAction::Focus);
         // A disabled toggle stays in the tree (focusable, announced as
@@ -109,7 +110,7 @@ pub fn toggle_accessibility(
         } else {
             node.add_action(AccessibilityAction::Click);
             Some(AccessibilityActionTarget::Toggle {
-                binding: toggle.toggle.clone(),
+                binding: toggle.toggle().clone(),
             })
         };
         if let Some(node_id) = renderer.register_accessibility_leaf(ctx, node, env, action_target) {
@@ -136,14 +137,14 @@ const UNRESOLVED_STYLE: &str =
 /// A switch with a visible label (`StretchAxis::Horizontal`) answers a finite
 /// width proposal, never below its intrinsic width; every other toggle
 /// answers its intrinsic size (`docs/layout-spec.md` §6).
-pub fn measure_toggle_node(
-    render_state: &ToggleRenderState,
+pub fn measure_toggle_node<E: crate::text::TextEngine>(
+    render_state: &ToggleRenderState<E>,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let metrics = theme.toggle_metrics(render_state.config.style);
+    let metrics = theme.toggle_metrics(render_state.config.style());
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {
@@ -169,9 +170,9 @@ pub fn measure_toggle_node(
 
 /// Renders a retained toggle leaf every flush: emits a11y (unless hidden) then the
 /// control + label + tap target, reading the config's live signals each frame.
-pub fn render_toggle_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ToggleRenderState>>,
+pub fn render_toggle_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ToggleRenderState<E>>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -194,9 +195,9 @@ pub fn render_toggle_node(
     clippy::too_many_lines,
     reason = "the render sequence is one continuous scenario; splitting it would obscure the order"
 )]
-pub fn render_toggle_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ToggleRenderState>>,
+pub fn render_toggle_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ToggleRenderState<E>>>,
     env: &Environment,
 ) {
     let visual_interaction_key = InteractionKey::for_rc(state, 0);
@@ -204,7 +205,7 @@ pub fn render_toggle_parts(
     let owner = state;
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
-    let style = state.config.style;
+    let style = state.config.style();
     let metrics = theme.toggle_metrics(style);
     // Reading the disabled signal watches it, so a change schedules a frame
     // and this persistent node re-renders (and re-registers input) with the
@@ -254,7 +255,7 @@ pub fn render_toggle_parts(
     // signal (it registers a retained-refresh watcher), so a value change
     // schedules a frame and this persistent node re-renders the new state.
     let (thumb_progress, selected) = {
-        let binding = state.config.toggle.clone();
+        let binding = state.config.toggle().clone();
         ctx.renderer_mut()
             .resolve_toggle_progress(&binding, owner, theme.toggle_value_animation())
     };
@@ -309,7 +310,7 @@ pub fn render_toggle_parts(
     // switch's visual interaction. An associated the Material label toggles the switch
     // but does not originate a switch ripple or pressed thumb from the label's
     // distant pointer coordinate.
-    let binding = state.config.toggle.clone();
+    let binding = state.config.toggle().clone();
     if label_bounds.width() > 0.0 {
         let mut activation_press_slot = press_slot.clone();
         activation_press_slot.key = activation_interaction_key;
@@ -330,10 +331,10 @@ pub fn render_toggle_parts(
     );
 }
 
-fn toggle_binding_action(
+fn toggle_binding_action<E: crate::text::TextEngine>(
     binding: nami::Binding<bool>,
     visual_interaction_key: InteractionKey,
-) -> impl FnMut(&mut crate::renderer::SemanticCore, kurbo::Point, &Environment) -> bool {
+) -> impl FnMut(&mut crate::renderer::SemanticCore<E>, kurbo::Point, &Environment) -> bool {
     move |renderer, _point, _env| {
         // A pointer press on the non-focusable label target temporarily owns an
         // interaction-only key. Restore semantic keyboard focus to the switch
@@ -344,14 +345,14 @@ fn toggle_binding_action(
     }
 }
 
-pub fn measure_toggle_intrinsic(
+pub fn measure_toggle_intrinsic<E: crate::text::TextEngine>(
     toggle: &ToggleConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = theme.toggle_metrics(toggle.style);
-    let label_size = measure_label_intrinsic(&toggle.label, state, env, theme);
+    let metrics = theme.toggle_metrics(toggle.style());
+    let label_size = measure_label_intrinsic(toggle.label(), state, env, theme);
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {
         label_width + metrics.label_spacing + metrics.width
@@ -434,9 +435,9 @@ fn toggle_control_and_label_bounds(
 /// same node `toggle_accessibility` registers, with no bounds. The label
 /// sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
-pub fn emit_toggle_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<ToggleRenderState>>,
+pub fn emit_toggle_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<ToggleRenderState<E>>>,
     env: &Environment,
 ) {
     toggle_accessibility(

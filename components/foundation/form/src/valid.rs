@@ -21,10 +21,6 @@ macro_rules! impl_error {
     ($ident:ident,$message:expr) => {
         #[derive(Debug, Clone, Copy)]
         #[doc = $message]
-        #[expect(
-            clippy::exhaustive_structs,
-            reason = "field-less validation error, used by name"
-        )]
         pub struct $ident;
 
         impl fmt::Display for $ident {
@@ -141,6 +137,20 @@ where
 #[non_exhaustive]
 pub struct OutOfRange<T>(pub Range<T>);
 
+impl<T> OutOfRange<T> {
+    /// Reports a value outside `range`.
+    #[must_use]
+    pub const fn new(range: Range<T>) -> Self {
+        Self(range)
+    }
+
+    /// The range the value fell outside of.
+    #[must_use]
+    pub const fn range(&self) -> &Range<T> {
+        &self.0
+    }
+}
+
 impl<T: Display> Display for OutOfRange<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -158,7 +168,7 @@ impl<T: Display + Debug + Ord + Clone + 'static> Validator<T> for Range<T> {
     fn validate(&self, value: T) -> Result<(), Self::Err> {
         self.contains(&value)
             .then_some(())
-            .ok_or(OutOfRange(self.clone()))
+            .ok_or_else(|| OutOfRange::new(self.clone()))
     }
 }
 
@@ -287,10 +297,6 @@ pub struct Or<A, B>(A, B);
 
 /// An error type for the `Or` validator, representing both validation failures.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a pair of the two failures, built and destructured positionally"
-)]
 pub struct OrError<A, B>(pub A, pub B);
 
 impl<A, B> Display for OrError<A, B>
@@ -330,10 +336,6 @@ where
 
 /// A validator that checks if a value is present (not None or not empty).
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less validator used by name"
-)]
 pub struct Required;
 
 impl_error!(RequiredError, "Value is required.");
@@ -375,10 +377,6 @@ impl_required_for_text!(&str, Str, String);
 /// ValidatableView::new(field, Plain(Required))
 /// ```
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "validator adapter newtype over the wrapped validator"
-)]
 pub struct Plain<V>(pub V);
 
 impl<V> Validator<StyledStr> for Plain<V>

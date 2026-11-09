@@ -17,6 +17,11 @@
 //! older one that was never shown, which releases the older planes back to
 //! the producer's pool. The host drains the mailbox once per engine pass,
 //! so a frame never rebuilds the view.
+//!
+//! An interactive source — a web view — takes input, answers a caret and
+//! pumps its UI-thread work through the same hooks a
+//! [`GpuContentView`](super::GpuContentView) carries, and keeps its own
+//! viewport at the layer's [`PresentedSize`].
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -26,12 +31,15 @@ use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use cherenkov_gpu::interop::ExternalFrame;
+use cherenkov_gpu::interop::{ExternalFrame, SharedDevice};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, View};
 use wgpu::{Device, Queue};
 
-use super::{RedrawHandle, Shared, measure_by_intrinsic_size};
+use super::{RedrawHandle, Shared, SurfaceHooks, measure_by_intrinsic_size};
+use crate::draw::kurbo;
+use crate::input::SurfaceInputEvent;
+use crate::offscreen::OffscreenSize;
 
 /// A producer of [`ExternalFrame`]s: a video decoder, a camera, a web view.
 ///
@@ -47,6 +55,9 @@ pub trait ExternalFrameSource: 'static {
     /// the replacement device after a device loss. Planes must be imported on
     /// [`FrameOutput::device`]; an output whose host is gone refuses frames
     /// with [`RetiredOutput`], which is the signal to stop producing for it.
+    /// A source that reuses its planes learns when the host is done with a
+    /// frame through `ExternalFrame::on_release`, and one without a natural
+    /// size renders at [`FrameOutput::presented_size`].
     fn start(&mut self, output: FrameOutput);
 
     /// Whether every pixel of every frame is opaque.
@@ -90,11 +101,21 @@ pub trait ExternalFrameSource: 'static {
 /// [`ExternalFrameSource::start`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the external-frame output was retired by its host")]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit error marker with no fields to add"
-)]
 pub struct RetiredOutput;
+
+/// The size a host layer presents its frames at: the physical pixel extent
+/// the layer covers on screen and the display scale, in pixels per logical
+/// point.
+///
+/// A source whose frames have no natural size — a web view — renders at
+/// exactly this extent so the engine never resamples its pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PresentedSize {
+    /// The layer's extent in physical pixels.
+    pub pixels: OffscreenSize,
+    /// Physical pixels per logical point on the display the layer shows on.
+    pub scale: f64,
+}
 
 /// Where an [`ExternalFrameSource`] publishes frames for one host layer.
 ///
@@ -102,8 +123,7 @@ pub struct RetiredOutput;
 /// single-slot mailbox.
 #[derive(Clone)]
 pub struct FrameOutput {
-    device: Device,
-    queue: Queue,
+    device: SharedDevice,
     mailbox: Shared<Mailbox>,
 }
 
@@ -120,13 +140,37 @@ impl FrameOutput {
     /// imported onto it.
     #[must_use]
     pub const fn device(&self) -> &Device {
-        &self.device
+        &self.device.device
     }
 
     /// The device's queue.
     #[must_use]
     pub const fn queue(&self) -> &Queue {
-        &self.queue
+        &self.device.queue
+    }
+
+    /// The host engine's whole device-creation chain — instance, adapter,
+    /// device and queue — for importers that open their own view of the
+    /// device, such as `cherenkov_gpu::interop::vulkan::Device::new`.
+    #[must_use]
+    pub const fn shared_device(&self) -> &SharedDevice {
+        &self.device
+    }
+
+    /// Wakes the host for another pass without publishing a frame.
+    ///
+    /// A source whose producer must be ticked from the UI thread — a
+    /// browser engine driven by external begin frames — requests the next
+    /// pass here so its [`ExternalFrameView::on_frame`] hook keeps running.
+    pub fn request_redraw(&self) {
+        self.mailbox.redraw.request_redraw();
+    }
+
+    /// The size the host layer presents frames at, as of its latest pass;
+    /// `None` until the host has run its first pass.
+    #[must_use]
+    pub fn presented_size(&self) -> Option<PresentedSize> {
+        *self.mailbox.presented()
     }
 
     /// Publishes `frame` as the layer's next content and wakes the host.
@@ -163,6 +207,8 @@ impl FrameOutput {
 /// swap of one `Option`.
 struct Mailbox {
     frame: Mutex<Option<ExternalFrame>>,
+    /// The host's latest presented size, written every pass.
+    presented: Mutex<Option<PresentedSize>>,
     retired: AtomicBool,
     redraw: RedrawHandle,
 }
@@ -170,6 +216,12 @@ struct Mailbox {
 impl Mailbox {
     fn slot(&self) -> std::sync::MutexGuard<'_, Option<ExternalFrame>> {
         self.frame
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn presented(&self) -> std::sync::MutexGuard<'_, Option<PresentedSize>> {
+        self.presented
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -195,6 +247,13 @@ impl FrameReceiver {
     #[must_use]
     pub fn take(&self) -> Option<ExternalFrame> {
         self.mailbox.slot().take()
+    }
+
+    /// Records the size the host layer presents frames at this pass, which
+    /// the source reads back through [`FrameOutput::presented_size`]. The
+    /// host reports it on every pass, from wherever it sizes the layer.
+    pub fn report_presented(&self, size: PresentedSize) {
+        *self.mailbox.presented() = Some(size);
     }
 }
 
@@ -222,22 +281,23 @@ impl fmt::Debug for ExternalFrameStream {
 }
 
 impl ExternalFrameStream {
-    /// Starts the source producing onto `device` for a host layer.
+    /// Starts the source producing onto `device` — the host engine's
+    /// device-creation chain — for a host layer.
     ///
-    /// `redraw` wakes the host when a frame is published; the host drains
-    /// the returned receiver on its next engine pass. The previous
-    /// receiver, if the host still holds one, keeps its own output until it
-    /// is dropped.
+    /// `redraw` wakes the host when a frame is published or the source asks
+    /// for a pass; the host drains the returned receiver on its next engine
+    /// pass and reports its presented size there. The previous receiver, if
+    /// the host still holds one, keeps its own output until it is dropped.
     #[must_use]
-    pub fn start(&self, device: &Device, queue: &Queue, redraw: RedrawHandle) -> FrameReceiver {
+    pub fn start(&self, device: &SharedDevice, redraw: RedrawHandle) -> FrameReceiver {
         let mailbox = Shared::new(Mailbox {
             frame: Mutex::new(None),
+            presented: Mutex::new(None),
             retired: AtomicBool::new(false),
             redraw,
         });
         self.0.borrow_mut().start(FrameOutput {
             device: device.clone(),
-            queue: queue.clone(),
             mailbox: Shared::clone(&mailbox),
         });
         FrameReceiver { mailbox }
@@ -270,6 +330,7 @@ pub struct ExternalFrameView {
     intrinsic_size: Option<Size>,
     opaque: bool,
     surface_prefers_hdr: Option<bool>,
+    hooks: SurfaceHooks,
     label: Option<String>,
     value: Option<String>,
 }
@@ -293,9 +354,55 @@ impl ExternalFrameView {
             opaque: source.is_opaque(),
             stream: ExternalFrameStream(Rc::new(RefCell::new(Box::new(source)))),
             surface_prefers_hdr: None,
+            hooks: SurfaceHooks::default(),
             label: None,
             value: None,
         }
+    }
+
+    /// Receives pointer, keyboard and gesture events the backend routes to
+    /// this view.
+    #[must_use]
+    pub fn on_input(mut self, handler: impl Fn(&SurfaceInputEvent) + 'static) -> Self {
+        self.hooks.input = Some(Rc::new(handler));
+        self
+    }
+
+    /// Runs `hook` on the UI thread once per host pass, before the host
+    /// drains the newest published frame.
+    #[must_use]
+    pub fn on_frame(mut self, hook: impl Fn() + 'static) -> Self {
+        self.hooks.frame = Some(Rc::new(hook));
+        self
+    }
+
+    /// Answers where the source's text caret is, for input-method panels.
+    #[must_use]
+    pub fn on_ime_caret(mut self, query: impl Fn() -> Option<kurbo::Rect> + 'static) -> Self {
+        self.hooks.caret = Some(Rc::new(query));
+        self
+    }
+
+    /// Whether this view takes input events.
+    #[must_use]
+    pub const fn wants_input_events(&self) -> bool {
+        self.hooks.wants_input_events()
+    }
+
+    /// Routes an input event to the view's handler.
+    pub fn input(&self, event: &SurfaceInputEvent) {
+        self.hooks.input(event);
+    }
+
+    /// The source's text caret, if it has one right now.
+    #[must_use]
+    pub fn ime_caret(&self) -> Option<kurbo::Rect> {
+        self.hooks.ime_caret()
+    }
+
+    /// Runs the per-frame UI hook, if any.
+    pub fn frame(&self) {
+        self.hooks.frame();
     }
 
     /// The accessibility name of the frames.

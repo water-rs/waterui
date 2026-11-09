@@ -69,7 +69,9 @@ use objc2_quartz_core::{
     CATransaction, kCAAnimationLinear, kCAMediaTimingFunctionLinear,
 };
 use waterui_backend_core::{AnyView, Environment};
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
 use waterui_graphics::filter_view::{AnyEffect, ParamGuards};
 use waterui_graphics::filtrate::{FilterLink, Interpolator, WatchGuard, WorkingSpace};
 
@@ -932,13 +934,21 @@ impl std::fmt::Debug for NativeFilterOwner {
 }
 
 impl Drop for NativeFilterOwner {
-    /// Clears the layer's filters and shuts the capture down; the
-    /// watchers cancel with the guards.
+    /// Shuts the capture down; the watchers cancel with the guards. The
+    /// layer's filters are not cleared: the layer dies with its view on
+    /// an ordinary removal, and a ghost keeps them until the retired
+    /// tree detaches.
+    ///
+    /// An enclosing capture still holding this output in an open
+    /// external-render scope has lost content it may have deferred on:
+    /// the owner's departure is the wake the capture's retry waits for.
     fn drop(&mut self) {
-        // SAFETY: `filters` accepts nil to clear the list; main-thread use
-        // by the leaf contract.
-        unsafe { self.layer.setFilters(None) };
         self.capture.shutdown();
+        if self.external_count.get() > 0
+            && let Some(redraw) = self.external_redraw.get_mut().take()
+        {
+            redraw();
+        }
     }
 }
 
@@ -1451,6 +1461,17 @@ impl std::fmt::Debug for NativeFilteredSubView {
 }
 
 impl SubView for NativeFilteredSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.mounted
+            .borrow()
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.mounted.borrow().layout().measure(proposal)
     }
@@ -1510,15 +1531,10 @@ impl CapturableSurface for NativeFilterCapturable {
         objc2_metal::MTLPixelFormat::RGBA16Float
     }
 
-    fn content_bounds(&self, relative_to: &PlatformView) -> cocoa_ui::Rect {
-        let Some(owner) = self.owner.upgrade() else {
-            return cocoa_ui::Rect::ZERO;
-        };
-        cocoa_ui::view::convert_rect(
-            &owner.view,
-            cocoa_ui::view::bounds(&owner.view),
-            Some(relative_to),
-        )
+    /// The host layer the filters attach to — the capture texture is
+    /// that layer's filtered output, over its bounds.
+    fn presentation_layer(&self) -> Option<Retained<CALayer>> {
+        self.owner.upgrade().map(|owner| owner.layer.clone())
     }
 
     /// Native-pass suppression — direct `hidden` mutation on the host
@@ -1716,6 +1732,21 @@ impl CapturableSurface for NativeFilterCapturable {
     /// never land.
     fn presentation_failed(&self) -> bool {
         false
+    }
+
+    /// Internal invariant: armed filter chains route to the GPU
+    /// realization under `SnapshotDemand`, so a native filter
+    /// realization can never sit inside a retiring transition subtree.
+    fn take_frozen_frame(
+        &self,
+    ) -> (
+        Option<cocoa_ui::capture::FrozenSurface>,
+        Retained<objc2_quartz_core::CAMetalLayer>,
+    ) {
+        // §2.2: native filters never mount under a transition
+        // declaration — `SnapshotDemand` routes them to the GPU
+        // realization — so a retirement walk can never reach this.
+        unreachable!("a NativeFilterCapturable never appears under a transition subtree")
     }
 }
 

@@ -54,7 +54,7 @@ impl WebFonts {
         );
         families.install(&mut font_cx.collection);
         Self {
-            collection: FontCollection::new(font_cx),
+            collection: FontCollection::from_parley(font_cx),
             families,
         }
     }
@@ -74,7 +74,7 @@ impl WebFonts {
     ///
     /// Panics if `font_data` holds no face.
     pub fn register(&mut self, name: &str, font_data: Vec<u8>) {
-        self.collection.use_fonts(|font_cx| {
+        self.collection.with_parley(|font_cx| {
             assert!(
                 register_face(&mut font_cx.collection, &mut self.families, name, font_data),
                 "hydrolysis web font `{name}` holds no face"

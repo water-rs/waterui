@@ -259,7 +259,7 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
 
     let mut settled = false;
     for _ in 0..64 {
-        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt {
+        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt() {
             settled = true;
             break;
         }
@@ -269,9 +269,9 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
 
     let snapshot = runtime
         .pump_at(true, std::time::Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("capture must produce a snapshot");
-    assert_eq!(snapshot.width, 96);
-    assert_eq!(snapshot.height, 72);
-    assert_eq!(snapshot.rgba8.len(), 96 * 72 * 4);
+    assert_eq!(snapshot.width(), 96);
+    assert_eq!(snapshot.height(), 72);
+    assert_eq!(snapshot.rgba8().len(), 96 * 72 * 4);
 }

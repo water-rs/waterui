@@ -22,9 +22,9 @@ const SCROLL_INDICATOR_DRAG_THICKNESS: f64 = 6.5;
 /// Inset of the thumb from the viewport edge.
 const SCROLL_INDICATOR_EDGE_INSET: f64 = 1.5;
 
-impl HydroNativeView for Native<ScrollView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ScrollView> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -33,7 +33,7 @@ impl HydroNativeView for Native<ScrollView> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -52,19 +52,20 @@ impl HydroNativeView for Native<ScrollView> {
 }
 
 #[cfg(feature = "accessibility")]
-pub fn register_scroll_accessibility_node(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn register_scroll_accessibility_node<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     env: &Environment,
     bounds: Option<kurbo::Rect>,
     handle: &crate::scroll::ScrollHandle,
     metrics: crate::scroll::ScrollMetrics,
     axis: ScrollAxis,
 ) -> Option<AccessibilityNodeId> {
-    let mut node =
-        AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+    let mut node = AccessibilityNode::new(
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
             env,
             AccessibilityNodeRole::ScrollView,
-        ));
+        ),
+    );
     let label = renderer.resolve_accessibility_label(env, None);
     if let Some(label) = label {
         node.set_label(label);
@@ -125,8 +126,8 @@ pub fn register_scroll_accessibility_node(
 /// nested inside this one — registered by the children below — hit-tests
 /// ahead of it and consumes the delta until it hits its own edge, where the
 /// delta falls through to the next enclosing region.
-pub fn register_scroll_wheel_target(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn register_scroll_wheel_target<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     viewport: kurbo::Rect,
     handle: &crate::scroll::ScrollHandle,
 ) {
@@ -176,8 +177,8 @@ fn indicator_geometry(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn draw_scroll_indicators(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     _env: &Environment,
     viewport: kurbo::Rect,
     metrics: crate::scroll::ScrollMetrics,

@@ -22,16 +22,16 @@ use std::fmt;
 use std::rc::Rc;
 
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::NSObject;
+use objc2::runtime::{NSObject, ProtocolObject};
 use objc2::sel;
 use objc2::{
     ClassType, DefinedClass, DowncastTarget, MainThreadMarker, MainThreadOnly, define_class,
     msg_send,
 };
 use objc2_app_kit::{
-    NSClickGestureRecognizer, NSGestureRecognizer, NSGestureRecognizerState,
-    NSMagnificationGestureRecognizer, NSPanGestureRecognizer, NSPressGestureRecognizer,
-    NSRotationGestureRecognizer, NSView,
+    NSClickGestureRecognizer, NSGestureRecognizer, NSGestureRecognizerDelegate,
+    NSGestureRecognizerState, NSMagnificationGestureRecognizer, NSPanGestureRecognizer,
+    NSPressGestureRecognizer, NSRotationGestureRecognizer, NSView,
 };
 use objc2_foundation::NSObjectProtocol;
 
@@ -95,6 +95,58 @@ impl fmt::Debug for Target {
     }
 }
 
+/// The closure a [`Gate`] runs: given the recognizer about to begin,
+/// answers whether it may. The recognizer's geometry — `locationInView:` —
+/// is already valid at this point.
+type GateHandler = Rc<dyn Fn(&NSGestureRecognizer) -> bool>;
+
+struct GateIvars {
+    gate: GateHandler,
+}
+
+define_class!(
+    /// Gates recognition: `gestureRecognizerShouldBegin:` declines a
+    /// recognizer whose gate rejects it, so the event fails through to the
+    /// view hierarchy and sibling recognizers as if the recognizer were
+    /// never there.
+    ///
+    // SAFETY: `NSObject` has no subclassing requirements; the class holds a
+    // main-thread closure and does not implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[name = "CocoaUiGestureGate"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = GateIvars]
+    struct Gate;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject` subclass.
+    unsafe impl NSObjectProtocol for Gate {}
+
+    // SAFETY: `gestureRecognizerShouldBegin:` has the signature
+    // `NSGestureRecognizerDelegate` declares.
+    unsafe impl NSGestureRecognizerDelegate for Gate {
+        #[unsafe(method(gestureRecognizerShouldBegin:))]
+        fn should_begin(&self, recognizer: &NSGestureRecognizer) -> bool {
+            guarded("CocoaUiGestureGate gestureRecognizerShouldBegin:", || {
+                (self.ivars().gate)(recognizer)
+            })
+        }
+    }
+);
+
+impl Gate {
+    fn new(mtm: MainThreadMarker, gate: GateHandler) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(GateIvars { gate });
+        // SAFETY: `init` is `NSObject`'s designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+impl fmt::Debug for Gate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Gate").finish_non_exhaustive()
+    }
+}
+
 /// A recognizer attached to a view, together with the target that owns its
 /// handler.
 ///
@@ -106,6 +158,9 @@ impl fmt::Debug for Target {
 pub struct GestureAttachment {
     target: Retained<Target>,
     recognizer: Weak<NSGestureRecognizer>,
+    /// The should-begin gate a gated recognizer carries: the recognizer's
+    /// `delegate` is weak, so the attachment owns it.
+    gate: Option<Retained<Gate>>,
 }
 
 impl GestureAttachment {
@@ -131,6 +186,15 @@ impl Drop for GestureAttachment {
                 recognizer.setTarget(None);
                 recognizer.setAction(None);
             }
+        }
+        let ours = recognizer.delegate().is_some_and(|delegate| {
+            self.gate
+                .as_ref()
+                .is_some_and(|gate| Retained::as_ptr(&delegate) == Retained::as_ptr(gate).cast())
+        });
+        if ours {
+            // Clearing the delegate this attachment installed.
+            recognizer.setDelegate(None);
         }
     }
 }
@@ -166,7 +230,47 @@ where
     GestureAttachment {
         target,
         recognizer: Weak::new(&recognizer),
+        gate: None,
     }
+}
+
+/// A click recognizer on `view` that begins only when `gate` accepts the
+/// recognition.
+///
+/// The gate runs in `gestureRecognizerShouldBegin:`, where `locationInView:`
+/// already answers the click point. A click it declines fails the
+/// recognizer, letting the event reach ancestor recognizers and
+/// the view hierarchy as if this recognizer were not there.
+///
+/// # Panics
+///
+/// If the gate delegate is asked about a recognizer other than the
+/// `NSClickGestureRecognizer` this function installs it on.
+pub fn click_gated(
+    view: &NSView,
+    clicks: usize,
+    buttons: ButtonMask,
+    gate: impl Fn(&NSClickGestureRecognizer) -> bool + 'static,
+    handler: impl Fn(GestureState, &NSClickGestureRecognizer) + 'static,
+) -> GestureAttachment {
+    let mtm = view.mtm();
+    let recognizer = NSClickGestureRecognizer::new(mtm);
+    recognizer.setNumberOfClicksRequired(clicks.max(1).cast_signed());
+    recognizer.setButtonMask(usize::from(buttons.bits()));
+    let gate = Gate::new(
+        mtm,
+        Rc::new(move |recognizer| {
+            gate(
+                recognizer
+                    .downcast_ref::<NSClickGestureRecognizer>()
+                    .expect("the recognizer is the class this constructor built"),
+            )
+        }),
+    );
+    recognizer.setDelegate(Some(ProtocolObject::from_ref(&*gate)));
+    let mut attachment = attach(view, recognizer, handler);
+    attachment.gate = Some(gate);
+    attachment
 }
 
 /// A click recognizer on `view`: `clicks` consecutive presses (at least one)

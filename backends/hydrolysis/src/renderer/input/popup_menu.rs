@@ -67,11 +67,10 @@ pub fn window_in_opening_environment(mut window: Window, env: &Environment) -> W
     window
 }
 
-#[derive(Clone)]
-pub struct ContextMenuTarget {
+pub struct ContextMenuTarget<E: crate::text::TextEngine> {
     pub(crate) bounds: kurbo::Rect,
     /// The node cell that registered the target.
-    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
     pub(crate) depth: usize,
     pub(crate) order: usize,
     pub(crate) items: nami::Computed<Vec<ResolvedMenuItem>>,
@@ -84,10 +83,10 @@ pub struct ContextMenuTarget {
     /// The view the owning node lends the open presentation to lift over the
     /// dimmed backdrop at `bounds`; `None` content means the source view stays
     /// lit through the backdrop's hole instead.
-    pub(crate) preview: Rc<RefCell<Option<RetainedSubview>>>,
+    pub(crate) preview: Rc<RefCell<Option<RetainedSubview<E>>>>,
     /// The interactive accessory the owning node lends the open presentation
     /// to anchor to the lifted preview. Returned to the slot on close.
-    pub accessory: Rc<RefCell<Option<RetainedSubview>>>,
+    pub accessory: Rc<RefCell<Option<RetainedSubview<E>>>>,
 }
 
 #[derive(Clone)]
@@ -118,13 +117,12 @@ pub enum PopupMenuNode {
 #[derive(Clone)]
 pub struct PopupMenuStateGroup(pub Rc<RefCell<Vec<Binding<WindowState>>>>);
 
-#[derive(Default)]
-pub struct PopupMenuState {
+pub struct PopupMenuState<E: crate::text::TextEngine> {
     pub active_popup_menu_group: Option<PopupMenuStateGroup>,
     /// The drawn presentation around an open `.context_menu` popup — dimmed
     /// backdrop, lifted preview and anchored accessory. `None` when the active
     /// menu was not opened from a context-menu target or carries no preview.
-    pub(crate) context_menu_presentation: Option<ContextMenuPresentation>,
+    pub(crate) context_menu_presentation: Option<ContextMenuPresentation<E>>,
     /// Open/closed handles for the picker menus currently in the render tree, each
     /// owned by its picker node. This is only a registry for "dismiss every menu"
     /// (outside click) — it is Rc-pruned, never flush-order-indexed, so a dropped
@@ -133,18 +131,18 @@ pub struct PopupMenuState {
     /// The anchored overlays this frame's flush registered — each anchor's live
     /// hit-space bounds, placement and handles. The post-flush
     /// `render_anchored_overlays` drains it.
-    pub(crate) anchored_overlays: Vec<RegisteredAnchoredOverlay>,
+    pub(crate) anchored_overlays: Vec<RegisteredAnchoredOverlay<E>>,
     /// The anchored overlays drawn this frame — bounds, dismissal mode and
     /// binding — for the pointer-down outside-interaction dismissal and the
     /// anchor-left-the-tree close.
-    pub(crate) presented_anchored_overlays: Vec<PresentedAnchoredOverlay>,
+    pub(crate) presented_anchored_overlays: Vec<PresentedAnchoredOverlay<E>>,
     /// The window's open `.dialog` presentations in presentation order —
     /// which one is on screen, which wait, and which closed with their node.
     pub(crate) dialog_stack: DialogStack,
     /// The front dialog this frame's flush registered — its modal
     /// environment and retained layer content. The post-flush
     /// `render_dialogs` takes it.
-    pub(crate) front_dialog: Option<RegisteredDialog>,
+    pub(crate) front_dialog: Option<RegisteredDialog<E>>,
 }
 
 #[derive(Clone)]
@@ -163,7 +161,7 @@ pub struct PickerMenuRequest {
     pub(crate) selected: Id,
 }
 
-impl PopupMenuState {
+impl<E: crate::text::TextEngine> PopupMenuState<E> {
     /// Register a picker node's open handle for "dismiss every menu". Prunes handles
     /// of dropped pickers (the registry is then their only holder) and deduplicates,
     /// so a node re-registering its handle on every flush is idempotent.
@@ -321,10 +319,9 @@ pub fn popup_menu_size(
 }
 
 /// A menu command row: a borderless `Button` that closes the menu group and
-/// runs the command on press. A `disabled` row draws its label at Material's
-/// disabled contrast — on-surface at 38% opacity, which here is the menu's
-/// `Foreground` token at 0.38 — while its press stays inert (the action's
-/// early return also gates it).
+/// runs the command on press. A `disabled` row draws its label in the
+/// `DisabledForeground` token while its press stays inert (the action's early
+/// return also gates it).
 fn popup_menu_command_row(
     label: SemanticLabel,
     action: SharedAction<()>,
@@ -340,9 +337,7 @@ fn popup_menu_command_row(
         },
     );
     if disabled {
-        AnyView::new(
-            button.foreground(Color::new(waterui::theme::color::Foreground).with_opacity(0.38)),
-        )
+        AnyView::new(button.foreground(Color::new(waterui::theme::color::DisabledForeground)))
     } else {
         AnyView::new(button)
     }
@@ -351,8 +346,8 @@ fn popup_menu_command_row(
 /// A row's trailing shortcut hint in the theme's menu-label treatment: the
 /// borderless-button label font the row's own label resolves through
 /// [`crate::theme::WidgetTheme::button_label_font`] — label-large in the
-/// Material mapping — over the muted (on-surface-variant) colour, dimmed
-/// with the row's label when the command is disabled. The drawn row and
+/// Material mapping — over the muted (on-surface-variant) colour, in the
+/// disabled colour with the row's label when the command is disabled. The drawn row and
 /// [`SemanticCore::popup_menu_text_metrics`] share it so the two cannot
 /// drift (water-rs/hydrolysis#247).
 fn shortcut_hint_styled(
@@ -361,11 +356,10 @@ fn shortcut_hint_styled(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> StyledStr {
     let mut styled = StyledStr::plain(shortcut.to_string()).foreground({
-        let color = Color::new(waterui::theme::color::MutedForeground);
         if disabled {
-            color.with_opacity(0.38)
+            Color::new(waterui::theme::color::DisabledForeground)
         } else {
-            color
+            Color::new(waterui::theme::color::MutedForeground)
         }
     });
     if let Some(font) = theme.button_label_font(ButtonStyle::Borderless) {
@@ -1138,7 +1132,7 @@ pub fn date_picker_window(
     (popup, state)
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) const fn active_popup_menu_visible(&self) -> bool {
         self.popup_menu.active_popup_menu_group.is_some()
     }
@@ -1225,7 +1219,7 @@ impl SemanticCore {
         &self,
         point: kurbo::Point,
         rect: kurbo::Rect,
-    ) -> Option<ContextMenuTarget> {
+    ) -> Option<ContextMenuTarget<E>> {
         self.hit_test
             .context_menu_targets
             .iter()
@@ -1248,7 +1242,7 @@ impl SemanticCore {
     pub(crate) fn topmost_context_menu_target_at_point(
         &self,
         point: kurbo::Point,
-    ) -> Option<ContextMenuTarget> {
+    ) -> Option<ContextMenuTarget<E>> {
         self.hit_test
             .context_menu_targets
             .iter()
@@ -1289,7 +1283,7 @@ impl SemanticCore {
         let mut max_row_text_width = 0.0_f64;
         let mut max_hint_width = 0.0_f64;
         for node in nodes {
-            let mut consider = |state: &mut HydroState, styled: StyledStr| {
+            let mut consider = |state: &mut HydroState<E>, styled: StyledStr| {
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 max_row_text_width = max_row_text_width.max(f64::from(size.width));
             };
@@ -1550,8 +1544,8 @@ impl SemanticCore {
         items: nami::Computed<Vec<ResolvedMenuItem>>,
         env: &Environment,
         dismiss_requests: nami::Computed<i32>,
-        preview: Rc<RefCell<Option<RetainedSubview>>>,
-        accessory: Rc<RefCell<Option<RetainedSubview>>>,
+        preview: Rc<RefCell<Option<RetainedSubview<E>>>>,
+        accessory: Rc<RefCell<Option<RetainedSubview<E>>>>,
     ) {
         self.register_context_menu_target_data(
             bounds,
@@ -1572,8 +1566,8 @@ impl SemanticCore {
         depth: usize,
         env: &Environment,
         dismiss_requests: nami::Computed<i32>,
-        preview: Rc<RefCell<Option<RetainedSubview>>>,
-        accessory: Rc<RefCell<Option<RetainedSubview>>>,
+        preview: Rc<RefCell<Option<RetainedSubview<E>>>>,
+        accessory: Rc<RefCell<Option<RetainedSubview<E>>>>,
     ) {
         self.register_retained(
             ContextMenuTarget {
@@ -1590,5 +1584,35 @@ impl SemanticCore {
             bounds,
             |regs| &mut regs.context_menu_targets,
         );
+    }
+}
+
+impl<E: crate::text::TextEngine> Default for PopupMenuState<E> {
+    fn default() -> Self {
+        Self {
+            active_popup_menu_group: Option::default(),
+            context_menu_presentation: Option::default(),
+            node_picker_menus: Vec::default(),
+            anchored_overlays: Vec::default(),
+            presented_anchored_overlays: Vec::default(),
+            dialog_stack: DialogStack::default(),
+            front_dialog: Option::default(),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for ContextMenuTarget<E> {
+    fn clone(&self) -> Self {
+        Self {
+            bounds: self.bounds,
+            owner: self.owner.clone(),
+            depth: self.depth,
+            order: self.order,
+            items: self.items.clone(),
+            env: self.env.clone(),
+            dismiss_requests: self.dismiss_requests.clone(),
+            preview: self.preview.clone(),
+            accessory: self.accessory.clone(),
+        }
     }
 }

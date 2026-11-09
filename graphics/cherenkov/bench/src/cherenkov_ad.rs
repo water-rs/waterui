@@ -561,6 +561,9 @@ pub struct Cherenkov {
     alloc_diag: Option<cherenkov_gpu::diag::Sink>,
     /// The #2547 composition attribution sink; `None` in timed runs.
     composition_diag: Option<cherenkov_gpu::composition::Sink>,
+    /// The frame the last submit rendered and whether it drew anything,
+    /// until [`Engine::completion`] arms its signal.
+    awaiting_completion: Option<u64>,
 }
 
 /// `--present` state: the engine runs on a bench-owned shared device so a
@@ -1778,6 +1781,7 @@ impl Cherenkov {
             present: None,
             alloc_diag,
             composition_diag,
+            awaiting_completion: None,
         })
     }
 }
@@ -1988,6 +1992,7 @@ impl Engine for Cherenkov {
         )?;
         let stats = self.engine.stats();
         let render_seconds = render_at.elapsed().as_secs_f64();
+        self.awaiting_completion = Some(frame);
         let readback_at = std::time::Instant::now();
         let image = if !readback {
             None
@@ -2022,6 +2027,23 @@ impl Engine for Cherenkov {
         })
     }
 
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(crate::Completion::WGPU_SIGNAL)
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        self.awaiting_completion.take().ok_or_else(|| {
+            BenchError::Engine("cherenkov: completion requested without a submitted frame".into())
+        })?;
+        // For changed content this waits for the frame's last submission.
+        // An unchanged frame reuses the existing image: it still depends on
+        // any earlier work producing that image, but has no new GPU timing.
+        // The queue callback observes readiness in both cases.
+        Ok(Some(crate::Completion::on_submitted_work_done(
+            &self.shared_device.queue,
+        )))
+    }
+
     fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
         // finish_timings only waits for submissions that carry queries.
         // Completion must also be guaranteed when GPU timing is disabled.
@@ -2046,15 +2068,16 @@ impl Engine for Cherenkov {
     fn counters(&self) -> Counters {
         let mut counters = self.counters.clone();
         let stats = self.engine.stats();
-        let memory = self.engine.memory();
         counters.dispatches = Some(stats.draws);
         counters.passes = Some(stats.passes);
-        counters.memory_gpu_bytes = Some(memory.gpu.0);
-        counters.memory_cpu_bytes = Some(memory.cpu.0);
-        counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
-        counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
-        counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
-        counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        if let Ok(memory) = self.engine.memory() {
+            counters.memory_gpu_bytes = Some(memory.gpu.0);
+            counters.memory_cpu_bytes = Some(memory.cpu.0);
+            counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
+            counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
+            counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
+            counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        }
         counters
     }
 
@@ -2082,13 +2105,18 @@ impl Engine for Cherenkov {
         let usage = self.engine.memory();
         let adapter_info = self.shared_device.adapter.get_info();
         AdapterMemory {
-            engine: Reading::Measured(EngineBytes {
-                cpu_bytes: usage.cpu.0,
-                gpu_bytes: usage.gpu.0,
-                backdrop_capture_bytes: usage.backdrop_captures.0,
-                filter_target_bytes: usage.filter_targets.0,
-                filter_image_bytes: usage.filter_images.0,
-            }),
+            engine: usage.map_or_else(
+                |error| Reading::unavailable(error.to_string()),
+                |usage| {
+                    Reading::Measured(EngineBytes {
+                        cpu_bytes: usage.cpu.0,
+                        gpu_bytes: usage.gpu.0,
+                        backdrop_capture_bytes: usage.backdrop_captures.0,
+                        filter_target_bytes: usage.filter_targets.0,
+                        filter_image_bytes: usage.filter_images.0,
+                    })
+                },
+            ),
             wgpu_allocator: wgpu_allocator(&self.shared_device.device, adapter_info.backend),
             skia_budgeted: Reading::unavailable("not a Skia adapter"),
             vk_memory_budget: wgpu_vk_memory_budget(

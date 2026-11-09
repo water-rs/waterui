@@ -19,7 +19,6 @@ use waterui_core::{Environment, Native};
 
 use crate::platform_view::{
     PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
-    next_platform_view_id,
 };
 use crate::renderer::{
     HydroNativeView, HydroState, WidgetRenderContext, graphics_dimensions_from_proposal,
@@ -69,10 +68,11 @@ impl PlatformViewRenderState {
     }
 
     pub fn from_config(view: &PlatformView, env: &Environment) -> Self {
+        let sink = Self::sink_from(env);
         Self {
-            id: next_platform_view_id(),
+            id: sink.next_id(),
             source: PlacementSource::Factory(view.kind().into()),
-            sink: Self::sink_from(env),
+            sink,
         }
     }
 
@@ -83,20 +83,21 @@ impl PlatformViewRenderState {
     /// Only the Android system-WebView bridge creates these today.
     #[cfg(hydrolysis_android_system_webview)]
     pub fn from_instance(instance: u64, owner: Rc<dyn core::any::Any>, env: &Environment) -> Self {
+        let sink = Self::sink_from(env);
         Self {
-            id: next_platform_view_id(),
+            id: sink.next_id(),
             source: PlacementSource::Instance {
                 id: instance,
                 _owner: owner,
             },
-            sink: Self::sink_from(env),
+            sink,
         }
     }
 }
 
-impl HydroNativeView for Native<PlatformView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<PlatformView> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -105,7 +106,7 @@ impl HydroNativeView for Native<PlatformView> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -117,10 +118,10 @@ impl HydroNativeView for Native<PlatformView> {
 
 /// Measures a platform-view leaf: it fills the proposal — the mounted child
 /// takes whatever the layout assigned.
-pub fn measure_platform_view_node(
+pub fn measure_platform_view_node<E: crate::text::TextEngine>(
     state: &PlatformViewRenderState,
     proposal: ProposalSize,
-    hydro: &mut HydroState,
+    hydro: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -133,8 +134,8 @@ pub fn measure_platform_view_node(
 /// paint order the host stacks embedded children by. The sink republishes the
 /// set once the frame's encode completes, so a frame that never re-flushes
 /// keeps the previous placements.
-pub fn render_platform_view_node(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_platform_view_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<PlatformViewRenderState>>,
     env: &Environment,
 ) {
@@ -147,16 +148,6 @@ pub fn render_platform_view_node(
     ctx.renderer_mut().register_platform_view_placement(
         local_bounds,
         Rc::clone(&state.sink.table),
-        PlatformViewPlacement {
-            id: state.id,
-            source: state.source.wire(),
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 0.0,
-            clip: None,
-            order: 0,
-            visible: false,
-        },
+        PlatformViewPlacement::new(state.id, state.source.wire()),
     );
 }

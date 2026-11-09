@@ -11,17 +11,26 @@
 use std::fmt;
 
 use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSColor, NSView};
 use objc2_core_foundation::CGRect;
 use objc2_foundation::NSObjectProtocol;
 
-/// A [`ColorView`] carries no state beyond its layer's background color.
-pub struct ColorViewIvars {}
+use crate::callback::guarded;
+use crate::response::{ReportsResponse, ResponseGeometry};
+
+/// A [`ColorView`] carries its leaf geometry beyond its layer's background
+/// color.
+pub struct ColorViewIvars {
+    /// How the view was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
+}
 
 impl fmt::Debug for ColorViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ColorViewIvars").finish_non_exhaustive()
+        f.debug_struct("ColorViewIvars")
+            .field("geometry", &self.geometry)
+            .finish()
     }
 }
 
@@ -56,14 +65,44 @@ define_class!(
         fn is_fill_override(&self) -> bool {
             true
         }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(layout))]
+        fn layout_override(&self) {
+            guarded("ColorView layout", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layout] };
+                self.ivars().geometry.commit(self);
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("ColorView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
+        }
     }
 );
+
+impl ReportsResponse for ColorView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
 
 impl ColorView {
     /// A color fill view with no color set yet.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ColorViewIvars {});
+        let this = Self::alloc(mtm).set_ivars(ColorViewIvars {
+            geometry: ResponseGeometry::default(),
+        });
         // SAFETY: `initWithFrame:` is `NSView`'s designated initializer.
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
         view.setWantsLayer(true);

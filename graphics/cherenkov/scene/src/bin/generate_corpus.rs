@@ -1019,16 +1019,6 @@ fn sparse_bounds_slivers(bound_w: f64, bound_h: f64, count: u32, width: f64) -> 
     p
 }
 
-/// The largest singular value of `transform`'s linear part, as the engine's
-/// `path::sigma_max` computes it.
-fn sigma_max(transform: Affine) -> f64 {
-    let [a, b, c, d, _, _] = transform.as_coeffs();
-    let sum = a.mul_add(a, b * b) + c.mul_add(c, d * d);
-    let det = a.mul_add(d, -(b * c));
-    sum.midpoint(sum.mul_add(sum, (-4.0 * det) * det).sqrt())
-        .sqrt()
-}
-
 /// A lower bound on the chords a compute stroker emits for `stroke` of
 /// `path` at the user tolerance `tol`: one per side for every centreline
 /// element, after dashing, that kurbo's stroker does not skip as
@@ -1115,7 +1105,7 @@ fn encoder_chords_min(path: &BezPath, stroke: &cherenkov_scene::kurbo::Stroke, t
 /// ([`encoder_chords_min`]), which is what `prefers_gpu`'s segment floor
 /// reads once strokes are expanded in compute.
 ///
-/// Expansion runs in user space at `FLATTEN / sigma_max(transform)`, the
+/// Expansion runs in user space at `FLATTEN / transform.spectral_norm()`, the
 /// engine's user tolerance. Nothing here is written to the scene tree; it
 /// keeps the numbers quoted in the scene comments checkable by rerunning
 /// the generator.
@@ -1136,7 +1126,7 @@ fn log_route_inputs(
     /// segments and to the grid's pixel count.
     const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
-    let tol = FLATTEN / sigma_max(transform);
+    let tol = FLATTEN / transform.spectral_norm();
 
     let mut outline = stroke.map_or_else(
         || path.clone(),
@@ -6395,40 +6385,53 @@ fn run(root: &Path) -> Result<(), SceneError> {
         );
     }
 
-    // Effects page: 20 shadowed cards under a group-opacity layer.
+    // Effects page: 20 shadowed cards under a group-opacity group that
+    // composites in sRGB-encoded space — its shadows, card bodies and
+    // translucent insets blend with each other encoded, and the group
+    // composites onto the background encoded (#3346). Encoded sRGB is the
+    // one blend space every compared engine composites in through its
+    // own API: Vello has no linear compositing, so a linear effects page
+    // would compare different images.
     {
         perf.scene("effects", pw, ph, srgb(0.98, 0.97, 0.96), |l| {
-            l.layer(|group| {
-                group.opacity(0.82);
-                for i in 0u8..20 {
-                    let (col, row) = (i % 4, i / 4);
-                    let (x, y) = (32.0 + f64::from(col) * 250.0, 48.0 + f64::from(row) * 420.0);
-                    let card = RoundedRect::from_rect(
-                        Rect::new(x, y, x + 226.0, y + 380.0),
-                        RoundedRectRadii::new(20.0, 20.0, 20.0, 20.0),
-                    );
-                    group.shadow(
-                        Shape::RoundedRect(card),
-                        12.0,
-                        [0.0, 10.0],
-                        srgba(0.15, 0.1, 0.3, 0.35),
-                    );
-                    group.fill(
-                        Shape::RoundedRect(card),
-                        solid(srgb(
-                            0.55 + 0.05 * f32::from(col),
-                            0.35 + 0.03 * f32::from(row),
-                            0.75,
-                        )),
-                    );
-                    group.fill(
-                        Shape::RoundedRect(RoundedRect::from_rect(
-                            Rect::new(x + 20.0, y + 24.0, x + 206.0, y + 120.0),
-                            RoundedRectRadii::new(10.0, 10.0, 10.0, 10.0),
-                        )),
-                        solid(srgba(1.0, 1.0, 1.0, 0.6)),
-                    );
-                }
+            let mut items = Vec::with_capacity(60);
+            for i in 0u8..20 {
+                let (col, row) = (i % 4, i / 4);
+                let (x, y) = (32.0 + f64::from(col) * 250.0, 48.0 + f64::from(row) * 420.0);
+                let card = RoundedRect::from_rect(
+                    Rect::new(x, y, x + 226.0, y + 380.0),
+                    RoundedRectRadii::new(20.0, 20.0, 20.0, 20.0),
+                );
+                items.push(GroupItem::Draw(Draw::Shadow {
+                    shape: Shape::RoundedRect(card),
+                    blur_sigma: 12.0,
+                    offset: [0.0, 10.0],
+                    color: srgba(0.15, 0.1, 0.3, 0.35),
+                }));
+                items.push(GroupItem::Draw(Draw::Fill {
+                    shape: Shape::RoundedRect(card),
+                    rule: FillRule::NonZero,
+                    paint: solid(srgb(
+                        0.55 + 0.05 * f32::from(col),
+                        0.35 + 0.03 * f32::from(row),
+                        0.75,
+                    )),
+                }));
+                items.push(GroupItem::Draw(Draw::Fill {
+                    shape: Shape::RoundedRect(RoundedRect::from_rect(
+                        Rect::new(x + 20.0, y + 24.0, x + 206.0, y + 120.0),
+                        RoundedRectRadii::new(10.0, 10.0, 10.0, 10.0),
+                    )),
+                    rule: FillRule::NonZero,
+                    paint: solid(srgba(1.0, 1.0, 1.0, 0.6)),
+                }));
+            }
+            l.group(Group {
+                items,
+                opacity: 0.82,
+                blend: BlendMode::Normal,
+                blend_space: BlendSpace::SrgbEncoded,
+                filter: None,
             });
         });
     }

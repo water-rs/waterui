@@ -26,6 +26,19 @@ pub trait Filter: 'static {
     /// [`Filter::visit_images`].
     const IMAGES: usize = 0;
 
+    /// Whether the filter is a pure coordinate remap: the output at a
+    /// position is the input sampled at a position that depends on the
+    /// position and the parameters alone, never on the input's contents
+    /// (a warp, a stretch, a displacement by parameters).
+    ///
+    /// Such a filter commutes with source-over compositing up to the
+    /// sampler's edge filtering, `F(a over b) = F(a) over F(b)`, so a group
+    /// may be filtered in disjoint paint-order parts that are composed in
+    /// order. A filter that mixes neighbouring texels by weights (a blur),
+    /// reads the input's colours to decide its result, or shifts colours
+    /// is not a remap. A chain is a remap when both halves are.
+    const COORDINATE_REMAP: bool = false;
+
     /// Snapshots the current parameter values.
     fn params(&self) -> Self::Params;
 
@@ -164,6 +177,7 @@ impl<A: Filter, B: Filter> Filter for Chain<A, B> {
     type Kind = <A::Kind as Kind>::Then<B::Kind>;
     type Params = (A::Params, B::Params);
     const IMAGES: usize = A::IMAGES + B::IMAGES;
+    const COORDINATE_REMAP: bool = A::COORDINATE_REMAP && B::COORDINATE_REMAP;
 
     #[inline]
     fn params(&self) -> Self::Params {
@@ -402,6 +416,28 @@ mod tests {
             <Chain<Tint, Clamp> as CpuFilter>::cpu_footprint(&color_color.params()),
             Footprint::ZERO
         );
+    }
+
+    struct Warp;
+    impl Filter for Warp {
+        type Kind = kind::Spatial;
+        type Params = [f32; 0];
+        const COORDINATE_REMAP: bool = true;
+
+        fn params(&self) -> [f32; 0] {
+            []
+        }
+        fn collect_stages<C: StageCollector>(&self, _: &mut C) {}
+    }
+
+    #[test]
+    fn a_chain_is_a_coordinate_remap_when_both_halves_are() {
+        const { assert!(Warp::COORDINATE_REMAP) };
+        const { assert!(<Chain<Warp, Warp>>::COORDINATE_REMAP) };
+        const { assert!(!Spread::COORDINATE_REMAP) };
+        const { assert!(!Tint::COORDINATE_REMAP) };
+        const { assert!(!<Chain<Warp, Spread>>::COORDINATE_REMAP) };
+        const { assert!(!<Chain<Tint, Warp>>::COORDINATE_REMAP) };
     }
 
     #[test]

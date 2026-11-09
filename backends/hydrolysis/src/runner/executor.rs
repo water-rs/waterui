@@ -17,6 +17,7 @@ use executor_core::LocalExecutor;
 use executor_core::async_task::{AsyncTask, Runnable};
 
 #[derive(Clone, Debug)]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct HeadlessMainThreadExecutor {
     runnable_tx: mpsc::Sender<Runnable>,
     runnable_rx: Rc<mpsc::Receiver<Runnable>>,
@@ -61,9 +62,11 @@ thread_local! {
     /// queue — never drained, and dropped only during thread-local teardown,
     /// where dropping a future whose destructor touches other thread-locals
     /// aborts the process.
+#[cfg(hydrolysis_gpu_painter)]
     static THREAD_EXECUTOR: HeadlessMainThreadExecutor = HeadlessMainThreadExecutor::new();
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl HeadlessMainThreadExecutor {
     fn new() -> Self {
         let (runnable_tx, runnable_rx) = mpsc::channel();
@@ -152,6 +155,7 @@ impl HeadlessMainThreadExecutor {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl LocalExecutor for HeadlessMainThreadExecutor {
     type Task<T: 'static> = AsyncTask<T>;
 
@@ -203,8 +207,10 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
 /// runtime's drop therefore closes the queue and drains it to quiescence
 /// while this thread's locals are still alive.
 #[derive(Debug)]
+#[cfg(hydrolysis_gpu_painter)]
 pub(super) struct DrainExecutorOnDrop(HeadlessMainThreadExecutor);
 
+#[cfg(hydrolysis_gpu_painter)]
 impl DrainExecutorOnDrop {
     pub(super) fn new(executor: HeadlessMainThreadExecutor) -> Self {
         executor.owners.set(executor.owners.get() + 1);
@@ -216,6 +222,7 @@ impl DrainExecutorOnDrop {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl Drop for DrainExecutorOnDrop {
     fn drop(&mut self) {
         let remaining = self.0.owners.get() - 1;

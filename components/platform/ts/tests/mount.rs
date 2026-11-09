@@ -290,10 +290,11 @@ fn ts_the_mount_metadata_reaches_the_test_executable() {
     let bytes = artifact::meta_static("waterui_meta_tsx_tests_fixtures_promo_tsx");
     let mount = decode_mount(&bytes).expect("the mount payload decodes");
 
-    assert_eq!(mount.module, MODULE);
+    assert_eq!(mount.module(), MODULE);
     assert_eq!(
-        mount.props, "PromoProps",
+        mount.props(),
+        "PromoProps",
         "the props name comes from the type's resolved schema"
     );
-    assert_eq!(mount.contract_hash, PromoProps::CONTRACT_HASH);
+    assert_eq!(mount.contract_hash(), PromoProps::CONTRACT_HASH);
 }

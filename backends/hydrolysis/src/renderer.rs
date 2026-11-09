@@ -62,7 +62,9 @@ use mount::{HitClasses, HitGate, ScopeDelta};
 pub use native_measure::*;
 #[cfg(test)]
 pub use recording::assert_well_formed_image;
-pub use recording::{Glyph, GlyphRun, Recording, working_color};
+#[cfg(hydrolysis_gpu_painter)]
+pub use recording::{Glyph, GlyphRun};
+pub use recording::{Recording, working_color};
 pub use tree::safe_area::{
     ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
 };
@@ -85,7 +87,9 @@ pub use interaction_layers::*;
 pub use lifecycle::lazy;
 pub use lifecycle::*;
 pub use navigation::*;
+#[cfg(hydrolysis_gpu_painter)]
 pub use render::FrameRenderTarget;
+#[cfg(hydrolysis_gpu_painter)]
 pub use render::HydrolysisRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
@@ -101,6 +105,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
+#[cfg(hydrolysis_gpu_painter)]
 use std::sync::Arc;
 
 #[cfg(feature = "accessibility")]
@@ -117,8 +122,9 @@ use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 use waterui::accessibility::{
-    AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier, AccessibilityLabel,
-    AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
+    AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden, AccessibilityIdentifier,
+    AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+    AccessibilityValue,
 };
 use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground, MaterialGroup};
@@ -176,8 +182,11 @@ use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::Color;
 use waterui_graphics::draw::{Paint, WorkingColor};
+#[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
-use waterui_graphics::{ExternalFrameView, FilteredView, GpuContentView, Gradient, SceneView};
+#[cfg(hydrolysis_gpu)]
+use waterui_graphics::{ExternalFrameView, GpuContentView};
+use waterui_graphics::{FilteredView, Gradient, SceneView};
 
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
@@ -201,7 +210,8 @@ use crate::platform::{
 };
 #[cfg(feature = "accessibility")]
 use crate::scroll::ScrollHandle;
-use crate::text::SessionTextEngine;
+#[cfg(test)]
+use crate::text::ParleyEngine;
 use crate::theme::{
     RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
 };
@@ -240,9 +250,9 @@ pub enum ReaderPhase {
 }
 
 /// The node a signal read attributes to while `f` runs.
-pub struct Reader {
+pub struct Reader<E: crate::text::TextEngine> {
     /// The reading node's cell — watcher closures mark it on update.
-    pub(crate) cell: Rc<NodeCell>,
+    pub(crate) cell: Rc<NodeCell<E>>,
     /// The store the phase pushes watcher guards into: the node's
     /// `subscriptions` while it records, `layout_subscriptions` while it
     /// measures or lays out.
@@ -284,17 +294,81 @@ pub struct OutsideWatch {
 
 /// Slot-owner attribution for the animation controller: the cell a slot's
 /// tick marks and the [`Dirty`] it raises.
-#[derive(Clone)]
-pub struct AnimationOwner {
+pub struct AnimationOwner<E: crate::text::TextEngine> {
     /// The cell marked while the slot is active.
-    pub(crate) cell: Weak<NodeCell>,
+    pub(crate) cell: Weak<NodeCell<E>>,
     /// The dirty bit the slot raises.
     pub(crate) dirty: Dirty,
+}
+
+/// A wake a host hands the renderer once so producers can request the next
+/// frame. `Arc<dyn Fn>` on purpose: the channel is painter-neutral — the
+/// HWUI host's `content_redraw_handle` and a GPU surface's `RedrawHandle`
+/// install the same shape — so the producer path never names an engine
+/// crate.
+#[derive(Clone)]
+pub struct HostRedraw(std::sync::Arc<dyn Fn() + Send + Sync>);
+
+impl std::fmt::Debug for HostRedraw {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostRedraw")
+    }
+}
+
+impl HostRedraw {
+    /// A handle that runs `wake` on every request.
+    pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(wake))
+    }
+
+    /// Asks the host for another frame.
+    pub fn request_redraw(&self) {
+        (self.0)();
+    }
+}
+
+/// A GPU surface's `RedrawHandle` installs the same channel.
+#[cfg(hydrolysis_gpu)]
+impl From<RedrawHandle> for HostRedraw {
+    fn from(handle: RedrawHandle) -> Self {
+        Self::new(move || handle.request_redraw())
+    }
+}
+
+/// The frame pump's scheduling answer from the last presented frame —
+/// the painter's `Next` carried without naming the engine crate, so the
+/// shared runtime and the Android host read it under every painter.
+#[derive(Clone, Debug)]
+pub enum Next {
+    /// No animation is running; the display link may sleep.
+    Idle,
+    /// The next frame is wanted at `time`, at a refresh rate inside `rate`.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    At {
+        /// When the frame is wanted.
+        #[cfg_attr(not(any(target_os = "android", trybuild)), expect(dead_code))]
+        time: Instant,
+        /// The refresh-rate range the frame requests.
+        #[cfg_attr(not(any(target_os = "android", trybuild)), expect(dead_code))]
+        rate: cherenkov_record::RefreshRange,
+    },
+}
+
+/// The GPU painter's scheduling answer is the same shape.
+#[cfg(hydrolysis_gpu_painter)]
+impl From<cherenkov::Next> for Next {
+    fn from(next: cherenkov::Next) -> Self {
+        match next {
+            cherenkov::Next::Idle => Self::Idle,
+            cherenkov::Next::At { time, rate } => Self::At { time, rate },
+        }
+    }
 }
 
 /// A cross-thread wake handle for a GPU or external-frame producer: posts
 /// its `ProducerKey` through the renderer's wake channel and wakes the
 /// host, so the next frame update marks exactly the owning cell `PRODUCER`.
+#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
 #[derive(Clone)]
 pub struct ProducerWake {
     /// Identity of the owning cell (from the renderer's key counter).
@@ -303,7 +377,7 @@ pub struct ProducerWake {
     tx: std::sync::mpsc::Sender<ProducerKey>,
     /// The host wake (an engine surface's redraw handle), when the host
     /// provides one.
-    redraw: Option<RedrawHandle>,
+    redraw: Option<HostRedraw>,
 }
 
 impl std::fmt::Debug for ProducerWake {
@@ -314,6 +388,7 @@ impl std::fmt::Debug for ProducerWake {
 
 impl ProducerWake {
     /// Posts the producer key and wakes the host for a frame.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn request_redraw(&self) {
         // A producer thread can outlive the renderer at window close: a
         // closed channel means the owner is gone, so the post is a no-op.
@@ -333,22 +408,23 @@ impl ProducerWake {
 /// so a closed or re-recorded presentation's entries retire in O(its
 /// entries), and its placement slot keeps all presentation content ranked
 /// above the window's own.
-pub struct PresentationHosts {
+pub struct PresentationHosts<E: crate::text::TextEngine> {
     /// The overlay-mode text context menu's host.
-    pub(crate) text_overlay: NodeCore,
+    pub(crate) text_overlay: NodeCore<E>,
     /// The `.context_menu` presentation's host.
-    pub(crate) context_menu: NodeCore,
+    pub(crate) context_menu: NodeCore<E>,
     /// `.anchored_overlay` presentations' host.
-    pub(crate) anchored: NodeCore,
+    pub(crate) anchored: NodeCore<E>,
     /// The `.dialog` modal layer's host.
-    pub(crate) dialog: NodeCore,
+    pub(crate) dialog: NodeCore<E>,
 }
 
-impl PresentationHosts {
+impl<E: crate::text::TextEngine> PresentationHosts<E> {
     /// §F's teardown before a remount: every host subtree drops its
     /// `NodeLayers` with the outgoing engine window, each cell marked
     /// `PAINT|COMMIT` like [`RenderNode::unmount`] leaves the window's own
     /// tree.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn unmount(&self) {
         for host in [
             &self.text_overlay,
@@ -364,13 +440,26 @@ impl PresentationHosts {
 /// One platform-view sink record resolved at materialization: the table
 /// the placement publishes into plus the window-space frame and clip its
 /// paint chain computed — staged so `record` calls run once per frame in
-/// one frame-end step.
-pub struct MaterializedPlatformView {
+/// one frame-end step. `owner` and `local` carry the layer binding the
+/// HWUI portal needs: the retained node that emitted the view and the
+/// view's bounds in that node's local coordinates.
+pub struct MaterializedPlatformView<E: crate::text::TextEngine> {
     /// The sink table the view records into.
     pub(crate) table: Rc<RefCell<crate::platform_view::PlatformViewTable>>,
     /// The resolved placement (window-space frame, clip, paint-order
     /// rank, visibility).
     pub(crate) placement: crate::platform_view::PlatformViewPlacement,
+    /// The retained node that emitted the view.
+    #[cfg(any(test, hydrolysis_hwui))]
+    pub(crate) owner: Weak<crate::renderer::mount::NodeCell<E>>,
+    /// The view's bounds in `owner`'s local coordinates — the HWUI
+    /// portal's binding datum; the GPU band split needs only `owner`.
+    #[cfg(any(test, hydrolysis_hwui))]
+    pub(crate) local: kurbo::Rect,
+    /// `E` reaches the record only through `owner`; where neither painter
+    /// binds the node, the parameter is phantom.
+    #[cfg(not(any(test, hydrolysis_hwui)))]
+    _phantom: std::marker::PhantomData<fn() -> E>,
 }
 
 /// The GPU-free dispatch core: everything the retained view tree's build,
@@ -386,17 +475,17 @@ pub struct MaterializedPlatformView {
 ///
 /// `pub` only because `HydrolysisRenderer` dereferences to it — every member
 /// is crate-internal.
-pub struct SemanticCore {
-    state: HydroState,
-    hit_test: HitTestState,
+pub struct SemanticCore<E: crate::text::TextEngine> {
+    state: HydroState<E>,
+    hit_test: HitTestState<E>,
     gesture_engine: GestureEngine,
     gesture_group_ids: BTreeMap<usize, usize>,
     next_gesture_group_id: usize,
     /// Input targets, selection slots and pre-edit live here — `pub(crate)`
     /// because the runner's editing session and headless tests read them
     /// from outside the renderer module tree.
-    pub(crate) text_editing: TextEditingState,
-    popup_menu: PopupMenuState,
+    pub(crate) text_editing: TextEditingState<E>,
+    popup_menu: PopupMenuState<E>,
     /// The identity the runner gave the window this core renders — menu-chord
     /// dispatch scopes mounted `Menu` sources by it (water-rs/hydrolysis#247).
     /// Renderers no runner claimed — embedded GPU hosts, direct test
@@ -431,12 +520,12 @@ pub struct SemanticCore {
     animation_owner_pins: AnimationOwnerPins,
     frame_instant: Instant,
     pub(crate) lazy: LazyState,
-    pub(crate) navigation: NavigationState,
+    pub(crate) navigation: NavigationState<E>,
     #[cfg(feature = "accessibility")]
-    accessibility: AccessibilityBuilder,
+    accessibility: AccessibilityBuilder<E>,
     /// The persistent window render tree (`tree::RenderNode`), built on a structural
     /// rebuild and re-flushed each frame. `None` before the first build.
-    render_tree: Option<RenderNode>,
+    render_tree: Option<RenderNode<E>>,
     /// Content minimum measured after the most recent retained-tree update.
     /// Engine-only redraws do not change the window's layout constraints.
     content_minimum: Option<LayoutSize>,
@@ -469,31 +558,31 @@ pub struct SemanticCore {
     /// The window's root cell: the tree's root node and the presentation
     /// hosts attach to it. The pump reads `own|below` on it to see pending
     /// marks without walking the tree.
-    root: Rc<NodeCell>,
+    root: Rc<NodeCell<E>>,
     /// A second [`NodeCore`] naming the root cell — the pump wraps the
     /// window flush in its `Record` so registrations that arrive with no
     /// enclosing node (window-level payloads) still have a recording owner.
-    root_core: NodeCore,
+    root_core: NodeCore<E>,
     /// The presentation hosts — §D's host cells brought forward so each
     /// transient emit path owns its registrations: they retire when the
     /// host re-records or its presentation closes. Their placements sit
     /// under `window_placement` above the content root, in pump order.
-    presentation_hosts: PresentationHosts,
+    presentation_hosts: PresentationHosts<E>,
     /// Platform-view sink records staged at materialization — resolved
     /// window-space placements in paint order, consumed once by
     /// [`Self::record_platform_views`] at frame end rather than written
     /// mid-walk.
-    materialized_platform_views: Vec<MaterializedPlatformView>,
+    materialized_platform_views: Vec<MaterializedPlatformView<E>>,
     /// Epoch every placement in the window caches resolutions against;
     /// any placement write bumps it.
     placement_clock: Rc<PlacementClock>,
     /// The node currently recording or measuring, and the phase — signal
     /// reads inside attribute their watcher guards (and marks) to it.
-    reader: Option<Reader>,
+    reader: Option<Reader<E>>,
     /// Slot-owner attribution for the animation controller: a bound key
     /// maps to the cell that re-records when the slot advances, plus the
     /// [`Dirty`] it raises.
-    animation_owners: rustc_hash::FxHashMap<AnimationKey, AnimationOwner>,
+    animation_owners: rustc_hash::FxHashMap<AnimationKey, AnimationOwner<E>>,
     /// Identity-keyed subscriptions for reads no node owns (window-signal
     /// polls and driver reads outside a record or layout): one guard per
     /// signal identity, marking the root cell, kept only while the flush
@@ -524,7 +613,7 @@ pub struct SemanticCore {
     /// marks through this registry instead, pruning dead handles as it goes.
     /// Bridge state — the per-frame sweep over `cells` goes away with the
     /// dirty-guided descent (commit 4).
-    cells: RefCell<Vec<Weak<NodeCell>>>,
+    cells: RefCell<Vec<Weak<NodeCell<E>>>>,
     /// Producer wakes posted (possibly cross-thread) by GPU/external-frame
     /// content callbacks; the frame update drains them and marks the
     /// owning cells `PRODUCER`.
@@ -535,14 +624,14 @@ pub struct SemanticCore {
     /// Key counter for producer registrations.
     next_producer_key: Cell<u64>,
     /// Which cell each producer key reports to.
-    producer_owners: rustc_hash::FxHashMap<ProducerKey, std::rc::Weak<NodeCell>>,
+    producer_owners: rustc_hash::FxHashMap<ProducerKey, std::rc::Weak<NodeCell<E>>>,
     /// Owner cell address to its producer key: an owner re-binds the same
     /// key across re-installs so the map does not grow per frame.
     producer_keys_by_owner: rustc_hash::FxHashMap<usize, ProducerKey>,
     /// The retained registries every record emits into, owned per node
     /// and resolved through placements; `hit_test`'s flat lists are the
     /// materialized view consumers read.
-    retained: mount::RetainedRegistry,
+    retained: mount::RetainedRegistry<E>,
     /// The placement scopes the open clip scopes created —
     /// child placements of the placement they were pushed under.
     /// Registrations resolve through the top of the stack.
@@ -553,7 +642,7 @@ pub struct SemanticCore {
     /// `emit_owner` values saved across nested records, riding the same
     /// stack discipline as `saved_scope_stacks`.
     #[cfg(feature = "accessibility")]
-    saved_emit_owners: Vec<Weak<NodeCell>>,
+    saved_emit_owners: Vec<Weak<NodeCell<E>>>,
     /// The sequence the current record runs under — `enter_reader`
     /// bumps it; a registration's [`mount::PaintOrder`] carries it.
     record_seq: u64,
@@ -570,7 +659,7 @@ pub struct SemanticCore {
 // The state members are engine internals (gesture/hit-test/executor state)
 // with nothing useful to print; a name-only non-exhaustive form keeps the
 // impl honest.
-impl std::fmt::Debug for SemanticCore {
+impl<E: crate::text::TextEngine> std::fmt::Debug for SemanticCore<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SemanticCore").finish_non_exhaustive()
     }
@@ -578,8 +667,8 @@ impl std::fmt::Debug for SemanticCore {
 
 /// Core hydrolysis renderer state: a `SemanticCore` plus the GPU-side scene
 /// and surface state the layout/encode pass needs.
-pub struct HydrolysisRenderer {
-    core: SemanticCore,
+pub struct HydrolysisRenderer<E: crate::text::TextEngine> {
+    core: SemanticCore<E>,
     /// The widget theme the runtime's style supplies to layout and encode.
     /// Never installed into the environment: build and patch cannot reach it.
     theme: Rc<dyn crate::theme::WidgetTheme>,
@@ -596,30 +685,35 @@ pub struct HydrolysisRenderer {
     /// Wake target supplied when this renderer itself is hosted inside
     /// another GPU host. Renderer-owned redraws use it to wake the parent host
     /// without polling frames.
-    host_redraw_handle: Option<RedrawHandle>,
+    host_redraw_handle: Option<HostRedraw>,
     /// Engine window surfaces by GPU-context id: the `TextureTarget` surface,
     /// the stable mounts under it and the resource registrations its content
     /// names. Entries whose device was reported lost are pruned at the next
     /// presented frame.
+    #[cfg(hydrolysis_gpu_painter)]
     cherenkov_window:
-        Option<crate::renderer::render::CherenkovWindow<crate::engine::TextureCherenkovSurface>>,
+        Option<crate::renderer::render::CherenkovWindow<crate::engine::TextureCherenkovSurface, E>>,
     /// The engine work the last commit did, with the live mounted counts.
     last_mount_stats: mount::MountStats,
     /// The tests' [`MirrorTarget`](tests::mirror::MirrorTarget) mount.
     #[cfg(test)]
     mirror: Option<tests::mirror::MirrorWindow>,
     /// The node programs open while recording, innermost last (§C).
-    program: Vec<mount::ProgramBuilder>,
+    program: Vec<mount::ProgramBuilder<E>>,
     /// The engine's frame scheduling answer from the last presented frame.
     /// The pump follows it: `Next::Idle` means no animation is running and
     /// the display link may sleep.
-    engine_next: Option<cherenkov::Next>,
+    #[cfg(hydrolysis_gpu_painter)]
+    engine_next: Option<Next>,
     live_caret: Option<Rc<chrome::LiveCaret>>,
     /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
     /// calls accumulate into; reset before each `Engine::render` and read back
     /// into the `frame_applied_filter_*` fields after it.
+    #[cfg(hydrolysis_gpu_painter)]
     applied_filter_metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
+    #[cfg(hydrolysis_gpu_painter)]
     frame_applied_filter_count: u32,
+    #[cfg(hydrolysis_gpu_painter)]
     frame_applied_filter_effect: Duration,
     /// CPU stage times accumulated by `flush_window_tree`, plus the GPU spans
     /// the render pass resolves; drained per pump by `take_frame_stage_times`.
@@ -640,7 +734,7 @@ pub struct HydrolysisRenderer {
     /// outside every group. An anchored-overlay flush starts with the
     /// stack empty, so overlay content never joins a scope the window
     /// tree opened.
-    pub(crate) material_group_scopes: Vec<Rc<NodeCell>>,
+    pub(crate) material_group_scopes: Vec<Rc<NodeCell<E>>>,
     /// The widget theme's material terms (water-rs/waterui#1788), filled
     /// once here — the renderer calls `register_backdrop_shaders` before
     /// any chrome draws and keeps the registry. Every engine the window
@@ -649,15 +743,15 @@ pub struct HydrolysisRenderer {
     material_registry: Rc<cherenkov_record::MaterialRegistry>,
 }
 
-impl core::ops::Deref for HydrolysisRenderer {
-    type Target = SemanticCore;
-    fn deref(&self) -> &SemanticCore {
+impl<E: crate::text::TextEngine> core::ops::Deref for HydrolysisRenderer<E> {
+    type Target = SemanticCore<E>;
+    fn deref(&self) -> &SemanticCore<E> {
         &self.core
     }
 }
 
-impl core::ops::DerefMut for HydrolysisRenderer {
-    fn deref_mut(&mut self) -> &mut SemanticCore {
+impl<E: crate::text::TextEngine> core::ops::DerefMut for HydrolysisRenderer<E> {
+    fn deref_mut(&mut self) -> &mut SemanticCore<E> {
         &mut self.core
     }
 }
@@ -668,7 +762,7 @@ const TEXT_SELECTION_MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500)
 const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Assigns the identity the runner minted for the window this core
     /// renders — called once when the runner creates the window
     /// (water-rs/hydrolysis#247).
@@ -693,6 +787,7 @@ impl SemanticCore {
     /// resolve a viewport-dependent decision (a navigation split's
     /// collapsed-column mode) read what a layout would have seen.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn set_window_frame(&mut self, frame: kurbo::Rect) {
         self.window_frame = frame;
     }
@@ -727,7 +822,7 @@ impl SemanticCore {
             .and_then(|link| link.parent.clone());
     }
 
-    pub(crate) fn new(frame_instant: Instant, text: SessionTextEngine) -> Self {
+    pub(crate) fn new(frame_instant: Instant, text: E) -> Self {
         let signals = FrameSignals::new(frame_instant);
         let placement_clock = PlacementClock::new();
         let root = NodeCell::new(signals.clone(), Placement::new(&placement_clock));
@@ -828,7 +923,7 @@ impl SemanticCore {
 
     /// The window's root cell — what `mark`s escalate to when no node is
     /// reading, and what the pump checks for pending work.
-    pub(crate) const fn root_cell(&self) -> &Rc<NodeCell> {
+    pub(crate) const fn root_cell(&self) -> &Rc<NodeCell<E>> {
         &self.root
     }
 
@@ -862,7 +957,7 @@ impl SemanticCore {
     /// A fresh [`NodeCore`] for a node being built: a loose cell on this
     /// window's signals and placement clock. The caller attaches it
     /// (`set_parent` / `attach_subtree`) when the node lands in the tree.
-    pub(crate) fn new_core(&self) -> NodeCore {
+    pub(crate) fn new_core(&self) -> NodeCore<E> {
         let core = NodeCore::new(self.signals.clone(), Placement::new(&self.placement_clock));
         self.cells.borrow_mut().push(Rc::downgrade(&core.cell));
         core
@@ -1005,7 +1100,7 @@ impl SemanticCore {
     #[cfg(feature = "accessibility")]
     pub(crate) fn with_reader<R>(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         phase: ReaderPhase,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
@@ -1019,7 +1114,7 @@ impl SemanticCore {
     /// run here.
     pub(crate) fn with_probe_reader<R>(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         phase: ReaderPhase,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
@@ -1031,7 +1126,7 @@ impl SemanticCore {
     /// `leave_reader` can gate the a11y unit-diff bookkeeping on it.
     fn with_reader_kind<R>(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         phase: ReaderPhase,
         emits_a11y: bool,
         f: impl FnOnce(&mut Self) -> R,
@@ -1050,7 +1145,7 @@ impl SemanticCore {
     /// would wipe the subscriptions and registrations the outer record
     /// already collected. The window flush nests a root record inside the
     /// frame's own root record this way.
-    pub(crate) fn record_is_current(&self, core: &NodeCore) -> bool {
+    pub(crate) fn record_is_current(&self, core: &NodeCore<E>) -> bool {
         self.reader.as_ref().is_some_and(|reader| {
             reader.phase == ReaderPhase::Record && Rc::ptr_eq(&reader.cell, &core.cell)
         })
@@ -1064,10 +1159,10 @@ impl SemanticCore {
     /// so the node starts on a clean scope stack.
     pub(crate) fn enter_reader(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         phase: ReaderPhase,
         emits_a11y: bool,
-    ) -> Option<Reader> {
+    ) -> Option<Reader<E>> {
         let store = match phase {
             ReaderPhase::Record => Rc::clone(&core.subscriptions),
             ReaderPhase::Layout => Rc::clone(&core.layout_subscriptions),
@@ -1138,7 +1233,7 @@ impl SemanticCore {
     /// Restores the reader `enter_reader` displaced. The saved stacks —
     /// placement scopes, emit owner — belong to `Record` readers: a
     /// `Layout` reader nested inside a record restores nothing.
-    pub(crate) fn leave_reader(&mut self, outer: Option<Reader>) {
+    pub(crate) fn leave_reader(&mut self, outer: Option<Reader<E>>) {
         let leaving = std::mem::replace(&mut self.reader, outer);
         if !leaving
             .as_ref()
@@ -1185,7 +1280,7 @@ impl SemanticCore {
             reason = "the a11y node retire that needs the mutable borrow is compiled out"
         )
     )]
-    fn retire_subtrees(&mut self, roots: Vec<Rc<NodeCell>>) {
+    fn retire_subtrees(&mut self, roots: Vec<Rc<NodeCell<E>>>) {
         let mut stack = roots;
         #[cfg(feature = "accessibility")]
         let mut ids: Vec<AccessibilityNodeId> = Vec::new();
@@ -1211,8 +1306,8 @@ impl SemanticCore {
     /// the record owns that it did not place while it ran has its subtree
     /// retired — its registrations and a11y nodes leave through
     /// [`Self::retire_subtrees`].
-    fn retire_unplaced_subviews(&mut self, cell: &Rc<NodeCell>, seq: u64) {
-        let mut unplaced: Vec<Rc<NodeCell>> = Vec::new();
+    fn retire_unplaced_subviews(&mut self, cell: &Rc<NodeCell<E>>, seq: u64) {
+        let mut unplaced: Vec<Rc<NodeCell<E>>> = Vec::new();
         cell.subviews.borrow_mut().retain(|weak| {
             weak.upgrade().is_some_and(|subview| {
                 // A link stamped while this record ran — at its own
@@ -1233,7 +1328,7 @@ impl SemanticCore {
     /// repaints the nearest a11y-unit ancestor (the root when none) so the
     /// collapse and claim decisions recompute over the whole unit.
     #[cfg(feature = "accessibility")]
-    fn check_a11y_unit_diff(&self, cell: &Rc<NodeCell>) {
+    fn check_a11y_unit_diff(&self, cell: &Rc<NodeCell<E>>) {
         // The unit rule diffs the semantic payload (role, label, actions,
         // children). Bounds resolve at publish — after both the mid-flush
         // node and its stored baseline — so they strip out of the compare;
@@ -1307,7 +1402,7 @@ impl SemanticCore {
     }
 
     /// The current reader's cell, if a node is recording or measuring.
-    pub(crate) fn reader_cell(&self) -> Option<Rc<NodeCell>> {
+    pub(crate) fn reader_cell(&self) -> Option<Rc<NodeCell<E>>> {
         self.reader.as_ref().map(|reader| Rc::clone(&reader.cell))
     }
 
@@ -1316,7 +1411,7 @@ impl SemanticCore {
     /// wraps the window flush in the root cell's own record and each
     /// transient emit path in its presentation host's, so a call reaching
     /// here with no reader is a bug in the emit path, not a fallback case.
-    pub(crate) fn registration_owner(&self) -> Rc<NodeCell> {
+    pub(crate) fn registration_owner(&self) -> Rc<NodeCell<E>> {
         self.reader_cell()
             .expect("hydrolysis renderer: registration emitted with no recording owner")
     }
@@ -1382,7 +1477,7 @@ impl SemanticCore {
     /// root) keeps its existing parent and index; the window content tree
     /// is the root cell's only item, so its link keeps the pinned slot
     /// zero rather than a cursor the sentinel never resets.
-    pub(crate) fn link_placement(&self, core: &NodeCore, delta: kurbo::Affine) {
+    pub(crate) fn link_placement(&self, core: &NodeCore<E>, delta: kurbo::Affine) {
         let placement = core.cell.placement();
         let parent = self.current_placement();
         if !Rc::ptr_eq(&parent, placement) {
@@ -1409,7 +1504,7 @@ impl SemanticCore {
     /// entry's rank is a real slot).
     pub(crate) fn link_placement_to(
         &self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         anchor: Option<Rc<Placement>>,
         delta: kurbo::Affine,
         index: u32,
@@ -1454,7 +1549,7 @@ impl SemanticCore {
 
     /// The flat-list view of the retained registries, rebuilt when a
     /// registry write or a placement write made it stale.
-    pub(crate) fn registries(&mut self) -> &HitTestState {
+    pub(crate) fn registries(&mut self) -> &HitTestState<E> {
         self.materialize_registries();
         &self.hit_test
     }
@@ -1469,7 +1564,7 @@ impl SemanticCore {
     /// `frame` was).
     pub(crate) fn focused_field_frame_in_scope(
         &self,
-        scope: &Rc<NodeCell>,
+        scope: &Rc<NodeCell<E>>,
     ) -> Option<(crate::renderer::input::InteractionKey, kurbo::Rect)> {
         let key = self.text_editing.focused_key()?;
         let (owner, local, placement) = self.retained.live_owners().find_map(|cell| {
@@ -1501,11 +1596,11 @@ impl SemanticCore {
     /// entry in the recording owner's bucket, ordering exactly where its
     /// emission ranks under that anchor. Registering with no recording
     /// owner is a bug in the emit path and panics.
-    pub(crate) fn register_retained<T: mount::SetRegistrationOwner>(
+    pub(crate) fn register_retained<T: mount::SetRegistrationOwner<E>>(
         &mut self,
         payload: T,
         local: kurbo::Rect,
-        pick: impl FnOnce(&mut mount::OwnerRegistrations) -> &mut Vec<mount::RetainedEntry<T>>,
+        pick: impl FnOnce(&mut mount::OwnerRegistrations<E>) -> &mut Vec<mount::RetainedEntry<T, E>>,
     ) {
         let anchor = self.current_placement();
         self.register_retained_at(payload, local, &anchor, pick);
@@ -1514,12 +1609,12 @@ impl SemanticCore {
     /// [`Self::register_retained`] with the anchor supplied — payloads
     /// already in window space (occluder frames) anchor at the placement
     /// that resolves identity for them.
-    pub(crate) fn register_retained_at<T: mount::SetRegistrationOwner>(
+    pub(crate) fn register_retained_at<T: mount::SetRegistrationOwner<E>>(
         &mut self,
         payload: T,
         local: kurbo::Rect,
         anchor: &Rc<Placement>,
-        pick: impl FnOnce(&mut mount::OwnerRegistrations) -> &mut Vec<mount::RetainedEntry<T>>,
+        pick: impl FnOnce(&mut mount::OwnerRegistrations<E>) -> &mut Vec<mount::RetainedEntry<T, E>>,
     ) {
         let owner = self.registration_owner();
         self.retained.enlist(&owner);
@@ -1579,7 +1674,7 @@ impl SemanticCore {
     /// A change attributed to the node that registered `owner` — the
     /// target's cell. A dead owner has no registrations left (they retire
     /// with its record), so there is nothing to wake.
-    pub(crate) fn mark_owner(owner: &Weak<NodeCell>, bits: Dirty) {
+    pub(crate) fn mark_owner(owner: &Weak<NodeCell<E>>, bits: Dirty) {
         if let Some(cell) = owner.upgrade() {
             cell.mark(bits);
         }
@@ -1595,7 +1690,10 @@ impl SemanticCore {
     /// embedded input — the owner of the target registered under it. A
     /// key with neither is a bug in the caller: every key a mark names
     /// came from a live registration.
-    pub(crate) fn key_owner(&self, key: &crate::renderer::input::InteractionKey) -> Weak<NodeCell> {
+    pub(crate) fn key_owner(
+        &self,
+        key: &crate::renderer::input::InteractionKey,
+    ) -> Weak<NodeCell<E>> {
         self.try_key_owner(key)
             .unwrap_or_else(|| panic!("hydrolysis renderer: interaction key {key:?} has no owner"))
     }
@@ -1605,8 +1703,8 @@ impl SemanticCore {
     pub(crate) fn try_key_owner(
         &self,
         key: &crate::renderer::input::InteractionKey,
-    ) -> Option<Weak<NodeCell>> {
-        let live = |owner: &Weak<NodeCell>| owner.strong_count() > 0;
+    ) -> Option<Weak<NodeCell<E>>> {
+        let live = |owner: &Weak<NodeCell<E>>| owner.strong_count() > 0;
         self.hit_test
             .interaction
             .owner_of(key)
@@ -1639,7 +1737,7 @@ impl SemanticCore {
     /// `key` — read from the retained registries, so a target the hit gate
     /// keeps out of the materialized list still resolves. A handle no
     /// target holds is a bug: only a registered scroll surface drives one.
-    pub(crate) fn scroll_target_owner(&self, key: usize) -> Weak<NodeCell> {
+    pub(crate) fn scroll_target_owner(&self, key: usize) -> Weak<NodeCell<E>> {
         self.try_scroll_target_owner(key).unwrap_or_else(|| {
             panic!("hydrolysis renderer: scroll handle {key} has no registered scroll target")
         })
@@ -1666,7 +1764,7 @@ impl SemanticCore {
 
     /// The live cell that emitted the semantic node `node`.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn live_node_owner(&self, node: AccessibilityNodeId) -> Option<Weak<NodeCell>> {
+    pub(crate) fn live_node_owner(&self, node: AccessibilityNodeId) -> Option<Weak<NodeCell<E>>> {
         self.accessibility
             .node_owners
             .get(&node)
@@ -1674,7 +1772,7 @@ impl SemanticCore {
             .cloned()
     }
 
-    fn try_scroll_target_owner(&self, key: usize) -> Option<Weak<NodeCell>> {
+    fn try_scroll_target_owner(&self, key: usize) -> Option<Weak<NodeCell<E>>> {
         self.retained.scroll_owner(key)
     }
 
@@ -1683,8 +1781,8 @@ impl SemanticCore {
     /// host through `redraw` when one exists.
     pub(crate) fn producer_wake(
         &mut self,
-        cell: &Rc<NodeCell>,
-        redraw: Option<RedrawHandle>,
+        cell: &Rc<NodeCell<E>>,
+        redraw: Option<HostRedraw>,
     ) -> ProducerWake {
         let addr = Rc::as_ptr(cell) as usize;
         let key = match self.producer_keys_by_owner.get(&addr) {
@@ -1747,7 +1845,7 @@ impl SemanticCore {
     pub(crate) fn bind_animation_owner(
         &mut self,
         key: AnimationKey,
-        cell: &Rc<NodeCell>,
+        cell: &Rc<NodeCell<E>>,
         dirty: Dirty,
     ) {
         self.animation_owners.insert(
@@ -1781,13 +1879,41 @@ impl SemanticCore {
     }
 }
 
-impl HydrolysisRenderer {
+#[cfg(hydrolysis_gpu_painter)]
+impl HydrolysisRenderer<crate::text::ParleyEngine> {
+    /// A renderer drawing with `theme`, shaping text against the system font
+    /// collection under `family_resolution`.
+    #[must_use]
+    pub fn new(
+        theme: Rc<dyn crate::theme::WidgetTheme>,
+        family_resolution: FontFamilyResolution,
+    ) -> Self {
+        Self::with_engine(theme, crate::text::ParleyEngine::system(family_resolution))
+    }
+
+    /// A renderer drawing with `theme`, shaping text against `fonts` — the
+    /// collection [`crate::native_collection`] builds — under
+    /// `family_resolution`.
+    #[must_use]
+    pub fn with_fonts(
+        theme: Rc<dyn crate::theme::WidgetTheme>,
+        fonts: &waterui_text::FontCollection,
+        family_resolution: FontFamilyResolution,
+    ) -> Self {
+        Self::with_engine(
+            theme,
+            crate::text::ParleyEngine::from_collection(fonts, family_resolution),
+        )
+    }
+}
+
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// A record on the full renderer — the same enter/run/leave mechanics
     /// as [`SemanticCore::with_probe_reader`], but the record drives the
     /// accessibility emit walk. The record and layout descents take it.
     pub(crate) fn with_reader<R>(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         phase: ReaderPhase,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
@@ -1802,7 +1928,7 @@ impl HydrolysisRenderer {
 
     /// The flat-list view of the retained registries — see
     /// [`SemanticCore::registries`].
-    pub(crate) fn registries(&mut self) -> &HitTestState {
+    pub(crate) fn registries(&mut self) -> &HitTestState<E> {
         self.core.registries()
     }
 
@@ -1811,13 +1937,29 @@ impl HydrolysisRenderer {
         self.core.record_platform_views();
     }
 
+    /// The platform view that owns a touch at host pixel `point`: the
+    /// topmost view placed there, unless an interactive target painted
+    /// above it covers the point — the GPU band's ordered hit test, the
+    /// same rule the HWUI `platform_view_hit` applies (water-rs/waterui#2225).
+    /// `scale` is the density the touch edge divides host pixels by: the
+    /// placed frames and the interactive targets are both in window logical
+    /// coordinates.
+    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
+    pub(crate) fn platform_view_hit_gpu(&self, point: kurbo::Point, scale: f64) -> Option<u64> {
+        let logical = kurbo::Point::new(point.x / scale, point.y / scale);
+        self.core
+            .platform_view_at(logical)
+            .filter(|view| !self.core.platform_view_occluded(*view, logical))
+    }
+
     /// [`SemanticCore::current_placement`].
     pub(crate) fn current_placement(&self) -> Rc<Placement> {
         self.core.current_placement()
     }
 
     /// [`SemanticCore::registration_owner`].
-    pub(crate) fn registration_owner(&self) -> Rc<NodeCell> {
+    pub(crate) fn registration_owner(&self) -> Rc<NodeCell<E>> {
         self.core.registration_owner()
     }
 
@@ -1832,14 +1974,14 @@ impl HydrolysisRenderer {
     }
 
     /// [`SemanticCore::link_placement`].
-    pub(crate) fn link_placement(&self, core: &NodeCore, delta: kurbo::Affine) {
+    pub(crate) fn link_placement(&self, core: &NodeCore<E>, delta: kurbo::Affine) {
         self.core.link_placement(core, delta);
     }
 
     /// The window's fixed host frames in paint order: the content root,
     /// then the context menu, anchored overlay and text overlay hosts, and
     /// finally the `.dialog` modal layer so nothing else stacks above it.
-    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell>; 5] {
+    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell<E>>; 5] {
         let hosts = &self.core.presentation_hosts;
         [
             Rc::clone(&self.core.root_core.cell),
@@ -1853,7 +1995,7 @@ impl HydrolysisRenderer {
     /// [`SemanticCore::link_placement_to`].
     pub(crate) fn link_placement_to(
         &self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         anchor: Option<Rc<Placement>>,
         delta: kurbo::Affine,
         index: u32,
@@ -1885,37 +2027,9 @@ impl HydrolysisRenderer {
         self.core.current_hit_transform()
     }
 
-    /// A renderer drawing with `theme`, shaping text against the system font
-    /// collection under `family_resolution`.
-    #[must_use]
-    pub fn new(
-        theme: Rc<dyn crate::theme::WidgetTheme>,
-        family_resolution: FontFamilyResolution,
-    ) -> Self {
-        Self::with_engine(theme, SessionTextEngine::system(family_resolution))
-    }
-
-    /// A renderer drawing with `theme`, shaping text against `fonts` — the
-    /// collection [`crate::native_collection`] builds — under
-    /// `family_resolution`.
-    #[must_use]
-    pub fn with_fonts(
-        theme: Rc<dyn crate::theme::WidgetTheme>,
-        fonts: &waterui_text::FontCollection,
-        family_resolution: FontFamilyResolution,
-    ) -> Self {
-        Self::with_engine(
-            theme,
-            SessionTextEngine::from_collection(fonts, family_resolution),
-        )
-    }
-
     /// A renderer drawing with `theme`, shaping through `text` — the
     /// session's text engine the runner built it with.
-    pub(crate) fn with_engine(
-        theme: Rc<dyn crate::theme::WidgetTheme>,
-        text: SessionTextEngine,
-    ) -> Self {
+    pub(crate) fn with_engine(theme: Rc<dyn crate::theme::WidgetTheme>, text: E) -> Self {
         let frame_instant = Instant::now();
         let mut material_registry = cherenkov_record::MaterialRegistry::default();
         theme.register_backdrop_shaders(&mut material_registry);
@@ -1926,15 +2040,20 @@ impl HydrolysisRenderer {
             window_display_transform: kurbo::Affine::IDENTITY,
             host_redraw_handle: None,
 
+            #[cfg(hydrolysis_gpu_painter)]
             cherenkov_window: None,
             last_mount_stats: mount::MountStats::default(),
             #[cfg(test)]
             mirror: None,
             program: Vec::new(),
+            #[cfg(hydrolysis_gpu_painter)]
             engine_next: None,
             live_caret: None,
+            #[cfg(hydrolysis_gpu_painter)]
             applied_filter_metrics: Arc::default(),
+            #[cfg(hydrolysis_gpu_painter)]
             frame_applied_filter_count: 0,
+            #[cfg(hydrolysis_gpu_painter)]
             frame_applied_filter_effect: Duration::ZERO,
             #[cfg(feature = "frame-profile")]
             frame_stage_times: FrameStageTimes::default(),
@@ -1975,3 +2094,12 @@ impl HydrolysisRenderer {
 pub use render::HydroState;
 pub use render::RenderContext;
 pub use render::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
+
+impl<E: crate::text::TextEngine> Clone for AnimationOwner<E> {
+    fn clone(&self) -> Self {
+        Self {
+            cell: self.cell.clone(),
+            dirty: self.dirty,
+        }
+    }
+}

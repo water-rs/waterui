@@ -13,8 +13,8 @@ use waterui_layout::padding::EdgeInsets;
 /// [`WindowSafeArea`] binding re-lays out through the ordinary input path with
 /// no explicit refresh request. An environment that carries none reports zero
 /// insets, which is also what the whole window pipeline saw before.
-pub(super) fn window_container_insets(
-    renderer: &mut HydrolysisRenderer,
+pub(super) fn window_container_insets<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
 ) -> EdgeInsets {
     env.get::<WindowSafeArea>()
@@ -26,8 +26,8 @@ pub(super) fn window_container_insets(
 /// region: the software keyboard's own cover of the window, tracked
 /// frame-by-frame as the host animates it, which never resizes the window
 /// or the rendering surface.
-pub(super) fn window_keyboard_insets(
-    renderer: &mut HydrolysisRenderer,
+pub(super) fn window_keyboard_insets<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
 ) -> EdgeInsets {
     env.get::<WindowKeyboardArea>()
@@ -41,18 +41,25 @@ pub(super) fn window_keyboard_insets(
 /// collapse to the origin rather than inverting the rect.
 /// [`ReleasedRegions::unreleased_depth`](safe_area::ReleasedRegions::unreleased_depth)
 /// owns the `max(container, keyboard)` resolution — the one place it lives.
+/// `direction` is the publish direction the insets' leading and trailing
+/// resolve under (water-rs/waterui#1827).
 pub fn window_content_rect(
     bounds: kurbo::Rect,
     container: &EdgeInsets,
     keyboard: &EdgeInsets,
+    direction: waterui_core::layout::LayoutDirection,
 ) -> kurbo::Rect {
     let none = safe_area::ReleasedRegions::default();
-    let x0 = bounds.x0 + none.unreleased_depth(safe_area::Edge::Leading, container, keyboard);
-    let y0 = bounds.y0 + none.unreleased_depth(safe_area::Edge::Top, container, keyboard);
-    let x1 =
-        (bounds.x1 - none.unreleased_depth(safe_area::Edge::Trailing, container, keyboard)).max(x0);
-    let y1 =
-        (bounds.y1 - none.unreleased_depth(safe_area::Edge::Bottom, container, keyboard)).max(y0);
+    let x0 =
+        bounds.x0 + none.unreleased_depth(safe_area::Edge::Leading, container, keyboard, direction);
+    let y0 =
+        bounds.y0 + none.unreleased_depth(safe_area::Edge::Top, container, keyboard, direction);
+    let x1 = (bounds.x1
+        - none.unreleased_depth(safe_area::Edge::Trailing, container, keyboard, direction))
+    .max(x0);
+    let y1 = (bounds.y1
+        - none.unreleased_depth(safe_area::Edge::Bottom, container, keyboard, direction))
+    .max(y0);
     kurbo::Rect::new(x0, y0, x1, y1)
 }
 
@@ -63,15 +70,19 @@ pub fn window_content_rect(
 /// context's frame agree exactly. `transform` places the window in device
 /// pixels: the touch tolerance derives from its per-axis scale, never a
 /// literal.
-pub fn window_root_layout(
-    renderer: &mut HydrolysisRenderer,
+pub fn window_root_layout<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
     bounds: kurbo::Rect,
     transform: kurbo::Affine,
 ) -> (kurbo::Rect, Size, safe_area::SafeAreaLayout) {
     let container = window_container_insets(renderer, env);
     let keyboard = window_keyboard_insets(renderer, env);
-    let content = window_content_rect(bounds, &container, &keyboard);
+    // The direction the regions' leading and trailing resolve under —
+    // read as a signal so a direction change re-lays the window out
+    // (water-rs/waterui#1827).
+    let direction = renderer.read_signal(&waterui_layout::layout_direction(env));
+    let content = window_content_rect(bounds, &container, &keyboard, direction);
     let size = Size::new(
         crate::num_cast::f64_as_f32(content.width()),
         crate::num_cast::f64_as_f32(content.height()),
@@ -93,6 +104,7 @@ pub fn window_root_layout(
             frame,
             xx.hypot(yx),
             xy.hypot(yy),
+            direction,
         ),
     )
 }
@@ -109,22 +121,22 @@ fn safe_area_context(
 ) -> (RenderContext, kurbo::Affine) {
     let shift = kurbo::Affine::translate((content.x0, content.y0));
     (
-        RenderContext {
-            local: shift,
-            bounds: kurbo::Rect::new(0.0, 0.0, content.width(), content.height()),
-        },
+        RenderContext::new(
+            shift,
+            kurbo::Rect::new(0.0, 0.0, content.width(), content.height()),
+        ),
         hit_transform * shift,
     )
 }
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Apply pending reactive `Dynamic` content changes by rebuilding only the
     /// affected child subtree — no whole-window re-dispatch. Returns whether
     /// anything changed; the caller relays the whole (retained, cheap) tree out
     /// when so, which lets a size-changing swap reflow its ancestors without
     /// resetting the scene and re-dispatching, which is visible as a flash.
     /// Walks the whole tree.
-    pub(crate) fn patch(&mut self, renderer: &mut SemanticCore) -> bool {
+    pub(crate) fn patch(&mut self, renderer: &mut SemanticCore<E>) -> bool {
         // No environment is threaded through: a rebuild uses the node's own captured
         // environment (`Dynamic`/`Collection`/`Env` carry it), so the walk only needs
         // the renderer.
@@ -192,11 +204,11 @@ impl RenderNode {
             | Self::SceneView(_)
             // GPU content owns its runtime and produces every frame; like a
             // self-drawn scene it has no structural patch.
-            | Self::GpuContent(_)
-            | Self::ExternalFrame(_)
             // A widget leaf re-dispatches from its live config every flush, so it
             // needs no structural patch.
             | Self::Widget(_) => false,
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => false,
             // A lazy stack keeps only visible item subtrees. Patch those retained
             // items before parent layout so a Dynamic row-height change updates the
             // scroll extent in the same refresh instead of one frame later.
@@ -241,12 +253,9 @@ impl RenderNode {
             Self::Scroll(node) => node.child.collect_dynamic_identities_into(out),
             Self::Filtered(node) => node.child.collect_dynamic_identities_into(out),
             Self::Fill(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::SceneView(_)
-            | Self::GpuContent(_)
-            | Self::ExternalFrame(_)
-            | Self::Widget(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::SceneView(_) | Self::Widget(_) => {}
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => {}
             Self::LazyStack(node) => node
                 .item_cache
                 .borrow()
@@ -301,7 +310,9 @@ impl RenderNode {
             // drift, which the next `measure` clears by rewriting
             // `measured` (water-rs/waterui#1957).
             Self::SceneView(node) => node.size_drifted(),
+            #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => node.size_drifted(),
+            #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => node.size_drifted(),
             // A widget's measured size is a function of the
             // `RetainedSubview`s it owns (labels, nav bars, badges):
@@ -314,7 +325,7 @@ impl RenderNode {
     }
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The emit-pass equivalent of the `SemanticCore` half of
     /// `HydrolysisRenderer::reset_scene`: clears every pure-emission registry
     /// the accessibility walk re-pushes — input targets, gesture targets,
@@ -322,6 +333,7 @@ impl SemanticCore {
     /// state — so each walk re-registers exactly what is live. The rendered
     /// pump runs this after the structural patch, so state the patch orphaned
     /// drops in the renderer's teardown order rather than ahead of it.
+    #[cfg(hydrolysis_gpu_painter)]
     fn reset_semantic_scene(&mut self) {
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
@@ -335,6 +347,7 @@ impl SemanticCore {
     /// plus the input, lazy and navigation registries' begins. The scene
     /// clears stay in `reset_semantic_scene`, which the pump runs after the
     /// patch like the rendered path.
+    #[cfg(hydrolysis_gpu_painter)]
     fn begin_semantic_emit_frame(&mut self) {
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
@@ -346,6 +359,7 @@ impl SemanticCore {
     /// opens, including the animation and accessibility registries the pump
     /// path leaves to `reset_semantic_scene`.
     /// `signals.begin_rebuild` stays with the caller — only a build enters one.
+    #[cfg(hydrolysis_gpu_painter)]
     fn begin_semantic_rebuild_frame(&mut self) {
         self.state.measurement.begin_frame();
         self.hit_test.begin_rebuild_frame();
@@ -364,6 +378,7 @@ impl SemanticCore {
     /// focus validation, and the accessibility tree's publication.
     /// `signals.finish_rebuild` stays with the caller — only a build entered
     /// one.
+    #[cfg(hydrolysis_gpu_painter)]
     fn finish_semantic_rebuild_frame(&mut self, live_dynamics: &FxHashSet<usize>) {
         self.prune_dynamic_measurements(live_dynamics);
         self.validate_focused_text_input_after_flush();
@@ -384,7 +399,8 @@ impl SemanticCore {
     /// focus validation/relocation and the accessibility tree's publication.
     /// Releasing in the renderer's order is what exposes same-manager watcher
     /// re-entrancy (water-rs/waterui#1213) to `#[waterui::test]`.
-    fn finish_semantic_emit_frame(&mut self, tree: &RenderNode, structural_change: bool) {
+    #[cfg(hydrolysis_gpu_painter)]
+    fn finish_semantic_emit_frame(&mut self, tree: &RenderNode<E>, structural_change: bool) {
         self.registries();
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
@@ -410,6 +426,7 @@ impl SemanticCore {
     ///
     /// Like the rendered path, a call made with a tree already built applies
     /// the pending patch and re-emits instead of re-dispatching.
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn capture_window_semantics(&mut self, content: AnyView, env: &Environment) {
         if self.render_tree.is_some() {
             assert!(
@@ -459,6 +476,7 @@ impl SemanticCore {
     // `_env` is consumed only by the accessibility emit path; the signature must
     // match `capture_window_semantics` regardless of feature selection.
     #[allow(clippy::used_underscore_binding)]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn flush_window_semantics(&mut self, _env: &Environment) -> bool {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
@@ -492,7 +510,7 @@ impl SemanticCore {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Refreshes text presentation without walking or laying out the view tree.
     pub(crate) fn record_text_input_overlay(
         &mut self,
@@ -547,7 +565,7 @@ impl HydrolysisRenderer {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Build the retained tree before its first sized frame, so statically
     /// reachable nodes exist before the first render target is presented.
     #[cfg(test)]
@@ -604,7 +622,8 @@ impl HydrolysisRenderer {
             tree.patch(self);
             #[cfg(feature = "frame-profile")]
             {
-                self.frame_stage_times.update += update_started_at.elapsed();
+                self.frame_stage_times
+                    .set_update(self.frame_stage_times.update() + update_started_at.elapsed());
             }
             #[cfg(feature = "frame-profile")]
             let layout_started_at = Instant::now();
@@ -612,7 +631,8 @@ impl HydrolysisRenderer {
             tree.layout(self, env, Some(safe_area.clone()), proposal, size);
             #[cfg(feature = "frame-profile")]
             {
-                self.frame_stage_times.layout += layout_started_at.elapsed();
+                self.frame_stage_times
+                    .set_layout(self.frame_stage_times.layout() + layout_started_at.elapsed());
                 self.last_layout_signature = Some(tree.placed_signature(Rect::from_size(size)));
             }
             #[cfg(feature = "frame-profile")]
@@ -629,7 +649,8 @@ impl HydrolysisRenderer {
             self.core.finish_emit_pass();
             #[cfg(feature = "frame-profile")]
             {
-                self.frame_stage_times.encode += encode_started_at.elapsed();
+                self.frame_stage_times
+                    .set_encode(self.frame_stage_times.encode() + encode_started_at.elapsed());
             }
             self.content_minimum = None;
             self.render_tree = Some(tree);
@@ -637,7 +658,8 @@ impl HydrolysisRenderer {
         }
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.update += update_started_at.elapsed();
+            self.frame_stage_times
+                .set_update(self.frame_stage_times.update() + update_started_at.elapsed());
         }
         self.render_depth = 0;
         let mut node = RenderNode::build(content, env, self);
@@ -653,7 +675,8 @@ impl HydrolysisRenderer {
         node.layout(self, env, Some(safe_area.clone()), proposal, size);
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.layout += layout_started_at.elapsed();
+            self.frame_stage_times
+                .set_layout(self.frame_stage_times.layout() + layout_started_at.elapsed());
             self.last_layout_signature = Some(node.placed_signature(Rect::from_size(size)));
         }
         #[cfg(feature = "frame-profile")]
@@ -668,7 +691,8 @@ impl HydrolysisRenderer {
         self.core.finish_emit_pass();
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.encode += encode_started_at.elapsed();
+            self.frame_stage_times
+                .set_encode(self.frame_stage_times.encode() + encode_started_at.elapsed());
         }
         self.content_minimum = None;
         self.render_tree = Some(node);
@@ -719,7 +743,8 @@ impl HydrolysisRenderer {
         drop(update_span);
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.update += update_started_at.elapsed();
+            self.frame_stage_times
+                .set_update(self.frame_stage_times.update() + update_started_at.elapsed());
         }
         let layout_span = tracing::debug_span!("hydrolysis_frame_layout").entered();
         #[cfg(feature = "frame-profile")]
@@ -737,7 +762,8 @@ impl HydrolysisRenderer {
         drop(layout_span);
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.layout += layout_started_at.elapsed();
+            self.frame_stage_times
+                .set_layout(self.frame_stage_times.layout() + layout_started_at.elapsed());
             self.last_layout_signature = Some(tree.placed_signature(Rect::from_size(size)));
         }
         let encode_span = tracing::debug_span!("hydrolysis_scene_encode").entered();
@@ -757,7 +783,8 @@ impl HydrolysisRenderer {
         drop(encode_span);
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.encode += encode_started_at.elapsed();
+            self.frame_stage_times
+                .set_encode(self.frame_stage_times.encode() + encode_started_at.elapsed());
         }
         self.core.registries();
         // The materialized platform-view placements write into their tables
@@ -822,7 +849,7 @@ impl HydrolysisRenderer {
 
     /// The retained window tree's root, for render-identity probes.
     #[cfg(test)]
-    pub(crate) fn render_tree_root(&self) -> Option<&RenderNode> {
+    pub(crate) fn render_tree_root(&self) -> Option<&RenderNode<E>> {
         self.render_tree.as_ref()
     }
 }

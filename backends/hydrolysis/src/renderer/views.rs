@@ -48,7 +48,7 @@ fn popup_menu_node(
         }
         ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
-            let styled = menu.label.content.snapshot() + StyledStr::plain(" ›");
+            let styled = menu.label.content().snapshot() + StyledStr::plain(" ›");
             let plain_label = styled.to_plain().to_string();
             let semantic_text = menu.semantic_label.semantic_text().clone();
             let label = SemanticLabel::new(semantic_text, move || {
@@ -72,7 +72,7 @@ fn popup_menu_node(
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
 fn command_node(command: ResolvedCommand) -> PopupMenuNode {
-    let mut styled = command.label.content.snapshot();
+    let mut styled = command.label.content().snapshot();
     if command.selected.snapshot() {
         styled = StyledStr::plain("✓ ") + styled;
     }
@@ -128,8 +128,8 @@ fn command_node(command: ResolvedCommand) -> PopupMenuNode {
 /// presentation, not semantics. Only a resolved label — the environment's
 /// `a11y_label` or the leaf's own default — a resolved `a11y_value`, or an
 /// explicit `a11y_role` puts a graphics leaf in the tree.
-pub fn graphics_image_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn graphics_image_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     env: &Environment,
     default_label: Option<String>,
@@ -143,11 +143,12 @@ pub fn graphics_image_accessibility(
             renderer.note_suppressed_graphics_leaf(ctx);
             return;
         }
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::Image,
-            ));
+            ),
+        );
         if let Some(label) = label {
             node.set_label(label);
         }
@@ -180,10 +181,10 @@ pub fn graphics_dimensions_from_proposal(proposal: ProposalSize) -> ViewDimensio
 }
 
 /// Measures a retained gradient leaf: a gradient fills the proposed bounds.
-pub fn measure_gradient_node(
+pub fn measure_gradient_node<E: crate::text::TextEngine>(
     _gradient: &waterui_graphics::Gradient,
     proposal: ProposalSize,
-    _state: &mut HydroState,
+    _state: &mut HydroState<E>,
     _env: &Environment,
     _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -192,8 +193,8 @@ pub fn measure_gradient_node(
 
 /// Renders a retained gradient leaf every flush: emits a11y (unless hidden) then
 /// fills the gradient. The payload is fully resolved data (no signal), so no watch.
-pub fn render_gradient_node(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_gradient_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     gradient: &Rc<RefCell<waterui_graphics::Gradient>>,
     env: &Environment,
 ) {
@@ -225,8 +226,8 @@ fn gradient_paint_in_bounds(paint: Paint, width: f32, height: f32) -> Paint {
     }
 }
 
-pub fn render_gradient_parts(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_gradient_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     gradient: &Rc<RefCell<waterui_graphics::Gradient>>,
     _env: &Environment,
 ) {
@@ -244,10 +245,10 @@ pub fn render_gradient_parts(
 }
 
 /// Measures a retained shape leaf: a shape fills the proposed bounds.
-pub fn measure_shape_node(
+pub fn measure_shape_node<E: crate::text::TextEngine>(
     _shape: &ResolvedShape,
     proposal: ProposalSize,
-    _state: &mut HydroState,
+    _state: &mut HydroState<E>,
     _env: &Environment,
     _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -256,8 +257,8 @@ pub fn measure_shape_node(
 
 /// Renders a retained shape leaf every flush: emits a11y (unless hidden), tracks
 /// the resolved fill signal, then fills the shape path.
-pub fn render_shape_node(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_shape_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     shape: &Rc<RefCell<ResolvedShape>>,
     env: &Environment,
 ) {
@@ -271,8 +272,8 @@ pub fn render_shape_node(
     render_shape_parts(ctx, shape, env);
 }
 
-pub fn render_shape_parts(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_shape_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     shape: &Rc<RefCell<ResolvedShape>>,
     _env: &Environment,
 ) {
@@ -281,7 +282,7 @@ pub fn render_shape_parts(
         let resolved = shape.borrow();
         (
             resolved_shape_to_path(&resolved, bounds),
-            resolved.fill.clone(),
+            resolved.fill().clone(),
         )
     };
     let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
@@ -292,10 +293,10 @@ pub fn render_shape_parts(
 }
 
 /// Measures a retained morph-shape leaf: a morph shape fills the proposed bounds.
-pub fn measure_morph_shape_node(
+pub fn measure_morph_shape_node<E: crate::text::TextEngine>(
     _shape: &ResolvedMorphShape,
     proposal: ProposalSize,
-    _state: &mut HydroState,
+    _state: &mut HydroState<E>,
     _env: &Environment,
     _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -307,8 +308,8 @@ pub fn measure_morph_shape_node(
 /// resolved via the animation controller every frame (explicit `progress` signal
 /// watched through `resolve_owned_scalar`; time-based
 /// animation driven by `sample_morph_progress`), so the morph stays live.
-pub fn render_morph_shape_node(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_morph_shape_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     shape: &Rc<RefCell<ResolvedMorphShape>>,
     env: &Environment,
 ) {
@@ -322,8 +323,8 @@ pub fn render_morph_shape_node(
     render_morph_shape_parts(ctx, shape, env);
 }
 
-pub fn render_morph_shape_parts(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_morph_shape_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     shape: &Rc<RefCell<ResolvedMorphShape>>,
     _env: &Environment,
 ) {
@@ -332,7 +333,7 @@ pub fn render_morph_shape_parts(
     let renderer = ctx.renderer_mut();
     let (path, fill) = {
         let resolved = shape.borrow();
-        let progress = if let Some(progress) = resolved.progress.as_ref() {
+        let progress = if let Some(progress) = resolved.progress() {
             renderer.resolve_owned_scalar(
                 progress,
                 shape,
@@ -340,9 +341,9 @@ pub fn render_morph_shape_parts(
                 cherenkov_record::tree::RATE_FAST,
             )
         } else {
-            renderer.sample_morph_progress(resolved.animation, shape)
+            renderer.sample_morph_progress(resolved.animation(), shape)
         };
-        let fill = renderer.read_signal(&resolved.fill);
+        let fill = renderer.read_signal(resolved.fill());
         (
             resolved_morph_shape_to_path(&resolved, progress, bounds),
             waterui_graphics::draw::Paint::Solid(fill),
@@ -358,8 +359,8 @@ pub fn render_morph_shape_parts(
 /// `Widget`-node path so both produce the same a11y tree.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn str_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn str_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     text: &Str,
     env: &Environment,
@@ -383,11 +384,12 @@ pub fn str_accessibility(
                 .as_deref()
                 .is_some_and(|label| renderer.consume_accessibility_descendant_text(env, label))
         {
-            let mut node =
-                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+            let mut node = AccessibilityNode::new(
+                crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     env,
                     AccessibilityNodeRole::Label,
-                ));
+                ),
+            );
             if let Some(label) = label {
                 node.set_label(label);
             }
@@ -406,10 +408,10 @@ pub fn str_accessibility(
 /// Measures a retained string leaf from its immutable content, mirroring how
 /// [`measure_view_dimensions_with_proposal`] measures a `Str` (plain styled text,
 /// leading alignment, wrapped at the proposal width).
-pub fn measure_str_node(
+pub fn measure_str_node<E: crate::text::TextEngine>(
     text: &Str,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -426,8 +428,8 @@ pub fn measure_str_node(
 /// Renders a retained string leaf every flush: emits a11y (unless hidden) then the
 /// plain styled text. The content is an immutable `Str`, so no signal watch is
 /// needed — it never changes for a given node.
-pub fn render_str_node(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_str_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     text: &Rc<RefCell<Str>>,
     env: &Environment,
 ) {
@@ -436,8 +438,8 @@ pub fn render_str_node(
     render_str_parts(ctx, text, env);
 }
 
-pub fn render_str_parts(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_str_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     text: &Rc<RefCell<Str>>,
     env: &Environment,
 ) {
@@ -450,8 +452,8 @@ pub fn render_str_parts(
 /// Emits a retained `Str` leaf's accessibility node for the semantic walk —
 /// the same node `str_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
-pub fn emit_str_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn emit_str_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     text: &Rc<RefCell<Str>>,
     env: &Environment,
 ) {
@@ -462,8 +464,8 @@ pub fn emit_str_accessibility(
 /// walk — the same node `graphics_image_accessibility` registers, with no
 /// bounds.
 #[cfg(feature = "accessibility")]
-pub fn emit_graphics_leaf_accessibility<T>(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn emit_graphics_leaf_accessibility<T, E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     _state: &Rc<RefCell<T>>,
     env: &Environment,
 ) {

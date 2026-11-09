@@ -11,6 +11,7 @@ keywords = ["graphics", "2d", "rendering", "engine", "wgpu"]
 categories = ["graphics", "rendering"]
 
 [features]
+workers = []
 testing = ["dep:cherenkov-oracle"]
 
 [dependencies]

@@ -103,7 +103,7 @@ impl DirectoryServer {
 
     /// Answers one request; `request.path` is still percent-encoded.
     fn serve(&self, request: &AssetRequest) -> AssetResponse {
-        let decoded = percent_decode_str(request.path.as_str()).decode_utf8_lossy();
+        let decoded = percent_decode_str(request.path().as_str()).decode_utf8_lossy();
         let relative = decoded.strip_prefix('/').unwrap_or(&decoded);
 
         let mut candidate = self.root.clone();
@@ -253,19 +253,19 @@ mod tests {
     }
 
     fn get(server: &AssetServer, path: &str) -> AssetResponse {
-        server(&AssetRequest {
-            method: crate::assets::AssetMethod::Get,
-            path: Str::from(path.to_string()),
-            query: None,
-        })
+        server(&AssetRequest::new(
+            crate::assets::AssetMethod::Get,
+            Str::from(path.to_string()),
+            None,
+        ))
     }
 
     #[test]
     fn index_is_served_at_the_root() {
         let (_dir, server) = stage(&[("index.html", b"<html>hi</html>")]);
         let response = get(&server.into_server(), "/");
-        assert_eq!(response.status, 200);
-        assert_eq!(response.body, b"<html>hi</html>");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), b"<html>hi</html>");
         assert_eq!(header(&response, "content-type"), "text/html");
         assert_eq!(
             header(&response, "content-security-policy"),
@@ -284,7 +284,7 @@ mod tests {
         ]);
         let server = server.into_server();
         let js = get(&server, "/assets/app.js");
-        assert_eq!(js.status, 200);
+        assert_eq!(js.status(), 200);
         assert_eq!(header(&js, "content-type"), "text/javascript");
         let wasm = get(&server, "/assets/app.wasm");
         assert_eq!(header(&wasm, "content-type"), "application/wasm");
@@ -301,8 +301,8 @@ mod tests {
     fn missing_files_answer_404() {
         let (_dir, server) = stage(&[("index.html", b"<html></html>")]);
         let server = server.into_server();
-        assert_eq!(get(&server, "/nope.js").status, 404);
-        assert_eq!(get(&server, "/docs/page").status, 404);
+        assert_eq!(get(&server, "/nope.js").status(), 404);
+        assert_eq!(get(&server, "/docs/page").status(), 404);
     }
 
     #[test]
@@ -310,10 +310,10 @@ mod tests {
         let (_dir, server) = stage(&[("index.html", b"<html>spa</html>")]);
         let server = server.spa(true).into_server();
         let route = get(&server, "/docs/getting-started");
-        assert_eq!(route.status, 200);
-        assert_eq!(route.body, b"<html>spa</html>");
-        assert_eq!(get(&server, "/missing.js").status, 404);
-        assert_eq!(get(&server, "/docs/deep/route").status, 200);
+        assert_eq!(route.status(), 200);
+        assert_eq!(route.body(), b"<html>spa</html>");
+        assert_eq!(get(&server, "/missing.js").status(), 404);
+        assert_eq!(get(&server, "/docs/deep/route").status(), 200);
     }
 
     #[test]
@@ -328,7 +328,7 @@ mod tests {
             "/%2e%2e/index.html",
             "/%00",
         ] {
-            assert_eq!(get(&server, path).status, 404, "{path}");
+            assert_eq!(get(&server, path).status(), 404, "{path}");
         }
     }
 
@@ -343,7 +343,7 @@ mod tests {
             dir.path().join("link.txt"),
         )
         .expect("symlink");
-        assert_eq!(get(&server.into_server(), "/link.txt").status, 404);
+        assert_eq!(get(&server.into_server(), "/link.txt").status(), 404);
     }
 
     #[test]
@@ -375,7 +375,7 @@ mod tests {
 
     fn header<'a>(response: &'a AssetResponse, name: &str) -> &'a str {
         response
-            .headers
+            .headers()
             .iter()
             .find(|(key, _)| key.as_str().eq_ignore_ascii_case(name))
             .map_or("", |(_, value)| value.as_str())

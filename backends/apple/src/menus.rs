@@ -40,9 +40,9 @@ fn resolve(
 /// subtitle, symbol name, destructive flag and shortcut.
 fn kit_command(command: &ResolvedCommand) -> cocoa_ui::menu::Command {
     kit_command_fields(
-        command.label.content.snapshot().to_plain().to_string(),
+        command.label.content().snapshot().to_plain().to_string(),
         command.subtitle.as_ref().map(ToString::to_string),
-        command.icon.as_ref().map(|icon| icon.name.to_string()),
+        command.icon.as_ref().map(|icon| icon.name().to_string()),
         command.role,
         command.shortcut.as_ref(),
     )
@@ -51,9 +51,9 @@ fn kit_command(command: &ResolvedCommand) -> cocoa_ui::menu::Command {
 /// A resolved nested menu's header as the kit's shared `Command` payload.
 pub fn kit_command_for_menu(menu: &ResolvedNestedMenu) -> cocoa_ui::menu::Command {
     kit_command_fields(
-        menu.label.content.snapshot().to_plain().to_string(),
+        menu.label.content().snapshot().to_plain().to_string(),
         None,
-        menu.icon.as_ref().map(|icon| icon.name.to_string()),
+        menu.icon.as_ref().map(|icon| icon.name().to_string()),
         CommandRole::Standard,
         None,
     )
@@ -69,17 +69,17 @@ fn kit_command_fields(
     let mut modifiers = cocoa_ui::menu::KeyModifiers::empty();
     let mut key_equivalent = String::new();
     if let Some(shortcut) = shortcut {
-        key_equivalent = key_equivalent_for(&shortcut.key);
-        if shortcut.modifiers.command() {
+        key_equivalent = key_equivalent_for(shortcut.key());
+        if shortcut.modifiers().command() {
             modifiers |= cocoa_ui::menu::KeyModifiers::COMMAND;
         }
-        if shortcut.modifiers.shift() {
+        if shortcut.modifiers().shift() {
             modifiers |= cocoa_ui::menu::KeyModifiers::SHIFT;
         }
-        if shortcut.modifiers.option() {
+        if shortcut.modifiers().option() {
             modifiers |= cocoa_ui::menu::KeyModifiers::OPTION;
         }
-        if shortcut.modifiers.control() {
+        if shortcut.modifiers().control() {
             modifiers |= cocoa_ui::menu::KeyModifiers::CONTROL;
         }
     }
@@ -626,17 +626,17 @@ mod imp {
     /// Fills `declared` and flags each change for rebuild. The returned
     /// guard keeps the watcher alive; hold it for the process.
     pub fn install_declared(
+        mtm: MainThreadMarker,
         menu_bar: &Computed<Vec<DeclaredMenu>>,
         env: &Environment,
         declared: &Declared,
     ) -> Box<dyn Any> {
         let resolved = resolve(menu_bar, env);
-        let guard = resolved.watch(|_| {
-            if let Some(mtm) = MainThreadMarker::new() {
-                cocoa_ui::uikit::request_main_menu_rebuild(mtm);
-            }
-        });
+        let guard = resolved.watch(move |_| cocoa_ui::uikit::request_main_menu_rebuild(mtm));
         *declared.borrow_mut() = Some((resolved, env.clone()));
+        // `UIKit` may have built the main menu before the slot was filled;
+        // the watcher only flags later changes.
+        cocoa_ui::uikit::request_main_menu_rebuild(mtm);
         Box::new(guard)
     }
 }

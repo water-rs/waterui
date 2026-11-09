@@ -413,15 +413,14 @@ fn a_fling_whose_scroll_view_is_replaced_mid_fling_ends_with_it() {
 /// retired owner.
 #[test]
 fn a_fling_whose_scroll_view_is_hidden_by_a_tab_switch_mid_fling_ends_with_it() {
-    let selection = Binding::container(Id::try_from(1).expect("non-zero tab id"));
-    let tabs = vec![
-        Tab::new(Id::try_from(1).expect("non-zero tab id"), "Rows", || {
-            NavigationView::new("Rows", tall_stack())
-        }),
-        Tab::new(Id::try_from(2).expect("non-zero tab id"), "Other", || {
-            NavigationView::new("Other", text("Other"))
-        }),
-    ];
+    let tabs = waterui_core::views::SharedAnyViews::new(vec![
+        Tab::new("Rows", || NavigationView::new("Rows", tall_stack())),
+        Tab::new("Other", || NavigationView::new("Other", text("Other"))),
+    ]);
+    let selection = Binding::container(
+        waterui_core::views::ViewSnapshot::get_id(&waterui_core::views::Views::snapshot(&tabs), 0)
+            .expect("a non-empty tab set reports an id"),
+    );
     let mut runtime = runtime(TabsLayout::new(selection.clone(), tabs));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -526,7 +525,7 @@ fn uikit_runtime(view: impl View) -> HeadlessRuntime {
 }
 
 fn uikit_band() -> RubberBand {
-    match TouchScrollConfig::uikit_default().physics.overscroll {
+    match TouchScrollConfig::uikit_default().physics().overscroll() {
         Overscroll::RubberBand(band) => band,
         Overscroll::Clamped | Overscroll::Stretch(_) => panic!("the UIKit family rubber-bands"),
     }
@@ -716,10 +715,10 @@ fn inner_stretch(
             kurbo::Affine,
         )>,
     );
-    impl crate::renderer::mount::layers::LayerVisitor for Probe {
+    impl<E: crate::text::TextEngine> crate::renderer::mount::layers::LayerVisitor<E> for Probe {
         fn node(
             &mut self,
-            layers: &crate::renderer::mount::layers::NodeLayers,
+            layers: &crate::renderer::mount::layers::NodeLayers<E>,
             world: kurbo::Affine,
             _alphas: &[f32],
         ) {
@@ -1273,4 +1272,115 @@ fn another_scroll_views_fling_leaves_a_uikit_bounce_to_settle() {
         offset_at(&runtime, RIGHT) > 0.0,
         "the right scroll view flung"
     );
+}
+
+/// A platform view inside a stretching scroll view carries the stretch its
+/// host applies to it: the inner layer filter's own parameters carried
+/// through the window's logical units instead of the display transform,
+/// and the window region the warped view draws into. At rest the
+/// placement drops them.
+#[test]
+fn a_platform_view_in_a_stretching_scroll_view_carries_the_stretch() {
+    let sink = crate::platform_view::PlatformViewSink::new();
+    let mut env = test_environment();
+    env.insert(sink);
+    let view = std::cell::RefCell::new(Some(AnyView::new(scroll(vstack((
+        waterui::ViewExt::size(
+            AnyView::new(waterui_core::Native::new(
+                crate::platform_view::PlatformView::new("probe"),
+            )),
+            300.0,
+            160.0,
+        ),
+        VStack::for_each((0..ROWS).map(SelfId::new).collect::<Vec<_>>(), |row| {
+            let index = row.into_inner();
+            vstack((text(format!("Row {index}")),)).size(360.0, ROW_HEIGHT)
+        }),
+    ))))));
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        view.borrow_mut()
+            .take()
+            .expect("the test view is built once")
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        builder,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        MinimalTestTheme::default(),
+    );
+    runtime.set_touch_scroll_config(test_config());
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    let placed = |runtime: &HeadlessRuntime| {
+        let [placed] = runtime.renderer().materialized_platform_views.as_slice() else {
+            panic!("the probe view is placed exactly once");
+        };
+        placed.placement.clone()
+    };
+    assert_eq!(placed(&runtime).stretches(), []);
+    assert_eq!(placed(&runtime).stretch_region(), None);
+
+    drag_past_the_top(&mut runtime, start);
+    let stretch = stretch_at(&runtime);
+    let (probe, world) = inner_stretch(&runtime);
+    let (_, engine) = probe.stretch.expect("the inner layer registers its filter");
+    let viewport = probe.clip.expect("the inner layer clips to its viewport");
+    let placement = placed(&runtime);
+    let [carried] = placement.stretches() else {
+        panic!(
+            "one scroll view stretches the view: {:?}",
+            placement.stretches()
+        );
+    };
+    // The engine's frame is the display transform of the host's.
+    let display = runtime.renderer().window_display_transform;
+    let host_frame = (display.inverse()
+        * kurbo::Affine::new(std::array::from_fn(|i| f64::from(engine[i]))))
+    .as_coeffs();
+    let near = |what: &str, actual: f32, expected: f64| {
+        assert!(
+            (f64::from(actual) - expected).abs() <= 1e-4 * expected.abs().max(1.0),
+            "{what}: {actual}, expected {expected}"
+        );
+    };
+    for (index, (actual, expected)) in carried.params.into_iter().zip(host_frame).enumerate() {
+        near(&format!("frame coefficient {index}"), actual, expected);
+    }
+    // The extent and direction are the filter's own.
+    for (index, expected) in [viewport.width(), viewport.height(), stretch.x, stretch.y]
+        .into_iter()
+        .enumerate()
+    {
+        near("extent or direction", carried.params[6 + index], expected);
+    }
+    assert_eq!(
+        carried.strength,
+        waterui_graphics::filtrate::filters::STRETCH_INTERPOLATION_STRENGTH
+    );
+    // The view's frame and the stretching viewport, in window points.
+    let window_viewport = world.transform_rect_bbox(viewport);
+    let region = placement
+        .stretch_region()
+        .expect("a stretched view carries its region");
+    // The viewport covers the view's frame and bounds its stretch.
+    for (index, expected) in [
+        window_viewport.x0,
+        window_viewport.y0,
+        window_viewport.width(),
+        window_viewport.height(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        near("region", region[index], expected);
+    }
+
+    // A release relaxes the stretch; at rest the placement carries none.
+    runtime.push_input_event(touch_up(200.0, 310.0));
+    for frame in 0..=70_u64 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(400 + frame * 16));
+    }
+    assert_eq!(placed(&runtime).stretches(), []);
+    assert_eq!(placed(&runtime).stretch_region(), None);
 }

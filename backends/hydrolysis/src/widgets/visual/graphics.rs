@@ -4,14 +4,15 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 use waterui_graphics::color::Color;
-use waterui_graphics::{
-    ExternalFrameView, FilteredView, GpuContentView, Gradient, SceneView, resolve_scene_proposal,
-};
+#[cfg(hydrolysis_gpu)]
+use waterui_graphics::{ExternalFrameView, GpuContentView};
+use waterui_graphics::{FilteredView, Gradient, SceneView, resolve_scene_proposal};
 use waterui_shape::{ResolvedMorphShape, ResolvedShape};
 
-impl HydroNativeView for Native<GpuContentView> {
+#[cfg(hydrolysis_gpu)]
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<GpuContentView> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -20,7 +21,7 @@ impl HydroNativeView for Native<GpuContentView> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -34,9 +35,10 @@ impl HydroNativeView for Native<GpuContentView> {
     }
 }
 
-impl HydroNativeView for Native<ExternalFrameView> {
+#[cfg(hydrolysis_gpu)]
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ExternalFrameView> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -45,7 +47,7 @@ impl HydroNativeView for Native<ExternalFrameView> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -57,9 +59,9 @@ impl HydroNativeView for Native<ExternalFrameView> {
     }
 }
 
-impl HydroNativeView for Native<SceneView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SceneView> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -70,7 +72,7 @@ impl HydroNativeView for Native<SceneView> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -85,9 +87,9 @@ impl HydroNativeView for Native<SceneView> {
     }
 }
 
-impl HydroNativeView for Native<FilteredView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<FilteredView> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -96,9 +98,9 @@ impl HydroNativeView for Native<FilteredView> {
     }
 }
 
-impl HydroNativeView for Native<Color> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<Color> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -107,7 +109,7 @@ impl HydroNativeView for Native<Color> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -117,9 +119,9 @@ impl HydroNativeView for Native<Color> {
     }
 }
 
-impl HydroNativeView for Native<Gradient> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<Gradient> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -128,7 +130,7 @@ impl HydroNativeView for Native<Gradient> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -138,9 +140,9 @@ impl HydroNativeView for Native<Gradient> {
     }
 }
 
-impl HydroNativeView for Native<ResolvedShape> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedShape> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -149,7 +151,7 @@ impl HydroNativeView for Native<ResolvedShape> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -159,9 +161,9 @@ impl HydroNativeView for Native<ResolvedShape> {
     }
 }
 
-impl HydroNativeView for Native<ResolvedMorphShape> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedMorphShape> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -170,7 +172,7 @@ impl HydroNativeView for Native<ResolvedMorphShape> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,

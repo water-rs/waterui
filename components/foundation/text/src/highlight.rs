@@ -284,9 +284,23 @@ impl Highlighter for DefaultHighlighter {
 #[non_exhaustive]
 pub struct HighlightChunk<'a> {
     /// The text content.
-    pub text: &'a str,
+    text: &'a str,
     /// The color for this chunk.
-    pub color: Srgb,
+    color: Srgb,
+}
+
+impl<'a> HighlightChunk<'a> {
+    /// The text content.
+    #[must_use]
+    pub const fn text(&self) -> &'a str {
+        self.text
+    }
+
+    /// The color for this chunk.
+    #[must_use]
+    pub const fn color(&self) -> Srgb {
+        self.color
+    }
 }
 
 impl HighlightChunk<'_> {

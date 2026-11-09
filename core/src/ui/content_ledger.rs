@@ -238,9 +238,29 @@ fn view_name<V: 'static>() -> &'static str {
 #[non_exhaustive]
 pub struct PendingContent {
     /// The owing view's type name, without its path.
-    pub view: &'static str,
+    view: &'static str,
     /// What the view is waiting for, as it described it.
-    pub detail: Cow<'static, str>,
+    detail: Cow<'static, str>,
+}
+
+impl PendingContent {
+    /// Creates a `PendingContent` from its parts.
+    #[must_use]
+    pub const fn new(view: &'static str, detail: Cow<'static, str>) -> Self {
+        Self { view, detail }
+    }
+
+    /// The owing view's type name, without its path.
+    #[must_use]
+    pub const fn view(&self) -> &'static str {
+        self.view
+    }
+
+    /// What the view is waiting for, as it described it.
+    #[must_use]
+    pub const fn detail(&self) -> &Cow<'static, str> {
+        &self.detail
+    }
 }
 
 impl fmt::Display for PendingContent {
@@ -310,12 +330,45 @@ impl fmt::Debug for OwedContent {
 #[non_exhaustive]
 pub struct ContentFailure {
     /// The owing view's type name, without its path.
-    pub view: &'static str,
+    view: &'static str,
     /// What the view was waiting for.
-    pub detail: Cow<'static, str>,
+    detail: Cow<'static, str>,
     /// Why the load failed.
     #[source]
-    pub source: Box<dyn core::error::Error + Send + Sync>,
+    source: Box<dyn core::error::Error + Send + Sync>,
+}
+
+impl ContentFailure {
+    /// The owing view's type name, without its path.
+    #[must_use]
+    pub const fn view(&self) -> &'static str {
+        self.view
+    }
+
+    /// What the view was waiting for.
+    #[must_use]
+    pub const fn detail(&self) -> &Cow<'static, str> {
+        &self.detail
+    }
+
+    /// Why the load failed.
+    #[must_use]
+    pub fn get_source(&self) -> &(dyn core::error::Error + Send + Sync) {
+        &*self.source
+    }
+
+    /// Takes the failure apart into the view's type name, what it was waiting
+    /// for and why the load failed.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        &'static str,
+        Cow<'static, str>,
+        Box<dyn core::error::Error + Send + Sync>,
+    ) {
+        (self.view, self.detail, self.source)
+    }
 }
 
 /// The future [`ContentLedger::settled`] returns.

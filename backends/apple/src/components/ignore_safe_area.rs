@@ -17,7 +17,10 @@ use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect};
 use waterui::layout::IgnoreSafeArea;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -53,6 +56,14 @@ impl core::fmt::Debug for IgnoreSubView {
 }
 
 impl SubView for IgnoreSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }
@@ -92,8 +103,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             // both regions (`SafeAreaRegions::ALL`); `KEYBOARD` names only
             // the keyboard region, so the container region keeps its hold
             // on the same edge.
-            let regions = metadata.value.regions;
-            let edges = metadata.value.edges;
+            let regions = metadata.value.regions();
+            let edges = metadata.value.edges();
             let named = |region: bool| {
                 cocoa_ui::geometry::Edges::new(
                     region && edges.top,

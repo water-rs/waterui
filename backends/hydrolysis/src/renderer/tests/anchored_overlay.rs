@@ -25,6 +25,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, View as _};
 use waterui_graphics::Color;
 use waterui_layout::frame::Frame;
+use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
 
 use super::popup_windows::find_by_label;
@@ -143,21 +144,25 @@ fn a_mid_window_anchor_places_the_overlay_below_it_centered() {
 }
 
 /// With `edge: Top` on an anchor at the top of the window the overlay does
-/// not fit above it; `flip` moves it to the bottom edge.
+/// not fit above it; `flip` moves it to the bottom edge. The trailing spacer
+/// fills the column, so the anchor starts at the window's top edge.
 #[test]
 fn an_overlay_too_tall_for_the_top_edge_flips_below() {
     let open = Binding::container(true);
     let open_for_view = open;
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
-        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_content)
-                .edge(AnchorEdge::Top)
-                .alignment(EdgeAlignment::Center)
-                .gap(GAP)
-                .flip(true)
-                .clamp(Clamp::Window { margin: MARGIN }),
-        ),)))
+        AnyView::new(vstack((
+            button("host").action(|| {}).anchored_overlay(
+                AnchoredOverlay::new(&open, overlay_content)
+                    .edge(AnchorEdge::Top)
+                    .alignment(EdgeAlignment::Center)
+                    .gap(GAP)
+                    .flip(true)
+                    .clamp(Clamp::Window { margin: MARGIN }),
+            ),
+            spacer(),
+        )))
     });
     let mut runtime = runtime(view);
     let anchor = bounds_of(&mut runtime, "host");
@@ -542,14 +547,15 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
     open.set(false);
     scale.set(0.0);
     let result = runtime.pump_at(true, start + Duration::from_millis(500));
-    let snapshot = result
-        .snapshot
-        .expect("a mid-exit frame must be capturable");
+    let (width, height, rgba8, _) = result
+        .into_snapshot()
+        .expect("a mid-exit frame must be capturable")
+        .into_parts();
     let path =
         crate::testing::artifact_snapshot_path("hydrolysis", "anchored_overlay_exit", "mid-flight");
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");
-    image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8)
+    image::RgbaImage::from_raw(width, height, rgba8)
         .expect("snapshot dimensions must match the rgba buffer")
         .save(&path)
         .expect("the mid-exit frame must be writable");
@@ -766,7 +772,7 @@ fn an_overlay_body_transition_runs_on_present_and_dismiss() {
     let presented = presented_frame(&runtime);
     let mid_insertion = runtime
         .pump_at(true, start + Duration::from_millis(516))
-        .snapshot
+        .into_snapshot()
         .expect("a mid-insertion frame must be capturable");
     assert!(
         has_inside(&mut runtime),
@@ -774,10 +780,10 @@ fn an_overlay_body_transition_runs_on_present_and_dismiss() {
     );
     let settled = runtime
         .pump_at(true, start + Duration::from_millis(1_100))
-        .snapshot
+        .into_snapshot()
         .expect("a settled frame must be capturable");
     assert!(
-        mid_insertion.rgba8 != settled.rgba8,
+        mid_insertion.rgba8() != settled.rgba8(),
         "halfway through the insertion the overlay is still fading in"
     );
 
@@ -794,10 +800,10 @@ fn an_overlay_body_transition_runs_on_present_and_dismiss() {
     );
     let mid_removal = runtime
         .pump_at(true, start + Duration::from_millis(1_616))
-        .snapshot
+        .into_snapshot()
         .expect("a mid-removal frame must be capturable");
     assert!(
-        mid_removal.rgba8 != settled.rgba8,
+        mid_removal.rgba8() != settled.rgba8(),
         "halfway through the removal the overlay is fading out"
     );
 
@@ -834,14 +840,19 @@ fn placed_edge_reports_the_logical_edge_after_a_flip() {
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         let placed = placed_for_view.clone();
-        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_content)
-                .edge(AnchorEdge::Top)
-                .alignment(EdgeAlignment::Center)
-                .gap(GAP)
-                .flip(true)
-                .placed_edge(&placed),
-        ),)))
+        // The trailing spacer fills the column, so the anchor starts at the
+        // window's top edge and has no room above it.
+        AnyView::new(vstack((
+            button("host").action(|| {}).anchored_overlay(
+                AnchoredOverlay::new(&open, overlay_content)
+                    .edge(AnchorEdge::Top)
+                    .alignment(EdgeAlignment::Center)
+                    .gap(GAP)
+                    .flip(true)
+                    .placed_edge(&placed),
+            ),
+            spacer(),
+        )))
     });
     let mut runtime = runtime(view);
     pump_until_settled(&mut runtime);

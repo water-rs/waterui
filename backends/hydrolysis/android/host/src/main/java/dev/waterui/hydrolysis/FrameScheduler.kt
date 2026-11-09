@@ -81,11 +81,13 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         }
     }
 
-    /** Sends host demand; native combines content rates and ignores repeats. */
+    /**
+     * Sends host demand; the session routes it — the GPU path reports to
+     * native, which combines content rates and ignores repeats, while a
+     * session painter applies it on the bound host.
+     */
     private fun publishFrameDemand() {
-        session.withNativePtr(NativeBridge::nativeSetFrameDemand.name) { ptr ->
-            NativeBridge.nativeSetFrameDemand(ptr, pumping, touching)
-        }
+        session.setFrameDemand(pumping, touching)
     }
 
     /**

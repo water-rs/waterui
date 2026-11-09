@@ -52,10 +52,11 @@ dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
 # Harness-only reach for `tests/native`: compiles the doc(hidden)
 # test-support entry points that touch implementation-private surfaces
 # (`accessory_overlay_window_for_test`), the harnesses' shared
-# `native_test::pump_main_until` and, on iOS, the `uikit::native_test`
-# application the `native_app` harnesses run their cases in — never part of
-# a production build.
-native-test = ["dep:libtest-mimic"]
+# `native_test::pump_main_until`, the `native_test::DisplayAwake` display
+# power assertion's `IOKit` edge on macOS and, on iOS, the
+# `uikit::native_test` application the `native_app` harnesses run their
+# cases in — never part of a production build.
+native-test = ["dep:libtest-mimic", "dep:objc2-io-kit"]
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 block2 = "0.6"
@@ -70,7 +71,9 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
     "CFString",
     "CFStringTokenizer",
     "CFLocale",
+    "CFRunLoop",
     "CFURL",
+    "block2",
 ] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "std",
@@ -86,6 +89,7 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = [
 ] }
 objc2-core-text = { version = "0.3", default-features = false, features = [
     "std",
+    "CTFont",
     "CTFontManager",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
@@ -98,9 +102,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSCalendar",
     "NSCharacterSet",
     "NSDate",
+    "NSTimer",
     "NSUUID",
     "NSDateFormatter",
     "NSFormatter",
+    "NSNumberFormatter",
     "NSDateInterval",
     "NSDictionary",
     "NSEnumerator",
@@ -114,6 +120,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSNull",
     "NSObjCRuntime",
     "NSOperation",
+    "NSPathUtilities",
     "NSProcessInfo",
     "NSIndexPath",
     "NSIndexSet",
@@ -130,6 +137,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSURLRequest",
     "NSURLResponse",
     "NSURLSession",
+    "NSUserDefaults",
 ] }
 objc2-security = { version = "0.3", default-features = false, features = [
     "SecTrust",
@@ -246,6 +254,10 @@ objc2-core-media = { version = "0.3", default-features = false, features = [
     "CMTimeRange",
 ], optional = true }
 kurbo = { version = "0.13" }
+# The sRGB / Display P3 constants the capture compositor converts each
+# source into its target's colour with — the filter working space's own
+# definition, so the two cannot drift apart.
+filtrate-core = { workspace = true }
 wgpu = { version = "30.0.1", default-features = false }
 wgpu-hal = { version = "30.0.1", default-features = false, features = [
     "metal",
@@ -283,14 +295,26 @@ objc2-av-kit = { version = "0.3", default-features = false, features = [
     "objc2-av-foundation",
     "AVPlayerView",
 ], optional = true }
+# The `IOKit` power-management edge `native_test::DisplayAwake` links —
+# the harness's `PreventUserIdleDisplaySleep` assertion — opt-in behind
+# `native-test` so no production artifact carries it.
+objc2-io-kit = { version = "0.3", default-features = false, features = [
+    "pwr_mgt",
+], optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "objc2-core-foundation",
     "NSAppearance",
     "NSAlert",
+    "NSBezierPath",
+    "NSBox",
+    "NSGridView",
+    "NSColorList",
+    "NSWorkspace",
     "NSApplication",
     "NSAccessibility",
     "NSAccessibilityConstants",
+    "NSAccessibilityElement",
     "NSAccessibilityProtocols",
     "NSActionCell",
     "NSAttributedString",
@@ -306,6 +330,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSGraphics",
     "NSGraphicsContext",
     "NSImage",
+    "NSImageCell",
     "NSImageView",
     "NSAccessibilityProtocols",
     "NSMenu",
@@ -329,6 +354,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSCursor",
     "NSLayoutAnchor",
     "NSScrollView",
+    "NSScroller",
     "NSSecureTextField",
     "NSSlider",
     "NSProgressIndicator",
@@ -400,6 +426,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSVisualEffectView",
     "NSGlassEffectView",
     "NSLayoutConstraint",
+    "NSLayoutGuide",
     "NSStringDrawing",
     "objc2-quartz-core",
     "objc2-core-graphics",
@@ -449,6 +476,9 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UILabel",
     "UIAccessibility",
     "UIAccessibilityConstants",
+    "UIAccessibilityContainer",
+    "UIAccessibilityCustomAction",
+    "UIAccessibilityElement",
     "UIAccessibilityIdentification",
     "UIButton",
     "UIButtonConfiguration",
@@ -465,6 +495,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "NSStringDrawing",
     "UICalendarSelection",
     "UICalendarSelectionMultiDate",
+    "UICalendarSelectionSingleDate",
     "UICalendarView",
     "UICalendarViewDecoration",
     "UIDatePicker",
@@ -506,6 +537,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UINavigationBarAppearance",
     "UITabBar",
     "UITabBarController",
+    "UIToolbar",
     "UITabBarItem",
     "UITab",
     "UITabAccessory",

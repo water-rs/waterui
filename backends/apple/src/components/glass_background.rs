@@ -21,7 +21,10 @@ use waterui::background::{Glass, GlassBackground};
 use waterui::graphics::color::WorkingColor;
 use waterui::shape::ShapeKind;
 use waterui_core::IgnorableMetadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -173,6 +176,14 @@ impl core::fmt::Debug for GlassBackgroundSubView {
 }
 
 impl SubView for GlassBackgroundSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }
@@ -218,6 +229,20 @@ pub fn install(dispatcher: &mut Dispatcher) {
         view::add_subview(host_view, glass_view);
         view::pin_edges(mtm, host_view, glass_view);
 
+        // Default-token text inside the glass draws at full strength, as
+        // SwiftUI's does (`SystemLabelSlots::in_glass`).
+        #[cfg(target_os = "macos")]
+        let child_leaf = {
+            let slots = ctx
+                .env()
+                .get::<crate::theme::SystemLabelSlots>()
+                .copied()
+                .expect("the Apple theme installs its label slots with the color slots");
+            let mut env = ctx.env().clone();
+            env.insert(slots.in_glass());
+            ctx.with_env(&env).render(metadata.content)
+        };
+        #[cfg(target_os = "ios")]
         let child_leaf = ctx.render(metadata.content);
         let mounted = {
             #[cfg(target_os = "ios")]

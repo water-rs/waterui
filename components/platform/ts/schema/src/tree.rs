@@ -177,9 +177,23 @@ pub enum TypeSchema {
 #[non_exhaustive]
 pub struct StructSchema {
     /// The Rust type name, which is also the generated TypeScript type name.
-    pub name: &'static str,
+    name: &'static str,
     /// The fields in declaration order.
-    pub fields: &'static [FieldSchema],
+    fields: &'static [FieldSchema],
+}
+
+impl StructSchema {
+    /// The Rust type name, which is also the generated TypeScript type name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The fields in declaration order.
+    #[must_use]
+    pub const fn fields(&self) -> &'static [FieldSchema] {
+        self.fields
+    }
 }
 
 impl StructSchema {
@@ -195,9 +209,23 @@ impl StructSchema {
 #[non_exhaustive]
 pub struct FieldSchema {
     /// The field name, which is also the generated property name.
-    pub name: &'static str,
+    name: &'static str,
     /// The field type.
-    pub ty: TypeSchema,
+    ty: TypeSchema,
+}
+
+impl FieldSchema {
+    /// The field name, which is also the generated property name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The field type.
+    #[must_use]
+    pub const fn ty(&self) -> &TypeSchema {
+        &self.ty
+    }
 }
 
 impl FieldSchema {
@@ -213,11 +241,31 @@ impl FieldSchema {
 #[non_exhaustive]
 pub struct EnumSchema {
     /// The Rust type name, which is also the generated TypeScript type name.
-    pub name: &'static str,
+    name: &'static str,
     /// How the variants are laid out on the TypeScript side.
-    pub representation: EnumRepresentation,
+    representation: EnumRepresentation,
     /// The variants in declaration order.
-    pub variants: &'static [VariantSchema],
+    variants: &'static [VariantSchema],
+}
+
+impl EnumSchema {
+    /// The Rust type name, which is also the generated TypeScript type name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// How the variants are laid out on the TypeScript side.
+    #[must_use]
+    pub const fn representation(&self) -> EnumRepresentation {
+        self.representation
+    }
+
+    /// The variants in declaration order.
+    #[must_use]
+    pub const fn variants(&self) -> &'static [VariantSchema] {
+        self.variants
+    }
 }
 
 impl EnumSchema {
@@ -276,9 +324,23 @@ impl EnumRepresentation {
 #[non_exhaustive]
 pub struct VariantSchema {
     /// The variant name, which is also its tag value.
-    pub name: &'static str,
+    name: &'static str,
     /// What the variant carries.
-    pub payload: VariantPayload,
+    payload: VariantPayload,
+}
+
+impl VariantSchema {
+    /// The variant name, which is also its tag value.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// What the variant carries.
+    #[must_use]
+    pub const fn payload(&self) -> VariantPayload {
+        self.payload
+    }
 }
 
 impl VariantSchema {

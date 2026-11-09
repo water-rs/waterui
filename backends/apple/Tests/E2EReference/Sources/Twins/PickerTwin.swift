@@ -79,20 +79,20 @@ struct PickerTwin: View {
       Text("Picker Styles").font(.headline)
       Text("Choose from different picker presentation styles").font(.body)
       Spacer(minLength: 0)
-      Text("Automatic (default)").fontWeight(.bold)
+      Text("Automatic (default)").bold()
       Picker("Automatic (default)", selection: $automatic) {
         ForEach(Fruit.allCases) { Text($0.rawValue).tag($0) }
       }
       selectionLabel(automatic)
       Spacer(minLength: 0)
-      Text("Menu Style").fontWeight(.bold)
+      Text("Menu Style").bold()
       Picker("Menu Style", selection: $menu) {
         ForEach(Fruit.allCases) { Text($0.rawValue).tag($0) }
       }
       .pickerStyle(.menu)
       selectionLabel(menu)
       Spacer(minLength: 0)
-      Text("Radio Style").fontWeight(.bold)
+      Text("Radio Style").bold()
       Picker("Radio Style", selection: $radio) {
         ForEach(Fruit.allCases) { Text($0.rawValue).tag($0) }
       }
@@ -124,15 +124,26 @@ struct PickerTwin: View {
     .padding(12)
   }
 
+  /// `Calendar` and `MultiDatePicker` draw their label above the month
+  /// grid, leading, 8 pt apart — not beside it as a labelled `DatePicker`.
+  private func labeledAbove(_ label: String, @ViewBuilder _ grid: () -> some View) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(label)
+      grid().labelsHidden()
+    }
+  }
+
   private var calendarSection: some View {
     VStack(spacing: 10) {
       Text("Calendar").font(.headline)
       Text("Month-grid calendar with single-date selection and passive decorations").font(.body)
       Spacer(minLength: 0)
-      DatePicker(
-        "Trip Date", selection: $calendarDate, in: dateRange, displayedComponents: .date
-      )
-      .datePickerStyle(.graphical)
+      labeledAbove("Trip Date") {
+        DatePicker(
+          "Trip Date", selection: $calendarDate, in: dateRange, displayedComponents: .date
+        )
+        .datePickerStyle(.graphical)
+      }
       Text("Selected calendar date: \(calendarDate, format: .dateTime.year().month().day())")
     }
     .padding(12)
@@ -143,15 +154,17 @@ struct PickerTwin: View {
       Text("Multi-Date Picker").font(.headline)
       Text("Month-grid calendar for selecting multiple dates").font(.body)
       Spacer(minLength: 0)
-      #if os(iOS)
-        MultiDatePicker("Available Dates", selection: $multiDates, in: Self.day(2025, 1, 1) ..< Self.day(2026, 1, 1))
-      #else
-        // macOS has no MultiDatePicker; WUI's macOS realization is an
-        // NSDatePicker + selection list, so the graphical DatePicker is the
-        // closest visual match.
-        DatePicker("Available Dates", selection: $calendarDate, in: dateRange, displayedComponents: .date)
-          .datePickerStyle(.graphical)
-      #endif
+      labeledAbove("Available Dates") {
+        #if os(iOS)
+          MultiDatePicker("Available Dates", selection: $multiDates, in: Self.day(2025, 1, 1) ..< Self.day(2026, 1, 1))
+        #else
+          // macOS has no MultiDatePicker; WUI's macOS realization is a month
+          // calendar laid out like the graphical NSDatePicker, so the
+          // graphical DatePicker is the closest visual match.
+          DatePicker("Available Dates", selection: $calendarDate, in: dateRange, displayedComponents: .date)
+            .datePickerStyle(.graphical)
+        #endif
+      }
       Text("Selected dates: \(multiDates.count)")
     }
     .padding(12)
@@ -159,7 +172,7 @@ struct PickerTwin: View {
 
   private func swatch(_ color: Color, _ label: String) -> some View {
     HStack(spacing: 10) {
-      Text(label).fontWeight(.bold)
+      Text(label).bold()
       // `text(": ")` — the example's space is inside the text.
       Text(": ")
       RoundedRectangle(cornerRadius: 0.1 * 32)
@@ -192,7 +205,7 @@ struct PickerTwin: View {
       Spacer(minLength: 0)
       Button("Select Files") {}
       Spacer(minLength: 0)
-      Text("Selected files:").fontWeight(.bold)
+      Text("Selected files:").bold()
       Text("No files selected")
     }
     .padding(12)

@@ -428,14 +428,40 @@ impl AndroidCandidate {
 
 /// What [`AndroidTarget::select`] decided for a command.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct AndroidSelection {
     /// A `remembered` id that named no candidate — it was dropped before
     /// the decision, and is reported for the caller to warn about; the
     /// choice that follows repairs the record.
-    pub stale: Option<String>,
+    stale: Option<String>,
     /// The decision itself.
-    pub decision: AndroidDecision,
+    decision: AndroidDecision,
+}
+impl AndroidSelection {
+    /// A `AndroidSelection` carrying each of its fields.
+    #[must_use]
+    pub const fn new(stale: Option<String>, decision: AndroidDecision) -> Self {
+        Self { stale, decision }
+    }
+
+    /// A `remembered` id that named no candidate — it was dropped before
+    /// the decision, and is reported for the caller to warn about; the
+    /// choice that follows repairs the record.
+    #[must_use]
+    pub fn stale(&self) -> Option<&str> {
+        self.stale.as_deref()
+    }
+
+    /// The decision itself.
+    #[must_use]
+    pub const fn decision(&self) -> &AndroidDecision {
+        &self.decision
+    }
+
+    /// The selection's decision, moved out.
+    #[must_use]
+    pub fn into_decision(self) -> AndroidDecision {
+        self.decision
+    }
 }
 
 impl AndroidSelection {
@@ -1470,10 +1496,7 @@ fn extract_panic_info_from_log(line: &str) -> Option<PanicInfo> {
         }
     }
 
-    payload.map(|p| PanicInfo {
-        payload: p,
-        location,
-    })
+    payload.map(|p| PanicInfo::new(p, location))
 }
 
 /// Parsed logcat line with level, tag, and message.

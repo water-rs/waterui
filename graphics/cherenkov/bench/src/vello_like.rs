@@ -9,7 +9,8 @@
 //! replays its own `Op<peniko::Brush>` list against `vello::Scene`).
 
 use cherenkov_scene::{
-    BlendMode, Draw, Feature, Glyph, Item, Layer, Paint, ResourceHash, Scene, Shape,
+    BlendMode, BlendSpace, Draw, Feature, Glyph, Group, GroupItem, Item, Layer, Paint,
+    ResourceHash, Scene, Shape,
 };
 use kurbo::{Affine, BezPath, Rect, Shape as _, Stroke};
 use peniko::{BlendMode as PBlendMode, Fill, FontData};
@@ -103,6 +104,11 @@ pub fn expressible_shadow(shape: &Shape) -> Option<(Rect, f64)> {
     }
 }
 
+/// The upstream API vello-family adapters lack for a group compositing in
+/// linear light.
+pub const ENCODED_ONLY_API: &str =
+    "vello composites in encoded sRGB only; it has no linear-light group compositing";
+
 /// The upstream API a vello-family adapter lacks for a declared scene
 /// feature. Answers the "why" an `UnsupportedReport` records; `None` when
 /// the adapter simply does not map the feature yet.
@@ -130,6 +136,9 @@ pub const fn vello_missing_api(f: &Feature) -> Option<&'static str> {
 /// clamp, so they honestly report HDR/wide-gamut scenes unsupported rather
 /// than silently quantizing them.
 ///
+/// [`Feature::BlendSpace`] is claimed for encoded sRGB only: a group maps
+/// to an isolated layer, which vello composites in encoded sRGB.
+///
 /// Gradient interpolation is honest too: every space `peniko`'s
 /// `ColorSpaceTag` names is claimed; `linear-p3` is not among them and is
 /// reported unsupported instead of remapped.
@@ -153,6 +162,9 @@ pub fn vello_features() -> Vec<Feature> {
         Feature::Shadow,
         Feature::Glyphs,
         Feature::FontVariations,
+        // Vello composites every group in encoded sRGB, which is what a
+        // group declaring this space asks for (`lower_group`).
+        Feature::BlendSpace(BlendSpace::SrgbEncoded),
         // Interpolation spaces `peniko::color::ColorSpaceTag` covers —
         // `ColorSpace::LinearP3` has no tag and stays unsupported.
         Feature::InterpolationSpace(cherenkov_scene::ColorSpace::Srgb),
@@ -337,10 +349,10 @@ fn lower_layer<B>(
     let tf = parent_tf * layer.transform;
     let grouped = layer.clip.is_some() || layer.blend != BlendMode::Normal || layer.opacity < 1.0;
     if grouped {
-        let clip = layer.clip.as_ref().map_or_else(
-            || opaque_clip.then(|| Rect::new(0.0, 0.0, 1e9, 1e9).to_path(0.25)),
-            |c| Some(convert::shape_path(c)),
-        );
+        let clip = layer
+            .clip
+            .as_ref()
+            .map_or_else(|| unclipped(opaque_clip), |c| Some(convert::shape_path(c)));
         lowered.ops.push(Op::PushLayer {
             transform: tf,
             clip,
@@ -366,20 +378,88 @@ fn lower_layer<B>(
             Item::Draw(d) => {
                 lower_draw(lowered, d, content_tf, prepared, engine, paint_fn, image_fn)?;
             }
-            // Unreachable: scenes declaring `blend-space` fail the feature
-            // check; a group with no declared feature needs no support.
-            Item::Group(_) => {
-                return Err(BenchError::Unsupported {
-                    engine,
-                    feature: Feature::BlendSpace(cherenkov_scene::BlendSpace::SrgbEncoded),
-                    api: Some("vello: scoped group compositing"),
-                });
-            }
+            Item::Group(g) => lower_group(
+                lowered,
+                g,
+                content_tf,
+                prepared,
+                engine,
+                opaque_clip,
+                paint_fn,
+                image_fn,
+            )?,
         }
     }
     if grouped {
         lowered.ops.push(Op::PopLayer);
     }
+    Ok(())
+}
+
+/// The clip of an unclipped layer: none, or a near-infinite rect where the
+/// engine's `push_layer` requires a clip path (`opaque_clip`).
+fn unclipped(opaque_clip: bool) -> Option<BezPath> {
+    opaque_clip.then(|| Rect::new(0.0, 0.0, 1e9, 1e9).to_path(0.25))
+}
+
+/// Lowers a [`Group`] to one isolated vello layer: its members composite
+/// with each other in the layer, which composites onto the enclosing level
+/// with the group's opacity and blend.
+///
+/// Vello composites in encoded sRGB only, so a group declaring
+/// [`BlendSpace::SrgbEncoded`] maps exactly and a [`BlendSpace::Linear`]
+/// group is unsupported. A filtered group never reaches here:
+/// [`Feature::Filter`] is absent from [`vello_features`].
+///
+/// # Errors
+/// [`BenchError::Unsupported`] for a linear group; any error lowering its
+/// members.
+#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "vello layer opacity is f32 at the engine boundary; scene values are f64"
+)]
+fn lower_group<B>(
+    lowered: &mut Lowered<B>,
+    group: &Group,
+    tf: Affine,
+    prepared: &Prepared,
+    engine: &'static str,
+    opaque_clip: bool,
+    paint_fn: &dyn Fn(&Paint) -> Result<B, BenchError>,
+    image_fn: &dyn Fn(ResourceHash, cherenkov_scene::Sampling) -> Result<B, BenchError>,
+) -> Result<(), BenchError> {
+    if group.blend_space != BlendSpace::SrgbEncoded {
+        return Err(BenchError::Unsupported {
+            engine,
+            feature: Feature::BlendSpace(group.blend_space),
+            api: Some(ENCODED_ONLY_API),
+        });
+    }
+    lowered.ops.push(Op::PushLayer {
+        transform: tf,
+        clip: unclipped(opaque_clip),
+        blend: convert::blend(group.blend),
+        opacity: group.opacity as f32,
+    });
+    for item in &group.items {
+        match item {
+            GroupItem::Draw(d) => {
+                lower_draw(lowered, d, tf, prepared, engine, paint_fn, image_fn)?;
+            }
+            GroupItem::Group(g) => lower_group(
+                lowered,
+                g,
+                tf,
+                prepared,
+                engine,
+                opaque_clip,
+                paint_fn,
+                image_fn,
+            )?,
+        }
+    }
+    lowered.ops.push(Op::PopLayer);
     Ok(())
 }
 

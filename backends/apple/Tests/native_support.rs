@@ -12,7 +12,15 @@ use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
 
+/// `pump_main_until` for the `AppKit` harnesses.
+#[cfg(target_os = "macos")]
 pub use cocoa_ui::native_test::pump_main_until;
+/// The pump a case inside the harness application waits on: on iOS it is
+/// `uikit::native_test`'s — under Catalyst that is a real `AppKit`
+/// `nextEvent:`/`sendEvent:` turn, the only dispatch route `UIKit` has
+/// (water-rs/waterui#3358) — while `AppKit` keeps the bare run-loop turn.
+#[cfg(target_os = "ios")]
+pub use cocoa_ui::uikit::native_test::pump_main_until;
 
 /// The bound a case gives deferred main-queue work before it fails.
 ///
@@ -178,7 +186,7 @@ pub struct UIKitMount {
     pub host: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
     pub content: alloc::rc::Rc<crate::contract::Mounted>,
     pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
-    _controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
+    controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
     _keepalive: crate::contract::KeepAlive,
 }
 
@@ -186,8 +194,27 @@ pub struct UIKitMount {
 impl Drop for UIKitMount {
     fn drop(&mut self) {
         self.host.clear_handlers();
+        // Whether the window shows in a window scene — the same read
+        // `mount_uikit_window` gated its appearance wait on, taken before
+        // the window hides. A scene-less window releases its root at once,
+        // as it always has.
+        let scene_bound = self.window.windowScene().is_some();
         self.window.setHidden(true);
+        // Hiding alone delivers no disappearance; releasing the root does,
+        // ending on a later run-loop turn. The mount still owns the
+        // controller, so it lives until that disappearance has ended.
         self.window.setRootViewController(None);
+        if scene_bound {
+            assert!(
+                pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                    let counts = self.controller.appearance_counts();
+                    counts.did_disappear >= counts.did_appear
+                }),
+                "the root controller's viewDidDisappear: did not run within \
+                 {MAIN_QUEUE_DEADLINE}s of releasing it: {:?}",
+                self.controller.appearance_counts()
+            );
+        }
     }
 }
 
@@ -245,13 +272,126 @@ pub fn mount_uikit_window(
     let content = crate::embedding::mount_content(&host, view, &env, &mut keepalive);
     window.makeKeyAndVisible();
     window.layoutIfNeeded();
+    // A scene window opens an appearance transition only the run loop
+    // closes: `viewWillAppear:` lands inside `makeKeyAndVisible`, but
+    // `viewDidAppear:` waits for a later turn. Returning before it runs
+    // hands the case a mid-transition controller whose drop would cut
+    // the transition short. A scene-less window — the bare harness's
+    // spawned window — keeps the immediate return.
+    if window.windowScene().is_some() {
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                controller.appearance_counts().did_appear >= 1
+            }),
+            "the root controller's viewDidAppear: did not run within \
+             {MAIN_QUEUE_DEADLINE}s of showing its scene window"
+        );
+    }
     UIKitMount {
         host,
         content,
         window,
-        _controller: controller,
+        controller,
         _keepalive: keepalive,
     }
+}
+
+/// Performs the application entry's once-per-process `startup::initialize`.
+///
+/// It installs the executors a realized window's tasks run on. Called once
+/// from the `Tests/native_app.rs` harness's main thread before any trial
+/// runs.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+pub fn initialize_process() {
+    let _ = crate::startup::initialize();
+}
+
+/// A scene window filled by the production `windows::realize`.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+pub struct RealizedScene {
+    /// The scene's root host, which places the window content.
+    pub root: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
+    /// The scene window.
+    pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+    _host: crate::windows::WindowHost,
+}
+
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+impl core::fmt::Debug for RealizedScene {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RealizedScene")
+            .field("root", &self.root)
+            .field("window", &self.window)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Fills an already shown scene window through the production `windows::realize`.
+///
+/// The window has appeared before `declaration`'s content arrives, and the
+/// theme is installed from the root controller's scheme as
+/// `windows::connect` installs it.
+///
+/// This is the order a launch takes when the declaration lands after the
+/// scene's window displayed: the window is key and visible with the empty
+/// root `windows::connect` gives it, and `realize` then adds the content.
+/// The wait is on the root controller's `viewDidAppear:`, the signal the
+/// window displayed.
+///
+/// # Panics
+/// Panics when the root controller does not appear within
+/// [`MAIN_QUEUE_DEADLINE`].
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+#[must_use]
+pub fn realize_into_shown_scene(
+    mtm: MainThreadMarker,
+    declaration: &waterui::window::Window,
+    env: &Environment,
+    window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+) -> RealizedScene {
+    let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
+    window.setRootViewController(Some(&controller));
+    window.makeKeyAndVisible();
+    assert!(
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            controller.appearance_counts().did_appear >= 1
+        }),
+        "the root controller's viewDidAppear: did not run within \
+         {MAIN_QUEUE_DEADLINE}s of showing its scene window"
+    );
+    let root = objc2::Message::retain(controller.host_view());
+    let mut env = env.clone();
+    env.insert(crate::first_paint::FirstPaint::default());
+    let theme = alloc::rc::Rc::new(crate::theme::install(&mut env, controller.color_scheme()));
+    let observation =
+        controller.observe_color_scheme(move |scheme| crate::theme::refresh(&theme, scheme));
+    let host = crate::windows::realize(
+        declaration,
+        crate::windows::Pending {
+            session_id: String::new(),
+            window: window.clone(),
+            controller,
+            observation,
+        },
+        &env,
+        mtm,
+    );
+    RealizedScene {
+        root,
+        window,
+        _host: host,
+    }
+}
+
+/// The frame `root` resolves for `content` — what its placement handler
+/// gives the content.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+#[must_use]
+pub fn content_frame(
+    root: &cocoa_ui::uikit::HostView,
+    content: &cocoa_ui::PlatformView,
+) -> cocoa_ui::Rect {
+    crate::native_layout::LayoutContext::of(root).content_frame(content)
 }
 
 /// `mount_uikit` at a fixed window frame — trials that assert geometry
@@ -396,6 +536,37 @@ pub fn window_environment(mtm: MainThreadMarker) -> (Environment, crate::theme::
     (env, theme)
 }
 
+/// Re-reads every theme slot for `scheme`, as an appearance change does.
+#[cfg(target_os = "macos")]
+pub fn refresh_theme(theme: &crate::theme::ThemeSignals, scheme: cocoa_ui::ColorScheme) {
+    crate::theme::refresh(theme, scheme);
+}
+
+/// Binds a window background without a window.
+///
+/// `container` stands for the window's content view and `content` for its
+/// content, as `windows::realize` wires them. Returns the keepalive holding
+/// the binding and the colour most recently painted behind the content.
+#[cfg(target_os = "macos")]
+pub fn bind_window_background(
+    container: &cocoa_ui::PlatformView,
+    content: &cocoa_ui::PlatformView,
+    resolved: &waterui::reactive::Computed<waterui::window::ResolvedWindowBackground>,
+    env: &Environment,
+    mtm: MainThreadMarker,
+) -> (
+    crate::contract::KeepAlive,
+    std::rc::Rc<core::cell::Cell<Option<waterui::graphics::color::WorkingColor>>>,
+) {
+    let painted = std::rc::Rc::new(core::cell::Cell::new(None));
+    let mut keepalive = crate::contract::KeepAlive::default();
+    crate::window_background::bind(&mut keepalive, container, content, resolved, env, mtm, {
+        let painted = painted.clone();
+        move |color| painted.set(Some(color))
+    });
+    (keepalive, painted)
+}
+
 /// Checks two-way bindings on a real native root window.
 ///
 /// `windows::realize` turns a declaration into a live window: the
@@ -469,6 +640,429 @@ pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
     drop(host);
 }
 
+/// §7.1 on a real window root: a navigation page's scroll surface runs
+/// under the window toolbar, its other content stays below the titlebar.
+///
+/// A navigation page touches the edge the window-drawn bar sits on, so on
+/// a titled window — unified toolbar, full-size content view — a scroll
+/// surface on it reaches the window's top edge, while non-scrolling
+/// content in the same position stays clear of the titlebar.
+///
+/// Every case realizes its content through `windows::realize`, the
+/// production window root, so each link the safe-area answer passes —
+/// the root's `content_frame`, the tab host, the tab's `NavigationView`
+/// pane, the stack, the page — is the one an application gets. Each case
+/// orders a window in.
+#[cfg(target_os = "macos")]
+pub mod toolbar_reach {
+    use cocoa_ui::objc2_app_kit::{
+        NSScrollView, NSTextField, NSView, NSWindowStyleMask, NSWindowToolbarStyle,
+    };
+    use cocoa_ui::{MainThreadMarker, Retained};
+    use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::list::{List, ListItem};
+    use waterui::id::SelfId;
+    use waterui::navigation::{
+        NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, Tabs, tab_style,
+    };
+    use waterui::prelude::{scroll, text, vstack, zstack};
+    use waterui::reactive::binding;
+    use waterui::window::{WindowState, WindowStyle};
+    use waterui_core::layout::{Point, Rect, Size};
+
+    use super::{
+        ListSurface, MAIN_QUEUE_DEADLINE, ScrollSurface, pump_main_until, row_item,
+        window_environment,
+    };
+
+    /// The text the non-scrolling fixtures show — the label the case
+    /// finds in the window.
+    const MARKER: &str = "toolbar-reach-marker";
+
+    /// Half a point: the distance at which an edge counts as reaching a
+    /// boundary at any backing scale.
+    const TOLERANCE: f64 = 0.5;
+
+    /// The gap `SwiftUI` leaves between the safe-area top and a list's
+    /// first row.
+    const LIST_GAP: f64 = 10.0;
+
+    /// How far the first row may stray from [`LIST_GAP`] below the
+    /// titlebar.
+    const LIST_GAP_TOLERANCE: f64 = 2.0;
+
+    /// The window-coordinate tops a case measures against.
+    struct Edges {
+        /// The top of the window, which a full-size content view reaches.
+        window: f64,
+        /// The top of the content view's safe-area rect — the bottom of
+        /// the titlebar, its toolbar and any accessory row.
+        safe: f64,
+    }
+
+    /// The top edge of `rect`, a rect in `view`'s coordinates, in window
+    /// coordinates.
+    fn top_in_window(view: &NSView, rect: cocoa_ui::objc2_foundation::NSRect) -> f64 {
+        let frame = view.convertRect_toView(rect, None);
+        frame.origin.y + frame.size.height
+    }
+
+    /// The first view under `root`, depth-first, that `matches` accepts.
+    fn find<T: objc2::DowncastTarget>(
+        root: &NSView,
+        matches: &impl Fn(&T) -> bool,
+    ) -> Option<Retained<T>> {
+        for sub in root.subviews() {
+            if let Ok(found) = sub.clone().downcast::<T>()
+                && matches(&found)
+            {
+                return Some(found);
+            }
+            if let Some(found) = find(&sub, matches) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Realizes `content` as a titled window through the production root,
+    /// waits until the window carries its unified toolbar over a full-size
+    /// content view — and the search row when `searchable` — then lays the
+    /// tree out and hands `check` the content view and its edges.
+    fn realized<V: waterui::View>(
+        mtm: MainThreadMarker,
+        content: impl Fn() -> V + 'static,
+        searchable: bool,
+        check: impl FnOnce(&NSView, &Edges),
+    ) {
+        let (mut env, _theme) = window_environment(mtm);
+        env.insert(crate::first_paint::FirstPaint::default());
+        let declaration =
+            waterui::window::Window::new("Toolbar Reach", binding(WindowState::Normal), content)
+                .style(WindowStyle::Titled);
+        declaration
+            .frame
+            .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
+        let host = crate::windows::realize(declaration, &env, mtm);
+        let native = host.window().native();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                native.toolbar().is_some()
+                    && native.toolbarStyle() == NSWindowToolbarStyle::Unified
+                    && native.styleMask().contains(
+                        NSWindowStyleMask::Titled | NSWindowStyleMask::FullSizeContentView,
+                    )
+                    && (!searchable || native.titlebarAccessoryViewControllers().count() == 1)
+            }),
+            "the window must carry a unified toolbar over a full-size content view{}",
+            if searchable {
+                " and the search row"
+            } else {
+                ""
+            }
+        );
+        let root = native
+            .contentView()
+            .expect("the realized window has a content view");
+        root.layoutSubtreeIfNeeded();
+        let edges = Edges {
+            window: native.frame().size.height,
+            safe: top_in_window(&root, root.safeAreaRect()),
+        };
+        let root_top = top_in_window(&root, root.bounds());
+        assert!(
+            (root_top - edges.window).abs() <= TOLERANCE,
+            "a full-size content view reaches the window top {}, got {root_top}",
+            edges.window
+        );
+        assert!(
+            edges.safe < edges.window - 1.0,
+            "the titlebar must cover a band of the content view: safe-area top {}, window top {}",
+            edges.safe,
+            edges.window
+        );
+        check(&root, &edges);
+        native.close();
+        drop(host);
+    }
+
+    /// Asserts the list's scroll view runs under the toolbar to the
+    /// window's top edge, and its first row rests [`LIST_GAP`] below the
+    /// titlebar's bottom.
+    fn assert_list_reaches_the_top(root: &NSView, edges: &Edges) {
+        let list = find::<ListSurface>(root, &|_| true).expect("the window hosts the list");
+        let top = top_in_window(&list, list.bounds());
+        assert!(
+            top >= edges.window - TOLERANCE,
+            "the list's scroll view must reach the window top {} under the toolbar \
+             (safe-area top {}), but its top is {top}",
+            edges.window,
+            edges.safe
+        );
+        let first_row = top_in_window(&list.table_view(), list.rect_of_row(0));
+        assert!(
+            first_row <= edges.safe + TOLERANCE,
+            "the list's first row must sit below the titlebar's bottom {}, but its top is \
+             {first_row}",
+            edges.safe
+        );
+        let expected = edges.safe - LIST_GAP;
+        assert!(
+            (first_row - expected).abs() <= LIST_GAP_TOLERANCE,
+            "the list's first row must rest {LIST_GAP}pt below the titlebar's bottom {}, at \
+             {expected}, but its top is {first_row}",
+            edges.safe
+        );
+    }
+
+    /// Asserts the marker text stays below the titlebar.
+    fn assert_text_stays_clear(root: &NSView, edges: &Edges) {
+        let label = find::<NSTextField>(root, &|field| field.stringValue().to_string() == MARKER)
+            .expect("the window hosts the marker text");
+        let top = top_in_window(&label, label.bounds());
+        assert!(
+            top <= edges.safe + TOLERANCE,
+            "non-scrolling content must stay below the titlebar at {}, but its top is {top}",
+            edges.safe
+        );
+    }
+
+    /// Asserts `scroll`'s vertical scroller starts at the titlebar's
+    /// bottom: it follows the toolbar band, as `SwiftUI`'s does, rather
+    /// than running under the toolbar or moving down with a list's gap.
+    fn assert_scroller_starts_below_the_titlebar(scroll: &NSScrollView, edges: &Edges) {
+        let scroller = scroll
+            .verticalScroller()
+            .expect("the scroll surface has a vertical scroller");
+        let top = top_in_window(&scroller, scroller.bounds());
+        assert!(
+            (top - edges.safe).abs() <= TOLERANCE,
+            "the vertical scroller must start at the titlebar's bottom {}, but its top is {top}",
+            edges.safe
+        );
+    }
+
+    /// Asserts the scroll view runs under the toolbar to the window's top
+    /// edge, its first content row rests at the titlebar's bottom, and its
+    /// scroller starts there.
+    fn assert_scroll_reaches_the_top(root: &NSView, edges: &Edges) {
+        let surface = find::<ScrollSurface>(root, &|_| true).expect("the window hosts the scroll");
+        let top = top_in_window(&surface, surface.bounds());
+        assert!(
+            top >= edges.window - TOLERANCE,
+            "the scroll view must reach the window top {} under the toolbar (safe-area top {}), \
+             but its top is {top}",
+            edges.window,
+            edges.safe
+        );
+        let first_row =
+            find::<NSTextField>(&surface, &|field| field.stringValue().to_string() == MARKER)
+                .expect("the scroll hosts the marker text");
+        let first_row = top_in_window(&first_row, first_row.bounds());
+        assert!(
+            (first_row - edges.safe).abs() <= TOLERANCE,
+            "the scroll's first row must rest at the titlebar's bottom {}, but its top is \
+             {first_row}",
+            edges.safe
+        );
+        assert_scroller_starts_below_the_titlebar(&surface, edges);
+    }
+
+    /// The fixtures' scrolling content: the marker over a column tall
+    /// enough to overflow the window, so the scroller is tiled.
+    fn tall_scroll() -> impl waterui::View {
+        scroll(vstack((text(MARKER), text("rest").height(2000.0))))
+    }
+
+    /// `liquid_glass`'s page shape: a backdrop behind the scroll.
+    fn backdrop_scroll() -> impl waterui::View {
+        zstack((text("backdrop"), tall_scroll()))
+    }
+
+    /// The fixtures' list: three plain rows.
+    fn rows() -> impl waterui::View {
+        List::content(vec![row_item as fn() -> ListItem; 3])
+    }
+
+    /// Window → `NavigationStack` → page whose content is a `List`.
+    pub fn a_stack_page_list_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationStack::new(NavigationView::new("Inbox", rows())),
+            false,
+            assert_list_reaches_the_top,
+        );
+    }
+
+    /// A row scrolled to the top sits below the titlebar.
+    ///
+    /// Window → `NavigationStack` → page whose content is a `List` taller
+    /// than the window: the row lands at the inset content edge — where
+    /// the first row rests — instead of under the toolbar.
+    pub fn a_row_scrolled_to_the_top_sits_below_the_titlebar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || {
+                NavigationStack::new(NavigationView::new(
+                    "Inbox",
+                    List::content(vec![row_item as fn() -> ListItem; 60]),
+                ))
+            },
+            false,
+            |root, edges| {
+                let list = find::<ListSurface>(root, &|_| true).expect("the window hosts the list");
+                list.scroll_row_to_top(20);
+                let row = top_in_window(&list.table_view(), list.rect_of_row(20));
+                assert!(
+                    row <= edges.safe + TOLERANCE,
+                    "a row scrolled to the top must sit below the titlebar's bottom {}, but its \
+                     top is {row}",
+                    edges.safe
+                );
+                let expected = edges.safe - LIST_GAP;
+                assert!(
+                    (row - expected).abs() <= LIST_GAP_TOLERANCE,
+                    "a row scrolled to the top must rest at the inset content edge {expected}, \
+                     but its top is {row}"
+                );
+                assert_scroller_starts_below_the_titlebar(&list, edges);
+            },
+        );
+    }
+
+    /// Window → `NavigationStack` → page whose content is text.
+    pub fn a_stack_page_text_stays_clear_of_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationStack::new(NavigationView::new("Inbox", text(MARKER))),
+            false,
+            assert_text_stays_clear,
+        );
+    }
+
+    /// Window → `NavigationStack` → page whose content is a `ScrollView`.
+    pub fn a_stack_page_scroll_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationStack::new(NavigationView::new("Surfaces", tall_scroll())),
+            false,
+            assert_scroll_reaches_the_top,
+        );
+    }
+
+    /// `Tabs` whose first tab is a `NavigationStack` over `inbox`, each tab
+    /// a `Tab::container` — the picker sits in the window toolbar.
+    fn tabbed(inbox: impl Fn() -> NavigationView + 'static) -> impl waterui::View {
+        let inbox = std::rc::Rc::new(inbox);
+        Tabs::new(
+            &binding(0usize),
+            vec![
+                Tab::container("Inbox", move || NavigationStack::new(inbox())),
+                Tab::container("Settings", || {
+                    NavigationStack::new(NavigationView::new("Settings", text("settings")))
+                }),
+            ],
+        )
+    }
+
+    /// Window → `Tabs` (its picker in the toolbar) → `NavigationStack` →
+    /// page whose content is a `List`.
+    pub fn a_tabbed_stack_page_list_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || tabbed(|| NavigationView::new("Inbox", rows())),
+            false,
+            assert_list_reaches_the_top,
+        );
+    }
+
+    /// `liquid_glass`'s Surfaces structure: Window → `Tabs` (its picker in
+    /// the toolbar) → `NavigationStack` → page whose content is a
+    /// `ScrollView` over a backdrop.
+    pub fn a_tabbed_stack_page_scroll_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || tabbed(|| NavigationView::new("Surfaces", backdrop_scroll())),
+            false,
+            assert_scroll_reaches_the_top,
+        );
+    }
+
+    /// Window → `Tabs` (its picker in the toolbar) → `NavigationStack` →
+    /// page whose content is text.
+    pub fn a_tabbed_stack_page_text_stays_clear_of_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || tabbed(|| NavigationView::new("Inbox", text(MARKER))),
+            false,
+            assert_text_stays_clear,
+        );
+    }
+
+    /// The navigation example's structure: automatic-style `Tabs` of
+    /// `Tab::container`s, the Inbox tab a path-backed `NavigationStack`
+    /// whose root page carries a large title, a subtitle and a search
+    /// field in the bar around `content`.
+    fn inbox_tabs<V: waterui::View>(content: impl Fn() -> V + 'static) -> impl waterui::View {
+        let content = std::rc::Rc::new(content);
+        Tabs::new(
+            &binding(0usize),
+            vec![
+                Tab::container("Inbox", move || {
+                    NavigationStack::with_path(
+                        NavigationPath::<u64>::new(),
+                        content()
+                            .title("Inbox")
+                            .large_title()
+                            .navigation_subtitle("3 unread")
+                            .searchable(&binding(Str::from("")), "Search mail"),
+                    )
+                    .destination(|id: u64| {
+                        NavigationView::new("Message", text(format!("message {id}")))
+                    })
+                }),
+                Tab::container("Settings", || {
+                    NavigationStack::new(NavigationView::new("Settings", text("settings")))
+                }),
+            ],
+        )
+        .style(tab_style::Automatic)
+    }
+
+    /// The navigation example's Inbox: its `List` of navigation-link rows
+    /// runs under the toolbar and the search row.
+    pub fn the_example_inbox_list_runs_under_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || {
+                inbox_tabs(|| {
+                    List::for_each(
+                        vec![SelfId::new(1_u64), SelfId::new(2), SelfId::new(3)],
+                        |id: SelfId<u64>| {
+                            ListItem::new(NavigationLink::value(text("message"), id.into_inner()))
+                        },
+                    )
+                    .editing(binding::<bool>(false))
+                })
+            },
+            true,
+            assert_list_reaches_the_top,
+        );
+    }
+
+    /// The same structure with text for content: it stays below the
+    /// titlebar and the search row.
+    pub fn the_example_inbox_text_stays_clear_of_the_toolbar(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || inbox_tabs(|| text(MARKER)),
+            true,
+            assert_text_stays_clear,
+        );
+    }
+}
+
 /// Re-exports the GPU-surface mounted-scene fixtures.
 ///
 /// The `native_test` module inside `components::gpu_surface` builds a real
@@ -479,6 +1073,7 @@ pub mod gpu_surface {
     pub use crate::components::gpu_surface::native_test::{
         MountedSceneSurface, WakeProbe, fixture_env, fixture_scene_view,
     };
+    pub use crate::gpu_completion::{SubmissionFailed, submit_with_completion};
 
     /// Performs the once-per-process `startup::initialize` — called
     /// once from the `Tests/native.rs` harness's true main thread
@@ -487,6 +1082,12 @@ pub mod gpu_surface {
     pub fn initialize_process() {
         let _ = crate::startup::initialize();
     }
+}
+
+/// Re-exports the transition clock a trial drives by hand.
+#[cfg(feature = "transition_sites")]
+pub mod transition {
+    pub use crate::transition::clock::ManualTransitionClock;
 }
 
 /// Re-exports the pieces a `ViewRenderer::render` trial needs.
@@ -628,6 +1229,18 @@ pub fn render_environment() -> Environment {
         &mut env,
         black(),
     );
+    waterui::theme::install_color_signal::<waterui::theme::color::TertiaryForeground>(
+        &mut env,
+        black(),
+    );
+    waterui::theme::install_color_signal::<waterui::theme::color::DisabledForeground>(
+        &mut env,
+        black(),
+    );
+    waterui::theme::install_color_signal::<waterui::theme::color::UnemphasizedSelection>(
+        &mut env,
+        black(),
+    );
     waterui::theme::install_color_signal::<waterui::theme::color::Accent>(&mut env, black());
     // A selectable list's rows re-theme onto the selection role.
     waterui::theme::install_color_signal::<waterui::theme::color::SelectionForeground>(
@@ -640,7 +1253,777 @@ pub fn render_environment() -> Environment {
         &mut env,
         binding(Subheadline::DEFAULT).computed(),
     );
+    // Text resolves its colour against the label slots the Apple theme
+    // installs beside the colour slots.
+    #[cfg(target_os = "macos")]
+    env.insert(crate::theme::SystemLabelSlots::installed(&env));
     env
+}
+/// The view's current pixels through the production
+/// [`capture_rgba`](crate::capture_image::capture_rgba) path — the same
+/// capture every visual-review export drives.
+#[cfg(feature = "gpu_surface")]
+pub fn capture_view_rgba(view: &cocoa_ui::PlatformView) -> crate::capture_image::CapturedRgba {
+    let mut env = render_environment();
+    let runtime = block_on_main(30.0, waterui_graphics::gpu::GpuRuntime::new())
+        .expect("the harness provides a GPU runtime");
+    install_gpu(&mut env, runtime);
+    let mtm = MainThreadMarker::new().expect("captures run on the main thread");
+    block_on_main(30.0, crate::capture_image::capture_rgba(view, &env, mtm))
+        .expect("the window capture completes")
+}
+
+/// The view rasterized through the production
+/// [`template_image`](crate::capture_image::template_image) path, capped at
+/// `max_side` points.
+#[cfg(all(feature = "gpu_surface", target_os = "ios"))]
+pub fn capture_template_image(
+    view: &cocoa_ui::PlatformView,
+    max_side: f64,
+) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIImage> {
+    let mut env = render_environment();
+    let runtime = block_on_main(30.0, waterui_graphics::gpu::GpuRuntime::new())
+        .expect("the harness provides a GPU runtime");
+    install_gpu(&mut env, runtime);
+    block_on_main(
+        30.0,
+        crate::capture_image::template_image(view, &env, max_side),
+    )
+}
+
+/// Installs the GPU owners onto an existing environment.
+///
+/// Runtime, scene engine, filter-pipeline cache and the
+/// `PresentationTime` anchor — the set a `captures_content` transition
+/// and the filtered handler resolve. `gpu_runtime::prepare` installs
+/// the same beside the runtime in production; trials that render
+/// `FilteredView` through the dispatcher need it on the env they hand
+/// `dispatch::render`.
+#[cfg(feature = "gpu_surface")]
+pub fn install_gpu(
+    env: &mut waterui_backend_core::Environment,
+    runtime: waterui_graphics::gpu::GpuRuntime,
+) {
+    use std::rc::Rc;
+    env.insert(runtime);
+    env.insert(Rc::new(crate::gpu_runtime::SceneEngine::new()));
+    env.insert(Rc::new(crate::gpu_runtime::FilterPipelines::new()));
+    crate::presentation_time::PresentationTime::install(env);
+    crate::components::view_renderer::install_service(env);
+    // The dispatcher captures the environment at install time — re-run
+    // the install so its root env sees the GPU services just inserted
+    // (`handler.set`-driven remounts render through it).
+    crate::dispatch::install(env);
+}
+
+/// Gates the suite on one real trip through the simulator's Metal path:
+/// runtime, pipeline creation, submission, completion.
+///
+/// A host display asleep when the run starts leaves these calls stalled
+/// inside the process while the simulator resumes presenting — the
+/// runner's `caffeinate` wakes the display but cannot observe the
+/// in-process stall, and `simctl io screenshot` answers regardless
+/// (#3529). The only honest readiness signal is a completed GPU trip:
+/// this blocks the suite until one lands, bounded at `seconds` so a
+/// truly dead device fails naming the bound instead of hanging a case.
+/// Kept off the main thread where `wgpu` compiles Metal state the same
+/// way `filtrate`'s `compile::validated` does.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+pub fn await_gpu(seconds: f64) {
+    let _ = executor_core::try_init_local_executor(
+        native_executor::NativeMainExecutor::new()
+            .expect("the native suite runs on the process's main thread"),
+    );
+    // The stage the run is waiting on, for the timeout panic's name.
+    let stage = std::cell::Cell::new("GPU runtime");
+    // One absolute deadline bounds the whole gate — the pool witness and
+    // every stage inside every trip spend from the same clock, never a
+    // fresh `seconds` each.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
+    await_gpu_stage(seconds, &stage, gpu_readiness_trip(&stage, 0, deadline));
+    // One landed trip proves the first stall unstuck — not that the
+    // cold-boot window passed: it recurs per call site until it closes
+    // (#3798). A repeat trip landing inside a fast bound is the warmth
+    // signal — each probes a fresh pipeline (`salt` varies the shader)
+    // so warmth covers call sites the first trip never walked; retry
+    // until one lands within the same total budget.
+    stage.set("warmth");
+    let mut salt = 0u32;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !left.is_zero(),
+            "the GPU readiness warmth stage did not settle within {seconds}s"
+        );
+        salt += 1;
+        // The probe's own deadline — inside `poll()` the trip's pool
+        // witness pumps and joins on this bound, so a stalled drawable
+        // pool cannot stretch the "fast" probe to the gate's clock.
+        let probe_deadline =
+            std::time::Instant::now() + left.min(std::time::Duration::from_secs(5));
+        let trip = poll_gpu_stage(
+            probe_deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs_f64(),
+            &stage,
+            gpu_readiness_trip(&stage, salt, probe_deadline),
+        );
+        match trip {
+            // A hard error the trip modelled — not a warmup miss: the
+            // suite sees the real failure, never a retry (#3812).
+            ProbeOutcome::Failed(reason) => panic!("{reason}"),
+            ProbeOutcome::TimedOut => continue,
+            ProbeOutcome::Ready => {}
+        }
+        let fresh = poll_gpu_stage(
+            probe_deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs_f64(),
+            &stage,
+            // Instance-level warmth: the gate's own runtime proves
+            // nothing about a *fresh* one — a test still stalls inside
+            // its own `GpuRuntime::new` if instance startup is cold
+            // (#3798). A new instance landing inside the bound is the
+            // honest signal for that path; its `Err` is a real failure,
+            // not warmth.
+            async {
+                waterui_graphics::gpu::GpuRuntime::new()
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| TripFail::Failed(error.to_string()))
+            },
+        );
+        match fresh {
+            ProbeOutcome::Failed(reason) => panic!("{reason}"),
+            ProbeOutcome::TimedOut => {}
+            ProbeOutcome::Ready => return,
+        }
+    }
+}
+
+/// The trip `await_gpu` blocks on: runtime → pipeline compile → one real
+/// presented frame → queue completion.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the gate polls the future by hand on the main thread; the MetalPresenter it holds across the wait is single-threaded"
+)]
+async fn gpu_readiness_trip(
+    stage: &std::cell::Cell<&'static str>,
+    salt: u32,
+    deadline: std::time::Instant,
+) -> Result<(), TripFail> {
+    use waterui_graphics::wgpu;
+    {
+        let runtime = waterui_graphics::gpu::GpuRuntime::new()
+            .await
+            .expect("the harness provides a GPU runtime");
+        let context = runtime.context();
+        let device = context.device().clone();
+        let queue = context.queue().clone();
+        // Pipeline creation compiles Metal shader state on the calling
+        // thread — the same `blocking::unblock` trip `filtrate`'s
+        // `compile::validated` takes, so the gate warms exactly the path
+        // the suites' effect setup stalls on (#3529).
+        stage.set("pipeline compile");
+        let compile_device = device.clone();
+        blocking::unblock(move || {
+            // `filtrate`'s `compile::validated` wraps pipeline creation in a
+            // validation error scope; the gate takes the same trip so the
+            // warmed path matches what effect setup walks.
+            let error_scope = compile_device.push_error_scope(wgpu::ErrorFilter::Validation);
+            // `salt` varies the fragment's constant so every probe
+            // compiles a pipeline Metal has never seen — a fast compile
+            // then proves the service is warm for any new shader, not
+            // that the cache hit this one again (#3798).
+            let module = compile_device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("native-test readiness"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(format!(
+                    "@vertex fn vs() -> @builtin(position) vec4f {{ return vec4f(); }}
+                     @fragment fn fs() -> @location(0) vec4f {{ return vec4f({salt}.0); }}",
+                ))),
+            });
+            let _pipeline =
+                compile_device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("native-test readiness"),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            assert!(
+                futures::executor::block_on(error_scope.pop()).is_none(),
+                "the readiness pipeline compiles without validation errors"
+            );
+        })
+        .await;
+        // A queue submission alone is not presenting (#3529): the stall the
+        // issue describes keeps `CAMetalDisplayLink` from ever delivering a
+        // drawable — `present_readiness_frame` drives the real
+        // render → present → completion loop against a visible layer.
+        stage.set("frame presentation");
+        present_readiness_frame(&context, deadline).await?;
+        // One queue-completion trip proves the GPU side of the frame
+        // settled too — `submit_with_completion` carries the error a dead
+        // device would surface instead of letting the case discover it.
+        stage.set("submission completion");
+        let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
+        let (done, submitted) = futures::channel::oneshot::channel();
+        crate::gpu_completion::submit_with_completion(
+            mtm,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("native-test readiness"),
+            }),
+            &context,
+            move |result| {
+                let _ = done.send(result);
+            },
+        );
+        let result = submitted
+            .await
+            .expect("the readiness submission reports its completion");
+        result.map_err(|failure| {
+            TripFail::Failed(format!("the readiness submission failed: {failure}"))
+        })?;
+        let _ = queue;
+        Ok(())
+    }
+}
+
+/// Presents one real frame end to end: a `CAMetalLayer` in a visible
+/// window, one clear encoded into the `CAMetalDisplayLink`-delivered
+/// drawable's texture, `presentDrawable` on that same command buffer,
+/// and the buffer's completed handler — so a wedged display path holds
+/// the suite here instead of inside a case.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the gate polls the future by hand on the main thread; the MetalPresenter and UIWindow it holds across the wait are single-threaded"
+)]
+async fn present_readiness_frame(
+    context: &waterui_graphics::gpu::SharedGpuContext,
+    deadline: std::time::Instant,
+) -> Result<(), TripFail> {
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::objc2_metal::{
+        MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
+        MTLLoadAction, MTLRenderPassDescriptor, MTLStoreAction,
+    };
+    let (present_tx, present_rx) = futures::channel::oneshot::channel::<Result<(), String>>();
+    let present_tx = std::cell::RefCell::new(Some(present_tx));
+    let armed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
+    // A scene-attached window when the host connects one —
+    // `drawViewHierarchy` only captures composited content under a real
+    // `UIWindowScene`; the scene-less spawn answers `false` forever.
+    let present_window = cocoa_ui::bitmap::any_window_scene().map_or_else(
+        || spawned_window(mtm),
+        |scene| {
+            use cocoa_ui::objc2::MainThreadOnly as _;
+            let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithWindowScene(
+                cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
+                &scene,
+            );
+            window.setFrame(window.screen().bounds());
+            window
+        },
+    );
+    let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
+    let host = controller.host_view().retain();
+    present_window.setRootViewController(Some(&controller));
+    present_window.makeKeyAndVisible();
+    cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&present_window));
+    present_window.layoutIfNeeded();
+    let layer = cocoa_ui::objc2_quartz_core::CAMetalLayer::new();
+    let probe_layer = layer.clone();
+    host.layer().addSublayer(&layer);
+    let bounds = cocoa_ui::view::bounds(&host);
+    assert!(
+        bounds.size.width > 0.0 && bounds.size.height > 0.0,
+        "the readiness host lays out before the metal layer mounts"
+    );
+    layer.setFrame(bounds.into());
+    let render_queue = crate::gpu_runtime::raw_metal_device(context)
+        .newCommandQueue()
+        .expect("the readiness device creates a command queue");
+    let armed_slot = armed.clone();
+    let pool_queue = render_queue.clone();
+    let presenter = cocoa_ui::metal_presenter::MetalPresenter::new(
+        layer,
+        std::rc::Rc::new(move |frame| {
+            // The probe fires exactly once: the first frame encodes,
+            // commits, and presents; every later update returns before
+            // touching a drawable, queue, or buffer.
+            if armed_slot.get() {
+                return;
+            }
+            let drawable = cocoa_ui::objc2::runtime::ProtocolObject::<
+                dyn cocoa_ui::objc2_metal::MTLDrawable,
+            >::from_retained(frame.drawable());
+            let texture = frame.texture();
+            if let Some(tx) = present_tx.borrow_mut().take() {
+                armed_slot.set(true);
+                let buffer = render_queue
+                    .commandBuffer()
+                    .expect("the readiness queue hands a command buffer");
+                let pass = MTLRenderPassDescriptor::renderPassDescriptor();
+                let attachment = unsafe {
+                    // SAFETY: index 0 is the first color attachment every
+                    // render pass descriptor answers.
+                    pass.colorAttachments().objectAtIndexedSubscript(0)
+                };
+                attachment.setTexture(Some(&texture));
+                attachment.setLoadAction(MTLLoadAction::Clear);
+                attachment.setStoreAction(MTLStoreAction::Store);
+                attachment.setClearColor(MTLClearColor {
+                    red: 0.0,
+                    green: 0.0,
+                    blue: 1.0,
+                    alpha: 1.0,
+                });
+                let render = buffer
+                    .renderCommandEncoderWithDescriptor(&pass)
+                    .expect("the readiness pass opens a render encoder");
+                render.endEncoding();
+                arm_present_witness(&buffer, drawable, tx);
+                buffer.commit();
+            }
+            // (water-rs/waterui#3529).
+        }),
+        false,
+    );
+    presenter.set_device(&crate::gpu_runtime::raw_metal_device(context));
+    presenter.set_drawable_size(cocoa_ui::objc2_core_foundation::CGSize::new(64.0, 64.0));
+    presenter.set_paused(false);
+    // `MetalPresenter` reconfigures the layer for its own cadence —
+    // including resetting `presentsWithTransaction` — so the flag is
+    // asserted only after the presenter settles. With it, this frame's
+    // drawable presentation rides the CoreAnimation commit the callback
+    // ends, and that commit's completion is the display-side witness for
+    // the frame (the documented stand-in for the `addPresentedHandler`/
+    // `presentedTime` APIs `CAMetalDrawable` lacks on iOS).
+    probe_layer.setPresentsWithTransaction(true);
+    present_rx
+        .await
+        .expect("the readiness present delivers its frame or the sender drops")
+        .unwrap_or_else(|reason| panic!("the readiness frame failed: {reason}"));
+    pool_display_witness(
+        context,
+        probe_layer.frame(),
+        &host.layer(),
+        &pool_queue,
+        deadline,
+    )
+    .await?;
+    drop(presenter);
+    drop(present_window);
+    Ok(())
+}
+/// The display-side witness `CATransaction` completion cannot give: a
+/// bounded drawable pool recycles a slot only when Core Animation has
+/// finished displaying it, so blocking on `nextDrawable` resolves exactly
+/// when a frame went on screen. Runs on a sibling layer:
+/// `CAMetalDisplayLink`-driven layers forbid `nextDrawable` outright
+/// (water-rs/waterui#3529).
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the gate polls the future by hand on the main thread; the ObjC objects it holds across the wait are single-threaded"
+)]
+async fn pool_display_witness(
+    context: &waterui_graphics::gpu::SharedGpuContext,
+    frame: cocoa_ui::objc2_core_foundation::CGRect,
+    host_layer: &cocoa_ui::objc2_quartz_core::CALayer,
+    queue: &cocoa_ui::Retained<
+        cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandQueue>,
+    >,
+    deadline: std::time::Instant,
+) -> Result<(), TripFail> {
+    use cocoa_ui::objc2_metal::{
+        MTLClearColor, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLCommandQueue as _,
+        MTLLoadAction, MTLRenderPassDescriptor, MTLStoreAction,
+    };
+    use cocoa_ui::objc2_quartz_core::CAMetalDrawable as _;
+    // The display-side witness `CATransaction` completion cannot give:
+    // a one-slot drawable pool recycles its drawable only when Core
+    // Animation has finished displaying it, so blocking on
+    // `nextDrawable` resolves exactly when a frame went on screen — a
+    // submitted, scheduled, transaction-committed frame that never
+    // displayed keeps the pool held and times the probe out. The probe
+    // runs on a sibling layer: `CAMetalDisplayLink`-driven layers forbid
+    // `nextDrawable` outright (water-rs/waterui#3529).
+    let pool_layer = cocoa_ui::objc2_quartz_core::CAMetalLayer::new();
+    pool_layer.setDevice(Some(&crate::gpu_runtime::raw_metal_device(context)));
+    pool_layer.setMaximumDrawableCount(2);
+    pool_layer.setPresentsWithTransaction(true);
+    pool_layer.setFrame(frame);
+    pool_layer.setDrawableSize(cocoa_ui::objc2_core_foundation::CGSize::new(
+        frame.size.width,
+        frame.size.height,
+    ));
+    host_layer.addSublayer(&pool_layer);
+    let pool_drawable = pool_layer
+        .nextDrawable()
+        .expect("a fresh pool hands its drawable");
+    // The second slot is held too: with every drawable outstanding, the
+    // probe's `nextDrawable` below unblocks only when this one presents.
+    let pool_spare = pool_layer
+        .nextDrawable()
+        .expect("a fresh pool hands its spare drawable");
+    // Negative control: unpresented drawables never hold the pool —
+    // `nextDrawable` vends a fresh one while both stay outstanding, so a
+    // block can come only from drawables the compositor took to display
+    // (water-rs/waterui#3529).
+    assert!(
+        pool_layer.nextDrawable().is_some(),
+        "an unpresented pool must still vend — the control isolates presented-outstanding as the blocker"
+    );
+    let spare_buffer = queue
+        .commandBuffer()
+        .expect("the readiness queue hands the spare buffer");
+    arm_present_witness(
+        &spare_buffer,
+        cocoa_ui::objc2::runtime::ProtocolObject::<
+            dyn cocoa_ui::objc2_metal::MTLDrawable,
+        >::from_retained(pool_spare.clone()),
+        futures::channel::oneshot::channel::<Result<(), String>>().0,
+    );
+    spare_buffer.commit();
+    let pool_buffer = queue
+        .commandBuffer()
+        .expect("the readiness queue hands the pool buffer");
+    let pool_pass = MTLRenderPassDescriptor::renderPassDescriptor();
+    let pool_attachment = unsafe {
+        // SAFETY: index 0 is the first color attachment every render
+        // pass descriptor answers.
+        pool_pass.colorAttachments().objectAtIndexedSubscript(0)
+    };
+    pool_attachment.setTexture(Some(&pool_drawable.texture()));
+    pool_attachment.setLoadAction(MTLLoadAction::Clear);
+    pool_attachment.setStoreAction(MTLStoreAction::Store);
+    pool_attachment.setClearColor(MTLClearColor {
+        red: 0.0,
+        green: 1.0,
+        blue: 0.0,
+        alpha: 1.0,
+    });
+    let pool_render = pool_buffer
+        .renderCommandEncoderWithDescriptor(&pool_pass)
+        .expect("the pool pass opens a render encoder");
+    pool_render.endEncoding();
+    let (pool_tx, pool_rx) = futures::channel::oneshot::channel::<Result<(), String>>();
+    arm_present_witness(
+        &pool_buffer,
+        cocoa_ui::objc2::runtime::ProtocolObject::<
+            dyn cocoa_ui::objc2_metal::MTLDrawable,
+        >::from_retained(pool_drawable.clone()),
+        pool_tx,
+    );
+    pool_buffer.commit();
+    pool_rx
+        .await
+        .expect("the pool present delivers or the sender drops")
+        .unwrap_or_else(|reason| panic!("the pool frame failed: {reason}"));
+    // `allowsNextDrawableTimeout` bounds every single `nextDrawable`
+    // call to about a second, so the worker retries until the gate's
+    // shared deadline while the main thread keeps its run loop turning —
+    // presentation needs main-thread transactions committed.
+    let layer_ptr = cocoa_ui::Retained::as_ptr(&pool_layer) as usize;
+    let worker = std::thread::spawn(move || {
+        let layer = unsafe {
+            // SAFETY: `pool_layer` is retained by this test and released
+            // only after the worker joins; `nextDrawable` is the
+            // documented render-thread entry point.
+            &*(layer_ptr as *const cocoa_ui::objc2_quartz_core::CAMetalLayer)
+        };
+        while std::time::Instant::now() < deadline {
+            if layer.nextDrawable().is_some() {
+                return true;
+            }
+        }
+        false
+    });
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    let _ = pump_main_until(remaining.as_secs_f64(), || worker.is_finished());
+    let pool_presented = worker
+        .join()
+        .expect("the readiness pool worker always exits at the deadline");
+    if !pool_presented {
+        return Err(TripFail::TimedOut);
+    }
+    Ok(())
+}
+
+/// The witness tally the two completion paths share — the Metal buffer
+/// handler may run on any driver thread while the transaction
+/// completion lands on the main one, so it rides a mutex.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+type WitnessState = std::sync::Mutex<(
+    Option<futures::channel::oneshot::Sender<Result<(), String>>>,
+    u8,
+)>;
+
+/// Arms the frame's two witnesses: the buffer carrying the clear must
+/// report `MTLCommandBufferStatusCompleted` — an error propagates its
+/// reason — and the transaction carrying the present must complete.
+///
+/// Transaction-synchronized presentation forbids the convenience
+/// `presentDrawable`: once the buffer is scheduled the drawable
+/// presents at the commit carrying it. The schedule witness fires on a
+/// driver thread, so the present hops back to the main transaction that
+/// claims the completion block.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn arm_present_witness(
+    buffer: &cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandBuffer>,
+    drawable: cocoa_ui::Retained<
+        cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLDrawable>,
+    >,
+    tx: futures::channel::oneshot::Sender<Result<(), String>>,
+) {
+    use cocoa_ui::objc2_metal::{MTLCommandBuffer, MTLDrawable};
+
+    let state = std::sync::Arc::new(WitnessState::new((Some(tx), 0u8)));
+    let complete = {
+        let state = state.clone();
+        block2::RcBlock::new(
+            move |buf: core::ptr::NonNull<
+                cocoa_ui::objc2::runtime::ProtocolObject<
+                    dyn cocoa_ui::objc2_metal::MTLCommandBuffer,
+                >,
+            >| {
+                // SAFETY: Metal delivers the handler a valid buffer.
+                let buf = unsafe { buf.as_ref() };
+                witness_signal(
+                    &state,
+                    if buf.status() == cocoa_ui::objc2_metal::MTLCommandBufferStatus::Completed {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "command buffer status {:?}: {:?}",
+                            buf.status(),
+                            buf.error()
+                        ))
+                    },
+                );
+            },
+        )
+    };
+    let scheduled = block2::RcBlock::new(
+        move |_buf: core::ptr::NonNull<
+            cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandBuffer>,
+        >| {
+            let state = state.clone();
+            let drawable = drawable.clone();
+            let on_main = block2::RcBlock::new(move || {
+                drawable.present();
+                // The completion block rides the transaction this
+                // present is bound to — its fire marks the commit that
+                // put the frame on screen.
+                let state = state.clone();
+                let committed = block2::RcBlock::new(move || {
+                    witness_signal(&state, Ok(()));
+                });
+                unsafe {
+                    // SAFETY: the block matches the documented signature
+                    // and is set on the implicit transaction the next
+                    // line commits.
+                    cocoa_ui::objc2_quartz_core::CATransaction::setCompletionBlock(Some(
+                        &committed,
+                    ));
+                }
+                cocoa_ui::objc2_quartz_core::CATransaction::commit();
+            });
+            unsafe {
+                // SAFETY: `on_main` outlives the call — `performBlock`
+                // copies the block.
+                cocoa_ui::objc2_foundation::NSRunLoop::mainRunLoop().performBlock(&on_main);
+            }
+        },
+    );
+    unsafe {
+        // SAFETY: the blocks match their documented signatures, attached
+        // before `commit` as the API requires.
+        buffer
+            .addCompletedHandler(block2::RcBlock::as_ptr(&complete)
+                as cocoa_ui::objc2_metal::MTLCommandBufferHandler);
+        buffer
+            .addScheduledHandler(block2::RcBlock::as_ptr(&scheduled)
+                as cocoa_ui::objc2_metal::MTLCommandBufferHandler);
+    }
+}
+
+/// One witness event — the buffer's completion or the present's
+/// transaction completion — tallied into the gate's release. Two `Ok`s
+/// release it; the first error propagates its reason.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn witness_signal(state: &WitnessState, outcome: Result<(), String>) {
+    let mut state = state
+        .lock()
+        .expect("the readiness witness state is never poisoned");
+    if let Err(reason) = outcome {
+        if let Some(tx) = state.0.take() {
+            let _ = tx.send(Err(reason));
+        }
+    } else {
+        state.1 += 1;
+        if state.1 == 2
+            && let Some(tx) = state.0.take()
+        {
+            let _ = tx.send(Ok(()));
+        }
+    }
+}
+
+/// What a readiness trip answers — the probe retries only `TimedOut`;
+/// `Failed` carries a real error the suite must see, never a warmup
+/// state (#3812).
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+enum TripFail {
+    TimedOut,
+    Failed(String),
+}
+
+/// What a bounded probe reports.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+enum ProbeOutcome {
+    Ready,
+    TimedOut,
+    Failed(String),
+}
+
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn await_gpu_stage(
+    seconds: f64,
+    stage: &std::cell::Cell<&'static str>,
+    future: impl core::future::Future<Output = Result<(), TripFail>>,
+) {
+    match poll_gpu_stage(seconds, stage, future) {
+        ProbeOutcome::Ready => {}
+        ProbeOutcome::TimedOut => {
+            panic!(
+                "the GPU readiness {} stage did not settle within {seconds}s",
+                stage.get(),
+            );
+        }
+        ProbeOutcome::Failed(reason) => panic!("{reason}"),
+    }
+}
+
+/// The hand-rolled poll `await_gpu_stage` panics through: `false` at the
+/// deadline so the warmth probe can retry a stalled trip instead of
+/// failing the suite on it.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn poll_gpu_stage(
+    seconds: f64,
+    stage: &std::cell::Cell<&'static str>,
+    future: impl core::future::Future<Output = Result<(), TripFail>>,
+) -> ProbeOutcome {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+    use std::time::Instant;
+    struct Flag(Arc<AtomicBool>);
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let woken = Arc::new(AtomicBool::new(false));
+    let waker = Waker::from(Arc::new(Flag(Arc::clone(&woken))));
+    let mut cx = Context::from_waker(&waker);
+    let mut gate = core::pin::pin!(future);
+    let start = Instant::now();
+    let _ = stage;
+    loop {
+        woken.store(false, Ordering::Release);
+        // `catch_unwind` only catches errors the trip did not model —
+        // its own timeout path returns `Err(TimedOut)` so the warmth
+        // loop retries; every real failure lands in `Failed` and
+        // propagates with its message (#3812).
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gate.as_mut().poll(&mut cx)));
+        match outcome {
+            Ok(Poll::Ready(Ok(()))) => {
+                // A `poll` that blocked past the bound and still resolved
+                // is a slow trip, not a warm one — the warmth probe
+                // counts only completion inside the bound (#3798).
+                return if start.elapsed().as_secs_f64() < seconds {
+                    ProbeOutcome::Ready
+                } else {
+                    ProbeOutcome::TimedOut
+                };
+            }
+            Ok(Poll::Ready(Err(TripFail::TimedOut))) => return ProbeOutcome::TimedOut,
+            Ok(Poll::Ready(Err(TripFail::Failed(reason)))) => {
+                return ProbeOutcome::Failed(reason);
+            }
+            Ok(Poll::Pending) => {}
+            Err(payload) => {
+                let reason = payload
+                    .downcast_ref::<&str>()
+                    .map(|m| (*m).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "the readiness trip panicked".to_string());
+                return ProbeOutcome::Failed(reason);
+            }
+        }
+        if start.elapsed().as_secs_f64() >= seconds {
+            return ProbeOutcome::TimedOut;
+        }
+        pump_main_until(0.05, || woken.load(Ordering::Acquire));
+    }
+}
+
+/// Rehosts the detached `view` the way `capture_rgba` does.
+///
+/// The view goes into the offscreen capture window and is laid out
+/// immediately; `inspect` then runs with the rect
+/// `LayoutContext::of(view).safe_rect()` answers, while the view is still
+/// rehosted. The view is restored afterwards.
+///
+/// `device_band` is added to the capture root's safe area before the
+/// layout pass. Whether `UIKit` propagates the scene's device bands into a
+/// capture window depends on the runtime, so the band is supplied
+/// explicitly and every runtime lays the view out under it.
+///
+/// # Panics
+///
+/// When no window scene can host the capture window, or `view` already
+/// has a window.
+#[cfg(target_os = "ios")]
+pub fn with_capture_rehost<R>(
+    mtm: MainThreadMarker,
+    view: &cocoa_ui::Retained<cocoa_ui::PlatformView>,
+    device_band: cocoa_ui::objc2_ui_kit::UIEdgeInsets,
+    inspect: impl FnOnce(cocoa_ui::Rect) -> R,
+) -> R {
+    let _host = crate::capture_image::WindowHost::attach_if_windowless(view, mtm)
+        .expect("the harness application owns a window scene")
+        .expect("a detached view has no window to begin with");
+    cocoa_ui::view::window(view)
+        .and_then(|window| window.rootViewController())
+        .expect("a capture window is mounted through its root controller")
+        .setAdditionalSafeAreaInsets(device_band);
+    cocoa_ui::view::layout_immediately(view);
+    inspect(crate::native_layout::LayoutContext::of(view).safe_rect())
 }
 
 /// Renders `view` against [`render_environment`] through the typed
@@ -668,15 +2051,18 @@ pub type ListSurface = cocoa_ui::uikit::TableView;
 
 /// The offset that puts `row`'s top edge at the viewport's top.
 ///
-/// Read before any clamp: `rectOfRow`'s origin on `AppKit`;
-/// `rectForRowAtIndexPath`'s origin in section 0 minus the adjusted top
-/// inset on `UIKit`, read as the table stands now, since `UIKit` sizes
-/// unseen rows by estimate.
+/// Read before any clamp: `rectOfRow`'s origin minus the top content inset
+/// on `AppKit`; `rectForRowAtIndexPath`'s origin in section 0 minus the
+/// adjusted top inset on `UIKit`, read as the table stands now, since
+/// `UIKit` sizes unseen rows by estimate.
 #[must_use]
 pub fn list_row_top(table: &ListSurface, row: usize) -> cocoa_ui::Point {
     #[cfg(target_os = "macos")]
     {
-        cocoa_ui::Point::new(0.0, table.rect_of_row(row).origin.y)
+        cocoa_ui::Point::new(
+            0.0,
+            table.rect_of_row(row).origin.y - table.contentInsets().top,
+        )
     }
     #[cfg(target_os = "ios")]
     {
@@ -763,18 +2149,57 @@ pub mod menus {
     #[non_exhaustive]
     pub struct MenuRow {
         /// The row's title.
-        pub title: String,
+        title: String,
         /// Its key equivalent — `""` for none.
-        pub key_equivalent: String,
+        key_equivalent: String,
         /// The modifiers its key equivalent takes.
-        pub modifiers: NSEventModifierFlags,
+        modifiers: NSEventModifierFlags,
         /// The name of the selector the row sends, when it sends one —
         /// `performClose:` on the standard Close item.
-        pub action: Option<String>,
+        action: Option<String>,
         /// Whether the row reports enabled after a validation pass.
-        pub enabled: bool,
+        enabled: bool,
         /// Whether the row is a separator.
-        pub separator: bool,
+        separator: bool,
+    }
+
+    impl MenuRow {
+        /// The row's title.
+        #[must_use]
+        pub const fn title(&self) -> &str {
+            self.title.as_str()
+        }
+
+        /// Its key equivalent — `""` for none.
+        #[must_use]
+        pub const fn key_equivalent(&self) -> &str {
+            self.key_equivalent.as_str()
+        }
+
+        /// The modifiers its key equivalent takes.
+        #[must_use]
+        pub const fn modifiers(&self) -> NSEventModifierFlags {
+            self.modifiers
+        }
+
+        /// The name of the selector the row sends, when it sends one —
+        /// `performClose:` on the standard Close item.
+        #[must_use]
+        pub fn action(&self) -> Option<&str> {
+            self.action.as_deref()
+        }
+
+        /// Whether the row reports enabled after a validation pass.
+        #[must_use]
+        pub const fn enabled(&self) -> bool {
+            self.enabled
+        }
+
+        /// Whether the row is a separator.
+        #[must_use]
+        pub const fn separator(&self) -> bool {
+            self.separator
+        }
     }
 
     /// The Window menu's rows in the standard bar `menus::install` builds.
@@ -816,5 +2241,176 @@ pub mod menus {
                 separator: item.isSeparatorItem(),
             })
             .collect()
+    }
+}
+
+/// The inspector tree `walk` produces over `root` — a trial's read of
+/// the published hierarchy without driving the inspect gesture.
+pub fn inspector_tree(
+    root: &cocoa_ui::PlatformView,
+) -> Vec<waterui::inspector::protocol::TreeNode> {
+    crate::inspector::recordable_tree(root)
+}
+
+/// Navigation chrome drawn in content sits at the top of its host.
+///
+/// A borderless window has no toolbar to take the chrome, so a page's
+/// header and a tab host's strip are drawn in content. `HostView` is
+/// flipped, so both must dock at the smallest y of the host, the top, with
+/// the content below them.
+#[cfg(target_os = "macos")]
+pub mod chrome_top {
+    use cocoa_ui::objc2_app_kit::{NSSegmentedControl, NSTextField, NSView};
+    use cocoa_ui::{MainThreadMarker, Retained};
+    use waterui::navigation::{NavigationView, Tab, Tabs, tab_style};
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui::window::{WindowState, WindowStyle};
+    use waterui_core::layout::{Point, Rect, Size};
+
+    use super::{MAIN_QUEUE_DEADLINE, pump_main_until, window_environment};
+
+    /// The text the fixtures show as their content.
+    const MARKER: &str = "chrome-top-marker";
+
+    /// The gap the tab host leaves between the page top and its strip.
+    const STRIP_INSET: f64 = 8.0;
+
+    /// The title the page's in-content header shows.
+    const TITLE: &str = "chrome-top-title";
+
+    /// Half a point: the distance at which an edge counts as reaching a
+    /// boundary at any backing scale.
+    const TOLERANCE: f64 = 0.5;
+
+    /// `rect`, a rect in `view`'s coordinates, in window coordinates —
+    /// where y grows upward whatever the view's own orientation.
+    fn in_window(view: &NSView, rect: cocoa_ui::objc2_foundation::NSRect) -> (f64, f64) {
+        let frame = view.convertRect_toView(rect, None);
+        (frame.origin.y, frame.origin.y + frame.size.height)
+    }
+
+    /// The first text field under `root` showing `string`.
+    fn label(root: &NSView, string: &str) -> Option<Retained<NSTextField>> {
+        for sub in root.subviews() {
+            if let Ok(field) = sub.clone().downcast::<NSTextField>()
+                && field.stringValue().to_string() == string
+            {
+                return Some(field);
+            }
+            if let Some(found) = label(&sub, string) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The first segmented control under `root`.
+    fn strip(root: &NSView) -> Option<Retained<NSSegmentedControl>> {
+        for sub in root.subviews() {
+            if let Ok(control) = sub.clone().downcast::<NSSegmentedControl>() {
+                return Some(control);
+            }
+            if let Some(found) = strip(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Realizes `content` as a borderless window through the production
+    /// root, lays it out and hands `check` the content view.
+    fn realized<V: waterui::View>(
+        mtm: MainThreadMarker,
+        content: impl Fn() -> V + 'static,
+        check: impl FnOnce(&NSView),
+    ) {
+        let (mut env, _theme) = window_environment(mtm);
+        env.insert(crate::first_paint::FirstPaint::default());
+        let declaration =
+            waterui::window::Window::new("Chrome Top", binding(WindowState::Normal), content)
+                .style(WindowStyle::Borderless);
+        declaration
+            .frame
+            .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
+        let host = crate::windows::realize(declaration, &env, mtm);
+        let native = host.window().native();
+        let root = native
+            .contentView()
+            .expect("the realized window has a content view");
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                root.layoutSubtreeIfNeeded();
+                label(&root, MARKER).is_some()
+            }),
+            "the window must realize the fixture"
+        );
+        root.layoutSubtreeIfNeeded();
+        check(&root);
+        native.close();
+        drop(host);
+    }
+
+    /// Window → standalone `NavigationView`: its in-content header sits at
+    /// the top of the page and the content below it.
+    pub fn a_standalone_page_header_sits_above_its_content(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || NavigationView::new(TITLE, text(MARKER)),
+            |root| {
+                let (_, window_top) = in_window(root, root.bounds());
+                let title = label(root, TITLE).expect("the in-content header shows the title");
+                let header =
+                    cocoa_ui::view::superview(&title).expect("the title sits in the header");
+                let (header_bottom, header_top) = in_window(&header, header.bounds());
+                let content = label(root, MARKER).expect("the page shows its content");
+                let (_, content_top) = in_window(&content, content.bounds());
+                assert!(
+                    (header_top - window_top).abs() <= TOLERANCE,
+                    "the header must dock at the page top {window_top}, but its top is \
+                     {header_top}"
+                );
+                assert!(
+                    content_top <= header_bottom + TOLERANCE,
+                    "the content must start below the header's bottom {header_bottom}, but \
+                     its top is {content_top}"
+                );
+            },
+        );
+    }
+
+    /// Window → `Tabs` with the segmented strip: the strip sits at the top
+    /// of the page and the selected pane below it.
+    pub fn a_tab_strip_sits_above_its_panes(mtm: MainThreadMarker) {
+        realized(
+            mtm,
+            || {
+                Tabs::new(
+                    &binding(0usize),
+                    vec![
+                        Tab::container("First", || text(MARKER)),
+                        Tab::container("Second", || text("second")),
+                    ],
+                )
+                .style(tab_style::Automatic)
+            },
+            |root| {
+                let (_, window_top) = in_window(root, root.bounds());
+                let strip = strip(root).expect("the host draws the segmented strip");
+                let (strip_bottom, strip_top) = in_window(&strip, strip.bounds());
+                let content = label(root, MARKER).expect("the selected pane shows its content");
+                let (_, content_top) = in_window(&content, content.bounds());
+                assert!(
+                    (window_top - strip_top - STRIP_INSET).abs() <= TOLERANCE,
+                    "the strip must sit {STRIP_INSET}pt below the page top {window_top}, but \
+                     its top is {strip_top}"
+                );
+                assert!(
+                    content_top <= strip_bottom + TOLERANCE,
+                    "the pane must start below the strip's bottom {strip_bottom}, but its top \
+                     is {content_top}"
+                );
+            },
+        );
     }
 }

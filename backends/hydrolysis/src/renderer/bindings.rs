@@ -5,7 +5,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(super) const fn target_hit_priority(
         depth: usize,
         order: usize,
@@ -122,24 +122,24 @@ impl SemanticCore {
     #[must_use]
     pub fn focused_text_input_state(&self) -> Option<TextInputState> {
         if let Some(caret) = self.focused_embedded_ime_caret() {
-            return Some(TextInputState {
-                x: caret.x0,
-                y: caret.y0,
-                width: caret.width().max(1.0),
-                height: caret.height().max(1.0),
-                purpose: crate::platform::TextInputPurpose::Normal,
-                activation: self.text_editing.activations(),
-            });
+            return Some(TextInputState::new(
+                caret.x0,
+                caret.y0,
+                caret.width().max(1.0),
+                caret.height().max(1.0),
+                crate::platform::TextInputPurpose::Normal,
+                self.text_editing.activations(),
+            ));
         }
         let target = self.text_editing.focused_target()?;
-        Some(TextInputState {
-            x: target.cursor_area.x0,
-            y: target.cursor_area.y0,
-            width: target.cursor_area.width().max(1.0),
-            height: target.cursor_area.height().max(1.0),
-            purpose: target.purpose,
-            activation: self.text_editing.activations(),
-        })
+        Some(TextInputState::new(
+            target.cursor_area.x0,
+            target.cursor_area.y0,
+            target.cursor_area.width().max(1.0),
+            target.cursor_area.height().max(1.0),
+            target.purpose,
+            self.text_editing.activations(),
+        ))
     }
 
     /// The focused text input's accessibility node — UI focus is the text
@@ -161,7 +161,7 @@ impl SemanticCore {
     /// Whether hosted content (`AppKit` or DOM) holds platform focus: it then
     /// receives key and IME delivery itself, so Hydrolysis dispatches none.
     #[cfg_attr(
-        not(hydrolysis_hosted),
+        not(all(hydrolysis_hosted, hydrolysis_gpu)),
         expect(
             clippy::unused_self,
             clippy::missing_const_for_fn,
@@ -169,13 +169,13 @@ impl SemanticCore {
         )
     )]
     fn hosted_has_focus(&self) -> bool {
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         return self
             .hit_test
             .native_view_occlusions
             .iter()
             .any(|target| target.hosted.1.focused.snapshot());
-        #[cfg(not(hydrolysis_hosted))]
+        #[cfg(not(all(hydrolysis_hosted, hydrolysis_gpu)))]
         false
     }
 
@@ -195,7 +195,7 @@ impl SemanticCore {
     /// Whether the pointer is over hosted content that no Hydrolysis content
     /// covers: the hosted view sets the cursor there itself.
     #[cfg_attr(
-        not(hydrolysis_hosted),
+        not(all(hydrolysis_hosted, hydrolysis_gpu)),
         expect(
             clippy::unused_self,
             clippy::missing_const_for_fn,
@@ -203,7 +203,7 @@ impl SemanticCore {
         )
     )]
     pub(crate) fn hosted_owns_cursor(&self, x: f32, y: f32) -> bool {
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         {
             let point = kurbo::Point::new(f64::from(x), f64::from(y));
             self.hit_test
@@ -211,7 +211,7 @@ impl SemanticCore {
                 .iter()
                 .any(|target| target.bounds.contains(point) && !target.sink.covers(point))
         }
-        #[cfg(not(hydrolysis_hosted))]
+        #[cfg(not(all(hydrolysis_hosted, hydrolysis_gpu)))]
         {
             let _ = (x, y);
             false
@@ -388,7 +388,7 @@ impl SemanticCore {
         group_id
     }
 
-    pub(crate) fn register_text_input_target(&mut self, target: TextInputTargetRegistration) {
+    pub(crate) fn register_text_input_target(&mut self, target: TextInputTargetRegistration<E>) {
         #[cfg(feature = "accessibility")]
         let accessibility_node_id = self.take_pending_text_input_accessibility_node();
         self.register_text_input_target_data(text_editing::TextInputTargetData {
@@ -402,7 +402,7 @@ impl SemanticCore {
 
     pub(super) fn register_text_input_target_data(
         &mut self,
-        data: text_editing::TextInputTargetData,
+        data: text_editing::TextInputTargetData<E>,
     ) {
         // All four rects stay node-local; materialization resolves them and
         // applies the clip intersect + alpha gate.

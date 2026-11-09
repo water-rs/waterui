@@ -10,8 +10,8 @@ use waterui_core::{Environment, Native};
 /// Measures a `Dynamic` node's current content if the node still owns it, or
 /// reaches the retained child through the renderer's identity registry when
 /// the content has already been handed to the render pipeline.
-fn measure_dynamic(
-    state: &mut HydroState,
+fn measure_dynamic<E: crate::text::TextEngine>(
+    state: &mut HydroState<E>,
     dynamic: &Dynamic,
     env: &Environment,
     proposal: ProposalSize,
@@ -21,7 +21,7 @@ fn measure_dynamic(
     state
         .measurement
         .begin_dynamic_measurement(identity, proposal);
-    let measure_content = |slot: &mut Option<waterui_core::AnyView>, state: &mut HydroState| {
+    let measure_content = |slot: &mut Option<waterui_core::AnyView>, state: &mut HydroState<E>| {
         slot.take().map(|content| {
             let normalized = normalize_layout_view(content, env);
             let dimensions = if proposal == ProposalSize::UNSPECIFIED {
@@ -74,9 +74,9 @@ fn measure_dynamic(
     dimensions
 }
 
-impl HydroNativeView for Native<Dynamic> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<Dynamic> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -92,7 +92,7 @@ impl HydroNativeView for Native<Dynamic> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,

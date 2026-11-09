@@ -36,7 +36,7 @@ pub(super) mod binding {
     pub const PARAMS: u32 = 2;
     /// The working-space constants.
     pub const SPACE: u32 = 3;
-    /// The clip shape.
+    /// The input's shape (see [`filtrate_core::ShapeInput`]).
     pub const SHAPE: u32 = 4;
     /// Auxiliary image `n` binds at `AUX + n`.
     pub const AUX: u32 = 5;
@@ -64,7 +64,7 @@ pub(super) fn pass_module(
     let segment = module
         .functions
         .iter()
-        .find(|(_, function)| function.name.as_deref() == Some(pass.segment.function.as_str()))
+        .find(|(_, function)| function.name.as_deref() == Some(pass.segment.function()))
         .map(|(handle, _)| handle)
         .expect("the composition defines every segment it describes");
     let argument_types: Vec<Handle<Type>> = module.functions[segment]
@@ -114,7 +114,7 @@ pub(super) fn pass_module(
     };
     let arguments = pass
         .segment
-        .args
+        .args()
         .iter()
         .zip(&argument_types)
         .map(|(&arg, &ty)| inputs.argument(arg, ty))

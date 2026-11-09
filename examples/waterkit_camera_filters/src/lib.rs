@@ -440,15 +440,15 @@ impl CameraFilterRenderer {
 
 impl CameraFilterContent {
     fn ensure_pipeline(&mut self, ctx: &Context) {
-        if self.pipeline.is_some() && self.pipeline_format == Some(ctx.format) {
+        if self.pipeline.is_some() && self.pipeline_format == Some(ctx.format()) {
             return;
         }
 
         let (vertex_shader, fragment_shader) =
-            CAMERA_FILTER_SHADER.create_render_stages(ctx.device, "vs_main", "fs_main");
+            CAMERA_FILTER_SHADER.create_render_stages(ctx.device(), "vs_main", "fs_main");
 
         let bind_group_layout =
-            ctx.device
+            ctx.device()
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("Camera Filter Bind Group Layout"),
                     entries: &[
@@ -481,16 +481,16 @@ impl CameraFilterContent {
                     ],
                 });
 
-        let pipeline_layout = ctx
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Camera Filter Pipeline Layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
+        let pipeline_layout =
+            ctx.device()
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Camera Filter Pipeline Layout"),
+                    bind_group_layouts: &[Some(&bind_group_layout)],
+                    immediate_size: 0,
+                });
 
         let pipeline = ctx
-            .device
+            .device()
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Camera Filter Pipeline"),
                 layout: Some(&pipeline_layout),
@@ -504,7 +504,7 @@ impl CameraFilterContent {
                     module: fragment_shader.module(),
                     entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.format,
+                        format: ctx.format(),
                         blend: Some(wgpu::BlendState::REPLACE),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -520,14 +520,14 @@ impl CameraFilterContent {
                 cache: None,
             });
 
-        let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("Camera Filter Uniform Buffer"),
             size: (core::mem::size_of::<f32>() * 8) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = ctx.device().create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Camera Filter Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -542,18 +542,18 @@ impl CameraFilterContent {
         self.bind_group_layout = Some(bind_group_layout);
         self.sampler = Some(sampler);
         self.uniform_buffer = Some(uniform_buffer);
-        self.pipeline_format = Some(ctx.format);
+        self.pipeline_format = Some(ctx.format());
     }
 }
 
 impl GpuContent for CameraFilterContent {
     fn setup(&mut self, context: &Context<'_>) {
         self.ensure_pipeline(context);
-        self.converter = Some(FrameConverter::new(context.device));
+        self.converter = Some(FrameConverter::new(context.device()));
         self.shared
             .lock()
             .expect("camera mailbox poisoned")
-            .gpu_handles = Some((context.device.clone(), context.queue.clone()));
+            .gpu_handles = Some((context.device().clone(), context.queue().clone()));
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {

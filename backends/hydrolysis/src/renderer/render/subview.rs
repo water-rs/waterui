@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use waterui_core::MainThreadBound;
+use waterui_core::layout::{LayoutError, ResolvedExtent};
 
 /// Layout proxy that measures a child view through the hydrolysis renderer.
 ///
@@ -14,9 +15,9 @@ use waterui_core::MainThreadBound;
 /// content-keyed [`TextService`] directly. That shortcut skips the general
 /// path, which measures by recursing into arbitrary (possibly reactive) bodies and
 /// so has to borrow the renderer's `HydroState` and `Environment`.
-pub struct HydroSubview<'a> {
+pub struct HydroSubview<'a, E: crate::text::TextEngine> {
     view: MainThreadBound<&'a AnyView>,
-    state: MainThreadBound<&'a RefCell<&'a mut HydroState>>,
+    state: MainThreadBound<&'a RefCell<&'a mut HydroState<E>>>,
     env: MainThreadBound<Environment>,
     /// The widget theme widget leaves measure against. Stored as an `Rc` so
     /// the layout `SubView` contract — which carries no theme — still answers
@@ -33,21 +34,21 @@ pub struct HydroSubview<'a> {
     /// Present when this child is a text leaf resolved on the main thread. When
     /// set, `measure` shapes through `service` on any thread and the subview is
     /// worker-safe.
-    resolved_text: Option<ResolvedTextMeasure>,
+    resolved_text: Option<ResolvedTextMeasure<E>>,
 }
 
 /// A text leaf resolved on the main thread, ready to be shaped on any thread.
-struct ResolvedTextMeasure {
+struct ResolvedTextMeasure<E: crate::text::TextEngine> {
     input: ResolvedTextLayoutInput,
-    service: Arc<TextService<SessionTextEngine>>,
+    service: Arc<TextService<E>>,
     /// Maximum laid-out lines, from the leaf's `TextConfig::line_limit`.
     max_lines: Option<usize>,
 }
 
-impl<'a> HydroSubview<'a> {
+impl<'a, E: crate::text::TextEngine> HydroSubview<'a, E> {
     pub(crate) fn from_view(
         view: &'a AnyView,
-        state: &'a RefCell<&'a mut HydroState>,
+        state: &'a RefCell<&'a mut HydroState<E>>,
         env: &'a Environment,
         theme: &'a Rc<dyn WidgetTheme>,
     ) -> Self {
@@ -97,7 +98,7 @@ impl<'a> HydroSubview<'a> {
     }
 }
 
-impl SubView for HydroSubview<'_> {
+impl<E: crate::text::TextEngine> SubView for HydroSubview<'_, E> {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         // Worker-safe path: shaping a resolved text leaf touches no
         // `MainThreadBound` state, so it may run on any thread.
@@ -135,6 +136,34 @@ impl SubView for HydroSubview<'_> {
             .borrow_mut()
             .push((proposal, dimensions.clone()));
         dimensions
+    }
+
+    /// Dispatches through [`resolve_view_extent`], so containers answer their
+    /// layout's rule over their children and wrappers forward. A leaf (and a
+    /// resolved text leaf, which must stay worker-safe) answers its
+    /// stretch-applied [`Self::measure`] centred in `bounds`.
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        if self.resolved_text.is_none() {
+            let resolved = {
+                let mut state = self.state.borrow_mut();
+                resolve_view_extent(
+                    *self.view,
+                    bounds,
+                    proposal,
+                    &mut state,
+                    &self.env,
+                    &self.theme,
+                )?
+            };
+            if let Some(resolved) = resolved {
+                return Ok(resolved);
+            }
+        }
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -185,11 +214,11 @@ fn try_resolve_text_leaf(
         let resolved = text.resolve(&scoped_env);
         return Some((
             resolve_text_layout_input(
-                &resolved.content.snapshot(),
-                resolved.paragraph_alignment.snapshot(),
+                &resolved.content().snapshot(),
+                resolved.paragraph_alignment().snapshot(),
                 &scoped_env,
             ),
-            resolved.line_limit.map(core::num::NonZeroUsize::get),
+            resolved.line_limit().map(core::num::NonZeroUsize::get),
         ));
     }
 
@@ -197,11 +226,11 @@ fn try_resolve_text_leaf(
         let config = text.as_inner();
         return Some((
             resolve_text_layout_input(
-                &config.content.snapshot(),
-                config.paragraph_alignment.snapshot(),
+                &config.content().snapshot(),
+                config.paragraph_alignment().snapshot(),
                 &scoped_env,
             ),
-            config.line_limit.map(core::num::NonZeroUsize::get),
+            config.line_limit().map(core::num::NonZeroUsize::get),
         ));
     }
 
@@ -221,7 +250,7 @@ fn try_resolve_text_leaf(
     None
 }
 
-impl core::fmt::Debug for HydroSubview<'_> {
+impl<E: crate::text::TextEngine> core::fmt::Debug for HydroSubview<'_, E> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HydroSubview")
             .field("stretch_axis", &self.stretch_axis)
@@ -230,7 +259,7 @@ impl core::fmt::Debug for HydroSubview<'_> {
     }
 }
 
-impl core::fmt::Debug for HydrolysisRenderer {
+impl<E: crate::text::TextEngine> core::fmt::Debug for HydrolysisRenderer<E> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HydrolysisRenderer").finish_non_exhaustive()
     }

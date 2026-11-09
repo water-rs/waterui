@@ -311,11 +311,7 @@ pub fn into_list(collection: &Collection, attributes: ListAttributes) -> AnyView
     let list = List::new(ForEach::new(collection.keys(), move |key| {
         ListItem::new(items(key))
     }));
-    let ListAttributes {
-        editing,
-        on_delete,
-        on_move,
-    } = attributes;
+    let (editing, on_delete, on_move) = attributes.into_parts();
     if editing.is_none() && on_delete.is_none() && on_move.is_none() {
         return AnyView::new(Metadata::new(list, collection.retain()));
     }

@@ -32,19 +32,74 @@ use std::sync::Arc;
 #[non_exhaustive]
 pub struct SemanticPumpResult {
     /// Whether the pump rebuilt the view tree.
-    pub rebuilt: bool,
+    rebuilt: bool,
     /// The frame's CPU/GPU stage profile.
-    pub profile: FrameProfile,
+    profile: FrameProfile,
     #[cfg(feature = "accessibility")]
     /// The accessibility tree update the frame produced.
-    pub tree_update: Option<AccessibilityTreeUpdate>,
+    tree_update: Option<AccessibilityTreeUpdate>,
     #[cfg(feature = "accessibility")]
     /// The content types the emitted tree's text fields declared — the map
     /// the update publishes beside it.
-    pub content_types: AccessibilityContentTypes,
+    content_types: AccessibilityContentTypes,
     #[cfg(feature = "accessibility")]
     /// The accessibility node holding UI focus.
-    pub ui_focus: Option<accesskit::NodeId>,
+    ui_focus: Option<accesskit::NodeId>,
+}
+
+impl SemanticPumpResult {
+    /// Whether the pump rebuilt the view tree.
+    #[must_use]
+    pub const fn rebuilt(&self) -> bool {
+        self.rebuilt
+    }
+
+    /// The frame's CPU/GPU stage profile.
+    #[must_use]
+    pub const fn profile(&self) -> FrameProfile {
+        self.profile
+    }
+
+    /// The accessibility tree update the frame produced.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub const fn tree_update(&self) -> Option<&AccessibilityTreeUpdate> {
+        self.tree_update.as_ref()
+    }
+
+    /// Takes the accessibility tree update the frame produced.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn into_tree_update(self) -> Option<AccessibilityTreeUpdate> {
+        self.tree_update
+    }
+
+    /// The content types the emitted tree's text fields declared — the map
+    /// the update publishes beside it.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub const fn content_types(&self) -> &AccessibilityContentTypes {
+        &self.content_types
+    }
+
+    /// The accessibility node holding UI focus.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub const fn ui_focus(&self) -> Option<accesskit::NodeId> {
+        self.ui_focus
+    }
+
+    /// Takes the accessibility tree update out of the result, leaving none.
+    #[cfg(feature = "accessibility")]
+    pub const fn take_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
+        self.tree_update.take()
+    }
+
+    /// Takes the content types out of the result, leaving the map empty.
+    #[cfg(feature = "accessibility")]
+    pub fn take_content_types(&mut self) -> AccessibilityContentTypes {
+        core::mem::take(&mut self.content_types)
+    }
 }
 
 /// One window in a [`SemanticRuntime`]: the platform [`Window`] (title,
@@ -52,7 +107,7 @@ pub struct SemanticPumpResult {
 /// and the input events queued for the next pump.
 struct SemanticWindow {
     window: Window,
-    core: SemanticCore,
+    core: SemanticCore<crate::text::ParleyEngine>,
     pending_events: VecDeque<InputEvent>,
     /// Set when state changed outside a pump (an accessibility action, a
     /// signal write from an event) so the next pump re-emits even when no
@@ -80,10 +135,11 @@ impl SemanticWindow {
         fonts: &FontCollection,
         window_id: WindowId,
         family_resolution: FontFamilyResolution,
+        env: &Environment,
     ) -> Self {
         let mut core = SemanticCore::new(
             Instant::now(),
-            SessionTextEngine::from_collection(fonts, family_resolution),
+            ParleyEngine::from_collection(fonts, family_resolution),
         );
         core.set_window_id(window_id);
         core.set_window_closable(window.closable);
@@ -97,7 +153,7 @@ impl SemanticWindow {
             core.use_semantic_keyboard_activation();
             core.use_semantic_walk();
         }
-        let declaration_watches = subscribe_window_declaration_signals(&window, &core);
+        let declaration_watches = subscribe_window_declaration_signals(&window, env, &core);
         Self {
             window,
             core,
@@ -211,12 +267,16 @@ impl SemanticRuntime {
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
-        install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
+        install_headless_window_managers::<crate::text::ParleyEngine>(
+            &mut env,
+            Rc::clone(&pending_window_queue),
+        );
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // Framework tokens only: the semantic runtime has no `Style`, so no
         // style-package tokens ever install — widget structure, roles, labels
-        // and actions do not depend on one.
-        crate::theme::install_theme_tokens(&mut env, None);
+        // and actions do not depend on one. No platform appearance either: the
+        // scheme is Light unless the application installs its own.
+        crate::theme::install_theme_tokens(&mut env, None, waterui::theme::ColorScheme::Light);
         let fonts = build_fonts(&env);
         fonts.clone().install(&mut env);
 
@@ -250,13 +310,15 @@ impl SemanticRuntime {
         ));
 
         let window_id = env
-            .get::<MenuShortcutRegistry>()
+            .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
             .expect("install_headless_window_managers seeds MenuShortcutRegistry")
             .mint_window_id();
         window.arm_close_requests(&env);
+        let semantic_window =
+            SemanticWindow::new(window, &fonts, window_id, family_resolution, &env);
         Self {
             env,
-            window: SemanticWindow::new(window, &fonts, window_id, family_resolution),
+            window: semantic_window,
             pending_window_queue,
             popup_windows: Vec::new(),
             fonts,
@@ -347,7 +409,7 @@ impl SemanticRuntime {
     }
 
     fn is_quiescent(&self, perpetual: PerpetualAnimation) -> bool {
-        let scheduled = |core: &SemanticCore| match perpetual {
+        let scheduled = |core: &SemanticCore<crate::text::ParleyEngine>| match perpetual {
             PerpetualAnimation::Counts => core.has_scheduled_semantic_work(),
             PerpetualAnimation::Ignored => core.has_finite_semantic_work(),
         };
@@ -461,15 +523,17 @@ impl SemanticRuntime {
 
         SemanticPumpResult {
             rebuilt: rebuilt || drained_before || drained_after,
-            profile: FrameProfile {
-                phases: FramePhases {
-                    executor_before,
-                    input,
-                    animation,
-                    executor_after,
-                    ..FramePhases::default()
-                },
-                ..FrameProfile::default()
+            profile: {
+                let mut literal = FrameProfile::default();
+                literal.set_phases({
+                    let mut literal = FramePhases::default();
+                    literal.set_executor_before(executor_before);
+                    literal.set_input(input);
+                    literal.set_animation(animation);
+                    literal.set_executor_after(executor_after);
+                    literal
+                });
+                literal
             }
             .with_total(frame_started_at.elapsed()),
             #[cfg(feature = "accessibility")]
@@ -491,7 +555,7 @@ impl SemanticRuntime {
             let fonts = self.fonts.clone();
             let window_id = self
                 .env
-                .get::<MenuShortcutRegistry>()
+                .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id();
             window.arm_close_requests(&self.env);
@@ -500,6 +564,7 @@ impl SemanticRuntime {
                 &fonts,
                 window_id,
                 self.family_resolution,
+                &self.env,
             ));
         }
     }
@@ -1142,7 +1207,7 @@ mod tests {
     ) -> impl waterui_core::handler::Handler<(Use<KeyPress>,), KeyHandling> {
         move |Use(press): Use<KeyPress>| {
             let mut seen = hits.snapshot();
-            seen.push(format!("{:?}", press.key));
+            seen.push(format!("{:?}", press.key()));
             hits.set(seen);
             disposition
         }
@@ -1363,9 +1428,9 @@ mod tests {
                 vstack((waterui_controls::text_field::field("Search", &value),)).on_key_press(
                     move |Use(press): Use<KeyPress>| {
                         let mut seen = hits.snapshot();
-                        seen.push(format!("{:?}", press.key));
+                        seen.push(format!("{:?}", press.key()));
                         hits.set(seen);
-                        if matches!(&press.key, Key::Character(c) if c.as_str() == "x") {
+                        if matches!(&press.key(), Key::Character(c) if c.as_str() == "x") {
                             KeyHandling::Handled
                         } else {
                             KeyHandling::Ignored

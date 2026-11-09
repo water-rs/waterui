@@ -16,7 +16,9 @@ use waterui::graphics::draw::{
     ColorSpace, ColorStop, Extend, Interpolation, LinearDisplayP3, LinearGradient, Paint,
     RadialGradient, Srgb, SweepGradient, WorkingColor,
 };
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
@@ -211,6 +213,14 @@ impl core::fmt::Debug for GradientSubView {
 }
 
 impl SubView for GradientSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         // Greedy: take the whole proposal on every axis.
         ViewDimensions::new(Size::new(

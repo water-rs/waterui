@@ -48,10 +48,6 @@ use waterui_shape::{Capsule, Shape, ShapeKind};
 /// let frosted = text!("Hello").background(Material::Regular);
 /// ```
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "metadata newtype; backends destructure the wrapped material"
-)]
 pub struct MaterialBackground(pub Material);
 
 impl MetadataKey for MaterialBackground {}
@@ -92,10 +88,6 @@ impl IntoBackground for Material {
 /// let pill = text!("Now Playing").padding().background(Glass::regular());
 /// ```
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "metadata newtype; backends destructure the wrapped glass"
-)]
 pub struct GlassBackground(pub Glass);
 
 impl MetadataKey for GlassBackground {}
@@ -128,10 +120,6 @@ impl IntoBackground for Glass {
 /// Use via [`material_group`](crate::ViewExt::material_group) rather than
 /// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less metadata marker inserted by name"
-)]
 pub struct MaterialGroup;
 
 impl MetadataKey for MaterialGroup {}

@@ -404,15 +404,10 @@ where
         + cherenkov::ShaderPaintCapability,
 {
     fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError> {
-        match source.language {
+        let (source, language, animated) = source.into_parts();
+        match language {
             ShaderLanguage::Wgsl => {
-                let shader = Self::shader(
-                    self,
-                    cherenkov::ShaderSource {
-                        source: source.source,
-                        animated: source.animated,
-                    },
-                )?;
+                let shader = Self::shader(self, cherenkov::ShaderSource { source, animated })?;
                 Ok(Handle::new(shader))
             }
             language @ ShaderLanguage::Agsl => Err(ResourceError::Shader(format!(
@@ -957,7 +952,7 @@ impl SceneResources {
     }
 
     /// The largest image the target admits, in each dimension and in
-    /// total texels — what it reports through
+    /// stored bytes — what it reports through
     /// [`SceneBackend::image_limits`]. Fixed for the target's life.
     /// [`ImageLimits::fit`](crate::draw::ImageLimits::fit) gives the
     /// largest admitted size at a kept aspect ratio, for content that
@@ -972,7 +967,7 @@ impl SceneResources {
     /// the source is hashed for [`intern`](Self::intern), so an oversized
     /// image is rejected without hashing it at all.
     fn admit_image<F: Format>(&self, data: &ImageData<F>) -> Result<(), ResourceError> {
-        self.image_limits().check(data.width(), data.height())
+        self.image_limits().check::<F>(data.width(), data.height())
     }
 
     /// The live registration of `bytes` in `shape`, or a new one from
@@ -1135,15 +1130,15 @@ impl SceneResources {
         let Some(backend) = self.table.shaders.clone() else {
             return Err(ResourceError::Unsupported("shader paint"));
         };
-        let bytes = match &source.source {
+        let bytes = match &source.source() {
             Cow::Borrowed(text) => SourceBytes::Static(text.as_bytes()),
             Cow::Owned(text) => SourceBytes::Shared(Arc::from(text.as_bytes())),
         };
         self.intern(
             |table| &table.shaders_cache,
             ShaderShape {
-                animated: source.animated,
-                language: source.language,
+                animated: source.get_animated(),
+                language: source.language(),
             },
             bytes,
             EntryKey::Shader,

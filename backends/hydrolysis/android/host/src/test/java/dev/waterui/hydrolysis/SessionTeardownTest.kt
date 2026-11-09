@@ -178,6 +178,73 @@ class SessionTeardownTest {
         assertEquals(0, ShadowNativeBridge.deadlineQueries)
     }
 
+    /**
+     * #3319: `showSoftInput` builds the input connection synchronously, and
+     * its `nativeEditingState` pull would re-enter the session the frame
+     * still holds borrowed — so a soft-input request made inside a native
+     * call reaches the host view only when the outermost call returns, and
+     * only the latest request.
+     */
+    @Test
+    fun aSoftInputRequestInsideANativeCallReachesTheHostWhenItReturns() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {})
+        val host = SoftInputRecordingHostView(activity, session)
+        activity.setContentView(host)
+        ShadowNativeBridge.onFrame = {
+            session.onNativeSoftInput(true)
+            // A later request replaces the earlier one inside the frame.
+            session.onNativeSoftInput(false)
+            assertTrue(host.softInputRequests.isEmpty())
+            0L
+        }
+
+        session.onNativeRequestRedraw()
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+
+        assertEquals(listOf(false), host.softInputRequests)
+        session.destroy()
+    }
+
+    /**
+     * #1966: the translucency listeners switch the Activity window and
+     * recreate the band's surface, whose callbacks re-enter the session — so
+     * a change the frame reports reaches them only when the frame returns.
+     */
+    @Test
+    fun aTranslucencyChangeInsideANativeCallReachesTheListenersWhenItReturns() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {})
+        val seen = mutableListOf<HydrolysisSession.Translucency>()
+        session.addTranslucencyListener { seen += it }
+        seen.clear()
+        ShadowNativeBridge.onFrame = {
+            session.onNativeTranslucency(true, false, 0)
+            assertTrue(seen.isEmpty())
+            0L
+        }
+
+        session.onNativeRequestRedraw()
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+
+        assertEquals(listOf(HydrolysisSession.Translucency(true, false, 0)), seen)
+        session.destroy()
+    }
+
+    @Test
+    fun aSoftInputRequestOutsideANativeCallReachesTheHostAtOnce() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {})
+        val host = SoftInputRecordingHostView(activity, session)
+        activity.setContentView(host)
+
+        session.onNativeSoftInput(true)
+        session.onNativeSoftInput(false)
+
+        assertEquals(listOf(true, false), host.softInputRequests)
+        session.destroy()
+    }
+
     @Test
     fun childrenDetachBeforeTheDeferredTeardown() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
@@ -455,6 +522,52 @@ class SessionTeardownTest {
         assertEquals(visibilityCalls, ShadowNativeBridge.visibilities.size)
     }
 
+    @Test
+    fun aSessionPainterOutlivesItsHostViewsAndDiesAtTeardown() {
+        val events = mutableListOf<String>()
+        val painter = object : SessionPainter {
+            override fun attach(host: HydrolysisHostView) { events += "attach:${System.identityHashCode(host)}" }
+            override fun detach(host: HydrolysisHostView) { events += "detach:${System.identityHashCode(host)}" }
+            override fun destroy() { events += "destroy(nativedestroyed=${ShadowNativeBridge.destroyed})" }
+            override fun setHighRefresh(active: Boolean) { events += "refresh:$active" }
+        }
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {}, painter = painter)
+
+        // The window lifecycle drives bind/unbind — no manual calls.
+        val first = HydrolysisHostView(activity, session)
+        activity.setContentView(first)
+        assertTrue(first.isAttachedToWindow)
+        (first.parent as ViewGroup).removeView(first)
+
+        val second = HydrolysisHostView(activity, session)
+        activity.setContentView(second)
+        assertTrue(second.isAttachedToWindow)
+
+        session.setFrameDemand(continuous = true, touching = false)
+        assertEquals("refresh:true", events.last())
+
+        // A live attached host defers teardown until it detaches.
+        session.destroy()
+        assertFalse(ShadowNativeBridge.destroyed)
+        assertFalse(events.any { it.startsWith("destroy") })
+
+        (second.parent as ViewGroup).removeView(second)
+        assertTrue(ShadowNativeBridge.destroyed)
+        assertEquals(1, ShadowNativeBridge.sessions)
+        assertEquals(
+            listOf(
+                "attach:${System.identityHashCode(first)}",
+                "detach:${System.identityHashCode(first)}",
+                "attach:${System.identityHashCode(second)}",
+                "refresh:true",
+                "detach:${System.identityHashCode(second)}",
+                "destroy(nativedestroyed=true)",
+            ),
+            events,
+        )
+    }
+
     private companion object {
         /** Long enough for Robolectric's Choreographer to run a posted frame. */
         val FRAME_WINDOW: Duration = Duration.ofSeconds(1)
@@ -466,6 +579,8 @@ class SessionTeardownTest {
 }
 
 /** A host view that counts its frame requests and still schedules them. */
+
+
 class RecordingHostView(context: Context, session: HydrolysisSession) :
     HydrolysisHostView(context, session) {
     var frameRequests = 0
@@ -474,6 +589,16 @@ class RecordingHostView(context: Context, session: HydrolysisSession) :
     override fun requestFrame() {
         frameRequests += 1
         super.requestFrame()
+    }
+}
+
+/** A host view that records the soft-input requests the session sends it. */
+class SoftInputRecordingHostView(context: Context, session: HydrolysisSession) :
+    HydrolysisHostView(context, session) {
+    val softInputRequests = mutableListOf<Boolean>()
+
+    override fun setSoftInputVisible(visible: Boolean) {
+        softInputRequests += visible
     }
 }
 
@@ -533,6 +658,12 @@ class ShadowNativeBridge {
         /** Every `nativeSetVisible` call, in order. */
         val visibilities = mutableListOf<Boolean>()
 
+        /** The night-mode flag each `nativeCreateSession` carried. */
+        val createNightModes = mutableListOf<Boolean>()
+
+        /** Every `nativeSetColorScheme` push, in order. */
+        val colorSchemes = mutableListOf<Boolean>()
+
         /** Every `nativeBackEvent` phase, in order. */
         val backEvents = mutableListOf<Int>()
 
@@ -563,6 +694,8 @@ class ShadowNativeBridge {
             deadlineNanos = 0L
             highRefreshDemands.clear()
             visibilities.clear()
+            createNightModes.clear()
+            colorSchemes.clear()
             backEvents.clear()
             onDestroy = {}
             onFrame = { 0L }
@@ -594,10 +727,29 @@ class ShadowNativeBridge {
         fun nativeCreateSession(
             @Suppress("UNUSED_PARAMETER") session: HydrolysisSession,
             @Suppress("UNUSED_PARAMETER") context: Context,
+            @Suppress("UNUSED_PARAMETER") painter: SessionPainter?,
             @Suppress("UNUSED_PARAMETER") uiThreadServices: Long,
+            nightMode: Boolean,
         ): Long {
             sessions += 1
+            createNightModes += nightMode
             return SESSION_PTR
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean) {
+            assertLive(sessionPtr)
+            colorSchemes += nightMode
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetHostAttached(
+            sessionPtr: Long,
+            @Suppress("UNUSED_PARAMETER") attached: Boolean,
+        ) {
+            assertLive(sessionPtr)
         }
 
         @JvmStatic
@@ -664,4 +816,6 @@ class ShadowNativeBridge {
             return treeJson
         }
     }
+
+
 }

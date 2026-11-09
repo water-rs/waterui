@@ -51,8 +51,8 @@ values, or `Capsule` when fully-rounded is the intent. Same for `UnevenRoundedRe
 whose four radii are in reading order (top_leading, top_trailing, bottom_leading,
 bottom_trailing), not clockwise.
 
-**Padding lands on the wrong edges.** `EdgeInsets::new(top, bottom, leading, trailing)` —
-not CSS order — and `EdgeInsets::symmetric(vertical, horizontal)`.
+**Padding lands on the wrong edges.** `EdgeInsets::new(top, leading, bottom, trailing)` —
+SwiftUI's order, not CSS — and `EdgeInsets::symmetric(vertical, horizontal)`.
 
 **A background task never runs, or an animation loop dies instantly.** The
 `spawn_local(..)` handle was dropped — it cancels the future on drop. Call `.detach()`.

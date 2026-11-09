@@ -154,6 +154,30 @@ class Host(unittest.TestCase):
 
 
 class Sampling(unittest.TestCase):
+    def test_joined_worker_cost_is_counted_with_its_lowering_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            write_dump(root, 1, ('after', MARKER), [
+                (RUN, ROOT, 1, 40), (WAITER, JOB, 1, 200),
+                (ROOT, chain(WAIT, ROOT, RUN), 1, 10),
+                (JOB, chain(LATCH, JOB, WAITER), 1, 6),
+                (JOB, chain(ALLOC, JOB, WAITER), 1, 5),
+                (JOB, chain('memcpy', JOB, WAITER), 1, 8),
+            ])
+            write_dump(root, 2, ('after', ROOT), [
+                (RUN, ROOT, 0, 60), (WAITER, JOB, 1, 100),
+                (JOB, chain(ALLOC, JOB, WAITER), 1, 2),
+                (JOB, chain('memcpy', JOB, WAITER), 1, 4),
+            ])
+            [sample] = ir_gate.call_samples(root, 'cpu', ROOT, [2], count=1, workers=(JOB,), sync=ir_gate.SYNC)
+            self.assertEqual(sample['ncalls'], 1)
+            self.assertEqual(sample['worker_calls'], 2)
+            self.assertEqual(sample['ir'], 400)
+            self.assertEqual(sample['rust_ir'], 365)
+            self.assertEqual(sample['sync_ir'], 16)
+            self.assertEqual(sample['allocs'], 2)
+            self.assertEqual(sample['mem_calls'], 2)
+
     def test_span_subtracts_only_calls_under_the_root(self):
         # run.1 closes the call in flight when instrumentation switched on,
         # run.2 is another root's return before the root is entered, run.3
@@ -206,6 +230,8 @@ class Sampling(unittest.TestCase):
 
     def test_profile_stops_on_its_declared_roots(self):
         every, once = ir_gate.EVERY_FRAME, ir_gate.RECORDED_ONCE
+        self.assertTrue(ir_gate.sampled({'lower': [], 'encode': [1] * 8, 'run_transaction': [2] * 8}, every, 'retained'))
+        self.assertFalse(ir_gate.sampled({'lower': [], 'encode': [1] * 8, 'run_transaction': [2] * 8}, every, 'fresh', returns=1))
         self.assertTrue(ir_gate.sampled({'lower': [2] * 4, 'encode': [1] * 4, 'run_transaction': []}, once, 's'))
         self.assertFalse(ir_gate.sampled({'lower': [2] * 3, 'encode': [1] * 8, 'run_transaction': []}, once, 's'))
         with self.assertRaisesRegex(RuntimeError, 'declare'):

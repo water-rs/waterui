@@ -7,7 +7,7 @@ struct MultiWindowTwin: View {
   var body: some View {
     ScrollView {
       VStack(spacing: 10) {
-        Text("Multi-Window Gallery").font(.title).fontWeight(.bold)
+        Text("Multi-Window Gallery").font(.title).bold()
         Text("Explore different window styles and backgrounds").font(.body)
         Spacer(minLength: 0).frame(height: 20)
         wuiDivider()
@@ -56,7 +56,7 @@ struct MultiWindowTwin: View {
 
   private func windowSection(_ title: String, _ description: String) -> some View {
     VStack(spacing: 10) {
-      Text(title).font(.headline).fontWeight(.bold)
+      Text(title).font(.headline).bold()
       Text(description).font(.body)
       Spacer(minLength: 0).frame(height: 8)
       HStack(spacing: 10) {

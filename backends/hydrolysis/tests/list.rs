@@ -671,7 +671,7 @@ fn for_each_same_id_item_update_rematerializes_row_offscreen() {
         320,
     );
     app.settle();
-    let before = app.snapshot().rgba8.clone();
+    let before = app.snapshot().rgba8().to_vec();
 
     // Focus a row so its claim is retained by id, then update a different row.
     app.tap_at(20.0, 20.0);
@@ -686,7 +686,7 @@ fn for_each_same_id_item_update_rematerializes_row_offscreen() {
             .collect::<Vec<_>>(),
     );
     app.settle();
-    let after = app.snapshot().rgba8.clone();
+    let after = app.snapshot().rgba8().to_vec();
     assert!(
         after != before,
         "the updated row must repaint: a same-id content change must re-materialize \
@@ -960,21 +960,21 @@ fn scroll_position_reports_actual_offset_not_pending_requests() {
         .position()
         .snapshot()
         .expect("the first painted layout reports a position");
-    assert_eq!(position.offset.y, 0.0);
-    assert!(position.at_start && !position.at_end);
-    assert!(position.content_size.height > position.viewport_size.height);
+    assert_eq!(position.offset().y, 0.0);
+    assert!(position.at_start() && !position.at_end());
+    assert!(position.content_size().height > position.viewport_size().height);
 
     // A queued row request must not present itself as the actual position.
     controller.scroll_to(GROWN_ROW_COUNT - 1);
     assert_eq!(
-        controller.position().snapshot().unwrap().offset,
-        position.offset,
+        controller.position().snapshot().unwrap().offset(),
+        position.offset(),
         "a pending request must never pose as the actual position"
     );
     app.pump_for(FRAME);
     let applied = controller.position().snapshot().unwrap();
     assert!(
-        applied.offset.y > 0.0,
+        applied.offset().y > 0.0,
         "the applied request reports the landed offset: {applied:?}"
     );
 }
@@ -991,20 +991,20 @@ fn scroll_position_updates_edge_flags_when_content_grows() {
     controller.scroll_to(GROWN_ROW_COUNT - 1);
     app.pump_for(FRAME);
     let bottom = controller.position().snapshot().unwrap();
-    assert!(bottom.at_end, "scrolled to the last row must be at_end");
-    let extent = bottom.content_size.height;
+    assert!(bottom.at_end(), "scrolled to the last row must be at_end");
+    let extent = bottom.content_size().height;
 
     // Appending rows grows the extent; the offset holds while `at_end`
     // clears — geometry must report without a scroll happening.
     let _ = items.replace((0..GROWN_ROW_COUNT + 10).map(SelfId::new).collect());
     app.pump_for(FRAME);
     let after = controller.position().snapshot().unwrap();
-    assert_eq!(after.offset, bottom.offset);
+    assert_eq!(after.offset(), bottom.offset());
     assert!(
-        !after.at_end,
+        !after.at_end(),
         "growth past the tail must clear at_end, got {after:?}"
     );
-    assert!(after.content_size.height > extent);
+    assert!(after.content_size().height > extent);
 }
 
 // Issue #1259: a position observer may mutate the list collection during
@@ -1037,7 +1037,7 @@ fn scroll_position_watcher_may_mutate_the_list_collection() {
     controller.scroll_to(3);
     app.settle();
     assert!(
-        controller.position().snapshot().unwrap().offset.y > 0.0,
+        controller.position().snapshot().unwrap().offset().y > 0.0,
         "the applied scroll must have moved the reported offset"
     );
     assert!(

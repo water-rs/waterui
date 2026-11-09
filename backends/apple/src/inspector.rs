@@ -58,6 +58,13 @@ impl Inspection {
     reason = "inspector bounds use f32 platform points"
 )]
 fn walk(view: &PlatformView, nodes: &mut Vec<TreeNode>) {
+    // A retired host and its subtree are a ghost — pure visuals outside
+    // semantic membership — so the published tree skips it whole.
+    if let Some(host) = view.downcast_ref::<HostView>()
+        && host.is_retired()
+    {
+        return;
+    }
     let children = view.subviews();
     let frame = view.convertRect_toView(view.bounds(), None);
     let (role, label, enabled) = accessibility(view);
@@ -107,6 +114,15 @@ fn accessibility(view: &PlatformView) -> (String, Option<String>, bool) {
             .map(|label| label.to_string()),
         view.isUserInteractionEnabled(),
     )
+}
+
+/// The tree `publish` would record — the walk a native trial reads
+/// without driving the inspect gesture.
+#[cfg(feature = "native-test")]
+pub fn recordable_tree(root: &PlatformView) -> Vec<TreeNode> {
+    let mut nodes = Vec::new();
+    walk(root, &mut nodes);
+    nodes
 }
 
 /// Installs interactions for the root's lifetime. Only an inspect action publishes

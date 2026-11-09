@@ -170,66 +170,7 @@ where
     ) / V::splat(simd, p.len2)
 }
 
-/// `atan2` lane-wise: `f32::atan2` has no vector form, so the sweep
-/// kernel evaluates this polynomial at every width and a pixel never
-/// depends on its lane. Cephes' single-precision `atan` reduction:
-/// `t ∈ [0, 1]` from |min|/|max|, `t > tan(π/8)` folded through
-/// `(t − 1)/(t + 1)` with a π/4 bias, the four-coefficient minimax on
-/// `|u| ≤ tan(π/8)`, then the quadrant rebuilt from the arguments'
-/// signs. The IEEE corners fall out of the same selects: `±0`/`±π` for
-/// a zero pair, `±π/4`/`±3π/4` for `±∞,±∞`, NaN in gives NaN out. The
-/// absolute error is under 3×10⁻⁷ rad (≈1.1 ulp at π), as measured
-/// over the domain; `f32::atan2` itself is good to ≈0.5 ulp.
-#[expect(
-    clippy::many_single_char_names,
-    reason = "x/y/t/u/z/r are the atan2 reduction's own names"
-)]
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
-pub(super) fn atan2_span<S, V>(simd: S, y: V, x: V) -> V
-where
-    S: Simd,
-    V: SimdFloat<S, Element = f32>,
-    V::Mask: Select<V>,
-{
-    let zero = V::splat(simd, 0.0);
-    let one = V::splat(simd, 1.0);
-    let (ax, ay) = (x.abs(), y.abs());
-    let (lo, hi) = (ax.min(ay), ax.max(ay));
-    // `lo / hi` is NaN when both are ∞ — atan(±1) — or both are 0;
-    // the first is corrected here, the second below.
-    let t = lo
-        .simd_eq(V::splat(simd, f32::INFINITY))
-        .select(one, lo / hi);
-    let big = t.simd_gt(V::splat(simd, 0.414_213_57));
-    let u = big.select((t - one) / (t + one), t);
-    let z = u * u;
-    // atan(u) = u + u³·P(u²), P the cephes f32 coefficients.
-    let p = V::splat(simd, 8.053_744_5e-2)
-        .mul_add(z, V::splat(simd, -1.387_768_5e-1))
-        .mul_add(z, V::splat(simd, 1.997_771_1e-1))
-        .mul_add(z, V::splat(simd, -3.333_295e-1));
-    let mut r =
-        (u * z).mul_add(p, u) + big.select(V::splat(simd, std::f32::consts::FRAC_PI_4), zero);
-    r = ay
-        .simd_gt(ax)
-        .select(V::splat(simd, std::f32::consts::FRAC_PI_2) - r, r);
-    r = x
-        .simd_lt(zero)
-        .select(V::splat(simd, std::f32::consts::PI) - r, r);
-    let r = r.copysign(y);
-    // atan2(±0, ±0): ±π for a negative-signed x, ±0 otherwise.
-    let corner = x
-        .simd_lt(zero)
-        .select(V::splat(simd, std::f32::consts::PI), zero)
-        .copysign(y);
-    let r = hi.simd_eq(zero).select(corner, r);
-    // NaN in either argument gives NaN, whatever min/max picked.
-    (!(x.simd_eq(x)) | !(y.simd_eq(y))).select(V::splat(simd, f32::NAN), r)
-}
+use cherenkov_simd::math::atan2 as atan2_span;
 
 /// `premul_span`'s working-space arm on one pixel's channel vector:
 /// `[r·a, g·a, b·a, a]` as one multiply — the same IEEE products — and
@@ -975,7 +916,8 @@ struct Gradient<E>(E);
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
-impl<'a, S, E> SpanKernel<'a, S> for Gradient<E>
+// SAFETY: run writes every output pixel before returning.
+unsafe impl<'a, S, E> SpanKernel<'a, S> for Gradient<E>
 where
     S: Simd,
     E: SpanEval<'a, S>,

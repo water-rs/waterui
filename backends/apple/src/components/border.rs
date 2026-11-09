@@ -15,7 +15,10 @@ use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::border::Border;
 use waterui::graphics::color::WorkingColor;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -114,6 +117,14 @@ impl core::fmt::Debug for BorderSubView {
 }
 
 impl SubView for BorderSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }
@@ -135,9 +146,9 @@ impl SubView for BorderSubView {
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<Metadata<Border>>(|metadata, ctx| {
         let border = metadata.value;
-        let edges = border.edges;
-        let width = border.width;
-        let corner_radius = border.corner_radius;
+        let edges = border.get_edges();
+        let width = border.width();
+        let corner_radius = border.get_corner_radius();
         let draws_all_edges = edges.top && edges.leading && edges.bottom && edges.trailing;
 
         let mtm = ctx.mtm();
@@ -220,7 +231,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         );
         leaf.keep(sink_guard);
 
-        let resolved = border.color.resolve(ctx.env());
+        let resolved = border.color().resolve(ctx.env());
         leaf.bind(&resolved, {
             let state = Rc::clone(&state);
             move |color| {

@@ -12,7 +12,7 @@ use crossbeam_channel::Receiver;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use cherenkov_record::Realize;
+use cherenkov_record::{ContentOp, Realize};
 
 use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
@@ -429,6 +429,7 @@ fn apply_message<B: Backend>(
         }
         Message::Display { id, display } => set_display(surfaces, id, display),
         Message::DisplayMoved { id } => set_display_moved(surfaces, id),
+        Message::SetBand { id, window, target } => renderer.set_band(id, window, target),
         Message::Visibility { id, visibility } => {
             set_visibility::<B>(renderer, surfaces, id, visibility);
         }
@@ -757,15 +758,27 @@ fn commit<B: Backend>(
     }
     state.content_animating = *animating;
     for op in ops.drain(..) {
-        state.commits = Commits::Other;
-        match state.tree.apply_op(op) {
-            Realize::Remove(layer) => renderer.remove_layer(surface, layer),
+        let invalidates = match state.tree.apply_op(op) {
+            Realize::Remove(layer) => {
+                renderer.remove_layer(surface, layer);
+                true
+            }
             Realize::Content(layer, content) => {
-                if let Some(mut old) = renderer.set_content(surface, layer, content)
+                let replacement = match &content {
+                    Some(ContentOp::Replace(picture)) => Some(picture.clone()),
+                    _ => None,
+                };
+                let previous = renderer.set_content(surface, layer, content);
+                let invalidates = replacement
+                    .as_ref()
+                    .zip(previous.as_ref())
+                    .is_none_or(|(new, old)| new != old);
+                if let Some(mut old) = previous
                     && old.try_recycle()
                 {
                     recycled.push((layer, old));
                 }
+                invalidates
             }
             Realize::Install(layer, install) => {
                 // The install reports its content's declared alpha —
@@ -774,8 +787,12 @@ fn commit<B: Backend>(
                     layer,
                     install.into_inner()(&mut *renderer, surface, layer).unwrap_or(false),
                 );
+                true
             }
-            Realize::Applied => {}
+            Realize::Applied => true,
+        };
+        if invalidates {
+            state.commits = Commits::Other;
         }
     }
 }
@@ -1130,6 +1147,7 @@ mod tests {
             .expect("surface");
         let layer = surface.layer();
         let mut pointers = Vec::new();
+        let mut changed = Vec::new();
         for _ in 0..7 {
             surface.update(|tx| {
                 tx[&layer].record(|_| {});
@@ -1141,9 +1159,25 @@ mod tests {
                     && l == layer.id()
                 {
                     pointers.push(pointer);
+                } else if let Event::Frame(frame) = event {
+                    changed.push(frame.changed);
                 }
             }
         }
+
+        assert_eq!(changed, [true, false, false, false, false, false, false]);
+        surface.update(|tx| {
+            tx[&layer].record(|r| {
+                r.fill(crate::kurbo::Rect::new(0., 0., 1., 1.), WorkingColor::WHITE);
+            });
+        });
+        engine
+            .render(FrameTime::now())
+            .expect("changed content renders");
+        assert!(
+            rx.try_iter()
+                .any(|event| matches!(event, Event::Frame(frame) if frame.changed))
+        );
 
         assert_eq!(pointers.len(), 7, "every frame stored a picture");
         assert_eq!(pointers[0], pointers[2]);
@@ -1225,6 +1259,7 @@ impl<B: Backend> LocalState<B> {
             }
             Message::Display { id, display } => set_display(surfaces, id, display),
             Message::DisplayMoved { id } => set_display_moved(surfaces, id),
+            Message::SetBand { id, window, target } => renderer.set_band(id, window, target),
             Message::Visibility { id, visibility } => {
                 set_visibility::<B>(renderer, surfaces, id, visibility);
             }

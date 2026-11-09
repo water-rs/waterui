@@ -2,14 +2,15 @@
 //! each `VARIANT` pipeline, so a Metal or D3D regression shows on Linux.
 
 use cherenkov::__engine_test as split_test;
+use cherenkov_shader::SPIRV_WRITER_FLAGS;
 use naga::back::{hlsl, msl, spv};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{Module, front::wgsl};
 
-/// Both colour precisions of the nine engine modules exactly as `build.rs` composed, validated
+/// Both colour precisions of the twelve engine modules exactly as `build.rs` composed, validated
 /// and emitted them — read from `OUT_DIR` so the test exercises the
 /// shipped source rather than a copy of its composition logic.
-const ENGINE_SOURCES: [&str; 18] = [
+const ENGINE_SOURCES: [&str; 24] = [
     include_str!(concat!(env!("OUT_DIR"), "/engine0.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine1.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine2.wgsl")),
@@ -19,6 +20,9 @@ const ENGINE_SOURCES: [&str; 18] = [
     include_str!(concat!(env!("OUT_DIR"), "/engine6.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine7.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine8.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine9.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine10.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine11.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine0_f32.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine1_f32.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine2_f32.wgsl")),
@@ -28,6 +32,9 @@ const ENGINE_SOURCES: [&str; 18] = [
     include_str!(concat!(env!("OUT_DIR"), "/engine6_f32.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine7_f32.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine8_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine9_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine10_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine11_f32.wgsl")),
 ];
 const SHARED: &str = include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl"));
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
@@ -76,7 +83,11 @@ split_test! {
 fn every_variant_emits_spirv() {
     for variant in 0..ENGINE_SOURCES.len() {
         let (module, info) = composed(variant);
-        let mut writer = spv::Writer::new(&spv::Options::default())
+        let options = spv::Options {
+            flags: SPIRV_WRITER_FLAGS,
+            ..spv::Options::default()
+        };
+        let mut writer = spv::Writer::new(&options)
             .unwrap_or_else(|e| panic!("variant {variant}: spv: {e}"));
         let mut words = Vec::new();
         writer
@@ -138,8 +149,11 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
     };
     msl::write_string(module, info, &options, &msl::PipelineOptions::default())
         .unwrap_or_else(|e| panic!("{name}: msl: {e}"));
-    let mut writer =
-        spv::Writer::new(&spv::Options::default()).unwrap_or_else(|e| panic!("{name}: spv: {e}"));
+    let spv_options = spv::Options {
+        flags: SPIRV_WRITER_FLAGS,
+        ..spv::Options::default()
+    };
+    let mut writer = spv::Writer::new(&spv_options).unwrap_or_else(|e| panic!("{name}: spv: {e}"));
     let mut words = Vec::new();
     writer
         .write(module, info, None, &None, &mut words)

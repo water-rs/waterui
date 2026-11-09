@@ -73,7 +73,10 @@ fn env_with_top_inset(top: f32) -> Environment {
     env
 }
 
-fn capture(view: impl waterui_core::View, env: &Environment) -> HydrolysisRenderer {
+fn capture(
+    view: impl waterui_core::View,
+    env: &Environment,
+) -> HydrolysisRenderer<crate::text::ParleyEngine> {
     let mut renderer = test_renderer();
     render_frame(&mut renderer, AnyView::new(view), env);
     renderer
@@ -81,7 +84,11 @@ fn capture(view: impl waterui_core::View, env: &Environment) -> HydrolysisRender
 
 /// Renders one frame of the window tree; the tree is built by the first frame
 /// and later frames reuse it, so `view` matters only the first time.
-fn render_frame(renderer: &mut HydrolysisRenderer, view: AnyView, env: &Environment) {
+fn render_frame(
+    renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+    view: AnyView,
+    env: &Environment,
+) {
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(view, env, WINDOW, Affine::IDENTITY, Affine::IDENTITY);
@@ -98,7 +105,9 @@ struct Presented {
 }
 
 /// Every GPU content layer the frame presents.
-fn presented_gpu_layers(renderer: &HydrolysisRenderer) -> Vec<Presented> {
+fn presented_gpu_layers(
+    renderer: &HydrolysisRenderer<crate::text::ParleyEngine>,
+) -> Vec<Presented> {
     let mirror = renderer.mirror();
     mirror
         .installs()
@@ -120,7 +129,7 @@ fn presented_gpu_layers(renderer: &HydrolysisRenderer) -> Vec<Presented> {
 }
 
 /// Every GPU content layer the frame presents, as its window-space rect.
-fn presented_gpu_rects(renderer: &HydrolysisRenderer) -> Vec<Rect> {
+fn presented_gpu_rects(renderer: &HydrolysisRenderer<crate::text::ParleyEngine>) -> Vec<Rect> {
     presented_gpu_layers(renderer)
         .into_iter()
         .map(|layer| layer.rect)
@@ -140,8 +149,10 @@ fn root_stack() -> impl waterui_core::View {
     NavigationStack::new(NavigationView::new("Root", vstack((gpu(ROOT_CONTENT),))))
 }
 
-/// The page's GPU layer sits where the page is drawn: one top inset lower
-/// than it sits without insets.
+/// The page's GPU layer sits where the page is drawn. The top inset pushes
+/// the bar and the page's top edge down by the inset while its bottom edge
+/// stays put, and the page's column centres its block in what is left
+/// (`docs/layout-spec.md` §4.2), so the layer moves down by half the inset.
 #[test]
 fn a_page_gpu_layer_follows_the_stack_placement() {
     let bare = single(&presented_gpu_rects(&capture(
@@ -153,9 +164,9 @@ fn a_page_gpu_layer_follows_the_stack_placement() {
         &env_with_top_inset(TOP_INSET),
     )));
     assert!(
-        (inset.y0 - bare.y0 - f64::from(TOP_INSET)).abs() <= 0.5
+        (inset.y0 - bare.y0 - f64::from(TOP_INSET) / 2.0).abs() <= 0.5
             && (inset.x0 - bare.x0).abs() <= 0.5,
-        "the GPU layer should move down by the top inset with the page: \
+        "the GPU layer should move down by half the top inset with the page: \
          {bare:?} without insets, {inset:?} with a {TOP_INSET} top inset"
     );
 }
@@ -218,7 +229,7 @@ fn a_non_presented_page_unmounts_and_remounts_its_gpu_layers() {
     .transition(navigation_transition::none());
     let env = test_environment();
     let mut renderer = test_renderer();
-    let installed = |renderer: &HydrolysisRenderer| -> Vec<(f64, f64)> {
+    let installed = |renderer: &HydrolysisRenderer<crate::text::ParleyEngine>| -> Vec<(f64, f64)> {
         renderer
             .mirror()
             .installs()

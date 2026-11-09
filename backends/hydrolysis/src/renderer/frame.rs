@@ -6,11 +6,12 @@
 use super::*;
 use kurbo::Shape as _;
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Whether the persistent render tree has been built. The view tree's `body()`
     /// is dispatched recursively exactly once — on the first frame, when this is
     /// `false`. Afterwards every change (reactive value, structural patch, scroll,
@@ -23,11 +24,11 @@ impl SemanticCore {
     }
 
     #[must_use]
-    pub const fn state(&self) -> &HydroState {
+    pub const fn state(&self) -> &HydroState<E> {
         &self.state
     }
 
-    pub const fn state_mut(&mut self) -> &mut HydroState {
+    pub const fn state_mut(&mut self) -> &mut HydroState<E> {
         &mut self.state
     }
 
@@ -205,12 +206,13 @@ impl SemanticCore {
             || self.has_active_touch_fling()
     }
 
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn measurement_cache_stats(&self) -> (u32, u32) {
         self.state.measurement.stats()
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Records the window's logical bounds and the root transform that maps
     /// them onto the target's physical pixel grid.
     ///
@@ -368,7 +370,7 @@ impl HydrolysisRenderer {
     }
 
     /// The recording node's program builder.
-    pub(crate) fn program(&mut self) -> &mut mount::ProgramBuilder {
+    pub(crate) fn program(&mut self) -> &mut mount::ProgramBuilder<E> {
         self.program
             .last_mut()
             .expect("hydrolysis renderer: drawing with no recording node")
@@ -422,13 +424,14 @@ impl HydrolysisRenderer {
         let visible = self.record_alpha() > 0.0;
         let below = layered.below.into_picture();
         if !below.display_list().is_empty() {
-            self.scene_mut().draw_picture(ctx.local, below);
+            self.scene_mut().draw_picture(ctx.local(), below);
         }
         for run in layered.runs {
-            self.program().push_chrome(run.material, ctx.local, visible);
+            self.program()
+                .push_chrome(run.material, ctx.local(), visible);
             let above = run.above.into_picture();
             if !above.display_list().is_empty() {
-                self.scene_mut().draw_picture(ctx.local, above);
+                self.scene_mut().draw_picture(ctx.local(), above);
             }
         }
     }
@@ -444,7 +447,7 @@ impl HydrolysisRenderer {
         ctx: RenderContext,
         source: &Rc<dyn crate::renderer::chrome::LiveSource>,
     ) {
-        self.program().push_live(Rc::clone(source), ctx.local);
+        self.program().push_live(Rc::clone(source), ctx.local());
     }
 
     /// Records `core`'s node into its own program (§C): the parent's list
@@ -453,7 +456,7 @@ impl HydrolysisRenderer {
     /// node draws from its frame origin with `local = IDENTITY`.
     pub(crate) fn record_layer_node(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         bounds: kurbo::Rect,
         record: impl FnOnce(&mut Self, RenderContext),
     ) {
@@ -464,7 +467,7 @@ impl HydrolysisRenderer {
     /// program, for a caller that lists it elsewhere and sets its anchor.
     pub(crate) fn record_layer_node_in(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         bounds: kurbo::Rect,
         listed: bool,
         record: impl FnOnce(&mut Self, RenderContext),
@@ -487,10 +490,7 @@ impl HydrolysisRenderer {
                 .push(mount::ProgramBuilder::new(Rc::clone(&cell)));
             record(
                 renderer,
-                RenderContext {
-                    local: kurbo::Affine::IDENTITY,
-                    bounds,
-                },
+                RenderContext::new(kurbo::Affine::IDENTITY, bounds),
             );
             let program = renderer
                 .program
@@ -504,7 +504,7 @@ impl HydrolysisRenderer {
 
     /// Records a presentation host's program (§D): the host's reader and
     /// its own program, anchored on the window.
-    pub(crate) fn record_host(&mut self, host: &NodeCore, record: impl FnOnce(&mut Self)) {
+    pub(crate) fn record_host(&mut self, host: &NodeCore<E>, record: impl FnOnce(&mut Self)) {
         let anchor = host
             .cell
             .placement()
@@ -545,7 +545,7 @@ impl HydrolysisRenderer {
     /// scope membership never depends on where a flush starts (#2268).
     pub(crate) fn with_enclosing_material_group_scopes(
         &mut self,
-        core: &NodeCore,
+        core: &NodeCore<E>,
         record: impl FnOnce(&mut Self),
     ) {
         let base = self.material_group_scopes.len();
@@ -618,18 +618,20 @@ impl HydrolysisRenderer {
         self.pop_placement_scope();
     }
 
-    pub(crate) fn set_host_redraw_handle(&mut self, handle: RedrawHandle) {
+    pub(crate) fn set_host_redraw_handle(&mut self, handle: HostRedraw) {
         self.host_redraw_handle = Some(handle);
     }
 
     /// The engine's scheduling answer from the last presented frame, drained
     /// once so one pump consumes it: `Next::At` asks the host for the frame
     /// an in-flight animation needs, `Next::Idle` parks the display link.
-    pub(crate) const fn take_engine_next(&mut self) -> Option<cherenkov::Next> {
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) const fn take_engine_next(&mut self) -> Option<Next> {
         self.engine_next.take()
     }
 
     /// The engine work the last commit did.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) const fn mount_stats(&self) -> mount::MountStats {
         self.last_mount_stats
     }

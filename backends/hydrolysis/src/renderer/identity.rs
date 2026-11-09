@@ -119,7 +119,7 @@ impl AnimationOwnerPins {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Pushes the retained node whose subtree is about to flush onto the
     /// render owner chain — the ancestry input registration reads. The
     /// accessibility builder gets the same push for its semantic-key owner.

@@ -230,6 +230,19 @@ pub struct Release {
     /// Release fences of the system compositor planes that showed the
     /// frame, merged into the producer's release fence (#90).
     pub plane_fences: Vec<OwnedFd>,
+    /// The producer's `ExternalFrame::on_release` hook, run by
+    /// [`Release::destroy`] after the producer lease drops.
+    pub hook: Option<ReleaseHook>,
+}
+
+/// A producer's release callback for a native frame, carried by its
+/// [`Release`] to the point the release submission has completed.
+pub struct ReleaseHook(crate::interop::ReleaseFn);
+
+impl std::fmt::Debug for ReleaseHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseHook").finish_non_exhaustive()
+    }
 }
 
 impl Release {
@@ -380,6 +393,10 @@ impl Release {
         }
         // The producer lease drops after every Vulkan object built on it.
         drop(self.lease);
+        // The engine is done with the producer's buffer: tell the producer.
+        if let Some(ReleaseHook(release)) = self.hook {
+            release();
+        }
     }
 }
 
@@ -720,6 +737,26 @@ impl Generation {
     /// On a poisoned plane-fence mutex.
     pub fn add_plane_release(&self, fence: OwnedFd) {
         self.plane_fences.lock().expect("plane fences").push(fence);
+    }
+
+    /// Installs the producer's release hook: it travels with the release
+    /// parts and runs once the release submission has completed and the
+    /// frame's objects are destroyed — `ExternalFrame::on_release` for a
+    /// native frame.
+    ///
+    /// # Panics
+    /// When the generation already has a hook, or has already retired.
+    pub(crate) fn on_release(&self, release: crate::interop::ReleaseFn) {
+        let mut guard = self.parts.lock().expect("release parts");
+        let parts = guard
+            .as_mut()
+            .expect("ExternalFrame::on_release on a native frame the engine already retired");
+        assert!(
+            parts.hook.is_none(),
+            "ExternalFrame::on_release called twice: a frame has one release hook"
+        );
+        parts.hook = Some(ReleaseHook(release));
+        drop(guard);
     }
 
     /// Drops one engine-side reference; the last one retires the frame.

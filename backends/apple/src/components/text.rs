@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 use core::cell::RefCell;
 use core::num::{NonZero, NonZeroUsize};
+use core::ops::Range;
 
 use cocoa_ui::Retained;
 use waterui::Str;
@@ -20,32 +21,91 @@ use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
+use waterui::text::TapSpan;
 use waterui::text::TextConfig;
-use waterui::text::font::{FontDesign, FontWeight, ResolvedFont};
+use waterui::text::font::ResolvedFont;
 use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
 use waterui_core::layout::{
-    HorizontalAlignment, ProposalSize, Size, StretchAxis, SubView, VerticalAlignment,
-    ViewDimensions,
+    HorizontalAlignment, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
+    SubView, VerticalAlignment, ViewDimensions,
 };
 
+use super::font::platform_font;
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
+use crate::theme::platform_color;
 
 #[cfg(target_os = "macos")]
 mod platform {
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
+
+    use cocoa_ui::appkit::gesture;
+    use cocoa_ui::gesture::ButtonMask;
+    use cocoa_ui::objc2_app_kit::NSClickGestureRecognizer;
+
+    use super::TextState;
+
     pub(super) use cocoa_ui::appkit::HostView;
     pub(super) use cocoa_ui::appkit::Label;
     pub(super) use cocoa_ui::appkit::colors;
+    pub(super) use cocoa_ui::appkit::gesture::GestureAttachment;
     pub(super) use cocoa_ui::objc2_app_kit::NSTextAlignment;
+
+    /// Attaches the span tap recognizer: a click that begins only when the
+    /// point's character index falls in a span and activates that span.
+    pub(super) fn attach_tap(label: &Label, state: &Rc<RefCell<TextState>>) -> GestureAttachment {
+        let (gate, handler) = super::span_tap(
+            label,
+            state,
+            |recognizer: &NSClickGestureRecognizer, label| {
+                recognizer.locationInView(Some(label)).into()
+            },
+        );
+        gesture::click_gated(label, 1, ButtonMask::PRIMARY, gate, handler)
+    }
+
+    /// An `NSView` hit-tests without an interaction switch — nothing to
+    /// toggle.
+    pub(super) const fn set_interaction_enabled(_label: &Label, _enabled: bool) {}
 }
 
 #[cfg(target_os = "ios")]
 mod platform {
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
+
+    use cocoa_ui::gesture::ButtonMask;
+    use cocoa_ui::objc2_ui_kit::UITapGestureRecognizer;
+    use cocoa_ui::uikit::gesture;
+
+    use super::TextState;
+
     pub(super) use cocoa_ui::objc2_ui_kit::NSTextAlignment;
     pub(super) use cocoa_ui::uikit::HostView;
     pub(super) use cocoa_ui::uikit::Label;
-    pub(super) use cocoa_ui::uikit::colors;
+    pub(super) use cocoa_ui::uikit::gesture::GestureAttachment;
+
+    /// Attaches the span tap recognizer: a tap that begins only when the
+    /// point's character index falls in a span and activates that span.
+    pub(super) fn attach_tap(label: &Label, state: &Rc<RefCell<TextState>>) -> GestureAttachment {
+        let (gate, handler) = super::span_tap(
+            label,
+            state,
+            |recognizer: &UITapGestureRecognizer, label| {
+                recognizer.locationInView(Some(label)).into()
+            },
+        );
+        gesture::tap_gated(label, 1, ButtonMask::PRIMARY, gate, handler)
+    }
+
+    /// A `UILabel` hit-tests only with interaction enabled — required for
+    /// the span recognizer to see touches at all.
+    pub(super) fn set_interaction_enabled(label: &Label, enabled: bool) {
+        label.setUserInteractionEnabled(enabled);
+    }
 }
 
 use cocoa_ui::PlatformView;
@@ -64,7 +124,7 @@ struct Chunk {
     /// Its latest resolved font.
     font: ResolvedFont,
     /// Its latest foreground — `None` draws the theme default.
-    foreground: Option<WorkingColor>,
+    foreground: Option<RunForeground>,
     /// Its latest background.
     background: Option<WorkingColor>,
     /// Whether the chunk is italicized.
@@ -86,7 +146,7 @@ struct TextState {
     /// The platform label.
     label: Retained<Label>,
     /// The theme default for chunks without their own foreground.
-    default_foreground: WorkingColor,
+    default_foreground: RunForeground,
     /// The resolved chunks of the current `StyledStr`.
     chunks: Vec<Chunk>,
     /// Watcher guards of the current `StyledStr`'s per-chunk signals,
@@ -96,6 +156,95 @@ struct TextState {
     /// to the content, so it survives `apply_styled`. The field is never read
     /// after creation: holding it keeps the subscription alive.
     default_guard: Option<Box<dyn Any>>,
+    /// The current `StyledStr`'s tap spans, kept for activation.
+    tap_spans: Vec<TapSpan>,
+    /// Each span's range over the plain text in UTF-16 code units — the
+    /// currency the label's hit testing speaks.
+    span_ranges: Vec<Range<usize>>,
+    /// The span-gated tap recognizer, attached while spans exist.
+    tap: Option<platform::GestureAttachment>,
+}
+
+/// The index of the span a point in label coordinates hits, or `None` —
+/// the same query the recognizer's gate and handler both run.
+fn span_index_at(state: &TextState, point: cocoa_ui::geometry::Point) -> Option<usize> {
+    let index = state.label.character_index(point)?;
+    state
+        .span_ranges
+        .iter()
+        .position(|range| range.contains(&index))
+}
+
+/// The gate and handler of a label's span tap recognizer, shared by both
+/// platforms: `location` reads the recognizer's point in label coordinates.
+/// The gate admits a recognition only over a span; the handler activates the
+/// span under the point once the tap ends.
+fn span_tap<R, L>(
+    label: &platform::Label,
+    state: &Rc<RefCell<TextState>>,
+    location: L,
+) -> (
+    impl Fn(&R) -> bool + use<R, L>,
+    impl Fn(cocoa_ui::gesture::GestureState, &R) + use<R, L>,
+)
+where
+    L: Fn(&R, &platform::Label) -> cocoa_ui::geometry::Point + Copy + 'static,
+{
+    let gate = {
+        let state = Rc::downgrade(state);
+        let label = objc2::Message::retain(label);
+        move |recognizer: &R| {
+            state.upgrade().is_some_and(|state| {
+                span_index_at(&state.borrow(), location(recognizer, &label)).is_some()
+            })
+        }
+    };
+    let handler = {
+        let state = Rc::downgrade(state);
+        let label = objc2::Message::retain(label);
+        move |gesture_state: cocoa_ui::gesture::GestureState, recognizer: &R| {
+            if gesture_state != cocoa_ui::gesture::GestureState::Ended {
+                return;
+            }
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            // The action runs after the borrow ends: it may write the binding
+            // this text renders, whose watcher re-applies the content.
+            let hit = {
+                let state = state.borrow();
+                span_index_at(&state, location(recognizer, &label))
+                    .map(|index| (state.tap_spans[index].clone(), state.env.clone()))
+            };
+            if let Some((span, env)) = hit {
+                span.activate(&env);
+            }
+        }
+    };
+    (gate, handler)
+}
+
+/// Keeps the label's span machinery in step with `state`: a gated tap
+/// recognizer while spans exist, removed when a content update leaves
+/// none.
+fn sync_tap(state: &Rc<RefCell<TextState>>) {
+    if state.borrow().tap_spans.is_empty() {
+        let mut state = state.borrow_mut();
+        platform::set_interaction_enabled(&state.label, false);
+        if let Some(attachment) = state.tap.take()
+            && let Some(recognizer) = attachment.recognizer()
+        {
+            state.label.removeGestureRecognizer(&recognizer);
+        }
+        return;
+    }
+    if state.borrow().tap.is_none() {
+        let label = state.borrow().label.clone();
+        let attachment = platform::attach_tap(&label, state);
+        let mut state = state.borrow_mut();
+        platform::set_interaction_enabled(&state.label, true);
+        state.tap = Some(attachment);
+    }
 }
 
 /// The cross-dissolve duration the metadata calls for, in seconds: `None`
@@ -110,101 +259,58 @@ fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
     }
 }
 
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
+/// A run's foreground: the latest value of its color signal and, on
+/// `AppKit`, the system label color that signal stands for.
+///
+/// Which color a run came from is a property of its signal, not of its
+/// value: a theme token resolves to the very signal the backend installed in
+/// its slot (see [`crate::theme::SystemLabelSlots`]), while an app color
+/// equal in value to a token is a different signal. A run whose signal is a
+/// label slot draws as the dynamic system label color, which `AppKit`
+/// renders vibrant inside an `NSVisualEffectView`; every other run draws its
+/// value.
+struct RunForeground {
+    /// The signal's latest value.
+    value: WorkingColor,
+    /// The system label color the signal stands for, if it is one of the
+    /// backend's label slots. Fixed for the signal's lifetime.
+    #[cfg(target_os = "macos")]
+    system: Option<platform::colors::AppColor>,
 }
 
-/// The comma-separated candidates of a CSS-style family list, trimmed with
-/// the empties dropped — `fontFamilyCandidates` in the Swift port.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names: a named family resolved through
-/// its candidate list — generics first, then `fontWithName:` — or the design
-/// face, italicized when the chunk asks for it.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-    italic: bool,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    let mut font = match resolved.family.as_deref() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
+impl RunForeground {
+    /// Reads `signal`'s current value and source in `env`.
+    #[cfg(target_os = "macos")]
+    fn resolve(env: &Environment, signal: &impl Signal<Output = WorkingColor>) -> Self {
+        let slots = env
+            .get::<crate::theme::SystemLabelSlots>()
+            .expect("the Apple theme installs its label slots with the color slots");
+        Self {
+            value: signal.snapshot(),
+            system: slots.system_color(signal),
         }
-        _ => match resolved.design {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
-    };
-    if italic && let Some(italic_font) = cocoa_ui::font::italic_variant(&font) {
-        font = italic_font;
     }
-    font
-}
 
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object.
-#[cfg(target_os = "ios")]
-pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_ui_kit::UIColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        platform::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
+    /// Reads `signal`'s current value: `UIKit` draws no vibrant text, so the
+    /// source does not matter.
+    #[cfg(target_os = "ios")]
+    fn resolve(_env: &Environment, signal: &impl Signal<Output = WorkingColor>) -> Self {
+        Self {
+            value: signal.snapshot(),
+        }
     }
-}
 
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object, with HDR
-/// headroom applied as a content-headroom multiplier — the `AppKit` variant.
-#[cfg(target_os = "macos")]
-pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        platform::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
+    /// The platform color the run draws in.
+    #[cfg(target_os = "macos")]
+    fn platform(&self) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
+        self.system
+            .map_or_else(|| platform_color(&self.value), platform::colors::dynamic)
+    }
+
+    /// The platform color the run draws in.
+    #[cfg(target_os = "ios")]
+    fn platform(&self) -> Retained<cocoa_ui::objc2_ui_kit::UIColor> {
+        platform_color(&self.value)
     }
 }
 
@@ -221,12 +327,13 @@ fn render_attributed(state: &TextState) -> Retained<objc2_foundation::NSAttribut
         .chunks
         .iter()
         .map(|chunk| {
-            Some(platform_color(
+            Some(
                 chunk
                     .foreground
                     .as_ref()
-                    .unwrap_or(&state.default_foreground),
-            ))
+                    .unwrap_or(&state.default_foreground)
+                    .platform(),
+            )
         })
         .collect();
     let backgrounds: Vec<Option<Retained<_>>> = state
@@ -245,8 +352,8 @@ fn render_attributed(state: &TextState) -> Retained<objc2_foundation::NSAttribut
             background: backgrounds[i].as_deref(),
             underline: chunk.underline,
             strikethrough: chunk.strikethrough,
-            letter_spacing: f64::from(chunk.font.letter_spacing),
-            line_height: chunk.font.line_height.map_or(0.0, f64::from),
+            letter_spacing: f64::from(chunk.font.letter_spacing()),
+            line_height: chunk.font.line_height().map_or(0.0, f64::from),
         })
         .collect();
     cocoa_ui::text::build(state.mtm, &runs).into_super()
@@ -268,6 +375,22 @@ fn rebuild(state: &TextState, duration: Option<f64>) {
     }
 }
 
+/// The UTF-16 ranges of `tap_spans` within `plain`, which the label's link
+/// elements are positioned by.
+fn utf16_span_ranges(plain: &str, tap_spans: &[TapSpan]) -> Vec<Range<usize>> {
+    tap_spans
+        .iter()
+        .map(|span| {
+            let range = span.range();
+            let start = cocoa_ui::text::utf16_offset_at_byte(plain, range.start)
+                .expect("a tap span starts on a char boundary");
+            let end = cocoa_ui::text::utf16_offset_at_byte(plain, range.end)
+                .expect("a tap span ends on a char boundary");
+            start..end
+        })
+        .collect()
+}
+
 /// Resolves a `StyledStr` into chunk state plus the guards that keep its
 /// signals subscribed — the work `WuiStyledStrRenderer` performs.
 fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
@@ -275,17 +398,25 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
     let mut chunks = Vec::with_capacity(styled.chunks().len());
     let mut guards: Vec<Box<dyn Any>> = Vec::new();
     for (index, (text, style)) in styled.chunks().iter().enumerate() {
-        let font = style.font.resolve(&env);
-        let foreground = style.foreground.as_ref().map(|color| color.resolve(&env));
-        let background = style.background.as_ref().map(|color| color.resolve(&env));
+        let font = style.get_font().resolve(&env);
+        let foreground = style
+            .get_foreground()
+            .as_ref()
+            .map(|color| color.resolve(&env));
+        let background = style
+            .get_background()
+            .as_ref()
+            .map(|color| color.resolve(&env));
         chunks.push(Chunk {
             text: text.clone(),
             font: font.snapshot(),
-            foreground: foreground.as_ref().map(Signal::snapshot),
+            foreground: foreground
+                .as_ref()
+                .map(|signal| RunForeground::resolve(&env, signal)),
             background: background.as_ref().map(Signal::snapshot),
-            italic: style.italic,
-            underline: style.underline,
-            strikethrough: style.strikethrough,
+            italic: style.get_italic(),
+            underline: style.get_underline(),
+            strikethrough: style.get_strikethrough(),
         });
 
         guards.push(Box::new(font.watch({
@@ -309,7 +440,11 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
                     };
                     let duration = cross_dissolve_duration(ctx.metadata());
                     let mut state = state.borrow_mut();
-                    state.chunks[index].foreground = Some(ctx.into_value());
+                    state.chunks[index]
+                        .foreground
+                        .as_mut()
+                        .expect("a chunk with a foreground signal has a foreground")
+                        .value = ctx.into_value();
                     rebuild(&state, duration);
                 }
             })));
@@ -329,9 +464,32 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
             })));
         }
     }
-    let mut state = state.borrow_mut();
-    state.chunks = chunks;
-    state.signal_guards = guards;
+    let plain = styled.to_plain();
+    let tap_spans: Vec<TapSpan> = styled.tap_spans().to_vec();
+    let span_ranges = utf16_span_ranges(&plain, &tap_spans);
+    let links: Vec<cocoa_ui::text::SpanLink<'_>> = tap_spans
+        .iter()
+        .zip(&span_ranges)
+        .map(|(span, utf16)| {
+            let span = span.clone();
+            let env = env.clone();
+            cocoa_ui::text::SpanLink {
+                range: utf16.clone(),
+                text: &plain[span.range()],
+                activate: Rc::new(move || span.activate(&env)),
+            }
+        })
+        .collect();
+    let label = {
+        let mut state = state.borrow_mut();
+        state.chunks = chunks;
+        state.signal_guards = guards;
+        state.tap_spans = tap_spans;
+        state.span_ranges = span_ranges;
+        state.label.clone()
+    };
+    sync_tap(state);
+    label.set_link_elements(&links);
 }
 
 /// The label's layout face: intrinsic, baseline-aware, non-stretching.
@@ -347,6 +505,14 @@ impl core::fmt::Debug for TextSubView {
 }
 
 impl SubView for TextSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `TextMetrics` measures in f64; `ViewDimensions` speaks f32 — the
     // narrowing is the layout contract.
     #[expect(
@@ -434,12 +600,14 @@ fn label_leaf(
     host.set_layout_handler({
         let label = label.clone();
         move |view| {
-            let bounds = cocoa_ui::view::bounds(view);
+            // The text draws in its response rectangle, centred in the
+            // frame it was assigned (docs/layout-spec.md §2.4).
+            let bounds = proposal::response(view);
             // A `labelWithString:` field keeps its text's alignment rect
             // inside the frame (`-[NSView alignmentRectInsets]`); expand
             // the frame by those insets so the ink lands exactly on the
-            // leaf's bounds. `UILabel` draws at the frame's origin and
-            // wraps at `preferredMaxLayoutWidth`, so it takes the bounds
+            // response. `UILabel` draws at the frame's origin and wraps
+            // at `preferredMaxLayoutWidth`, so it takes the response
             // unchanged.
             #[cfg(target_os = "macos")]
             let frame = {
@@ -457,20 +625,22 @@ fn label_leaf(
         }
     });
 
+    // The theme default backs every chunk without its own foreground,
+    // exactly as the Swift renderer's `defaultForeground` slot does.
+    let default_foreground = Foreground.resolve(ctx.env());
     let state = Rc::new(RefCell::new(TextState {
         mtm,
         env: ctx.env().clone(),
         label: label.clone(),
-        default_foreground: WorkingColor::BLACK,
+        default_foreground: RunForeground::resolve(ctx.env(), &default_foreground),
         chunks: Vec::new(),
         signal_guards: Vec::new(),
         default_guard: None,
+        tap_spans: Vec::new(),
+        span_ranges: Vec::new(),
+        tap: None,
     }));
 
-    // The theme default backs every chunk without its own foreground,
-    // exactly as the Swift renderer's `defaultForeground` slot does.
-    let default_foreground = Foreground.resolve(ctx.env());
-    let initial_foreground = default_foreground.snapshot();
     let foreground_guard = default_foreground.watch({
         let state = Rc::downgrade(&state);
         move |ctx| {
@@ -479,15 +649,11 @@ fn label_leaf(
             };
             let duration = cross_dissolve_duration(ctx.metadata());
             let mut state = state.borrow_mut();
-            state.default_foreground = ctx.into_value();
+            state.default_foreground.value = ctx.into_value();
             rebuild(&state, duration);
         }
     });
-    {
-        let mut state = state.borrow_mut();
-        state.default_foreground = initial_foreground;
-        state.default_guard = Some(Box::new(foreground_guard));
-    }
+    state.borrow_mut().default_guard = Some(Box::new(foreground_guard));
 
     apply_styled(&state, styled);
     rebuild(&state.borrow(), None);
@@ -511,19 +677,19 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<TextConfig>(|config, ctx| {
         let (mut leaf, state, label) = label_leaf(
             ctx,
-            config.line_limit,
-            &config.content.snapshot(),
-            config.paragraph_alignment.snapshot(),
+            config.line_limit(),
+            &config.content().snapshot(),
+            config.paragraph_alignment().snapshot(),
         );
 
         // Content changes re-resolve every chunk signal; paragraph
         // alignment pushes straight to the label inside the leaf.
-        leaf.watch(&config.content, move |ctx| {
+        leaf.watch(config.content(), move |ctx| {
             let duration = cross_dissolve_duration(ctx.metadata());
             apply_styled(&state, ctx.value());
             rebuild(&state.borrow(), duration);
         });
-        leaf.watch(&config.paragraph_alignment, move |ctx| {
+        leaf.watch(config.paragraph_alignment(), move |ctx| {
             apply_alignment(&label, *ctx.value());
         });
         leaf
@@ -549,34 +715,6 @@ mod tests {
     use core::time::Duration;
 
     use super::*;
-
-    #[test]
-    fn family_candidates_splits_trims_and_drops_empties() {
-        let candidates: Vec<&str> = family_candidates("Menlo , Monaco ,,  Courier New ").collect();
-        assert_eq!(candidates, ["Menlo", "Monaco", "Courier New"]);
-        assert!(family_candidates("").next().is_none());
-        assert!(family_candidates(" ,  ").next().is_none());
-        assert_eq!(family_candidates("system").collect::<Vec<_>>(), ["system"]);
-    }
-
-    #[test]
-    fn platform_weight_maps_every_weight() {
-        use cocoa_ui::font::weight;
-        let table: [(FontWeight, f64); 9] = [
-            (FontWeight::Thin, weight::THIN),
-            (FontWeight::UltraLight, weight::ULTRA_LIGHT),
-            (FontWeight::Light, weight::LIGHT),
-            (FontWeight::Normal, weight::REGULAR),
-            (FontWeight::Medium, weight::MEDIUM),
-            (FontWeight::SemiBold, weight::SEMI_BOLD),
-            (FontWeight::Bold, weight::BOLD),
-            (FontWeight::UltraBold, weight::HEAVY),
-            (FontWeight::Black, weight::BLACK),
-        ];
-        for (weight, expected) in table {
-            assert_eq!(platform_weight(weight).to_bits(), expected.to_bits());
-        }
-    }
 
     #[test]
     fn cross_dissolve_duration_follows_animation_table() {

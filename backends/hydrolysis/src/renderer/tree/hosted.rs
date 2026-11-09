@@ -7,9 +7,9 @@ struct HostedNode {
     runtime: Rc<crate::hosted::HostedRuntime>,
 }
 
-impl HydroNativeView for Native<crate::HostedView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<crate::HostedView> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -18,7 +18,7 @@ impl HydroNativeView for Native<crate::HostedView> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -34,10 +34,10 @@ impl Drop for HostedNode {
     }
 }
 
-impl WidgetBehavior for HostedNode {
+impl<E: crate::text::TextEngine> WidgetBehavior<E> for HostedNode {
     fn measure(
         &self,
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         proposal: ProposalSize,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -47,7 +47,7 @@ impl WidgetBehavior for HostedNode {
 
     fn render(
         self: Rc<Self>,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         env: &Environment,
         _safe_area: Option<safe_area::SafeAreaLayout>,
@@ -56,40 +56,40 @@ impl WidgetBehavior for HostedNode {
         renderer.read_signal(&runtime.focused);
         let key = InteractionKey::for_rc(runtime, 0);
         let (_, slot, _) =
-            renderer.bind_control_interaction_target(key.clone(), ctx.bounds, env, false);
+            renderer.bind_control_interaction_target(key.clone(), ctx.bounds(), env, false);
         let focus = Rc::clone(runtime);
-        renderer.register_interactive_pointer_target(ctx.bounds, slot, move |_, _, _| {
+        renderer.register_interactive_pointer_target(ctx.bounds(), slot, move |_, _, _| {
             focus.content.request_focus();
             true
         });
         emit_graphics_image_accessibility(renderer, Some(ctx), env, None, None, true);
         renderer.register_retained(
             NativeViewOcclusion {
-                bounds: ctx.bounds,
+                bounds: ctx.bounds(),
                 order: 0,
                 sink: runtime.occlusion.clone(),
                 hosted: (key, Rc::clone(runtime)),
             },
-            ctx.bounds,
+            ctx.bounds(),
             |regs| &mut regs.native_view_occlusions,
         );
         renderer.program().program_mut().producer = Some(mount::ProducerContent::Hosted {
             runtime: Rc::clone(runtime),
-            bounds: ctx.bounds,
+            bounds: ctx.bounds(),
         });
     }
 
     #[cfg(feature = "accessibility")]
-    fn emit_accessibility(self: Rc<Self>, renderer: &mut SemanticCore, env: &Environment) {
+    fn emit_accessibility(self: Rc<Self>, renderer: &mut SemanticCore<E>, env: &Environment) {
         emit_graphics_image_accessibility(renderer, None, env, None, None, true);
     }
 }
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     pub(super) fn build_hosted(
         view: crate::hosted::HostedView,
         env: &Environment,
-        renderer: &SemanticCore,
+        renderer: &SemanticCore<E>,
     ) -> Self {
         let state = Rc::new(HostedNode {
             runtime: crate::hosted::HostedRuntime::new(view),

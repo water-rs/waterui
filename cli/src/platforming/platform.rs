@@ -470,6 +470,14 @@ const APPLE_PLATFORMS: &[TargetPlatform] = &[
     TargetPlatform::VisionOSSimulator,
 ];
 
+/// Every `*_DEPLOYMENT_TARGET` variable the Apple platforms this CLI
+/// produces read; platforms sharing a variable repeat it.
+pub(crate) fn apple_deployment_target_settings() -> impl Iterator<Item = &'static str> {
+    APPLE_PLATFORMS
+        .iter()
+        .filter_map(TargetPlatform::deployment_target_setting)
+}
+
 /// The Apple triples a `cfg(target_vendor = "apple")` table of a generated
 /// manifest serves — every Apple platform a `water` build can produce,
 /// device and simulator alike.

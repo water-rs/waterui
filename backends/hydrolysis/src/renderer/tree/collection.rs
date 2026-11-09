@@ -2,15 +2,16 @@
 //! reconciled by id) and [`LazyStackNode`] (viewport-virtualized lazy stack).
 
 #[cfg(feature = "accessibility")]
-use super::layout::kurbo_rect;
-#[cfg(feature = "accessibility")]
-use super::layout::resolved_content_rect;
+use super::layout::accessibility_rect;
+use super::layout::placed_layout;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::WidgetTheme;
 use std::rc::Rc;
 
 use nami::collection::CollectionChange;
+use waterui_core::layout::{LayoutError, PlacementInput, ResolvedExtent, resolve_layout_extent};
 use waterui_core::transition::{Ghost, GhostSlot, TransitionSpec};
 use waterui_core::views::ViewSnapshot;
 
@@ -50,33 +51,33 @@ fn frozen_placement_dimensions(sub: &dyn SubView, placement: &SubviewPlacement) 
 /// One retained entry of a [`CollectionNode`]: the item's persistent node, the
 /// `.transition()` declaration claimed from its built root, and the
 /// in-flight insertion.
-pub(super) struct CollectionEntry {
+pub(super) struct CollectionEntry<E: crate::text::TextEngine> {
     /// Stable item identity from the source collection.
     pub(super) id: CollectionItemId,
     /// The entry's own mount core: the layer its transition scope writes and
     /// the cell a transition marks, distinct from `node`'s so an entry
     /// transition re-places only the entry, not the subtree inside it.
-    pub(crate) core: NodeCore,
+    pub(crate) core: NodeCore<E>,
     /// The item's retained node, kept across membership changes by id.
-    pub(super) node: RenderNode,
+    pub(super) node: RenderNode<E>,
     /// The `.transition(...)` the built item declares at its root;
     /// `None` means this item pops on membership changes.
     pub(super) spec: Option<TransitionSpec>,
     /// Independent insertion while the entry animates in; `None` at rest and
     /// forever when the item declared no spec.
-    pub(super) insertion: Option<TransitionRun>,
+    pub(super) insertion: Option<TransitionRun<E>>,
     /// The dimensions and layout priority the entry last measured at — the
     /// frozen geometry its removal ghost's [`GhostSlot`] retains.
     last_measured: std::cell::RefCell<(ViewDimensions, i32)>,
 }
 
-impl CollectionEntry {
+impl<E: crate::text::TextEngine> CollectionEntry<E> {
     /// An at-rest entry over a built item node: the item's declaration is
     /// claimed from the node's root, so a row whose declaration sits behind
     /// type erasure is owned the same way; one beneath a modifier is not. The
     /// initial membership of a collection is built from these (no insertion
     /// runs); later additions get their clock from [`Self::begin_insertion`].
-    pub(super) fn new(id: CollectionItemId, node: RenderNode, core: NodeCore) -> Self {
+    pub(super) fn new(id: CollectionItemId, node: RenderNode<E>, core: NodeCore<E>) -> Self {
         let spec = claim_transition(&node);
         Self {
             id,
@@ -90,7 +91,7 @@ impl CollectionEntry {
 
     /// Replaces the entry's node with a rebuilt one for the same id, claiming
     /// the rebuilt item's declaration.
-    fn replace_node(&mut self, node: RenderNode) {
+    fn replace_node(&mut self, node: RenderNode<E>) {
         node.core().cell.set_parent(&self.core.cell);
         self.spec = claim_transition(&node);
         self.node = node;
@@ -106,7 +107,7 @@ impl CollectionEntry {
     }
 }
 
-pub struct CollectionNode {
+pub struct CollectionNode<E: crate::text::TextEngine> {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
     /// once per frame pays a `Cell` update instead of a `RefCell` borrow.
@@ -130,7 +131,7 @@ pub struct CollectionNode {
     /// id survives membership changes shifting the sibling ordinals.
     pub(super) accessibility_identity: Rc<()>,
     /// The collection's own mount core: cell, placement and subscriptions.
-    pub(crate) core: NodeCore,
+    pub(crate) core: NodeCore<E>,
     /// The unshielded environment when this collection carries accessibility
     /// naming metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -140,22 +141,23 @@ pub struct CollectionNode {
     /// builds/drops the delta. With a transition this also holds still-exiting
     /// entries — anchored after the live id they followed — until their
     /// fade-out completes.
-    pub(super) entries: Vec<CollectionEntry>,
+    pub(super) entries: Vec<CollectionEntry<E>>,
     /// Child frames cached by [`RenderNode::layout`], reused by `flush`. During
     /// a transition each frame holds the entry's full extent at its re-stacked
     /// position; flush clips it to the presence factor.
     pub(super) placed: Vec<Rect>,
-    /// The extent this collection resolved at layout — the size it answered to
-    /// the selected proposal, centred on the assigned frame — kept beside
-    /// `placed` so a naming-scope owner reports its own extent when the
-    /// parent assigned more than it answered (water-rs/hydrolysis#51).
+    /// The geometry this collection was committed with at its last layout,
+    /// its response resolved by `place_layout` — kept beside `placed` so a
+    /// naming-scope owner reports its response rectangle when the parent
+    /// assigned more than it answered (water-rs/hydrolysis#51). `None` until
+    /// the first layout.
     #[cfg(feature = "accessibility")]
-    pub(super) resolved: Rect,
+    pub(super) geometry: Option<PlacedGeometry>,
     /// Detached removals still animating out, each anchored after the live id
     /// it followed (`None` = before the first live entry). A ghost's node is
     /// out of semantics, accessibility, focus and hit-testing — it only keeps
     /// painting inside a `hit: false` scope until its clock completes.
-    pub(super) ghosts: Vec<CollectionGhost>,
+    pub(super) ghosts: Vec<CollectionGhost<E>>,
     /// Ghost slot frames in `ghosts` order, filled by `layout` beside `placed`.
     pub(super) ghost_placed: Vec<Rect>,
     /// Reduce Motion resolved once at build from the item environment: every
@@ -178,7 +180,7 @@ pub struct CollectionNode {
     pub(super) _layout_guards: Vec<BoxWatcherGuard>,
 }
 
-pub struct LazyStackNode {
+pub struct LazyStackNode<E: crate::text::TextEngine> {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
     /// once per frame pays a `Cell` update instead of a `RefCell` borrow.
@@ -202,11 +204,16 @@ pub struct LazyStackNode {
     /// survives the visible window shifting the sibling ordinals.
     pub(super) accessibility_identity: Rc<()>,
     /// The stack's own mount core: cell, placement and subscriptions.
-    pub(crate) core: NodeCore,
+    pub(crate) core: NodeCore<E>,
     /// The §7.1 context the stack was last laid out against — node-lifetime
     /// storage, so a stack inside an unchanged retained sub-view still hands
     /// each materialized item its context at flush.
     pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
+    /// The geometry this stack was committed with at its last layout, its
+    /// response resolved by the stack rule from the lazy measurement; read
+    /// by the naming scope it owns. `None` until the first layout.
+    #[cfg(feature = "accessibility")]
+    pub(super) geometry: Option<PlacedGeometry>,
     /// The unshielded environment when this stack carries accessibility naming
     /// metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -217,7 +224,7 @@ pub struct LazyStackNode {
     /// Retained node sub-views for the items currently in the visible window, keyed
     /// by stable id so a steady scroll reuses each visible item's node (keeping its
     /// reactive content live) and only builds items entering the window.
-    pub(super) item_cache: RefCell<VisibleSubviewCache<CollectionItemId>>,
+    pub(super) item_cache: RefCell<VisibleSubviewCache<CollectionItemId, E>>,
     /// Index range materialized by the previous flush. Those retained items are
     /// the only rows that need exact pre-layout remeasurement on a reactive
     /// height change; all other rows keep their virtual estimate.
@@ -256,20 +263,20 @@ pub struct LazyStackNode {
     /// extent index and item rects.
     pub(super) _layout_guards: Vec<BoxWatcherGuard>,
     /// The structural transitions of the realized rows.
-    pub(super) transitions: LazyTransitions,
+    pub(super) transitions: LazyTransitions<E>,
 }
 
 /// A detached outgoing item: its retained node (semantically dead, painted
 /// only), the fixed-size [`GhostSlot`] it still occupies, and the runtime of
 /// the independent removal clock driving it (layout-spec.md §4.5).
-pub(super) struct CollectionGhost {
+pub(super) struct CollectionGhost<E: crate::text::TextEngine> {
     /// Live id this ghost displays after; `None` places it before the first
     /// live entry.
     anchor: Option<CollectionItemId>,
-    ghost: Ghost<RenderNode>,
+    ghost: Ghost<RenderNode<E>>,
     /// This ghost's own clock and paint scope — removal runs on its own
     /// timeline, never on the collection's shared tick.
-    runtime: TransitionRuntime,
+    runtime: TransitionRuntime<E>,
 }
 
 /// One layout/flush position in display order: a live entry, or a removal
@@ -282,10 +289,10 @@ enum CollectionSlot {
 
 /// The members of `order` as the layout sees them, `subs` being the entries'
 /// sub-views by entry index.
-fn slot_refs<'a, S: SubView>(
+fn slot_refs<'a, S: SubView, E: crate::text::TextEngine>(
     order: &[CollectionSlot],
     subs: &'a [S],
-    ghosts: &'a [CollectionGhost],
+    ghosts: &'a [CollectionGhost<E>],
 ) -> Vec<&'a dyn SubView> {
     order
         .iter()
@@ -296,7 +303,7 @@ fn slot_refs<'a, S: SubView>(
         .collect()
 }
 
-impl CollectionNode {
+impl<E: crate::text::TextEngine> CollectionNode<E> {
     /// Display order for measure, layout and flush: head-anchored ghosts first,
     /// then each live entry followed by the ghosts anchored to it. Ghosts
     /// whose anchor left in the same reconcile trail at the end. A
@@ -330,12 +337,12 @@ impl CollectionNode {
     /// state cell across the level (mirrors [`ContainerNode`] measurement).
     pub(super) fn measure(
         &self,
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let cell = RefCell::new(state);
-        let subs: Vec<NodeSubView> = self
+        let subs: Vec<NodeSubView<E>> = self
             .entries
             .iter()
             .map(|entry| NodeSubView::new(&entry.node, &cell, &self.env, theme))
@@ -348,19 +355,39 @@ impl CollectionNode {
         ViewDimensions::new(self.layout.size_that_fits(proposal, &refs))
     }
 
+    /// The collection's response geometry: its layout's rule over the same
+    /// members [`Self::measure`] hands it, ghost slots included.
+    pub(super) fn resolve_extent(
+        &self,
+        state: &mut HydroState<E>,
+        theme: &Rc<dyn WidgetTheme>,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let cell = RefCell::new(state);
+        let subs: Vec<NodeSubView<E>> = self
+            .entries
+            .iter()
+            .map(|entry| NodeSubView::new(&entry.node, &cell, &self.env, theme))
+            .collect();
+        let order = self.slot_order();
+        let refs = slot_refs(&order, &subs, &self.ghosts);
+        resolve_layout_extent(&*self.layout, bounds, proposal, &refs)
+    }
+
     pub(super) fn layout(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         safe_area: Option<&safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
-        size: Size,
+        bounds: Rect,
     ) {
         let env = self.env.clone();
         let theme = renderer.theme();
         let order = self.slot_order();
-        let (placements, mut frozen, priorities) = {
+        let (placement, mut frozen, priorities) = {
             let cell = RefCell::new(&mut renderer.state);
-            let subs: Vec<NodeSubView> = self
+            let subs: Vec<NodeSubView<E>> = self
                 .entries
                 .iter()
                 .map(|entry| NodeSubView::new(&entry.node, &cell, &env, &theme))
@@ -370,51 +397,53 @@ impl CollectionNode {
             // the container's membership only reflows when a ghost's clock
             // completes and its slot is released.
             let refs = slot_refs(&order, &subs, &self.ghosts);
-            // Only the accessibility scope reads `resolved` — skip the measure
-            // in builds without it.
-            #[cfg(feature = "accessibility")]
-            {
-                self.resolved =
-                    resolved_content_rect(self.layout.size_that_fits(proposal, &refs), size);
-            }
-            let placed = self.layout.place(Rect::from_size(size), proposal, &refs);
+            let placement = placed_layout(&*self.layout, bounds, proposal, &refs);
             // Freeze each live entry's placed dimensions (size plus explicit
             // guides at the placed proposal) while `subs` is still borrowed —
             // the removal ghost keeps them fixed afterward.
             let mut frozen: Vec<Option<ViewDimensions>> = vec![None; self.entries.len()];
-            for (slot, placement) in order.iter().zip(&placed) {
+            for (slot, child) in order.iter().zip(&placement.children) {
                 if let CollectionSlot::Entry(index) = *slot {
-                    frozen[index] = Some(frozen_placement_dimensions(&subs[index], placement));
+                    frozen[index] = Some(frozen_placement_dimensions(&subs[index], child));
                 }
             }
-            (placed, frozen, priorities)
+            (placement, frozen, priorities)
         };
+        #[cfg(feature = "accessibility")]
+        {
+            self.geometry = Some(PlacedGeometry {
+                proposal,
+                answer: placement.answer,
+                allocation: Rect::from_size(*bounds.size()),
+                response_rect: placement.response_rect,
+            });
+        }
         let mut entry_frames = vec![None; self.entries.len()];
         let mut ghost_frames = vec![None; self.ghosts.len()];
-        for (slot, placement) in order.iter().zip(&placements) {
+        for (slot, child) in order.iter().zip(&placement.children) {
             match *slot {
-                CollectionSlot::Entry(index) => entry_frames[index] = Some(placement),
-                CollectionSlot::Ghost(index) => ghost_frames[index] = Some(placement),
+                CollectionSlot::Entry(index) => entry_frames[index] = Some(child),
+                CollectionSlot::Ghost(index) => ghost_frames[index] = Some(child),
             }
         }
-        for (index, (entry, placement)) in self.entries.iter_mut().zip(&entry_frames).enumerate() {
-            let Some(placement) = placement else { continue };
+        for (index, (entry, child)) in self.entries.iter_mut().zip(&entry_frames).enumerate() {
+            let Some(child) = child else { continue };
             if let Some(dimensions) = frozen[index].take() {
                 entry.last_measured.replace((dimensions, priorities[index]));
             }
-            let child_area = safe_area.map(|area| area.child(placement.frame));
+            let child_area = safe_area.map(|area| area.child(child.frame));
             entry.node.layout(
                 renderer,
                 &env,
                 child_area,
-                placement.proposal,
-                *placement.frame.size(),
+                child.proposal,
+                *child.frame.size(),
             );
         }
         let empty_frame = Rect::from_size(Size::new(0.0, 0.0));
         self.placed = entry_frames
             .into_iter()
-            .map(|placement| placement.map_or(empty_frame, |p| p.frame))
+            .map(|child| child.map_or(empty_frame, |p| p.frame))
             .collect();
         self.ghost_placed = ghost_frames
             .into_iter()
@@ -422,15 +451,15 @@ impl CollectionNode {
             .collect();
     }
 
-    pub(super) fn flush(&self, renderer: &mut HydrolysisRenderer, ctx: RenderContext) {
+    pub(super) fn flush(&self, renderer: &mut HydrolysisRenderer<E>, ctx: RenderContext) {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
-            let (bounds, extent) = (
-                ctx.bounds,
-                renderer.resolve_window_rect(kurbo_rect(self.resolved)),
-            );
-            let scope = renderer.begin_accessibility_container(bounds, Some(extent), env);
+            let geometry = self
+                .geometry
+                .expect("hydrolysis collection flushed before its layout");
+            let scope =
+                renderer.begin_accessibility_container(accessibility_rect(env, &geometry), env);
             renderer.pop_accessibility_owner();
             scope
         });
@@ -494,7 +523,7 @@ impl CollectionNode {
     /// ghosts are not entries, so a removed item leaves the tree the moment
     /// the membership change lands, exactly as §4.5 requires.
     #[cfg(feature = "accessibility")]
-    pub(super) fn emit_accessibility(&self, renderer: &mut SemanticCore) {
+    pub(super) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>) {
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
             let scope = renderer.begin_accessibility_container_semantic(env);
@@ -520,7 +549,7 @@ impl CollectionNode {
     /// rebuilds exactly that row. Re-insertion of a departed id is a new
     /// instance with a new slot; a same-id ghost keeps animating beside it
     /// and is never revived.
-    pub(super) fn reconcile(&mut self, renderer: &mut SemanticCore) {
+    pub(super) fn reconcile(&mut self, renderer: &mut SemanticCore<E>) {
         renderer.state.counters.structural_patches += 1;
         let env = self.env.clone();
         // The retained snapshot is immutable: ids and views read here stay
@@ -543,9 +572,9 @@ impl CollectionNode {
         // Partition the previous display order into entries still live
         // (reusable, keyed by id) and departed ones, which become ghosts when
         // the item declared a removal transition and drop outright otherwise.
-        let mut reuse_by_id: std::collections::BTreeMap<CollectionItemId, CollectionEntry> =
+        let mut reuse_by_id: std::collections::BTreeMap<CollectionItemId, CollectionEntry<E>> =
             std::collections::BTreeMap::new();
-        let mut new_ghosts: Vec<CollectionGhost> = Vec::new();
+        let mut new_ghosts: Vec<CollectionGhost<E>> = Vec::new();
         {
             let mut last_live: Option<CollectionItemId> = None;
             for entry in self.entries.drain(..) {
@@ -610,7 +639,7 @@ impl CollectionNode {
     /// while anything is still mid-flight a refresh is requested so frames
     /// keep coming until the collection settles. Returns whether the tree
     /// changed shape or is still animating (both need a fresh layout).
-    pub(super) fn advance_transitions(&mut self, renderer: &SemanticCore) -> bool {
+    pub(super) fn advance_transitions(&mut self, renderer: &SemanticCore<E>) -> bool {
         let now = renderer.frame_instant;
         let mut animating = false;
         for entry in &mut self.entries {
@@ -642,7 +671,7 @@ impl CollectionNode {
 /// ghost holding its main-axis slot in the stack's flow until its removal
 /// completes. A removed row that was never realized has no pixels to animate
 /// and leaves at once.
-pub struct LazyTransitions<T: View = AnyView> {
+pub struct LazyTransitions<E: crate::text::TextEngine, T: View = AnyView> {
     /// Set by the membership watcher; consumed when the container applies
     /// the change.
     pub(crate) membership: Rc<Cell<bool>>,
@@ -653,10 +682,10 @@ pub struct LazyTransitions<T: View = AnyView> {
     /// Its id set is derived only when such a row declares a transition.
     replaced_set: RefCell<Option<ReplacedSet<T>>>,
     /// The transition state of every realized row, by id.
-    rows: RefCell<std::collections::HashMap<CollectionItemId, LazyRow>>,
+    rows: RefCell<std::collections::HashMap<CollectionItemId, LazyRow<E>>>,
     /// Removed rows still animating out, ordered by the row position they
     /// sit before.
-    ghosts: RefCell<Vec<LazyGhost>>,
+    ghosts: RefCell<Vec<LazyGhost<E>>>,
     /// Reduce Motion resolved once at build from the item environment.
     reduce_motion: bool,
     /// Logical-edge resolution for sampled transition properties.
@@ -683,14 +712,17 @@ pub struct RowPlacement {
     pub content: kurbo::Rect,
     /// The proposal the content was placed at.
     pub proposal: ProposalSize,
+    /// The stretch the row measured with, kept so its ghost is re-placed
+    /// with the same cross-axis behavior.
+    pub stretch: StretchAxis,
 }
 
 /// The transition state of one realized row.
-pub struct LazyRow {
+pub struct LazyRow<E: crate::text::TextEngine> {
     /// The declaration claimed from the built row.
     spec: Option<TransitionSpec>,
     /// The row's insertion while it animates in.
-    pub insertion: Option<TransitionRun>,
+    pub insertion: Option<TransitionRun<E>>,
     /// Where the row was last placed — the fixed slot its removal ghost
     /// keeps.
     placed: Option<RowPlacement>,
@@ -699,18 +731,18 @@ pub struct LazyRow {
 /// A removed row still animating out: its retained sub-view, frozen at the
 /// geometry it was last placed at, sitting before row `position` of the
 /// current row set.
-pub struct LazyGhost {
+pub struct LazyGhost<E: crate::text::TextEngine> {
     /// The live id the ghost displays after; `None` places it first.
     anchor: Option<CollectionItemId>,
     /// The row position (current row set) the ghost sits before.
     position: usize,
-    pub ghost: Ghost<RetainedSubview>,
+    pub ghost: Ghost<RetainedSubview<E>>,
     /// The frozen slot and content frame.
     pub placement: RowPlacement,
-    pub runtime: TransitionRuntime,
+    pub runtime: TransitionRuntime<E>,
 }
 
-impl LazyGhost {
+impl<E: crate::text::TextEngine> LazyGhost<E> {
     /// The frozen size of the ghost's slot.
     pub const fn size(&self) -> Size {
         kurbo_size(self.placement.slot)
@@ -725,7 +757,7 @@ pub enum LazySlot {
     Ghost(usize),
 }
 
-impl<T: View> LazyTransitions<T> {
+impl<T: View, E: crate::text::TextEngine> LazyTransitions<E, T> {
     pub(crate) fn new(
         env: &Environment,
         snapshot: AnyViewsSnapshot<T>,
@@ -802,12 +834,12 @@ impl<T: View> LazyTransitions<T> {
     }
 
     /// The removal ghost at `index`, in display order.
-    pub(crate) fn ghost(&self, index: usize) -> std::cell::RefMut<'_, LazyGhost> {
+    pub(crate) fn ghost(&self, index: usize) -> std::cell::RefMut<'_, LazyGhost<E>> {
         std::cell::RefMut::map(self.ghosts.borrow_mut(), |ghosts| &mut ghosts[index])
     }
 
     /// The tracked transition state of realized row `id`.
-    pub(crate) fn row(&self, id: CollectionItemId) -> std::cell::RefMut<'_, LazyRow> {
+    pub(crate) fn row(&self, id: CollectionItemId) -> std::cell::RefMut<'_, LazyRow<E>> {
         std::cell::RefMut::map(self.rows.borrow_mut(), |rows| {
             rows.get_mut(&id)
                 .expect("hydrolysis virtualized row: a placed row is tracked")
@@ -849,8 +881,8 @@ impl<T: View> LazyTransitions<T> {
     pub(crate) fn track(
         &self,
         id: CollectionItemId,
-        subview: &RetainedSubview,
-        renderer: &SemanticCore,
+        subview: &RetainedSubview<E>,
+        renderer: &SemanticCore<E>,
     ) {
         if self.rows.borrow().contains_key(&id) {
             return;
@@ -902,7 +934,7 @@ impl<T: View> LazyTransitions<T> {
     pub(crate) fn apply_membership(
         &self,
         current: &AnyViewsSnapshot<T>,
-        cache: &mut VisibleSubviewCache<CollectionItemId>,
+        cache: &mut VisibleSubviewCache<CollectionItemId, E>,
         now: Instant,
     ) -> bool {
         let previous = self.previous.replace(current.clone());
@@ -1035,7 +1067,7 @@ fn lazy_main_extent(axis: &LazyStackAxisConfig, size: Size) -> f64 {
     }
 }
 
-impl LazyStackNode {
+impl<E: crate::text::TextEngine> LazyStackNode<E> {
     /// Applies structural updates owned by the currently visible retained items
     /// before the parent scroll view measures this stack. Items whose ids the
     /// stored viewport window covers but that were never materialized — e.g.
@@ -1048,7 +1080,7 @@ impl LazyStackNode {
     /// realized rows that left become ghosts holding their slot, and rows it
     /// inserted start their insertion when they are first built this frame.
     /// Every row and ghost clock then advances.
-    pub(super) fn patch_visible(&self, renderer: &mut SemanticCore) -> bool {
+    pub(super) fn patch_visible(&self, renderer: &mut SemanticCore<E>) -> bool {
         let transitions = &self.transitions;
         let replaced = core::mem::take(&mut *self.replaced_ids.borrow_mut());
         if !replaced.is_empty() {
@@ -1131,7 +1163,7 @@ impl LazyStackNode {
         changed | materialized | ghosted | dropped | animating
     }
 
-    fn spacing(&self, state: &mut HydroState) -> f64 {
+    fn spacing(&self, state: &mut HydroState<E>) -> f64 {
         match &self.axis {
             LazyStackAxisConfig::Vertical { spacing, .. }
             | LazyStackAxisConfig::Horizontal { spacing, .. } => {
@@ -1162,7 +1194,7 @@ impl LazyStackNode {
     fn measure_item(
         &self,
         snapshot: &AnyViewsSnapshot<AnyView>,
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         index: usize,
         proposal: ProposalSize,
@@ -1207,7 +1239,7 @@ impl LazyStackNode {
     fn ensure_floor(
         &self,
         snapshot: &AnyViewsSnapshot<AnyView>,
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         cross: Option<f32>,
     ) -> f64 {
@@ -1226,7 +1258,7 @@ impl LazyStackNode {
     fn ensure_estimate(
         &self,
         snapshot: &AnyViewsSnapshot<AnyView>,
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         cross: Option<f32>,
     ) -> Size {
@@ -1251,7 +1283,7 @@ impl LazyStackNode {
 
     /// Resets the extent index when the display order (rows plus ghosts),
     /// the estimate or the spacing changed — or the membership did.
-    fn prepare_extent_index(&self, state: &mut HydroState, count: usize) {
+    fn prepare_extent_index(&self, state: &mut HydroState<E>, count: usize) {
         let estimate = self.estimate.get();
         let display = self.transitions.display_len(count);
         if display == 0 || estimate <= 0.0 {
@@ -1281,7 +1313,7 @@ impl LazyStackNode {
     fn refresh_visible_extents(
         &self,
         snapshot: &AnyViewsSnapshot<AnyView>,
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         count: usize,
         cross: Option<f32>,
@@ -1311,7 +1343,7 @@ impl LazyStackNode {
     #[allow(clippy::cast_possible_truncation)]
     pub(super) fn measure(
         &self,
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
@@ -1365,11 +1397,30 @@ impl LazyStackNode {
         ViewDimensions::new(size)
     }
 
+    /// The stack's response geometry: the stack rule for its axis and
+    /// alignment, which reads no children, over the answer [`Self::measure`]
+    /// derives from the lazy measurement state.
+    pub(super) fn resolve_extent(
+        &self,
+        state: &mut HydroState<E>,
+        theme: &Rc<dyn WidgetTheme>,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let answer = self.measure(state, theme, proposal).size;
+        let rect = self.axis.resolve_extent(PlacementInput {
+            bounds,
+            proposal,
+            answer,
+        })?;
+        Ok(ResolvedExtent { answer, rect })
+    }
+
     /// Resolves the visible window from the enclosing scroll's pushed viewport and
     /// re-dispatches only those items at their placed rects. Bounded by visible rows.
     pub(super) fn flush(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         _env: &Environment,
     ) {
@@ -1385,20 +1436,20 @@ impl LazyStackNode {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
-            // A lazy stack places its items at flush (offset-dependent), so no
-            // resolved extent is cached for it — `None` keeps the surviving
-            // child's own bounds on collapse.
-            let bounds = ctx.bounds;
-            let scope = renderer.begin_accessibility_container(bounds, None, env);
+            let geometry = self
+                .geometry
+                .expect("hydrolysis lazy stack flushed before its layout");
+            let scope =
+                renderer.begin_accessibility_container(accessibility_rect(env, &geometry), env);
             renderer.pop_accessibility_owner();
             scope
         });
         let cross = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => {
-                Some(crate::num_cast::f64_as_f32(ctx.bounds.width()))
+                Some(crate::num_cast::f64_as_f32(ctx.bounds().width()))
             }
             LazyStackAxisConfig::Horizontal { .. } => {
-                Some(crate::num_cast::f64_as_f32(ctx.bounds.height()))
+                Some(crate::num_cast::f64_as_f32(ctx.bounds().height()))
             }
         };
         let theme = renderer.theme();
@@ -1408,28 +1459,27 @@ impl LazyStackNode {
         self.prepare_extent_index(&mut renderer.state, count);
         let total_extent_before = self.extent_index.borrow().total_extent();
         self.item_cache.borrow_mut().begin_frame();
-        let visible = renderer
-            .lazy
-            .lazy_viewport_stack
-            .last()
-            .map_or(ctx.bounds, |viewport| {
-                (renderer.record_world(ctx.local).inverse() * viewport.transform)
+        let visible = renderer.lazy.lazy_viewport_stack.last().map_or_else(
+            || ctx.bounds(),
+            |viewport| {
+                (renderer.record_world(ctx.local()).inverse() * viewport.transform)
                     .transform_rect_bbox(viewport.bounds)
-            });
+            },
+        );
         let (visible_start, visible_end) = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => {
-                (visible.y0 - ctx.bounds.y0, visible.y1 - ctx.bounds.y0)
+                (visible.y0 - ctx.bounds().y0, visible.y1 - ctx.bounds().y0)
             }
             LazyStackAxisConfig::Horizontal { .. }
                 if self.axis.direction().snapshot().is_right_to_left() =>
             {
                 (
-                    ctx.bounds.x0 + ctx.bounds.x1 - visible.x1,
-                    ctx.bounds.x0 + ctx.bounds.x1 - visible.x0,
+                    ctx.bounds().x0 + ctx.bounds().x1 - visible.x1,
+                    ctx.bounds().x0 + ctx.bounds().x1 - visible.x0,
                 )
             }
             LazyStackAxisConfig::Horizontal { .. } => {
-                (visible.x0 - ctx.bounds.x0, visible.x1 - ctx.bounds.x0)
+                (visible.x0 - ctx.bounds().x0, visible.x1 - ctx.bounds().x0)
             }
         };
         self.visible_span.set(Some((visible_start, visible_end)));
@@ -1493,7 +1543,7 @@ impl LazyStackNode {
     )]
     fn flush_row(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         snapshot: &AnyViewsSnapshot<AnyView>,
         index: usize,
@@ -1519,13 +1569,13 @@ impl LazyStackNode {
             self.transitions.track(id, subview, renderer);
             measured
         };
-        let child_rect = place_lazy_stack_item(&self.axis, stretch, size, ctx.bounds, cursor);
+        let child_rect = place_lazy_stack_item(&self.axis, stretch, size, ctx.bounds(), cursor);
         // The item's frame in the context the stack recorded at layout:
         // `child_rect` resolves in `ctx.bounds` space — the same layout-fact
         // mapping `WidgetRenderContext` and the collection layout loop share
         // through `SafeAreaLayout::hosted_frame`.
         let item_area =
-            stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
+            stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds(), child_rect)));
         let slot = kurbo_size(child_rect);
         self.transitions.place(
             id,
@@ -1533,6 +1583,7 @@ impl LazyStackNode {
                 slot: child_rect,
                 content: kurbo::Rect::from_origin_size(kurbo::Point::ZERO, child_rect.size()),
                 proposal,
+                stretch,
             },
         );
         let row = self.transitions.row(id);
@@ -1574,7 +1625,7 @@ impl LazyStackNode {
     /// main-axis extent.
     fn flush_ghost(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         index: usize,
         cursor: f64,
@@ -1589,8 +1640,8 @@ impl LazyStackNode {
             ..
         } = &mut *ghost;
         let proposal = &placement.proposal;
-        let rect = place_lazy_stack_item(&self.axis, StretchAxis::None, size, ctx.bounds, cursor);
-        let area = stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds, rect)));
+        let rect = place_lazy_stack_item(&self.axis, placement.stretch, size, ctx.bounds(), cursor);
+        let area = stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds(), rect)));
         let delta = kurbo::Affine::translate((rect.x0, rect.y0));
         let child_ctx = ctx.child(
             delta,
@@ -1626,7 +1677,7 @@ impl LazyStackNode {
     /// whole collection, so every item materializes its node rather than only
     /// the visible window. Removal ghosts left the tree with their rows.
     #[cfg(feature = "accessibility")]
-    pub(super) fn emit_accessibility(&self, renderer: &mut SemanticCore) {
+    pub(super) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>) {
         let snapshot = self.snapshot.borrow().clone();
         let count = snapshot.len();
         if count == 0 {
@@ -1676,6 +1727,14 @@ mod tests {
     struct GuidedSubView;
 
     impl SubView for GuidedSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             // Distinguishes measuring at the placed proposal from measuring
             // at the parent's container proposal.

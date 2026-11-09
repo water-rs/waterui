@@ -72,10 +72,6 @@ type Receiver = Rc<dyn Fn(Context<AnyView>)>;
 
 /// Metadata marker for the body-time snapshot installed by [`Dynamic::watch`].
 #[derive(Clone, Copy, Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less metadata marker inserted by name"
-)]
 pub struct DynamicInitialContent;
 
 impl_debug!(Dynamic);

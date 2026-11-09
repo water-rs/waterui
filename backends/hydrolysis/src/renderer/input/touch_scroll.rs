@@ -43,8 +43,8 @@ const VELOCITY_MAX_SAMPLES: usize = 32;
 
 /// The in-flight touch-drag scroll gesture — one at a time, for the single
 /// active pointer the hit-test state tracks.
-#[derive(Debug, Default)]
-pub enum TouchScrollGesture {
+#[derive(Default)]
+pub enum TouchScrollGesture<E: crate::text::TextEngine> {
     /// No touch sequence is driving a scroll.
     #[default]
     Idle,
@@ -54,7 +54,7 @@ pub enum TouchScrollGesture {
     /// A scroll view claimed the drag: every move scrolls it one to one.
     /// Boxed: the drag carries the view's stretch inline, many times the
     /// size of the other states.
-    Dragging(Box<TouchScrollDrag>),
+    Dragging(Box<TouchScrollDrag<E>>),
 }
 
 /// A touch press still inside the slop, waiting on the claim check.
@@ -75,8 +75,7 @@ pub struct TouchScrollPending {
 }
 
 /// A scroll view's claimed drag, scrolled one to one by later moves.
-#[derive(Debug)]
-pub struct TouchScrollDrag {
+pub struct TouchScrollDrag<E: crate::text::TextEngine> {
     /// The claimed scroll view's offset handle.
     pub(crate) handle: crate::scroll::ScrollHandle,
     /// The claim the gesture took on the offset when the drag was
@@ -86,7 +85,7 @@ pub struct TouchScrollDrag {
     pub(crate) claim: crate::scroll::GestureClaim,
     /// The cell that registered the claimed scroll target — mark
     /// attribution for the drag's offset writes.
-    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
     /// The point the last applied delta ended at, in window hit-test space.
     pub(crate) last: kurbo::Point,
     /// The motion samples the release's fling is fit over.
@@ -100,7 +99,7 @@ pub struct TouchScrollDrag {
     pub(super) stretch: Option<ScrollStretch>,
 }
 
-impl TouchScrollDrag {
+impl<E: crate::text::TextEngine> TouchScrollDrag<E> {
     /// Moves the claimed offset by `(dx, dy)` — the finger's travel,
     /// negated — at `now`, and returns whether the offset or the stretch
     /// it shows changed: clamped edges stop it, rubber-band edges let it
@@ -311,19 +310,19 @@ impl AxisFling {
         extent: f64,
         from: Instant,
     ) -> Option<Self> {
-        let bounce = match physics.overscroll {
+        let bounce = match physics.overscroll() {
             // An axis with nothing to scroll does not bounce — the band's
             // `drag` documents why.
-            Overscroll::RubberBand(band) => (extent > 0.0).then_some(band.bounce),
+            Overscroll::RubberBand(band) => (extent > 0.0).then_some(band.bounce()),
             Overscroll::Clamped | Overscroll::Stretch(_) => None,
         };
-        match physics.deceleration {
+        match physics.deceleration() {
             FlingDeceleration::OverScrollerSpline(spline) => Some(SplineFling::new(
                 velocity,
                 start,
                 extent,
-                spline.physical_coeff,
-                spline.friction,
+                spline.physical_coeff(),
+                spline.friction(),
                 from,
             ))
             // A run whose clamped destination is already the offset —
@@ -398,11 +397,11 @@ impl TouchFling {
         at: Instant,
     ) -> Option<Self> {
         let metrics = handle.metrics();
-        let max = f64::from(config.max_fling_velocity);
-        let min = f64::from(config.min_fling_velocity);
-        let physics = config.physics;
+        let max = f64::from(config.max_fling_velocity());
+        let min = f64::from(config.min_fling_velocity());
+        let physics = config.physics();
         assert_eq!(
-            matches!(physics.overscroll, Overscroll::Stretch(_)),
+            matches!(physics.overscroll(), Overscroll::Stretch(_)),
             stretch.is_some(),
             "a release carries a stretch exactly under stretch edges"
         );
@@ -432,21 +431,20 @@ impl TouchFling {
                     .filter(|_| extent > 0.0);
                 return (fling, impact);
             }
-            if let Overscroll::RubberBand(band) = physics.overscroll
+            if let Overscroll::RubberBand(band) = physics.overscroll()
                 && !(0.0..=extent).contains(&start)
             {
                 let edge = start.clamp(0.0, extent);
                 let overscroll = start - edge;
-                let then =
-                    band.release
-                        .handover(overscroll, offset_velocity)
-                        .and_then(|handover| {
-                            let from = at + Duration::from_secs_f64(handover.seconds);
-                            inside(handover.velocity, edge, from)
-                                .map(|fling| (from, Box::new(fling)))
-                        });
+                let then = band
+                    .release()
+                    .handover(overscroll, offset_velocity)
+                    .and_then(|handover| {
+                        let from = at + Duration::from_secs_f64(handover.seconds);
+                        inside(handover.velocity, edge, from).map(|fling| (from, Box::new(fling)))
+                    });
                 let release = AxisFling::Release {
-                    spring: SpringFling::new(edge, overscroll, offset_velocity, band.release, at),
+                    spring: SpringFling::new(edge, overscroll, offset_velocity, band.release(), at),
                     then,
                 };
                 return (Some(release), None);
@@ -493,7 +491,7 @@ impl TouchFling {
         }
         Some(Self {
             claim,
-            overscroll: physics.overscroll,
+            overscroll: physics.overscroll(),
             x,
             y,
         })
@@ -910,4 +908,28 @@ fn spline_time(x: f64) -> f64 {
     let low = SPLINE_TIME[index];
     let high = SPLINE_TIME[index + 1];
     (scaled - crate::num_cast::usize_as_f64(index)).mul_add(high - low, low)
+}
+
+impl<E: crate::text::TextEngine> core::fmt::Debug for TouchScrollDrag<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TouchScrollDrag")
+            .field("handle", &self.handle)
+            .field("claim", &self.claim)
+            .field("owner", &self.owner)
+            .field("last", &self.last)
+            .field("tracker", &self.tracker)
+            .field("overscroll", &self.overscroll)
+            .field("stretch", &self.stretch)
+            .finish()
+    }
+}
+
+impl<E: crate::text::TextEngine> core::fmt::Debug for TouchScrollGesture<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Idle => f.write_str("Idle"),
+            Self::Pending(v) => f.debug_tuple("Pending").field(v).finish(),
+            Self::Dragging(v) => f.debug_tuple("Dragging").field(v).finish(),
+        }
+    }
 }

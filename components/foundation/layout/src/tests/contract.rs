@@ -1,12 +1,15 @@
 use alloc::{boxed::Box, vec, vec::Vec};
+use core::cell::RefCell;
 
 use nami::Computed;
 
+use super::leaf_extent;
 use crate::modifiers::alignment_guide::HorizontalAlignmentGuideLayout;
 use crate::stack::{Axis, HStackLayout, VStackLayout};
 use crate::{
-    HorizontalAlignment, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    SubviewPlacement, VerticalAlignment, ViewDimensions, measure_layout,
+    HorizontalAlignment, Layout, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size,
+    StretchAxis, SubView, SubviewPlacement, VerticalAlignment, ViewDimensions, measure_layout,
+    resolve_layout_extent,
 };
 
 struct RangeLeaf {
@@ -18,6 +21,13 @@ struct RangeLeaf {
 }
 
 impl SubView for RangeLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal)
             .map_or(self.ideal, |value| value.clamp(self.minimum, self.maximum));
@@ -37,20 +47,54 @@ impl SubView for RangeLeaf {
     }
 }
 
+/// A container node as a backend retains one.
+///
+/// `measure_layout` dedups child measures only within one call; a backend
+/// node memoizes its own answers across calls, without which nested stacks
+/// re-measure exponentially in depth. Every leaf under a node here is
+/// immutable, so the memo never goes stale.
 struct LayoutNode {
     layout: Box<dyn Layout>,
     children: Vec<Box<dyn SubView>>,
+    measured: RefCell<Vec<(ProposalSize, ViewDimensions)>>,
 }
 
 impl LayoutNode {
+    fn new(layout: Box<dyn Layout>, children: Vec<Box<dyn SubView>>) -> Self {
+        Self {
+            layout,
+            children,
+            measured: RefCell::new(Vec::new()),
+        }
+    }
+
     fn child_refs(&self) -> Vec<&dyn SubView> {
         self.children.iter().map(AsRef::as_ref).collect()
     }
 }
 
 impl SubView for LayoutNode {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        resolve_layout_extent(self.layout.as_ref(), bounds, proposal, &self.child_refs())
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        measure_layout(self.layout.as_ref(), proposal, &self.child_refs())
+        if let Some((_, dimensions)) = self
+            .measured
+            .borrow()
+            .iter()
+            .find(|(measured, _)| *measured == proposal)
+        {
+            return dimensions.clone();
+        }
+        let dimensions = measure_layout(self.layout.as_ref(), proposal, &self.child_refs());
+        self.measured
+            .borrow_mut()
+            .push((proposal, dimensions.clone()));
+        dimensions
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -141,9 +185,9 @@ fn sections(axis: Axis) -> Vec<Box<dyn SubView>> {
     [40.0, 120.0]
         .into_iter()
         .map(|extent| {
-            Box::new(LayoutNode {
-                layout: stack(axis),
-                children: vec![
+            Box::new(LayoutNode::new(
+                stack(axis),
+                vec![
                     Box::new(RangeLeaf {
                         axis,
                         minimum: extent,
@@ -159,7 +203,7 @@ fn sections(axis: Axis) -> Vec<Box<dyn SubView>> {
                         cross: 0.0,
                     }),
                 ],
-            }) as Box<dyn SubView>
+            )) as Box<dyn SubView>
         })
         .collect()
 }
@@ -337,14 +381,14 @@ fn nested_rigid_stacks_preserve_mixed_axis_probe_responses() {
         cross: 20.0,
     });
     for depth in 0..8 {
-        node = Box::new(LayoutNode {
-            layout: stack(if depth % 2 == 0 {
+        node = Box::new(LayoutNode::new(
+            stack(if depth % 2 == 0 {
                 Axis::Horizontal
             } else {
                 Axis::Vertical
             }),
-            children: vec![node],
-        });
+            vec![node],
+        ));
     }
     for width in [
         None,
@@ -428,6 +472,13 @@ fn spacing_invalidation_and_membership_changes_return_to_original_geometry() {
 struct CrossFillLeaf(Axis);
 
 impl SubView for CrossFillLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let cross = if self.0.is_horizontal() {
             proposal.height
@@ -484,6 +535,13 @@ struct WrappingLeaf {
 }
 
 impl SubView for WrappingLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let cross = cross_proposal(self.axis, proposal)
             .unwrap_or(self.unwrapped)
@@ -588,6 +646,13 @@ fn placement_proposes_the_resolved_extent_on_underfill() {
 struct SquareLeaf(f32);
 
 impl SubView for SquareLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let side = match (proposal.width, proposal.height) {
             (Some(width), Some(height)) if width.is_finite() && height.is_finite() => {
@@ -653,6 +718,13 @@ struct GuidedLeaf {
 }
 
 impl SubView for GuidedLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         let mut dimensions = ViewDimensions::new(self.size);
         dimensions.set_vertical(VerticalAlignment::Top, self.top);
@@ -721,6 +793,13 @@ struct BaselineLeaf {
 }
 
 impl SubView for BaselineLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
             .with_vertical(VerticalAlignment::FirstBaseline, self.baseline)
@@ -742,18 +821,18 @@ impl SubView for BaselineLeaf {
 /// baseline hung on the wrapped one's.
 #[test]
 fn an_alignment_guide_modifier_forwards_unrelated_guides() {
-    let wrapped = LayoutNode {
-        layout: Box::new(HorizontalAlignmentGuideLayout {
+    let wrapped = LayoutNode::new(
+        Box::new(HorizontalAlignmentGuideLayout {
             alignment: HorizontalAlignment::Leading,
             compute: |dimensions: &ViewDimensions| {
                 dimensions.horizontal(HorizontalAlignment::Leading) - 4.0
             },
         }),
-        children: vec![Box::new(BaselineLeaf {
+        vec![Box::new(BaselineLeaf {
             size: Size::new(20.0, 20.0),
             baseline: 12.0,
         })],
-    };
+    );
     let sibling = BaselineLeaf {
         size: Size::new(20.0, 20.0),
         baseline: 4.0,
@@ -811,6 +890,13 @@ struct ConditionalChild {
 }
 
 impl SubView for ConditionalChild {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
     }
@@ -869,7 +955,12 @@ fn a_child_that_renders_nothing_is_not_a_stack_member() {
         children.len(),
         "place answers one placement per child, members or not"
     );
-    assert_extent(placements[0].frame.y(), 0.0, "first member at the top");
+    // Block 20 + 10 + 20 = 50 centred in 400: starts at 175.
+    assert_extent(
+        placements[0].frame.y(),
+        175.0,
+        "first member opens the block",
+    );
     assert_extent(
         placements[1].frame.height(),
         0.0,
@@ -877,7 +968,7 @@ fn a_child_that_renders_nothing_is_not_a_stack_member() {
     );
     assert_extent(
         placements[2].frame.y(),
-        sibling.height + spacing,
+        175.0 + sibling.height + spacing,
         "second member one spacing below the first",
     );
 
@@ -904,9 +995,10 @@ fn a_child_that_renders_nothing_is_not_a_stack_member() {
         "shown conditional: stack height is three members and two gaps",
     );
     let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
+    // Block 3 * 20 + 2 * 10 = 80 centred in 400: starts at 160.
     assert_extent(
         placements[2].frame.y(),
-        sibling.height * 2.0 + spacing * 2.0,
+        160.0 + sibling.height * 2.0 + spacing * 2.0,
         "second member two spacings below the first",
     );
 }
@@ -940,9 +1032,10 @@ fn a_zero_sized_child_is_still_a_member() {
         "a zero-size member still counts for spacing",
     );
     let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
+    // Block 20 + 10 + 0 + 10 + 20 = 60 centred in 400: starts at 170.
     assert_extent(
         placements[2].frame.y(),
-        20.0 + spacing * 2.0,
+        170.0 + 20.0 + spacing * 2.0,
         "the last member keeps both gaps around the zero-size one",
     );
 }
@@ -957,6 +1050,13 @@ struct EmptyGuideLeaf {
 }
 
 impl SubView for EmptyGuideLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::zero()).with_vertical(VerticalAlignment::Top, self.top)
     }
@@ -1001,16 +1101,16 @@ fn a_non_member_exports_neither_guides_nor_stretch() {
 
     // Guide leg: the empty child's -100 top guide must stay out of the inner
     // stack's exported guide and the outer envelope.
-    let inner = LayoutNode {
-        layout: top_stack(),
-        children: vec![
+    let inner = LayoutNode::new(
+        top_stack(),
+        vec![
             Box::new(rigid()),
             Box::new(EmptyGuideLeaf {
                 top: -100.0,
                 stretch: StretchAxis::None,
             }),
         ],
-    };
+    );
     let sibling = rigid();
     let children: [&dyn SubView; 2] = [&inner, &sibling];
     let measured = measure_layout(&outer, ProposalSize::UNSPECIFIED, &children);
@@ -1035,16 +1135,16 @@ fn a_non_member_exports_neither_guides_nor_stretch() {
 
     // Stretch leg: the non-member's `Both` must not make its stack greedy —
     // under a finite offer the outer row stays content-sized.
-    let inner = LayoutNode {
-        layout: top_stack(),
-        children: vec![
+    let inner = LayoutNode::new(
+        top_stack(),
+        vec![
             Box::new(rigid()),
             Box::new(EmptyGuideLeaf {
                 top: 0.0,
                 stretch: StretchAxis::Both,
             }),
         ],
-    };
+    );
     let sibling = rigid();
     let children: [&dyn SubView; 2] = [&inner, &sibling];
     let measured = measure_layout(
@@ -1079,6 +1179,13 @@ struct DecliningLeaf {
 }
 
 impl SubView for DecliningLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
             if value == 0.0 {
@@ -1112,6 +1219,13 @@ struct FillLeaf {
 }
 
 impl SubView for FillLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(axis_size(self.axis, self.minimum, self.cross))
     }
@@ -1137,6 +1251,13 @@ struct AcceptingLeaf {
 }
 
 impl SubView for AcceptingLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.maximum, |value| {
             value.clamp(self.minimum, self.maximum)
@@ -1164,6 +1285,13 @@ struct RoundDownLeaf {
 }
 
 impl SubView for RoundDownLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
             if value.is_infinite() {
@@ -1193,6 +1321,13 @@ struct PlateauLeaf {
 }
 
 impl SubView for PlateauLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(200.0, |value| {
             if value.is_infinite() {
@@ -1226,6 +1361,13 @@ struct OversizeLeaf {
 }
 
 impl SubView for OversizeLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.answer, |value| {
             if value == 0.0 { 0.0 } else { self.answer }
@@ -1252,6 +1394,13 @@ struct NextDownLeaf {
 }
 
 impl SubView for NextDownLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
             if value.is_infinite() {
@@ -1292,6 +1441,13 @@ struct GuidedFillLeaf {
 }
 
 impl SubView for GuidedFillLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let (cross, guide) = if main_proposal(self.axis, proposal) == Some(0.0) {
             (30.0, 20.0)
@@ -1326,6 +1482,13 @@ struct DecliningGuidedLeaf {
 }
 
 impl SubView for DecliningGuidedLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
             if value == 0.0 {
@@ -1388,8 +1551,21 @@ fn assert_negotiation(
     spacing: f32,
     expected: &[(f32, f32)],
 ) {
+    assert_negotiation_from(axis, 0.0, placements, spacing, expected);
+}
+
+/// [`assert_negotiation`] for a negotiated block that does not fill its
+/// bounds: `start` is the main origin of the first member, where the
+/// centred block begins.
+fn assert_negotiation_from(
+    axis: Axis,
+    start: f32,
+    placements: &[SubviewPlacement],
+    spacing: f32,
+    expected: &[(f32, f32)],
+) {
     assert_eq!(placements.len(), expected.len(), "one placement per member");
-    let mut cursor = 0.0;
+    let mut cursor = start;
     for (placement, &(extent, proposal)) in placements.iter().zip(expected) {
         assert_extent(
             main_origin(axis, placement.frame),
@@ -1755,10 +1931,7 @@ fn declined_space_inside_a_nested_stack_stays_nested_on_both_axes() {
             cross: 10.0,
             priority: 0,
         });
-        let inner = LayoutNode {
-            layout: stack(axis),
-            children: vec![leaf],
-        };
+        let inner = LayoutNode::new(stack(axis), vec![leaf]);
         let children: Vec<Box<dyn SubView>> = vec![
             Box::new(inner),
             Box::new(FillLeaf {
@@ -1842,7 +2015,9 @@ fn declined_space_without_a_stretcher_stays_unused_on_both_axes() {
             100.0,
             "the stack answers the reported extents",
         );
-        assert_negotiation(axis, &placements, 0.0, &[(80.0, 83.0), (20.0, 20.0)]);
+        // Block 80 + 20 = 100 centred in 103: starts at 1.5.
+        assert_negotiation_from(axis, 1.5, &placements, 0.0, &[(80.0, 83.0), (20.0, 20.0)]);
+        // The block fills the 100 bounds: starts at 0.
         let (_, own_placements) = place_after_proposal(axis, 0.0, 103.0, 100.0, &refs);
         assert_negotiation(axis, &own_placements, 0.0, &[(80.0, 80.0), (20.0, 20.0)]);
     }
@@ -1958,7 +2133,9 @@ fn minima_that_overflow_the_budget_are_offered_verbatim_on_both_axes() {
         let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
         let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
         assert_extent(main_extent(axis, size), 110.0, "the overflow is reported");
-        assert_negotiation(axis, &placements, 0.0, &[(90.0, 90.0), (20.0, 20.0)]);
+        // Block 90 + 20 = 110 centred in 100: overflows both edges by 5, so
+        // it starts at -5.
+        assert_negotiation_from(axis, -5.0, &placements, 0.0, &[(90.0, 90.0), (20.0, 20.0)]);
     }
 }
 
@@ -2127,8 +2304,11 @@ fn an_oversized_answer_overflows_without_stealing_minima_on_both_axes() {
         let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
         let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
         assert_extent(main_extent(axis, size), 110.0, "the refusal overflows");
-        assert_negotiation(
+        // Block 90 + 0 + 20 = 110 centred in 100: overflows both edges by 5,
+        // so it starts at -5.
+        assert_negotiation_from(
             axis,
+            -5.0,
             &placements,
             0.0,
             &[(90.0, 80.0), (0.0, 0.0), (20.0, 20.0)],
@@ -2377,4 +2557,270 @@ fn the_lower_band_gives_way_before_the_higher_on_both_axes() {
         let (_, placements) = place_after_proposal(axis, 0.0, 150.0, 150.0, &refs);
         assert_negotiation(axis, &placements, 0.0, &[(100.0, 100.0), (50.0, 50.0)]);
     }
+}
+
+// ============================================================================
+// ScrollView on the non-scrolling axis (docs/layout-spec.md §6)
+// ============================================================================
+
+/// A scroll leaf under the contract. On its scrolling axis it claims the
+/// whole offer — a finite proposal is answered with the proposal, `None` with
+/// the content's intrinsic extent, `0` with `0`. On the non-scrolling axis it
+/// answers the content's own answer to the content proposal — that axis gets
+/// the scroll's offer, the scrolling axis `None` — clamped to a finite offer
+/// (docs/layout-spec.md §6, water-rs/waterui#1208). `scrolls_both` models
+/// `Axis::All`, which fills both axes.
+struct ScrollLeaf {
+    axis: Axis,
+    scrolls_both: bool,
+    /// The content's minimum on the non-scrolling axis — what a `0` proposal
+    /// there measures.
+    content_min_cross: f32,
+    /// The content's own (non-filling) answer on the non-scrolling axis plus
+    /// its intrinsic extent on the scrolling axis.
+    content_intrinsic: Size,
+    /// Whether the content fills the non-scrolling axis — then the scroll
+    /// fills it too, naturally.
+    content_fills_cross: bool,
+}
+
+impl ScrollLeaf {
+    /// The scroll's answer on its non-scrolling axis: the content's own
+    /// answer to the content proposal on that axis, clamped to a finite
+    /// offer; `0` and `None` keep the minimum and intrinsic behaviours.
+    fn cross_answer(&self, offer: Option<f32>) -> f32 {
+        match offer {
+            None => cross_extent(self.axis, self.content_intrinsic),
+            Some(0.0) => self.content_min_cross,
+            Some(offer) => {
+                let content = if self.content_fills_cross {
+                    offer
+                } else {
+                    cross_extent(self.axis, self.content_intrinsic)
+                };
+                content.min(offer)
+            }
+        }
+    }
+}
+
+impl SubView for ScrollLeaf {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        if self.scrolls_both {
+            return ViewDimensions::new(Size::new(
+                proposal.width.unwrap_or(self.content_intrinsic.width),
+                proposal.height.unwrap_or(self.content_intrinsic.height),
+            ));
+        }
+        let main = main_proposal(self.axis, proposal)
+            .unwrap_or_else(|| main_extent(self.axis, self.content_intrinsic));
+        let cross = self.cross_answer(cross_proposal(self.axis, proposal));
+        ViewDimensions::new(axis_size(self.axis, main, cross))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        if self.scrolls_both {
+            return StretchAxis::Both;
+        }
+        match (self.axis, self.content_fills_cross) {
+            (Axis::Vertical, false) => StretchAxis::Vertical,
+            (Axis::Horizontal, false) => StretchAxis::Horizontal,
+            _ => StretchAxis::Both,
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// The issue scenario (water-rs/waterui#1208): a horizontal chip row inside a
+/// vertical stack answers the content's height on the scroll's non-scrolling
+/// axis, not the offer's — the stack wraps the chips at 240x28 instead of
+/// claiming the whole 240x160.
+#[test]
+fn scrollview_hugs_content_on_the_non_scrolling_axis() {
+    let scroll = ScrollLeaf {
+        axis: Axis::Horizontal,
+        scrolls_both: false,
+        content_min_cross: 28.0,
+        content_intrinsic: Size::new(328.5, 28.0),
+        content_fills_cross: false,
+    };
+    let layout = stack(Axis::Vertical);
+    let proposal = ProposalSize::new(Some(240.0), Some(160.0));
+    let size = layout.size_that_fits(proposal, &[&scroll]);
+    assert_extent(size.width, 240.0, "stack width");
+    assert_extent(size.height, 28.0, "stack height hugs the scroll's content");
+    let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&scroll]);
+    assert_eq!(placements.len(), 1);
+    assert_extent(
+        placements[0].frame.size().width,
+        240.0,
+        "scroll fills the stack's cross axis",
+    );
+    assert_extent(
+        placements[0].frame.size().height,
+        28.0,
+        "scroll hugs the content's height",
+    );
+}
+
+/// The symmetric case: a vertical scroll of 28 pt-wide content inside a
+/// horizontal stack answers 28x160.
+#[test]
+fn scrollview_hugs_content_on_the_non_scrolling_axis_vertically() {
+    let scroll = ScrollLeaf {
+        axis: Axis::Vertical,
+        scrolls_both: false,
+        content_min_cross: 28.0,
+        content_intrinsic: Size::new(28.0, 328.5),
+        content_fills_cross: false,
+    };
+    let layout = stack(Axis::Horizontal);
+    let proposal = ProposalSize::new(Some(240.0), Some(160.0));
+    let size = layout.size_that_fits(proposal, &[&scroll]);
+    assert_extent(size.width, 28.0, "stack width hugs the scroll's content");
+    assert_extent(size.height, 160.0, "stack height");
+    let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&scroll]);
+    assert_extent(
+        placements[0].frame.size().width,
+        28.0,
+        "scroll hugs the width",
+    );
+    assert_extent(
+        placements[0].frame.size().height,
+        160.0,
+        "scroll fills the stack's cross axis",
+    );
+}
+
+/// Content that itself fills the non-scrolling axis still fills it through
+/// the scroll: a horizontal scroll of height-filling content in a vertical
+/// stack answers 240x160.
+#[test]
+fn scrollview_fills_the_non_scrolling_axis_with_filling_content() {
+    let scroll = ScrollLeaf {
+        axis: Axis::Horizontal,
+        scrolls_both: false,
+        content_min_cross: 0.0,
+        content_intrinsic: Size::new(328.5, 0.0),
+        content_fills_cross: true,
+    };
+    let layout = stack(Axis::Vertical);
+    let proposal = ProposalSize::new(Some(240.0), Some(160.0));
+    let size = layout.size_that_fits(proposal, &[&scroll]);
+    assert_extent(size.width, 240.0, "stack width");
+    assert_extent(size.height, 160.0, "stack height fills with the content");
+    let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&scroll]);
+    assert_extent(placements[0].frame.size().height, 160.0, "scroll fills");
+}
+
+/// An omnidirectional scroll (`Axis::All`) fills both axes of the offer.
+#[test]
+fn scrollview_all_fills_both_axes() {
+    let scroll = ScrollLeaf {
+        axis: Axis::Vertical,
+        scrolls_both: true,
+        content_min_cross: 0.0,
+        content_intrinsic: Size::new(328.5, 480.0),
+        content_fills_cross: false,
+    };
+    let layout = stack(Axis::Vertical);
+    let proposal = ProposalSize::new(Some(240.0), Some(160.0));
+    let size = layout.size_that_fits(proposal, &[&scroll]);
+    assert_extent(size.width, 240.0, "stack width");
+    assert_extent(size.height, 160.0, "stack height");
+    let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&scroll]);
+    assert_extent(
+        placements[0].frame.size().width,
+        240.0,
+        "scroll fills width",
+    );
+    assert_extent(
+        placements[0].frame.size().height,
+        160.0,
+        "scroll fills height",
+    );
+}
+
+/// The hug is clamped to a finite offer: content 28 pt tall under a 10 pt
+/// offer answers 10, never more. `0` still answers the content's minimum and
+/// `None` its intrinsic extent, unchanged from the previous rule.
+#[test]
+fn scrollview_cross_axis_answer_is_clamped_to_the_offer() {
+    let scroll = ScrollLeaf {
+        axis: Axis::Horizontal,
+        scrolls_both: false,
+        content_min_cross: 28.0,
+        content_intrinsic: Size::new(328.5, 28.0),
+        content_fills_cross: false,
+    };
+    // Finite offers: the content's own answer, never larger than the offer.
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(240.0), Some(160.0)))
+            .size
+            .height,
+        28.0,
+        "offer above the content hugs the content",
+    );
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(240.0), Some(10.0)))
+            .size
+            .height,
+        10.0,
+        "offer below the content clamps to the offer",
+    );
+    // `0` and `None` keep the content minimum and intrinsic behaviours.
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(240.0), Some(0.0)))
+            .size
+            .height,
+        28.0,
+        "zero offer measures the content's minimum",
+    );
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(240.0), None))
+            .size
+            .height,
+        28.0,
+        "unspecified offer answers the intrinsic extent",
+    );
+    // The scrolling axis is unchanged: finite -> proposal, `None` ->
+    // content's intrinsic extent, `0` -> 0.
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(240.0), Some(160.0)))
+            .size
+            .width,
+        240.0,
+        "scrolling axis answers the proposal",
+    );
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(None, Some(160.0)))
+            .size
+            .width,
+        328.5,
+        "scrolling axis answers the content's intrinsic extent",
+    );
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(0.0), Some(160.0)))
+            .size
+            .width,
+        0.0,
+        "scrolling axis answers zero to a zero offer",
+    );
 }

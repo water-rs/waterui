@@ -37,6 +37,11 @@ fn main() {
     // `libtest-mimic` executes every trial on the calling thread — `main`'s
     // — where `pthread_main` answers true.
     arguments.test_threads = Some(1);
+    // The precondition the windowed presenter and capture cases rely on:
+    // an awake display — a sleeping one presents nothing (#3529).
+    // `--list` mounts nothing and skips it.
+    #[cfg(target_os = "macos")]
+    let _display_awake = (!arguments.list).then(cocoa_ui::native_test::DisplayAwake::hold);
     // A Catalyst spawn has no `UIApplication`, no scene and no
     // `NSApplication`. A scene-less `UIWindow`'s unassociated scene reads
     // the `AppKit` delegate the moment the window is created, and its

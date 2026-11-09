@@ -25,7 +25,7 @@ pub(crate) fn manifest_permissions(
     manifest: &crate::project::Manifest,
 ) -> Vec<crate::project_types::AndroidPermissionName> {
     manifest
-        .permissions
+        .permissions()
         .iter()
         .filter(|(_, entry)| entry.is_enabled())
         .filter_map(|(key, _)| key.android_permission_name())

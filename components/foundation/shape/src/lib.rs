@@ -213,7 +213,6 @@ pub trait Shape {
 
 /// A circle inscribed in the view bounds.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Circle;
 
 impl Shape for Circle {
@@ -237,7 +236,6 @@ impl Shape for Circle {
 
 /// An ellipse that fills the view bounds.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Ellipse;
 
 impl Shape for Ellipse {
@@ -261,7 +259,6 @@ impl Shape for Ellipse {
 
 /// A capsule (pill) shape.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Capsule;
 
 impl Shape for Capsule {
@@ -306,7 +303,15 @@ impl Shape for Capsule {
 #[non_exhaustive]
 pub struct RoundedRectangle {
     /// Corner radius (normalized, 0.0-0.5 range).
-    pub corner_radius: f32,
+    corner_radius: f32,
+}
+
+impl RoundedRectangle {
+    /// Corner radius (normalized, 0.0-0.5 range).
+    #[must_use]
+    pub const fn corner_radius(&self) -> f32 {
+        self.corner_radius
+    }
 }
 
 impl RoundedRectangle {
@@ -398,13 +403,39 @@ impl Shape for RoundedRectangle {
 #[non_exhaustive]
 pub struct UnevenRoundedRectangle {
     /// Top-leading corner radius (normalized).
-    pub top_leading: f32,
+    top_leading: f32,
     /// Top-trailing corner radius (normalized).
-    pub top_trailing: f32,
+    top_trailing: f32,
     /// Bottom-leading corner radius (normalized).
-    pub bottom_leading: f32,
+    bottom_leading: f32,
     /// Bottom-trailing corner radius (normalized).
-    pub bottom_trailing: f32,
+    bottom_trailing: f32,
+}
+
+impl UnevenRoundedRectangle {
+    /// Top-leading corner radius (normalized).
+    #[must_use]
+    pub const fn top_leading(&self) -> f32 {
+        self.top_leading
+    }
+
+    /// Top-trailing corner radius (normalized).
+    #[must_use]
+    pub const fn top_trailing(&self) -> f32 {
+        self.top_trailing
+    }
+
+    /// Bottom-leading corner radius (normalized).
+    #[must_use]
+    pub const fn bottom_leading(&self) -> f32 {
+        self.bottom_leading
+    }
+
+    /// Bottom-trailing corner radius (normalized).
+    #[must_use]
+    pub const fn bottom_trailing(&self) -> f32 {
+        self.bottom_trailing
+    }
 }
 
 impl UnevenRoundedRectangle {
@@ -516,7 +547,15 @@ impl Shape for UnevenRoundedRectangle {
 #[non_exhaustive]
 pub struct FixedRoundedRectangle {
     /// Corner radius in logical points.
-    pub corner_radius: f32,
+    corner_radius: f32,
+}
+
+impl FixedRoundedRectangle {
+    /// Corner radius in logical points.
+    #[must_use]
+    pub const fn corner_radius(&self) -> f32 {
+        self.corner_radius
+    }
 }
 
 impl FixedRoundedRectangle {
@@ -565,13 +604,39 @@ impl Shape for FixedRoundedRectangle {
 #[non_exhaustive]
 pub struct FixedUnevenRoundedRectangle {
     /// Top-leading corner radius in logical points.
-    pub top_leading: f32,
+    top_leading: f32,
     /// Top-trailing corner radius in logical points.
-    pub top_trailing: f32,
+    top_trailing: f32,
     /// Bottom-leading corner radius in logical points.
-    pub bottom_leading: f32,
+    bottom_leading: f32,
     /// Bottom-trailing corner radius in logical points.
-    pub bottom_trailing: f32,
+    bottom_trailing: f32,
+}
+
+impl FixedUnevenRoundedRectangle {
+    /// Top-leading corner radius in logical points.
+    #[must_use]
+    pub const fn top_leading(&self) -> f32 {
+        self.top_leading
+    }
+
+    /// Top-trailing corner radius in logical points.
+    #[must_use]
+    pub const fn top_trailing(&self) -> f32 {
+        self.top_trailing
+    }
+
+    /// Bottom-leading corner radius in logical points.
+    #[must_use]
+    pub const fn bottom_leading(&self) -> f32 {
+        self.bottom_leading
+    }
+
+    /// Bottom-trailing corner radius in logical points.
+    #[must_use]
+    pub const fn bottom_trailing(&self) -> f32 {
+        self.bottom_trailing
+    }
 }
 
 impl FixedUnevenRoundedRectangle {
@@ -630,7 +695,6 @@ impl Shape for FixedUnevenRoundedRectangle {
 
 /// A simple rectangle with sharp corners.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Rectangle;
 
 impl Shape for Rectangle {
@@ -851,11 +915,31 @@ pub enum ShapeKind {
 #[non_exhaustive]
 pub struct ResolvedShape {
     /// Shape kind for backend-side optimization.
-    pub kind: ShapeKind,
+    kind: ShapeKind,
     /// Path commands in unit coordinate space.
-    pub commands: Vec<PathCommand>,
+    commands: Vec<PathCommand>,
     /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::WorkingColor>,
+    fill: Computed<waterui_graphics::WorkingColor>,
+}
+
+impl ResolvedShape {
+    /// Shape kind for backend-side optimization.
+    #[must_use]
+    pub const fn kind(&self) -> ShapeKind {
+        self.kind
+    }
+
+    /// Path commands in unit coordinate space.
+    #[must_use]
+    pub const fn commands(&self) -> &[PathCommand] {
+        self.commands.as_slice()
+    }
+
+    /// Environment-resolved fill color that remains reactive to theme changes.
+    #[must_use]
+    pub const fn fill(&self) -> &Computed<waterui_graphics::WorkingColor> {
+        &self.fill
+    }
 }
 
 waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
@@ -865,15 +949,47 @@ waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
 #[non_exhaustive]
 pub struct ResolvedMorphShape {
     /// Source shape kind.
-    pub from: ShapeKind,
+    from: ShapeKind,
     /// Target shape kind.
-    pub to: ShapeKind,
+    to: ShapeKind,
     /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::WorkingColor>,
+    fill: Computed<waterui_graphics::WorkingColor>,
     /// Time-based morph animation configuration.
-    pub animation: MorphAnimation,
+    animation: MorphAnimation,
     /// Optional explicit progress signal.
-    pub progress: Option<Computed<f32>>,
+    progress: Option<Computed<f32>>,
+}
+
+impl ResolvedMorphShape {
+    /// Source shape kind.
+    #[must_use]
+    pub const fn from(&self) -> &ShapeKind {
+        &self.from
+    }
+
+    /// Target shape kind.
+    #[must_use]
+    pub const fn to(&self) -> &ShapeKind {
+        &self.to
+    }
+
+    /// Environment-resolved fill color that remains reactive to theme changes.
+    #[must_use]
+    pub const fn fill(&self) -> &Computed<waterui_graphics::WorkingColor> {
+        &self.fill
+    }
+
+    /// Time-based morph animation configuration.
+    #[must_use]
+    pub const fn animation(&self) -> MorphAnimation {
+        self.animation
+    }
+
+    /// Optional explicit progress signal.
+    #[must_use]
+    pub const fn progress(&self) -> Option<&Computed<f32>> {
+        self.progress.as_ref()
+    }
 }
 
 impl waterui_core::NativeView for ResolvedMorphShape {
@@ -948,13 +1064,39 @@ impl FilledShape {
 #[non_exhaustive]
 pub struct MorphAnimation {
     /// Duration of one forward morph cycle.
-    pub duration: Duration,
+    duration: Duration,
     /// Easing curve applied to normalized cycle progress.
-    pub easing: EasingCurve,
+    easing: EasingCurve,
     /// Whether the animation repeats after reaching the end.
-    pub repeat: bool,
+    repeat: bool,
     /// Whether repeating animation should play in reverse every other cycle.
-    pub autoreverse: bool,
+    autoreverse: bool,
+}
+
+impl MorphAnimation {
+    /// Duration of one forward morph cycle.
+    #[must_use]
+    pub const fn duration(&self) -> Duration {
+        self.duration
+    }
+
+    /// Easing curve applied to normalized cycle progress.
+    #[must_use]
+    pub const fn easing(&self) -> EasingCurve {
+        self.easing
+    }
+
+    /// Whether the animation repeats after reaching the end.
+    #[must_use]
+    pub const fn repeat(&self) -> bool {
+        self.repeat
+    }
+
+    /// Whether repeating animation should play in reverse every other cycle.
+    #[must_use]
+    pub const fn autoreverse(&self) -> bool {
+        self.autoreverse
+    }
 }
 
 impl Default for MorphAnimation {

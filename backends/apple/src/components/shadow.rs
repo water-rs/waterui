@@ -17,7 +17,10 @@ use waterui::graphics::color::WorkingColor;
 use waterui::shape::{ClipShape, PathCommand, ShapeKind};
 use waterui::style::Shadow;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -220,6 +223,14 @@ impl core::fmt::Debug for ShadowSubView {
 }
 
 impl SubView for ShadowSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }
@@ -254,8 +265,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         if let Some(host_layer) = layer::layer_of(&host) {
             layer::set_shadow(
                 &host_layer,
-                Size::new(f64::from(shadow.offset.x), f64::from(shadow.offset.y)),
-                f64::from(shadow.radius),
+                Size::new(f64::from(shadow.offset().x), f64::from(shadow.offset().y)),
+                f64::from(shadow.radius()),
             );
             layer::set_masks_to_bounds(&host_layer, false);
         }
@@ -263,7 +274,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The silhouette: `WuiShapePath.commands(from:)`'s pair — the
         // structured kind first, the unit-space commands as the custom-path
         // fallback.
-        let silhouette: &ClipShape = &shadow.silhouette;
+        let silhouette: &ClipShape = shadow.silhouette();
         let kind = shape_kind(silhouette.kind());
         let commands = shape_commands(silhouette.commands());
 
@@ -295,7 +306,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         );
         leaf.keep(sink_guard);
 
-        let resolved = shadow.color.resolve(ctx.env());
+        let resolved = shadow.color().resolve(ctx.env());
         leaf.bind(&resolved, {
             move |color| {
                 apply_shadow_color(&color, &host);

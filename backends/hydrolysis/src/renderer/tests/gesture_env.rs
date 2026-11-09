@@ -426,6 +426,27 @@ fn hover_exit_delivers_state_installed_between_view_and_handler() {
     );
 }
 
+/// water-rs/waterui#3701: the mouse leaving the window arrives as a
+/// `PointerCancel` with no button held; it must end the hover and run the
+/// exit handler.
+#[test]
+fn mouse_cancel_without_a_press_runs_hover_exit() {
+    let exits = Rc::new(RefCell::new(0_u32));
+    let exits_for_view = Rc::clone(&exits);
+    let view = handle().on_hover_exit(move || *exits_for_view.borrow_mut() += 1);
+    let mut runtime = runtime_with(split(AnyView::new(view)));
+
+    pointer_move(&mut runtime, 400.0, 300.0);
+    assert_eq!(*exits.borrow(), 0, "hovering does not exit");
+    runtime.push_input_event(InputEvent::PointerCancel {
+        id: POINTER_ID,
+        kind: PointerKind::Mouse,
+    });
+    let _ = runtime.pump(false);
+
+    assert_eq!(*exits.borrow(), 1, "leaving the window ends the hover");
+}
+
 /// The reverse spelling — `v.on_hover_exit(h).state(&b)` — resolves to the
 /// same environment.
 #[test]
@@ -507,7 +528,8 @@ fn repeated_state_binding_order_is_identical_in_both_placements() {
 fn hover_move_location_is_view_local() {
     let record = |sink: Rc<RefCell<Vec<(f32, f32)>>>| {
         move |Use(event): Use<HoverEvent>| {
-            sink.borrow_mut().push((event.location.x, event.location.y));
+            sink.borrow_mut()
+                .push((event.location().x, event.location().y));
         }
     };
 
@@ -547,7 +569,7 @@ fn gesture_event_locations_are_view_local_under_scale() {
     let tapped = handle()
         .gesture(TapGesture::new(), {
             let taps = Rc::clone(&taps);
-            move |Use(event): Use<TapEvent>| taps.borrow_mut().push(event.location)
+            move |Use(event): Use<TapEvent>| taps.borrow_mut().push(event.location())
         })
         .scale_from(2.0, 2.0, Anchor::TOP_LEFT);
     let mut runtime = runtime_with(split(AnyView::new(tapped)));
@@ -564,7 +586,9 @@ fn gesture_event_locations_are_view_local_under_scale() {
         .gesture(DragGesture::new(0.0), {
             let drags = Rc::clone(&drags);
             move |Use(event): Use<DragEvent>| {
-                drags.borrow_mut().push((event.location, event.translation));
+                drags
+                    .borrow_mut()
+                    .push((event.location(), event.translation()));
             }
         })
         .scale_from(2.0, 2.0, Anchor::TOP_LEFT);

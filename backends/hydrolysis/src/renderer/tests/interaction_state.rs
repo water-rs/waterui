@@ -293,10 +293,10 @@ fn pump_red_ring_pixels(env: Environment, activate: impl Fn(&mut HeadlessRuntime
     activate(&mut runtime);
     let snapshot = runtime
         .pump(true)
-        .snapshot
+        .into_snapshot()
         .expect("the pump captured a snapshot");
     snapshot
-        .rgba8
+        .rgba8()
         .as_chunks::<4>()
         .0
         .iter()
@@ -463,7 +463,7 @@ fn selected_sets_the_accessibility_selected_trait() {
 
     let mut update = None;
     for _ in 0..64 {
-        if let Some(tree) = runtime.pump(false).tree_update {
+        if let Some(tree) = runtime.pump(false).into_tree_update() {
             update = Some(tree);
             break;
         }

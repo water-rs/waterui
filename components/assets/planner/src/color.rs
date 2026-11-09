@@ -22,7 +22,15 @@ pub struct HexColor([u8; 3]);
 #[non_exhaustive]
 pub struct InvalidHexColor {
     /// The rejected text.
-    pub value: String,
+    value: String,
+}
+
+impl InvalidHexColor {
+    /// The rejected text.
+    #[must_use]
+    pub const fn value(&self) -> &str {
+        self.value.as_str()
+    }
 }
 
 impl HexColor {

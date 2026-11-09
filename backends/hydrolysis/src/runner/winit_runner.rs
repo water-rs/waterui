@@ -48,7 +48,7 @@ use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
     pump_window_semantics, render_window, runtime_window_origin,
 };
-use crate::text::SessionTextEngine;
+use crate::text::ParleyEngine;
 
 #[derive(Debug)]
 pub(super) enum RunnerEvent {
@@ -190,6 +190,26 @@ const fn ends_event_loop(policy: LastWindowPolicy, open_windows: usize) -> bool 
         LastWindowPolicy::Quit => open_windows == 0,
         LastWindowPolicy::StayResident => false,
     }
+}
+
+/// Writes the scheme `theme` reports into `scheme`, only when it moved.
+///
+/// Both winit reports reach the runner through this seam: the
+/// `ActiveEventLoop::system_theme` read where the loop first activates, and
+/// each `WindowEvent::ThemeChanged` payload afterwards. A report repeating
+/// the held scheme writes nothing, so the token slots never re-resolve for a
+/// report that moved nothing. (`ThemeChanged` arrives per window, so the
+/// repeat case is the common one.)
+#[cfg(any(target_os = "windows", test))]
+fn sync_system_color_scheme(
+    scheme: &nami::Binding<waterui::theme::ColorScheme>,
+    theme: winit::window::Theme,
+) {
+    let resolved = match theme {
+        winit::window::Theme::Dark => waterui::theme::ColorScheme::Dark,
+        winit::window::Theme::Light => waterui::theme::ColorScheme::Light,
+    };
+    crate::theme::sync_color_scheme(scheme, resolved);
 }
 
 /// The window a `MenuItem::CloseWindow` request acts on: the window the
@@ -719,8 +739,39 @@ pub fn run(
     // registry: a compositor that hands a popup window keyboard focus routes
     // the menu's chords to that window's dispatch, which must resolve them
     // while the menu is open (water-rs/hydrolysis#247).
-    let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
-    crate::theme::install_theme_tokens(&mut env, Some(&style));
+    let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
+        MenuShortcutRegistry::default,
+    );
+    // The platform appearance feeds the colour scheme for as long as the
+    // loop runs. macOS observes `NSApp.effectiveAppearance` itself; Windows
+    // writes winit's system theme into the binding — seeded where the loop
+    // first activates, ahead of the first window mount, and again on each
+    // `WindowEvent::ThemeChanged`. Linux follows the XDG desktop portal's
+    // `color-scheme` setting (`platform::linux_appearance`): the portal task
+    // runs on the local executor and its initial `ReadOne` resolves the
+    // binding before the held first mount proceeds. Elsewhere the scheme is
+    // Light unless the application installs its own.
+    #[cfg(target_os = "macos")]
+    let system_appearance = crate::platform::macos_appearance::SystemAppearance::observe();
+    #[cfg(target_os = "macos")]
+    let appearance = system_appearance.scheme();
+    #[cfg(target_os = "windows")]
+    let system_color_scheme = nami::binding(waterui::theme::ColorScheme::Light);
+    #[cfg(target_os = "windows")]
+    let appearance = system_color_scheme.clone();
+    #[cfg(target_os = "linux")]
+    let linux_appearance =
+        crate::platform::linux_appearance::SystemAppearance::observe(&local_executor, {
+            let event_proxy = event_proxy.clone();
+            move || {
+                let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
+            }
+        });
+    #[cfg(target_os = "linux")]
+    let appearance = linux_appearance.scheme();
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let appearance = waterui::theme::ColorScheme::Light;
+    crate::theme::install_theme_tokens(&mut env, Some(&style), appearance);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     // The application's fonts, discovered once. Every window's renderer is
     // seeded from this collection, and a self-drawn component that typesets
@@ -769,11 +820,11 @@ pub fn run(
     // `MainThreadMarker` contract needs.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
-        &super::menu_bar::register_menu_bar(&menu_bar, &env),
+        &super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env),
         &env,
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    super::menu_bar::register_menu_bar(&menu_bar, &env);
+    super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     // The capture service mounts its subtree under a snapshot of the
     // assembled environment — the theme tokens, hooks and font collection a
     // window's subtree resolves — so it must be installed last
@@ -810,6 +861,10 @@ pub fn run(
         outside_pointer_presses: 0,
         focused_window: None,
         last_pointer_window: None,
+        #[cfg(target_os = "windows")]
+        system_color_scheme,
+        #[cfg(target_os = "linux")]
+        linux_appearance,
         termination,
         #[cfg(target_os = "windows")]
         session_end,
@@ -851,7 +906,7 @@ struct WinitRunner {
     /// What the application does once it has no window left.
     last_window: LastWindowPolicy,
     pending_window_queue: Rc<RefCell<Vec<PendingWindow>>>,
-    windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
+    windows: HashMap<WindowId, RuntimeWindow<WinitWindow, crate::text::ParleyEngine>>,
     /// Transient popup windows (mounted through `PopupWindowManager`): a
     /// pointer press that lands outside every app window dismisses them.
     popup_window_ids: std::collections::HashSet<WindowId>,
@@ -879,6 +934,22 @@ struct WinitRunner {
     /// pointer position, so for `MonitorSelector::Pointer` this window's
     /// monitor stands in for the pointer's home.
     last_pointer_window: Option<WindowId>,
+    /// The system colour scheme the theme tokens resolve against, owned for
+    /// the loop's lifetime: seeded from `ActiveEventLoop::system_theme`
+    /// where the loop first activates — ahead of the first window mount —
+    /// and written again on each `WindowEvent::ThemeChanged`, only when the
+    /// value moved. macOS feeds the same tokens through its own observer
+    /// (`platform::macos_appearance`); other platforms' sources land with
+    /// their own issues.
+    #[cfg(target_os = "windows")]
+    system_color_scheme: nami::Binding<waterui::theme::ColorScheme>,
+    /// The XDG desktop portal colour-scheme subscription, owned for the
+    /// loop's lifetime: its `ReadOne`/`SettingChanged` feed writes the
+    /// scheme binding, and its initial-read gate is what
+    /// `mount_pending_windows` waits on before creating the first window.
+    /// Dropping the runner cancels the subscription.
+    #[cfg(target_os = "linux")]
+    linux_appearance: crate::platform::linux_appearance::SystemAppearance,
     /// The termination machine every quit path reports through: signals,
     /// the last window closing, `Quit` in the environment, Windows'
     /// `WM_QUERYENDSESSION`.
@@ -1103,7 +1174,9 @@ impl WinitRunner {
         }
     }
 
-    fn current_window_origin(runtime: &RuntimeWindow<WinitWindow>) -> HydrolysisWindowOrigin {
+    fn current_window_origin<E: crate::text::TextEngine>(
+        runtime: &RuntimeWindow<WinitWindow, E>,
+    ) -> HydrolysisWindowOrigin {
         let native_window = runtime.platform.native_window();
         if let Ok(position) = native_window.outer_position() {
             let logical = position.to_logical::<f64>(native_window.scale_factor());
@@ -1177,7 +1250,10 @@ impl WinitRunner {
         &mut self,
         event_loop: &ActiveEventLoop,
         pending: PendingWindow,
-    ) -> (RuntimeWindow<WinitWindow>, AccessKitAdapter) {
+    ) -> (
+        RuntimeWindow<WinitWindow, crate::text::ParleyEngine>,
+        AccessKitAdapter,
+    ) {
         let PendingWindow { window, activates } = pending;
         let activation = window.activation;
         // `Window::placement` resolves each time the window is shown — and a
@@ -1185,8 +1261,8 @@ impl WinitRunner {
         // destroyed, never re-shown) — so the resolved rect is written into
         // `frame` here, before the attributes carry it into the map request.
         if let Some(placement) = window.placement.as_ref() {
-            let monitor = self.resolve_placement_monitor(event_loop, placement.monitor);
-            window.frame.set((placement.place)(&monitor));
+            let monitor = self.resolve_placement_monitor(event_loop, placement.monitor());
+            window.frame.set((placement.place())(&monitor));
         }
         let attributes =
             native_window_attributes(&window, &self.env, activates, self.window_icon.clone());
@@ -1221,12 +1297,17 @@ impl WinitRunner {
         }
         let mut platform = self.create_platform_window(native_window, &window);
         platform.apply_properties(&window);
-        let text = SessionTextEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
+        let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
         let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         let closable = window.closable;
         window.arm_close_requests(&self.env);
-        let mut runtime =
-            RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
+        let mut runtime = RuntimeWindow::new_gpu(
+            window,
+            platform,
+            renderer,
+            self.render_diagnostics_config,
+            &self.env,
+        );
         runtime
             .renderer
             .set_window_id(crate::renderer::WindowId::Winit(runtime.platform.id()));
@@ -1323,6 +1404,27 @@ impl WinitRunner {
 
     fn mount_pending_windows(&mut self, event_loop: &ActiveEventLoop) {
         self.start_main_thread_executor(event_loop);
+        // The same first-active point the executor install uses: the system
+        // theme is readable now, and seeding the binding here — ahead of
+        // every window creation — means no window's first frame ever
+        // resolves the placeholder the binding was created with.
+        #[cfg(target_os = "windows")]
+        sync_system_color_scheme(
+            &self.system_color_scheme,
+            event_loop
+                .system_theme()
+                .expect("winit reports the system theme on Windows"),
+        );
+        // Linux: hold every mount until the portal's initial `ReadOne`
+        // resolved — the first window's first frame must already draw in
+        // the real scheme, never a Light placeholder corrected a frame
+        // later. The portal task is polled by the runnable-queue drains in
+        // the event callbacks, and posts `MountPendingWindows` when the
+        // read lands, so the held mounts are replayed, not lost.
+        #[cfg(target_os = "linux")]
+        if !self.linux_appearance.initial_read_done() {
+            return;
+        }
         let mut pending = mem::take(&mut self.pending_windows);
         pending.extend(self.pending_window_queue.borrow_mut().drain(..));
         for pending in pending {
@@ -1357,7 +1459,10 @@ impl WinitRunner {
         )
     }
 
-    fn handle_input_events(runtime: &mut RuntimeWindow<WinitWindow>, env: &Environment) -> bool {
+    fn handle_input_events<E: crate::text::TextEngine>(
+        runtime: &mut RuntimeWindow<WinitWindow, E>,
+        env: &Environment,
+    ) -> bool {
         handle_input_events_with(runtime, env, |runtime, env| {
             env.extending(Self::current_window_origin(runtime))
         })
@@ -1368,7 +1473,10 @@ impl WinitRunner {
     /// its HWND) is destroyed, so detaching the menu and both subclass
     /// procs only ever run on live handles.
     #[cfg(target_os = "windows")]
-    fn detach_menu_bar_hwnd(&self, runtime: &RuntimeWindow<WinitWindow>) {
+    fn detach_menu_bar_hwnd<E: crate::text::TextEngine>(
+        &self,
+        runtime: &RuntimeWindow<WinitWindow, E>,
+    ) {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if let Ok(handle) = runtime.platform.native_window().window_handle()
             && let RawWindowHandle::Win32(win) = handle.as_raw()
@@ -1566,6 +1674,13 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         match &event {
             WindowEvent::Focused(focused) => {
                 self.focused_window = focused.then_some(window_id);
+            }
+            // The system theme moved: winit re-reads it and reports only a
+            // real change, but repeats the event on every window — the
+            // write dedups against what the binding already holds.
+            #[cfg(target_os = "windows")]
+            WindowEvent::ThemeChanged(theme) => {
+                sync_system_color_scheme(&self.system_color_scheme, *theme);
             }
             WindowEvent::CursorMoved { .. }
             | WindowEvent::CursorEntered { .. }
@@ -1847,6 +1962,41 @@ mod tests {
             WindowButtons::all(),
             "a closable window keeps every title-bar button"
         );
+    }
+
+    /// A winit theme report writes the scheme binding only when the scheme
+    /// actually moved: `ThemeChanged` repeats on every window, and a write
+    /// repeating the held value would re-resolve every token slot for
+    /// nothing.
+    #[test]
+    fn theme_reports_write_the_scheme_only_on_a_move() {
+        use nami::Signal as _;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use waterui::theme::ColorScheme;
+        use winit::window::Theme;
+
+        let scheme = binding(ColorScheme::Light);
+        let notifications = Rc::new(Cell::new(0_u32));
+        let _guard = scheme.watch({
+            let notifications = Rc::clone(&notifications);
+            move |_| notifications.set(notifications.get() + 1)
+        });
+
+        // A report matching the held value writes nothing.
+        super::sync_system_color_scheme(&scheme, Theme::Light);
+        assert_eq!(notifications.get(), 0);
+
+        super::sync_system_color_scheme(&scheme, Theme::Dark);
+        assert_eq!(scheme.snapshot(), ColorScheme::Dark);
+        assert_eq!(notifications.get(), 1);
+
+        super::sync_system_color_scheme(&scheme, Theme::Dark);
+        assert_eq!(notifications.get(), 1, "a repeated report writes nothing");
+
+        super::sync_system_color_scheme(&scheme, Theme::Light);
+        assert_eq!(scheme.snapshot(), ColorScheme::Light);
+        assert_eq!(notifications.get(), 2);
     }
 
     /// The window a Close Window request acts on is the window the

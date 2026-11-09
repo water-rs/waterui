@@ -98,8 +98,8 @@ impl HydrolysisBackend {
     ) -> eyre::Result<TemplateContext> {
         let manifest = project.manifest();
         let app_name = manifest
-            .package
-            .name
+            .package()
+            .name()
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
@@ -237,6 +237,7 @@ impl Backend for HydrolysisBackend {
             return crate::hydrolysis::android::build(
                 project,
                 AndroidAbi::Arm64V8a,
+                crate::hydrolysis::android::resolve_painter(project, None),
                 options,
                 &kotlin,
             )

@@ -1,5 +1,5 @@
 use core::fmt;
-use core::{fmt::Display, mem::take, ops::Add};
+use core::{fmt::Display, mem::take, ops::Add, ops::Range};
 
 use crate::{
     font::{Font, FontWeight},
@@ -7,10 +7,14 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 use core::ops::AddAssign;
-use nami::impl_constant;
+use nami::signal::IntoComputed;
+use nami::{Signal, impl_constant};
 #[cfg(feature = "markdown")]
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
-use waterui_core::{Str, View};
+use waterui_core::{
+    Environment, Str, View,
+    handler::{EventHandler, SharedAction},
+};
 use waterui_graphics::color::{Color, SurfaceVariantColor};
 
 /// A set of text attributes for rich text formatting.
@@ -18,17 +22,60 @@ use waterui_graphics::color::{Color, SurfaceVariantColor};
 #[non_exhaustive]
 pub struct Style {
     /// The font to use.
-    pub font: Font,
+    font: Font,
     /// The foreground (text) color.
-    pub foreground: Option<Color>,
+    foreground: Option<Color>,
     /// The background color.
-    pub background: Option<Color>,
+    background: Option<Color>,
     /// Whether the text is italic.
-    pub italic: bool,
+    italic: bool,
     /// Whether the text has an underline.
-    pub underline: bool,
+    underline: bool,
     /// Whether the text has a strikethrough.
-    pub strikethrough: bool,
+    strikethrough: bool,
+}
+
+impl Style {
+    /// The font to use.
+    #[must_use]
+    pub const fn get_font(&self) -> &Font {
+        &self.font
+    }
+
+    /// The foreground (text) color.
+    #[must_use]
+    pub const fn get_foreground(&self) -> Option<&Color> {
+        self.foreground.as_ref()
+    }
+
+    /// Sets the `foreground`.
+    pub fn set_foreground(&mut self, foreground: Option<Color>) {
+        self.foreground = foreground;
+    }
+
+    /// The background color.
+    #[must_use]
+    pub const fn get_background(&self) -> Option<&Color> {
+        self.background.as_ref()
+    }
+
+    /// Whether the text is italic.
+    #[must_use]
+    pub const fn get_italic(&self) -> bool {
+        self.italic
+    }
+
+    /// Whether the text has an underline.
+    #[must_use]
+    pub const fn get_underline(&self) -> bool {
+        self.underline
+    }
+
+    /// Whether the text has a strikethrough.
+    #[must_use]
+    pub const fn get_strikethrough(&self) -> bool {
+        self.strikethrough
+    }
 }
 
 impl Style {
@@ -73,8 +120,7 @@ impl Style {
         self
     }
 
-    /// Sets the bold style.
-    /// Equal to calling `self.weight(FontWeight::Bold)`.
+    /// Asks for the platform's bold face of the font; see [`Font::bold`].
     #[must_use]
     pub fn bold(mut self) -> Self {
         self.font = self.font.bold();
@@ -143,17 +189,47 @@ impl Style {
     }
 }
 
+/// A tap-activated region of a [`StyledStr`].
+///
+/// The range is a half-open UTF-8 byte range over [`StyledStr::to_plain`];
+/// construction always lands it on char boundaries, and every style edit
+/// preserves it, so a span always covers whole characters. The action reads its payload at
+/// activation, not construction, so a `Binding` payload reports the latest
+/// value without rebuilding the text.
+#[derive(Debug, Clone)]
+pub struct TapSpan {
+    range: Range<usize>,
+    action: SharedAction,
+}
+
+impl TapSpan {
+    /// The UTF-8 byte range this span covers over [`StyledStr::to_plain`].
+    #[must_use]
+    pub fn range(&self) -> Range<usize> {
+        self.range.clone()
+    }
+
+    /// Invokes the span's action against the given environment.
+    pub fn activate(&self, env: &Environment) {
+        self.action.call(env);
+    }
+}
+
 /// A string with associated text attributes for rich text formatting.
 #[derive(Debug, Clone, Default)]
 pub struct StyledStr {
     chunks: Vec<(Str, Style)>,
+    tap_spans: Vec<TapSpan>,
 }
 
 impl StyledStr {
     /// Creates a new empty `StyledStr`.
     #[must_use]
     pub const fn empty() -> Self {
-        Self { chunks: Vec::new() }
+        Self {
+            chunks: Vec::new(),
+            tap_spans: Vec::new(),
+        }
     }
 
     /// Creates a styled string from Markdown inline semantics.
@@ -279,6 +355,10 @@ impl StyledStr {
     }
 
     /// Appends text to the last chunk, or creates a new chunk if empty.
+    ///
+    /// Appended text does not inherit an earlier [`TapSpan`]: spans are byte
+    /// ranges over the string as it stood when `on_tap` ran, so the new text
+    /// starts past the span's end.
     pub fn push_str(&mut self, text: impl Into<Str>) {
         let text = text.into();
         if let Some(last) = self.chunks.last_mut() {
@@ -340,10 +420,11 @@ impl StyledStr {
         result.into()
     }
 
-    /// Returns `true` if all chunks are plain text style.
+    /// Returns `true` if all chunks are plain text style and nothing is
+    /// interactive — a tap span is content a plain fast path must not drop.
     #[must_use]
     pub fn is_plain(&self) -> bool {
-        self.chunks.iter().all(|(_, style)| style.is_plain())
+        self.tap_spans.is_empty() && self.chunks.iter().all(|(_, style)| style.is_plain())
     }
 
     /// Consumes the attributed string and returns its constituent chunks.
@@ -356,6 +437,43 @@ impl StyledStr {
     #[must_use]
     pub fn chunks(&self) -> &[(Str, Style)] {
         &self.chunks
+    }
+
+    /// Annotates the whole current string with a tap action.
+    ///
+    /// The payload is read through its `Computed` at activation, not captured
+    /// at construction — a `Binding` payload reports the latest value without
+    /// rebuilding the text. Calling `on_tap` again replaces the previous
+    /// annotation rather than overlapping it, and an empty string keeps none.
+    #[must_use]
+    pub fn on_tap<E, Args>(
+        mut self,
+        payload: impl IntoComputed<E>,
+        mut handler: impl EventHandler<E, Args>,
+    ) -> Self
+    where
+        E: Clone + 'static,
+    {
+        let end = self.len();
+        if end == 0 {
+            return self;
+        }
+        let payload = payload.into_computed();
+        let action = SharedAction::new(move |env: Environment| {
+            handler.call(payload.snapshot(), &env);
+        });
+        self.tap_spans = alloc::vec![TapSpan {
+            range: 0..end,
+            action,
+        }];
+        self
+    }
+
+    /// The tap-activated regions of this string, as byte ranges over
+    /// [`Self::to_plain`].
+    #[must_use]
+    pub fn tap_spans(&self) -> &[TapSpan] {
+        &self.tap_spans
     }
 
     /// Sets the style for all text in this styled text.
@@ -411,10 +529,12 @@ impl StyledStr {
         })
     }
 
-    /// Sets the font to bold for all chunks.
+    /// Asks for the platform's bold face for all chunks; see [`Font::bold`].
     #[must_use]
     pub fn bold(self) -> Self {
-        self.weight(FontWeight::Bold)
+        self.apply_style(|s| {
+            *s = take(s).bold();
+        })
     }
 
     /// Asks for the platform's fixed-pitch face for all chunks.
@@ -529,7 +649,7 @@ impl MarkdownInlineBuilder {
         self.enter_with(Style::italic);
     }
 
-    /// Enters a bold styled span.
+    /// Enters a strong span, set in the platform's bold face.
     pub fn enter_strong(&mut self) {
         self.enter_with(Style::bold);
     }
@@ -632,9 +752,15 @@ impl Add for StyledStr {
     type Output = Self;
 
     fn add(mut self, rhs: Self) -> Self::Output {
+        let offset = self.len();
         for (text, style) in rhs.chunks {
             self.push(text, style);
         }
+        self.tap_spans
+            .extend(rhs.tap_spans.into_iter().map(|mut span| {
+                span.range = span.range.start + offset..span.range.end + offset;
+                span
+            }));
         self
     }
 }
@@ -693,6 +819,174 @@ const fn is_bidi_control(character: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::{rc::Rc, vec::Vec};
+    use core::cell::RefCell;
+    use nami::binding;
+
+    fn env() -> Environment {
+        Environment::new()
+    }
+
+    #[test]
+    fn each_tap_span_delivers_its_own_typed_payload() {
+        let calls = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+        let seen = calls.clone();
+        let text = StyledStr::plain("https://example.com").on_tap("url", move |v: &'static str| {
+            seen.borrow_mut().push(v);
+        });
+        text.tap_spans()[0].activate(&env());
+        assert_eq!(calls.borrow().as_slice(), ["url"]);
+
+        let numbers = Rc::new(RefCell::new(Vec::<u64>::new()));
+        let seen = numbers.clone();
+        let text = StyledStr::plain("#release").on_tap(7_u64, move |v: u64| {
+            seen.borrow_mut().push(v);
+        });
+        text.tap_spans()[0].activate(&env());
+        assert_eq!(numbers.borrow().as_slice(), [7]);
+
+        let names = Rc::new(RefCell::new(Vec::<String>::new()));
+        let seen = names.clone();
+        let text =
+            StyledStr::plain("@lexoliu").on_tap(String::from("mention"), move |v: String| {
+                seen.borrow_mut().push(v);
+            });
+        text.tap_spans()[0].activate(&env());
+        assert_eq!(names.borrow().as_slice(), ["mention"]);
+    }
+
+    #[test]
+    fn a_binding_payload_reports_the_latest_value_at_activation() {
+        let payload = binding(1_i32);
+        let calls = Rc::new(RefCell::new(Vec::<i32>::new()));
+        let seen = calls.clone();
+        let text = StyledStr::plain("counter").on_tap(payload.clone(), move |v: i32| {
+            seen.borrow_mut().push(v);
+        });
+        payload.set(2);
+        text.tap_spans()[0].activate(&env());
+        assert_eq!(calls.borrow().as_slice(), [2]);
+    }
+
+    #[test]
+    fn concatenation_offsets_spans_across_multibyte_boundaries() {
+        let hits = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let seen = hits.clone();
+        let seen2 = hits.clone();
+        // "a\u{1F600}\u{0301}" is 1 + 4 + 2 = 7 bytes of utf-8.
+        let first = StyledStr::plain("a\u{1F600}\u{0301}").on_tap(1_u8, move |v: u8| {
+            seen.borrow_mut().push(v);
+        });
+        let second = StyledStr::plain("\u{1F601}b").on_tap(2_u8, move |v: u8| {
+            seen2.borrow_mut().push(v);
+        });
+        let combined = first + second;
+        let spans = combined.tap_spans();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].range(), 0..7);
+        assert_eq!(spans[1].range(), 7..12);
+        // Every span boundary sits on a char boundary of the plain text.
+        let plain = combined.to_plain();
+        for span in spans {
+            assert!(plain.is_char_boundary(span.range().start));
+            assert!(plain.is_char_boundary(span.range().end));
+        }
+        spans[1].activate(&env());
+        assert_eq!(hits.borrow().as_slice(), [2]);
+    }
+
+    #[test]
+    fn styling_edits_preserve_tap_spans() {
+        let calls = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let seen = calls.clone();
+        let text = StyledStr::plain("styled")
+            .on_tap(3_u8, move |v: u8| {
+                seen.borrow_mut().push(v);
+            })
+            .foreground(waterui_graphics::color::Srgb::new(1.0, 0.0, 0.0))
+            .underline(true)
+            .set_style(&Style::new().italic());
+        assert_eq!(text.tap_spans()[0].range(), 0..6);
+        text.tap_spans()[0].activate(&env());
+        assert_eq!(calls.borrow().as_slice(), [3]);
+    }
+
+    #[test]
+    fn an_empty_string_carries_no_tap_spans() {
+        assert!(
+            StyledStr::empty()
+                .on_tap(0_u8, |_: u8| {})
+                .tap_spans()
+                .is_empty()
+        );
+        assert!(
+            StyledStr::plain("")
+                .on_tap(0_u8, |_: u8| {})
+                .tap_spans()
+                .is_empty(),
+            "a plain empty string has one chunk but zero bytes to annotate"
+        );
+        let mut chunks_only = StyledStr::empty();
+        chunks_only.push("", Style::new());
+        chunks_only.push("", Style::new());
+        assert!(
+            chunks_only.on_tap(0_u8, |_: u8| {}).tap_spans().is_empty(),
+            "empty chunks are still zero bytes"
+        );
+    }
+
+    #[test]
+    fn a_second_on_tap_replaces_the_first_annotation() {
+        let calls = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let seen = calls.clone();
+        let text = StyledStr::plain("replace")
+            .on_tap(1_u8, {
+                let seen = calls.clone();
+                move |v: u8| {
+                    seen.borrow_mut().push(v);
+                }
+            })
+            .on_tap(9_u8, move |v: u8| {
+                seen.borrow_mut().push(v);
+            });
+        assert_eq!(text.tap_spans().len(), 1);
+        text.tap_spans()[0].activate(&env());
+        assert_eq!(calls.borrow().as_slice(), [9]);
+    }
+
+    #[test]
+    fn appended_text_falls_outside_an_earlier_span() {
+        let text = StyledStr::plain("old").on_tap(1_u8, |_: u8| {});
+        let appended = text + " new";
+        assert_eq!(appended.tap_spans()[0].range(), 0..3);
+
+        let mut pushed = StyledStr::plain("old").on_tap(1_u8, |_: u8| {});
+        pushed.push_str(" more");
+        assert_eq!(pushed.tap_spans()[0].range(), 0..3);
+    }
+
+    #[test]
+    fn cloned_and_concatenated_spans_invoke_their_own_handlers() {
+        let hits = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let first = StyledStr::plain("aa").on_tap(1_u8, {
+            let hits = hits.clone();
+            move |v: u8| {
+                hits.borrow_mut().push(v);
+            }
+        });
+        let second = StyledStr::plain("bb").on_tap(2_u8, {
+            let hits = hits.clone();
+            move |v: u8| {
+                hits.borrow_mut().push(v);
+            }
+        });
+        let combined = first.clone() + second;
+        combined.tap_spans()[0].activate(&env());
+        combined.tap_spans()[1].activate(&env());
+        // The clone shares the action, so it reports the same payload.
+        first.tap_spans()[0].activate(&env());
+        assert_eq!(hits.borrow().as_slice(), [1, 2, 1]);
+    }
 
     #[cfg(feature = "markdown")]
     #[test]
@@ -757,10 +1051,34 @@ mod tests {
             HeadingLevel::H6,
         ]
         .iter()
-        .map(|&level| heading_style(level).font.resolve(&env).snapshot().size)
+        .map(|&level| heading_style(level).font.resolve(&env).snapshot().size())
         .collect();
 
         assert_eq!(sizes.as_slice(), &[28.0, 17.0, 17.0, 15.0, 13.0, 12.0]);
+    }
+
+    /// `**strong**` asks for the platform's bold face, keeping the slot's
+    /// weight and its declared bold weight, rather than weight 700.
+    #[cfg(feature = "markdown")]
+    #[test]
+    fn strong_markdown_is_platform_bold_not_weight_700() {
+        use crate::font::{Body, ResolvedFont};
+        use nami::{Computed, Signal};
+        use waterui_core::{Environment, env::Store};
+
+        let mut env = Environment::new();
+        env.insert(Store::<Body, _>::new(Computed::constant(
+            ResolvedFont::new(17.0, FontWeight::Normal).with_bold_weight(FontWeight::SemiBold),
+        )));
+
+        let chunks = StyledStr::from_markdown("plain **strong**").into_chunks();
+        assert_eq!(chunks[1].0.as_str(), "strong");
+        let plain = chunks[0].1.font.resolve(&env).snapshot();
+        let strong = chunks[1].1.font.resolve(&env).snapshot();
+        assert!(!plain.bold());
+        assert!(strong.bold());
+        assert_eq!(strong.weight(), FontWeight::Normal);
+        assert_eq!(strong.bold_weight(), Some(FontWeight::SemiBold));
     }
 
     #[cfg(feature = "markdown")]

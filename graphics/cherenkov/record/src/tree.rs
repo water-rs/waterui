@@ -124,6 +124,11 @@ pub struct LayerNode {
     /// Recorded or installed content of its own exists — a pure container,
     /// which only composites children, has none.
     has_content: bool,
+    /// The layer marks an external host window's frame: the engine draws
+    /// nothing for it, and its paint-order position splits the surface's
+    /// presentation bands (water-rs/waterui#2225). The host's id for the
+    /// window.
+    host_window: Option<u64>,
     parent: Option<LayerId>,
     transform_track: Option<Track<Affine>>,
     components: Option<Box<components::Components>>,
@@ -241,6 +246,7 @@ impl LayerNode {
             content_blends: false,
             content_translucent: false,
             has_content: false,
+            host_window: None,
             parent: None,
             transform_track: None,
             components: None,
@@ -279,11 +285,37 @@ impl LayerNode {
         self.content_translucent
     }
 
+    /// The host's id for the external host window whose frame the layer
+    /// marks — the paint-order boundary where that window's presentation
+    /// band starts (water-rs/waterui#2225) — `None` for an unmarked layer.
+    #[must_use]
+    pub const fn host_window(&self) -> Option<u64> {
+        self.host_window
+    }
+
     /// Whether the layer has recorded or installed content of its own —
     /// what distinguishes a layer that paints from a pure container.
     #[must_use]
     pub const fn has_content(&self) -> bool {
         self.has_content
+    }
+
+    /// The tree clock at the last change to what this layer draws in its
+    /// own space: its clip, scroll offset, filter, backdrop, content or
+    /// children, including a step a running scroll track sampled. A target
+    /// that mirrors the tree re-encodes the layer's own state only when
+    /// this moved past the stamp it last encoded.
+    #[must_use]
+    pub const fn inner_stamp(&self) -> u64 {
+        self.inner_stamp
+    }
+
+    /// The tree clock at the last change to how this layer composes into
+    /// its parent: its transform, components, projection, opacity or
+    /// blend, including a step a running track sampled.
+    #[must_use]
+    pub const fn outer_stamp(&self) -> u64 {
+        self.outer_stamp
     }
 
     fn classify_rate(&self, scale: f64, components_running: bool) -> Option<RefreshRange> {
@@ -777,6 +809,7 @@ impl SurfaceTree {
             | LayerOp::Clip(id, _)
             | LayerOp::Filter(id, _)
             | LayerOp::Backdrop(id, _)
+            | LayerOp::HostWindow(id, _)
             | LayerOp::Content(id, _) => Some((*id, true)),
             LayerOp::Push { parent, .. }
             | LayerOp::Insert { parent, .. }
@@ -860,6 +893,11 @@ impl SurfaceTree {
             LayerOp::Blend(id, blend) => self.set_blend(id, blend),
             LayerOp::Filter(id, filter) => self.node_mut(id).filter = filter,
             LayerOp::Backdrop(id, backdrop) => self.node_mut(id).backdrop = backdrop,
+            LayerOp::HostWindow(id, window) => {
+                let node = self.node_mut(id);
+                node.host_window = window;
+                node.has_content |= window.is_some();
+            }
             LayerOp::Content(id, _) => {
                 // Validated here; forwarded to the renderer by the loop.
                 assert!(
@@ -1184,6 +1222,22 @@ mod hierarchy_tests {
         tree.apply(LayerOp::Push {
             parent: LayerId::new(2),
             child: tree.root(),
+        });
+    }
+
+    /// A commit never emits `Remove` before `Push` for one layer; a
+    /// stream that carries it anyway is an invariant violation, not a
+    /// tree to render (water-rs/waterui#3453).
+    #[test]
+    #[should_panic(expected = "pushing unknown layer")]
+    fn pushing_a_removed_layer_panics() {
+        let mut tree = tree();
+        let id = LayerId::new(4);
+        tree.apply(LayerOp::Create(id));
+        tree.remove(id);
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: id,
         });
     }
 

@@ -142,7 +142,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     render_reports(shell, &suite, args.format, args.output.as_deref()).await?;
     if let Some(gha_path) = args.gha.as_deref() {
-        write_bench_gha_json(gha_path, &suite.reports).await?;
+        write_bench_gha_json(gha_path, suite.reports()).await?;
         success!(
             shell,
             "Benchmark-action JSON written: {}",
@@ -161,16 +161,16 @@ async fn render_reports(
 ) -> Result<()> {
     match format {
         BenchOutputFormat::Human => {
-            for report in &suite.reports {
+            for report in suite.reports() {
                 emit_bench_human(shell, report);
             }
         }
         BenchOutputFormat::Json => {
             if let Some(path) = output {
-                write_bench_output_json(path, &suite.reports).await?;
+                write_bench_output_json(path, suite.reports()).await?;
                 success!(shell, "Bench JSON written: {}", path.display());
             } else {
-                write_bench_stdout_json(&suite.reports)?;
+                write_bench_stdout_json(suite.reports())?;
             }
         }
         BenchOutputFormat::Html => {
@@ -178,7 +178,7 @@ async fn render_reports(
                 || PathBuf::from("waterui-bench-report.html"),
                 std::path::Path::to_path_buf,
             );
-            write_bench_html(&path, &suite.reports).await?;
+            write_bench_html(&path, suite.reports()).await?;
             success!(shell, "Bench HTML report written: {}", path.display());
         }
     }
@@ -186,7 +186,7 @@ async fn render_reports(
 }
 
 fn finish(shell: &Shell, suite: &BenchSuiteRun) -> Result<()> {
-    if !suite.nextest_succeeded {
+    if !suite.nextest_succeeded() {
         bail!(
             "bench run failed: a bench panicked or exceeded its budget; see the nextest output above"
         );
@@ -194,8 +194,8 @@ fn finish(shell: &Shell, suite: &BenchSuiteRun) -> Result<()> {
     success!(
         shell,
         "{} bench report{} collected",
-        suite.reports.len(),
-        if suite.reports.len() == 1 { "" } else { "s" }
+        suite.reports().len(),
+        if suite.reports().len() == 1 { "" } else { "s" }
     );
     Ok(())
 }
@@ -208,9 +208,9 @@ fn emit_bench_human(shell: &Shell, report: &BenchReport) {
         shell,
         "Bench report: {} (warmups={} samples={} repetitions={})",
         bench_target_label(report),
-        report.config.warmups,
-        report.config.samples,
-        report.config.repetitions
+        report.config.warmups(),
+        report.config.samples(),
+        report.config.repetitions()
     );
     for measurement in &report.measurements {
         note!(
@@ -284,30 +284,30 @@ fn budget_headroom_lines(budgets: &BenchBudgets, measurement: &PerfMeasurement) 
         )
     }
     let mut lines = Vec::new();
-    if let Some(limit) = budgets.max_p95_us {
+    if let Some(limit) = budgets.max_p95_us() {
         lines.push(count_line("frame p95 us", measurement.p95_us, limit));
     }
-    if let Some(limit) = budgets.max_mean_us {
+    if let Some(limit) = budgets.max_mean_us() {
         lines.push(count_line("frame mean us", measurement.mean_us, limit));
     }
-    if let Some(limit) = budgets.max_rebuild_ratio {
+    if let Some(limit) = budgets.max_rebuild_ratio() {
         let actual = rebuild_ratio(measurement);
         lines.push(format!(
             "rebuild ratio {actual:.3}/{limit} ({})",
             headroom(actual, limit)
         ));
     }
-    if let Some(limit) = budgets.max_scene_layers {
+    if let Some(limit) = budgets.max_scene_layers() {
         lines.push(count_line("scene layers", measurement.scene_layers, limit));
     }
-    if let Some(limit) = budgets.max_gpu_surface_layers {
+    if let Some(limit) = budgets.max_gpu_surface_layers() {
         lines.push(count_line(
             "gpu-surface layers",
             measurement.gpu_surface_layers,
             limit,
         ));
     }
-    if let Some(limit) = budgets.max_clip_layers {
+    if let Some(limit) = budgets.max_clip_layers() {
         lines.push(count_line("clip layers", measurement.clip_layers, limit));
     }
     lines

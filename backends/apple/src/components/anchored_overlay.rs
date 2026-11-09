@@ -15,7 +15,9 @@
 //! pointer or touch down that lands outside it — the event itself still
 //! reaches its target.
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
+use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 
 use cocoa_ui::geometry::Rect as KitRect;
@@ -24,16 +26,19 @@ use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchorPlacement, AnchoredOverlay, Dismissal,
 };
 use waterui::reactive::{Binding, Signal};
+use waterui_backend_core::Environment;
 use waterui_backend_core::overlay::{PhysicalEdge, logical_edge, place_anchored_overlay};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{
-    LayoutDirection, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
-    layout_direction,
+    LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
+    SubView, ViewDimensions, layout_direction,
 };
 use waterui_core::{Computed, Metadata};
 
 use crate::contract::{Mounted, NativeLeaf, Renderer};
 use crate::dispatch::Dispatcher;
+use crate::transition::ghost::Ghost;
+use crate::transition::live::{LiveChild, Removal};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HostView, Panel, window_of};
@@ -54,8 +59,15 @@ struct OverlayState {
     /// A `'static` render handle the builder's output mounts through.
     renderer: Renderer,
     /// The overlay content, moved into the presentation surface while shown;
-    /// rebuilt from `builder` on each presentation.
-    overlay: RefCell<Option<NativeLeaf>>,
+    /// rebuilt from `builder` on each presentation (§5.6).
+    overlay: RefCell<Option<LiveChild>>,
+    /// The anchor's environment — the removal's GPU services and the
+    /// insertion run's read of it.
+    env: Environment,
+    /// Dismissed presentations still leaving under their removal
+    /// transition: the ghost plus the container it paints in, each held
+    /// until its own completion drops the entry.
+    ghosts: Rc<RefCell<Vec<OverlayGhost>>>,
     /// Whether the overlay is presented; platform dismissal writes back.
     is_presented: Binding<bool>,
     /// The logical edge the last placement landed on, written here.
@@ -93,36 +105,61 @@ impl core::fmt::Debug for OverlayState {
     }
 }
 
-/// The `NSPanel` presentation: the panel plus its outside-click monitor.
+/// A presentation's visual container — the borderless child panel on
+/// `AppKit`, the window-covering passthrough host on `UIKit`. Dropping it
+/// takes the surface off the screen, whether a live presentation or an
+/// exit ghost (§5.6) held it.
+#[cfg(target_os = "macos")]
+struct OverlayContainer(Panel);
+
+#[cfg(target_os = "macos")]
+impl Drop for OverlayContainer {
+    fn drop(&mut self) {
+        self.0.detach();
+    }
+}
+
+/// A presentation's visual container — see the `AppKit` definition.
+#[cfg(target_os = "ios")]
+struct OverlayContainer(Retained<HostView>);
+
+#[cfg(target_os = "ios")]
+impl Drop for OverlayContainer {
+    fn drop(&mut self) {
+        self.0.clear_handlers();
+        let host: &PlatformView = &self.0;
+        view::remove_from_superview(host);
+    }
+}
+
+/// The `NSPanel` presentation: the panel plus its outside-click monitor,
+/// the semantic half `dismiss` drops.
 #[cfg(target_os = "macos")]
 struct Presentation {
     /// The borderless child window holding the overlay while presented.
-    panel: Panel,
+    container: OverlayContainer,
     /// Observes clicks that land outside the panel; does not consume them.
-    _monitor: cocoa_ui::appkit::event::LocalEventMonitor,
+    monitor: cocoa_ui::appkit::event::LocalEventMonitor,
 }
 
-#[cfg(target_os = "macos")]
-impl Drop for Presentation {
-    fn drop(&mut self) {
-        self.panel.detach();
-    }
-}
-
-/// The passthrough container covering the host `UIWindow` (iOS).
+/// The passthrough presentation (iOS): its semantic half is the host's
+/// hit-test handler.
 #[cfg(target_os = "ios")]
 struct Presentation {
     /// The window-covering container holding the overlay.
-    host: Retained<HostView>,
+    container: OverlayContainer,
 }
 
-#[cfg(target_os = "ios")]
-impl Drop for Presentation {
-    fn drop(&mut self) {
-        self.host.clear_handlers();
-        let host: &PlatformView = &self.host;
-        view::remove_from_superview(host);
-    }
+/// A dismissed presentation still leaving: the removal ghost plus the
+/// container its visuals keep painting in. Held in
+/// [`OverlayState::ghosts`] until `on_complete` removes the entry; the
+/// site dropping it closes the container at once (the anchor left the
+/// tree).
+struct OverlayGhost {
+    /// The outgoing instance's removal run.
+    ghost: Ghost,
+    /// The surface the ghost's visuals still paint in.
+    _container: OverlayContainer,
 }
 
 /// A `cocoa_ui` rect as the placement contract's top-left-space rect — the
@@ -201,23 +238,80 @@ fn attachment_changed(state: &Rc<OverlayState>) {
         #[cfg(target_os = "macos")]
         observe_window_and_frame(state);
     } else {
-        // The anchor left the tree: the overlay closes with it.
+        // The anchor left the tree: the overlay closes with it — a ghost
+        // would paint against an anchor that is gone, so the surviving
+        // presentations drop at once (Hydrolysis's anchor-detach rule).
         state.pending.set(false);
         if state.is_presented.snapshot() {
             state.is_presented.set(false);
         }
         dismiss(state);
+        let ghosts = core::mem::take(&mut *state.ghosts.borrow_mut());
+        drop(ghosts);
         #[cfg(target_os = "macos")]
         state.watchers.borrow_mut().take();
     }
 }
 
-/// `dismissOverlay`: the presentation surface releases the overlay's view
-/// back to the leaf.
+/// `dismissOverlay` (§5.6): the presentation's semantic half ends now —
+/// macOS drops the outside-click monitor and makes the panel transparent
+/// to input, iOS clears the passthrough hit-test handler and retires the
+/// container — and the `LiveChild` is removed in place. A claimed
+/// removal keeps the container alive as an [`OverlayGhost`] until
+/// `on_complete` closes it; anything else closes at once.
 fn dismiss(state: &Rc<OverlayState>) {
-    state.presentation.borrow_mut().take();
-    if let Some(overlay) = state.overlay.borrow_mut().take() {
-        view::remove_from_superview(overlay.view());
+    state.pending.set(false);
+    let Some(presentation) = state.presentation.borrow_mut().take() else {
+        return;
+    };
+    let overlay = state
+        .overlay
+        .borrow_mut()
+        .take()
+        .expect("a live presentation always holds its overlay content");
+    // The semantic half ends: macOS drops the outside-click monitor and
+    // lets input through the panel, iOS clears the hit-test handler.
+    #[cfg(target_os = "macos")]
+    let container = {
+        let Presentation { container, monitor } = presentation;
+        drop(monitor);
+        container.0.set_ignores_mouse_events(true);
+        container
+    };
+    #[cfg(target_os = "ios")]
+    let container = {
+        let Presentation { container } = presentation;
+        container.0.clear_handlers();
+        container.0.retire();
+        container
+    };
+    // An anchor that left the tree gets no exit: it would paint against
+    // nothing — Hydrolysis drops the presentation with the anchor.
+    if !view::has_window(&state.host) {
+        return;
+    }
+    // The ghost's container never moves — the retired host stays where the
+    // presentation placed it, which is also why `remove` runs only after
+    // the container stopped answering input.
+    let ghost_view = view::retain_base(overlay.view());
+    let held = Rc::downgrade(&state.ghosts);
+    let ghost = overlay.remove(Removal {
+        env: &state.env,
+        slot: None,
+        on_complete: Box::new(move || {
+            if let Some(held) = held.upgrade() {
+                held.borrow_mut().retain(|entry| {
+                    core::ptr::from_ref(entry.ghost.host()) != Retained::as_ptr(&ghost_view)
+                });
+            }
+        }),
+    });
+    match ghost {
+        Some(ghost) => state.ghosts.borrow_mut().push(OverlayGhost {
+            ghost,
+            _container: container,
+        }),
+        None => drop(container),
     }
 }
 
@@ -264,11 +358,16 @@ fn present(state: &Rc<OverlayState>) {
             }
         });
         let window_view: &PlatformView = &window;
-        let overlay = state.renderer.render(state.builder.build());
         view::add_subview(window_view, host_view);
-        view::add_subview(host_view, overlay.view());
+        // Every presentation is a fresh instance that plays its
+        // insertion — including one overtaking an exit in flight and the
+        // first-build present, as Hydrolysis's `present` does.
+        let leaf = state.renderer.render(state.builder.build());
+        let overlay = LiveChild::mount_inserted(leaf, host_view, None, &state.env);
         *state.overlay.borrow_mut() = Some(overlay);
-        *state.presentation.borrow_mut() = Some(Presentation { host });
+        *state.presentation.borrow_mut() = Some(Presentation {
+            container: OverlayContainer(host),
+        });
     }
     reposition(state);
 }
@@ -289,7 +388,7 @@ fn reposition(state: &Rc<OverlayState>) {
     let anchor = to_core(view::bounds_in_window(&state.host));
     let direction = state.direction.snapshot();
     let placed = place_anchored_overlay(anchor, container, size, state.placement, direction);
-    let frame = to_kit(placed.frame);
+    let frame = to_kit(placed.frame());
     state.overlay_frame.set(frame);
     // Retain the overlay's view inside a short borrow — `set_frame` may
     // re-enter layout through the platform, and `report_edge` invokes
@@ -304,7 +403,7 @@ fn reposition(state: &Rc<OverlayState>) {
         )
     };
     view::set_frame(&overlay_view, frame);
-    report_edge(state, placed.edge, direction);
+    report_edge(state, placed.edge(), direction);
 }
 
 // MARK: - macOS presentation
@@ -319,9 +418,14 @@ fn present(state: &Rc<OverlayState>) {
     };
     if state.presentation.borrow().is_none() {
         let panel = Panel::new(state.mtm);
-        let overlay = state.renderer.render(state.builder.build());
         panel.attach(&parent);
-        panel.set_content(overlay.view());
+        // Every presentation is a fresh instance that plays its
+        // insertion — the passthrough host's rule on iOS, Hydrolysis's
+        // `present` on both.
+        let container = panel.content_view(state.mtm);
+        let leaf = state.renderer.render(state.builder.build());
+        let overlay = LiveChild::mount_inserted(leaf, &container, None, &state.env);
+        view::set_autoresizing_flexible_size(overlay.view());
         *state.overlay.borrow_mut() = Some(overlay);
         let monitor = cocoa_ui::appkit::event::on_mouse_down({
             let state = Rc::downgrade(state);
@@ -332,7 +436,7 @@ fn present(state: &Rc<OverlayState>) {
                 let presentation = state.presentation.borrow();
                 let inside = presentation
                     .as_ref()
-                    .is_some_and(|shown| shown.panel.is_window(event_window));
+                    .is_some_and(|shown| shown.container.0.is_window(event_window));
                 drop(presentation);
                 if !inside && state.dismissal == Dismissal::OutsideInteraction {
                     state.is_presented.set(false);
@@ -340,8 +444,8 @@ fn present(state: &Rc<OverlayState>) {
             }
         });
         *state.presentation.borrow_mut() = Some(Presentation {
-            panel,
-            _monitor: monitor,
+            container: OverlayContainer(panel),
+            monitor,
         });
     }
     reposition(state);
@@ -364,18 +468,19 @@ fn reposition(state: &Rc<OverlayState>) {
     let direction = state.direction.snapshot();
     let placed =
         place_anchored_overlay(anchor, to_core(container), size, state.placement, direction);
-    let frame_window = mirror(to_kit(placed.frame), container);
+    let frame_window = mirror(to_kit(placed.frame()), container);
     {
         let presentation = state.presentation.borrow();
         if let Some(shown) = presentation.as_ref() {
             shown
-                .panel
+                .container
+                .0
                 .set_frame(cocoa_ui::appkit::convert_to_screen(&parent, frame_window));
         }
     }
     // The borrow ends before the watcher callbacks — `report_edge` may
     // re-enter the overlay state.
-    report_edge(state, placed.edge, direction);
+    report_edge(state, placed.edge(), direction);
 }
 
 /// `observeWindowAndFrame`: the overlay re-places when the parent window
@@ -433,6 +538,14 @@ impl core::fmt::Debug for AnchoredSubView {
 }
 
 impl SubView for AnchoredSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }
@@ -465,6 +578,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             builder: metadata.value.content,
             renderer: ctx.renderer(),
             overlay: RefCell::new(None),
+            env: ctx.env().clone(),
+            ghosts: Rc::new(RefCell::new(Vec::new())),
             is_presented: metadata.value.is_presented,
             placed_edge: metadata.value.placed_edge,
             placement: metadata.value.placement,

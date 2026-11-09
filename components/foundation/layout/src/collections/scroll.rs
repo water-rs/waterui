@@ -1,7 +1,7 @@
 //! Scroll containers that defer behaviour to the active renderer backend.
 
 use nami::{Binding, Computed};
-use waterui_core::{AnyView, View, animation::Animation, raw_view};
+use waterui_core::{AnyView, Environment, Native, NativeView, View, animation::Animation};
 
 use crate::{Point, Size, StretchAxis};
 
@@ -11,7 +11,7 @@ use crate::{Point, Size, StretchAxis};
 #[non_exhaustive]
 pub struct ScrollRequest<T> {
     /// The position the scroll view moves to.
-    pub target: T,
+    target: T,
     /// How the scroll view moves there. `None` jumps in one frame.
     /// [`Animation::Default`] uses the backend's default scroll motion: the
     /// native smooth scroll on a backend that drives a platform scroll view,
@@ -21,7 +21,29 @@ pub struct ScrollRequest<T> {
     /// The C FFI does not carry the animation yet, so the Kotlin Android
     /// runtime, which consumes it, jumps for every request
     /// (water-rs/waterui#2084).
-    pub animation: Option<Animation>,
+    animation: Option<Animation>,
+}
+
+impl<T> ScrollRequest<T> {
+    /// The position the scroll view moves to.
+    #[must_use]
+    pub const fn target(&self) -> &T {
+        &self.target
+    }
+
+    /// How the scroll view moves there. `None` jumps in one frame.
+    /// [`Animation::Default`] uses the backend's default scroll motion: the
+    /// native smooth scroll on a backend that drives a platform scroll view,
+    /// the backend's default animation curve on a self-drawn one. Any other
+    /// animation drives the offset along its own curve and duration.
+    ///
+    /// The C FFI does not carry the animation yet, so the Kotlin Android
+    /// runtime, which consumes it, jumps for every request
+    /// (water-rs/waterui#2084).
+    #[must_use]
+    pub const fn animation(&self) -> Option<&Animation> {
+        self.animation.as_ref()
+    }
 }
 
 /// The scroll viewport's last reported actual position.
@@ -40,15 +62,47 @@ pub struct ScrollRequest<T> {
 #[non_exhaustive]
 pub struct ScrollPosition {
     /// The content offset the viewport's origin sits at, in points.
-    pub offset: Point,
+    offset: Point,
     /// The size of the visible scroll area, in points.
-    pub viewport_size: Size,
+    viewport_size: Size,
     /// The scrollable extent, in points.
-    pub content_size: Size,
+    content_size: Size,
     /// Whether the viewport touches the start of every scrollable axis.
-    pub at_start: bool,
+    at_start: bool,
     /// Whether the viewport touches the end of every scrollable axis.
-    pub at_end: bool,
+    at_end: bool,
+}
+
+impl ScrollPosition {
+    /// The content offset the viewport's origin sits at, in points.
+    #[must_use]
+    pub const fn offset(&self) -> Point {
+        self.offset
+    }
+
+    /// The size of the visible scroll area, in points.
+    #[must_use]
+    pub const fn viewport_size(&self) -> Size {
+        self.viewport_size
+    }
+
+    /// The scrollable extent, in points.
+    #[must_use]
+    pub const fn content_size(&self) -> Size {
+        self.content_size
+    }
+
+    /// Whether the viewport touches the start of every scrollable axis.
+    #[must_use]
+    pub const fn at_start(&self) -> bool {
+        self.at_start
+    }
+
+    /// Whether the viewport touches the end of every scrollable axis.
+    #[must_use]
+    pub const fn at_end(&self) -> bool {
+        self.at_end
+    }
 }
 
 impl ScrollPosition {
@@ -252,14 +306,69 @@ pub struct ScrollView {
 #[non_exhaustive]
 pub struct ScrollViewParts {
     /// The axis or axes the view scrolls along.
-    pub axis: Axis,
+    axis: Axis,
     /// The scrolled content.
-    pub content: AnyView,
+    content: AnyView,
     /// The programmatic scroll controller, if one is connected.
-    pub controller: Option<ScrollController<Point>>,
+    controller: Option<ScrollController<Point>>,
     /// The binding the backend reports the content offset into, if one is
     /// connected.
-    pub offset: Option<Binding<Point>>,
+    offset: Option<Binding<Point>>,
+}
+
+impl ScrollViewParts {
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Axis,
+        AnyView,
+        Option<ScrollController<Point>>,
+        Option<Binding<Point>>,
+    ) {
+        (self.axis, self.content, self.controller, self.offset)
+    }
+
+    /// Creates a `ScrollViewParts` from its parts.
+    #[must_use]
+    pub const fn new(
+        axis: Axis,
+        content: AnyView,
+        controller: Option<ScrollController<Point>>,
+        offset: Option<Binding<Point>>,
+    ) -> Self {
+        Self {
+            axis,
+            content,
+            controller,
+            offset,
+        }
+    }
+
+    /// The axis or axes the view scrolls along.
+    #[must_use]
+    pub const fn axis(&self) -> Axis {
+        self.axis
+    }
+
+    /// The scrolled content.
+    #[must_use]
+    pub const fn content(&self) -> &AnyView {
+        &self.content
+    }
+
+    /// The programmatic scroll controller, if one is connected.
+    #[must_use]
+    pub const fn controller(&self) -> Option<&ScrollController<Point>> {
+        self.controller.as_ref()
+    }
+
+    /// The binding the backend reports the content offset into, if one is
+    /// connected.
+    #[must_use]
+    pub const fn offset(&self) -> Option<&Binding<Point>> {
+        self.offset.as_ref()
+    }
 }
 
 /// Defines the scrolling directions supported by `ScrollView`.
@@ -348,7 +457,45 @@ impl ScrollView {
     }
 }
 
-raw_view!(ScrollView, StretchAxis::Both);
+/// The axis a scroll stretches on: always its scrolling axis — the scroll
+/// fills the offer along it — and the non-scrolling axis only when the
+/// content itself stretches there, so a scroll hugs non-filling content
+/// instead of claiming the whole cross-axis slot (water-rs/waterui#1208).
+///
+/// Content `MainAxis`/`CrossAxis` are claims a containing *stack* resolves
+/// (stack.rs); a scroll view is not a stack, so they claim nothing here —
+/// only a concrete `Horizontal`/`Vertical`/`Both` content answer stretches
+/// the scroll on its non-scrolling axis.
+#[doc(hidden)]
+#[must_use]
+pub const fn scroll_stretch_axis(axis: Axis, content: StretchAxis) -> StretchAxis {
+    let cross_stretches = match axis {
+        Axis::Vertical => content.stretches_horizontal(),
+        Axis::Horizontal => content.stretches_vertical(),
+        Axis::All => return StretchAxis::Both,
+    };
+    match (axis, cross_stretches) {
+        (Axis::Vertical, false) => StretchAxis::Vertical,
+        (Axis::Horizontal, false) => StretchAxis::Horizontal,
+        _ => StretchAxis::Both,
+    }
+}
+
+impl NativeView for ScrollView {
+    fn stretch_axis(&self) -> StretchAxis {
+        scroll_stretch_axis(self.axis, self.content.stretch_axis())
+    }
+}
+
+impl View for ScrollView {
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        scroll_stretch_axis(self.axis, self.content.stretch_axis())
+    }
+}
 
 /// Creates a vertical `ScrollView` with the given content.
 ///
@@ -376,8 +523,8 @@ pub fn scroll_both(content: impl View) -> ScrollView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Axis, ScrollController, ScrollPosition, ScrollRequest};
-    use crate::{Point, Size};
+    use super::{Axis, ScrollController, ScrollPosition, ScrollRequest, scroll_stretch_axis};
+    use crate::{Point, Size, StretchAxis};
     use core::time::Duration;
     use nami::Signal;
     use waterui_core::animation::Animation;
@@ -406,6 +553,92 @@ mod tests {
             }
         );
         assert_eq!(controller.generation().snapshot(), 2);
+    }
+
+    #[test]
+    fn scroll_stretch_axis_always_stretches_on_the_scrolling_axis() {
+        for content in [
+            StretchAxis::None,
+            StretchAxis::Horizontal,
+            StretchAxis::Vertical,
+            StretchAxis::Both,
+            StretchAxis::MainAxis,
+            StretchAxis::CrossAxis,
+        ] {
+            assert!(
+                scroll_stretch_axis(Axis::Vertical, content).stretches_vertical(),
+                "vertical scroll stretches vertically under {content:?}"
+            );
+            assert!(
+                scroll_stretch_axis(Axis::Horizontal, content).stretches_horizontal(),
+                "horizontal scroll stretches horizontally under {content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_stretch_axis_claims_the_cross_axis_only_with_filling_content() {
+        // A horizontal scroll hugs its content's height: only content that
+        // itself stretches vertically lifts the scroll to `Both`.
+        assert_eq!(
+            scroll_stretch_axis(Axis::Horizontal, StretchAxis::Vertical),
+            StretchAxis::Both
+        );
+        assert_eq!(
+            scroll_stretch_axis(Axis::Horizontal, StretchAxis::Both),
+            StretchAxis::Both
+        );
+        for content in [
+            StretchAxis::None,
+            StretchAxis::Horizontal,
+            StretchAxis::MainAxis,
+            StretchAxis::CrossAxis,
+        ] {
+            assert_eq!(
+                scroll_stretch_axis(Axis::Horizontal, content),
+                StretchAxis::Horizontal,
+                "horizontal scroll under {content:?}"
+            );
+        }
+        // Symmetric on the vertical scroll's width.
+        assert_eq!(
+            scroll_stretch_axis(Axis::Vertical, StretchAxis::Horizontal),
+            StretchAxis::Both
+        );
+        assert_eq!(
+            scroll_stretch_axis(Axis::Vertical, StretchAxis::Both),
+            StretchAxis::Both
+        );
+        for content in [
+            StretchAxis::None,
+            StretchAxis::Vertical,
+            StretchAxis::MainAxis,
+            StretchAxis::CrossAxis,
+        ] {
+            assert_eq!(
+                scroll_stretch_axis(Axis::Vertical, content),
+                StretchAxis::Vertical,
+                "vertical scroll under {content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_stretch_axis_all_stretches_on_both_axes() {
+        for content in [
+            StretchAxis::None,
+            StretchAxis::Horizontal,
+            StretchAxis::Vertical,
+            StretchAxis::Both,
+            StretchAxis::MainAxis,
+            StretchAxis::CrossAxis,
+        ] {
+            assert_eq!(
+                scroll_stretch_axis(Axis::All, content),
+                StretchAxis::Both,
+                "omnidirectional scroll under {content:?}"
+            );
+        }
     }
 
     #[test]

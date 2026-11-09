@@ -97,7 +97,7 @@ impl core::ops::BitAnd for Dirty {
 /// link set on attach — it keeps ancestors' cells alive while a descendant
 /// is held somewhere (a stale watcher, a deferred overlay), and releases
 /// when the subtree is actually dropped, since cells never point back down.
-pub struct NodeCell {
+pub struct NodeCell<E: crate::text::TextEngine> {
     /// Marks raised on this node itself.
     own: Cell<Dirty>,
     /// Marks raised anywhere in this node's subtree.
@@ -116,12 +116,12 @@ pub struct NodeCell {
     pub scopes: RefCell<RetainedScopes>,
     /// The owning node's retained layer state (held strongly by its
     /// [`NodeCore`], so the layers drop with the node, not the cell).
-    retained: RefCell<std::rc::Weak<super::layers::NodeRetained>>,
+    retained: RefCell<std::rc::Weak<super::layers::NodeRetained<E>>>,
     /// The registrations the node's last record emitted — the retained
     /// entries its materialization replays (`None` until the first record
     /// registers, or after a purge). Purging the cell's bucket is the
     /// per-owner retire: O(entries of that owner), no registry sweep.
-    pub(crate) registrations: RefCell<Option<Box<OwnerRegistrations>>>,
+    pub(crate) registrations: RefCell<Option<Box<OwnerRegistrations<E>>>>,
     /// The cell is listed in the window's `retained.owners` enumeration —
     /// set the first time it registers, so materialization visits each
     /// owner once.
@@ -170,13 +170,13 @@ pub struct NodeCell {
     pub(crate) a11y_retired: RefCell<Option<Vec<(AccessibilityNodeId, AccessibilityNode)>>>,
 }
 
-impl NodeCell {
+impl<E: crate::text::TextEngine> NodeCell<E> {
     /// The owning node's retained layer state.
     ///
     /// # Panics
     /// Panics when the node was dropped while its cell is still listed in
     /// a program — a program never outlives the frame that recorded it.
-    pub(crate) fn retained(&self) -> Rc<super::layers::NodeRetained> {
+    pub(crate) fn retained(&self) -> Rc<super::layers::NodeRetained<E>> {
         self.retained
             .borrow()
             .upgrade()
@@ -186,7 +186,7 @@ impl NodeCell {
     /// The owning node's retained layer state while the node lives —
     /// `None` once it dropped. A child a `committed` list reaches may be
     /// dead already: its drop queued the layer removal before this commit.
-    pub(crate) fn try_retained(&self) -> Option<Rc<super::layers::NodeRetained>> {
+    pub(crate) fn try_retained(&self) -> Option<Rc<super::layers::NodeRetained<E>>> {
         self.retained.borrow().upgrade()
     }
 
@@ -443,12 +443,11 @@ impl NodeCell {
 /// `Clone` is a same-identity copy — every field is an `Rc`, so a cloned
 /// core names the same cell and stores (used where a `&mut` node borrow
 /// would otherwise conflict with the reader the core anchors).
-#[derive(Clone)]
-pub struct NodeCore {
+pub struct NodeCore<E: crate::text::TextEngine> {
     /// The node's cell: identity, marks and placement mirror.
-    pub cell: Rc<NodeCell>,
+    pub cell: Rc<NodeCell<E>>,
     /// The node's retained layers and pending program (§A).
-    pub retained: Rc<super::layers::NodeRetained>,
+    pub retained: Rc<super::layers::NodeRetained<E>>,
     /// Signal guards from the node's last record (paint phase). `Rc` so the
     /// live reader can point a store clone at it while the guard closures
     /// run.
@@ -457,7 +456,7 @@ pub struct NodeCore {
     pub layout_subscriptions: Rc<RefCell<Vec<Retain>>>,
 }
 
-impl NodeCore {
+impl<E: crate::text::TextEngine> NodeCore<E> {
     /// A fresh core with an unattached cell.
     pub fn new(frames: FrameSignals, placement: Rc<Placement>) -> Self {
         let cell = NodeCell::new(frames, placement);
@@ -474,7 +473,7 @@ impl NodeCore {
     /// A second core naming `cell` — the presentation hosts and the
     /// window root's own record read through it, each with their own
     /// subscription stores.
-    pub(crate) fn for_cell(cell: &Rc<NodeCell>) -> Self {
+    pub(crate) fn for_cell(cell: &Rc<NodeCell<E>>) -> Self {
         let live = cell.retained.borrow().upgrade();
         let retained = live.unwrap_or_else(|| {
             let retained = Rc::new(super::layers::NodeRetained::default());
@@ -498,5 +497,16 @@ impl NodeCore {
             FrameSignals::new(std::time::Instant::now()),
             Placement::new(&super::placement::PlacementClock::new()),
         )
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for NodeCore<E> {
+    fn clone(&self) -> Self {
+        Self {
+            cell: self.cell.clone(),
+            retained: self.retained.clone(),
+            subscriptions: self.subscriptions.clone(),
+            layout_subscriptions: self.layout_subscriptions.clone(),
+        }
     }
 }

@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use waterui::{AnyView, Color, View, ViewExt as _};
 use waterui_core::Environment;
 use waterui_core::id::SelfId;
-use waterui_core::layout::{StretchAxis, ViewDimensions};
+use waterui_core::layout::{LayoutError, Rect, ResolvedExtent, StretchAxis, ViewDimensions};
 use waterui_core::views::ForEach;
 use waterui_graphics::draw::Recorder;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
@@ -29,7 +29,7 @@ use waterui_graphics::{
 };
 use waterui_layout::LazyContainer;
 use waterui_layout::stack::hstack;
-use waterui_layout::{Divider, ProposalSize, Rect, Size, SubView};
+use waterui_layout::{Divider, ProposalSize, Size, SubView};
 
 use super::{test_environment, test_renderer};
 use crate::renderer::HydroState;
@@ -159,8 +159,8 @@ struct MeasureEntry {
 /// probe so a test can see which leaf answered more than its offer.
 struct OfferProbe<'a> {
     label: &'static str,
-    node: &'a RenderNode,
-    state: &'a RefCell<&'a mut HydroState>,
+    node: &'a RenderNode<crate::text::ParleyEngine>,
+    state: &'a RefCell<&'a mut HydroState<crate::text::ParleyEngine>>,
     env: Environment,
     theme: Rc<dyn WidgetTheme>,
     stretch: StretchAxis,
@@ -194,6 +194,14 @@ impl SubView for OfferProbe<'_> {
         reported
     }
 
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn stretch_axis(&self) -> StretchAxis {
         self.stretch
     }
@@ -225,7 +233,13 @@ fn issue_tree(kind: Pane) -> impl View {
     .spacing(0.0)
 }
 
-fn build_issue_tree(kind: Pane) -> (Environment, crate::renderer::HydrolysisRenderer, RenderNode) {
+fn build_issue_tree(
+    kind: Pane,
+) -> (
+    Environment,
+    crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    RenderNode<crate::text::ParleyEngine>,
+) {
     let env = test_environment().extending(SceneViewMergeToParent);
     let mut renderer = test_renderer();
     let node = RenderNode::build(AnyView::new(issue_tree(kind)), &env, &mut renderer);
@@ -239,8 +253,8 @@ fn probe_issue_stack(
     kind: Pane,
 ) -> (
     Environment,
-    crate::renderer::HydrolysisRenderer,
-    RenderNode,
+    crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    RenderNode<crate::text::ParleyEngine>,
     MeasureLog,
 ) {
     let (env, mut renderer, node) = build_issue_tree(kind);

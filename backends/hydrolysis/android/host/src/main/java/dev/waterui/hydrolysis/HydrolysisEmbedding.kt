@@ -33,8 +33,10 @@ internal class HydrolysisSessionHolder : ViewModel() {
     private var closePending = false
 
     /** The session for this owner, created on first mount. */
-    fun session(context: Context): HydrolysisSession =
-        session ?: HydrolysisSession(context.applicationContext, ::requestClose)
+    fun session(context: Context, createPainter: () -> SessionPainter? = { null }): HydrolysisSession =
+        // The factory runs only at first creation: a retained session keeps
+        // the painter it was built with across view recreation.
+        session ?: HydrolysisSession(context.applicationContext, ::requestClose, createPainter())
             .also { session = it }
 
     /** A mount's view attached: it handles close requests from now on. */
@@ -112,6 +114,7 @@ object HydrolysisEmbedding {
         key: String = nativeLibraryName,
         logLevel: String? = null,
         prepareEnvironmentOverrides: ((() -> Unit) -> Unit) -> Unit = { it({}) },
+        createPainter: () -> SessionPainter? = { null },
         createContentView: (HydrolysisSession) -> View,
         onCloseRequested: () -> Unit,
         onMounted: () -> Unit = {},
@@ -128,7 +131,7 @@ object HydrolysisEmbedding {
                         NativeBridge.load(nativeLibraryName, logLevel)
                         mountSession(
                             container, context, lifecycleOwner, viewModelStoreOwner,
-                            onBackPressedDispatcher, key, createContentView,
+                            onBackPressedDispatcher, key, createPainter, createContentView,
                             onCloseRequested,
                         )
                         onMounted()
@@ -152,6 +155,7 @@ object HydrolysisEmbedding {
         viewModelStoreOwner: ViewModelStoreOwner,
         onBackPressedDispatcher: OnBackPressedDispatcher,
         key: String,
+        createPainter: () -> SessionPainter?,
         createContentView: (HydrolysisSession) -> View,
         onCloseRequested: () -> Unit,
     ) {
@@ -159,7 +163,7 @@ object HydrolysisEmbedding {
             "dev.waterui.hydrolysis.session:$key",
             HydrolysisSessionHolder::class.java,
         ]
-        val session = holder.session(context)
+        val session = holder.session(context, createPainter)
         val contentView = createContentView(session)
         contentView.setViewTreeLifecycleOwner(lifecycleOwner)
         val observer = object : DefaultLifecycleObserver {

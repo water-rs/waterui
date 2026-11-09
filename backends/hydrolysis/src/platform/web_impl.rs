@@ -54,7 +54,12 @@ pub struct BrowserSurface {
     size: (u32, u32),
     /// The engine surface and mount, created on the first frame and
     /// replaced when the device chain no longer matches.
-    engine_window: Option<crate::renderer::CherenkovWindow<crate::engine::DomCherenkovSurface>>,
+    engine_window: Option<
+        crate::renderer::CherenkovWindow<
+            crate::engine::DomCherenkovSurface,
+            crate::text::ParleyEngine,
+        >,
+    >,
 }
 
 impl core::fmt::Debug for BrowserSurface {
@@ -108,7 +113,7 @@ impl BrowserSurface {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-web-device"),
-                required_features: adapter.features() & wgpu::Features::SHADER_F16,
+                required_features: super::required_media_features(adapter.features()),
                 ..Default::default()
             })
             .await
@@ -227,14 +232,18 @@ impl BrowserSurface {
     ) -> (
         crate::renderer::FrameRenderTarget<'_>,
         &HtmlElement,
-        &mut Option<crate::renderer::CherenkovWindow<crate::engine::DomCherenkovSurface>>,
+        &mut Option<
+            crate::renderer::CherenkovWindow<
+                crate::engine::DomCherenkovSurface,
+                crate::text::ParleyEngine,
+            >,
+        >,
     ) {
         let context = self.handles.gpu_context();
         (
             crate::renderer::FrameRenderTarget {
                 adapter: &context.shared_device.adapter,
                 device: &context.shared_device.device,
-                queue: &context.shared_device.queue,
                 device_loss: self.handles.clone(),
                 gpu_context_id: context.context_id,
                 shared_device: context.shared_device.clone(),
@@ -552,22 +561,22 @@ impl PlatformWindow for BrowserWindow {
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
         if let Some(state) = state {
-            self.ime_input.set_type(match state.purpose {
+            self.ime_input.set_type(match state.purpose() {
                 TextInputPurpose::Normal => "text",
                 TextInputPurpose::Password => "password",
             });
             let style = self.ime_input.style();
             style
-                .set_property("left", &format!("{}px", state.x))
+                .set_property("left", &format!("{}px", state.x()))
                 .expect("hydrolysis web platform: failed to place IME input");
             style
-                .set_property("top", &format!("{}px", state.y))
+                .set_property("top", &format!("{}px", state.y()))
                 .expect("hydrolysis web platform: failed to place IME input");
             style
-                .set_property("width", &format!("{}px", state.width.max(1.0)))
+                .set_property("width", &format!("{}px", state.width().max(1.0)))
                 .expect("hydrolysis web platform: failed to size IME input width");
             style
-                .set_property("height", &format!("{}px", state.height.max(1.0)))
+                .set_property("height", &format!("{}px", state.height().max(1.0)))
                 .expect("hydrolysis web platform: failed to size IME input height");
             let _ = self.ime_input.focus();
         } else {
@@ -794,8 +803,8 @@ impl Viewport {
         let inset = |property: &str| crate::num_cast::f64_as_f32(length(property));
         waterui_layout::padding::EdgeInsets::new(
             inset("padding-top"),
-            crate::num_cast::f64_as_f32(length("padding-bottom") + extension),
             inset("padding-left"),
+            crate::num_cast::f64_as_f32(length("padding-bottom") + extension),
             inset("padding-right"),
         )
     }
@@ -1315,7 +1324,7 @@ fn composition_text(event: CompositionEvent) -> String {
     event.data().unwrap_or_default()
 }
 
-fn add_event_listener(
+pub fn add_event_listener(
     target: &web_sys::EventTarget,
     event_name: &str,
     handler: impl 'static + FnMut(Event),

@@ -406,7 +406,7 @@ impl View for DialogCard {
         let spoken = dialog
             .title
             .resolve(env)
-            .content
+            .content()
             .map(|title| title.to_plain())
             .computed();
         dialog_card(dialog, spoken)

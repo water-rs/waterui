@@ -43,8 +43,12 @@ use objc2_foundation::{
     NSURLSessionAuthChallengeDisposition,
 };
 use objc2_security::SecTrust;
+pub use objc2_web_kit::WKNavigation;
+
+use crate::callback::guarded;
+use crate::response::{ReportsResponse, ResponseGeometry};
 use objc2_web_kit::{
-    WKContentWorld, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
+    WKContentWorld, WKFrameInfo, WKNavigationAction, WKNavigationActionPolicy,
     WKNavigationDelegate, WKNavigationResponse, WKNavigationResponsePolicy, WKScriptMessage,
     WKScriptMessageHandlerWithReply, WKUIDelegate, WKURLSchemeHandler, WKURLSchemeTask,
     WKUserScript, WKUserScriptInjectionTime, WKWebViewConfiguration, WKWindowFeatures,
@@ -88,6 +92,65 @@ extern_class!(
     /// The shared `WebKit` web view class.
     pub struct WebView;
 );
+
+define_class!(
+    // SAFETY: `WKWebView`'s designated initializer is
+    // `initWithFrame:configuration:`, which `WebViewController::new` calls,
+    // and the class does not implement `Drop`.
+    #[unsafe(super(WebView))]
+    #[name = "CocoaUiWebView"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ResponseGeometry]
+    #[derive(Debug)]
+    /// The `WKWebView` a [`WebViewController`] owns. Its frame is the
+    /// allocation its parent assigned; its accessibility frame is its
+    /// response rectangle, or the region `.a11y_geometry` names.
+    pub struct LeafWebView;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of a `WKWebView` subclass.
+    unsafe impl NSObjectProtocol for LeafWebView {}
+
+    impl LeafWebView {
+        // SAFETY: see the module safety note.
+        #[cfg(target_os = "macos")]
+        #[unsafe(method(layout))]
+        fn layout_override(&self) {
+            guarded("LeafWebView layout", || {
+                self.ivars().commit(self);
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layout] };
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[cfg(target_os = "ios")]
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews_override(&self) {
+            guarded("LeafWebView layoutSubviews", || {
+                self.ivars().commit(self);
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("LeafWebView accessibilityFrame", || {
+                self.ivars()
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
+        }
+    }
+);
+
+impl ReportsResponse for LeafWebView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        self.ivars()
+    }
+}
 
 impl WebView {
     extern_methods!(
@@ -196,6 +259,11 @@ pub struct ActionInfo {
     pub has_target_frame: bool,
     /// Whether the target frame is the main frame.
     pub target_is_main: bool,
+    /// `mainFrameNavigation`: the main-frame navigation the action belongs
+    /// to — the same `WKNavigation` the load call that issued it returned,
+    /// and the one every server redirect of it keeps. `None` for a subframe
+    /// action, and always `None` unless [`Handlers::reads_main_frame_navigation`].
+    pub navigation: Option<Retained<WKNavigation>>,
 }
 
 impl ActionInfo {
@@ -318,6 +386,12 @@ pub struct Handlers {
     pub authentication: Option<DecideAuthentication>,
     /// Every notification the navigation delegate emits.
     pub event: Option<OnEvent>,
+    /// Whether [`ActionInfo::navigation`] is read. `mainFrameNavigation` is
+    /// public API only from macOS/iOS 27, so only a consumer that needs it
+    /// — one with a navigation policy installed, which the type gate on
+    /// `WebViewOpen::navigation_policy` restricts to deployment targets of
+    /// Apple OS 27 or newer — turns this on. Otherwise `navigation` is `None`.
+    pub reads_main_frame_navigation: bool,
 }
 
 impl std::fmt::Debug for Handlers {
@@ -327,6 +401,10 @@ impl std::fmt::Debug for Handlers {
             .field("decide_response", &self.decide_response.is_some())
             .field("authentication", &self.authentication.is_some())
             .field("event", &self.event.is_some())
+            .field(
+                "reads_main_frame_navigation",
+                &self.reads_main_frame_navigation,
+            )
             .finish()
     }
 }
@@ -577,7 +655,7 @@ define_class!(
             };
             let progress = view.estimated_progress();
             let handler = self.ivars().handler.clone();
-            crate::callback::guarded("web view progress observer", || handler(progress));
+            guarded("web view progress observer", || handler(progress));
         }
     }
 );
@@ -896,6 +974,7 @@ define_class!(
         ) {
             // SAFETY: see the module safety note.
             let target_frame = unsafe { action.targetFrame() };
+            let handlers = self.ivars().handlers.clone();
             let info = ActionInfo {
                 // SAFETY: see the module safety note.
                 request: unsafe { action.request() },
@@ -905,8 +984,19 @@ define_class!(
                 target_is_main: target_frame
                     // SAFETY: see the module safety note.
                     .is_some_and(|frame| unsafe { frame.isMainFrame() }),
+                navigation: if handlers.reads_main_frame_navigation {
+                    // SAFETY: `action` is a live `WKNavigationAction`;
+                    // `mainFrameNavigation` is a read-only property the
+                    // generated bindings do not carry, public API since
+                    // macOS/iOS 27. The flag is set only for a view with a
+                    // navigation policy, which the type gate on
+                    // `WebViewOpen::navigation_policy` restricts to
+                    // deployment targets that reach it.
+                    unsafe { msg_send![action, mainFrameNavigation] }
+                } else {
+                    None
+                },
             };
-            let handlers = self.ivars().handlers.clone();
             let policy = crate::callback::guarded("web view navigation action", || {
                 handlers
                     .decide_action
@@ -1165,16 +1255,18 @@ impl WebViewController {
             objc2_foundation::NSPoint::new(0.0, 0.0),
             objc2_foundation::NSSize::new(0.0, 0.0),
         );
+        let view = LeafWebView::alloc(mtm).set_ivars(ResponseGeometry::default());
         // SAFETY: see the module safety note.
-        let view: Retained<WebView> = unsafe {
+        let view: Retained<LeafWebView> = unsafe {
             // SAFETY: `initWithFrame:configuration:` is the designated
             // initializer; `configuration` is a live object.
             msg_send![
-                WebView::alloc(mtm),
+                super(view),
                 initWithFrame: frame,
                 configuration: &*configuration
             ]
         };
+        let view = Retained::into_super(view);
         let handlers = Rc::new(handlers);
         let delegate = Delegate::new(mtm, handlers.clone());
         // SAFETY: both are live protocol objects; the controller retains
@@ -1220,17 +1312,21 @@ impl WebViewController {
     /// # Panics
     ///
     /// When `url` is not a URL Foundation can parse.
-    pub fn load_url(&self, url: &str) {
+    ///
+    /// Returns the navigation the engine started — the same `WKNavigation`
+    /// the action later reports as `mainFrameNavigation`, which the policy
+    /// uses to tell the loads the application issued from the page's own.
+    pub fn load_url(&self, url: &str) -> Option<Retained<WKNavigation>> {
         let url = NSURL::URLWithString(&NSString::from_str(url))
             .expect("WebView received an invalid URL");
         // SAFETY: `url` is a live `NSURL`.
         let request = NSURLRequest::requestWithURL(&url);
-        self.load_request(&request);
+        self.load_request(&request)
     }
 
-    /// Loads `request`.
-    pub fn load_request(&self, request: &NSURLRequest) {
-        self.view.load_request(request);
+    /// Loads `request`, returning the navigation the engine started.
+    pub fn load_request(&self, request: &NSURLRequest) -> Option<Retained<WKNavigation>> {
+        self.view.load_request(request)
     }
 
     /// The active committed URL string.
@@ -1254,19 +1350,21 @@ impl WebViewController {
         self.view.can_go_forward()
     }
 
-    /// Navigates to the previous entry.
-    pub fn go_back(&self) {
-        self.view.go_back();
+    /// Navigates to the previous entry, returning the navigation the
+    /// engine started — it starts none when there is no previous entry.
+    pub fn go_back(&self) -> Option<Retained<WKNavigation>> {
+        self.view.go_back()
     }
 
-    /// Navigates to the next entry.
-    pub fn go_forward(&self) {
-        self.view.go_forward();
+    /// Navigates to the next entry; see [`Self::go_back`].
+    pub fn go_forward(&self) -> Option<Retained<WKNavigation>> {
+        self.view.go_forward()
     }
 
-    /// Reloads the current document.
-    pub fn reload(&self) {
-        self.view.reload();
+    /// Reloads the current document, returning the navigation the engine
+    /// started.
+    pub fn reload(&self) -> Option<Retained<WKNavigation>> {
+        self.view.reload()
     }
 
     /// Stops an in-flight load.

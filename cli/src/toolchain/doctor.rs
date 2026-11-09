@@ -27,7 +27,7 @@ use crate::{
     },
     apple::{
         device::AppleSimulator,
-        toolchain::{AppleSdk, Xcode},
+        toolchain::{AppleSdk, MetalToolchain, Xcode},
     },
     device::Device,
     framework::manifest_rust_version,
@@ -191,7 +191,8 @@ impl DoctorGroup {
             | ids::IOS_SIMULATOR_SDK
             | ids::IOS_SIMULATORS
             | ids::MACOS_SDK
-            | ids::APPLE_RUST_TARGETS => Self::Apple,
+            | ids::APPLE_RUST_TARGETS
+            | ids::APPLE_METAL_TOOLCHAIN => Self::Apple,
             ids::LINUX_SYSTEM_PACKAGES
             | ids::MSVC_BUILD_TOOLS
             | ids::DXC
@@ -221,15 +222,50 @@ impl DoctorGroup {
 /// One heading of the rendered report: a group, whether it is optional for
 /// the current project or host, and its items in emission order.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct DoctorSection {
     /// The group the items belong to.
-    pub group: DoctorGroup,
+    group: DoctorGroup,
     /// `true` when the group's backend is out of scope, so its missing items
     /// are hints rather than failures.
-    pub optional: bool,
+    optional: bool,
     /// The group's items, in [`ids::ALL`] order.
-    pub items: Vec<DoctorItem>,
+    items: Vec<DoctorItem>,
+}
+impl DoctorSection {
+    /// A `DoctorSection` carrying each of its fields.
+    #[must_use]
+    pub const fn new(group: DoctorGroup, optional: bool, items: Vec<DoctorItem>) -> Self {
+        Self {
+            group,
+            optional,
+            items,
+        }
+    }
+
+    /// The section's items, moved out.
+    #[must_use]
+    pub fn into_items(self) -> Vec<DoctorItem> {
+        self.items
+    }
+
+    /// The group the items belong to.
+    #[must_use]
+    pub const fn group(&self) -> &DoctorGroup {
+        &self.group
+    }
+
+    /// `true` when the group's backend is out of scope, so its missing items
+    /// are hints rather than failures.
+    #[must_use]
+    pub const fn optional(&self) -> bool {
+        self.optional
+    }
+
+    /// The group's items, in [`ids::ALL`] order.
+    #[must_use]
+    pub fn items(&self) -> &[DoctorItem] {
+        &self.items
+    }
 }
 
 /// Group `items` by [`DoctorGroup`] in report order: in-scope groups in
@@ -268,29 +304,102 @@ pub fn sections(items: Vec<DoctorItem>) -> Vec<DoctorSection> {
 }
 
 /// A single item in the doctor report.
-#[non_exhaustive]
 pub struct DoctorItem {
     /// Stable machine-readable identifier (e.g. `android-sdk`).
-    pub id: &'static str,
+    id: &'static str,
     /// Human-readable name of the toolchain or component.
-    pub name: &'static str,
+    name: &'static str,
     /// The heading the item is reported under.
-    pub group: DoctorGroup,
+    group: DoctorGroup,
     /// `true` when the item's backend is out of scope for the current project
     /// or host: it is reported with its hint but neither fails the run nor
     /// counts toward `--fix`.
-    pub optional: bool,
+    optional: bool,
     /// Status of the check.
-    pub status: CheckStatus,
+    status: CheckStatus,
     /// Optional message with details or suggestions.
-    pub message: Option<String>,
+    message: Option<String>,
     /// `true` when running the fix modifies the machine outside `~/.water`
     /// (a system installer, `msiexec`, ...): `water doctor --fix` asks before
     /// it runs unless `--yes` was passed or the shell is non-interactive
     /// without consent semantics. Set from [`Installation::modifies_system`].
-    pub system_wide: bool,
+    system_wide: bool,
     /// Optional installation function if the issue can be fixed automatically.
-    pub install_fn: Option<BoxedInstallFn>,
+    install_fn: Option<BoxedInstallFn>,
+}
+impl DoctorItem {
+    /// Stable machine-readable identifier (e.g. `android-sdk`).
+    #[must_use]
+    pub const fn id(&self) -> &'static str {
+        self.id
+    }
+
+    /// Human-readable name of the toolchain or component.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The heading the item is reported under.
+    #[must_use]
+    pub const fn group(&self) -> &DoctorGroup {
+        &self.group
+    }
+
+    /// `true` when the item's backend is out of scope for the current project
+    /// or host: it is reported with its hint but neither fails the run nor
+    /// counts toward `--fix`.
+    #[must_use]
+    pub const fn optional(&self) -> bool {
+        self.optional
+    }
+
+    /// Status of the check.
+    #[must_use]
+    pub const fn status(&self) -> CheckStatus {
+        self.status
+    }
+
+    /// Optional message with details or suggestions.
+    #[must_use]
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    /// `true` when running the fix modifies the machine outside `~/.water`
+    /// (a system installer, `msiexec`, ...): `water doctor --fix` asks before
+    /// it runs unless `--yes` was passed or the shell is non-interactive
+    /// without consent semantics. Set from [`Installation::modifies_system`].
+    #[must_use]
+    pub const fn system_wide(&self) -> bool {
+        self.system_wide
+    }
+
+    /// Optional installation function if the issue can be fixed automatically.
+    #[must_use]
+    pub const fn install_fn(&self) -> Option<&BoxedInstallFn> {
+        self.install_fn.as_ref()
+    }
+
+    /// The install closure, moved out for an auto-fix attempt.
+    pub fn take_install_fn(&mut self) -> Option<BoxedInstallFn> {
+        self.install_fn.take()
+    }
+
+    /// Marks the item system-wide.
+    pub const fn set_system_wide(&mut self, system_wide: bool) {
+        self.system_wide = system_wide;
+    }
+
+    /// Marks the item optional under a different group.
+    pub const fn set_optional(&mut self, optional: bool) {
+        self.optional = optional;
+    }
+
+    /// Reassigns the item's group.
+    pub const fn set_group(&mut self, group: DoctorGroup) {
+        self.group = group;
+    }
 }
 
 impl std::fmt::Debug for DoctorItem {
@@ -315,26 +424,74 @@ impl std::fmt::Debug for DoctorItem {
 /// `Cow` so serialization borrows the static strings while deserialization
 /// (the `--json` smoke test) produces owned values.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct DoctorItemRecord {
     /// Record discriminator, like the shell's other typed records.
     #[serde(rename = "type")]
-    pub ty: Cow<'static, str>,
+    ty: Cow<'static, str>,
     /// Stable machine-readable item identifier.
-    pub id: Cow<'static, str>,
+    id: Cow<'static, str>,
     /// Human-readable item name.
-    pub name: Cow<'static, str>,
+    name: Cow<'static, str>,
     /// The [`DoctorGroup`] label the item is reported under.
-    pub group: Cow<'static, str>,
+    group: Cow<'static, str>,
     /// Whether the item's backend is out of scope for the project or host.
-    pub optional: bool,
+    optional: bool,
     /// `ok`, `missing`, or `skipped`.
-    pub status: Cow<'static, str>,
+    status: Cow<'static, str>,
     /// Whether `--fix` can remediate the item automatically.
-    pub fixable: bool,
+    fixable: bool,
     /// Detail or suggestion shown to the user, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
+    message: Option<String>,
+}
+impl DoctorItemRecord {
+    /// Record discriminator, like the shell's other typed records.
+    #[must_use]
+    pub fn ty(&self) -> &str {
+        &self.ty
+    }
+
+    /// Stable machine-readable item identifier.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Human-readable item name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The [`DoctorGroup`] label the item is reported under.
+    #[must_use]
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+
+    /// Whether the item's backend is out of scope for the project or host.
+    #[must_use]
+    pub const fn optional(&self) -> bool {
+        self.optional
+    }
+
+    /// `ok`, `missing`, or `skipped`.
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Whether `--fix` can remediate the item automatically.
+    #[must_use]
+    pub const fn fixable(&self) -> bool {
+        self.fixable
+    }
+
+    /// Detail or suggestion shown to the user, when present.
+    #[must_use]
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
 }
 
 impl From<&DoctorItem> for DoctorItemRecord {
@@ -464,6 +621,9 @@ pub mod ids {
     pub const WINDOWS_LONG_PATHS: &str = "windows-long-paths";
     /// iOS device and simulator rustup targets on the selected toolchain.
     pub const APPLE_RUST_TARGETS: &str = "apple-rust-targets";
+    /// The Metal Toolchain Xcode component `xcrun metal` needs —
+    /// `cherenkov-gpu` precompiles engine shaders through it.
+    pub const APPLE_METAL_TOOLCHAIN: &str = "apple-metal-toolchain";
     /// Android SDK root + `sdkmanager`.
     pub const ANDROID_SDK: &str = "android-sdk";
     /// `platform-tools` (`adb`).
@@ -528,6 +688,7 @@ pub mod ids {
         IOS_SIMULATORS,
         MACOS_SDK,
         APPLE_RUST_TARGETS,
+        APPLE_METAL_TOOLCHAIN,
         LINUX_SYSTEM_PACKAGES,
         MSVC_BUILD_TOOLS,
         DXC,
@@ -707,7 +868,7 @@ async fn project_context(host: &Host) -> ProjectContext {
         if let Some(floor) = cargo_manifest_rust_version(&host.cwd().join("Cargo.toml")).await {
             rust_floor = rust_floor.max(floor);
         }
-        let framework_floor = match (&manifest.framework, &manifest.waterui_path) {
+        let framework_floor = match (manifest.framework(), manifest.waterui_path()) {
             (Some(framework), _) => framework.rust_version().cloned(),
             (None, Some(waterui_path)) => {
                 let path = Path::new(waterui_path);
@@ -791,15 +952,32 @@ async fn apple_checks(host: &Host, project: &ProjectContext) -> Vec<DoctorItem> 
                 "Apple Rust targets",
                 "Apple platforms can only be built on macOS.",
             ),
+            DoctorItem::skipped(ids::APPLE_METAL_TOOLCHAIN, "Metal Toolchain"),
         ];
     }
 
-    let (xcode, ios_sdk, ios_simulator_sdk, ios_simulators, macos_sdk, rust_targets) = join!(
+    let (
+        xcode,
+        ios_sdk,
+        ios_simulator_sdk,
+        ios_simulators,
+        macos_sdk,
+        metal_toolchain,
+        rust_targets,
+    ) = join!(
         Xcode.check(host),
         AppleSdk::Ios.check(host),
         AppleSdk::IosSimulator.check(host),
         ios_simulator_check(host),
         AppleSdk::Macos.check(host),
+        toolchain_check(
+            host,
+            ids::APPLE_METAL_TOOLCHAIN,
+            "Metal Toolchain",
+            "The Metal Toolchain Xcode component is missing — cherenkov-gpu's \
+             build script compiles engine shaders through `xcrun metal`",
+            MetalToolchain,
+        ),
         apple_rust_targets_check(host, project),
     );
     vec![
@@ -813,6 +991,7 @@ async fn apple_checks(host: &Host, project: &ProjectContext) -> Vec<DoctorItem> 
         ios_simulators,
         simple_check(ids::MACOS_SDK, "macOS SDK", macos_sdk),
         rust_targets,
+        metal_toolchain,
     ]
 }
 
@@ -1392,8 +1571,8 @@ async fn web_package_manager_check(host: &Host, project: &ProjectContext) -> Opt
     let web = project
         .manifest
         .as_ref()
-        .and_then(|manifest| manifest.web.as_ref())?;
-    let package_manager = web.package_manager;
+        .and_then(|manifest| manifest.web())?;
+    let package_manager = web.package_manager();
     let name: &'static str = match package_manager {
         crate::web::PackageManager::Bun => "bun (web package manager)",
         crate::web::PackageManager::Pnpm => "pnpm (web package manager)",

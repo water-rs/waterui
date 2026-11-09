@@ -89,7 +89,7 @@ pub fn demo() -> impl View {
         .background(Surface)
         .on_key_press(
             |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
-                if press.key == Key::Named(NamedKey::Escape) {
+                if *press.key() == Key::Named(NamedKey::Escape) {
                     open.set(false);
                     KeyHandling::Handled
                 } else {
@@ -113,7 +113,7 @@ pub fn demo() -> impl View {
             ),
             spacer(),
         ))
-        .padding_with([14.0, 0.0, 14.0, 14.0]),
+        .padding_with([14.0, 14.0, 0.0, 14.0]),
         zstack((
             scroll(include_markdown!("example.md").padding()),
             vstack((when(open.clone(), search_bar), spacer())).padding(),

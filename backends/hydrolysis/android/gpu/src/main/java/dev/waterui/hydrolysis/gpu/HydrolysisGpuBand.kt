@@ -2,6 +2,7 @@ package dev.waterui.hydrolysis.gpu
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.PixelFormat
 import android.os.Build
 import android.util.AttributeSet
 import android.view.Display
@@ -45,6 +46,14 @@ constructor(
         // The band draws only while its surface exists; an idle engine never
         // requests frames, so a parked band costs nothing.
         setZOrderOnTop(false)
+        // A translucent window asks the surface for an alpha-capable format —
+        // the engine's own compositor planes carry the alpha either way, but
+        // an opaque parent format keeps the blend from reaching the window
+        // behind it. `setFormat` recreates the surface, so the native attach
+        // generation machinery re-leases the new `ANativeWindow` itself.
+        session.addTranslucencyListener { (translucent, _) ->
+            holder.setFormat(if (translucent) PixelFormat.RGBA_8888 else PixelFormat.OPAQUE)
+        }
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {

@@ -19,9 +19,34 @@ use waterui_text::styled::StyledStr;
 #[non_exhaustive]
 pub struct RenderContext {
     /// The transform placing the widget's local drawing space in the scene.
-    pub local: kurbo::Affine,
+    local: kurbo::Affine,
     /// The widget's bounds in its local space.
-    pub bounds: kurbo::Rect,
+    bounds: kurbo::Rect,
+}
+
+impl RenderContext {
+    /// Creates a `RenderContext` from its parts.
+    #[must_use]
+    pub const fn new(local: kurbo::Affine, bounds: kurbo::Rect) -> Self {
+        Self { local, bounds }
+    }
+
+    /// The transform placing the widget's local drawing space in the scene.
+    #[must_use]
+    pub const fn local(&self) -> kurbo::Affine {
+        self.local
+    }
+
+    /// Sets the `local`.
+    pub const fn set_local(&mut self, local: kurbo::Affine) {
+        self.local = local;
+    }
+
+    /// The widget's bounds in its local space.
+    #[must_use]
+    pub const fn bounds(&self) -> kurbo::Rect {
+        self.bounds
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,8 +61,8 @@ pub enum HydrolysisTextContextMenuMode {
     NativeWindow,
 }
 
-pub struct WidgetRenderContext<'a> {
-    renderer: &'a mut HydrolysisRenderer,
+pub struct WidgetRenderContext<'a, E: crate::text::TextEngine> {
+    renderer: &'a mut HydrolysisRenderer<E>,
     pub local: kurbo::Affine,
     pub bounds: kurbo::Rect,
     /// The §7.1 context this widget was laid out against — `None` inside a
@@ -67,9 +92,9 @@ impl RenderContext {
     }
 }
 
-impl<'a> WidgetRenderContext<'a> {
+impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     pub(crate) const fn new(
-        renderer: &'a mut HydrolysisRenderer,
+        renderer: &'a mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         safe_area: Option<SafeAreaLayout>,
     ) -> Self {
@@ -183,7 +208,7 @@ impl<'a> WidgetRenderContext<'a> {
         self.render_context().child(transform, bounds)
     }
 
-    pub(crate) const fn renderer_mut(&mut self) -> &mut HydrolysisRenderer {
+    pub(crate) const fn renderer_mut(&mut self) -> &mut HydrolysisRenderer<E> {
         self.renderer
     }
 
@@ -205,7 +230,7 @@ impl<'a> WidgetRenderContext<'a> {
         self.renderer.push_live(ctx, source);
     }
 
-    pub(crate) fn state_mut(&mut self) -> &mut HydroState {
+    pub(crate) fn state_mut(&mut self) -> &mut HydroState<E> {
         &mut self.renderer.state
     }
 

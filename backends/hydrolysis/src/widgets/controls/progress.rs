@@ -22,24 +22,17 @@ const CIRCULAR_DETERMINATE_ANIMATION_KEY: usize = 2;
 /// are move-only `AnyView`s (they cannot be re-dispatched twice), so the
 /// persistent `Widget` node holds them as [`RetainedSubview`]s built once and
 /// re-flushed each frame; the `value` signal is read through `read_signal`.
-pub struct ProgressRenderState {
-    label: RetainedSubview,
-    value_label: RetainedSubview,
+pub struct ProgressRenderState<E: crate::text::TextEngine> {
+    label: RetainedSubview<E>,
+    value_label: RetainedSubview<E>,
     value: Computed<f64>,
     style: ProgressStyle,
     four_color: bool,
 }
 
-impl ProgressRenderState {
+impl<E: crate::text::TextEngine> ProgressRenderState<E> {
     pub(crate) fn from_config(config: ProgressConfig) -> Self {
-        let ProgressConfig {
-            label,
-            value_label,
-            value,
-            style,
-            four_color,
-            ..
-        } = config;
+        let (label, value_label, value, style, four_color) = config.into_parts();
         Self {
             label: RetainedSubview::new(label),
             value_label: RetainedSubview::new(value_label),
@@ -52,7 +45,7 @@ impl ProgressRenderState {
     /// Eagerly build the label sub-views (the measure path has no renderer).
     pub(crate) fn prebuild_labels(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.label.ensure_built(renderer, env);
@@ -67,9 +60,9 @@ impl ProgressRenderState {
     }
 }
 
-impl HydroNativeView for Native<ProgressConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ProgressConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -81,8 +74,8 @@ impl HydroNativeView for Native<ProgressConfig> {
 /// Emits a progress indicator's accessibility node. Shared by the dispatch path
 /// (passing the config label's extracted default text) and the retained node path
 /// (passing the [`RetainedSubview`]'s build-time default text).
-pub fn progress_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn progress_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     default_label: Option<String>,
     value: &Computed<f64>,
@@ -90,11 +83,12 @@ pub fn progress_accessibility(
 ) {
     #[cfg(feature = "accessibility")]
     {
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::ProgressIndicator,
-            ));
+            ),
+        );
         let resolved = renderer.resolve_accessibility_label(env, default_label);
         if let Some(resolved) = resolved {
             node.set_label(resolved);
@@ -119,10 +113,10 @@ pub fn progress_accessibility(
 /// Measures a retained progress leaf from its [`ProgressRenderState`]. Mirrors
 /// [`measure_progress_intrinsic`] (which does not measure the label view — it uses
 /// the default font height — so the retained labels are not needed here).
-pub fn measure_progress_node(
-    render_state: &ProgressRenderState,
+pub fn measure_progress_node<E: crate::text::TextEngine>(
+    render_state: &ProgressRenderState<E>,
     _proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -133,7 +127,7 @@ pub fn measure_progress_node(
                 waterui_text::font::Font::default()
                     .resolve(env)
                     .snapshot()
-                    .size,
+                    .size(),
             )
             .max(metrics.label_height);
             let value_label_height = if state.measure_signal(&render_state.value).is_finite() {
@@ -170,9 +164,9 @@ pub fn measure_progress_node(
 
 /// Renders a retained progress leaf every flush: emits a11y (unless hidden) then
 /// the track/spinner + labels, reading the `value` signal each frame.
-pub fn render_progress_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ProgressRenderState>>,
+pub fn render_progress_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ProgressRenderState<E>>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -199,9 +193,9 @@ pub fn render_progress_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_progress_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ProgressRenderState>>,
+pub fn render_progress_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ProgressRenderState<E>>>,
     env: &Environment,
 ) {
     let theme = ctx.theme();
@@ -392,9 +386,9 @@ pub fn render_progress_parts(
 /// The label and value-label sub-views flush visual-only, so there is nothing
 /// else to emit.
 #[cfg(feature = "accessibility")]
-pub fn emit_progress_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<ProgressRenderState>>,
+pub fn emit_progress_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<ProgressRenderState<E>>>,
     env: &Environment,
 ) {
     let (default_label, value) = {

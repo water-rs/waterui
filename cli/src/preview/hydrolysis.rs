@@ -58,14 +58,32 @@ impl HydrolysisPreviewTheme {
 
 /// Interactive capture scenario for Hydrolysis preview.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub struct HydrolysisPreviewScenario {
     /// Capture timestamps in milliseconds from scenario start.
-    pub captures_ms: Vec<u64>,
+    captures_ms: Vec<u64>,
     /// Input events sorted by timestamp.
-    pub events: Vec<HydrolysisPreviewScenarioEvent>,
+    events: Vec<HydrolysisPreviewScenarioEvent>,
     /// Directory where captured frames are written.
-    pub output_dir: PathBuf,
+    output_dir: PathBuf,
+}
+impl HydrolysisPreviewScenario {
+    /// Capture timestamps in milliseconds from scenario start.
+    #[must_use]
+    pub fn captures_ms(&self) -> &[u64] {
+        &self.captures_ms
+    }
+
+    /// Input events sorted by timestamp.
+    #[must_use]
+    pub fn events(&self) -> &[HydrolysisPreviewScenarioEvent] {
+        &self.events
+    }
+
+    /// Directory where captured frames are written.
+    #[must_use]
+    pub fn output_dir(&self) -> &Path {
+        &self.output_dir
+    }
 }
 
 impl HydrolysisPreviewScenario {
@@ -87,10 +105,6 @@ impl HydrolysisPreviewScenario {
 
 /// Common inputs for driving the managed Hydrolysis preview backend.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the terminal fills every field of the preview request; a new field must fail its build instead of taking a default"
-)]
 pub struct HydrolysisPreviewRequest<'a> {
     /// The host the preview spawns on.
     pub host: &'a crate::toolchain::Host,
@@ -370,10 +384,10 @@ async fn run_preview_binary(
     )
     .await?;
 
-    match config.mode {
+    match config.mode() {
         PreviewRunMode::Scenario {
-            ref output_dir,
-            ref captures_ms,
+            output_dir,
+            captures_ms,
             ..
         } => {
             for capture_ms in captures_ms {
@@ -381,7 +395,7 @@ async fn run_preview_binary(
                 expect_nonempty_output(&frame_path, "scenario frame").await?;
             }
         }
-        PreviewRunMode::Image { ref output } => {
+        PreviewRunMode::Image { output } => {
             expect_nonempty_output(output, "output").await?;
         }
         PreviewRunMode::Semantic => {

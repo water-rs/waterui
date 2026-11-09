@@ -17,6 +17,8 @@ pub mod badge;
 pub mod border;
 #[cfg(feature = "button")]
 pub mod button;
+#[cfg(any(feature = "calendar", feature = "multi_date_picker"))]
+pub mod calendar;
 #[cfg(feature = "clip_shape")]
 pub mod clip_shape;
 #[cfg(feature = "color_picker")]
@@ -48,6 +50,17 @@ pub mod filtered;
 pub mod fixed_container;
 #[cfg(feature = "focused")]
 pub mod focused;
+#[cfg(any(
+    feature = "date_picker",
+    feature = "image",
+    feature = "list",
+    feature = "picker",
+    feature = "plain",
+    feature = "secure_field",
+    feature = "text",
+    feature = "text_field"
+))]
+mod font;
 #[cfg(feature = "gesture")]
 pub mod gesture;
 #[cfg(feature = "glass_background")]

@@ -2,7 +2,7 @@
 //! validates and translates them once at build time instead of wgpu doing it
 //! per pipeline at runtime. Each module produces
 //!
-//! - `<name>.spv` — naga SPIR-V as emitted, on the non-Apple, non-wasm
+//! - `<name>.spv` — naga SPIR-V as emitted, on the Linux and Android
 //!   targets only (issue #241). spirv-opt ran here until #124 measured it
 //!   on the Pixel 9 Pro (Mali-G715): ~0.64 s faster cold pipeline creation
 //!   but the effects scene's GPU time ~78% slower at p50 and ~2.7x at p99;
@@ -44,6 +44,11 @@ mod programs;
 mod stroke_abi;
 
 mod build_tile_spirv;
+/// The SPIR-V writer flags `cherenkov_shader::emit::spirv` emits with,
+/// pulled in the same way so the two emitters cannot drift
+/// (water-rs/waterui#3079).
+#[path = "../shader/src/spv_flags.rs"]
+mod spv_flags;
 #[path = "build_tile.rs"]
 mod tile;
 /// The union member cap the WGSL fold compiles against — the same
@@ -140,6 +145,7 @@ struct Stripped {
     shared_plain: String,
     shader_no_long: String,
     shader_cell: String,
+    shader_cell_plain: String,
     shader_long: String,
     shader_image: String,
     shader_plain: String,
@@ -158,13 +164,24 @@ impl Stripped {
         // and `shader_image` and `shader_plain` the long-gradient branch.
         let shader_no_long = drop_marked(shader, "long-gradient-stub");
         let shader_cell = drop_marked(shader, "union-stub");
+        let shader_cell_plain = drop_marked(
+            &drop_marked(&shader_cell, "long-gradient-stub"),
+            "image-source",
+        );
         let shader_no_cell = drop_marked(&shader_cell, "cell-buffer");
-        let shader_long = drop_marked(&shader_no_cell, "image-source");
+        let shader_long = drop_marked(
+            &drop_marked(
+                &drop_marked(&shader_no_cell, "image-source"),
+                "non-gradient-paint",
+            ),
+            "generic-composite",
+        );
         let shader_image = drop_marked(&shader_no_cell, "long-gradient-stub");
         let shader_plain = drop_marked(&shader_image, "image-source");
         let shared_plain = drop_marked(shared, "cell-buffer");
         for (product, source) in [
             ("shader_cell", &shader_cell),
+            ("shader_cell_plain", &shader_cell_plain),
             ("shader_long", &shader_long),
             ("shader_image", &shader_image),
             ("shader_plain", &shader_plain),
@@ -182,6 +199,7 @@ impl Stripped {
         for (product, source) in [
             ("shader_long", &shader_long),
             ("shader_plain", &shader_plain),
+            ("shader_cell_plain", &shader_cell_plain),
         ] {
             assert_absent(source, product, IMAGE_SOURCE_NAMES);
         }
@@ -189,6 +207,7 @@ impl Stripped {
             shared_plain,
             shader_no_long,
             shader_cell,
+            shader_cell_plain,
             shader_long,
             shader_image,
             shader_plain,
@@ -205,6 +224,12 @@ const UNCHECKED: naga::proc::BoundsCheckPolicies = naga::proc::BoundsCheckPolici
     binding_array: naga::proc::BoundsCheckPolicy::Unchecked,
 };
 
+fn read_shader(manifest: &Path, name: &str) -> String {
+    let path = manifest.join(format!("src/render/{name}.wgsl"));
+    println!("cargo::rerun-if-changed={}", path.display());
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -214,11 +239,7 @@ fn main() {
             manifest.join(format!("src/render/{shared}.rs")).display()
         );
     }
-    let read = |name: &str| {
-        let path = manifest.join(format!("src/render/{name}.wgsl"));
-        println!("cargo::rerun-if-changed={}", path.display());
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-    };
+    let read = |name: &str| read_shader(&manifest, name);
     let [
         shared,
         shader,
@@ -294,12 +315,19 @@ fn main() {
     let stripped = Stripped::new(&shader, &shared);
     let specialized = drop_marked(&stripped.shader_plain, "full-fragment");
     let glyph = format!("{specialized}\n{}", read("shader_glyph"));
+    let cell_specialized = drop_marked(&stripped.shader_cell_plain, "full-fragment");
+    let cell_glyph = format!("{cell_specialized}\n{}", read("shader_glyph"));
     let composite = format!("{specialized}\n{}", read("shader_composite"));
     let specs = module_specs(&Modules {
+        simple_entry: &read("entry_simple"),
+        shadow_entry: &read("entry_shadow"),
+        full_entry: &read("entry_full"),
         shared: &shared,
         shared_plain: &stripped.shared_plain,
         shader_no_long: &stripped.shader_no_long,
         shader_cell: &stripped.shader_cell,
+        shader_cell_plain: &stripped.shader_cell_plain,
+        cell_glyph: &cell_glyph,
         shader_long: &stripped.shader_long,
         shader_image: &stripped.shader_image,
         shader_plain: &stripped.shader_plain,
@@ -428,6 +456,9 @@ fn gauss_legendre_8() -> Vec<(f64, f64)> {
 
 /// The WGSL module sources `module_specs` splices into `Spec`s.
 struct Modules<'a> {
+    simple_entry: &'a str,
+    shadow_entry: &'a str,
+    full_entry: &'a str,
     shared: &'a str,
     /// `shared` minus its `// cell-buffer` spans.
     shared_plain: &'a str,
@@ -435,6 +466,8 @@ struct Modules<'a> {
     shader_no_long: &'a str,
     /// `shader` minus its `// union-stub` spans only.
     shader_cell: &'a str,
+    shader_cell_plain: &'a str,
+    cell_glyph: &'a str,
     /// `shader` minus its `// union-stub`, `// cell-buffer` and
     /// `// image-source` spans.
     shader_long: &'a str,
@@ -477,7 +510,7 @@ const TILE_FAMILIES: [(&str, usize); 5] = [
     ("engine_tile_composite", 8),
 ];
 
-/// The fixed module set `render` creates: nine VARIANT specializations
+/// The fixed module set `render` creates: twelve paint/coverage specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
 /// `projective`, `mip`, `resolve`, `reduce`, `shadow`, `coverage` and
 /// `space_convert`.
@@ -491,11 +524,12 @@ const TILE_FAMILIES: [(&str, usize); 5] = [
 /// without union; the plain variants drop every marker family, so their
 /// modules carry neither the union fold and member-cap arrays, the binary
 /// stop search nor the source conversion. Variant 5 (`Cell`), which only
-/// GPU-routed draws use, keeps every span but the union's; every variant
-/// but the union's and the cell's also drops the `// cell-buffer` spans of
-/// `shared.wgsl` and `shader.wgsl`, the cell-texel reads.
+/// GPU-routed rich paints use, keeps every span but the union's. GPU
+/// ordinary paints retain the same cell-buffer reads with their simple,
+/// glyph or full paint specialization, without source conversion or long
+/// gradient code. Other variants drop the cell-buffer spans.
 fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
-    let mut specs: Vec<Spec> = (0..9u32)
+    let mut specs: Vec<Spec> = (0..12u32)
         .map(|variant| {
             let (cap, shared, shader, union) = match variant {
                 3 => (m.union_max, m.shared, m.shader_no_long, m.union),
@@ -504,17 +538,27 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
                 6 => ("", m.shared_plain, m.shader_image, ""),
                 7 => ("", m.shared_plain, m.glyph, ""),
                 8 => ("", m.shared_plain, m.composite, ""),
+                9 | 11 => ("", m.shared, m.shader_cell_plain, ""),
+                10 => ("", m.shared, m.cell_glyph, ""),
                 _ => ("", m.shared_plain, m.shader_plain, ""),
+            };
+            let paint_variant = match variant {
+                9 => 0,
+                10 => 7,
+                11 => 2,
+                _ => variant,
+            };
+            let entry = match paint_variant {
+                0 => m.simple_entry,
+                1 => m.shadow_entry,
+                _ => m.full_entry,
             };
             Spec {
                 name: format!("engine{variant}"),
-                source: format!(
-                    "enable f16;\nconst VARIANT: u32 = {variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
+                source: half_colour(&format!(
+                    "enable f16;\nconst VARIANT: u32 = {paint_variant}u;\n{cap}{shared}\n{shader}\n{union}{}\n{entry}",
                     m.blend
-                )
-                .replace("alias Color = vec4<f32>;", "alias Color = vec4<f16>;")
-                .replace("alias ColorRgb = vec3<f32>;", "alias ColorRgb = vec3<f16>;")
-                .replace("alias ColorScalar = f32;", "alias ColorScalar = f16;"),
+                )),
                 groups: bindings::ENGINE_GROUPS,
                 programs: programs::ENGINE,
                 metal: true,
@@ -580,7 +624,32 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             attachment: true,
         });
     }
-    let precise = (0..9)
+    specs.push(Spec {
+        name: "engine_tile_simple".into(),
+        source: format!("{}\n{}", specs[0].source, m.tile),
+        groups: bindings::ENGINE_GROUPS,
+        programs: &[],
+        metal: false,
+        merge_pair: None,
+        attachment: true,
+    });
+    let precise = precise_engine_specs(&specs);
+    specs.extend(precise);
+    specs
+}
+
+/// `source` with the colour aliases narrowed to half precision.
+fn half_colour(source: &str) -> String {
+    source
+        .replace("alias Color = vec4<f32>;", "alias Color = vec4<f16>;")
+        .replace("alias ColorRgb = vec3<f32>;", "alias ColorRgb = vec3<f16>;")
+        .replace("alias ColorScalar = f32;", "alias ColorScalar = f16;")
+}
+
+/// The full-precision colour twin of each of the twelve engine specs, for
+/// `Rgba32Float` targets.
+fn precise_engine_specs(specs: &[Spec]) -> Vec<Spec> {
+    (0..12)
         .map(|index| Spec {
             name: format!("engine{index}_f32"),
             source: specs[index]
@@ -595,9 +664,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             merge_pair: None,
             attachment: false,
         })
-        .collect::<Vec<_>>();
-    specs.extend(precise);
-    specs
+        .collect()
 }
 
 /// The single-program helper modules' specs.
@@ -739,16 +806,15 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
 /// Whether the `.spv` artifacts are emitted.
 ///
 /// SPIR-V is the passthrough format of wgpu's Vulkan backend only, and
-/// wgpu compiles that backend on exactly the non-Apple, non-wasm targets
-/// (`windows`, `linux`, `android`, `freebsd`, `netbsd` in its
-/// `wgpu-core-deps-windows-linux-android` manifest entry): Apple targets
-/// get `.metallib`s and wgpu has no Vulkan backend for them unless the
-/// non-default `vulkan-portability` feature is on (issue #241). This
-/// crate's `wgpu` dependency is default-features, so `.spv` bytes are
-/// unreachable on Apple and wasm.
+/// GPU rendering is Vulkan-only on exactly the Linux and Android targets
+/// (the `cherenkov_gpu::REQUIRED_BACKEND` table): Apple targets get
+/// `.metallib`s, Windows gets DXIL, and wasm keeps WGSL, so none of them
+/// embeds `.spv` bytes (issue #241).
 fn emits_spirv() -> bool {
-    env::var("CARGO_CFG_TARGET_ARCH").unwrap() != "wasm32"
-        && env::var("CARGO_CFG_TARGET_VENDOR").unwrap() != "apple"
+    matches!(
+        env::var("CARGO_CFG_TARGET_OS").unwrap().as_str(),
+        "linux" | "android"
+    )
 }
 
 /// Parses, validates and compiles one module; with `dxil`, emits its
@@ -779,19 +845,23 @@ fn compile(
     let validated = Validator::new(ValidationFlags::all(), capabilities::ENGINE_CAPABILITIES)
         .validate(&module)
         .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
-    let info = if spec.attachment && spirv {
-        let specialized = matches!(
-            spec.name.as_str(),
-            "engine_tile_glyph" | "engine_tile_composite"
-        );
+    if spec.attachment && spirv {
+        let fragment = match spec.name.as_str() {
+            "engine_tile_simple" => Some("tile_simple"),
+            "engine_tile_glyph" | "engine_tile_composite" => Some("tile_full"),
+            _ => None,
+        };
         module.entry_points.retain(|entry| {
             entry.name == "vs_main"
-                || if specialized {
-                    entry.name == "tile_full"
-                } else {
-                    entry.name.starts_with("tile_")
-                }
+                || fragment.map_or_else(
+                    || entry.name.starts_with("tile_") && entry.name != "tile_simple",
+                    |name| entry.name == name,
+                )
         });
+    }
+    // Metal's attachment wrapper calls helper functions directly; its roots
+    // are outside the generated module. Other modules expose only entry points.
+    let info = if !spec.attachment || spirv {
         naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
         Validator::new(ValidationFlags::all(), capabilities::ENGINE_CAPABILITIES)
             .validate(&module)
@@ -889,9 +959,9 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
         // The attachment pass finds the reads by name; it strips the
         // names again, so the written module matches the others.
         flags: if spec.attachment {
-            spv::WriterFlags::DEBUG
+            spv_flags::SPIRV_WRITER_FLAGS | spv::WriterFlags::DEBUG
         } else {
-            spv::WriterFlags::empty()
+            spv_flags::SPIRV_WRITER_FLAGS
         },
         fake_missing_bindings: false,
         binding_map: binding_map(spec, module),
@@ -936,7 +1006,9 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
                     bindings::TILE_INPUT_BINDINGS,
                     source_index,
                     match spec.name.as_str() {
-                        "engine_tile_glyph" => [false, false],
+                        "engine_tile_simple" | "engine_tile_glyph" | "engine_tile_long" => {
+                            [false, false]
+                        }
                         "engine_tile_composite" => [false, true],
                         _ => [true, true],
                     },
@@ -1374,6 +1446,7 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
         };
         if spec.attachment {
             match spec.name.as_str() {
+                "engine_tile_long" => defines.push("TILE_LONG_GRADIENT".to_owned()),
                 "engine_tile_glyph" => defines.push("TILE_GLYPH".to_owned()),
                 "engine_tile_composite" => defines.push("TILE_COMPOSITE_SOURCE_OVER".to_owned()),
                 _ => {}

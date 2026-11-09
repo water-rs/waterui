@@ -3,9 +3,15 @@ name: Windows
 # The Windows test leg is split out of `test.yml` because it needs platform-
 # specific exclusions and compile-only coverage. It is a nightly platform
 # (#379): `nightly.yml` calls it once a day against `dev`, beside the full
-# `test.yml` matrix, and every verification command in it is gating there.
+# `test.yml` matrix.
 # It left the pull-request path because its three jobs were 43-65 minutes of
 # cold build on the scarcest runners for every change, whatever it touched.
+#
+# Windows is tier 2, so the leg is informational in the nightly: each job is
+# `continue-on-error`, which keeps a failure from failing the run or blocking
+# certification (a job that calls a reusable workflow cannot set it, so it
+# lives here), and its last step files one tracking issue on `dev`. The jobs
+# still show as failed on the run.
 
 on:
   workflow_call:
@@ -13,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: windows-${{ github.ref }}
@@ -28,6 +35,9 @@ env:
   # layers (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
+  # The nextest `test-fonts` setup script fetches its pinned GitHub-hosted
+  # sources as authenticated traffic with the job token (#3942).
+  GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   # Two jobs, not one: the lint passes used to run after the whole test build
@@ -44,8 +54,10 @@ jobs:
       # Saves the replacement, then retires the superseded generations of
       # only this job's cache family (cargo-sources-Windows-*) on its own ref.
       actions: write
+      issues: write
+    continue-on-error: true
     # Windows is the slowest platform and needs additional headroom for cold
-    # hosted-runner builds while remaining a hard gate.
+    # hosted-runner builds.
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -89,6 +101,7 @@ jobs:
       # `uv run` (`.config/nextest.toml`) — the styled test targets resolve
       # the installed test-font families through system font discovery.
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # Same for the Cherenkov test targets the workspace pass below
       # compiles and runs: their fonts and corpus scenes are generated,
       # not committed. The all-features pass also runs the bench tests
@@ -105,11 +118,8 @@ jobs:
       # 290k of them, and a PE export table stops at 65535. The preview system
       # targets macOS, the iOS Simulator and Android, not Windows.
       #
-      # waterui-browser-cef links cef_sandbox from a CEF binary distribution the
-      # runner does not stage. It is still compiled in the lint job below,
-      # through the crate's own `compile-only` feature, which its build script
-      # honours ahead of `cef-runtime` for exactly this case — so Windows keeps
-      # compile coverage of the backend without provisioning the SDK.
+      # The browser engine crates live in water-rs/browsers; their own CI
+      # owns every engine test and lint, including Windows (#868).
       #
       # The `*-example` packages cost the tail of this cold build (#1441):
       # their own crates plus the dependency trees only they pull (nokhwa,
@@ -126,12 +136,23 @@ jobs:
       # `graphics/cherenkov`, so the leg is expected to run green.
       #
       # One full-workspace pass under default features.
-      - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci
+      - run: cargo nextest run --timings --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example' --profile ci
+      # The pass above links the debug `water` binary for the CLI's
+      # integration tests; keep it as this revision's CLI (#4010). Failed
+      # tests still leave a usable binary, a failed compile leaves none.
+      - name: Upload debug CLI
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: water-cli-debug-${{ runner.os }}-${{ runner.arch }}
+          path: target/debug/water.exe
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Test (examples that carry tests)
-        run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
+        run: cargo nextest run --timings --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
       # nextest cannot run doctests, and this workspace has plenty of them.
       # No example carries a doc comment, so the glob loses no doctest.
-      - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example'
+      - run: cargo test --timings --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example'
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -169,6 +190,15 @@ jobs:
           families: cargo-sources-${{ runner.os }}-
           primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Report failure
+        if: failure() && github.ref == 'refs/heads/dev'
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          template: .github/WINDOWS_FAILURE.md
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: windows-test
 
   # Every crate's own optional features, in its own job so the test tarball
   # above holds one feature variant of the dependency graph instead of two
@@ -196,6 +226,10 @@ jobs:
   all-features:
     name: windows-latest (all features)
     runs-on: windows-latest
+    permissions:
+      contents: read
+      issues: write
+    continue-on-error: true
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -224,6 +258,7 @@ jobs:
       # fixture setup scripts install their fonts through `uv run`
       # (`.config/nextest.toml`).
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # Same as the test job: the Cherenkov test targets this pass compiles
       # `include_bytes!` generated fonts, and its bench tests read the
       # generated corpus scenes.
@@ -232,27 +267,26 @@ jobs:
         with:
           mode: full
       - name: Test (root crate, every feature but dynamic_linking)
-        run: cargo nextest run --locked --features all --profile ci
+        run: cargo nextest run --timings --locked --features all --profile ci
       # The `trybuild_*` binaries each drive a cold fixture build that is
       # independent of the outer feature set; they already ran once in the
       # `test` job on this OS, so this pass skips them (see test.yml).
       - name: Test (all features, workspace)
         run: |
-          cargo nextest run --locked --workspace --all-features --profile ci `
+          cargo nextest run --timings --locked --workspace --all-features --profile ci `
             --exclude waterui `
             --exclude waterui-apple `
             --exclude cocoa-ui `
             --exclude waterui-dylib `
             --exclude '*-example' `
             --exclude waterui-core `
-            --exclude waterui-browser-cef `
             --exclude skill_snippets `
             --exclude layout-twins `
             --exclude ios-test-host `
             --exclude filtrate `
             -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)
-        run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
+        run: cargo nextest run --timings --locked -p waterui-core --features std,serde --profile ci
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -261,10 +295,23 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - name: Report failure
+        if: failure() && github.ref == 'refs/heads/dev'
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          template: .github/WINDOWS_FAILURE.md
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: windows-all-features
 
   lint:
     name: windows-latest (lint)
     runs-on: windows-latest
+    permissions:
+      contents: read
+      issues: write
+    continue-on-error: true
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -293,13 +340,17 @@ jobs:
         uses: ./.github/actions/generate-scene-assets
         with:
           mode: fonts
-      # Compile the CEF backend without its binary distribution (see the test
-      # job for why it cannot be linked here). Clippy, not check (#1441): the
-      # pass used to re-check a graph the workspace lint already covers while
-      # the crate itself had no lint coverage; now it carries its own.
-      - run: cargo clippy --locked --profile ci-check -p waterui-browser-cef --features compile-only --all-targets -- -D warnings
       # Windows-only code is invisible to every other leg: a `cfg(windows)` body
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
       - name: Clippy
-        run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
+        run: cargo clippy --timings --locked --profile ci-check --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --all-targets -- -D warnings
+      - name: Report failure
+        if: failure() && github.ref == 'refs/heads/dev'
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          template: .github/WINDOWS_FAILURE.md
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: windows-lint

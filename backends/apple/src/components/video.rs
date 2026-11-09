@@ -42,7 +42,9 @@ use waterkit_audio::{
     PlaybackStatus as SessionStatus, QueueNavigationControls,
 };
 use waterui::reactive::{Binding, Computed, Signal};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 #[cfg(feature = "video")]
 use waterui_video::video::NativeVideoConfig;
 #[cfg(feature = "video_player")]
@@ -162,6 +164,14 @@ impl core::fmt::Debug for VideoSubView {
 }
 
 impl SubView for VideoSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         measure(self.mode, self.source.get(), proposal)
     }
@@ -461,8 +471,8 @@ impl State {
 
     /// Loads `media` into the shared player — the Swift `update(from:)`.
     fn load(&mut self, media: MediaItem) {
-        let url = media.source.to_string();
-        let key = (url.clone(), media.delivery);
+        let url = media.source().to_string();
+        let key = (url.clone(), media.get_delivery());
         if self.source_key.as_ref() == Some(&key) {
             return;
         }
@@ -481,7 +491,7 @@ impl State {
             .push(Deferred::TrackCatalog(TrackCatalog::default()));
         self.push_metadata(&media);
 
-        if media.delivery == Delivery::Dash {
+        if media.get_delivery() == Delivery::Dash {
             self.media = Some(media);
             self.emit_error(
                 "MPEG-DASH is not supported by the Apple AVPlayer realization; \
@@ -515,7 +525,7 @@ impl State {
     /// The playback policy mirrored onto the item, per the Swift
     /// `configurePlaybackPolicy`.
     fn configure_policy(&self, item: &PlayerItem) {
-        match self.playback_policy.power {
+        match self.playback_policy.get_power() {
             PlaybackPowerPolicy::PlatformManaged => {}
             PlaybackPowerPolicy::RequireAudioOffload => {
                 panic!(
@@ -533,7 +543,7 @@ impl State {
             // must not fall through into the platform-managed path.
             other => panic!("apple video: unsupported playback power policy {other:?}"),
         }
-        if self.playback_policy.realtime {
+        if self.playback_policy.realtime() {
             self.player
                 .set_automatically_waits_to_minimize_stalling(false);
             item.set_can_use_network_resources_for_live_streaming_while_paused(true);
@@ -543,7 +553,7 @@ impl State {
                 .set_automatically_waits_to_minimize_stalling(true);
             item.set_can_use_network_resources_for_live_streaming_while_paused(false);
             item.set_preferred_forward_buffer_duration(
-                f64::from(self.playback_policy.vod_start_buffer_ms) / 1000.0,
+                f64::from(self.playback_policy.vod_start_buffer_ms()) / 1000.0,
             );
         }
     }
@@ -1069,11 +1079,11 @@ impl State {
     /// The media-session metadata push, dedup'd — the Swift
     /// `updateNowPlayingInfo`.
     fn push_metadata(&mut self, media: &MediaItem) {
-        let metadata = media.metadata.clone();
+        let metadata = media.get_metadata().clone();
         let title = metadata
             .title()
             .map(str::to_owned)
-            .or_else(|| media_title_fallback(media.source.as_ref()));
+            .or_else(|| media_title_fallback(media.source().as_ref()));
         let mut snapshot = SessionMetadata::new();
         if let Some(title) = title {
             snapshot = snapshot.with_title(title);
@@ -1255,7 +1265,6 @@ impl State {
     /// session cleared, pump stopped.
     fn teardown(&mut self) {
         self.player.pause();
-        self.player.set_item(None);
         self.item = None;
         self.guards.clear();
         self.session.shutdown();

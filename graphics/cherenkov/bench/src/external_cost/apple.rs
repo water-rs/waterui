@@ -294,7 +294,14 @@ impl Producer {
         // referencing it can be in flight: the ring retains the
         // `CVPixelBuffer`, and `fill` waits until the submit that last
         // sampled slot `f % RING` has completed before writing it.
-        unsafe { cherenkov_gpu::interop::metal::import_texture(&self.device, raw, format) }
+        unsafe {
+            cherenkov_gpu::interop::metal::import_texture(
+                &self.device,
+                raw,
+                format,
+                wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+        }
     }
 
     /// Path `e`: the filled buffer's planes wrapped as an

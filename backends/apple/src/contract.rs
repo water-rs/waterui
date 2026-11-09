@@ -24,12 +24,16 @@ use cocoa_ui::PlatformView;
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
+use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
 use waterui_backend_core::{AnyView, Environment, View};
 use waterui_core::layout::SubView;
 
 use cocoa_ui::Retained;
+
+use crate::measure_memo::MemoizingSubView;
+use crate::proposal::{self, CommittedGeometry};
 
 /// What a rendered component owns beyond its platform view: watcher guards,
 /// action targets, rendered children, the platform objects they act on.
@@ -93,6 +97,16 @@ pub struct NativeLeaf {
     keepalive: KeepAlive,
     layout: Rc<dyn SubView>,
     view: Retained<PlatformView>,
+    /// The geometry the leaf's last placement committed
+    /// (`docs/layout-spec.md` §7.2), which its content layout and
+    /// accessibility frame read.
+    geometry: CommittedGeometry,
+    /// The `.transition(...)` declaration the `Metadata<TransitionSpec>`
+    /// handler stored on this leaf, waiting for a structural site to claim
+    /// it. A leaf rendered beneath another modifier keeps its declaration,
+    /// but only a leaf a site holds directly can be claimed — the
+    /// outermost-modifier rule docs/layout-spec.md §4.5 states.
+    transition: Option<crate::transition::TransitionClaim>,
     /// The view controllers [`mount`] adopted from this leaf's subtree —
     /// `UIKit` only forwards appearance and layout callbacks down a real
     /// containment chain.
@@ -111,14 +125,50 @@ impl fmt::Debug for NativeLeaf {
 impl NativeLeaf {
     /// A leaf whose platform view is `view` (any `NSView`/`UIView`
     /// subclass), retained for the leaf's life.
+    ///
+    /// A view whose class carries response geometry commits it under the
+    /// leaf's rule at the start of every layout pass and reports the
+    /// committed response as its accessibility frame; a container driver
+    /// takes the commit over through [`drive_geometry`](Self::drive_geometry).
     pub fn new<V: AsRef<PlatformView> + ?Sized>(view: &V, layout: impl SubView + 'static) -> Self {
+        let layout: Rc<dyn SubView> = Rc::new(MemoizingSubView::new(Box::new(layout)));
+        let view = retain_base(view);
+        let geometry = proposal::install(&view, &layout);
         Self {
             keepalive: KeepAlive::default(),
-            layout: Rc::new(crate::measure_memo::MemoizingSubView::new(Box::new(layout))),
-            view: cocoa_ui::view::retain_base(view),
+            layout,
+            view,
+            geometry,
+            transition: None,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
         }
+    }
+
+    /// Stores the leaf's `.transition(...)` declaration — the
+    /// `Metadata<TransitionSpec>` handler's only write.
+    ///
+    /// A second nested declaration — a `.transition(...)` beneath another
+    /// `.transition(...)` — is never owned (docs/layout-spec.md §4.5):
+    /// a debug build panics; a release build logs the violation and the
+    /// outer declaration wins, the inner one dropping unowned.
+    pub fn set_transition(&mut self, claim: crate::transition::TransitionClaim) {
+        if self.transition.is_some() {
+            crate::transition::transition_violation!(
+                "waterui-apple: a `.transition(...)` declaration beneath another `.transition(...)` \
+                 is never owned — remove the inner declaration (docs/layout-spec.md §4.5)"
+            );
+        }
+        self.transition = Some(claim);
+    }
+
+    /// The leaf's `.transition(...)` declaration, taken by the structural
+    /// site claiming it. `None` when the root carries no declaration.
+    /// Claims are owned, never cloned: a site calls this before mounting
+    /// and is then the declaration's only owner.
+    #[must_use]
+    pub const fn take_transition(&mut self) -> Option<crate::transition::TransitionClaim> {
+        self.transition.take()
     }
 
     /// The platform view. Borrowed: the leaf owns it.
@@ -142,20 +192,53 @@ impl NativeLeaf {
         Rc::clone(&self.layout)
     }
 
+    /// The geometry the leaf's last placement committed — what a handler
+    /// that names the leaf's accessibility geometry reads.
+    #[must_use]
+    pub(crate) fn geometry(&self) -> CommittedGeometry {
+        self.geometry.clone()
+    }
+
+    /// Hands the leaf's committed geometry to the container driver that
+    /// places its children: the driver commits it from the
+    /// `place_layout` answer of each pass, so the leaf stops resolving it
+    /// under its own rule.
+    ///
+    /// # Panics
+    ///
+    /// When the leaf's view carries no response geometry — a driver lays
+    /// its children out in a `HostView`.
+    #[must_use]
+    pub(crate) fn drive_geometry(&self) -> CommittedGeometry {
+        proposal::drive(&self.view);
+        self.geometry.clone()
+    }
+
     /// Mirrors the leaf's layout face onto the view's intrinsic measure,
     /// so an Auto Layout parent — the toggle's row is one — can size the
     /// mounted child. Without it a `HostView` leaf reports no intrinsic
     /// content size and the constraint system collapses it to zero.
     fn install_intrinsic_measure(view: &PlatformView, layout: &Rc<dyn SubView>) {
         if let Some(host) = view.downcast_ref::<HostView>() {
-            // The handler may hold the layout face strongly: `detach`
-            // clears it when the leaf moves, and the leaf's `Drop` clears
-            // every handler slot, which breaks the HostView → handler →
-            // SubView → leaf-state → HostView cycle (water-rs/waterui#1567).
-            // The context-menu panel clones the layout through
-            // `layout_handle` for its own measure.
-            let layout = Rc::clone(layout);
-            host.set_measure_handler(move |_host, proposal| measure_layout(&layout, proposal));
+            // The layout face often captures the leaf's own state, which
+            // retains this view — a strong capture here would close a
+            // HostView → handler → SubView → leaf-state → HostView
+            // ownership cycle (water-rs/waterui#1567). The handler holds
+            // the face weakly instead: `detach` clears the slot when the
+            // leaf moves and the leaf's `Drop` clears every handler
+            // before the face dies, so a failed upgrade means the face
+            // died under an installed handler — a structural violation,
+            // not a live mount. The context-menu panel clones the layout
+            // through `layout_handle` for its own measure.
+            let layout = Rc::downgrade(layout);
+            host.set_measure_handler(move |_host, proposal| {
+                measure_layout(
+                    &layout
+                        .upgrade()
+                        .expect("a leaf's layout face outlives its view's measure handler"),
+                    proposal,
+                )
+            });
         }
     }
 
@@ -177,12 +260,25 @@ impl NativeLeaf {
 
     /// Adds this leaf's view to `parent` and returns the handle that owns
     /// both; dropping the handle removes the view and releases the leaf.
+    ///
+    /// A leaf still carrying a `.transition(...)` declaration reached
+    /// mount unclaimed — no structural site owns it — which a debug build
+    /// rejects with a panic and a release build logs, dropping the claim
+    /// so the leaf mounts with no transition.
     #[must_use]
-    #[cfg_attr(
-        not(target_os = "ios"),
-        expect(unused_mut, reason = "mount mutates only on iOS")
-    )]
     pub fn mount(mut self, parent: &PlatformView) -> Mounted {
+        if self.transition.take().is_some() {
+            crate::transition::transition_violation!(
+                "waterui-apple: `.transition(...)` reached a view with no structural transition \
+                 owner. A transition declares how a view is inserted and removed, so it must be \
+                 the outermost modifier of the content a structural site swaps — of a \
+                 `when`/`watch` branch or the conditional itself, a `ForEach`/`List` row, a \
+                 navigation page's content, or an anchored-overlay body. A declaration beneath \
+                 another modifier (`.padding`, `.frame`, `.background`, `.alignment_guide`, …), a \
+                 stack, a scroll or a widget is never claimed: move `.transition(...)` outward so \
+                 it is the outermost modifier of that content (docs/layout-spec.md §4.5)"
+            );
+        }
         Self::install_intrinsic_measure(&self.view, &self.layout);
         cocoa_ui::view::add_subview(parent, &self.view);
         #[cfg(target_os = "ios")]
@@ -197,6 +293,21 @@ impl NativeLeaf {
 
     /// Detaches the view — ending `UIKit` containment first when `mount`
     /// established it — and hands the leaf back, for moving it elsewhere.
+    fn detach(&mut self) {
+        // The inverse of `mount`, and nothing more: a detached leaf may be
+        // mounted again (the iOS context-menu panel moves its preview and
+        // accessory in and out on every presentation), so the handlers its
+        // component installed at render time stay. Only the intrinsic
+        // measure `mount` installed goes, and `mount` installs it again.
+        self.unwind();
+        cocoa_ui::view::remove_from_superview(&self.view);
+    }
+
+    /// Ends the leaf's containment membership — the intrinsic measure
+    /// `mount` installed and, on `UIKit`, the adopted controller chain —
+    /// without touching the view's place in its superview. `detach` and
+    /// the retirement hand-off share it: a view inside a retired
+    /// `HostView` keeps its place when the leaf's semantics end.
     #[cfg_attr(
         not(target_os = "ios"),
         expect(
@@ -204,12 +315,7 @@ impl NativeLeaf {
             reason = "the contained-controller take is iOS-only"
         )
     )]
-    fn detach(&mut self) {
-        // The inverse of `mount`, and nothing more: a detached leaf may be
-        // mounted again (the iOS context-menu panel moves its preview and
-        // accessory in and out on every presentation), so the handlers its
-        // component installed at render time stay. Only the intrinsic
-        // measure `mount` installed goes, and `mount` installs it again.
+    fn unwind(&mut self) {
         if let Some(host) = self.view.downcast_ref::<HostView>() {
             host.clear_measure_handler();
         }
@@ -219,7 +325,6 @@ impl NativeLeaf {
         for controller in &controllers {
             cocoa_ui::uikit::view_controller::will_move_to_parent(controller);
         }
-        cocoa_ui::view::remove_from_superview(&self.view);
         #[cfg(target_os = "ios")]
         for controller in controllers.iter().rev() {
             cocoa_ui::uikit::view_controller::remove_from_parent(controller);
@@ -236,12 +341,14 @@ impl Drop for NativeLeaf {
     /// the leaf finds `None`. Other handler-holding views clear through the
     /// `cocoa_ui::HandlerTeardown` guard their component keeps in
     /// `keepalive`, which drops after this and before the layout face and the
-    /// view. The view stays where it is: removing it from its superview is
-    /// the owner's job, as [`Mounted`] does.
+    /// view. Any other view carrying response geometry drops the geometry
+    /// handlers the leaf installed. The view stays where it is: removing it
+    /// from its superview is the owner's job, as [`Mounted`] does.
     fn drop(&mut self) {
         if let Some(host) = self.view.downcast_ref::<HostView>() {
             host.clear_handlers();
         }
+        proposal::release(&self.view);
     }
 }
 
@@ -275,6 +382,16 @@ pub(crate) fn measure_callback(
     layout: Rc<dyn SubView>,
 ) -> Rc<dyn Fn(cocoa_ui::geometry::MeasureProposal) -> cocoa_ui::geometry::Size> {
     Rc::new(move |proposal| measure_layout(&layout, proposal))
+}
+
+/// Whether the leaf's visuals already belong to a ghost: the view sits
+/// inside a retired `HostView`, or it is one — the transition host a site
+/// retired owns its own pixels from that point on, so a `Mounted` whose
+/// view is the retired host itself must not detach it either.
+fn view_is_ghost(view: &PlatformView) -> bool {
+    view.downcast_ref::<HostView>()
+        .is_some_and(HostView::is_retired)
+        || cocoa_ui::view::has_retired_ancestor(view)
 }
 
 /// A child leaf attached to a parent view. Dropping it detaches the view
@@ -328,12 +445,41 @@ impl Mounted {
         leaf.detach();
         leaf
     }
+
+    /// Ends containment but leaves the view where it is. The caller has
+    /// retired the enclosing `HostView` — the transition host the leaf's
+    /// own view is, or a strict ancestor of it — so the subtree is
+    /// already a ghost: the retirement hand-off the transition path makes
+    /// before dropping the leaf's semantics.
+    ///
+    /// # Panics
+    ///
+    /// When the view is no retired `HostView` and none of its strict
+    /// ancestors is either — the internal invariant of the hand-off.
+    #[cfg(feature = "transition_sites")]
+    #[must_use]
+    pub(crate) fn into_retired_leaf(mut self) -> NativeLeaf {
+        let mut leaf = self.0.take().expect("a live Mounted");
+        assert!(
+            view_is_ghost(&leaf.view),
+            "waterui-apple: `into_retired_leaf` needs a retired `HostView` — \
+             retire the transition host before ending the mount"
+        );
+        leaf.unwind();
+        leaf
+    }
 }
 
 impl Drop for Mounted {
+    /// Ends containment, then drops the leaf. The view detaches unless a
+    /// retired `HostView` ancestor already owns it — a ghost's visuals
+    /// survive the semantic drop.
     fn drop(&mut self) {
         if let Some(mut leaf) = self.0.take() {
-            leaf.detach();
+            leaf.unwind();
+            if !view_is_ghost(&leaf.view) {
+                cocoa_ui::view::remove_from_superview(&leaf.view);
+            }
             drop(leaf);
         }
     }

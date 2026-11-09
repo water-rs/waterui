@@ -211,6 +211,8 @@ jobs:
     if: needs.release.outputs.cli_tag != ''
     permissions:
       contents: read
+      attestations: write
+      id-token: write
     env:
       TAG: ${{ needs.release.outputs.cli_tag }}
     strategy:
@@ -230,7 +232,7 @@ jobs:
             os: ubuntu-24.04-arm
             container: quay.io/pypa/manylinux_2_28_aarch64
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: xcode-27
           - target: x86_64-pc-windows-msvc
             os: windows-latest
           - target: aarch64-pc-windows-msvc
@@ -299,6 +301,13 @@ jobs:
             > dist-manifest.json
           mv dist-manifest.json "target/distrib/${{ matrix.target }}-dist-manifest.json"
 
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            target/distrib/*${{ matrix.target }}*.tar.*
+            target/distrib/*${{ matrix.target }}*.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -316,6 +325,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      attestations: write
+      id-token: write
     env:
       TAG: ${{ needs.release.outputs.cli_tag }}
     steps:
@@ -393,6 +404,14 @@ jobs:
           grep -q 'need_cmd unzip' "$installer"
 
           sh -n "$installer"
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            target/distrib/waterui-cli-installer.sh
+            target/distrib/waterui-cli-installer.ps1
+            target/distrib/sha256.sum
 
       # The patterns must not overlap. `*.tar.*` also matched every
       # `…tar.xz.sha256`, which `*.sha256` matched again, so each checksum

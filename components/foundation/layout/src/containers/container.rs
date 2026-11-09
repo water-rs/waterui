@@ -9,8 +9,9 @@ use nami::{Computed, Signal};
 use waterui_core::{
     AnyView, Native, NativeView, View,
     layout::{
-        HorizontalAlignment, LayoutDirection, LayoutInvalidationCallback, PlacedSubview,
-        ProposalSize, Rect, Size, SubView, SubviewPlacement, VerticalAlignment,
+        HorizontalAlignment, LayoutDirection, LayoutError, LayoutInvalidationCallback,
+        PlacedSubview, PlacementInput, Point, ProposalSize, Rect, ResolvedExtent, Size, SubView,
+        SubviewPlacement, VerticalAlignment, ViewDimensions, with_memoized_children,
     },
     view::TupleViews,
     views::{AnyViews, Views, ViewsExt},
@@ -30,17 +31,124 @@ impl DirectionalLayout {
 
     fn mirror(&self, bounds: Rect, frame: Rect) -> Rect {
         if self.direction.snapshot().is_right_to_left() {
-            Rect::new(
-                waterui_core::layout::Point::new(
-                    bounds.min_x() + bounds.max_x() - frame.max_x(),
-                    frame.y(),
-                ),
-                *frame.size(),
-            )
+            mirror_rect(bounds, frame)
         } else {
             frame
         }
     }
+}
+
+/// `frame` reflected about the vertical centre line of `bounds`. Its own
+/// inverse.
+fn mirror_rect(bounds: Rect, frame: Rect) -> Rect {
+    Rect::new(
+        Point::new(bounds.min_x() + bounds.max_x() - frame.max_x(), frame.y()),
+        *frame.size(),
+    )
+}
+
+/// A child seen from inside a mirrored layout: the inner layout computes in
+/// logical (left-to-right) coordinates, while the child answers its response
+/// query in physical ones. Bounds go out mirrored and the response comes back
+/// mirrored, both about the container's bounds, so a response the child
+/// already resolved physically is not mirrored a second time.
+struct MirroredChild<'a> {
+    inner: &'a dyn SubView,
+    container: Rect,
+}
+
+impl SubView for MirroredChild<'_> {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        self.inner.measure(proposal)
+    }
+
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let physical = self
+            .inner
+            .resolve_extent(mirror_rect(self.container, bounds), proposal)?;
+        Ok(ResolvedExtent {
+            answer: physical.answer,
+            rect: mirror_rect(self.container, physical.rect),
+        })
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.inner.stretch_axis()
+    }
+
+    fn priority(&self) -> i32 {
+        self.inner.priority()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+/// `layout`'s response under `direction`.
+///
+/// The layout's own logical rule, mirrored about the bounds for right-to-left,
+/// with each child's physical response seen through a mirroring adapter so it
+/// is not mirrored twice.
+///
+/// This is [`Layout::resolve_extent`] for a layout a container wraps for its
+/// direction. A lazy container, whose answer comes from its own measurement
+/// state, calls it with no children and checks the result with
+/// [`ResolvedExtent::checked`].
+///
+/// # Errors
+///
+/// Whatever `layout`'s rule reports.
+pub fn directional_response(
+    layout: &dyn Layout,
+    direction: LayoutDirection,
+    input: PlacementInput,
+    children: &[&dyn SubView],
+) -> Result<Rect, LayoutError> {
+    if !direction.is_right_to_left() {
+        return layout.resolve_extent(input, children);
+    }
+    let mirrored: Vec<MirroredChild<'_>> = children
+        .iter()
+        .map(|&inner| MirroredChild {
+            inner,
+            container: input.bounds,
+        })
+        .collect();
+    let mirrored: Vec<&dyn SubView> = mirrored.iter().map(|child| child as &dyn SubView).collect();
+    Ok(mirror_rect(
+        input.bounds,
+        layout.resolve_extent(input, &mirrored)?,
+    ))
+}
+
+/// The response of a [`FixedContainer`]'s `layout` as its `body` places it —
+/// wrapped for `direction` — for a backend that drives the container without
+/// running `body`.
+///
+/// # Errors
+///
+/// As [`waterui_core::layout::resolve_layout_extent`].
+pub fn resolve_directional_extent(
+    layout: &dyn Layout,
+    direction: LayoutDirection,
+    bounds: Rect,
+    proposal: ProposalSize,
+    children: &[&dyn SubView],
+) -> Result<ResolvedExtent, LayoutError> {
+    with_memoized_children(children, |children| {
+        let input = PlacementInput {
+            bounds,
+            proposal,
+            answer: layout.size_that_fits(proposal, children),
+        };
+        let rect = directional_response(layout, direction, input, children)?;
+        ResolvedExtent::checked(input, rect)
+    })
 }
 
 impl Debug for DirectionalLayout {
@@ -70,6 +178,14 @@ impl Layout for DirectionalLayout {
                 SubviewPlacement::new(self.mirror(bounds, placement.frame), placement.proposal)
             })
             .collect()
+    }
+
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        directional_response(&*self.inner, self.direction.snapshot(), input, children)
     }
 
     /// A guide is a position inside a real frame: the placed children already
@@ -269,6 +385,7 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use crate::UnitPoint;
     use crate::ViewDimensions;
     use waterui_core::layout::Point;
 
@@ -276,6 +393,14 @@ mod tests {
     struct OffsetLayout;
 
     impl Layout for OffsetLayout {
+        fn resolve_extent(
+            &self,
+            input: PlacementInput,
+            _children: &[&dyn SubView],
+        ) -> Result<Rect, LayoutError> {
+            Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+        }
+
         fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
             Size::new(100.0, 40.0)
         }
@@ -301,6 +426,13 @@ mod tests {
     }
 
     impl SubView for GuidedLeaf {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size).with_horizontal(HorizontalAlignment::Leading, self.guide)
         }
@@ -330,7 +462,7 @@ mod tests {
 
         let padding = || {
             Box::new(crate::padding::PaddingLayout {
-                edges: Computed::constant(crate::padding::EdgeInsets::new(0.0, 0.0, 10.0, 6.0)),
+                edges: Computed::constant(crate::padding::EdgeInsets::new(0.0, 10.0, 0.0, 6.0)),
             }) as Box<dyn Layout>
         };
 
