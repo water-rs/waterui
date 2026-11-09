@@ -14,7 +14,7 @@ use super::{
 use crate::color::WorkingColor;
 use crate::draw::{Content, ContentChange, LayoutSize, Operand};
 use crate::scene::resources::tests::{Mount, null_resources, removed_images};
-use crate::scene_view::{SceneContent, SceneInvalidator};
+use crate::scene_view::{SceneContent, SceneFrame, SceneInvalidator, SceneUpdate};
 
 fn mount(canvas: Canvas) -> CanvasScene {
     CanvasScene::mount(canvas, &Environment::new())
@@ -40,6 +40,37 @@ fn record(scene: &mut CanvasScene) -> Content {
     });
     drop(names.finish());
     content
+}
+
+/// One frame of a host that keeps `scene`'s recording installed.
+fn update(scene: &mut CanvasScene) -> SceneUpdate {
+    update_at(scene, crate::draw::Instant::now())
+}
+
+/// One frame presented at `time` by a host that keeps `scene`'s recording
+/// installed.
+fn update_at(scene: &mut CanvasScene, time: crate::draw::Instant) -> SceneUpdate {
+    let (resources, _events) = null_resources();
+    scene.update_scene(
+        &resources,
+        SceneFrame {
+            width: 100.0,
+            height: 50.0,
+            time,
+        },
+    )
+}
+
+/// The structural edit the installed `content` received since its last
+/// change, then its length.
+fn edited(content: &mut Content) -> usize {
+    let Some(ContentChange::Edit(edit)) = content.take_change() else {
+        panic!("a structural change edits the installed recording in place");
+    };
+    let [_, ..] = edit.splices[..] else {
+        panic!("an edit splices the changed region's commands");
+    };
+    content.len()
 }
 
 fn red() -> WorkingColor {
@@ -165,13 +196,20 @@ fn a_scope_records_again_alone() {
         }
     }));
     let invalidations = counting_invalidator(&mut scene);
-    assert_eq!(record(&mut scene).len(), 3);
+    let mut content = record(&mut scene);
+    assert_eq!(content.len(), 3);
+    let _ = content.take_change();
 
     count.set(4);
     assert_eq!(scope_runs.get(), 2, "the scope records again");
     assert_eq!(root_runs.get(), 1, "the closure does not");
     assert_eq!(invalidations.get(), 1, "the host is asked for one pass");
-    assert_eq!(record(&mut scene).len(), 5);
+    assert_eq!(
+        update(&mut scene),
+        SceneUpdate::Retained { again: false },
+        "the installed recording stays"
+    );
+    assert_eq!(edited(&mut content), 5);
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -225,13 +263,23 @@ fn each_records_inserted_keys_only_and_updates_changed_items_in_place() {
     ]));
     assert_eq!(item_runs.get(), 3, "only the new key records");
     assert_eq!(invalidations.get(), 1);
-    assert_eq!(record(&mut scene).len(), 3);
+    assert!(matches!(update(&mut scene), SceneUpdate::Retained { .. }));
+    assert_eq!(edited(&mut content), 3);
 
     // A move reorders without recording; a removal drops.
     dots.set(Vec::from([Dot { id: 2, x: 10.0 }, Dot { id: 1, x: 5.0 }]));
     assert_eq!(item_runs.get(), 3, "a move and a removal record nothing");
     assert_eq!(invalidations.get(), 2);
-    assert_eq!(record(&mut scene).len(), 2);
+    assert!(matches!(update(&mut scene), SceneUpdate::Retained { .. }));
+    assert_eq!(edited(&mut content), 2);
+
+    // The moved item's subscription follows it to its new index.
+    dots.set(Vec::from([Dot { id: 2, x: 10.0 }, Dot { id: 1, x: 7.0 }]));
+    let Some(ContentChange::Update(updates)) = content.take_change() else {
+        panic!("the moved dot still updates its slot in place");
+    };
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].command, 1, "dot 1 now draws second");
 }
 
 #[test]
@@ -331,13 +379,19 @@ fn an_image_is_held_while_drawn_and_released_after() {
     }));
     let host = Mount::new();
     let first = host.frame(&mut scene);
+    assert!(!first.retained, "the first frame installs the canvas");
     assert_eq!(removed_images(&first.events), Vec::new());
-    // Drawn again: the same registration, nothing released.
+    // Presented again: the installed recording stays, nothing released.
     let again = host.frame(&mut scene);
+    assert!(again.retained);
     assert_eq!(removed_images(&again.events), Vec::new());
 
     shown.set(false);
     let after = host.frame(&mut scene);
+    assert!(
+        after.retained,
+        "the scope's region is recorded again in place"
+    );
     assert_eq!(
         removed_images(&after.events).len(),
         1,
@@ -374,6 +428,39 @@ fn time_advances_only_while_observed() {
     });
     assert!(animating, "a canvas bound to time asks for the next frame");
     drop(names.finish());
+}
+
+#[test]
+fn time_is_the_presented_frames_clock() {
+    let mut scene = mount(Canvas::new(|cx| {
+        let time = cx.time();
+        cx.transform(
+            time.map(|t| Affine2::translate(t.as_secs_f32() * 1000.0, 0.0)),
+            |cx| cx.fill(Rect::from_size(Size::new(1.0, 1.0)), red()),
+        );
+    }));
+    let start = crate::draw::Instant::now();
+    // The first frame mounts the clock at its own instant, then records.
+    assert_eq!(update_at(&mut scene, start), SceneUpdate::Record);
+    let mut content = record(&mut scene);
+    let _ = content.take_change();
+
+    assert_eq!(
+        update_at(&mut scene, start + core::time::Duration::from_millis(48)),
+        SceneUpdate::Retained { again: true },
+        "a canvas bound to time keeps asking for frames"
+    );
+    let Some(ContentChange::Update(updates)) = content.take_change() else {
+        panic!("a presented frame updates the time operand in place");
+    };
+    let Operand::Transform(moved) = updates[0].value else {
+        panic!("the transform scope's operand");
+    };
+    let x = moved.translation().x;
+    assert!(
+        (x - 48.0).abs() < 1e-3,
+        "48 ms after mounting, time reads 48 ms: {x}"
+    );
 }
 
 #[test]

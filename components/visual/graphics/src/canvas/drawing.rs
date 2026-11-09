@@ -1,6 +1,6 @@
 //! Reusable recordings of constants.
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -78,6 +78,16 @@ struct Inner {
 #[derive(Clone)]
 pub struct Drawing(Arc<Inner>);
 
+/// A [`Drawing`] held weakly.
+pub struct WeakDrawing(Weak<Inner>);
+
+impl WeakDrawing {
+    /// Whether the drawing is still held somewhere.
+    pub fn is_alive(&self) -> bool {
+        self.0.strong_count() > 0
+    }
+}
+
 impl fmt::Debug for Drawing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Drawing")
@@ -139,6 +149,13 @@ impl Drawing {
     /// The identity a target caches the drawing's recorded form by.
     pub(crate) fn key(&self) -> usize {
         Arc::as_ptr(&self.0).addr()
+    }
+
+    /// A reference that does not keep the drawing alive: a cache keyed by
+    /// [`key`](Self::key) keeps its entry only while this is alive, so the
+    /// key is never another drawing's.
+    pub(crate) fn downgrade(&self) -> WeakDrawing {
+        WeakDrawing(Arc::downgrade(&self.0))
     }
 
     /// Records the drawing for a target that registered its resources under

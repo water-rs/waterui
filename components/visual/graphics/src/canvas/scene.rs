@@ -1,5 +1,6 @@
-//! The scene leaf a canvas renders through: it replays the canvas's
-//! retained recording into whichever target draws it, owning resource
+//! The scene leaf a canvas renders through: it records the canvas once into
+//! the recording its host installs, as one region per part, and edits that
+//! recording in place when a part's structure changes — owning resource
 //! registration and engine-generation recovery.
 
 use alloc::rc::{Rc, Weak};
@@ -18,8 +19,8 @@ use waterui_core::{Environment, Str};
 
 use crate::animation::engine_animation;
 use crate::canvas::Canvas;
-use crate::canvas::cx::{Cx, Node, Recording, Shared};
-use crate::canvas::drawing::Drawing;
+use crate::canvas::cx::{Cx, Node, Part, Recording, Shared, Stale};
+use crate::canvas::drawing::{Drawing, WeakDrawing};
 use crate::canvas::geometry::lower_rect;
 use crate::canvas::names::Names;
 use crate::canvas::paint::{Paint, affine};
@@ -27,8 +28,8 @@ use crate::canvas::resource::{Font, ImageSource, ImageStatus, Pixels};
 use crate::draw::{
     self, Draw as _, FontId, ImageId, Instant, Recorder, ResourceError, ShapeData, kurbo,
 };
-use crate::scene::resources::{RecordingResources, Registered};
-use crate::scene_view::{SceneContent, SceneInvalidator};
+use crate::scene::resources::{HeldResources, RecordingResources, SceneResources};
+use crate::scene_view::{SceneContent, SceneFrame, SceneInvalidator, SceneUpdate};
 
 /// A change's metadata as the recorder reads it: an app animation the
 /// change was made under becomes the engine animation that animates the
@@ -44,15 +45,16 @@ fn engine_metadata(metadata: Metadata) -> Metadata {
 }
 
 /// A live operand lowered to its recorded form against the ids of the
-/// recording it is bound into.
+/// part it is recorded in.
 ///
-/// A change whose value names a resource that recording has no id for
-/// cannot update in place: it asks the canvas to record again instead.
+/// A change whose value names a resource that part has no id for cannot
+/// update in place: it records the part again instead.
 struct Gate<T: 'static, U> {
     source: Computed<T>,
     lower: fn(&T, &Names) -> Option<U>,
     names: Rc<RefCell<Names>>,
     shared: Weak<Shared>,
+    part: Weak<Part>,
 }
 
 impl<T: 'static, U> Clone for Gate<T, U> {
@@ -62,6 +64,7 @@ impl<T: 'static, U> Clone for Gate<T, U> {
             lower: self.lower,
             names: Rc::clone(&self.names),
             shared: Weak::clone(&self.shared),
+            part: Weak::clone(&self.part),
         }
     }
 }
@@ -80,6 +83,7 @@ impl<T: 'static, U: 'static> Signal for Gate<T, U> {
         let lower = self.lower;
         let names = Rc::clone(&self.names);
         let shared = Weak::clone(&self.shared);
+        let part = Weak::clone(&self.part);
         self.source.watch(move |change| {
             let (value, metadata) = change.into_parts();
             let lowered = lower(&value, &names.borrow());
@@ -87,7 +91,7 @@ impl<T: 'static, U: 'static> Signal for Gate<T, U> {
                 Some(lowered) => watcher(Context::new(lowered, engine_metadata(metadata))),
                 None => {
                     if let Some(shared) = shared.upgrade() {
-                        shared.invalidate();
+                        shared.mark(Stale::Part(Weak::clone(&part)));
                     }
                 }
             }
@@ -95,33 +99,139 @@ impl<T: 'static, U: 'static> Signal for Gate<T, U> {
     }
 }
 
-/// A registration and whether the recording being made still names it.
-struct Held<I: crate::scene::resources::PlainId, S> {
-    _source: S,
-    registered: Result<Registered<I>, Arc<ResourceError>>,
-    used: bool,
-}
-
-/// A drawing recorded for the current target.
+/// A drawing recorded for the current target, with the registrations its
+/// recorded form names.
 struct Cached {
-    _drawing: Drawing,
+    drawing: WeakDrawing,
     picture: draw::Picture,
-    used: bool,
+    held: HeldResources,
 }
 
-/// What replaying the canvas into one recording needs.
-struct Replay<'r, 'a> {
-    resources: &'r mut RecordingResources<'a>,
-    images: &'r mut HashMap<usize, Held<ImageId, ImageSource>>,
-    fonts: &'r mut HashMap<usize, Held<FontId, Font>>,
-    drawings: &'r mut HashMap<usize, Cached>,
-    names: Rc<RefCell<Names>>,
+/// What every part recorded in one host call shares.
+struct Session<'s> {
+    resources: &'s SceneResources,
     shared: Weak<Shared>,
-    /// Statuses to publish once the replay is done: a status watcher may
-    /// set a signal the canvas records from.
-    statuses: Vec<(ImageSource, ImageStatus)>,
-    /// Watchers of operands no recorded slot can carry: an image swap.
-    guards: Vec<BoxWatcherGuard>,
+    drawings: &'s RefCell<HashMap<usize, Cached>>,
+    /// Statuses to publish once the call's recording is done: a status
+    /// watcher may set a signal the canvas records from.
+    statuses: RefCell<Vec<(ImageSource, ImageStatus)>>,
+}
+
+impl Session<'_> {
+    /// Records `part`'s commands into `recorder`: the recorder of its
+    /// region, which holds the registrations they name.
+    fn record(&self, part: &Rc<Part>, recorder: &mut Recorder) {
+        let mut cx = Replay {
+            session: self,
+            resources: self.resources.recording(),
+            names: Rc::default(),
+            part: Rc::downgrade(part),
+        };
+        replay(&part.recording.borrow(), recorder, &mut cx);
+        let held = cx.resources.finish();
+        recorder.keep(held);
+    }
+
+    /// `drawing` recorded for this target, from the cache when it was
+    /// recorded already, and the registrations it names; `None` when the
+    /// render thread is gone.
+    fn drawing(&self, drawing: &Drawing) -> Option<(draw::Picture, HeldResources)> {
+        if let Some(cached) = self.drawings.borrow().get(&drawing.key())
+            && cached.drawing.is_alive()
+        {
+            return Some((cached.picture.clone(), cached.held.clone()));
+        }
+        let mut resources = self.resources.recording();
+        let mut names = Names::default();
+        for image in drawing.images() {
+            let _ = register_image(&mut resources, &mut names, image, &self.statuses);
+        }
+        for font in drawing.fonts() {
+            register_font(&mut resources, &mut names, font)?;
+        }
+        let picture = drawing.lower(&names, &mut |nested| {
+            let (picture, held) = self
+                .drawing(nested)
+                .expect("a nested drawing's fonts registered with the drawing that holds it");
+            resources.hold(&held);
+            picture
+        });
+        let held = resources.finish();
+        self.drawings.borrow_mut().insert(
+            drawing.key(),
+            Cached {
+                drawing: drawing.downgrade(),
+                picture: picture.clone(),
+                held: held.clone(),
+            },
+        );
+        Some((picture, held))
+    }
+
+    fn publish_statuses(&self) {
+        for (image, status) in self.statuses.take() {
+            image.set_status(&status);
+        }
+    }
+}
+
+/// Registers `image` and names it in one recording; `None` when the target
+/// refused it, which its status reports.
+fn register_image(
+    resources: &mut RecordingResources<'_>,
+    names: &mut Names,
+    image: &ImageSource,
+    statuses: &RefCell<Vec<(ImageSource, ImageStatus)>>,
+) -> Option<ImageId> {
+    if let Some(id) = names.image(image) {
+        return Some(id);
+    }
+    let registered = match image.pixels() {
+        Pixels::Rgba8(data) => resources.image(data.clone()),
+        Pixels::Rgba16F(data) => resources.image16f(data.clone()),
+    }
+    .map_err(Arc::new);
+    let status = match &registered {
+        Ok(_) => ImageStatus::Ready,
+        Err(error) => ImageStatus::Refused(Arc::clone(error)),
+    };
+    statuses.borrow_mut().push((image.clone(), status));
+    let id = resources.name(&registered.ok()?);
+    names.insert_image(image, id);
+    Some(id)
+}
+
+/// Registers `font` and names it in one recording; `None` when the render
+/// thread is gone.
+///
+/// # Panics
+///
+/// When the target refuses the font: unreadable bytes, or a system family
+/// on a target with no platform font stack.
+fn register_font(
+    resources: &mut RecordingResources<'_>,
+    names: &mut Names,
+    font: &Font,
+) -> Option<FontId> {
+    if let Some(id) = names.font(font) {
+        return Some(id);
+    }
+    let registered = match resources.font(font.source()) {
+        Ok(registered) => registered,
+        Err(ResourceError::Lost) => return None,
+        Err(error) => panic!("a canvas glyph run's font was refused: {error}"),
+    };
+    let id = resources.name(&registered);
+    names.insert_font(font, id);
+    Some(id)
+}
+
+/// What replaying one part into the recorder of its region needs.
+struct Replay<'r, 's> {
+    session: &'r Session<'s>,
+    resources: RecordingResources<'s>,
+    names: Rc<RefCell<Names>>,
+    part: Weak<Part>,
 }
 
 impl Replay<'_, '_> {
@@ -134,7 +244,8 @@ impl Replay<'_, '_> {
             source: source.clone(),
             lower,
             names: Rc::clone(&self.names),
-            shared: Weak::clone(&self.shared),
+            shared: Weak::clone(&self.session.shared),
+            part: Weak::clone(&self.part),
         }
     }
 
@@ -146,60 +257,17 @@ impl Replay<'_, '_> {
         self.gate(transform, |transform, _| Some(affine(*transform)))
     }
 
-    /// The id `image` draws by in this recording; `None` when the target
-    /// refused it.
     fn image(&mut self, image: &ImageSource) -> Option<ImageId> {
-        if let Some(id) = self.names.borrow().image(image) {
-            return Some(id);
-        }
-        let held = self.images.entry(image.key()).or_insert_with(|| {
-            let registered = match image.pixels() {
-                Pixels::Rgba8(data) => self.resources.image(data.clone()),
-                Pixels::Rgba16F(data) => self.resources.image16f(data.clone()),
-            }
-            .map_err(Arc::new);
-            let status = match &registered {
-                Ok(_) => ImageStatus::Ready,
-                Err(error) => ImageStatus::Refused(Arc::clone(error)),
-            };
-            self.statuses.push((image.clone(), status));
-            Held {
-                _source: image.clone(),
-                registered,
-                used: false,
-            }
-        });
-        held.used = true;
-        let id = self.resources.name(held.registered.as_ref().ok()?);
-        self.names.borrow_mut().insert_image(image, id);
-        Some(id)
+        register_image(
+            &mut self.resources,
+            &mut self.names.borrow_mut(),
+            image,
+            &self.session.statuses,
+        )
     }
 
-    /// The id `font` draws by in this recording; `None` when the render
-    /// thread is gone.
-    ///
-    /// # Panics
-    ///
-    /// When the target refuses the font: unreadable bytes, or a system
-    /// family on a target with no platform font stack.
     fn font(&mut self, font: &Font) -> Option<FontId> {
-        if let Some(id) = self.names.borrow().font(font) {
-            return Some(id);
-        }
-        let held = self.fonts.entry(font.key()).or_insert_with(|| Held {
-            _source: font.clone(),
-            registered: self.resources.font(font.source()).map_err(Arc::new),
-            used: false,
-        });
-        held.used = true;
-        let registered = match &held.registered {
-            Ok(registered) => registered,
-            Err(error) if matches!(**error, ResourceError::Lost) => return None,
-            Err(error) => panic!("a canvas glyph run's font was refused: {error}"),
-        };
-        let id = self.resources.name(registered);
-        self.names.borrow_mut().insert_font(font, id);
-        Some(id)
+        register_font(&mut self.resources, &mut self.names.borrow_mut(), font)
     }
 
     /// The paint operand as a live recorded paint; `None` when it samples
@@ -212,33 +280,10 @@ impl Replay<'_, '_> {
     }
 
     fn drawing(&mut self, drawing: &Drawing) -> Option<draw::Picture> {
-        for image in drawing.images() {
-            let _ = self.image(image);
-        }
-        for font in drawing.fonts() {
-            self.font(font)?;
-        }
-        Some(picture(self.drawings, &self.names.borrow(), drawing))
+        let (picture, held) = self.session.drawing(drawing)?;
+        self.resources.hold(&held);
+        Some(picture)
     }
-}
-
-/// `drawing` recorded against `names`, from `cache` when it was recorded
-/// for this target already.
-fn picture(cache: &mut HashMap<usize, Cached>, names: &Names, drawing: &Drawing) -> draw::Picture {
-    if let Some(cached) = cache.get_mut(&drawing.key()) {
-        cached.used = true;
-        return cached.picture.clone();
-    }
-    let recorded = drawing.lower(names, &mut |nested| picture(cache, names, nested));
-    cache.insert(
-        drawing.key(),
-        Cached {
-            _drawing: drawing.clone(),
-            picture: recorded.clone(),
-            used: true,
-        },
-    );
-    recorded
 }
 
 fn replay(recording: &Recording, recorder: &mut Recorder, cx: &mut Replay<'_, '_>) {
@@ -269,17 +314,20 @@ fn replay(recording: &Recording, recorder: &mut Recorder, cx: &mut Replay<'_, '_
                 sampling,
             } => {
                 let current = image.snapshot();
-                // A new image is a new registration: the canvas records
-                // again rather than update a slot.
-                let shared = Weak::clone(&cx.shared);
+                // A new image is a new registration: the part records
+                // again rather than update a slot. The watch lives as long
+                // as this recording of the part.
+                let shared = Weak::clone(&cx.session.shared);
+                let part = Weak::clone(&cx.part);
                 let swapped = current.clone();
-                cx.guards.push(image.watch(move |change| {
+                let guard: BoxWatcherGuard = image.watch(move |change| {
                     if *change.value() != swapped
                         && let Some(shared) = shared.upgrade()
                     {
-                        shared.invalidate();
+                        shared.mark(Stale::Part(Weak::clone(&part)));
                     }
-                }));
+                });
+                recorder.keep(guard);
                 if let Some(id) = cx.image(&current) {
                     let dst = cx.gate(dst, |dst, _| Some(lower_rect(*dst)));
                     recorder.image(id, dst, sampling.lower());
@@ -314,10 +362,17 @@ fn replay(recording: &Recording, recorder: &mut Recorder, cx: &mut Replay<'_, '_
                 let group = cx.gate(layer, |layer, _| Some(layer.lower()));
                 recorder.group(group, |recorder| replay(body, recorder, cx));
             }
-            Node::Scope(region) => replay(&region.borrow(), recorder, cx),
+            Node::Part(part) => {
+                let session = cx.session;
+                part.install(recorder, &mut |part, recorder| {
+                    session.record(part, recorder);
+                });
+            }
             Node::Each(list) => {
-                list.borrow()
-                    .for_each(&mut |item| replay(item, recorder, cx));
+                let session = cx.session;
+                list.borrow_mut().install(recorder, &mut |part, recorder| {
+                    session.record(part, recorder);
+                });
             }
         }
     }
@@ -333,15 +388,13 @@ fn invalidating<T: 'static>(signal: &Computed<T>, shared: &Rc<Shared>) -> BoxWat
     })
 }
 
-/// A mounted canvas: its retained recording, and the registrations the
-/// target it is drawn by holds for it.
+/// A mounted canvas: its retained recording, installed as one region per
+/// part, and the drawings recorded for the target it is drawn by.
 pub struct CanvasScene {
     shared: Rc<Shared>,
-    root: Recording,
-    images: HashMap<usize, Held<ImageId, ImageSource>>,
-    fonts: HashMap<usize, Held<FontId, Font>>,
-    drawings: HashMap<usize, Cached>,
-    replay_guards: Vec<BoxWatcherGuard>,
+    root: Rc<Part>,
+    drawings: RefCell<HashMap<usize, Cached>>,
+    /// The first presented frame's instant: what [`Cx::time`] counts from.
     mounted: Option<Instant>,
     intrinsic: Computed<Option<Size>>,
     label: Computed<Option<Str>>,
@@ -362,7 +415,7 @@ impl CanvasScene {
         let shared = Shared::new(env.clone());
         let mut cx = Cx::new(Rc::clone(&shared));
         body(&mut cx);
-        let root = cx.finish();
+        let root = Part::new(cx.finish());
         // Layout and accessibility read these on the host's next pass,
         // which an invalidation schedules.
         let attribute_guards = [
@@ -373,15 +426,42 @@ impl CanvasScene {
         Self {
             shared,
             root,
-            images: HashMap::new(),
-            fonts: HashMap::new(),
-            drawings: HashMap::new(),
-            replay_guards: Vec::new(),
+            drawings: RefCell::new(HashMap::new()),
             mounted: None,
             intrinsic,
             label,
             value,
             _attribute_guards: attribute_guards,
+        }
+    }
+
+    /// Follows the box, and the frame clock while something observes it.
+    fn follow(&mut self, width: f32, height: f32, time: Option<Instant>) {
+        if let Some(time) = time {
+            let mounted = *self.mounted.get_or_insert(time);
+            if self.shared.clock.observed() {
+                let elapsed: Duration = time.saturating_duration_since(mounted);
+                if self.shared.clock.snapshot() != elapsed {
+                    self.shared.clock.set(&Context::from(elapsed));
+                }
+            }
+        }
+        let size = Size::new(width, height);
+        if self.shared.size.snapshot() != size {
+            self.shared.size.set(&Context::from(size));
+        }
+    }
+
+    fn session<'s>(&'s self, resources: &'s SceneResources) -> Session<'s> {
+        // A drawing nothing holds any more cannot be drawn again.
+        self.drawings
+            .borrow_mut()
+            .retain(|_, cached| cached.drawing.is_alive());
+        Session {
+            resources,
+            shared: Rc::downgrade(&self.shared),
+            drawings: &self.drawings,
+            statuses: RefCell::new(Vec::new()),
         }
     }
 }
@@ -394,59 +474,58 @@ impl SceneContent for CanvasScene {
         width: f32,
         height: f32,
     ) -> bool {
-        let now = Instant::now();
-        let mounted = *self.mounted.get_or_insert(now);
-        if self.shared.clock.observed() {
-            let elapsed: Duration = now.duration_since(mounted);
-            self.shared.clock.set(&Context::from(elapsed));
-        }
-        let size = Size::new(width, height);
-        if self.shared.size.snapshot() != size {
-            self.shared.size.set(&Context::from(size));
-        }
-
-        for held in self.images.values_mut() {
-            held.used = false;
-        }
-        for held in self.fonts.values_mut() {
-            held.used = false;
-        }
-        for cached in self.drawings.values_mut() {
-            cached.used = false;
-        }
-        let mut cx = Replay {
-            resources,
-            images: &mut self.images,
-            fonts: &mut self.fonts,
-            drawings: &mut self.drawings,
-            names: Rc::default(),
-            shared: Rc::downgrade(&self.shared),
-            statuses: Vec::new(),
-            guards: Vec::new(),
-        };
-        replay(&self.root, recorder, &mut cx);
-        let Replay {
-            statuses, guards, ..
-        } = cx;
-        self.replay_guards = guards;
-        // What this recording no longer names is released once the host
-        // installs it: the installed recording holds its own names.
-        self.images.retain(|_, held| held.used);
-        self.fonts.retain(|_, held| held.used);
-        self.drawings.retain(|_, cached| cached.used);
-        for (image, status) in statuses {
-            image.set_status(&status);
-        }
+        self.follow(width, height, None);
+        // A fresh recording installs every part anew.
+        drop(self.shared.take_stale());
+        let session = self.session(resources.scene_resources());
+        self.root.install(recorder, &mut |part, recorder| {
+            session.record(part, recorder);
+        });
+        session.publish_statuses();
         self.shared.clock.observed()
     }
 
+    fn update_scene(&mut self, resources: &SceneResources, frame: SceneFrame) -> SceneUpdate {
+        self.follow(frame.width, frame.height, Some(frame.time));
+        let installed = self
+            .root
+            .handle
+            .borrow()
+            .as_ref()
+            .is_some_and(draw::Region::is_recorded);
+        if !installed {
+            return SceneUpdate::Record;
+        }
+        let session = self.session(resources);
+        // Each stale region records again in the order it changed; one
+        // inside a region recorded again since is already current.
+        for stale in self.shared.take_stale() {
+            match stale {
+                Stale::Part(part) => {
+                    if let Some(part) = part.upgrade() {
+                        part.rerecord(&mut |part, recorder| session.record(part, recorder));
+                    }
+                }
+                Stale::Each(list) => {
+                    if let Some(list) = list.upgrade() {
+                        list.borrow_mut()
+                            .apply(&mut |part, recorder| session.record(part, recorder));
+                    }
+                }
+            }
+        }
+        session.publish_statuses();
+        SceneUpdate::Retained {
+            again: self.shared.clock.observed(),
+        }
+    }
+
     fn rebuild_for_engine(&mut self) {
-        // Registrations and recorded drawings belong to the replaced engine;
-        // the next replay registers everything again on the new one.
-        self.images.clear();
-        self.fonts.clear();
-        self.drawings.clear();
-        self.replay_guards.clear();
+        // Recorded drawings name the replaced engine's registrations, and
+        // the installed recording is the replaced engine's; the next record
+        // installs everything again on the new one.
+        self.drawings.borrow_mut().clear();
+        drop(self.root.handle.borrow_mut().take());
     }
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {

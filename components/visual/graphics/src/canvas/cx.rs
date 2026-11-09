@@ -23,7 +23,7 @@ use crate::canvas::operand::Operand;
 use crate::canvas::paint::{IntoPaint, Layer, Paint, Sampling, Shadow, StrokeStyle};
 use crate::canvas::resource::{GlyphRun, ImageSource};
 use crate::color::{Color, WorkingColor};
-use crate::draw::ShapeData;
+use crate::draw::{Recorder, Region, ShapeData};
 use crate::scene_view::SceneInvalidator;
 
 /// What every context of one mounted canvas shares.
@@ -32,6 +32,17 @@ pub struct Shared {
     invalidator: RefCell<Option<SceneInvalidator>>,
     pub(crate) size: SignalCell<Size>,
     pub(crate) clock: SignalCell<Duration>,
+    /// The installed regions whose structure changed, to record again at
+    /// the host's next update, in the order they changed.
+    stale: RefCell<Vec<Stale>>,
+}
+
+/// An installed region whose structure changed.
+pub enum Stale {
+    /// A part to record again.
+    Part(Weak<Part>),
+    /// A collection whose items were inserted, removed or moved.
+    Each(Weak<RefCell<dyn Collection>>),
 }
 
 impl Shared {
@@ -41,6 +52,7 @@ impl Shared {
             invalidator: RefCell::new(None),
             size: SignalCell::new(Size::zero()),
             clock: SignalCell::new(Duration::ZERO),
+            stale: RefCell::new(Vec::new()),
         })
     }
 
@@ -48,13 +60,70 @@ impl Shared {
         *self.invalidator.borrow_mut() = invalidator;
     }
 
-    /// Asks the host to record the canvas again: its structure changed.
+    /// Asks the host for a pass: an attribute or the structure changed.
     pub(crate) fn invalidate(&self) {
         let invalidator = self.invalidator.borrow().clone();
         if let Some(invalidator) = invalidator {
             invalidator();
         }
     }
+
+    /// Queues `stale` to record again in place at the host's next update.
+    pub(crate) fn mark(&self, stale: Stale) {
+        self.stale.borrow_mut().push(stale);
+        self.invalidate();
+    }
+
+    /// The regions queued since the last call.
+    pub(crate) fn take_stale(&self) -> Vec<Stale> {
+        core::mem::take(&mut *self.stale.borrow_mut())
+    }
+}
+
+/// A part of the canvas recorded as a region of its own: a
+/// [`Cx::scope`] region, an item of a [`Cx::each`], or a single command
+/// whose resource can change. It records again in place, without the rest
+/// of the canvas.
+pub struct Part {
+    pub(crate) recording: RefCell<Recording>,
+    /// Its region in the installed recording, once installed.
+    pub(crate) handle: RefCell<Option<Region>>,
+}
+
+impl Part {
+    pub(crate) fn new(recording: Recording) -> Rc<Self> {
+        Rc::new(Self {
+            recording: RefCell::new(recording),
+            handle: RefCell::new(None),
+        })
+    }
+
+    /// Records the part as a region of `recorder`, through `record`.
+    pub(crate) fn install(self: &Rc<Self>, recorder: &mut Recorder, record: &mut RecordPart<'_>) {
+        let handle = recorder.region(|recorder| record(self, recorder));
+        *self.handle.borrow_mut() = Some(handle);
+    }
+
+    /// Records the installed part again in place, through `record`.
+    pub(crate) fn rerecord(self: &Rc<Self>, record: &mut RecordPart<'_>) {
+        let handle = self.handle.borrow_mut().take();
+        if let Some(handle) = handle {
+            handle.record(|recorder| record(self, recorder));
+            *self.handle.borrow_mut() = Some(handle);
+        }
+    }
+}
+
+/// Records a part's commands into the recorder of its region.
+pub type RecordPart<'a> = dyn FnMut(&Rc<Part>, &mut Recorder) + 'a;
+
+/// A [`Cx::each`] as the scene installs it.
+pub trait Collection {
+    /// Records the items, each a region of its own, inside one region.
+    fn install(&mut self, recorder: &mut Recorder, record: &mut RecordPart<'_>);
+    /// Brings the installed regions in line with the items: removed items
+    /// leave, new ones record, moved ones move — and nothing else records.
+    fn apply(&mut self, record: &mut RecordPart<'_>);
 }
 
 /// One retained command, holding its operands as signals.
@@ -97,16 +166,10 @@ pub enum Node {
         layer: Computed<Layer>,
         body: Recording,
     },
-    /// A region a signal re-records ([`Cx::scope`]).
-    Scope(Rc<RefCell<Recording>>),
+    /// A part recorded as a region of its own.
+    Part(Rc<Part>),
     /// A keyed collection of regions ([`Cx::each`]).
-    Each(Rc<RefCell<dyn Regions>>),
-}
-
-/// The ordered sub-recordings of a [`Cx::each`].
-pub trait Regions {
-    /// Calls `f` with each sub-recording, in item order.
-    fn for_each(&self, f: &mut dyn FnMut(&Recording));
+    Each(Rc<RefCell<dyn Collection>>),
 }
 
 /// What one closure scope recorded: its commands, and the values it keeps
@@ -268,11 +331,23 @@ impl Cx {
         rect: impl Into<Operand<Rect>>,
         sampling: Sampling,
     ) {
-        self.recording.nodes.push(Node::Image {
+        // Its own part: a new image is a new registration, which records
+        // this one command again.
+        self.isolate(Node::Image {
             image: image.into().into_computed(),
             dst: rect.into().into_computed(),
             sampling,
         });
+    }
+
+    /// Records `node` as a part of its own, so a change of the resource it
+    /// draws records only it again.
+    fn isolate(&mut self, node: Node) {
+        let part = Part::new(Recording {
+            nodes: alloc::vec![node],
+            kept: Vec::new(),
+        });
+        self.recording.nodes.push(Node::Part(part));
     }
 
     /// Draws `run`'s glyphs, exactly as positioned, with `paint`.
@@ -281,11 +356,13 @@ impl Cx {
         run: impl Into<Operand<GlyphRun>>,
         paint: impl Into<Operand<P>>,
     ) {
+        // Its own part: a run in a font not yet registered records this
+        // one command again.
         let node = Node::Glyphs {
             run: run.into().into_computed(),
             paint: self.paint(paint),
         };
-        self.recording.nodes.push(node);
+        self.isolate(node);
     }
 
     /// Draws `drawing` under `transform`.
@@ -336,33 +413,27 @@ impl Cx {
         body: impl Fn(&mut Self, &T) + 'static,
     ) {
         let signal = signal.into().into_computed();
-        let region = Rc::new(RefCell::new(Recording::default()));
-        let body = Rc::new(body);
-        let shared = Rc::downgrade(&self.shared);
-        let record = {
-            let region = Rc::downgrade(&region);
-            let body = Rc::clone(&body);
-            move |value: &T| {
-                let (Some(shared), Some(region)) = (shared.upgrade(), region.upgrade()) else {
-                    return;
-                };
-                let mut cx = Self::new(Rc::clone(&shared));
-                body(&mut cx, value);
-                // The replaced recording drops after the borrow ends: what it
-                // kept may observe the canvas.
-                let replaced = core::mem::replace(&mut *region.borrow_mut(), cx.recording);
-                drop(replaced);
-                shared.invalidate();
-            }
-        };
-        {
+        let part = {
             let mut cx = Self::new(Rc::clone(&self.shared));
             signal.with_ref(|value| body(&mut cx, value));
-            *region.borrow_mut() = cx.recording;
-        }
-        let guard: BoxWatcherGuard = signal.watch(move |context| record(context.value()));
+            Part::new(cx.recording)
+        };
+        let shared = Rc::downgrade(&self.shared);
+        let weak = Rc::downgrade(&part);
+        let guard: BoxWatcherGuard = signal.watch(move |context| {
+            let (Some(shared), Some(part)) = (shared.upgrade(), weak.upgrade()) else {
+                return;
+            };
+            let mut cx = Self::new(Rc::clone(&shared));
+            body(&mut cx, context.value());
+            // The replaced recording drops after the borrow ends: what it
+            // kept may observe the canvas.
+            let replaced = core::mem::replace(&mut *part.recording.borrow_mut(), cx.recording);
+            drop(replaced);
+            shared.mark(Stale::Part(Rc::downgrade(&part)));
+        });
         self.recording.kept.push(Box::new(guard));
-        self.recording.nodes.push(Node::Scope(region));
+        self.recording.nodes.push(Node::Part(part));
     }
 
     /// Records `body` once per item of `items`, keyed by `key`.
@@ -389,6 +460,9 @@ impl Cx {
         let items = items.into().into_computed();
         let list = Rc::new(RefCell::new(Keyed::<T, K> {
             entries: Vec::new(),
+            container: None,
+            installed: Vec::new(),
+            removed: Vec::new(),
         }));
         let key: Rc<dyn Fn(&T) -> K> = Rc::new(key);
         let body: Rc<ItemBody<T>> = Rc::new(body);
@@ -412,7 +486,8 @@ impl Cx {
                 // observe the canvas.
                 drop(dropped);
                 if structural {
-                    shared.invalidate();
+                    let list: Rc<RefCell<dyn Collection>> = list;
+                    shared.mark(Stale::Each(Rc::downgrade(&list)));
                 }
             })
         };
@@ -425,15 +500,72 @@ impl Cx {
 type ItemBody<T> = dyn Fn(&mut Cx, Computed<T>);
 
 /// One item of a [`Cx::each`]: its key, the signal its body observes, and
-/// what the body recorded.
+/// the part its body recorded.
 struct Entry<T: 'static, K> {
     key: K,
     item: SignalCell<T>,
-    recording: Recording,
+    part: Rc<Part>,
 }
 
 struct Keyed<T: 'static, K> {
     entries: Vec<Entry<T, K>>,
+    /// The region the items are installed in, once installed.
+    container: Option<Region>,
+    /// The keys of the installed item regions, in their installed order.
+    installed: Vec<K>,
+    /// The installed regions of items that left, to remove.
+    removed: Vec<Region>,
+}
+
+impl<T: Clone + PartialEq + 'static, K: Eq + Hash + Clone + fmt::Debug + 'static> Collection
+    for Keyed<T, K>
+{
+    fn install(&mut self, recorder: &mut Recorder, record: &mut RecordPart<'_>) {
+        // Regions installed before belong to a recording that is gone.
+        self.removed.clear();
+        let entries = &self.entries;
+        let container = recorder.region(|recorder| {
+            for entry in entries {
+                entry.part.install(recorder, record);
+            }
+        });
+        self.container = Some(container);
+        self.installed = self.entries.iter().map(|entry| entry.key.clone()).collect();
+    }
+
+    fn apply(&mut self, record: &mut RecordPart<'_>) {
+        let Some(container) = &self.container else {
+            return;
+        };
+        for region in self.removed.drain(..) {
+            region.remove();
+        }
+        let present: std::collections::HashSet<&K> =
+            self.entries.iter().map(|entry| &entry.key).collect();
+        self.installed.retain(|key| present.contains(key));
+        for (index, entry) in self.entries.iter().enumerate() {
+            let handle = entry.part.handle.borrow();
+            match handle.as_ref() {
+                None => {
+                    drop(handle);
+                    let region = container.insert(index, |recorder| record(&entry.part, recorder));
+                    *entry.part.handle.borrow_mut() = Some(region);
+                    self.installed.insert(index, entry.key.clone());
+                }
+                Some(region) if self.installed[index] != entry.key => {
+                    let from = self
+                        .installed
+                        .iter()
+                        .position(|key| *key == entry.key)
+                        .expect("an installed item keeps its key");
+                    region.move_to(index);
+                    let key = self.installed.remove(from);
+                    self.installed.insert(index, key);
+                }
+                Some(_) => {}
+            }
+        }
+    }
 }
 
 impl<T: Clone + PartialEq + 'static, K: Eq + Hash + Clone + fmt::Debug + 'static> Keyed<T, K> {
@@ -474,8 +606,14 @@ impl<T: Clone + PartialEq + 'static, K: Eq + Hash + Clone + fmt::Debug + 'static
                 entries.push(Entry {
                     key,
                     item: cell,
-                    recording: cx.recording,
+                    part: Part::new(cx.recording),
                 });
+            }
+        }
+        // The regions of items that left are removed at the next update.
+        for entry in old.values() {
+            if let Some(region) = entry.part.handle.borrow_mut().take() {
+                self.removed.push(region);
             }
         }
         let structural = entries.len() != before.len()
@@ -491,15 +629,5 @@ impl<T: Clone + PartialEq + 'static, K: Eq + Hash + Clone + fmt::Debug + 'static
             cell.set(&Context::new(value, metadata.clone()));
         }
         (structural, old.into_values().collect())
-    }
-}
-
-impl<T: Clone + PartialEq + 'static, K: Eq + Hash + Clone + fmt::Debug + 'static> Regions
-    for Keyed<T, K>
-{
-    fn for_each(&self, f: &mut dyn FnMut(&Recording)) {
-        for entry in &self.entries {
-            f(&entry.recording);
-        }
     }
 }
