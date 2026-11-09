@@ -113,7 +113,7 @@ jobs:
           key: nextest-fixtures-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/nextest-fixtures/Cargo.lock', '.github/tools/nextest-fixtures/Cargo.toml', '.github/tools/nextest-fixtures/src/**') }}
       - name: Build the nextest fixtures checker
         if: steps.nextest-fixtures-tool.outputs.cache-hit != 'true'
-        run: cargo build --locked --release --manifest-path .github/tools/nextest-fixtures/Cargo.toml
+        run: cargo build --timings --locked --release --manifest-path .github/tools/nextest-fixtures/Cargo.toml
       # The `test-fonts` nextest setup script names the packages it serves
       # (.config/nextest.toml); the set is a fact of the package graph, so
       # the rule fails here, naming each package, as soon as it drifts.
@@ -153,3 +153,7 @@ jobs:
           else
             uv run .github/scripts/affected.py --base "${{ inputs.base }}"
           fi
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: affected-scope
