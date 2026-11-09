@@ -441,6 +441,29 @@ jobs:
           water package --platform android --arch arm64 --release --unsigned --yes 2>&1 | tee ../e2e-logs/package-release.log
           grep -q 'Packaged at' ../e2e-logs/package-debug.log
           grep -q 'Packaged at' ../e2e-logs/package-release.log
+      # The APK paths come from the `Packaged at <path>` lines (anstream
+      # strips the colour codes off a piped stderr).
+      - name: Collect the APKs
+        run: |
+          set -euo pipefail
+          for profile in debug release; do
+            apk=$(sed -n 's/.*Packaged at //p' "e2e-logs/package-$profile.log" | tail -n 1)
+            [ -f "$apk" ] || { echo "::error::water package reported '$apk', which is not a file"; exit 1; }
+            mkdir -p "$RUNNER_TEMP/apk-$profile"
+            cp "$apk" "$RUNNER_TEMP/apk-$profile/"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-package-apk-debug
+          path: ${{ runner.temp }}/apk-debug
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-package-apk-release
+          path: ${{ runner.temp }}/apk-release
+          retention-days: 14
+          if-no-files-found: error
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
         with:
