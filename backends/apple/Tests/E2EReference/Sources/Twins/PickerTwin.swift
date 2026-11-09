@@ -146,9 +146,9 @@ struct PickerTwin: View {
       #if os(iOS)
         MultiDatePicker("Available Dates", selection: $multiDates, in: Self.day(2025, 1, 1) ..< Self.day(2026, 1, 1))
       #else
-        // macOS has no MultiDatePicker; WUI's macOS realization is an
-        // NSDatePicker + selection list, so the graphical DatePicker is the
-        // closest visual match.
+        // macOS has no MultiDatePicker; WUI's macOS realization is a month
+        // calendar laid out like the graphical NSDatePicker, so the
+        // graphical DatePicker is the closest visual match.
         DatePicker("Available Dates", selection: $calendarDate, in: dateRange, displayedComponents: .date)
           .datePickerStyle(.graphical)
       #endif
