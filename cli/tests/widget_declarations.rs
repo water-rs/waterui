@@ -22,9 +22,8 @@ use waterui_cli::toolchain::Host;
 /// The step is a few seconds of work when the machine is quiet (about 6 s for
 /// the intent probe on an M2 Max), but the nightly `cli-ignored` leg runs the
 /// whole ignored suite at once on a small shared runner: the Swift driver
-/// competes with the other tests' cargo builds, and the first compile against
-/// a fresh image has to build the SDK's module cache. There the first attempt
-/// of the intent probe exceeded 120 s while the retry, warm, took 28 s. The
+/// competes with the other tests' cargo builds. There the first attempt of the
+/// intent probe exceeded 120 s while the retry took 28 s for the whole test. The
 /// bound is 2.5 times the 120 s that proved too short and leaves the fixture
 /// build room inside nextest's 600 s ceiling for the whole test; a real hang
 /// still fails, only later.
