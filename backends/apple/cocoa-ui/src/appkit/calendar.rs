@@ -47,13 +47,13 @@ use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityGroupRole, NSAccessibilityPostNotification,
-    NSAttributedStringNSStringDrawing,
     NSAccessibilitySelectedChildrenChangedNotification, NSAccessibilityValueChangedNotification,
-    NSBezierPath, NSBox, NSBoxType, NSButton, NSCellImagePosition, NSColor, NSEvent, NSFont,
-    NSFontAttributeName, NSForegroundColorAttributeName, NSGridCellPlacement, NSGridView,
-    NSImage, NSImageSymbolConfiguration, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
-    NSResponder, NSStackView, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
-    NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification,
+    NSAttributedStringNSStringDrawing, NSBezierPath, NSBox, NSBoxType, NSButton,
+    NSCellImagePosition, NSColor, NSEvent, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSGridCellPlacement, NSGridView, NSImage,
+    NSImageSymbolConfiguration, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+    NSResponder, NSStackView, NSStringDrawing, NSTextAlignment, NSTextField, NSTitlePosition,
+    NSView, NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSCalendar, NSDate, NSDateFormatter,
@@ -242,14 +242,16 @@ struct LocaleText {
     day: Retained<NSDateFormatter>,
     /// The full date a day button speaks.
     spoken: Retained<NSDateFormatter>,
-    /// The two-letter weekday symbols, Sunday first.
+    /// The weekday symbols, Sunday first.
     weekdays: [String; 7],
     /// The locale's first weekday, `1` (Sunday) through `7`.
     first_weekday: i32,
 }
 
 impl LocaleText {
-    fn new(identifier: &str) -> Self {
+    /// The text of the locale `identifier`, with weekday symbols that fit a
+    /// column in `weekday_font`.
+    fn new(identifier: &str, weekday_font: &NSFont) -> Self {
         let locale = NSLocale::localeWithLocaleIdentifier(&NSString::from_str(identifier));
         let calendar = date::gregorian();
         calendar.setLocale(Some(&locale));
@@ -267,7 +269,10 @@ impl LocaleText {
             f.setDateStyle(NSDateFormatterStyle::FullStyle);
             f.setTimeStyle(NSDateFormatterStyle::NoStyle);
         });
-        let symbol = formatter(&|f| f.setDateFormat(Some(&NSString::from_str("cccccc"))));
+        let symbol_formatters = [
+            formatter(&|f| f.setDateFormat(Some(&NSString::from_str("cccccc")))),
+            formatter(&|f| f.setDateFormat(Some(&NSString::from_str("ccccc")))),
+        ];
         let first_weekday =
             i32::try_from(calendar.firstWeekday()).expect("firstWeekday is 1 through 7");
         let mut text = Self {
@@ -278,12 +283,28 @@ impl LocaleText {
             weekdays: Default::default(),
             first_weekday,
         };
-        text.weekdays = std::array::from_fn(|offset| {
-            let sunday_offset = i32::try_from(offset).expect("seven weekdays");
-            symbol
-                .stringFromDate(&text.date(date::add_days(REFERENCE_SUNDAY, sunday_offset)))
-                .to_string()
-        });
+        // The graphical `NSDatePicker` heads its columns with the two-letter
+        // symbols ("Su") when all of them fit a column, and with the narrow
+        // ones otherwise ("周日" does not, so Chinese gets "日").
+        let symbols = |symbol: &NSDateFormatter| {
+            std::array::from_fn::<_, 7, _>(|offset| {
+                let sunday_offset = i32::try_from(offset).expect("seven weekdays");
+                symbol.stringFromDate(&text.date(date::add_days(REFERENCE_SUNDAY, sunday_offset)))
+            })
+        };
+        let [two_letter, narrow] = &symbol_formatters;
+        // SAFETY: the font attribute name is a static the platform exports,
+        // and its value is the `NSFont` it documents.
+        let attributes: Retained<TextAttributes> =
+            unsafe { NSDictionary::from_slices(&[NSFontAttributeName], &[weekday_font.as_ref()]) };
+        let short = symbols(two_letter);
+        // SAFETY: `sizeWithAttributes:` is `NSStringDrawing`'s documented
+        // measure; the dictionary carries the documented value types.
+        let fits = short.iter().all(
+            |symbol| unsafe { symbol.sizeWithAttributes(Some(&attributes)) }.width <= COLUMN_WIDTH,
+        );
+        let chosen = if fits { short } else { symbols(narrow) };
+        text.weekdays = chosen.map(|symbol| symbol.to_string());
         text
     }
 
@@ -392,7 +413,11 @@ impl Shared {
     /// Whether the selection highlight is the focused one: a day has
     /// keyboard focus in the key window.
     fn is_emphasized(&self) -> bool {
-        self.focused.get() && self.root.window().is_some_and(|window| window.isKeyWindow())
+        self.focused.get()
+            && self
+                .root
+                .window()
+                .is_some_and(|window| window.isKeyWindow())
     }
 
     /// Restyles the selected days when the emphasis changed.
@@ -436,7 +461,10 @@ impl Shared {
                 .setEnabled(model.month < last);
             for (button, cell) in self.days.iter().zip(&model.grid) {
                 button.setEnabled(model.in_range(cell.parts));
-                let spoken = model.text.spoken.stringFromDate(&model.text.date(cell.parts));
+                let spoken = model
+                    .text
+                    .spoken
+                    .stringFromDate(&model.text.date(cell.parts));
                 button.setAccessibilityLabel(Some(&spoken));
             }
         }
@@ -906,7 +934,10 @@ impl DayButton {
     /// number's centre.
     fn show(&self, look: &DayLook, rtl: bool) {
         self.setAttributedTitle(&look.title);
-        self.ivars().highlight.borrow_mut().clone_from(&look.highlight);
+        self.ivars()
+            .highlight
+            .borrow_mut()
+            .clone_from(&look.highlight);
         let view: &NSView = self;
         view.setNeedsDisplay(true);
         let dot = &self.ivars().dot;
@@ -1049,9 +1080,27 @@ impl CalendarView {
         title.setFont(Some(&system_font(mtm, TITLE_FONT)));
         title.setTextColor(Some(&colors.foreground));
         let navigation = [
-            navigation_button(mtm, if rtl { "arrowtriangle.right.fill" } else { "arrowtriangle.left.fill" }, &labels.previous, &colors.muted),
+            navigation_button(
+                mtm,
+                if rtl {
+                    "arrowtriangle.right.fill"
+                } else {
+                    "arrowtriangle.left.fill"
+                },
+                &labels.previous,
+                &colors.muted,
+            ),
             navigation_button(mtm, "circle.fill", &labels.selection, &colors.muted),
-            navigation_button(mtm, if rtl { "arrowtriangle.left.fill" } else { "arrowtriangle.right.fill" }, &labels.next, &colors.muted),
+            navigation_button(
+                mtm,
+                if rtl {
+                    "arrowtriangle.left.fill"
+                } else {
+                    "arrowtriangle.right.fill"
+                },
+                &labels.next,
+                &colors.muted,
+            ),
         ];
         let weekdays: Vec<_> = (0..7)
             .map(|_| {
@@ -1060,14 +1109,16 @@ impl CalendarView {
                 field
             })
             .collect();
-        let days: Vec<_> = (0..GRID_DAYS).map(|index| DayButton::new(mtm, index)).collect();
+        let days: Vec<_> = (0..GRID_DAYS)
+            .map(|index| DayButton::new(mtm, index))
+            .collect();
         let separator = NSBox::initWithFrame(NSBox::alloc(mtm), NSRect::ZERO);
         separator.setBoxType(NSBoxType::Custom);
         separator.setTitlePosition(NSTitlePosition::NoTitle);
         separator.setBorderWidth(0.0);
         separator.setFillColor(&colors.separator);
 
-        let text = LocaleText::new(locale);
+        let text = LocaleText::new(locale, &system_font(mtm, WEEKDAY_FONT));
         let model = Model {
             month,
             range,
@@ -1121,7 +1172,8 @@ impl CalendarView {
     /// month title, digits, weekday symbols, first weekday and spoken
     /// dates.
     pub fn set_locale(&self, identifier: &str) {
-        self.shared.model.borrow_mut().text = LocaleText::new(identifier);
+        let font = system_font(self.shared.root.mtm(), WEEKDAY_FONT);
+        self.shared.model.borrow_mut().text = LocaleText::new(identifier, &font);
         self.shared.refresh_weekdays();
         self.shared.show_model_month();
     }
@@ -1264,8 +1316,14 @@ fn navigation_button(
     button.setAccessibilityLabel(Some(&NSString::from_str(label)));
     let (width, height) = NAV_SIZE;
     button.setTranslatesAutoresizingMaskIntoConstraints(false);
-    button.widthAnchor().constraintEqualToConstant(width).setActive(true);
-    button.heightAnchor().constraintEqualToConstant(height).setActive(true);
+    button
+        .widthAnchor()
+        .constraintEqualToConstant(width)
+        .setActive(true);
+    button
+        .heightAnchor()
+        .constraintEqualToConstant(height)
+        .setActive(true);
     button
 }
 
@@ -1286,8 +1344,11 @@ fn install(shared: &Shared) {
         .constraintEqualToAnchor_constant(&root.topAnchor(), TITLE_BASELINE)
         .setActive(true);
 
-    let navigation_views: Vec<&NSView> =
-        shared.navigation.iter().map(|button| -> &NSView { button }).collect();
+    let navigation_views: Vec<&NSView> = shared
+        .navigation
+        .iter()
+        .map(|button| -> &NSView { button })
+        .collect();
     let navigation = NSStackView::stackViewWithViews(&NSArray::from_slice(&navigation_views), mtm);
     navigation.setSpacing(0.0);
     navigation.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -1322,7 +1383,11 @@ fn install(shared: &Shared) {
         .constraintEqualToConstant(separator_height)
         .setActive(true);
 
-    let weekday_row: Vec<&NSView> = shared.weekdays.iter().map(|field| -> &NSView { field }).collect();
+    let weekday_row: Vec<&NSView> = shared
+        .weekdays
+        .iter()
+        .map(|field| -> &NSView { field })
+        .collect();
     let mut rows = vec![NSArray::from_slice(&weekday_row)];
     for week in shared.days.chunks(7) {
         let views: Vec<&NSView> = week.iter().map(|day| -> &NSView { day }).collect();
@@ -1371,11 +1436,14 @@ fn connect(shared: &Rc<Shared>) {
         CalendarNavigation::Next,
     ] {
         let weak = Rc::downgrade(shared);
-        actions.push(ActionTarget::new(shared.navigation_button(button), move |_| {
-            if let Some(shared) = weak.upgrade() {
-                shared.activate(button);
-            }
-        }));
+        actions.push(ActionTarget::new(
+            shared.navigation_button(button),
+            move |_| {
+                if let Some(shared) = weak.upgrade() {
+                    shared.activate(button);
+                }
+            },
+        ));
     }
     for (index, day) in shared.days.iter().enumerate() {
         let weak = Rc::downgrade(shared);
@@ -1427,23 +1495,33 @@ mod tests {
 
     #[test]
     fn locale_text_follows_the_locale() {
-        let text = LocaleText::new("en-US");
+        let font = NSFont::systemFontOfSize_weight(WEEKDAY_FONT.0, WEEKDAY_FONT.1);
+        let text = LocaleText::new("en-US", &font);
         assert_eq!(text.weekdays[0], "Su");
         assert_eq!(text.weekdays[6], "Sa");
         assert_eq!(text.first_weekday, 1);
         // German weeks start on Monday, and so does an English locale
         // carrying a Monday first-weekday preference.
-        assert_eq!(LocaleText::new("de-DE").first_weekday, 2);
-        assert_eq!(LocaleText::new("en-US-u-fw-mon").first_weekday, 2);
+        assert_eq!(LocaleText::new("de-DE", &font).first_weekday, 2);
+        assert_eq!(LocaleText::new("en-US-u-fw-mon", &font).first_weekday, 2);
+        // Two-letter symbols that overflow a column give way to the narrow
+        // ones, as in the graphical date picker.
+        assert_eq!(LocaleText::new("zh-Hans-CN", &font).weekdays[0], "日");
+        assert_eq!(LocaleText::new("ja-JP", &font).weekdays[0], "日");
+        assert_eq!(LocaleText::new("ko-KR", &font).weekdays[0], "일");
+        assert_eq!(LocaleText::new("ar", &font).weekdays[0], "ح");
         // Egyptian Arabic writes day numbers in Arabic-Indic digits.
-        let arabic = LocaleText::new("ar-EG");
+        let arabic = LocaleText::new("ar-EG", &font);
         let twentieth = DateParts {
             year: 2026,
             month: 11,
             day: 20,
         };
         assert_eq!(
-            arabic.day.stringFromDate(&arabic.date(twentieth)).to_string(),
+            arabic
+                .day
+                .stringFromDate(&arabic.date(twentieth))
+                .to_string(),
             "٢٠"
         );
     }
