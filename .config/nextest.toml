@@ -80,6 +80,12 @@ slow-timeout = { period = "300s", terminate-after = 8 }
 [[profile.ci.overrides]]
 filter = 'package(waterui-macros)'
 slow-timeout = { period = "120s", terminate-after = 15 }
+
+# Only the trybuild binary retries: the timed-out attempt is what warms the
+# isolated fixture cache, so the retry completes inside the same bound. The
+# rest of the package is deterministic — a first failure there is real.
+[[profile.ci.overrides]]
+filter = 'package(waterui-macros) and binary(trybuild_macro_contracts)'
 retries = { backoff = "fixed", count = 1, delay = "1s" }
 
 # GPU- and process-backed tests are occasionally flaky on shared runners — a
