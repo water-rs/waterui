@@ -204,7 +204,7 @@ if [[ "${platform}" == "ios" ]]; then
           --predicate 'subsystem CONTAINS[c] "CoreSimulator"' \
           2>/dev/null | tail -40 || true
       } >> "${diag}" 2>&1
-    ) &
+    ) </dev/null >/dev/null 2>&1 &
     echo $!
   }
   stall_sampler_stop() {
