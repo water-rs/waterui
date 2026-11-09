@@ -101,12 +101,12 @@ belong to water-rs/waterui.
   memory bandwidth, and real memory use, energy and frame time.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
-  change reports the steady-state `Engine::memory()` (GPU and CPU) of the five
-  perf scenes against dev; it is deterministic, so any increase is explained
-  in the pull request. Cross-engine comparisons include memory: engine-reported
-  GPU bytes and the process footprint (`phys_footprint` on Apple, PSS plus
-  graphics memory on Android), steady and peak (#101). A scene is not won if it
-  is won by spending more memory.
+  change reports the steady-state `Engine::memory()` (GPU and CPU) of the
+  memory gate's seven perf scenes against dev; it is deterministic, so any
+  increase is explained in the pull request. Cross-engine comparisons include
+  memory: engine-reported GPU bytes and the process footprint (`phys_footprint`
+  on Apple, PSS plus graphics memory on Android), steady and peak (#101). A
+  scene is not won if it is won by spending more memory.
 
 ## Platform
 
