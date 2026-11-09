@@ -760,6 +760,11 @@ pub(crate) struct LiveState {
     /// The surface the content is installed on. Detached when the content
     /// retires.
     owner: RefCell<Option<Weak<dyn LiveOwner>>>,
+    /// Set once the recording keeps a subscription or value or records a
+    /// region: something can still change the content. A constant
+    /// recording leaves it down, so installing and retiring one read
+    /// this flag only. Cleared when the content retires.
+    changeable: Cell<bool>,
     /// The content's regions and the edits queued against its list;
     /// `None` until a region is recorded ([`Recorder::region`]).
     regions: RefCell<Option<Box<Table>>>,
@@ -767,6 +772,9 @@ pub(crate) struct LiveState {
     /// its index through `regions`. Until then every key is its index,
     /// and a notification reads this flag only.
     keyed: Cell<bool>,
+    /// Set while `regions` holds edits not yet sent, so a content without
+    /// one drains its changes with this flag read, not a borrow.
+    edited: Cell<bool>,
     /// Set while a region records: one recording at a time takes keys.
     recording_region: Cell<bool>,
 }
@@ -801,12 +809,6 @@ struct AnimState {
 }
 
 impl LiveState {
-    /// Whether anything can still change the content: a signal it
-    /// subscribed to, or a region that can be edited.
-    fn is_live(&self) -> bool {
-        !self.guards.borrow().is_empty() || self.regions.borrow().is_some()
-    }
-
     /// The index the command recorded under `key` lies at, every queued
     /// edit applied; `None` once an edit removed it.
     fn index_of(&self, key: u32) -> Option<u32> {
@@ -849,6 +851,7 @@ impl LiveState {
             return;
         };
         self.keyed.set(true);
+        self.edited.set(true);
         self.pending.borrow_mut().retain_mut(|update| {
             shift.index(update.command).is_some_and(|command| {
                 update.command = command;
@@ -1060,12 +1063,20 @@ pub struct Recorder {
     /// The state of a recording opened with [`Content::record_layered`];
     /// `None` for a plain recording, which takes no material.
     layered: Option<Layered>,
+    /// The regions open around the current call; `None` until the
+    /// recording opens one, so a recording without regions starts and
+    /// finishes with one field more than a plain one.
+    levels: Option<Levels>,
+}
+
+/// The region levels of a recording that opened one, or of a region's own
+/// recording.
+struct Levels {
     /// The key of this recording's first command: zero for a content's
     /// recording, the content's next free key for a region's.
     key_base: u32,
-    /// The regions open around the current call; `None` until the
-    /// recording opens one, or for a region's recording, its own.
-    frames: Option<Vec<Frame>>,
+    /// The levels open around the current call, outermost first.
+    frames: Vec<Frame>,
 }
 
 /// One level of the region tree being recorded.
@@ -1134,8 +1145,7 @@ impl Recorder {
             size,
             depth: 0,
             layered: None,
-            key_base: 0,
-            frames: None,
+            levels: None,
         }
     }
 
@@ -1160,7 +1170,14 @@ impl Recorder {
             "a region cannot be recorded into a layered recording"
         );
         let here = self.here();
-        let frames = self.frames.get_or_insert_with(|| vec![Frame::new(None, 0)]);
+        self.live.changeable.set(true);
+        let frames = &mut self
+            .levels
+            .get_or_insert_with(|| Levels {
+                key_base: 0,
+                frames: vec![Frame::new(None, 0)],
+            })
+            .frames;
         let outer = frames.last_mut().expect("a recording has its own level");
         let parent = outer.slot.map_or(Parent::Root, Parent::Region);
         outer.close_run(here);
@@ -1173,7 +1190,11 @@ impl Recorder {
         frames.push(Frame::new(Some(slot), here));
         body(self);
         let end = self.here();
-        let frames = self.frames.as_mut().expect("the region's level is open");
+        let frames = &mut self
+            .levels
+            .as_mut()
+            .expect("the region's level is open")
+            .frames;
         let mut frame = frames.pop().expect("the region's level is open");
         frame.close_run(end);
         let outer = frames.last_mut().expect("a recording has its own level");
@@ -1199,7 +1220,12 @@ impl Recorder {
     }
 
     fn keep_boxed(&mut self, value: Box<dyn Any>) {
-        match self.frames.as_mut().and_then(|frames| frames.last_mut()) {
+        self.live.changeable.set(true);
+        match self
+            .levels
+            .as_mut()
+            .and_then(|levels| levels.frames.last_mut())
+        {
             Some(frame) => frame.kept.push(value),
             None => self.live.guards.borrow_mut().push(value),
         }
@@ -1227,11 +1253,13 @@ impl Recorder {
             (table.size.clone(), table.key_base())
         };
         let mut recorder = Self::new(DisplayList::default(), Rc::clone(live), None, size);
-        recorder.key_base = key_base;
-        recorder.frames = Some(vec![Frame::new(Some(slot), 0)]);
+        recorder.levels = Some(Levels {
+            key_base,
+            frames: vec![Frame::new(Some(slot), 0)],
+        });
         body(&mut recorder);
         let end = recorder.here();
-        let mut frames = recorder.frames.take().expect("the region's level is open");
+        let Levels { mut frames, .. } = recorder.levels.take().expect("the region's level is open");
         let mut frame = frames.pop().expect("the region's level is open");
         assert!(frames.is_empty(), "every nested region closed");
         frame.close_run(end);
@@ -1328,18 +1356,8 @@ impl Recorder {
     #[must_use]
     #[inline]
     pub(crate) fn finish(mut self) -> Content {
-        if let Some(mut frames) = self.frames.take() {
-            let mut top = frames.pop().expect("a recording has its own level");
-            assert!(frames.is_empty(), "every region closed");
-            let end = self.here();
-            top.close_run(end);
-            self.live
-                .regions
-                .borrow_mut()
-                .as_mut()
-                .expect("a recording with regions made their table")
-                .finish_root(top.segments, end);
-            self.live.guards.borrow_mut().extend(top.kept);
+        if let Some(levels) = self.levels.take() {
+            self.finish_regions(levels);
         }
         self.list.trim_spare();
         let picture = match self.picture.take() {
@@ -1350,6 +1368,23 @@ impl Recorder {
             None => Picture::from_list(self.list),
         };
         Content::new(picture, self.live)
+    }
+
+    /// Closes the top level of a recording that opened regions: the
+    /// table learns the root's segments, and the content keeps what the
+    /// top level kept.
+    fn finish_regions(&self, Levels { mut frames, .. }: Levels) {
+        let mut top = frames.pop().expect("a recording has its own level");
+        assert!(frames.is_empty(), "every region closed");
+        let end = self.here();
+        top.close_run(end);
+        self.live
+            .regions
+            .borrow_mut()
+            .as_mut()
+            .expect("a recording with regions made their table")
+            .finish_root(top.segments, end);
+        self.live.guards.borrow_mut().extend(top.kept);
     }
 
     /// Subscribes to a value's later changes, which update operand `convert`
@@ -1368,7 +1403,10 @@ impl Recorder {
         let guard = subscribe.start(Watch {
             destination: Destination::Slot {
                 state: Rc::downgrade(&self.live),
-                command: self.key_base + command,
+                command: self
+                    .levels
+                    .as_ref()
+                    .map_or(command, |levels| levels.key_base + command),
                 convert,
             },
         });
@@ -1590,8 +1628,6 @@ pub struct Content {
     picture: Picture,
     live: Rc<LiveState>,
     sent: bool,
-    /// Region edits applied to `picture` and not yet sent.
-    staged: Vec<Splice>,
 }
 
 /// Spare storage a retired [`Content`] leaves for the next recording.
@@ -1636,27 +1672,53 @@ impl Content {
             picture,
             live,
             sent: false,
-            staged: Vec::new(),
         }
     }
 
     /// Applies the region edits queued since the last call to the list,
-    /// staging each as the splices that send it.
+    /// staging each as the splices that send it. A content with no unsent
+    /// edit reads one flag.
+    #[inline]
     fn flush_edits(&mut self) {
-        let edits = {
-            let mut regions = self.live.regions.borrow_mut();
-            match regions.as_mut() {
-                Some(table) if !table.edits.is_empty() => std::mem::take(&mut table.edits),
-                _ => return,
-            }
-        };
+        if self.live.edited.get() {
+            self.apply_edits();
+        }
+    }
+
+    /// The splices of every unsent edit, each applied to the list first;
+    /// `None` when no edit is unsent.
+    #[inline]
+    fn take_edits(&mut self) -> Option<Vec<Splice>> {
+        if !self.live.edited.get() {
+            return None;
+        }
+        self.apply_edits();
+        self.live.edited.set(false);
+        let mut regions = self.live.regions.borrow_mut();
+        let table = regions
+            .as_mut()
+            .expect("an edited content keeps its regions");
+        Some(std::mem::take(&mut table.staged))
+    }
+
+    fn apply_edits(&mut self) {
+        let edits = std::mem::take(
+            &mut self
+                .live
+                .regions
+                .borrow_mut()
+                .as_mut()
+                .expect("an edited content keeps its regions")
+                .edits,
+        );
+        let mut staged = Vec::new();
         let list = self.picture.list_mut();
         for PendingEdit { shift, insert } in edits {
             match shift {
                 Shift::Replace { at, remove, .. } => {
                     let splice = Splice { at, remove, insert };
                     list.splice(&splice);
-                    self.staged.push(splice);
+                    staged.push(splice);
                 }
                 Shift::Move { from, len, to } => {
                     // Sent as the block leaving and coming back: the
@@ -1674,11 +1736,18 @@ impl Content {
                         insert: block,
                     };
                     list.splice(&back);
-                    self.staged.push(out);
-                    self.staged.push(back);
+                    staged.push(out);
+                    staged.push(back);
                 }
             }
         }
+        self.live
+            .regions
+            .borrow_mut()
+            .as_mut()
+            .expect("an edited content keeps its regions")
+            .staged
+            .append(&mut staged);
     }
 
     /// Records content for a layer laid out at `size` — the [`LayoutSize`]
@@ -1766,17 +1835,19 @@ impl Content {
     #[must_use]
     pub fn retire(self) -> ContentSpare {
         let Self { picture, live, .. } = self;
-        // Watchers only exist while the content carried signals or
-        // regions; a recording with neither never attached the sampling
-        // flag, and its sampling state needs no reset.
-        if live.is_live() {
+        // Watchers, kept values and regions only exist while the content
+        // is changeable; a constant recording never attached the sampling
+        // flag, and neither its sampling nor its region state needs a reset.
+        if live.changeable.get() {
+            live.changeable.set(false);
             live.detach_animated();
             live.anim.set(None);
             live.needs_sample.set(false);
+            drop(live.regions.borrow_mut().take());
+            live.keyed.set(false);
+            live.edited.set(false);
+            live.guards.borrow_mut().clear();
         }
-        drop(live.regions.borrow_mut().take());
-        live.keyed.set(false);
-        live.guards.borrow_mut().clear();
         live.pending.borrow_mut().clear();
         *live.owner.borrow_mut() = None;
         drop(picture);
@@ -1821,7 +1892,7 @@ impl Content {
     /// recording attaches nothing. [`retire`](Self::retire) detaches both.
     pub fn attach(&mut self, owner: Weak<dyn LiveOwner>, flag: &SampleFlag) {
         // Constant recordings need no owner or weak-count traffic.
-        if self.live.is_live() {
+        if self.live.changeable.get() {
             *self.live.owner.borrow_mut() = Some(owner);
             self.live.attach_animated(flag);
         }
@@ -1887,21 +1958,18 @@ impl Content {
     /// whole display list; later calls send the structural [`Edit`] when a
     /// region changed, and otherwise only the slots whose signals changed.
     pub fn take_change(&mut self) -> Option<ContentChange> {
-        self.flush_edits();
+        let splices = self.take_edits();
         let updates = self.live.pending.take();
         if !updates.is_empty() {
             let _ = self.picture.list_mut().apply(updates.iter().cloned());
         }
         if !self.sent {
+            // The whole picture carries every edit already applied to it.
             self.sent = true;
-            self.staged.clear();
             return Some(ContentChange::Replace(self.picture.clone()));
         }
-        if !self.staged.is_empty() {
-            return Some(ContentChange::Edit(Edit {
-                splices: std::mem::take(&mut self.staged),
-                updates,
-            }));
+        if let Some(splices) = splices {
+            return Some(ContentChange::Edit(Edit { splices, updates }));
         }
         (!updates.is_empty()).then_some(ContentChange::Update(updates))
     }

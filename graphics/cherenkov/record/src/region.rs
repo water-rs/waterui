@@ -18,7 +18,7 @@ use std::any::Any;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
-use crate::display_list::DisplayList;
+use crate::display_list::{DisplayList, Splice};
 use crate::record::{LiveState, Recorder};
 use crate::size::LayoutSize;
 
@@ -128,6 +128,9 @@ pub(crate) struct Table {
     keys: Option<Vec<Run>>,
     /// Edits not yet applied to the content's list, in order.
     pub(crate) edits: Vec<PendingEdit>,
+    /// Edits applied to the content's list and not yet sent, as the
+    /// splices that send them.
+    pub(crate) staged: Vec<Splice>,
     /// What the edit in progress replaced or removed kept, released once
     /// the edit is queued and the table's borrow has ended.
     pub(crate) retired: Vec<Box<dyn Any>>,
@@ -155,6 +158,7 @@ impl Table {
             next_key: 0,
             keys: None,
             edits: Vec::new(),
+            staged: Vec::new(),
             retired: Vec::new(),
         }
     }
