@@ -1,9 +1,10 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::num_cast::f64_as_f32;
 use crate::text::TextEngine;
 use crate::text::TextLayout as _;
-use crate::theme::WidgetTheme;
+use crate::theme::{ListMetrics, WidgetTheme};
 use crate::widgets::layout::container::resolve_lazy_container_extent;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
@@ -14,6 +15,7 @@ use waterui_core::views::ViewSnapshot;
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_layout::container::resolve_directional_extent;
+use waterui_layout::padding::EdgeInsets;
 
 pub struct MeasuredTableMetrics {
     pub(crate) column_widths: Vec<f64>,
@@ -1053,8 +1055,57 @@ pub fn navigation_back_button_rect(
     )
 }
 
+/// The `(left, right)` insets a list row opens its content by: the row's
+/// `insets` replace the theme's row insets edge for edge, and unset the theme's
+/// symmetric horizontal inset applies. `EdgeInsets` is logical, so leading is
+/// the side the layout direction starts from.
+pub fn list_row_horizontal_insets(
+    insets: Option<&EdgeInsets>,
+    metrics: ListMetrics,
+    env: &Environment,
+) -> (f64, f64) {
+    let (leading, trailing) = insets.map_or(
+        (metrics.horizontal_inset, metrics.horizontal_inset),
+        |insets| (f64::from(insets.leading()), f64::from(insets.trailing())),
+    );
+    if layout_direction(env).snapshot().is_right_to_left() {
+        (trailing, leading)
+    } else {
+        (leading, trailing)
+    }
+}
+
+/// Measures a list row's content at the width the row lays it out at: the row
+/// width less the row's horizontal insets, with the height open. A row's
+/// height comes from this answer, so content that wraps is held at the lines it
+/// wraps to there. The content is a view this measurement materialized, so it
+/// goes through the transient path.
+pub fn measure_list_row_content<E: TextEngine>(
+    content: &AnyView,
+    row_width: f64,
+    insets: Option<&EdgeInsets>,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+) -> LayoutSize {
+    let (left, right) = list_row_horizontal_insets(insets, theme.list_metrics(), env);
+    let content_width = (row_width - left - right).max(0.0);
+    measure_transient_view_with_proposal(
+        content,
+        ProposalSize::new(Some(f64_as_f32(content_width)), None),
+        state,
+        env,
+        theme,
+    )
+}
+
+/// The list's own size. `width` is the width the list is laid out at when one
+/// is proposed: rows are then measured at it, so the height answers the
+/// wrapping that width causes; `None` is the ideal query, rows at their natural
+/// width.
 pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     list: &ListConfig,
+    width: Option<f32>,
     state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
@@ -1072,12 +1123,24 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
     let first_content = normalize_layout_view(first_item.take_content(), env);
     first_item.set_content(first_content);
-    let content_size = measure_transient_view_intrinsic(first_item.content(), state, env, theme);
     let metrics = theme.list_metrics();
-    let row_height = metrics
-        .vertical_inset
-        .mul_add(2.0, f64::from(content_size.height))
-        .max(metrics.one_line_row_height);
+    let content_size = match width {
+        Some(width) => measure_list_row_content(
+            first_item.content(),
+            f64::from(width),
+            first_item.get_insets(),
+            state,
+            env,
+            theme,
+        ),
+        None => measure_transient_view_intrinsic(first_item.content(), state, env, theme),
+    };
+    let row_height = list_row_height_for_content(
+        f64::from(content_size.height),
+        first_item.get_insets(),
+        list.min_row_height(),
+        metrics,
+    );
 
     let mut row_width = metrics
         .horizontal_inset
@@ -1136,12 +1199,12 @@ pub fn materialize_list_item(
 /// `ListItem::insets` — `None` uses the theme's `vertical_inset` — and
 /// `min_height` is `ListConfig::min_row_height` — `None` uses the theme's
 /// `one_line_row_height`, so both unset reproduces the theme metrics exactly.
-/// The caller measures the content (a [`measure_transient_view_intrinsic`] on
-/// the materialized `ListItem`) and the section chrome height is added on top
+/// The caller measures the content ([`measure_list_row_content`] on the
+/// materialized `ListItem`) and the section chrome height is added on top
 /// of what this returns.
 pub fn list_row_height_for_content(
     content_height: f64,
-    insets: Option<&waterui_layout::padding::EdgeInsets>,
+    insets: Option<&EdgeInsets>,
     min_height: Option<f32>,
     metrics: crate::theme::ListMetrics,
 ) -> f64 {

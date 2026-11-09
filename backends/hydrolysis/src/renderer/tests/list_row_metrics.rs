@@ -23,6 +23,12 @@ use waterui_layout::padding::EdgeInsets;
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
+use crate::num_cast::f64_as_f32;
+use crate::platform::InputEvent;
+use crate::renderer::{HydroState, measure_view_dimensions_with_proposal, normalize_layout_view};
+use crate::text::{FontFamilyResolution, ParleyEngine};
+use crate::theme::WidgetTheme;
+use waterui_core::layout::ProposalSize;
 
 const WINDOW_WIDTH: u32 = 400;
 const WINDOW_HEIGHT: u32 = 700;
@@ -244,4 +250,99 @@ fn unset_metrics_keep_the_theme_row_geometry() {
              bottom {bottom:.1})"
         );
     }
+}
+
+/// A label long enough to wrap onto several lines at any window these tests
+/// open (water-rs/waterui#3939).
+const LONG_LABEL: &str = "This is a deliberately long list row label that must wrap onto several lines at the row width of the window";
+
+/// The height `LONG_LABEL` answers when proposed `width`, measured straight
+/// through the view path — what a row of that content width must hold.
+fn wrapped_label_height(width: f64) -> f64 {
+    let env = test_environment();
+    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
+    let view = normalize_layout_view(AnyView::new(text(LONG_LABEL)), &env);
+    let height = measure_view_dimensions_with_proposal(
+        &view,
+        ProposalSize::new(Some(f64_as_f32(width)), None),
+        &mut state,
+        &env,
+        &theme,
+    )
+    .size
+    .height;
+    f64::from(height)
+}
+
+fn wrapping_list() -> AnyViewBuilder<AnyView> {
+    let rows = Binding::container(vec![SelfId::new(0_u64)]);
+    AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(List::for_each(SignalCollection::new(rows.clone()), |_| {
+            ListItem::new(text(LONG_LABEL))
+        }))
+    })
+}
+
+fn only_row_height(updates: &[TreeUpdate]) -> f64 {
+    updates
+        .iter()
+        .rev()
+        .find_map(|update| {
+            update
+                .nodes
+                .iter()
+                .find_map(|(_, node)| (node.role() == Role::ListItem).then(|| node.bounds())?)
+        })
+        .expect("the row must publish bounds")
+        .height()
+}
+
+/// A row holds its content as laid out at the row's content width: a label that
+/// wraps there gets the wrapped height plus the vertical insets, not the
+/// one-line height of an unbounded measure (water-rs/waterui#3939).
+#[test]
+fn a_list_row_holds_its_wrapped_label() {
+    let mut runtime = runtime(wrapping_list());
+    let mut at = Instant::now();
+    let updates = settle(&mut runtime, &mut at, 4);
+
+    let wrapped =
+        wrapped_label_height(2.0f64.mul_add(-THEME_HORIZONTAL_INSET, f64::from(WINDOW_WIDTH)));
+    assert!(
+        wrapped > LABEL_SIZE * 2.0,
+        "the label must wrap at the content width (answered {wrapped})"
+    );
+    let row = only_row_height(&updates);
+    assert!(
+        row >= 2.0f64.mul_add(THEME_VERTICAL_INSET, wrapped) - 0.5,
+        "row {row:.1} must hold the wrapped label {wrapped:.1} plus insets"
+    );
+}
+
+/// Narrowing the window re-measures the row at the new content width: the label
+/// wraps onto more lines and the row grows with it.
+#[test]
+fn a_list_row_remeasures_when_the_window_width_changes() {
+    let mut runtime = runtime(wrapping_list());
+    let mut at = Instant::now();
+    let wide = only_row_height(&settle(&mut runtime, &mut at, 4));
+
+    let narrow_width = 240;
+    runtime.push_input_event(InputEvent::Resize {
+        width: narrow_width,
+        height: WINDOW_HEIGHT,
+    });
+    let narrow = only_row_height(&settle(&mut runtime, &mut at, 4));
+
+    let wrapped =
+        wrapped_label_height(2.0f64.mul_add(-THEME_HORIZONTAL_INSET, f64::from(narrow_width)));
+    assert!(
+        narrow >= 2.0f64.mul_add(THEME_VERTICAL_INSET, wrapped) - 0.5,
+        "narrow row {narrow:.1} must hold the label wrapped to {wrapped:.1} plus insets"
+    );
+    assert!(
+        narrow > wide,
+        "narrowing the window must grow the row (wide {wide:.1}, narrow {narrow:.1})"
+    );
 }
