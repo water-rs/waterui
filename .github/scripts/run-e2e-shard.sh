@@ -182,17 +182,16 @@ if [[ "${platform}" == "ios" ]]; then
   # a healthy answer lands in ~0.5 s. The sampler fires inside the command
   # bound, so the wedge's stacks land in the log while the guilty process is
   # still alive (#1539). A 30 s scoped capture leaves ~15 s of collection
-  # headroom after the sample fires; the 120 s warmup leaves far more.
+  # headroom after the sample fires.
   # Diagnostic collectors share one bounded budget — defined before the
-  # sampler because the warmup's subshell inherits it at launch time.
+  # sampler because its subshell inherits it at launch time.
   DIAG_DEADLINE_S=30
   stall_sampler_start() {
     local diag="$1"
-    local after="${2:-15}"
     (
       # Each sampler marks itself with a per-invocation file, so a later
       # capture's sleep cannot be mistaken for an earlier one's collection.
-      sleep "${after}"
+      sleep 15
       touch "${diag}.fired.${BASHPID}"
       {
         echo "=== screenshot stall sample $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
@@ -252,29 +251,6 @@ if [[ "${platform}" == "ios" ]]; then
     fi
     rm -f "${diag}.fired.${pid}"
   }
-
-  # The first `simctl io screenshot` each boot pays a one-time cost while the
-  # io channel's render pipeline initializes — 20-30 s in nightly receipts,
-  # 451 s in the run behind #1539. Inside the settle loop that stall consumed
-  # the shared capture budget before the next deadline check. One warmup here
-  # moves the stall out of the budget; it is bounded on its own so a genuinely
-  # hung channel still shows up in the command receipts instead of blocking
-  # the shard.
-  warmup_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-warmup.XXXXXX")"
-  warmup_frame="${warmup_dir}/frame.png"
-  warmup_deadline_at="$("${command_deadline}" deadline --seconds 120)"
-  warmup_sampler="$(stall_sampler_start "${logs_dir}/${platform}-warmup-stall-sample.log" 25)"
-  warmup_rc=0
-  "${command_deadline}" run --label "capture:simctl-io-screenshot-warmup" \
-    --deadline-at "${warmup_deadline_at}" --receipt "${receipts_file}" \
-    -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${warmup_frame}" >/dev/null || warmup_rc=$?
-  stall_sampler_stop "${warmup_sampler}" "${logs_dir}/${platform}-warmup-stall-sample.log"
-  if (( warmup_rc != 0 )) || [[ ! -s "${warmup_frame}" ]]; then
-    rm -rf "${warmup_dir}"
-    echo "e2e: the screenshot-pipeline warmup produced no frame — the capture channel is unusable" >&2
-    exit 1
-  fi
-  rm -rf "${warmup_dir}"
 
   # An iOS capture is the whole display (macOS captures the app's own window),
   # so a SpringBoard notification banner lands in the frame and reads as a
