@@ -1,6 +1,6 @@
 //! The binary boundary the generated extension calls across.
 //!
-//! [`#[widget]`](macro@crate::widget)-attributed functions are exported as
+//! `#[waterui::widget]`-attributed functions are exported as
 //! `waterui_widget_<crate>_<fn>` C symbols that take a JSON [`WidgetContext`]
 //! and return a [`Buffer`] — an owned, leaked byte buffer carrying the
 //! serialized [`Timeline`]. The extension frees each buffer through
