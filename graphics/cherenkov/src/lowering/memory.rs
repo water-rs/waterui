@@ -1,10 +1,15 @@
 //! Heap accounting shared by retained command-list consumers.
+//!
+//! Backends account their retained commands once per frame, so every
+//! function here is `#[inline]`: each consuming crate gets its own copy,
+//! which its accounting loop can inline.
 
 use kurbo::PathEl;
 use std::mem::{size_of, size_of_val};
 
 /// Heap bytes of one retained source-list command.
 #[must_use]
+#[inline]
 pub fn command_bytes(command: &crate::Command) -> u64 {
     match command {
         crate::Command::Fill { shape, paint } | crate::Command::Stroke { shape, paint, .. } => {
@@ -21,6 +26,7 @@ pub fn command_bytes(command: &crate::Command) -> u64 {
 
 /// Heap bytes of a shape's path elements.
 #[must_use]
+#[inline]
 pub fn shape_bytes(shape: &crate::ShapeData) -> u64 {
     match shape {
         crate::ShapeData::Path { elements, .. } => (elements.len() * size_of::<PathEl>()) as u64,
@@ -30,11 +36,13 @@ pub fn shape_bytes(shape: &crate::ShapeData) -> u64 {
 
 /// Heap bytes of a glyph run's positioned glyphs and coordinates.
 #[must_use]
+#[inline]
 pub fn glyph_run_bytes(run: &crate::GlyphRun) -> u64 {
     (run.glyphs.len() * size_of::<crate::Glyph>() + run.coords.len() * size_of::<i16>()) as u64
 }
 
 /// Heap bytes of a front-end paint's own allocations.
+#[inline]
 fn paint_bytes(paint: &crate::Paint) -> u64 {
     match paint {
         crate::Paint::Linear(g) => (g.stops.capacity() * size_of::<crate::ColorStop>()) as u64,
