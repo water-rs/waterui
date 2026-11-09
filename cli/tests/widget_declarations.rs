@@ -20,7 +20,7 @@ use waterui_cli::toolchain::Host;
 /// The deadline of one `xcrun swiftc` step.
 ///
 /// The step is a few seconds of work when the machine is quiet (about 6 s for
-/// the intent probe on an M2 Max), but the nightly `cli-ignored` leg runs the
+/// the intent probe on an M2 Max), but the nightly's ignored-test pass runs the
 /// whole ignored suite at once on a small shared runner: the Swift driver
 /// competes with the other tests' cargo builds. There the first attempt of the
 /// intent probe exceeded 120 s while the retry took 28 s for the whole test. The
@@ -216,7 +216,7 @@ fn build_fixture(profile: &str) -> WidgetFixture {
 }
 
 #[test]
-#[ignore = "builds framework source; runs in the nightly cli-ignored job"]
+#[ignore = "builds framework source; runs in the nightly's ignored-test pass"]
 fn widget_declarations_pair_exports_with_records() {
     for profile in ["dev", "release"] {
         assert_fixture_declarations(&build_fixture(profile));
@@ -311,7 +311,7 @@ fn fixture_swift_sources(symbols: &ArtifactSymbols) -> PathBuf {
 
 #[cfg(target_os = "macos")]
 #[test]
-#[ignore = "builds framework source and uses the Swift SDK; runs in nightly cli-ignored"]
+#[ignore = "builds framework source and uses the Swift SDK; runs in the nightly's ignored-test pass"]
 fn widget_snapshot_round_trips_through_swift() {
     let fixture = build_fixture("dev");
     smol::block_on(async {
@@ -381,7 +381,7 @@ async fn run_swift_probe(
 
 #[cfg(target_os = "macos")]
 #[test]
-#[ignore = "builds framework source and executes AppIntents; runs in nightly cli-ignored"]
+#[ignore = "builds framework source and executes AppIntents; runs in the nightly's ignored-test pass"]
 fn widget_intent_performs_through_generated_app_intent() {
     #[derive(askama::Template)]
     #[template(path = "apple_widgets/IntentProbe.swift.tpl", escape = "none")]
@@ -433,7 +433,7 @@ fn widget_intent_performs_through_generated_app_intent() {
 
 #[cfg(target_os = "macos")]
 #[test]
-#[ignore = "builds framework source and uses the Swift SDK; runs in nightly cli-ignored"]
+#[ignore = "builds framework source and uses the Swift SDK; runs in the nightly's ignored-test pass"]
 fn widget_renderer_typechecks_without_intents() {
     let fixture = build_fixture("dev");
     smol::block_on(async {

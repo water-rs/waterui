@@ -239,64 +239,6 @@ jobs:
         with:
           name: nightly-feature-checks
 
-  # The cli's `#[ignore]`d suite (water-rs/cli's nightly `ignored` job,
-  # #1446): the tests that build real framework source or hit the network —
-  # the workspace-resolved example graphs,
-  # the inspector app layout, the Xcode drives on macOS. The checkout the
-  # tests resolve is this tree itself, so the signal is "the cli matches the
-  # framework it ships with".
-  cli-ignored:
-    name: CLI ignored / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, xcode-27, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-rust
-        with:
-          # The cli's `artifact_symbols` suite builds a wasm rlib fixture.
-          targets: wasm32-unknown-unknown
-          cache: "false"
-      # The ignored tests compile workspace crates — the scaffolded web app
-      # links the GTK/VA-API/PipeWire stack — so they need the framework's
-      # own native dependency set.
-      - uses: ./.github/actions/setup-linux-deps
-        if: runner.os == 'Linux'
-      # `filtrate`'s `shaderloom` build script needs `dxc` to compile WGSL to
-      # DXIL; the Windows image does not ship it.
-      - uses: ./.github/actions/install-dxc
-        if: runner.os == 'Windows'
-      # #3093: the ignored hydrolysis suite's test binaries create wgpu
-      # devices; stage the pinned WARP before nextest builds them.
-      - uses: ./.github/actions/install-warp
-        if: runner.os == 'Windows'
-        with:
-          into: |
-            target/debug/deps
-            target/debug
-      - uses: ./.github/actions/install-tool
-        with:
-          tool: cargo-nextest@0.9.145
-          path: ~/.cargo/bin/cargo-nextest*
-      # The nextest runs' `cli-roboto` and `test-fonts` setup scripts invoke
-      # `uv run`; the hydrolysis step's fonts come from the shared cache.
-      - uses: astral-sh/setup-uv@v6
-      - uses: ./.github/actions/test-fonts-cache
-      # The `create --template web` tests scaffold and build a Vite frontend.
-      - uses: oven-sh/setup-bun@v2
-      - run: cargo nextest run --timings --locked --profile ci -p waterui-cli --run-ignored ignored-only
-      # The Android WebView bridge's composed-script round trip through a
-      # real JS engine. `bun` is on PATH from the step above. Named, not
-      # `ignored-only`: hydrolysis's other ignored test is a report-only
-      # perf probe that stays out of CI (#4012).
-      - run: cargo nextest run --timings --locked --profile ci -p hydrolysis --run-ignored ignored-only -E 'test(=widgets::platform::webview::android_protocol::tests::the_composed_async_call_survives_a_real_js_round_trip)'
-      - uses: ./.github/actions/upload-cargo-timings
-        if: always()
-        with:
-          name: nightly-cli-ignored-${{ strategy.job-index }}
-
   # The release `water` CLI of this revision, built once per platform: the
   # `cli-e2e` legs and `apple-e2e` install it instead of compiling their own
   # (#4048), and it is the one downloadable CLI of a nightly. The build stays
@@ -1588,7 +1530,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1632,7 +1574,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-e2e]
     if: failure() && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 5
