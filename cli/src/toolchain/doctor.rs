@@ -947,12 +947,12 @@ async fn apple_checks(host: &Host, project: &ProjectContext) -> Vec<DoctorItem> 
             DoctorItem::skipped(ids::IOS_SIMULATOR_SDK, "iOS Simulator SDK"),
             DoctorItem::skipped(ids::IOS_SIMULATORS, "iOS Simulators"),
             DoctorItem::skipped(ids::MACOS_SDK, "macOS SDK"),
-            DoctorItem::skipped(ids::APPLE_METAL_TOOLCHAIN, "Metal Toolchain"),
             DoctorItem::skipped_with_message(
                 ids::APPLE_RUST_TARGETS,
                 "Apple Rust targets",
                 "Apple platforms can only be built on macOS.",
             ),
+            DoctorItem::skipped(ids::APPLE_METAL_TOOLCHAIN, "Metal Toolchain"),
         ];
     }
 
@@ -990,8 +990,8 @@ async fn apple_checks(host: &Host, project: &ProjectContext) -> Vec<DoctorItem> 
         ),
         ios_simulators,
         simple_check(ids::MACOS_SDK, "macOS SDK", macos_sdk),
-        metal_toolchain,
         rust_targets,
+        metal_toolchain,
     ]
 }
 
