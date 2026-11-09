@@ -5574,10 +5574,9 @@ mod winit_impl {
 
     #[cfg(target_os = "windows")]
     fn desktop_multi_click_config(scale_factor: f64) -> MultiClickConfig {
+        use windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi;
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetSystemMetricsForDpi, SM_CXDOUBLECLK, SM_CYDOUBLECLK,
-        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SM_CXDOUBLECLK, SM_CYDOUBLECLK};
         // Win32's logical DPI is 96 at a scale factor of 1.
         let dpi = crate::num_cast::f64_as_u32((scale_factor * 96.0).round());
         // SAFETY: both functions read system settings and take only plain
@@ -5601,7 +5600,7 @@ mod winit_impl {
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    fn desktop_multi_click_config(_scale_factor: f64) -> MultiClickConfig {
+    const fn desktop_multi_click_config(_scale_factor: f64) -> MultiClickConfig {
         MultiClickConfig::GTK
     }
 

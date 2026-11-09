@@ -902,7 +902,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 /// Remembers the size and scale a surface was last told about, so its
 /// [`SurfaceInputEvent::Resize`] is delivered once per change rather than
 /// once per frame.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ResizeTracker {
     last: Option<(kurbo::Size, f32)>,
 }

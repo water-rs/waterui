@@ -349,8 +349,6 @@ impl BrowserWindow {
         let scale_factor = Rc::new(Cell::new(browser_window.device_pixel_ratio()));
         let pending_resize = Rc::new(Cell::new(None));
         let system = scroll_platform_for(&browser_window);
-        let touch_scroll_config = TouchScrollConfig::for_platform(system);
-        let input_conventions = InputConventions::for_platform(system);
 
         let initial_resize = measure_root(&browser_window, &root);
         pending_resize.set(Some(initial_resize));
@@ -443,8 +441,8 @@ impl BrowserWindow {
             safe_area,
             schedule_frame,
             current_cursor_style: CursorStyle::Arrow,
-            touch_scroll_config,
-            input_conventions,
+            touch_scroll_config: TouchScrollConfig::for_platform(system),
+            input_conventions: InputConventions::for_platform(system),
             top_edge_color: None,
             _intersection_observer: intersection_observer,
             _listeners: listeners,
