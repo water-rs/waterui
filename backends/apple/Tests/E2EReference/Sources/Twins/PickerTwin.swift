@@ -124,15 +124,26 @@ struct PickerTwin: View {
     .padding(12)
   }
 
+  /// `Calendar` and `MultiDatePicker` draw their label above the month
+  /// grid, leading, 8 pt apart — not beside it as a labelled `DatePicker`.
+  private func labeledAbove(_ label: String, @ViewBuilder _ grid: () -> some View) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(label)
+      grid().labelsHidden()
+    }
+  }
+
   private var calendarSection: some View {
     VStack(spacing: 10) {
       Text("Calendar").font(.headline)
       Text("Month-grid calendar with single-date selection and passive decorations").font(.body)
       Spacer(minLength: 0)
-      DatePicker(
-        "Trip Date", selection: $calendarDate, in: dateRange, displayedComponents: .date
-      )
-      .datePickerStyle(.graphical)
+      labeledAbove("Trip Date") {
+        DatePicker(
+          "Trip Date", selection: $calendarDate, in: dateRange, displayedComponents: .date
+        )
+        .datePickerStyle(.graphical)
+      }
       Text("Selected calendar date: \(calendarDate, format: .dateTime.year().month().day())")
     }
     .padding(12)
@@ -143,15 +154,17 @@ struct PickerTwin: View {
       Text("Multi-Date Picker").font(.headline)
       Text("Month-grid calendar for selecting multiple dates").font(.body)
       Spacer(minLength: 0)
-      #if os(iOS)
-        MultiDatePicker("Available Dates", selection: $multiDates, in: Self.day(2025, 1, 1) ..< Self.day(2026, 1, 1))
-      #else
-        // macOS has no MultiDatePicker; WUI's macOS realization is a month
-        // calendar laid out like the graphical NSDatePicker, so the
-        // graphical DatePicker is the closest visual match.
-        DatePicker("Available Dates", selection: $calendarDate, in: dateRange, displayedComponents: .date)
-          .datePickerStyle(.graphical)
-      #endif
+      labeledAbove("Available Dates") {
+        #if os(iOS)
+          MultiDatePicker("Available Dates", selection: $multiDates, in: Self.day(2025, 1, 1) ..< Self.day(2026, 1, 1))
+        #else
+          // macOS has no MultiDatePicker; WUI's macOS realization is a month
+          // calendar laid out like the graphical NSDatePicker, so the
+          // graphical DatePicker is the closest visual match.
+          DatePicker("Available Dates", selection: $calendarDate, in: dateRange, displayedComponents: .date)
+            .datePickerStyle(.graphical)
+        #endif
+      }
       Text("Selected dates: \(multiDates.count)")
     }
     .padding(12)
