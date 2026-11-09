@@ -20,8 +20,7 @@ use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_cl
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    NSObjectUIAccessibility, NSObjectUIAccessibilityAction,
-    UIAccessibilityConvertFrameToScreenCoordinates, UIAccessibilityCustomAction,
+    NSObjectUIAccessibility, NSObjectUIAccessibilityAction, UIAccessibilityCustomAction,
     UIAccessibilityTraitButton, UIAccessibilityTraitLink, UICommand, UIEdgeInsets, UIEvent,
     UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyCommand, UIMenu, UIPress,
     UIPressesEvent, UITraitDisplayScale, UITraitEnvironment, UIView,
