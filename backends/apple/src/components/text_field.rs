@@ -469,7 +469,7 @@ struct FieldState {
 /// `WuiTextField`'s constraints as manual frames. `UIKit` centers the input
 /// inside the region between the label and the container's bottom, the way
 /// the field's `inputRegion` layout guide does.
-fn layout_children(response: Rect, state: &FieldState) {
+fn layout_children(view: &PlatformView, response: Rect, state: &FieldState) {
     let bounds = response;
     let label = state.label.layout().measure(ProposalSize::UNSPECIFIED).size;
     let has_label = label.height > 0.0;
@@ -477,10 +477,13 @@ fn layout_children(response: Rect, state: &FieldState) {
 
     // The label pins top+leading and keeps its intrinsic width; the measure
     // reports bare text bounds, which is narrower than the cell's drawing
-    // frame, so the full region width is what keeps it unclipped.
-    view::set_frame(
+    // frame, so the full region width is its allocation and its response
+    // is anchored at the leading edge of it.
+    proposal::place_leading(
         state.label.view(),
         Rect::new(0.0, 0.0, bounds.size.width, f64::from(label.height)).translated(response.origin),
+        ProposalSize::UNSPECIFIED,
+        cocoa_ui::view::is_right_to_left(view),
     );
 
     let region_top = if has_label {
@@ -620,7 +623,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
         host.set_layout_handler({
             let state = Rc::clone(&state);
-            move |view| layout_children(proposal::response(view), &state)
+            move |view| layout_children(view, proposal::response(view), &state)
         });
 
         let control = view::retain_base(field_view);

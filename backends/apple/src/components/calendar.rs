@@ -153,10 +153,13 @@ impl CalendarLeaf {
             clippy::cast_possible_truncation,
             reason = "the layout contract is f32; view widths always fit"
         )]
-        let label_height = f64::from(self.label_size(Some(width as f32)).height);
-        cocoa_ui::view::set_frame(
+        let offer = Some(width as f32);
+        let label_height = f64::from(self.label_size(offer).height);
+        proposal::place_leading(
             self.label.view(),
             Rect::new(0.0, 0.0, width, label_height).translated(response.origin),
+            ProposalSize::new(offer, None),
+            cocoa_ui::view::is_right_to_left(view),
         );
         let top = label_height + LABEL_SPACING;
         // AppKit's calendar has a fixed size; UIKit's fills the rest.

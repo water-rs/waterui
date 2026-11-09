@@ -79,16 +79,17 @@ struct FieldState {
 /// `WuiSecureField`'s constraints as manual frames. `UIKit` centers the
 /// input inside the region between the label and the container's bottom,
 /// the way the field's `inputRegion` layout guide does.
-fn layout_children(response: Rect, state: &FieldState) {
+fn layout_children(view: &PlatformView, response: Rect, state: &FieldState) {
     let bounds = response;
     let label = state.label.layout().measure(ProposalSize::UNSPECIFIED).size;
     let has_label = label.height > 0.0;
     view::set_hidden(state.label.view(), !has_label);
 
-    view::set_frame(
+    proposal::place_leading(
         state.label.view(),
-        Rect::new(0.0, 0.0, f64::from(label.width), f64::from(label.height))
-            .translated(response.origin),
+        Rect::new(0.0, 0.0, bounds.size.width, f64::from(label.height)).translated(response.origin),
+        ProposalSize::UNSPECIFIED,
+        cocoa_ui::view::is_right_to_left(view),
     );
 
     let region_top = if has_label {
@@ -213,7 +214,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
         host.set_layout_handler({
             let state = Rc::clone(&state);
-            move |view| layout_children(proposal::response(view), &state)
+            move |view| layout_children(view, proposal::response(view), &state)
         });
 
         let control = view::retain_base(field_view);
