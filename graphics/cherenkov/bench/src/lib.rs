@@ -569,6 +569,9 @@ impl PresentKind {
     }
 }
 
+/// [`Engine::gpu_timing_unavailable`] of every CPU rasterizer.
+pub const CPU_RASTERIZER: &str = "a CPU rasterizer submits no GPU work to time";
+
 /// A rendering-engine adapter.
 ///
 /// Lifecycle: [`Engine::prepare`] runs once per scene outside the timed
@@ -584,10 +587,11 @@ impl PresentKind {
 pub trait Engine {
     /// Provenance pinned into every result JSON.
     fn info(&self) -> &EngineInfo;
-    /// Why this adapter cannot report GPU execution time using engine APIs.
-    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
-        None
-    }
+    /// Why this adapter cannot report GPU execution time using engine APIs,
+    /// or `None` when it times every frame from real GPU timestamps. Under
+    /// `None` the frame loop fails a run whose measured frame carries no GPU
+    /// time: that frame submitted no GPU work, so it measured nothing.
+    fn gpu_timing_unavailable(&self) -> Option<&'static str>;
     /// The backend signal [`Engine::completion`] comes from, or why the
     /// adapter has none.
     fn completion_signal(&self) -> CompletionSignal;

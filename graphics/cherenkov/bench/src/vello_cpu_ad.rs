@@ -216,6 +216,10 @@ impl Engine for VelloCpu {
         &self.info
     }
 
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        Some(crate::CPU_RASTERIZER)
+    }
+
     fn supported(&self) -> BTreeSet<Feature> {
         vello_features().into_iter().collect()
     }

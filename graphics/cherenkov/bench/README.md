@@ -22,6 +22,9 @@ timing, and `percentiles` gives p50/p90/p99 of each field:
 - `gpu_seconds`, `passes`, `phases` — GPU time from real timestamps, per
   pass, and per render-thread phase; `null` or omitted where the backend
   provides none, with `gpu_timing_unavailable` naming why. Never estimated.
+  When `gpu_timing_unavailable` is `null`, a measured frame without GPU
+  time fails the run: it submitted no timed GPU work, so the run would
+  report none of the scene's GPU cost.
 - `latency_seconds` — encode-to-completion wall time, present only under
   `--wait-for-completion`, which finishes each frame before the next
   encode.

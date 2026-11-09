@@ -1396,6 +1396,10 @@ impl Engine for Cherenkov {
         &self.info
     }
 
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        Some(crate::CPU_RASTERIZER)
+    }
+
     fn supported(&self) -> BTreeSet<Feature> {
         cherenkov_features().into_iter().collect()
     }

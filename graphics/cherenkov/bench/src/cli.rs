@@ -1772,6 +1772,7 @@ fn run_frames(
         }
     }
     attribute_gpu(&mut samples, warmup, engine.finish_gpu()?);
+    check_gpu_timed(&*engine, &samples)?;
     // finish_gpu has waited for every submission, so every in-flight
     // completion callback has run.
     if !completions.is_empty() {
@@ -1859,6 +1860,35 @@ fn attribute_completions(
         previous = Some(at);
     }
     Ok(())
+}
+
+/// Fails unless every measured frame carries its GPU time, when `engine`
+/// times the GPU. A frame without one submitted no timed GPU work —
+/// an engine that skipped the frame's rendering, say — so the run would
+/// report a scene's GPU cost from frames that rendered none of it.
+///
+/// # Errors
+/// [`BenchError::Engine`] naming how many measured frames carry no GPU time
+/// and the first of them.
+fn check_gpu_timed(engine: &dyn Engine, samples: &[FrameSample]) -> Result<(), BenchError> {
+    if engine.gpu_timing_unavailable().is_some() {
+        return Ok(());
+    }
+    let mut untimed = samples
+        .iter()
+        .enumerate()
+        .filter(|(_, sample)| sample.gpu_seconds.is_none())
+        .map(|(index, _)| index);
+    let Some(first) = untimed.next() else {
+        return Ok(());
+    };
+    Err(BenchError::Engine(format!(
+        "{} of {} measured frames carry no GPU time (first: measured frame {first}) although \
+         the adapter times the GPU: those frames submitted no timed GPU work, so the run \
+         measures none of the scene's GPU cost",
+        untimed.count() + 1,
+        samples.len()
+    )))
 }
 
 /// Stores each GPU timing on the measured sample of the frame it times;
@@ -2616,7 +2646,10 @@ mod completion_tests {
     #[derive(Default)]
     struct Probe {
         events: Vec<&'static str>,
-        pending_frame: Option<u64>,
+        /// Submitted frames whose timestamps the next drain returns.
+        pending_frames: Vec<u64>,
+        /// Frames that submit no GPU work and so carry no time.
+        untimed: Vec<u64>,
         awaiting_completion: bool,
     }
 
@@ -2636,7 +2669,9 @@ mod completion_tests {
         }
         fn submit(&mut self, frame: u64, _: bool) -> Result<crate::Submit, BenchError> {
             self.events.push("submit");
-            self.pending_frame = Some(frame);
+            if !self.untimed.contains(&frame) {
+                self.pending_frames.push(frame);
+            }
             self.awaiting_completion = true;
             Ok(crate::Submit {
                 image: None,
@@ -2666,24 +2701,39 @@ mod completion_tests {
         fn finish_gpu(&mut self) -> Result<Vec<crate::GpuSample>, BenchError> {
             self.events.push("collect timestamps");
             Ok(self
-                .pending_frame
-                .take()
-                .into_iter()
+                .pending_frames
+                .drain(..)
                 .flat_map(|frame| crate::GpuSample::whole_frame(frame, Some(0.001)))
                 .collect())
+        }
+        fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+            None
         }
         fn counters(&self) -> crate::Counters {
             crate::Counters::default()
         }
         fn memory(&self) -> crate::memory::AdapterMemory {
-            unreachable!("test has no warmup memory samples")
+            fn unavailable<T>() -> crate::memory::Reading<T> {
+                crate::memory::Reading::Unavailable("test probe".into())
+            }
+            crate::memory::AdapterMemory {
+                engine: unavailable(),
+                wgpu_allocator: unavailable(),
+                skia_budgeted: unavailable(),
+                vk_memory_budget: unavailable(),
+                metal_allocated_bytes: unavailable(),
+            }
         }
         fn device(&self) -> crate::DeviceInfo {
             unreachable!("frame loop does not request device metadata")
         }
     }
 
-    fn run_probe(wait_for_completion: bool) -> (Probe, Window) {
+    fn run_frames_of(
+        engine: &mut Probe,
+        warmup: u32,
+        wait_for_completion: bool,
+    ) -> Result<Window, BenchError> {
         let scene = Scene::new(1, 1, cherenkov_scene::Color::srgb(0.0, 0.0, 0.0));
         let blobs = std::collections::BTreeMap::new();
         let input = EncodeInput {
@@ -2691,12 +2741,11 @@ mod completion_tests {
             blobs: &blobs,
             scroll_offset: None,
         };
-        let mut engine = Probe::default();
-        let window = run_frames(
-            &mut engine,
+        run_frames(
+            engine,
             &input,
             2,
-            0,
+            warmup,
             FrameLoopOptions {
                 pause_at: None,
                 period: None,
@@ -2706,8 +2755,47 @@ mod completion_tests {
             },
             None,
         )
-        .unwrap();
+    }
+
+    fn run_probe(wait_for_completion: bool) -> (Probe, Window) {
+        let mut engine = Probe::default();
+        let window = run_frames_of(&mut engine, 0, wait_for_completion).unwrap();
         (engine, window)
+    }
+
+    #[test]
+    fn fails_a_measured_frame_without_gpu_time() {
+        // The second measured frame submits no GPU work, like a retained
+        // frame an engine skips: the run measured nothing for it.
+        let mut engine = Probe {
+            untimed: vec![3],
+            ..Probe::default()
+        };
+        let error = run_frames_of(&mut engine, 2, false)
+            .err()
+            .expect("an untimed measured frame fails the run")
+            .to_string();
+        assert!(
+            error.contains("1 of 2 measured frames carry no GPU time (first: measured frame 1)"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn warmup_frames_need_no_gpu_time() {
+        // Frames 0 and 1 warm up without GPU work; measured frames 2 and 3
+        // are timed.
+        let mut engine = Probe {
+            untimed: vec![0, 1],
+            ..Probe::default()
+        };
+        let window = run_frames_of(&mut engine, 2, false).unwrap();
+        assert!(
+            window
+                .samples
+                .iter()
+                .all(|sample| sample.gpu_seconds == Some(0.001))
+        );
     }
 
     #[test]

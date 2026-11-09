@@ -1791,6 +1791,17 @@ impl Engine for Cherenkov {
         &self.info
     }
 
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        // `GpuConfig::timestamps` enables the queries exactly when the
+        // adapter supports them.
+        (!self
+            .shared_device
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY))
+        .then_some("the device does not support GPU timestamp queries")
+    }
+
     fn supported(&self) -> BTreeSet<Feature> {
         cherenkov_features().into_iter().collect()
     }
