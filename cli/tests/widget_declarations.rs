@@ -17,6 +17,20 @@ use waterui_cli::apple::widgets::{declared_intents, declared_widgets};
 use waterui_cli::artifact_symbols::ArtifactSymbols;
 use waterui_cli::toolchain::Host;
 
+/// The deadline of one `xcrun swiftc` step.
+///
+/// The step is a few seconds of work when the machine is quiet (about 6 s for
+/// the intent probe on an M2 Max), but the nightly `cli-ignored` leg runs the
+/// whole ignored suite at once on a small shared runner: the Swift driver
+/// competes with the other tests' cargo builds, and the first compile against
+/// a fresh image has to build the SDK's module cache. There the first attempt
+/// of the intent probe exceeded 120 s while the retry, warm, took 28 s. The
+/// bound is 2.5 times the 120 s that proved too short and leaves the fixture
+/// build room inside nextest's 600 s ceiling for the whole test; a real hang
+/// still fails, only later.
+#[cfg(target_os = "macos")]
+const SWIFTC_DEADLINE: Duration = Duration::from_secs(300);
+
 /// The staged fixture's `Cargo.toml`.
 ///
 /// The fixture builds the enclosing checkout's framework source, so it must
@@ -355,7 +369,7 @@ async fn run_swift_probe(
     args.extend(fixture.native_links.iter().cloned());
     let host = Host::current().with_cwd(directory);
     let compile = host
-        .output_within("xcrun", args, Duration::from_secs(120))
+        .output_within("xcrun", args, SWIFTC_DEADLINE)
         .await
         .expect("compile the shipped Swift bridge against the Rust exports");
     assert!(compile.status.success(), "{compile:?}");
@@ -452,7 +466,7 @@ fn widget_renderer_typechecks_without_intents() {
                 .map(PathBuf::into_os_string),
         );
         let checked = Host::current()
-            .output_within("xcrun", args, Duration::from_secs(120))
+            .output_within("xcrun", args, SWIFTC_DEADLINE)
             .await
             .expect("typecheck the renderer with no declared intents");
         assert!(checked.status.success(), "{checked:?}");
