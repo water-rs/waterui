@@ -101,6 +101,7 @@ jobs:
       # `uv run` (`.config/nextest.toml`) — the styled test targets resolve
       # the installed test-font families through system font discovery.
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # Same for the Cherenkov test targets the workspace pass below
       # compiles and runs: their fonts and corpus scenes are generated,
       # not committed. The all-features pass also runs the bench tests
@@ -246,6 +247,7 @@ jobs:
       # fixture setup scripts install their fonts through `uv run`
       # (`.config/nextest.toml`).
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # Same as the test job: the Cherenkov test targets this pass compiles
       # `include_bytes!` generated fonts, and its bench tests read the
       # generated corpus scenes.
