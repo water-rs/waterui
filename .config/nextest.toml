@@ -71,12 +71,15 @@ slow-timeout = { period = "300s", terminate-after = 8 }
 # ceiling is for and exactly what a watchdog should not kill.
 #
 # The dependency graph keeps growing past each ceiling (15×120s was enough
-# at 39610385085 and not at 42492949228), so the suite also gets one retry:
-# the attempt that times out is what warms `target/tests/trybuild`, and the
-# retry then completes in minutes instead of failing the leg outright.
+# at 39610385085 and not at 42492949228): the fixture compiles into its own
+# isolated `target/tests/trybuild`, so a cold CI run rebuilds `waterui` and
+# `waterui-testing` from scratch inside the watchdog window. Rather than
+# growing the ceiling again, the suite gets one retry — the attempt that
+# times out is what warms that cache, and the retry completes the compile
+# and the cases inside the unchanged 1800 s bound.
 [[profile.ci.overrides]]
 filter = 'package(waterui-macros)'
-slow-timeout = { period = "120s", terminate-after = 20 }
+slow-timeout = { period = "120s", terminate-after = 15 }
 retries = { backoff = "fixed", count = 1, delay = "1s" }
 
 # GPU- and process-backed tests are occasionally flaky on shared runners — a
