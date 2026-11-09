@@ -1044,23 +1044,22 @@ fn can_render_frame(view: &Retained<SurfaceView>, first_paint_owed: bool) -> boo
     is_effectively_visible(view) || (first_paint_owed && participates_in_first_paint(view))
 }
 
-/// Positions the presentation layer and tells Core Animation the frames are
-/// already at device-pixel size — `updatePresentationFrame`.
+/// Positions the presentation layer over the surface's response — where a
+/// leaf draws its content (`docs/layout-spec.md` §6) — and tells Core
+/// Animation the frames are already at device-pixel size —
+/// `updatePresentationFrame`.
 fn update_presentation_frame(state: &SurfaceState, view: &Retained<SurfaceView>) {
     let layer = view.presentation_layer();
-    let bounds = view.bounds_size();
+    let frame = view.presentation_frame();
     cocoa_ui::core_animation::without_animation(|| {
-        cocoa_ui::core_animation::set_frame(
-            &layer,
-            cocoa_ui::Rect::new(0.0, 0.0, bounds.width, bounds.height),
-        );
+        cocoa_ui::core_animation::set_frame(&layer, frame);
         cocoa_ui::core_animation::set_contents_scale(&layer, state.current_scale.get());
     });
 }
 
 /// Geometry + deferred allocation — `initializeGpuIfNeeded`.
 fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
-    let bounds = view.bounds_size();
+    let bounds = view.content_rect().size;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         // A genuinely empty view cannot present at all: the live epoch
         // drops rather than carry a zero size beside a configured
@@ -1108,7 +1107,7 @@ fn prepare_presentation(
     view: &Retained<SurfaceView>,
     scale: f64,
 ) -> bool {
-    let bounds = view.bounds_size();
+    let bounds = view.content_rect().size;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return false;
     }
@@ -3068,14 +3067,15 @@ pub mod native_test {
             );
         }
 
-        /// Sets the view's frame — the logical size `initialize_gpu`
-        /// computes the drawable extent from (bounds follow frame for
-        /// an untransformed view).
+        /// Sets the view's frame and runs the layout pass that follows it,
+        /// which commits the response `initialize_gpu` computes the
+        /// drawable extent from.
         pub fn set_view_frame(&self, width: f64, height: f64) {
             cocoa_ui::view::set_frame(
                 self.view.as_platform_view(),
                 cocoa_ui::Rect::new(0.0, 0.0, width, height),
             );
+            cocoa_ui::view::layout_immediately(self.view.as_platform_view());
         }
 
         /// Drives the production `initialize_gpu` — the geometry and
@@ -3163,9 +3163,15 @@ pub mod native_test {
             condition()
         }
 
-        /// The view's current bounds size — what `initialize_gpu` reads.
+        /// The view's current bounds size.
         pub fn view_bounds(&self) -> cocoa_ui::geometry::Size {
-            self.view.bounds_size()
+            cocoa_ui::view::bounds(self.view.as_platform_view()).size
+        }
+
+        /// Where the surface draws — its committed response — what
+        /// `initialize_gpu` sizes the drawable from.
+        pub fn content_rect(&self) -> cocoa_ui::geometry::Rect {
+            self.view.content_rect()
         }
 
         /// The view's backing scale — the factor `initialize_gpu`

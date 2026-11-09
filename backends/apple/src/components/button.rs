@@ -13,7 +13,7 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::action::ActionTarget;
-use cocoa_ui::{PlatformView, Retained, view};
+use cocoa_ui::{PlatformView, Rect as KitRect, Retained, view};
 use waterui::component::button::{ButtonConfig, ButtonStyle};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::{Computed, SignalExt};
@@ -38,6 +38,7 @@ use waterui_core::layout::{
 use crate::components::control_size::platform_control_size;
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -375,19 +376,23 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let button = button.clone();
             let label_container = label_container.clone();
             container.set_layout_handler(move |host| {
-                let bounds = view::bounds(host);
+                // The button draws in its response rectangle, centred in
+                // the frame it was assigned (docs/layout-spec.md §2.4).
+                let bounds = proposal::response(host);
                 view::set_frame(as_view(&button), bounds);
                 let horizontal = f64::from(padding.0);
                 let vertical = f64::from(padding.1);
-                view::set_frame(
-                    &label_container,
-                    cocoa_ui::Rect::new(
-                        horizontal,
-                        vertical,
-                        horizontal.mul_add(-2.0, bounds.size.width).max(0.0),
-                        vertical.mul_add(-2.0, bounds.size.height).max(0.0),
-                    ),
+                let label_frame = KitRect::new(
+                    horizontal,
+                    vertical,
+                    horizontal.mul_add(-2.0, bounds.size.width).max(0.0),
+                    vertical.mul_add(-2.0, bounds.size.height).max(0.0),
                 );
+                // `AppKit`'s label is the bezel's sibling in the host's
+                // space; `UIKit`'s is inside the button, in its own.
+                #[cfg(target_os = "macos")]
+                let label_frame = label_frame.translated(bounds.origin);
+                view::set_frame(&label_container, label_frame);
             });
         }
         #[cfg(target_os = "macos")]

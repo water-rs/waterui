@@ -234,7 +234,7 @@ jobs:
           uv run --with pytest --with 'tree-sitter==0.26.0'
           --with 'tree-sitter-rust==0.24.2' pytest .github/scripts
       - uses: ./.github/actions/upload-cargo-timings
-        if: always()
+        if: always() && needs.changes.outputs.scripts == 'true'
         with:
           name: ci-scripts
 
