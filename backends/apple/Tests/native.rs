@@ -1028,7 +1028,7 @@ mod resolve {
     use waterui_core::metadata::MetadataKey;
     use waterui_core::{IgnorableMetadata, Metadata, Native, NativeView};
 
-    use super::{HostView, Label, Retained, mtm};
+    use super::{HostView, Label, PlatformView, Retained, mtm};
 
     /// A `Metadata` key no handler is registered for — an honest miss,
     /// never fabricated.
@@ -1076,16 +1076,14 @@ mod resolve {
     }
 
     /// A `&'static str` expands `Str` → `Native<Str>` → the text leaf: a
-    /// `HostView` wrapper holding a real kit `Label` with the string's
-    /// attributed text on it — and the layout face still answers measure.
+    /// real kit `Label` with the string's attributed text on it — and the
+    /// layout face still answers measure.
     pub fn a_string_maps_to_the_text_leaf() {
         let leaf = render("hello waterui");
         let view = cocoa_ui::view::retain_base(leaf.view());
-        assert!(view.downcast_ref::<HostView>().is_some());
         assert!(!cocoa_ui::view::is_hidden(&view));
-        let subviews = cocoa_ui::view::subviews(&view);
-        assert_eq!(subviews.len(), 1);
-        let label = subviews[0]
+        let label_view = text_leaf_label(&view);
+        let label = label_view
             .downcast_ref::<Label>()
             .expect("the text leaf mounts a kit label");
         let text = label
@@ -1095,6 +1093,22 @@ mod resolve {
         let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED);
         assert!(measured.size.width > 0.0);
         assert!(measured.size.height > 0.0);
+    }
+
+    /// The label view of a string's rich-text leaf: a `HostView` wrapping
+    /// exactly one kit label.
+    #[cfg(not(feature = "plain"))]
+    fn text_leaf_label(view: &Retained<PlatformView>) -> Retained<PlatformView> {
+        assert!(view.downcast_ref::<HostView>().is_some());
+        let subviews = cocoa_ui::view::subviews(view);
+        assert_eq!(subviews.len(), 1);
+        subviews[0].clone()
+    }
+
+    /// The label view of a string's `plain` leaf: the kit label itself.
+    #[cfg(feature = "plain")]
+    fn text_leaf_label(view: &Retained<PlatformView>) -> Retained<PlatformView> {
+        view.clone()
     }
 
     /// `Native<Spacer>` maps to a transparent host whose layout face
