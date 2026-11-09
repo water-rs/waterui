@@ -341,7 +341,14 @@ impl InsertionRun {
                         // content the effect never hid (§2.7). The wait is
                         // bounded — a wedged GPU must not hold it forever.
                         run.host.apply_sample(&TransitionProperties::IDENTITY);
-                        run.may_complete()
+                        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+                        {
+                            run.may_complete()
+                        }
+                        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+                        {
+                            true
+                        }
                     }
                 };
                 if done {
@@ -439,11 +446,6 @@ impl InsertionRun {
         }
     }
 
-    /// Without the filtered pipeline there is no pixel effect to wait on.
-    #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
-    const fn may_complete(&self) -> bool {
-        true
-    }
 }
 
 impl Drop for InsertionRun {
