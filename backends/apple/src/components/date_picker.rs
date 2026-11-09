@@ -14,7 +14,7 @@ use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 
 use cocoa_ui::date::{DateParts, DateTimeParts, TimeParts};
-use cocoa_ui::{PlatformView, Rect, Retained};
+use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::component::form::picker::date::{DatePickerConfig, DatePickerType, DateTime};
 use waterui::reactive::{Binding, Signal};
 use waterui::resolve::Resolvable;
@@ -26,6 +26,7 @@ use waterui_core::layout::{
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -321,18 +322,18 @@ fn update_binding(state: &Rc<RefCell<DatePickerState>>, binding: &Binding<DateTi
     binding.set(to_jiff(merged));
 }
 
-/// Lays out the row inside `view`'s bounds: label leading and centered,
-/// the seconds column hugging the trailing edge on `UIKit`, and the picker
-/// filling the space between — the constraint layout's middle spring.
-fn layout_children(view: &PlatformView, state: &DatePickerState) {
-    let bounds = cocoa_ui::view::bounds(view);
-    let width = bounds.size.width;
-    let height = bounds.size.height;
+/// Lays out the row inside the `response` rectangle: label leading and
+/// centered, the seconds column hugging the trailing edge on `UIKit`, and
+/// the picker filling the space between — the constraint layout's middle
+/// spring.
+fn layout_children(view: &PlatformView, response: Rect, state: &DatePickerState) {
+    let width = response.size.width;
+    let height = response.size.height;
     let rtl = cocoa_ui::view::is_right_to_left(view);
 
     let place = |child: &PlatformView, x: f64, y: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, y, w, h));
+        view::set_frame(child, Rect::new(x, y, w, h).translated(response.origin));
     };
 
     let label_size = state.label.layout().measure(ProposalSize::UNSPECIFIED).size;
@@ -535,7 +536,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         host.set_layout_handler({
             let state = Rc::clone(&state);
             move |view| {
-                layout_children(view, &state.borrow());
+                layout_children(view, proposal::response(view), &state.borrow());
             }
         });
 

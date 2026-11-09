@@ -8,13 +8,13 @@
 //! chain of metadata applies to the innermost view, what Swift's
 //! `accessibilityTarget` drill reached.
 //!
-//! When that leaf is a cocoa-ui [`HostView`] — a layout container —
-//! its `accessibilityFrame` reports where it placed its children, the
-//! resolved content extent, rather than the frame the parent assigned:
+//! A leaf's view reports the geometry its placement committed as its
+//! `accessibilityFrame` — the geometry owner's response rectangle
+//! (`docs/layout-spec.md` §7.2) rather than the frame the parent assigned:
 //! a `view.size(8, 8).a11y_label("…")` under a window-filling overlay is
-//! assigned the window but placed at 8×8, and announces the 8×8
-//! (water-rs/waterui#1482). A leaf that is no `HostView` keeps its own
-//! frame.
+//! assigned the window but answers 8×8, and announces the 8×8.
+//! `a11y_geometry` names the allocation or an explicit region of that
+//! committed geometry instead.
 //!
 //! `AccessibilityState` and `AccessibilityStateSignal` share one applier:
 //! on `UIKit`, `checked` writes a spoken value the first time it arrives
@@ -24,21 +24,20 @@
 //! On `AppKit`, `expanded` is applied only when present and `hidden`
 //! restores `isAccessibilityElement`.
 
-use cocoa_ui::PlatformView;
 use cocoa_ui::accessibility::{self as a11y, Role};
-#[cfg(target_os = "macos")]
-use cocoa_ui::appkit::HostView;
-#[cfg(target_os = "ios")]
-use cocoa_ui::uikit::HostView;
-use cocoa_ui::view;
+use cocoa_ui::response;
+use cocoa_ui::{PlatformView, view};
 use objc2_foundation::NSString;
 use waterui::accessibility::{
-    AccessibilityChecked, AccessibilityChildren, AccessibilityHidden, AccessibilityLabel,
-    AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
+    AccessibilityChecked, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
+    AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+    AccessibilityValue,
 };
 use waterui_core::IgnorableMetadata;
 
+use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
+use crate::proposal::in_view;
 
 #[cfg(target_os = "macos")]
 mod target {
@@ -63,14 +62,22 @@ mod target {
     }
 }
 
-/// Marks `view` to report its children's extent as its accessibility
-/// frame — a labelled layout container announces the region its content
-/// resolved to, not the frame it was assigned (water-rs/waterui#1482).
-/// A leaf that is no `HostView` keeps its own frame.
-fn report_content_extent(view: &PlatformView) {
-    if let Some(host) = view.downcast_ref::<HostView>() {
-        host.set_reports_content_extent(true);
-    }
+/// Names the rectangle `leaf`'s accessibility element reports — the
+/// allocation or an explicit region of its committed geometry instead of
+/// the response rectangle.
+///
+/// # Panics
+///
+/// When `leaf`'s platform view carries no response geometry — every leaf
+/// view class carries one.
+fn name_geometry(leaf: &NativeLeaf, source: AccessibilityGeometry) {
+    let slot = response::of(leaf.view()).expect("every leaf view class carries response geometry");
+    let geometry = leaf.geometry();
+    slot.set_accessibility_frame_handler(move |view| {
+        geometry
+            .get()
+            .map(|placed| in_view(view, &placed, source.resolve(&placed)))
+    });
 }
 
 /// The waterui checked state as a kit `Checked`.
@@ -285,7 +292,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<IgnorableMetadata<AccessibilityLabel>>(|metadata, ctx| {
         let mut leaf = ctx.render(metadata.content);
         let target = view::retain_base(leaf.view());
-        report_content_extent(&target);
         leaf.keep(target.clone());
         leaf.bind(metadata.value.signal(), move |label| {
             a11y::set_label(target::of(&target), &NSString::from_str(&label));
@@ -296,7 +302,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<IgnorableMetadata<AccessibilityValue>>(|metadata, ctx| {
         let mut leaf = ctx.render(metadata.content);
         let target = view::retain_base(leaf.view());
-        report_content_extent(&target);
         leaf.keep(target.clone());
         leaf.bind(metadata.value.signal(), move |value| {
             a11y::set_value(target::of(&target), &NSString::from_str(&value));
@@ -307,9 +312,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<IgnorableMetadata<AccessibilityRole>>(|metadata, ctx| {
         let mut leaf = ctx.render(metadata.content);
         let target = view::retain_base(leaf.view());
-        report_content_extent(&target);
         a11y::set_role(target::of(&target), role(&metadata.value));
         leaf.keep(target);
+        leaf
+    });
+
+    dispatcher.register_view::<IgnorableMetadata<AccessibilityGeometry>>(|metadata, ctx| {
+        let leaf = ctx.render(metadata.content);
+        name_geometry(&leaf, metadata.value);
         leaf
     });
 

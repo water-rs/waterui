@@ -21,7 +21,7 @@ use objc2_app_kit::{
     NSFontAttributeName, NSLineBreakMode, NSScreen, NSTextAlignment, NSTextField, NSTextFieldCell,
     NSView,
 };
-use objc2_core_foundation::{CGPoint, CGRect};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
     NSArray, NSAttributedString, NSDictionary, NSEdgeInsets, NSObjectProtocol, NSString,
     NSUnionRect,
@@ -29,6 +29,7 @@ use objc2_foundation::{
 
 use crate::callback::guarded;
 use crate::geometry::{Point, Rect};
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::text::{Layout, SpanLink, TextMetrics, WrapWidth};
 
 /// The text and line limit a [`Label`] measures with.
@@ -41,6 +42,8 @@ pub struct LabelIvars {
     line_limit: Cell<usize>,
     /// `bounds.width` as of the last measure-time invalidation.
     reported_width: Cell<f64>,
+    /// How the label was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl fmt::Debug for LabelIvars {
@@ -49,6 +52,7 @@ impl fmt::Debug for LabelIvars {
             .field("source_text", &self.source_text.borrow().is_some())
             .field("line_limit", &self.line_limit.get())
             .field("reported_width", &self.reported_width.get())
+            .field("geometry", &self.geometry)
             .finish()
     }
 }
@@ -105,8 +109,59 @@ define_class!(
                 }
             });
         }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(layout))]
+        fn layout_override(&self) {
+            guarded("Label layout", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layout] };
+                let geometry = &self.ivars().geometry;
+                let drawn = geometry.response_rect(self);
+                geometry.commit(self);
+                if geometry.response_rect(self) != drawn {
+                    NSView::setNeedsDisplay(self, true);
+                }
+            });
+        }
+
+        // A leaf label draws its text in its response rectangle, its frame
+        // the allocation its parent assigned.
+        // SAFETY: see the module safety note.
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, dirty: CGRect) {
+            guarded("Label drawRect:", || {
+                if self.ivars().geometry.response_rect(self).is_none() {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), drawRect: dirty] };
+                    return;
+                }
+                let cell = self
+                    .cell()
+                    .expect("an NSTextField draws through its cell");
+                cell.drawWithFrame_inView(self.cell_frame(), self);
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("Label accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
+        }
     }
 );
+
+impl ReportsResponse for Label {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
 
 impl Label {
     /// A wrapped text label, measuring and drawing `attributed` text.
@@ -116,6 +171,7 @@ impl Label {
             source_text: RefCell::new(None),
             line_limit: Cell::new(0),
             reported_width: Cell::new(0.0),
+            geometry: ResponseGeometry::default(),
         });
         // SAFETY: `initWithFrame:` is `NSTextField`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
@@ -137,9 +193,10 @@ impl Label {
     /// `+[NSTextField labelWithString:]`: the label-style factory, whose
     /// cell keeps minimal text insets.
     ///
-    /// The factory's own `alloc` zero-fills the ivar storage, which is
-    /// exactly the state `LabelIvars` starts in, so no `set_ivars` step is
-    /// needed. The title becomes the label's [`source_text`](Self::source_text)
+    /// The factory's own `alloc` zero-fills the ivar storage, a valid
+    /// `LabelIvars` with no handlers and no text, so no `set_ivars` step is
+    /// needed. A factory label is drawn inside its owner's view, never
+    /// placed as a leaf of its own, so its response geometry stays unused. The title becomes the label's [`source_text`](Self::source_text)
     /// in the factory's font, so measurement and hit tests see the text the
     /// label draws.
     ///
@@ -303,14 +360,36 @@ impl Label {
         crate::view::invalidate_layout(self);
     }
 
+    /// The frame the cell draws in, in bounds coordinates: the bounds, or
+    /// for a leaf the response rectangle out-set by the alignment insets,
+    /// so the text's alignment rectangle — its ink — is the response.
+    fn cell_frame(&self) -> CGRect {
+        let Some(response) = self.ivars().geometry.response_rect(self) else {
+            return self.bounds();
+        };
+        let insets = self.alignmentRectInsets();
+        // The label's y axis runs up: the bottom inset extends below the
+        // response's origin.
+        CGRect::new(
+            CGPoint::new(
+                response.origin.x - insets.left,
+                response.origin.y - insets.bottom,
+            ),
+            CGSize::new(
+                response.size.width + insets.left + insets.right,
+                response.size.height + insets.top + insets.bottom,
+            ),
+        )
+    }
+
     /// The rect the cell draws its text in, in bounds coordinates —
     /// `drawingRectForBounds:` answers where the cell's interior goes.
     fn text_rect(&self) -> CGRect {
         self.cell()
             .and_then(|cell| cell.downcast::<NSTextFieldCell>().ok())
             .map_or_else(
-                || self.bounds(),
-                |cell| cell.drawingRectForBounds(self.bounds()),
+                || self.cell_frame(),
+                |cell| cell.drawingRectForBounds(self.cell_frame()),
             )
     }
 

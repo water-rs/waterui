@@ -33,6 +33,7 @@ use waterui_core::layout::{
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -137,20 +138,21 @@ struct FieldState {
     label: Mounted,
 }
 
-/// Lays out the children inside `view`'s bounds: the label at top-leading,
-/// then the field spanning the full width below it — `WuiSecureField`'s
-/// constraints as manual frames. `UIKit` centers the input inside the
-/// region between the label and the container's bottom, the way the
-/// field's `inputRegion` layout guide does.
-fn layout_children(view: &PlatformView, state: &FieldState) {
-    let bounds = view::bounds(view);
+/// Lays out the children inside the `response` rectangle: the label at
+/// top-leading, then the field spanning the full width below it —
+/// `WuiSecureField`'s constraints as manual frames. `UIKit` centers the
+/// input inside the region between the label and the container's bottom,
+/// the way the field's `inputRegion` layout guide does.
+fn layout_children(response: Rect, state: &FieldState) {
+    let bounds = response;
     let label = state.label.layout().measure(ProposalSize::UNSPECIFIED).size;
     let has_label = label.height > 0.0;
     view::set_hidden(state.label.view(), !has_label);
 
     view::set_frame(
         state.label.view(),
-        Rect::new(0.0, 0.0, f64::from(label.width), f64::from(label.height)),
+        Rect::new(0.0, 0.0, f64::from(label.width), f64::from(label.height))
+            .translated(response.origin),
     );
 
     let region_top = if has_label {
@@ -170,7 +172,7 @@ fn layout_children(view: &PlatformView, state: &FieldState) {
         field_height,
     );
     let field_view: &PlatformView = &state.field;
-    view::set_frame(field_view, field_frame);
+    view::set_frame(field_view, field_frame.translated(response.origin));
 }
 
 /// The container's layout face: reports `WuiSecureField.sizeThatFits`'s
@@ -275,7 +277,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
         host.set_layout_handler({
             let state = Rc::clone(&state);
-            move |view| layout_children(view, &state)
+            move |view| layout_children(proposal::response(view), &state)
         });
 
         let control = view::retain_base(field_view);

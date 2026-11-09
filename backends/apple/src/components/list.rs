@@ -41,8 +41,8 @@ use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
-    LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
-    ViewDimensions,
+    LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
+    SubView, UnitPoint, ViewDimensions, layout_direction,
 };
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
@@ -344,6 +344,19 @@ impl SelectionMode {
             Self::Multiple(binding) => binding.set(ids.clone()),
         }
     }
+}
+
+/// The placement a row's content takes in the row's content rect, offered
+/// `proposal`: the List rule positions the content's response at the
+/// leading edge of that rect — the trailing edge in right-to-left, as the
+/// list's layout direction in `env` resolves leading — centred vertically,
+/// while the content keeps the whole rect as its allocation.
+fn row_content_placement(proposal: ProposalSize, env: &Environment) -> Placement {
+    let anchor = match layout_direction(env).snapshot() {
+        LayoutDirection::LeftToRight => UnitPoint::LEADING,
+        LayoutDirection::RightToLeft => UnitPoint::TRAILING,
+    };
+    Placement::platform_hosted(proposal).anchored(anchor)
 }
 
 /// A `waterui` `EdgeInsets` (leading/trailing) as the kit's directional
@@ -1549,7 +1562,8 @@ mod platform_impl {
                     move |_mtm| table.apply_row_updates(&[], &[], &[], &[], false),
                 );
             }
-            proposal::deliver(child.view(), Placement::platform_hosted(proposal));
+            let placement = row_content_placement(proposal, &self.state.borrow().env);
+            proposal::deliver(child.view(), placement);
             update_separator_insets(cell);
         }
     }
@@ -2072,19 +2086,23 @@ mod platform_impl {
             // deliver that width, again on every layout pass, so a
             // proposal-driven child tracks its true slot across
             // resizes and the button's appearance.
-            container.set_layout_handler(move |container| {
-                let Some(content) = container.content() else {
-                    return;
-                };
-                let width = view::bounds(&content).size.width;
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "kit geometry is f64; layout proposals are f32"
-                )]
-                proposal::deliver(
-                    &content,
-                    Placement::platform_hosted(ProposalSize::new(Some(width as f32), None)),
-                );
+            let env = self.state.borrow().env.clone();
+            container.set_layout_handler({
+                let env = env.clone();
+                move |container| {
+                    let Some(content) = container.content() else {
+                        return;
+                    };
+                    let width = view::bounds(&content).size.width;
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "kit geometry is f64; layout proposals are f32"
+                    )]
+                    proposal::deliver(
+                        &content,
+                        row_content_placement(ProposalSize::new(Some(width as f32), None), &env),
+                    );
+                }
             });
             #[expect(
                 clippy::cast_possible_truncation,
@@ -2092,7 +2110,7 @@ mod platform_impl {
             )]
             proposal::deliver(
                 child.view(),
-                Placement::platform_hosted(ProposalSize::new(Some(width as f32), None)),
+                row_content_placement(ProposalSize::new(Some(width as f32), None), &env),
             );
             let cell_row = Rc::new(RefCell::new(Some(child)));
             self.state
