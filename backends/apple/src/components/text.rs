@@ -35,6 +35,7 @@ use super::font::platform_font;
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
+use crate::theme::platform_color;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -85,7 +86,6 @@ mod platform {
     pub(super) use cocoa_ui::objc2_ui_kit::NSTextAlignment;
     pub(super) use cocoa_ui::uikit::HostView;
     pub(super) use cocoa_ui::uikit::Label;
-    pub(super) use cocoa_ui::uikit::colors;
     pub(super) use cocoa_ui::uikit::gesture::GestureAttachment;
 
     /// Attaches the span tap recognizer: a tap that begins only when the
@@ -256,35 +256,6 @@ fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
         Some(Animation::Default) => Some(0.25),
         Some(Animation::Bezier { duration, .. }) => Some(duration.as_secs_f64()),
         Some(Animation::Spring { .. }) => Some(0.15),
-    }
-}
-
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object.
-#[cfg(target_os = "ios")]
-pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_ui_kit::UIColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        platform::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
-    }
-}
-
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object, with HDR
-/// headroom applied as a content-headroom multiplier — the `AppKit` variant.
-#[cfg(target_os = "macos")]
-pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        platform::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
     }
 }
 

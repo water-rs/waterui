@@ -30,8 +30,12 @@ use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::component::form::picker::date::Date;
 use waterui::component::form::picker::multi_date::{MultiDatePicker, MultiDatePickerConfig};
 use waterui::reactive::{Binding, Computed, Signal};
+#[cfg(target_os = "macos")]
 use waterui::resolve::Resolvable;
 use waterui::view::{ConfigurableView, Hook};
+
+#[cfg(target_os = "macos")]
+use crate::theme::platform_color;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
@@ -50,7 +54,6 @@ mod platform {
 
 #[cfg(target_os = "ios")]
 mod platform {
-    pub(super) use cocoa_ui::objc2_ui_kit::UIColor;
     pub(super) use cocoa_ui::uikit::{CalendarView, HostView};
 }
 
@@ -150,9 +153,6 @@ struct MultiState {
     /// The `UICalendarView` on `UIKit`.
     #[cfg(target_os = "ios")]
     calendar: platform::CalendarView,
-    /// The decoration's current `MutedForeground` color.
-    #[cfg(target_os = "ios")]
-    decoration_color: Rc<RefCell<Retained<platform::UIColor>>>,
     /// The single-date `NSDatePicker` on `AppKit`.
     #[cfg(target_os = "macos")]
     picker: Retained<platform::DatePicker>,
@@ -185,8 +185,10 @@ fn sync_from_model(state: &MultiState) {
     #[cfg(target_os = "ios")]
     {
         let selected_parts: Vec<DateParts> = selected.iter().map(|day| parts_of(*day)).collect();
-        let decorated_parts: Vec<DateParts> = decorated.iter().map(|day| parts_of(*day)).collect();
-        state.calendar.sync(&selected_parts, &decorated_parts);
+        state.calendar.set_selection(&selected_parts);
+        state
+            .calendar
+            .set_decorations(decorated.iter().map(|day| parts_of(*day)));
     }
 
     #[cfg(target_os = "macos")]
@@ -407,6 +409,8 @@ fn platform_controls(
 
     #[cfg(target_os = "ios")]
     {
+        // The calendar wrapper keeps its own decorated set.
+        let _ = decorated_keys;
         let start = ns_date(*borrowed.range.start());
         let end = ns_date(*borrowed.range.end());
         borrowed
@@ -416,18 +420,9 @@ fn platform_controls(
             let range = borrowed.range.clone();
             move |parts| can_toggle(&range, parts)
         });
-        borrowed.calendar.on_toggle({
+        borrowed.calendar.on_pick({
             let value = borrowed.value.clone();
             move |parts| apply_selection_toggle(&value, to_jiff(parts))
-        });
-        borrowed.calendar.set_decoration({
-            let keys = Rc::clone(decorated_keys);
-            let color = Rc::clone(&borrowed.decoration_color);
-            move |parts| {
-                keys.borrow()
-                    .contains(&parts)
-                    .then(|| color.borrow().clone())
-            }
         });
         cocoa_ui::view::add_subview(host_view, borrowed.calendar.view());
     }
@@ -465,6 +460,10 @@ fn wire(
     state: &Rc<RefCell<MultiState>>,
     ctx: &RenderContext<'_>,
 ) {
+    // `UIKit` reads no theme here: the calendar draws the platform's
+    // default decoration.
+    #[cfg(target_os = "ios")]
+    let _ = ctx;
     // `value` and `decorated` both drive `syncFromModel`.
     leaf.watch(config.value(), {
         let state = Rc::clone(state);
@@ -474,26 +473,6 @@ fn wire(
         let state = Rc::clone(state);
         move |_| sync_from_model(&state.borrow())
     });
-
-    #[cfg(target_os = "ios")]
-    {
-        // `MutedForeground` recolors the decoration dots.
-        let muted = waterui::theme::color::MutedForeground.resolve(ctx.env());
-        leaf.bind(&muted, {
-            let state = Rc::clone(state);
-            move |color: waterui::graphics::color::WorkingColor| {
-                let borrowed = state.borrow();
-                *borrowed.decoration_color.borrow_mut() = platform_color(&color);
-                let decorated: Vec<DateParts> = borrowed
-                    .decorated
-                    .snapshot()
-                    .iter()
-                    .map(|day| parts_of(*day))
-                    .collect();
-                borrowed.calendar.reload_decorations(&decorated);
-            }
-        });
-    }
 
     #[cfg(target_os = "macos")]
     {
@@ -572,9 +551,13 @@ fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf 
         range: config.range().clone(),
         decorated_keys: Rc::clone(&decorated_keys),
         #[cfg(target_os = "ios")]
-        calendar: platform::CalendarView::new(mtm),
-        #[cfg(target_os = "ios")]
-        decoration_color: Rc::new(RefCell::new(platform::UIColor::secondaryLabelColor())),
+        calendar: platform::CalendarView::new(
+            mtm,
+            cocoa_ui::date::CalendarSelectionMode::Multiple,
+            &waterui_locale::locale_binding(ctx.env())
+                .snapshot()
+                .canonical_tag(),
+        ),
         #[cfg(target_os = "macos")]
         picker: platform::DatePicker::new(mtm, platform::DatePickerElements::Date),
         #[cfg(target_os = "macos")]
@@ -644,35 +627,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
         config.label_mut().resolve_in_place(ctx.env());
         render(config, ctx)
     });
-}
-
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object.
-#[cfg(target_os = "ios")]
-fn platform_color(color: &waterui::graphics::color::WorkingColor) -> Retained<platform::UIColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        cocoa_ui::uikit::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
-    }
-}
-
-/// The `AppKit` variant: headroom goes through
-/// `NSColor.applyingContentHeadroom` rather than scaled components.
-#[cfg(target_os = "macos")]
-fn platform_color(color: &waterui::graphics::color::WorkingColor) -> Retained<platform::NSColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        cocoa_ui::appkit::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
-    }
 }
 
 #[cfg(test)]
