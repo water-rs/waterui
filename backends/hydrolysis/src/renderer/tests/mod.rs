@@ -103,7 +103,7 @@ mod when_payload;
 mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_mount;
-use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
+use kurbo::{Affine, BezPath, Point, Rect, Size};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
@@ -111,7 +111,7 @@ use waterui::style::FloatingStyle;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
 use waterui_controls::ControlSize;
-use waterui_controls::button::{ButtonStyle, button};
+use waterui_controls::button::button;
 use waterui_controls::label::{LabelDisplayMode, label};
 use waterui_controls::slider::slider;
 #[cfg(feature = "accessibility")]
@@ -129,12 +129,13 @@ use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
-    BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding,
-    InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
-    PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-    RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics, StepperEnd, StepperMetrics,
-    TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
-    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
+    BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DividerMetrics,
+    FocusIndicator, HitRegion, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
+    Label, ListMetrics, ModalInteraction, Motion, NavigationMetrics, NavigationMotion,
+    PickerMetrics, PressFeedback, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion,
+    RadioIndicatorState, RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics,
+    StateLayer, StepperEnd, StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
+    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -1142,12 +1143,15 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
         ),
         "pressed controls must survive a retained redraw before pointer release"
     );
-    assert!(renderer.handle_pointer_up(
+    // The release moves only the button's live chrome operands, so it
+    // reports no visual change of its own; the action's write is what
+    // schedules the refresh asserted below.
+    let _ = renderer.handle_pointer_up(
         crate::num_cast::f64_as_f32(point.x),
         crate::num_cast::f64_as_f32(point.y),
         PointerButton::Primary,
         &env,
-    ));
+    );
 
     approx::assert_relative_eq!(zoom.snapshot(), 0.5);
     assert!(
@@ -2821,11 +2825,9 @@ pub struct MinimalTestTheme {
     slider_metric_sizes: Rc<RefCell<Vec<ControlSize>>>,
     /// Every slider track rect the theme was asked to draw.
     slider_track_draws: Rc<RefCell<Vec<Rect>>>,
-    /// Every `draw_interaction_state_layer` call, as `(state, resolved radii)`.
-    state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, RoundedRectRadii)>>>,
-    /// The backdrop-material plan a chrome test installs
-    /// (water-rs/waterui#1788): the registry entries and the materials the
-    /// state-layer draw replays.
+    /// The backdrop-material plan a chrome test registers
+    /// (water-rs/waterui#1788): the registry entries, and the materials the
+    /// plan's [`ChromePlan::chrome`] replays.
     chrome: ChromePlan,
     /// Every `draw_toggle_switch` call.
     toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
@@ -2836,11 +2838,25 @@ pub struct MinimalTestTheme {
     /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
     /// defaults `input_field_metrics` carries below.
     input_metrics: Option<InputFieldMetrics>,
-    /// The engine-provided chrome `button_chrome` hands out.
-    button_chrome: Option<crate::theme::Chrome>,
-    /// How many `draw_button_chrome` and `draw_button_state_layer` calls
-    /// the theme received.
-    button_chrome_draws: Rc<std::cell::Cell<usize>>,
+    /// The chrome the button look carries; `None` answers
+    /// [`invisible_chrome`].
+    button_chrome: Option<Chrome>,
+}
+
+/// A chrome that draws nothing at rest and tints nothing on interaction —
+/// the button look a test theme with no chrome of its own hands out. A
+/// touch press waits the theme's `touch_delay` before it shows.
+pub fn invisible_chrome() -> Chrome {
+    Chrome::new(
+        Surface::clear(CornerShape::radius(0.0)),
+        StateLayer::new(waterui::graphics::Color::new(
+            waterui::theme::color::Foreground,
+        )),
+        PressFeedback::new(),
+        FocusIndicator::Tint,
+        Motion::uniform(Animation::linear(Duration::from_millis(15))),
+    )
+    .hit(HitRegion::NONE.press_delay(Duration::from_millis(150)))
 }
 
 impl MinimalTestTheme {
@@ -2852,22 +2868,17 @@ impl MinimalTestTheme {
         self
     }
 
-    /// Hands out `chrome` from `button_chrome`, so buttons realize it with
-    /// live operands.
+    /// Puts `chrome` on the button look, so buttons realize it with live
+    /// operands.
     #[must_use]
-    pub fn with_button_chrome(mut self, chrome: crate::theme::Chrome) -> Self {
+    pub fn with_button_chrome(mut self, chrome: Chrome) -> Self {
         self.button_chrome = Some(chrome);
         self
     }
-
-    /// The count of `draw_button_chrome` and `draw_button_state_layer` calls.
-    pub fn button_chrome_draws(&self) -> Rc<std::cell::Cell<usize>> {
-        Rc::clone(&self.button_chrome_draws)
-    }
 }
 
-/// One `backdrop_material` a chrome test's theme replays per
-/// `draw_interaction_state_layer` call (water-rs/waterui#1788).
+/// One `backdrop_material` a chrome test's plan replays each time its
+/// chrome records (water-rs/waterui#1788).
 #[derive(Clone)]
 pub struct ChromeDraw {
     /// The member's live clip shape — a signal for the signal-rebind test.
@@ -2880,26 +2891,46 @@ pub struct ChromeDraw {
     pub effect: SharedLive<MaterialEffect>,
 }
 
-/// The backdrop-material terms a chrome test's theme declares: the
-/// registry `register_backdrop_shaders` fills and the materials the
-/// state-layer draw replays per call.
+/// The backdrop-material terms a chrome test declares: the registry
+/// `register_backdrop_shaders` fills, and the materials its
+/// [`chrome`](Self::chrome) replays.
 #[derive(Clone, Default)]
 pub struct ChromePlan {
     /// `(key, source)` pairs the registry registers.
     pub shaders: Vec<(MaterialShader, BackdropShaderSource)>,
     /// `(key, capture)` pairs the registry registers.
     pub captures: Vec<(CaptureClass, MaterialCapture)>,
-    /// The materials `draw_interaction_state_layer` records per call.
+    /// The materials the chrome's custom part records.
     pub draws: Vec<ChromeDraw>,
-    /// Scene fills `draw_interaction_state_layer` records after the
-    /// materials — each lands in the segment above the last member, so a
-    /// test can mount a keyed mount and a scene segment over it in one
-    /// program (water-rs/waterui#2002).
+    /// Scene fills the custom part records after the materials — each
+    /// lands in the segment above the last member, so a test can mount a
+    /// keyed mount and a scene segment over it in one program
+    /// (water-rs/waterui#2002).
     pub fills: Vec<(kurbo::RoundedRect, Paint)>,
-    /// When set, `draw_interaction_state_layer` records the materials
-    /// this resolves from the live `WidgetInteractionState` instead —
-    /// how a theme whose uniforms depend on the press is written.
-    pub stateful_draws: Option<Rc<dyn Fn(WidgetInteractionState) -> Vec<ChromeDraw>>>,
+}
+
+impl ChromePlan {
+    /// [`invisible_chrome`] with a custom part replaying the plan's
+    /// materials, then its fills — installed as a plugin, every tappable
+    /// view under it records them.
+    #[must_use]
+    pub fn chrome(&self) -> Chrome {
+        let draws = self.draws.clone();
+        let fills = self.fills.clone();
+        invisible_chrome().custom(Custom::new((), move |recorder, _frame, ()| {
+            for chrome in &draws {
+                recorder.backdrop_material(
+                    chrome.shape.clone(),
+                    chrome.shader,
+                    chrome.capture,
+                    chrome.effect.clone(),
+                );
+            }
+            for (shape, paint) in &fills {
+                recorder.fill(*shape, paint.clone());
+            }
+        }))
+    }
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2955,45 +2986,14 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-        ButtonMetrics {
-            padding_x: 1.0,
-            padding_y: 2.0,
-            min_width: 123.0,
-            min_height: 45.0,
+    fn button(&self, spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
+        let chrome = self.button_chrome.clone().unwrap_or_else(invisible_chrome);
+        let look = ButtonLook::new(chrome, Label::new());
+        if spec.icon_only() {
+            look.minimum_size(Size::new(41.0, 43.0))
+        } else {
+            look.padding(1.0, 2.0).minimum_size(Size::new(123.0, 45.0))
         }
-    }
-
-    fn icon_button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-        ButtonMetrics::new(0.0, 0.0, 41.0, 43.0)
-    }
-
-    fn button_chrome(&self, _spec: crate::theme::ButtonSpec) -> Option<crate::theme::Chrome> {
-        self.button_chrome.clone()
-    }
-
-    fn draw_button_chrome(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _style: ButtonStyle,
-        _icon_only: bool,
-        _state: WidgetInteractionState,
-    ) {
-        self.button_chrome_draws
-            .set(self.button_chrome_draws.get() + 1);
-    }
-
-    fn draw_button_state_layer(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _style: ButtonStyle,
-        _icon_only: bool,
-        _state: WidgetInteractionState,
-    ) {
-        self.button_chrome_draws
-            .set(self.button_chrome_draws.get() + 1);
     }
 
     /// Fills `registry` with the test's shader sources and capture
@@ -3004,33 +3004,6 @@ impl WidgetTheme for MinimalTestTheme {
         }
         for (key, capture) in &self.chrome.captures {
             registry.register_capture_class(*key, *capture);
-        }
-    }
-
-    fn draw_interaction_state_layer(
-        &self,
-        draw: &mut Recorder,
-        _bounds: Rect,
-        radii: RoundedRectRadii,
-        _color: WorkingColor,
-        state: WidgetInteractionState,
-    ) {
-        self.state_layer_draws.borrow_mut().push((state, radii));
-        let draws = self
-            .chrome
-            .stateful_draws
-            .as_ref()
-            .map_or_else(|| self.chrome.draws.clone(), |resolve| resolve(state));
-        for chrome in &draws {
-            draw.backdrop_material(
-                chrome.shape.clone(),
-                chrome.shader,
-                chrome.capture,
-                chrome.effect.clone(),
-            );
-        }
-        for (shape, paint) in &self.chrome.fills {
-            draw.fill(*shape, paint.clone());
         }
     }
 

@@ -1,0 +1,940 @@
+//! The look vocabulary of the theme contract (water-rs/waterui#1434): the
+//! pieces every widget look is built from.
+//!
+//! A look is plain data a theme returns for one widget presentation. Its
+//! values that follow the widget's live inputs — the interaction state, the
+//! frame, the value, a drag, the press point — are [`Driven`]s: a pure
+//! function from those [`Inputs`] to an operand value, plus the [`Motion`]
+//! each kind of change runs with. Hydrolysis keeps every `Driven` as a live
+//! operand of the recording and retargets it when an input changes, so the
+//! engine animates the recorded command — continuous in position and
+//! velocity — and a hover, press, focus, value or drag change records
+//! nothing, walks no tree and runs no layout. No snapshot of interaction
+//! state ever reaches a theme.
+//!
+//! The engine interpolates a derived operand lane by lane between targets;
+//! it does not re-run the theme's function every frame. A derivation should
+//! therefore be lane-linear in its inputs: translation, scale, opacity,
+//! colour, radii.
+
+use core::marker::PhantomData;
+use core::time::Duration;
+use std::any::Any;
+use std::rc::Rc;
+
+use cherenkov_record::{Live, Paint, Recorder};
+use kurbo::{Point, Rect, Size, Vec2};
+use nami::Signal;
+use nami::signal::IntoComputed;
+use nami::watcher::Context;
+use waterui_controls::ControlSize;
+use waterui_controls::button::ButtonStyle;
+use waterui_core::animation::Animation;
+use waterui_core::interaction::{InteractionState, StateValue};
+use waterui_core::layout::LayoutDirection;
+use waterui_graphics::color::Color;
+use waterui_text::font::Font;
+
+use super::Chrome;
+use super::live::Operand;
+
+/// The animations a change runs with as a condition sets in and as it
+/// clears.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transition {
+    /// The animation when the condition sets in: the pointer enters, the
+    /// press lands, focus arrives.
+    pub enter: Animation,
+    /// The animation when the condition clears.
+    pub exit: Animation,
+}
+
+impl Transition {
+    /// `enter` as the condition sets in, `exit` as it clears.
+    #[must_use]
+    pub const fn new(enter: Animation, exit: Animation) -> Self {
+        Self { enter, exit }
+    }
+
+    /// `animation` in both directions.
+    #[must_use]
+    pub fn symmetric(animation: Animation) -> Self {
+        Self::new(animation.clone(), animation)
+    }
+
+    /// The animation for the condition setting in (`entering`) or clearing.
+    #[must_use]
+    pub const fn animation(&self, entering: bool) -> &Animation {
+        if entering { &self.enter } else { &self.exit }
+    }
+}
+
+/// How a look's operands follow a change of the widget's value.
+///
+/// A value change carries the animation its caller made it under, or none.
+/// water-rs/waterui#4035 adds a third case, a change made with animation
+/// explicitly disabled; it enters through [`ValueMotion::animation`]'s
+/// parameter, and every variant documents what it does then.
+#[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the operand follows the caller's animation, its own whenever the change animates, or its own always"
+)]
+pub enum ValueMotion {
+    /// The change's own animation; this one when the change names none.
+    /// A change that disables animation snaps (water-rs/waterui#4035).
+    Follow(Animation),
+    /// This animation whenever the change animates, whatever animation the
+    /// change names. A change that disables animation snaps
+    /// (water-rs/waterui#4035); until that marker exists, a change naming
+    /// no animation animates with this one, as today.
+    Own(Animation),
+    /// This animation for every change, one made with animation disabled
+    /// included.
+    Always(Animation),
+}
+
+impl ValueMotion {
+    /// The animation a value change made under `change` runs with; `None`
+    /// snaps.
+    ///
+    /// `change` is the change's own animation, or `None` when it names
+    /// none. water-rs/waterui#4035 widens it to the three cases a change
+    /// can state — an animation, none named, animation disabled — and the
+    /// disabled case returns `None` for [`Self::Follow`] and [`Self::Own`].
+    #[must_use]
+    pub fn animation(&self, change: Option<&Animation>) -> Option<Animation> {
+        Some(match self {
+            Self::Follow(own) => change.unwrap_or(own).clone(),
+            Self::Own(own) | Self::Always(own) => own.clone(),
+        })
+    }
+}
+
+/// The motion each kind of input change runs with.
+///
+/// A [`Driven`] retargets under the transition of the input that changed:
+/// [`Self::press`] for a physical press, [`Self::drag`] for a drag,
+/// [`Self::focus`] for keyboard focus, [`Self::hover`] for hover — the
+/// first that applies, in that order — and [`Self::value`] for a value
+/// change. A change of the disabled or selected state reaches the widget
+/// through a render and snaps.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Motion {
+    /// Hover entering and leaving.
+    pub hover: Transition,
+    /// Keyboard focus arriving and leaving.
+    pub focus: Transition,
+    /// A physical press landing and releasing. A spring that overshoots
+    /// passes its overshoot through to every operand it drives.
+    pub press: Transition,
+    /// A drag starting and ending. Drag movement itself retargets with no
+    /// animation, so the operand tracks the finger.
+    pub drag: Transition,
+    /// A change of the widget's value.
+    pub value: ValueMotion,
+}
+
+impl Motion {
+    /// `animation` for every interaction transition, and value changes
+    /// following their caller with `animation` when they name none.
+    #[must_use]
+    pub fn uniform(animation: Animation) -> Self {
+        let transition = Transition::symmetric(animation.clone());
+        Self {
+            hover: transition.clone(),
+            focus: transition.clone(),
+            press: transition.clone(),
+            drag: transition,
+            value: ValueMotion::Follow(animation),
+        }
+    }
+
+    /// The animation an interaction change from `old` to `new` runs with,
+    /// `None` when it snaps.
+    #[must_use]
+    pub fn interaction(&self, old: InteractionState, new: InteractionState) -> Option<&Animation> {
+        let changed = old ^ new;
+        if changed.intersects(InteractionState::DISABLED | InteractionState::SELECTED) {
+            return None;
+        }
+        [
+            (InteractionState::PRESSED, &self.press),
+            (InteractionState::DRAGGED, &self.drag),
+            (InteractionState::FOCUSED, &self.focus),
+            (InteractionState::HOVERED, &self.hover),
+        ]
+        .into_iter()
+        .find(|(flag, _)| changed.contains(*flag))
+        .map(|(flag, transition)| transition.animation(new.contains(flag)))
+    }
+}
+
+/// The live inputs a [`Driven`] value is a function of.
+#[derive(Debug)]
+pub struct Inputs<'a, V> {
+    /// The part's frame in the widget's own space.
+    pub frame: Rect,
+    /// The widget's interaction state.
+    pub state: InteractionState,
+    /// The widget's value: `bool` for a toggle, `f64` normalized to its
+    /// range for a slider or progress, the selected index for a segmented
+    /// control, `()` for a widget without one.
+    pub value: &'a V,
+    /// The offset of an active drag on the widget.
+    pub drag: Option<Vec2>,
+    /// The current press's point in the widget's own space; `None` between
+    /// presses and for a keyboard or synthetic press.
+    pub press_point: Option<Point>,
+}
+
+impl<V> Clone for Inputs<'_, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<V> Copy for Inputs<'_, V> {}
+
+impl<'a, V> Inputs<'a, V> {
+    /// Inputs at rest: `frame` in `state` showing `value`, with no drag
+    /// and no press point.
+    #[must_use]
+    pub const fn at_rest(frame: Rect, state: InteractionState, value: &'a V) -> Self {
+        Self {
+            frame,
+            state,
+            value,
+            drag: None,
+            press_point: None,
+        }
+    }
+}
+
+type Target<T, V> = Rc<dyn Fn(&Inputs<'_, V>) -> T>;
+type Notify = Rc<dyn Fn(Option<Animation>)>;
+type Follows = Rc<dyn Fn(Notify) -> Box<dyn Any>>;
+
+/// A value that follows the widget's live [`Inputs`]: a pure function from
+/// them to an operand value, plus the [`Motion`] each kind of change runs
+/// with.
+///
+/// The renderer keeps it as a live operand of the recording and retargets
+/// it when an input changes; the theme's function is never sampled per
+/// frame. A `Driven` built with [`Self::follow`] also retargets when its
+/// signal changes — a theme token read from the environment follows a
+/// colour-scheme or application override in place, under the animation
+/// the change carries.
+///
+/// A `Driven` with no motion of its own runs with the motion of the look
+/// part that holds it.
+pub struct Driven<T, V = ()> {
+    target: Target<T, V>,
+    follows: Option<Follows>,
+    motion: Option<Motion>,
+}
+
+impl<T, V> Clone for Driven<T, V> {
+    fn clone(&self) -> Self {
+        Self {
+            target: Rc::clone(&self.target),
+            follows: self.follows.clone(),
+            motion: self.motion.clone(),
+        }
+    }
+}
+
+impl<T, V> core::fmt::Debug for Driven<T, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Driven")
+            .field("follows", &self.follows.is_some())
+            .field("motion", &self.motion)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: 'static, V: 'static> Driven<T, V> {
+    /// The value `target` derives from the widget's inputs.
+    #[must_use]
+    pub fn new(target: impl Fn(&Inputs<'_, V>) -> T + 'static) -> Self {
+        Self {
+            target: Rc::new(target),
+            follows: None,
+            motion: None,
+        }
+    }
+
+    /// One value, whatever the inputs.
+    #[must_use]
+    pub fn constant(value: T) -> Self
+    where
+        T: Clone,
+    {
+        Self::new(move |_| value.clone())
+    }
+
+    /// The value `target` derives from `signal`'s current value and the
+    /// widget's inputs. A change of `signal` retargets the operand under
+    /// the animation the change carries, or snaps it when it carries none.
+    #[must_use]
+    pub fn follow<O: Clone + 'static>(
+        signal: impl IntoComputed<O>,
+        target: impl Fn(&O, &Inputs<'_, V>) -> T + 'static,
+    ) -> Self {
+        let source = signal.into_computed();
+        let watched = source.clone();
+        Self {
+            target: Rc::new(move |inputs| source.with_ref(|value| target(value, inputs))),
+            follows: Some(Rc::new(move |notify: Notify| -> Box<dyn Any> {
+                Box::new(watched.watch(move |context: Context<O>| {
+                    notify(context.metadata().try_get::<Animation>());
+                }))
+            })),
+            motion: None,
+        }
+    }
+
+    /// Runs this value's changes with `motion` instead of the motion of the
+    /// look part that holds it.
+    #[must_use]
+    pub const fn motion(mut self, motion: Motion) -> Self {
+        self.motion = Some(motion);
+        self
+    }
+
+    /// The value at `inputs`.
+    #[must_use]
+    pub fn target(&self, inputs: &Inputs<'_, V>) -> T {
+        (self.target)(inputs)
+    }
+
+    /// The motion this value runs with, when it has its own.
+    #[must_use]
+    pub const fn get_motion(&self) -> Option<&Motion> {
+        self.motion.as_ref()
+    }
+
+    /// Calls `notify` with each change's animation whenever a signal this
+    /// value follows changes; the returned guard keeps the subscription.
+    /// `None` when the value follows no signal.
+    pub(crate) fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>> {
+        self.follows.as_ref().map(|follows| follows(notify))
+    }
+
+    /// Whether this value follows a signal.
+    pub(crate) const fn follows_signal(&self) -> bool {
+        self.follows.is_some()
+    }
+}
+
+/// A [`StateValue`] is a [`Driven`] over the interaction state alone.
+impl<T: Clone + 'static, V: 'static> From<StateValue<T>> for Driven<T, V> {
+    fn from(value: StateValue<T>) -> Self {
+        Self::new(move |inputs| value.resolve(inputs.state).clone())
+    }
+}
+
+macro_rules! constant_driven {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl<V: 'static> From<$ty> for Driven<$ty, V> {
+                fn from(value: $ty) -> Self {
+                    Self::constant(value)
+                }
+            }
+        )+
+    };
+}
+
+constant_driven!(
+    Paint,
+    Color,
+    Font,
+    f32,
+    f64,
+    super::Border,
+    super::Elevation,
+    super::Corners
+);
+
+impl<V: 'static> From<cherenkov_record::WorkingColor> for Driven<Paint, V> {
+    fn from(color: cherenkov_record::WorkingColor) -> Self {
+        Self::constant(Paint::from(color))
+    }
+}
+
+impl<V: 'static> From<StateValue<cherenkov_record::WorkingColor>> for Driven<Paint, V> {
+    fn from(value: StateValue<cherenkov_record::WorkingColor>) -> Self {
+        Self::new(move |inputs| Paint::from(*value.resolve(inputs.state)))
+    }
+}
+
+/// The realization terms of a [`DrivenSet`]; nameable by Hydrolysis only.
+mod sealed {
+    use std::any::Any;
+    use std::rc::Rc;
+
+    use waterui_core::animation::Animation;
+
+    use super::{Inputs, Motion};
+
+    pub trait Sealed {}
+
+    /// What retargets one realized [`Driven`](super::Driven).
+    #[derive(Clone, Copy)]
+    pub enum Change<'a> {
+        /// The interaction state moved from `old` to the inputs' state; a
+        /// value without motion of its own runs with `motion`.
+        Interaction {
+            old: waterui_core::interaction::InteractionState,
+            motion: &'a Motion,
+        },
+        /// A signal the value follows, the frame or the press point
+        /// changed, under this animation (`None` snaps).
+        Animated(Option<&'a Animation>),
+    }
+
+    /// One realized [`Driven`](super::Driven): its live operand, retargeted
+    /// by the renderer.
+    pub trait Retarget<V> {
+        fn retarget(&self, inputs: &Inputs<'_, V>, change: Change<'_>);
+        fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>>;
+    }
+
+    /// A realized set: a factory for the tuple of [`Live`](cherenkov_record::Live)
+    /// handles a recording closure receives, and the operands behind them.
+    pub struct Realized<L, V> {
+        pub(crate) live: Box<dyn Fn() -> L>,
+        pub(crate) drivens: Vec<Rc<dyn Retarget<V>>>,
+    }
+
+    impl<L, V> core::fmt::Debug for Realized<L, V> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("Realized")
+                .field("drivens", &self.drivens.len())
+                .finish_non_exhaustive()
+        }
+    }
+}
+
+pub use sealed::{Change, Realized, Retarget};
+
+/// One [`Driven`] realized as a live operand.
+pub struct LiveDriven<T: 'static, V> {
+    driven: Driven<T, V>,
+    operand: Operand<T>,
+}
+
+impl<T, V> core::fmt::Debug for LiveDriven<T, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LiveDriven")
+            .field("driven", &self.driven)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Clone + PartialEq + 'static, V: 'static> LiveDriven<T, V> {
+    pub(crate) fn new(driven: Driven<T, V>, inputs: &Inputs<'_, V>) -> Self {
+        let operand = Operand::new(driven.target(inputs));
+        Self { driven, operand }
+    }
+
+    pub(crate) fn live(&self) -> Live<T> {
+        self.operand.live()
+    }
+}
+
+impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V> {
+    fn retarget(&self, inputs: &Inputs<'_, V>, change: Change<'_>) {
+        let animation = match change {
+            Change::Interaction { old, motion } => self
+                .driven
+                .get_motion()
+                .unwrap_or(motion)
+                .interaction(old, inputs.state)
+                .cloned(),
+            Change::Animated(animation) => animation.cloned(),
+        };
+        self.operand
+            .set(self.driven.target(inputs), animation.as_ref());
+    }
+
+    fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>> {
+        self.driven.subscribe(notify)
+    }
+}
+
+/// A tuple of [`Driven`] values a [`Custom`] part declares: its recording
+/// closure receives the matching tuple of [`Live`] handles, so each handle's
+/// type ties it to its declaration with no index lookup.
+///
+/// Implemented for `()` — a part that reads no driven value — and for tuples
+/// of one to six `Driven`s over the same value type.
+pub trait DrivenSet<V>: sealed::Sealed {
+    /// The tuple of live handles the recording closure receives.
+    type Live;
+
+    /// Realizes every value as a live operand at `inputs`.
+    #[doc(hidden)]
+    fn realize(&self, inputs: &Inputs<'_, V>) -> Realized<Self::Live, V>;
+}
+
+macro_rules! driven_set {
+    ($($ty:ident $index:tt),+) => {
+        impl<V: 'static, $($ty: Clone + PartialEq + 'static),+> sealed::Sealed
+            for ($(Driven<$ty, V>,)+)
+        {
+        }
+
+        impl<V: 'static, $($ty: Clone + PartialEq + 'static),+> DrivenSet<V>
+            for ($(Driven<$ty, V>,)+)
+        {
+            type Live = ($(Live<$ty>,)+);
+
+            fn realize(&self, inputs: &Inputs<'_, V>) -> Realized<Self::Live, V> {
+                let operands = ($(Rc::new(LiveDriven::new(self.$index.clone(), inputs)),)+);
+                let drivens: Vec<Rc<dyn Retarget<V>>> =
+                    vec![$(Rc::clone(&operands.$index) as Rc<dyn Retarget<V>>),+];
+                Realized {
+                    live: Box::new(move || ($(operands.$index.live(),)+)),
+                    drivens,
+                }
+            }
+        }
+    };
+}
+
+impl sealed::Sealed for () {}
+
+/// A part that reads no driven value: its closure receives `()`.
+impl<V: 'static> DrivenSet<V> for () {
+    type Live = ();
+
+    fn realize(&self, _inputs: &Inputs<'_, V>) -> Realized<Self::Live, V> {
+        Realized {
+            live: Box::new(|| ()),
+            drivens: Vec::new(),
+        }
+    }
+}
+
+driven_set!(A 0);
+driven_set!(A 0, B 1);
+driven_set!(A 0, B 1, C 2);
+driven_set!(A 0, B 1, C 2, D 3);
+driven_set!(A 0, B 1, C 2, D 3, E 4);
+driven_set!(A 0, B 1, C 2, D 3, E 4, F 5);
+
+type RecordCustom<L> = Rc<dyn Fn(&mut Recorder, Rect, L)>;
+
+/// A look part the theme records itself: a tuple of [`Driven`] values and a
+/// recording closure over [`Recorder`] that receives them as the matching
+/// tuple of [`Live`] handles.
+///
+/// The closure runs when the part records — when the widget records for a
+/// spec, frame or content change — and never on an interaction or value
+/// change: those move the handles' operands. It records in the widget's
+/// own space, `frame` being the part's frame, and may declare backdrop
+/// materials ([`Recorder::backdrop_material`]).
+pub struct Custom<V, D: DrivenSet<V>> {
+    driven: D,
+    record: RecordCustom<D::Live>,
+    value: PhantomData<fn(&V)>,
+}
+
+impl<V, D: DrivenSet<V> + core::fmt::Debug> core::fmt::Debug for Custom<V, D> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Custom")
+            .field("driven", &self.driven)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<V, D: DrivenSet<V> + Clone> Clone for Custom<V, D> {
+    fn clone(&self) -> Self {
+        Self {
+            driven: self.driven.clone(),
+            record: Rc::clone(&self.record),
+            value: PhantomData,
+        }
+    }
+}
+
+impl<V, D: DrivenSet<V>> Custom<V, D> {
+    /// The part `driven` records with `record`.
+    #[must_use]
+    pub fn new(driven: D, record: impl Fn(&mut Recorder, Rect, D::Live) + 'static) -> Self {
+        Self {
+            driven,
+            record: Rc::new(record),
+            value: PhantomData,
+        }
+    }
+}
+
+/// A [`Custom`] part realized: its recording, and the operands it reads.
+pub struct RealizedCustom<V> {
+    record: RecordRealized,
+    pub(crate) drivens: Vec<Rc<dyn Retarget<V>>>,
+}
+
+type RecordRealized = Box<dyn Fn(&mut Recorder, Rect)>;
+
+impl<V> RealizedCustom<V> {
+    /// Records the part on `frame`.
+    pub(crate) fn record(&self, recorder: &mut Recorder, frame: Rect) {
+        (self.record)(recorder, frame);
+    }
+}
+
+/// The object-safe face of a [`Custom`] part, so a look stores parts of
+/// different [`DrivenSet`]s side by side.
+pub trait CustomPart<V> {
+    fn realize(&self, inputs: &Inputs<'_, V>) -> RealizedCustom<V>;
+}
+
+impl<V: 'static, D: DrivenSet<V>> CustomPart<V> for Custom<V, D>
+where
+    D::Live: 'static,
+{
+    fn realize(&self, inputs: &Inputs<'_, V>) -> RealizedCustom<V> {
+        let Realized { live, drivens } = self.driven.realize(inputs);
+        let record = Rc::clone(&self.record);
+        RealizedCustom {
+            record: Box::new(move |recorder, frame| record(recorder, frame, live())),
+            drivens,
+        }
+    }
+}
+
+/// How a look styles the label content the renderer lays out: its font, its
+/// colour and whether it follows the chrome's press scale.
+///
+/// The font and the colour are content styling, applied when the widget
+/// renders; they default to the label's own. A label laid out from a view
+/// (an icon, a composed label) takes them as its defaults, never over the
+/// caller's own styling. The font is a [`Driven`] so it can vary with the
+/// spec and the state; a label whose font or colour varies with hover,
+/// press or focus re-renders on those changes.
+#[derive(Debug, Clone, Default)]
+pub struct Label {
+    font: Option<Driven<Font>>,
+    color: Option<Driven<Color>>,
+    follows_press_scale: bool,
+}
+
+impl Label {
+    /// A label in its own font and colour.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            font: None,
+            color: None,
+            follows_press_scale: false,
+        }
+    }
+
+    /// Sets the label's font.
+    #[must_use]
+    pub fn font(mut self, font: impl Into<Driven<Font>>) -> Self {
+        self.font = Some(font.into());
+        self
+    }
+
+    /// Sets the label's colour.
+    #[must_use]
+    pub fn color(mut self, color: impl Into<Driven<Color>>) -> Self {
+        self.color = Some(color.into());
+        self
+    }
+
+    /// Grows the label with the chrome's press scale
+    /// ([`PressFeedback::scale`](super::PressFeedback::scale)).
+    #[must_use]
+    pub const fn follows_press_scale(mut self) -> Self {
+        self.follows_press_scale = true;
+        self
+    }
+
+    /// The label's font; `None` keeps its own.
+    #[must_use]
+    pub const fn get_font(&self) -> Option<&Driven<Font>> {
+        self.font.as_ref()
+    }
+
+    /// The label's colour; `None` keeps its own.
+    #[must_use]
+    pub const fn get_color(&self) -> Option<&Driven<Color>> {
+        self.color.as_ref()
+    }
+
+    /// Whether the label grows with the chrome's press scale.
+    #[must_use]
+    pub const fn get_follows_press_scale(&self) -> bool {
+        self.follows_press_scale
+    }
+}
+
+/// Where an interactive part takes touches: a minimum target size centred
+/// on its chrome frame, the tap slop and the cancel distance.
+///
+/// The target is the widget's bounds grown to cover the chrome frame grown
+/// to `minimum` — a 28 pt button keeps a 44 pt target, and an icon button
+/// laid out at its touch target keeps it. A touch press that moves no
+/// farther than `slop` from where it landed stays a press while it waits
+/// out its `press_delay`; a release within `cancel_distance` of the target
+/// activates, and one beyond it cancels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HitRegion {
+    minimum: Size,
+    slop: f64,
+    cancel_distance: f64,
+    press_delay: Duration,
+}
+
+impl Default for HitRegion {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl HitRegion {
+    /// The widget's bounds, with no slop, no cancel distance and no press
+    /// delay.
+    pub const NONE: Self = Self {
+        minimum: Size::ZERO,
+        slop: 0.0,
+        cancel_distance: 0.0,
+        press_delay: Duration::ZERO,
+    };
+
+    /// Grows the target to at least `minimum` around the chrome frame.
+    #[must_use]
+    pub const fn minimum(mut self, minimum: Size) -> Self {
+        self.minimum = minimum;
+        self
+    }
+
+    /// Keeps a waiting touch press alive while it moves no farther than
+    /// `slop` from where it landed.
+    #[must_use]
+    pub const fn slop(mut self, slop: f64) -> Self {
+        self.slop = slop;
+        self
+    }
+
+    /// Activates on a release within `distance` of the target.
+    #[must_use]
+    pub const fn cancel_distance(mut self, distance: f64) -> Self {
+        self.cancel_distance = distance;
+        self
+    }
+
+    /// Holds a touch press back for `delay` before it shows, so a scroll
+    /// that starts under the finger does not flash it. A mouse press shows
+    /// at once.
+    #[must_use]
+    pub const fn press_delay(mut self, delay: Duration) -> Self {
+        self.press_delay = delay;
+        self
+    }
+
+    /// The minimum target size.
+    #[must_use]
+    pub const fn get_minimum(&self) -> Size {
+        self.minimum
+    }
+
+    /// The tap slop.
+    #[must_use]
+    pub const fn get_slop(&self) -> f64 {
+        self.slop
+    }
+
+    /// The cancel distance.
+    #[must_use]
+    pub const fn get_cancel_distance(&self) -> f64 {
+        self.cancel_distance
+    }
+
+    /// The touch press delay.
+    #[must_use]
+    pub const fn get_press_delay(&self) -> Duration {
+        self.press_delay
+    }
+
+    /// The touch target of a widget laid out at `bounds` whose chrome lies
+    /// in `frame`.
+    #[must_use]
+    pub fn target(&self, bounds: Rect, frame: Rect) -> Rect {
+        let size = Size::new(
+            frame.width().max(self.minimum.width),
+            frame.height().max(self.minimum.height),
+        );
+        bounds.union(Rect::from_center_size(frame.center(), size))
+    }
+}
+
+/// What Hydrolysis asks a theme's [`button`](super::WidgetTheme::button)
+/// look for: everything structural about one button.
+///
+/// A spec change requests the look again; everything else reaches the look
+/// through its [`Driven`] values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonSpec {
+    style: ButtonStyle,
+    size: ControlSize,
+    icon_only: bool,
+    direction: LayoutDirection,
+}
+
+impl ButtonSpec {
+    /// The spec of a `style` button of `size`, laid out `direction`, whose
+    /// label resolved to an icon-only presentation when `icon_only`.
+    #[must_use]
+    pub const fn new(
+        style: ButtonStyle,
+        size: ControlSize,
+        icon_only: bool,
+        direction: LayoutDirection,
+    ) -> Self {
+        Self {
+            style,
+            size,
+            icon_only,
+            direction,
+        }
+    }
+
+    /// The button's style.
+    #[must_use]
+    pub const fn style(&self) -> ButtonStyle {
+        self.style
+    }
+
+    /// The button's control size.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
+    /// Whether the label resolved to `IconOnly`: the look lays the button
+    /// out at its touch target, its chrome the icon-button container.
+    #[must_use]
+    pub const fn icon_only(&self) -> bool {
+        self.icon_only
+    }
+
+    /// The layout direction the button is laid out in.
+    #[must_use]
+    pub const fn direction(&self) -> LayoutDirection {
+        self.direction
+    }
+
+    /// The button's tint: its subtree's accent colour, which an application
+    /// overrides for a subtree through the theme's `Accent` token.
+    #[must_use]
+    pub fn tint(&self) -> Color {
+        Color::new(waterui::theme::color::Accent)
+    }
+}
+
+/// How a button looks and responds: its [`Chrome`], its [`Label`] styling,
+/// the padding and minimum size it measures with, and its group opacity.
+///
+/// Hydrolysis measures, places, hit-tests, records and animates the button
+/// from this one value, so its layout and its drawing cannot diverge. The
+/// field order is the paint order: the chrome's surface, the label, the
+/// chrome's interaction layers.
+#[derive(Debug, Clone)]
+pub struct ButtonLook {
+    chrome: Chrome,
+    label: Label,
+    padding: Vec2,
+    minimum: Size,
+    group_opacity: Driven<f32>,
+}
+
+impl ButtonLook {
+    /// A button of `chrome` styling its label with `label`, with no padding
+    /// and no minimum size.
+    #[must_use]
+    pub fn new(chrome: Chrome, label: Label) -> Self {
+        Self {
+            chrome,
+            label,
+            padding: Vec2::ZERO,
+            minimum: Size::ZERO,
+            group_opacity: Driven::constant(1.0),
+        }
+    }
+
+    /// Pads the label by `horizontal` on each side and `vertical` above and
+    /// below.
+    #[must_use]
+    pub const fn padding(mut self, horizontal: f64, vertical: f64) -> Self {
+        self.padding = Vec2::new(horizontal, vertical);
+        self
+    }
+
+    /// Lays the button out at least `minimum`, capped by a tighter
+    /// proposal.
+    #[must_use]
+    pub const fn minimum_size(mut self, minimum: Size) -> Self {
+        self.minimum = minimum;
+        self
+    }
+
+    /// Draws the whole button as one group at `opacity` — a disabled button
+    /// that fades as a whole. An opacity that varies with hover, press or
+    /// focus re-renders the button on those changes.
+    #[must_use]
+    pub fn group_opacity(mut self, opacity: impl Into<Driven<f32>>) -> Self {
+        self.group_opacity = opacity.into();
+        self
+    }
+
+    /// The button's chrome.
+    #[must_use]
+    pub const fn chrome(&self) -> &Chrome {
+        &self.chrome
+    }
+
+    /// The label styling.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The label padding: horizontal per side, vertical above and below.
+    #[must_use]
+    pub const fn get_padding(&self) -> Vec2 {
+        self.padding
+    }
+
+    /// The minimum size.
+    #[must_use]
+    pub const fn get_minimum_size(&self) -> Size {
+        self.minimum
+    }
+
+    /// The group opacity.
+    #[must_use]
+    pub const fn get_group_opacity(&self) -> &Driven<f32> {
+        &self.group_opacity
+    }
+
+    /// Replaces the chrome, keeping the label styling and the metrics.
+    #[must_use]
+    pub fn with_chrome(mut self, chrome: Chrome) -> Self {
+        self.chrome = chrome;
+        self
+    }
+
+    /// Replaces the label styling.
+    #[must_use]
+    pub fn with_label(mut self, label: Label) -> Self {
+        self.label = label;
+        self
+    }
+}

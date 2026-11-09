@@ -220,16 +220,6 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         self.renderer.draw_context(ctx, body);
     }
 
-    /// Lists `source` as a live item at this point of the widget's record
-    /// ([`HydrolysisRenderer::push_live`]).
-    pub(crate) fn push_live(
-        &mut self,
-        source: &std::rc::Rc<dyn crate::renderer::chrome::LiveSource>,
-    ) {
-        let ctx = self.render_context();
-        self.renderer.push_live(ctx, source);
-    }
-
     pub(crate) fn state_mut(&mut self) -> &mut HydroState<E> {
         &mut self.renderer.state
     }
@@ -319,18 +309,28 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         );
     }
 
-    pub(crate) fn render_styled_text_single_line_centered(
+    /// A single line of `styled` centred in `bounds`, growing with
+    /// `scale`'s press scale when given — a label that follows its
+    /// chrome.
+    pub(crate) fn render_styled_text_single_line_scaled(
         &mut self,
         styled: StyledStr,
         env: &Environment,
         bounds: kurbo::Rect,
+        scale: Option<&std::rc::Rc<crate::renderer::chrome::LiveChrome>>,
     ) {
+        let widget = self.render_context().local();
         let child_ctx = self.child(
             kurbo::Affine::translate((bounds.x0, bounds.y0)),
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        renderer.render_styled_text_single_line_centered(child_ctx, styled, env);
+        renderer.render_styled_text_single_line_centered(
+            child_ctx,
+            styled,
+            env,
+            scale.map(|chrome| (chrome, widget)),
+        );
     }
 }
 

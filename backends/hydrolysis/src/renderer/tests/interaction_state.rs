@@ -1,17 +1,23 @@
 //! Per-state interaction styling (waterui#1270): the renderer computes a
 //! control's `InteractionState` from the hover/press/focus bookkeeping it
-//! already keeps plus `Selected`/`Disabled` metadata, resolves
-//! `InteractionStyle::state_layer_radii` and `label_color` with it, strokes
-//! `focus_ring` only while the state is FOCUSED (keyboard focus-visible), and
-//! writes `.interaction_state` report bindings on change.
+//! already keeps plus `Selected`/`Disabled` metadata, moves the installed
+//! [`Chrome`]'s surface shape with it, strokes its focus ring only while the
+//! state is FOCUSED (keyboard focus-visible), and writes
+//! `.interaction_state` report bindings on change.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::theme::{ButtonMetrics, FocusRing, InteractionStyle};
+use crate::renderer::chrome::LiveChrome;
+use crate::theme::{
+    Chrome, CornerShape, FocusIndicator, Motion, PressFeedback, StateLayer, Surface,
+};
+use cherenkov_record::ShapeData;
+use core::time::Duration;
 use kurbo::RoundedRectRadii;
 use nami::Signal as _;
 use waterui::accessibility::AccessibilityRole;
+use waterui::animation::Animation;
 use waterui::gesture::TapGesture;
 use waterui::{AnyView, Color, ViewExt as _};
 use waterui_core::Environment;
@@ -19,7 +25,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::interaction::{InteractionState, StateValue};
 use waterui_layout::stack::hstack;
 
-use super::{MinimalTestTheme, test_environment};
+use super::{MinimalTestTheme, invisible_chrome, test_environment};
 use crate::platform::{InputEvent, KeyCode, KeyState, Modifiers, PointerButton, PointerKind};
 use crate::{HeadlessRuntime, keyboard_types};
 
@@ -102,22 +108,36 @@ fn key(runtime: &mut HeadlessRuntime, key: KeyCode, state: KeyState) {
     let _ = runtime.pump(false);
 }
 
-/// The M3 list-item shape morph: 8 resting, 12 hovered, 16 pressed. The theme
-/// sees the radii resolved against the control's reported state.
+/// A chrome with `focus` and no visible surface or tint.
+fn chrome_with(shape: CornerShape, focus: FocusIndicator) -> Chrome {
+    Chrome::new(
+        Surface::clear(shape),
+        StateLayer::new(Color::srgb(0, 0, 0)),
+        PressFeedback::new(),
+        focus,
+        Motion::uniform(Animation::linear(Duration::from_millis(15))),
+    )
+}
+
+/// The tap control's live chrome.
+fn the_chrome(runtime: &HeadlessRuntime) -> Rc<LiveChrome> {
+    let chromes = runtime.renderer().hit_test.interaction.live_chromes();
+    let [chrome] = <[_; 1]>::try_from(chromes).expect("exactly one control binds a live chrome");
+    chrome
+}
+
+/// The M3 list-item shape morph: 8 resting, 12 hovered, 16 pressed. The
+/// chrome's live silhouette takes the radii resolved against the control's
+/// reported state.
 #[test]
 #[expect(
     clippy::float_cmp,
     reason = "the radii are the theme's literal per-state tokens selected as-is, not interpolated values"
 )]
-fn state_layer_radii_morph_with_reported_state() {
+fn surface_radii_morph_with_reported_state() {
     let mut env = test_environment();
-    env.install(
-        InteractionStyle::new(
-            ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-            Color::srgb(0, 0, 0),
-            8.0_f64,
-        )
-        .state_layer_radii(
+    env.install(chrome_with(
+        CornerShape::new(
             StateValue::new(RoundedRectRadii::from_single_radius(8.0))
                 .when(
                     InteractionState::PRESSED,
@@ -128,20 +148,28 @@ fn state_layer_radii_morph_with_reported_state() {
                     RoundedRectRadii::from_single_radius(12.0),
                 ),
         ),
+        FocusIndicator::Tint,
+    ));
+    // 40 pt wide, so no radius here is clamped to half the control's width.
+    let view = AnyView::new(
+        hstack((
+            AnyView::new(Color::srgb_hex("#18181B")),
+            AnyView::new(
+                Color::srgb_hex("#3F3F46")
+                    .width(40.0)
+                    .gesture(TapGesture::new(), || {})
+                    .a11y_role(AccessibilityRole::Button),
+            ),
+            AnyView::new(Color::srgb_hex("#27272A")),
+        ))
+        .spacing(0.0),
     );
-    let draws = Rc::new(RefCell::new(Vec::new()));
-    let theme = MinimalTestTheme {
-        state_layer_draws: Rc::clone(&draws),
-        ..Default::default()
-    };
-    let mut runtime = runtime(env, tap_view(), theme);
+    let mut runtime = runtime(env, view, MinimalTestTheme::default());
+    let chrome = the_chrome(&runtime);
 
-    let last_radii = || {
-        draws
-            .borrow()
-            .last()
-            .map(|(_, radii)| radii.top_left)
-            .expect("the state layer draws every frame")
+    let last_radii = || match chrome.shape() {
+        ShapeData::RoundedRect(rect) => rect.radii().top_left,
+        other => panic!("the surface is a rounded rectangle, not {other:?}"),
     };
     assert!(
         last_radii() == 8.0,
@@ -190,11 +218,7 @@ fn state_layer_radii_morph_with_reported_state() {
 #[test]
 fn interaction_report_follows_hover_and_press() {
     let mut env = test_environment();
-    env.install(InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        8.0_f64,
-    ));
+    env.install(invisible_chrome());
     let report = nami::binding(InteractionState::empty());
     let view = AnyView::new(
         hstack((
@@ -235,11 +259,7 @@ fn interaction_report_follows_hover_and_press() {
 #[test]
 fn selected_adds_selected_to_reported_state() {
     let mut env = test_environment();
-    env.install(InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        8.0_f64,
-    ));
+    env.install(invisible_chrome());
     let report = nami::binding(InteractionState::empty());
     let view = AnyView::new(
         hstack((
@@ -277,18 +297,14 @@ fn selected_adds_selected_to_reported_state() {
 /// is used so a single pixel scan detects it.
 fn pump_red_ring_pixels(env: Environment, activate: impl Fn(&mut HeadlessRuntime)) -> bool {
     let mut env = env;
-    env.install(
-        InteractionStyle::new(
-            ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-            Color::srgb(0, 0, 0),
-            8.0_f64,
-        )
-        .focus_ring(FocusRing {
-            color: Color::srgb(255, 0, 0),
+    env.install(chrome_with(
+        CornerShape::radius(8.0),
+        FocusIndicator::Ring {
             width: 3.0,
             offset: 3.0,
-        }),
-    );
+            color: Color::srgb(255, 0, 0),
+        },
+    ));
     let mut runtime = runtime(env, tap_view(), MinimalTestTheme::default());
     activate(&mut runtime);
     let snapshot = runtime
@@ -320,102 +336,6 @@ fn focus_ring_draws_only_for_keyboard_focus() {
     assert!(tabbed, "Tab focus must draw the focus ring");
 }
 
-/// `label_color` resolves against the reported state: a DISABLED button label
-/// takes the disabled override, an enabled one the resting value.
-#[test]
-fn label_color_resolves_disabled() {
-    let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let style = InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        8.0_f64,
-    )
-    .label_colors(Color::srgb(0, 0, 255), Color::srgb(128, 128, 128));
-    let env = test_environment();
-
-    let resolve = |state| {
-        crate::widgets::controls::button::button_label_color(
-            &theme,
-            waterui_controls::button::ButtonStyle::Automatic,
-            state,
-            Some(&style),
-            None,
-        )
-        .expect("the style overrides the label color")
-        .resolve(&env)
-        .snapshot()
-    };
-    let to_srgb = waterui_graphics::color::working::to_srgb;
-
-    let channel8 = |v: f32| crate::num_cast::f32_as_u8((v * 255.0).round());
-    let enabled = to_srgb(resolve(InteractionState::empty()));
-    assert_eq!(
-        (
-            channel8(enabled.red),
-            channel8(enabled.green),
-            channel8(enabled.blue)
-        ),
-        (0, 0, 255),
-        "enabled label color"
-    );
-
-    let disabled = to_srgb(resolve(InteractionState::DISABLED));
-    assert_eq!(
-        (
-            channel8(disabled.red),
-            channel8(disabled.green),
-            channel8(disabled.blue)
-        ),
-        (128, 128, 128),
-        "disabled label color"
-    );
-}
-
-/// The retained (non-title) label resolves `label_color` reactively through
-/// the full `InteractionState`, not just DISABLED: writing HOVERED to the
-/// control's state binding recolors it without a rebuild.
-#[test]
-fn retained_label_color_resolves_hovered() {
-    let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let style = InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        8.0_f64,
-    )
-    .label_color(
-        StateValue::new(Some(Color::srgb(0, 0, 255)))
-            .when(InteractionState::HOVERED, Some(Color::srgb(255, 0, 0))),
-    );
-    let env = test_environment();
-    let state = nami::Binding::container(InteractionState::empty());
-    let color = crate::widgets::controls::button::state_aware_label_color(
-        &theme,
-        waterui_controls::button::ButtonStyle::Automatic,
-        &state,
-        Some(&style),
-        None,
-    )
-    .expect("the style overrides the label color");
-    let resolved = color.resolve(&env);
-    let channel8 = |v: f32| crate::num_cast::f32_as_u8((v * 255.0).round());
-    let rgb = |color: waterui_graphics::draw::WorkingColor| {
-        let srgb = waterui_graphics::color::working::to_srgb(color);
-        (
-            channel8(srgb.red),
-            channel8(srgb.green),
-            channel8(srgb.blue),
-        )
-    };
-
-    assert_eq!(rgb(resolved.snapshot()), (0, 0, 255), "resting");
-
-    state.set(InteractionState::HOVERED);
-    assert_eq!(rgb(resolved.snapshot()), (255, 0, 0), "hovered override");
-
-    state.set(InteractionState::empty());
-    assert_eq!(rgb(resolved.snapshot()), (0, 0, 255), "back to resting");
-}
-
 /// `Selected` is announced through the accessibility tree on the control it
 /// modifies.
 #[cfg(feature = "accessibility")]
@@ -424,11 +344,7 @@ fn selected_sets_the_accessibility_selected_trait() {
     use accesskit::Role;
 
     let mut env = test_environment();
-    env.install(InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        8.0_f64,
-    ));
+    env.install(invisible_chrome());
     let view = AnyView::new(
         hstack((
             AnyView::new(Color::srgb_hex("#18181B")),

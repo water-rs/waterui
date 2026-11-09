@@ -683,41 +683,6 @@ pub fn estimate_layout_intrinsic<'a, E: crate::text::TextEngine>(
     layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)
 }
 
-/// The stroke parameters of `style.focus_ring` while `state` is FOCUSED
-/// (keyboard focus): the ring strokes the layer bounds grown by `offset`, so
-/// its inner edge sits `offset` points out — the stroked box and the resolved
-/// radii both grow by `offset + width / 2` — in the ring's color. The caller
-/// strokes it on the draw context it opens after resolving.
-pub fn interaction_focus_ring<E: crate::text::TextEngine>(
-    renderer: &mut HydrolysisRenderer<E>,
-    env: &Environment,
-    layer_bounds: kurbo::Rect,
-    layer_radii: kurbo::RoundedRectRadii,
-    style: &crate::theme::InteractionStyle,
-    state: waterui_core::interaction::InteractionState,
-) -> Option<(
-    kurbo::Rect,
-    kurbo::RoundedRectRadii,
-    waterui_graphics::draw::WorkingColor,
-    f64,
-)> {
-    let ring = style.focus_ring.as_ref()?;
-    if !state.contains(waterui_core::interaction::InteractionState::FOCUSED) {
-        return None;
-    }
-    let grow = ring.offset + ring.width / 2.0;
-    let bounds = layer_bounds.inflate(grow, grow);
-    let radii = kurbo::RoundedRectRadii::new(
-        layer_radii.top_left + grow,
-        layer_radii.top_right + grow,
-        layer_radii.bottom_right + grow,
-        layer_radii.bottom_left + grow,
-    );
-    let color_signal = ring.color.resolve(env);
-    let color = renderer.read_signal(&color_signal);
-    Some((bounds, radii, color, ring.width))
-}
-
 /// Resolves a shape into a concrete path for `bounds`.
 ///
 /// Structured shape kinds resolve their normalized corner radii against the

@@ -21,9 +21,10 @@ use crate::renderer::FrameWorkCounters;
 use crate::renderer::chrome::LiveChrome;
 use crate::runner::FrameCounters;
 use crate::theme::{
-    Chrome, CornerShape, Corners, Elevation, FocusIndicator, PressFeedback, Ripple, StateLayer,
-    Surface,
+    Chrome, CornerShape, Corners, Elevation, FocusIndicator, Motion, PressFeedback, Ripple,
+    StateLayer, Surface,
 };
+use waterui::animation::Animation;
 
 const WINDOW: u32 = 320;
 /// The window's centre, where the button lies.
@@ -55,17 +56,22 @@ fn chrome() -> Chrome {
             StateValue::new(Elevation::NONE)
                 .when(InteractionState::HOVERED, Elevation::new(raised, raised)),
         ),
-        StateLayer::new(color(1.0, 1.0, 1.0)).opacities(0.08, 0.1, 0.1, 0.16),
-        PressFeedback::Ripple(Ripple {
+        StateLayer::new(waterui::Color::srgb_f32(1.0, 1.0, 1.0)).opacities(0.08, 0.1, 0.1, 0.16),
+        PressFeedback::new().ripple(Ripple {
             min_diameter: 48.0,
             initial_scale: 0.4,
             drift: 1.0,
+            grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+            fade_in: Animation::linear(Duration::from_millis(105)),
+            fade_out: Animation::linear(Duration::from_millis(375)),
+            minimum_duration: Duration::from_millis(225),
         }),
         FocusIndicator::Ring {
             width: 3.0,
             offset: 2.0,
-            color: color(0.1, 0.1, 0.9),
+            color: waterui::Color::srgb_f32(0.1, 0.1, 0.9),
         },
+        Motion::uniform(Animation::linear(Duration::from_millis(15))),
     )
 }
 
@@ -114,7 +120,6 @@ fn tree_work(counters: FrameWorkCounters) -> [u64; 3] {
 #[test]
 fn interaction_cycle_records_chrome_once() {
     let theme = MinimalTestTheme::default().with_button_chrome(chrome());
-    let draws = theme.button_chrome_draws();
     let mut runtime = runtime_with(button("Chrome").action(|| {}), theme);
     let mut frames = Frames {
         start: Instant::now(),
@@ -178,7 +183,6 @@ fn interaction_cycle_records_chrome_once() {
         "the cycle keeps the mounted chrome"
     );
     assert_eq!(chrome.recordings(), 2, "press and release record no chrome");
-    assert_eq!(draws.get(), 0, "the theme never draws the button's chrome");
 }
 /// water-rs/waterui#2940: a pointer press that moves keyboard focus onto a
 /// live-chrome control is pure bookkeeping — the focus indicator rides the
@@ -194,7 +198,7 @@ fn press_focus_move_needs_no_tree_pass() {
     // no animation frames, so every mark this test may produce is the
     // focus move's — anything beyond the operands is the bug.
     let mut focus_chrome = chrome();
-    focus_chrome.set_press(PressFeedback::Tint);
+    focus_chrome.set_press(PressFeedback::new().tint());
     let theme = MinimalTestTheme::default().with_button_chrome(focus_chrome);
     let mut runtime = runtime_with(button("Chrome").action(|| {}), theme);
     let mut frames = Frames {
@@ -265,7 +269,7 @@ fn tap_release_needs_no_tree_pass() {
     // animation frames, so every mark this test may produce is the
     // activation's — anything beyond the live operands is the bug.
     let mut tap_chrome = chrome();
-    tap_chrome.set_press(PressFeedback::Tint);
+    tap_chrome.set_press(PressFeedback::new().tint());
     let theme = MinimalTestTheme::default().with_button_chrome(tap_chrome);
     let activations = Rc::new(Cell::new(0));
     let tapped = Rc::clone(&activations);
@@ -346,7 +350,7 @@ fn keyboard_activation_needs_no_tree_pass() {
     // The same static-tint fixture as the tap's: no animation frames, so
     // every mark is the activation's.
     let mut tap_chrome = chrome();
-    tap_chrome.set_press(PressFeedback::Tint);
+    tap_chrome.set_press(PressFeedback::new().tint());
     let theme = MinimalTestTheme::default().with_button_chrome(tap_chrome);
     let activations = Rc::new(Cell::new(0));
     let tapped = Rc::clone(&activations);
