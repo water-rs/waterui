@@ -112,6 +112,9 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   SHARD_TOTAL: 8
   PACKAGE_GROUP_TOTAL: 5
+  # The nextest `test-fonts` setup script fetches its pinned GitHub-hosted
+  # sources as authenticated traffic with the job token (#3942).
+  GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   prepare:
@@ -746,6 +749,30 @@ jobs:
         env:
           WATERUI_DIR: ${{ github.workspace }}
         run: ./.github/scripts/run-ios-device-tests.sh ios_test_host "${SIMULATOR_UDID}"
+
+      # Runs before the delete step, which removes the device's own logs.
+      - name: Collect the CoreSimulator diagnostics
+        if: failure()
+        timeout-minutes: 5
+        run: |
+          mkdir -p sim-diagnostics
+          log show --last 90m --style compact --predicate 'subsystem == "com.apple.CoreSimulator" OR process == "CoreSimulatorService" OR process == "ibtoold" OR process == "actool" OR process == "launchd_sim" OR process == "com.apple.CoreSimulator.CoreSimulatorService"' \
+            > sim-diagnostics/coresimulator.log 2>&1 || true
+          pgrep -fl 'ibtoold|actool|Simulator|CoreSimulator|launchd_sim' > sim-diagnostics/processes.txt || true
+          xcrun simctl list devices > sim-diagnostics/devices.txt 2>&1 || true
+          sysctl kern.memorystatus_vm_pressure_level > sim-diagnostics/memory-pressure.txt 2>&1 || true
+          if [[ -n "${SIMULATOR_UDID:-}" ]]; then
+            cp -R ~/Library/Logs/CoreSimulator/"${SIMULATOR_UDID}" sim-diagnostics/device-logs 2>/dev/null || true
+          fi
+
+      - name: Upload the CoreSimulator diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 5
+        with:
+          name: ios-device-tests-simulator-diagnostics
+          path: sim-diagnostics
+          if-no-files-found: warn
 
       - name: Delete the iOS simulator
         if: always()

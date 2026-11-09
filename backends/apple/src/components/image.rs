@@ -14,12 +14,13 @@ use waterui::graphics::color::WorkingColor;
 use waterui::icon::SystemIcon;
 use waterui::reactive::Signal;
 use waterui::resolve::Resolvable;
-use waterui::text::font::{Body, FontWeight, ResolvedFont};
+use waterui::text::font::{Body, ResolvedFont};
 use waterui::theme::color::Foreground;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
 
+use super::font::resolved_weight;
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
 
@@ -72,28 +73,11 @@ fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit::NSC
     }
 }
 
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale —
-/// the same table `WuiFontWeight.toNSFontWeight()` applies.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
 /// Pushes the themed font onto the symbol: `preferredSymbolConfiguration`
 /// with a font-derived configuration on `UIKit`.
 #[cfg(target_os = "ios")]
 fn apply_symbol_font(mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &ResolvedFont) {
-    let font = cocoa_ui::font::system(mtm, f64::from(font.size()), platform_weight(font.weight()));
+    let font = cocoa_ui::font::system(mtm, f64::from(font.size()), resolved_weight(mtm, font));
     assert!(
         view.set_symbol_font(&font),
         "SF Symbol rejected the themed font configuration"
@@ -103,9 +87,9 @@ fn apply_symbol_font(mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &R
 /// Pushes the themed font onto the symbol: a point-size/weight symbol
 /// configuration rebuilt from the symbol's name on `AppKit`.
 #[cfg(target_os = "macos")]
-fn apply_symbol_font(_mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &ResolvedFont) {
+fn apply_symbol_font(mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &ResolvedFont) {
     assert!(
-        view.set_symbol_configuration(f64::from(font.size()), platform_weight(font.weight())),
+        view.set_symbol_configuration(f64::from(font.size()), resolved_weight(mtm, font)),
         "SF Symbol rejected the themed font configuration"
     );
 }
@@ -189,28 +173,4 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf.bind(&body, move |font| apply_symbol_font(mtm, &view, &font));
         leaf
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn platform_weight_maps_every_font_weight() {
-        use cocoa_ui::font::weight;
-        let table: [(FontWeight, f64); 9] = [
-            (FontWeight::Thin, weight::THIN),
-            (FontWeight::UltraLight, weight::ULTRA_LIGHT),
-            (FontWeight::Light, weight::LIGHT),
-            (FontWeight::Normal, weight::REGULAR),
-            (FontWeight::Medium, weight::MEDIUM),
-            (FontWeight::SemiBold, weight::SEMI_BOLD),
-            (FontWeight::Bold, weight::BOLD),
-            (FontWeight::UltraBold, weight::HEAVY),
-            (FontWeight::Black, weight::BLACK),
-        ];
-        for (weight, expected) in table {
-            assert_eq!(platform_weight(weight).to_bits(), expected.to_bits());
-        }
-    }
 }

@@ -10,8 +10,8 @@ use crate::renderer::{
 };
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, VisibleSubviewCache, WidgetRenderContext,
-    list_row_height_for_content, local_interaction_state, materialize_list_item,
-    measure_list_intrinsic, measure_transient_view_intrinsic,
+    list_row_height_for_content, list_row_horizontal_insets, local_interaction_state,
+    materialize_list_item, measure_list_intrinsic, measure_list_row_content,
 };
 use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
 #[cfg(feature = "accessibility")]
@@ -28,7 +28,9 @@ use waterui_core::animation::Animation;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::Id as RawId;
 use waterui_core::interaction::Selected;
-use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::layout::{
+    ProposalSize, Size as LayoutSize, UnitPoint, ViewDimensions, layout_direction,
+};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -948,7 +950,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ListConfig> {
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
-        measure_list_intrinsic(view.as_inner(), state, env, theme)
+        measure_list_intrinsic(view.as_inner(), None, state, env, theme)
     }
 }
 
@@ -1277,8 +1279,10 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                         theme.expect("hydrolysis rendered list measurement requires a theme");
                     let list_metrics = list_metrics
                         .expect("hydrolysis rendered list measurement requires list metrics");
-                    let content_size = measure_transient_view_intrinsic(
+                    let content_size = measure_list_row_content(
                         item.content(),
+                        viewport.width(),
+                        item.get_insets(),
                         renderer.state_mut(),
                         &row_env,
                         theme,
@@ -1683,7 +1687,7 @@ pub fn measure_list_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let intrinsic = measure_list_intrinsic(list, state, env, theme);
+    let intrinsic = measure_list_intrinsic(list, proposal.width, state, env, theme);
     ViewDimensions::new(LayoutSize::new(
         proposal.width.unwrap_or(intrinsic.width),
         proposal.height.unwrap_or(intrinsic.height),
@@ -1930,8 +1934,14 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             let chrome = state.borrow().section_chrome(index);
             // A row's extent covers the section chrome it owns, so scroll offsets,
             // hit testing, and the visible window all account for it.
-            let content_size =
-                measure_transient_view_intrinsic(item.content(), ctx.state_mut(), &row_env, &theme);
+            let content_size = measure_list_row_content(
+                item.content(),
+                viewport.width(),
+                item.get_insets(),
+                ctx.state_mut(),
+                &row_env,
+                &theme,
+            );
             let row_height = list_row_height_for_content(
                 f64::from(content_size.height),
                 item.get_insets(),
@@ -2425,6 +2435,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                         stretch: subview.stretch_axis(),
                     },
                 );
+                subview.set_content_anchor(row_content_anchor(&row_env));
                 let row = state_ref.transitions.row(row_id);
                 match &row.insertion {
                     Some(insertion) => {
@@ -3004,30 +3015,29 @@ fn list_content_rect(
     // statically classified as stretching, and interactive rows must keep a
     // full-width hit target). The row's `insets` replace the theme's row
     // insets edge for edge; unset, the theme's symmetric inset keeps the
-    // same rect.
-    let (leading_inset, trailing_inset) = insets.map_or(
-        (metrics.horizontal_inset, metrics.horizontal_inset),
-        |insets| (f64::from(insets.leading()), f64::from(insets.trailing())),
-    );
+    // same rect. The row's height was measured at this same width.
     let vertical_insets = insets.map_or(metrics.vertical_inset * 2.0, |insets| {
         f64::from(insets.top() + insets.bottom())
     });
-    // `EdgeInsets` is logical: leading opens the content on the side the
-    // layout direction starts from.
-    let (left_inset, right_inset) = if waterui_core::layout::layout_direction(env)
-        .snapshot()
-        .is_right_to_left()
-    {
-        (trailing_inset, leading_inset)
-    } else {
-        (leading_inset, trailing_inset)
-    };
+    let (left_inset, right_inset) = list_row_horizontal_insets(insets, metrics, env);
     let x0 = row_rect.x0 + left_inset;
     let x1 = row_rect.x1 - right_inset;
     let available_height = (row_rect.height() - vertical_insets).max(0.0);
     let height = f64::from(content_size.height).min(available_height);
     let y0 = (row_rect.height() - height).mul_add(0.5, row_rect.y0);
     kurbo::Rect::new(x0, y0, x1, y0 + height)
+}
+
+/// Where a row positions its content's response (water-rs/waterui#3888): at
+/// the leading edge of the row's content rect — trailing in right-to-left —
+/// centred vertically. The content keeps the whole content rect as its
+/// allocation, so the row's hit target spans it.
+fn row_content_anchor(env: &Environment) -> UnitPoint {
+    if layout_direction(env).snapshot().is_right_to_left() {
+        UnitPoint::TRAILING
+    } else {
+        UnitPoint::LEADING
+    }
 }
 
 /// Emits a retained list's accessibility tree for the semantic walk — the same

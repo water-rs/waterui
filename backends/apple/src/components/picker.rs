@@ -18,14 +18,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use cocoa_ui::{PlatformView, Rect, Retained, view};
+use cocoa_ui::{PlatformView, Rect, view};
 #[cfg(target_os = "macos")]
 use waterui::component::LabelDisplayMode;
 use waterui::component::form::picker::{PickerConfig, PickerItem, PickerStyle as WuiPickerStyle};
 use waterui::reactive::{Computed, Signal};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
-use waterui::text::font::{Body, FontDesign, FontWeight, ResolvedFont};
+use waterui::text::font::{Body, ResolvedFont};
 use waterui_core::id::Id;
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
@@ -33,6 +33,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
+use super::font::platform_font;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
@@ -284,69 +285,6 @@ impl SubView for PickerSubView {
     }
 }
 
-/// The platform weight of a `FontWeight` on the `NSFont`/`UIFont` scale.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
-/// The comma-separated candidates of a CSS-style family list, trimmed with
-/// the empties dropped.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names — the `Body` resolved font
-/// applied to the control's items.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` `text` raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size());
-    let weight = platform_weight(resolved.weight());
-    match resolved.family() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
-        }
-        _ => match resolved.design() {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
-    }
-}
-
 /// Installs the `picker` handler on the dispatcher: `Native<PickerConfig>`
 /// maps to a container view with the platform selection control and, on
 /// `AppKit`, the visible leading label child.
@@ -434,7 +372,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf.bind(&body, {
             let state = Rc::clone(&state);
             move |font: ResolvedFont| {
-                state.borrow().picker.set_font(&platform_font(mtm, &font));
+                state
+                    .borrow()
+                    .picker
+                    .set_font(&platform_font(mtm, &font, false));
             }
         });
 

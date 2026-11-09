@@ -2008,17 +2008,12 @@ mod platform_impl {
             }
         }
 
-        /// A `ResolvedFont` as an `AppKit` font: the system face at the
-        /// resolved size and weight.
+        /// A `ResolvedFont` as an `AppKit` font.
         fn platform_font(
             &self,
             resolved: &waterui::text::font::ResolvedFont,
         ) -> Retained<cocoa_ui::Font> {
-            cocoa_ui::font::system(
-                self.mtm,
-                f64::from(resolved.size()),
-                platform_weight(resolved.weight()),
-            )
+            crate::components::font::platform_font(self.mtm, resolved, false)
         }
 
         /// Builds a section band view for `signal`, styled muted +
@@ -2386,25 +2381,6 @@ mod platform_impl {
             }
             true
         }
-    }
-}
-
-/// Maps a `FontWeight` to the kit's weight scale — the same table
-/// `date_picker` uses.
-#[cfg(target_os = "macos")]
-const fn platform_weight(weight: waterui::text::font::FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    use waterui::text::font::FontWeight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
     }
 }
 

@@ -106,22 +106,50 @@ pub fn named(name: &str, size: f64) -> Option<Retained<Font>> {
     Font::fontWithName_size(&name, size)
 }
 
+/// A symbolic trait a font descriptor can add: the platform resolves the
+/// face that carries it.
+#[derive(Clone, Copy)]
+enum SymbolicTrait {
+    Italic,
+    /// The platform picks the bold face per font: a text-style font gets
+    /// its style's bold counterpart, Semibold for body text, and a regular
+    /// fixed-size system font gets Bold.
+    Bold,
+}
+
 /// A variant of `font` that adds the italic trait to its descriptor, or
 /// `None` when the face has no italic variant.
 ///
 /// The returned font keeps the original's size.
 #[must_use]
 pub fn italic_variant(font: &Font) -> Option<Retained<Font>> {
+    trait_variant(font, SymbolicTrait::Italic)
+}
+
+/// A variant of `font` that adds the bold symbolic trait to its descriptor,
+/// or `None` when the face has no bold variant.
+///
+/// The returned font keeps the original's size.
+#[must_use]
+pub fn bold_variant(font: &Font) -> Option<Retained<Font>> {
+    trait_variant(font, SymbolicTrait::Bold)
+}
+
+/// A variant of `font` whose descriptor adds `symbolic`, at the original's
+/// size, or `None` when the platform resolves no such face.
+fn trait_variant(font: &Font, symbolic: SymbolicTrait) -> Option<Retained<Font>> {
     #[cfg(target_os = "ios")]
     {
         use objc2_ui_kit::UIFontDescriptorSymbolicTraits;
+        let added = match symbolic {
+            SymbolicTrait::Italic => UIFontDescriptorSymbolicTraits::TraitItalic,
+            SymbolicTrait::Bold => UIFontDescriptorSymbolicTraits::TraitBold,
+        };
         // SAFETY: see the module safety note.
         let descriptor = unsafe { font.fontDescriptor() };
         // SAFETY: see the module safety note.
         let descriptor = unsafe {
-            descriptor.fontDescriptorWithSymbolicTraits(
-                descriptor.symbolicTraits() | UIFontDescriptorSymbolicTraits::TraitItalic,
-            )
+            descriptor.fontDescriptorWithSymbolicTraits(descriptor.symbolicTraits() | added)
         }?;
         // SAFETY: see the module safety note.
         Some(Font::fontWithDescriptor_size(&descriptor, unsafe {
@@ -131,12 +159,21 @@ pub fn italic_variant(font: &Font) -> Option<Retained<Font>> {
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::NSFontDescriptorSymbolicTraits;
+        let added = match symbolic {
+            SymbolicTrait::Italic => NSFontDescriptorSymbolicTraits::TraitItalic,
+            SymbolicTrait::Bold => NSFontDescriptorSymbolicTraits::TraitBold,
+        };
         let descriptor = font.fontDescriptor();
-        let descriptor = descriptor.fontDescriptorWithSymbolicTraits(
-            descriptor.symbolicTraits() | NSFontDescriptorSymbolicTraits::TraitItalic,
-        );
+        let descriptor =
+            descriptor.fontDescriptorWithSymbolicTraits(descriptor.symbolicTraits() | added);
         Font::fontWithDescriptor_size(&descriptor, font.pointSize())
     }
+}
+
+/// The weight `font` declares, on the platform's own scale.
+#[must_use]
+pub fn weight_of(font: &Font) -> f64 {
+    crate::system_font::font_weight(font)
 }
 
 /// The distance from baseline to baseline the platform typesetter uses for

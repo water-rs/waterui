@@ -170,11 +170,14 @@ fn max_width_derived_from_the_mounted_window_frame_wraps_text() {
 /// from it (water-rs/hydrolysis#128).
 #[test]
 fn mount_app_drives_the_app_window_frame_from_the_viewport() {
+    use waterui::accessibility::AccessibilityGeometry;
     use waterui::window::{Window, WindowState};
 
     let frame = waterui::binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
+    // The label names its allocation (`docs/layout-spec.md` §7.2): a text
+    // root otherwise reports its centred response, not the window's width.
     let mut window = Window::new("app", waterui::binding(WindowState::Normal), || {
-        text("app content").body()
+        text("app content").a11y_geometry(AccessibilityGeometry::Allocation)
     });
     window.frame = frame.clone();
     let app = App::new_with_windows([window], Environment::new());

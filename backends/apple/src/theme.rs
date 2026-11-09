@@ -298,6 +298,7 @@ impl ThemeSignals {
                     reason = "platform metrics are f64; ResolvedFont is f32"
                 )]
                 let font = ResolvedFont::new(metrics.size as f32, font_weight(metrics.weight))
+                    .with_bold_weight(font_weight(metrics.bold_weight))
                     .with_typography_metrics(metrics.line_height as f32, 0.0);
                 binding.set(font);
             }),

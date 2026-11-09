@@ -23,7 +23,7 @@ use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
 use waterui::text::TapSpan;
 use waterui::text::TextConfig;
-use waterui::text::font::{FontDesign, FontWeight, ResolvedFont};
+use waterui::text::font::ResolvedFont;
 use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
 use waterui_core::layout::{
@@ -31,6 +31,7 @@ use waterui_core::layout::{
     SubView, VerticalAlignment, ViewDimensions,
 };
 
+use super::font::platform_font;
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
@@ -256,75 +257,6 @@ fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
         Some(Animation::Bezier { duration, .. }) => Some(duration.as_secs_f64()),
         Some(Animation::Spring { .. }) => Some(0.15),
     }
-}
-
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
-/// The comma-separated candidates of a CSS-style family list, trimmed with
-/// the empties dropped — `fontFamilyCandidates` in the Swift port.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names: a named family resolved through
-/// its candidate list — generics first, then `fontWithName:` — or the design
-/// face, italicized when the chunk asks for it.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-    italic: bool,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size());
-    let weight = platform_weight(resolved.weight());
-    let mut font = match resolved.family() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
-        }
-        _ => match resolved.design() {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
-    };
-    if italic && let Some(italic_font) = cocoa_ui::font::italic_variant(&font) {
-        font = italic_font;
-    }
-    font
 }
 
 /// A `WorkingColor` as the platform's extended linear Display-P3 color object.
@@ -812,34 +744,6 @@ mod tests {
     use core::time::Duration;
 
     use super::*;
-
-    #[test]
-    fn family_candidates_splits_trims_and_drops_empties() {
-        let candidates: Vec<&str> = family_candidates("Menlo , Monaco ,,  Courier New ").collect();
-        assert_eq!(candidates, ["Menlo", "Monaco", "Courier New"]);
-        assert!(family_candidates("").next().is_none());
-        assert!(family_candidates(" ,  ").next().is_none());
-        assert_eq!(family_candidates("system").collect::<Vec<_>>(), ["system"]);
-    }
-
-    #[test]
-    fn platform_weight_maps_every_weight() {
-        use cocoa_ui::font::weight;
-        let table: [(FontWeight, f64); 9] = [
-            (FontWeight::Thin, weight::THIN),
-            (FontWeight::UltraLight, weight::ULTRA_LIGHT),
-            (FontWeight::Light, weight::LIGHT),
-            (FontWeight::Normal, weight::REGULAR),
-            (FontWeight::Medium, weight::MEDIUM),
-            (FontWeight::SemiBold, weight::SEMI_BOLD),
-            (FontWeight::Bold, weight::BOLD),
-            (FontWeight::UltraBold, weight::HEAVY),
-            (FontWeight::Black, weight::BLACK),
-        ];
-        for (weight, expected) in table {
-            assert_eq!(platform_weight(weight).to_bits(), expected.to_bits());
-        }
-    }
 
     #[test]
     fn cross_dissolve_duration_follows_animation_table() {

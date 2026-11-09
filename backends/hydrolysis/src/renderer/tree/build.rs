@@ -86,6 +86,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     alignment,
                     line_limit: line_limit.map(core::num::NonZeroUsize::get),
                     layout_dirty,
+                    geometry: None,
                     _guards: guards,
                     tap_span_targets: RefCell::new(Vec::new()),
                 }));
@@ -1050,7 +1051,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             entries,
             placed: Vec::new(),
             #[cfg(feature = "accessibility")]
-            resolved: Rect::from_size(Size::zero()),
+            geometry: None,
             ghosts: Vec::new(),
             ghost_placed: Vec::new(),
             reduce_motion: env
@@ -1147,6 +1148,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             accessibility_identity: Rc::new(()),
             core,
             safe_area: None,
+            #[cfg(feature = "accessibility")]
+            geometry: None,
             #[cfg(feature = "accessibility")]
             accessibility_container_env,
             extent_index: RefCell::new(VirtualExtentIndex::default()),
@@ -1356,7 +1359,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             accessibility_child_env,
             placed: Vec::new(),
             #[cfg(feature = "accessibility")]
-            resolved: Rect::from_size(Size::zero()),
+            geometry: None,
             layout_dirty,
             _guards: guards,
         }))

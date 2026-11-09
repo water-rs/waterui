@@ -101,8 +101,8 @@ private final class PendingRuntime {
 
 /// A host's declared environment for one mount: the snapshot a `SwiftUI`
 /// representable hands the backend — scheme, direction and the six
-/// resolved text styles as `(size, weight, lineHeight)` triples in Body,
-/// Title1, Headline, Subheadline, Caption1, Footnote order.
+/// resolved text styles as `(size, weight, boldWeight, lineHeight)` groups
+/// in Body, Title1, Headline, Subheadline, Caption1, Footnote order.
 private struct HostEnvironment: Equatable {
   var dark: Bool
   var rtl: Bool
@@ -112,18 +112,22 @@ private struct HostEnvironment: Equatable {
   /// Resolves the environment's own text styles through `Font.resolve(in:)`
   /// against its `fontResolutionContext` — the host's content-size
   /// category included — and reads size, weight and face metrics off each
-  /// resolved `CTFont`.
+  /// resolved `CTFont`, plus the weight `SwiftUI` gives the style's bold
+  /// (`style.bold()`), the platform bold of that text style.
   init(_ environment: EnvironmentValues) {
     dark = environment.colorScheme == .dark
     rtl = environment.layoutDirection == .rightToLeft
     locale = environment.locale.identifier(.bcp47)
     let context = environment.fontResolutionContext
+    func weight(_ font: CTFont) -> Double {
+      let traits = CTFontCopyTraits(font) as NSDictionary
+      return (traits[kCTFontWeightTrait] as? NSNumber)?.doubleValue ?? 0.0
+    }
     fonts = [Font.body, .title, .headline, .subheadline, .caption, .footnote]
       .flatMap { style -> [Double] in
         let font = style.resolve(in: context).ctFont
-        let traits = CTFontCopyTraits(font) as NSDictionary
-        let weight = (traits[kCTFontWeightTrait] as? NSNumber)?.doubleValue ?? 0.0
-        return [Double(CTFontGetSize(font)), weight,
+        let bold = style.bold().resolve(in: context).ctFont
+        return [Double(CTFontGetSize(font)), weight(font), weight(bold),
                 Double(CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font))]
       }
   }

@@ -27,7 +27,6 @@ use skrifa::{GlyphId, MetadataProvider};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::FontCollection;
-use waterui_text::font::FontWeight as TextFontWeight;
 
 use crate::renderer::{FrameWorkCounters, Glyph, GlyphRun, Recording, rgba8_to_peniko};
 
@@ -255,7 +254,9 @@ impl TextEngine for ParleyEngine {
 
 impl ParleyEngine {
     /// The uncached walk behind `ink_extent`: the union of every drawn glyph's
-    /// outline bounds translated to its pen position, in layout space.
+    /// outline bounds translated to its pen position, measured from each
+    /// line's aligned start so alignment inside a wider box never counts as
+    /// ink.
     fn ink_extent_uncached(
         &self,
         layout: &ParleyLayout,
@@ -267,6 +268,7 @@ impl ParleyEngine {
             if max_lines.is_some_and(|limit| index >= limit) {
                 break;
             }
+            let line_offset = line.metrics().offset;
             for item in line.items() {
                 let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
@@ -311,8 +313,8 @@ impl ParleyEngine {
                         &coords,
                         glyph.id,
                     ) {
-                        ink_min = ink_min.min(x + x_min);
-                        ink_max = ink_max.max(x + x_max);
+                        ink_min = ink_min.min(x + x_min - line_offset);
+                        ink_max = ink_max.max(x + x_max - line_offset);
                     }
                 }
             }
@@ -1094,19 +1096,9 @@ impl TextLayout for ParleyLayout {
     }
 }
 
-const fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
-    let value = match weight {
-        TextFontWeight::Thin => 100.0,
-        TextFontWeight::UltraLight => 200.0,
-        TextFontWeight::Light => 300.0,
-        TextFontWeight::Normal => 400.0,
-        TextFontWeight::Medium => 500.0,
-        TextFontWeight::SemiBold => 600.0,
-        TextFontWeight::Bold => 700.0,
-        TextFontWeight::UltraBold => 800.0,
-        TextFontWeight::Black => 900.0,
-    };
-    parley::FontWeight::new(value)
+/// The parley weight of a shaped CSS weight.
+fn parley_font_weight(weight: u16) -> parley::FontWeight {
+    parley::FontWeight::new(f32::from(weight))
 }
 
 fn parley_alignment(alignment: HorizontalAlignment, right_to_left: bool) -> parley::Alignment {

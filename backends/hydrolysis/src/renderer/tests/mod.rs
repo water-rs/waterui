@@ -75,6 +75,8 @@ mod popup_windows;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod registrations;
 mod render_identity;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod response_geometry;
 mod retained_scene;
 mod scene_offer;
 #[cfg(feature = "accessibility")]
@@ -89,6 +91,7 @@ mod structural_transitions;
 mod tab_item_layout;
 mod teardown_order;
 mod text_ink;
+mod text_measure_direction;
 mod top_edge;
 mod touch_scroll;
 mod tree;
@@ -4356,11 +4359,12 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
 }
 
 /// A labelled container with several semantic children stands as a `Group`
-/// and reports the frame it was assigned — the frozen contract makes the
-/// assigned frame the view's frame (water-rs/hydrolysis#51 amendment).
+/// and reports its own response rectangle — the stack's answer centred in the
+/// frame it was assigned — never the descendants' union and never the whole
+/// assigned frame (`docs/layout-spec.md` §7.2).
 #[cfg(feature = "accessibility")]
 #[test]
-fn a_labelled_container_that_stands_reports_its_assigned_frame() {
+fn a_labelled_container_that_stands_reports_its_response_rectangle() {
     let env = test_environment();
     let mut renderer = test_renderer();
     let view = vstack((text("A"), text("B"))).a11y_label("Named");
@@ -4376,11 +4380,16 @@ fn a_labelled_container_that_stands_reports_its_assigned_frame() {
         .expect("the labelled element must exist");
     assert_eq!(node.role(), AccessibilityNodeRole::Group);
     let bounds = node.bounds().expect("the element must carry bounds");
+    let (center_x, center_y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
     assert!(
-        (bounds.width() - 160.0).abs() < 0.5 && (bounds.height() - 160.0).abs() < 0.5,
-        "a standing container reports its assigned frame, got {}x{}",
-        bounds.width(),
-        bounds.height(),
+        bounds.width() < 80.0
+            && bounds.height() < 80.0
+            && (center_x - 80.0).abs() < 0.5
+            && (center_y - 80.0).abs() < 0.5,
+        "a standing container reports its answer centred in the assigned frame, got {bounds:?}",
     );
 }
 

@@ -11669,6 +11669,7 @@ mod embedding {
             cocoa_ui::system_font::FontMetrics {
                 size: base + index,
                 weight: 0.01 * (index + 1.0),
+                bold_weight: 0.3,
                 line_height: base + 3.0 + index,
             }
         })
@@ -11676,7 +11677,7 @@ mod embedding {
     fn flat_metrics(metrics: &[cocoa_ui::system_font::FontMetrics; 6]) -> Vec<f64> {
         metrics
             .iter()
-            .flat_map(|font| [font.size, font.weight, font.line_height])
+            .flat_map(|font| [font.size, font.weight, font.bold_weight, font.line_height])
             .collect()
     }
     fn test_locale(tag: &str) -> waterui::locale::Locale {
@@ -11840,6 +11841,11 @@ mod embedding {
             waterui::text::font::FontWeight::Normal,
             "Body weight"
         );
+        assert_eq!(
+            cap.font_now(0).bold_weight(),
+            Some(waterui::text::font::FontWeight::SemiBold),
+            "Body bold weight"
+        );
     }
 
     /// The measure ABI delivers the host's proposal verbatim: `nil` axes
@@ -11940,7 +11946,7 @@ mod embedding {
         let updated_flat = flat_metrics(&updated);
         let ja = c"ja-JP";
         // SAFETY: `embed_a` is a live scoped mount; `ja` is NUL-terminated
-        // and `updated_flat` holds eighteen doubles.
+        // and `updated_flat` holds every style's metrics.
         unsafe {
             waterui_apple_update_environment(
                 embed_a.mount,

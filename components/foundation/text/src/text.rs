@@ -591,9 +591,15 @@ impl Text {
         })
     }
 
-    /// Sets the font to bold.
+    /// Asks for the platform's bold face of the font, which each backend
+    /// resolves from its platform's definition; [`Self::weight`] with
+    /// [`FontWeight::Bold`] is an exact weight of 700 instead. See
+    /// [`Font::bold`](crate::font::Font::bold).
     pub fn bold(self) -> Self {
-        self.weight(FontWeight::Bold)
+        self.map_config(|mut config| {
+            config.content = config.content.map(StyledStr::bold).computed();
+            config
+        })
     }
 
     /// Asks for the platform's fixed-pitch face, keeping the font's slot,
