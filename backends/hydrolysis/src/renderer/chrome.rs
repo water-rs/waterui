@@ -25,7 +25,7 @@ use cherenkov_record::{
 use kurbo::{Affine, Point, Rect};
 use nami::{Computed, Signal};
 use waterui_core::Environment;
-use waterui_core::animation::Animation;
+use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::interaction::InteractionState;
 
 use crate::renderer::recording::{LoweredResources, SceneResources};
@@ -355,7 +355,7 @@ impl LiveChrome {
         let watch_color = |color: &Computed<WorkingColor>| -> Box<dyn Any> {
             let notify = Rc::clone(&notify);
             Box::new(color.watch(move |context| {
-                notify(context.metadata().try_get::<Animation>());
+                notify(ChangeAnimation::of(context.metadata()).animation());
             }))
         };
         guards.push(watch_color(&this.layer_color));

@@ -29,7 +29,7 @@ use nami::signal::IntoComputed;
 use nami::watcher::Context;
 use waterui_controls::ControlSize;
 use waterui_controls::button::ButtonStyle;
-use waterui_core::animation::Animation;
+use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::interaction::{InteractionState, StateValue};
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
@@ -71,23 +71,21 @@ impl Transition {
 
 /// How a look's operands follow a change of the widget's value.
 ///
-/// A value change carries the animation its caller made it under, or none.
-/// water-rs/waterui#4035 adds a third case, a change made with animation
-/// explicitly disabled; it enters through [`ValueMotion::animation`]'s
-/// parameter, and every variant documents what it does then.
+/// A value change states how it asks to animate as a [`ChangeAnimation`]:
+/// with an animation, with none named, or with animation disabled
+/// ([`NoAnimation`](waterui_core::animation::NoAnimation)). Every variant
+/// documents what it does in each case.
 #[derive(Debug, Clone, PartialEq)]
 #[expect(
     clippy::exhaustive_enums,
     reason = "closed: the operand follows the caller's animation, its own whenever the change animates, or its own always"
 )]
 pub enum ValueMotion {
-    /// The change's own animation; this one when the change names none.
-    /// A change that disables animation snaps (water-rs/waterui#4035).
+    /// The change's own animation; this one when the change names none. A
+    /// change that disables animation snaps.
     Follow(Animation),
-    /// This animation whenever the change animates, whatever animation the
-    /// change names. A change that disables animation snaps
-    /// (water-rs/waterui#4035); until that marker exists, a change naming
-    /// no animation animates with this one, as today.
+    /// This animation for a change that names an animation or none,
+    /// whatever animation it names. A change that disables animation snaps.
     Own(Animation),
     /// This animation for every change, one made with animation disabled
     /// included.
@@ -97,17 +95,16 @@ pub enum ValueMotion {
 impl ValueMotion {
     /// The animation a value change made under `change` runs with; `None`
     /// snaps.
-    ///
-    /// `change` is the change's own animation, or `None` when it names
-    /// none. water-rs/waterui#4035 widens it to the three cases a change
-    /// can state — an animation, none named, animation disabled — and the
-    /// disabled case returns `None` for [`Self::Follow`] and [`Self::Own`].
     #[must_use]
-    pub fn animation(&self, change: Option<&Animation>) -> Option<Animation> {
-        Some(match self {
-            Self::Follow(own) => change.unwrap_or(own).clone(),
-            Self::Own(own) | Self::Always(own) => own.clone(),
-        })
+    pub fn animation(&self, change: ChangeAnimation) -> Option<Animation> {
+        match self {
+            Self::Follow(own) => change.or(own.clone()),
+            Self::Own(own) => match change {
+                ChangeAnimation::Animated(_) | ChangeAnimation::Unspecified => Some(own.clone()),
+                ChangeAnimation::Disabled => None,
+            },
+            Self::Always(own) => Some(own.clone()),
+        }
     }
 }
 
@@ -287,7 +284,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             target: Rc::new(move |inputs| source.with_ref(|value| target(value, inputs))),
             follows: Some(Rc::new(move |notify: Notify| -> Box<dyn Any> {
                 Box::new(watched.watch(move |context: Context<O>| {
-                    notify(context.metadata().try_get::<Animation>());
+                    notify(ChangeAnimation::of(context.metadata()).animation());
                 }))
             })),
             motion: None,

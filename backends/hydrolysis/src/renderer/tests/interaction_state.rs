@@ -7,6 +7,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use crate::renderer::chrome::LiveChrome;
 use crate::theme::{
@@ -115,9 +116,12 @@ fn chrome_with(shape: CornerShape, focus: FocusIndicator) -> Chrome {
         StateLayer::new(Color::srgb(0, 0, 0)),
         PressFeedback::new(),
         focus,
-        Motion::uniform(Animation::linear(Duration::from_millis(15))),
+        Motion::uniform(Animation::linear(MOTION)),
     )
 }
+
+/// How long every transition of [`chrome_with`]'s chrome runs.
+const MOTION: Duration = Duration::from_millis(15);
 
 /// The tap control's live chrome.
 fn the_chrome(runtime: &HeadlessRuntime) -> Rc<LiveChrome> {
@@ -307,8 +311,9 @@ fn pump_red_ring_pixels(env: Environment, activate: impl Fn(&mut HeadlessRuntime
     ));
     let mut runtime = runtime(env, tap_view(), MinimalTestTheme::default());
     activate(&mut runtime);
+    // The ring fades in over the chrome's motion: sample it settled.
     let snapshot = runtime
-        .pump(true)
+        .pump_at(true, Instant::now() + MOTION)
         .into_snapshot()
         .expect("the pump captured a snapshot");
     snapshot
