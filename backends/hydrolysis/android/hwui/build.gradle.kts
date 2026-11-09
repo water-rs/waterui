@@ -10,7 +10,7 @@ android {
         // The framework floor (`android-min-api-level` in the workspace
         // metadata). Mesh draws (34) and runtime shaders (33) check the
         // device level on the Rust side before they are encoded.
-        minSdk = 33
+        minSdk = 34
     }
 
     testOptions {
@@ -34,7 +34,6 @@ android {
 
 dependencies {
     api(project(":host"))
-    implementation("androidx.annotation:annotation:1.8.1")
     implementation("androidx.core:core:1.17.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.17")

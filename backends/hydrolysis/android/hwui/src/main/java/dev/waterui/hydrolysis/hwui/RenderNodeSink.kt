@@ -26,8 +26,6 @@ import android.graphics.Shader
 import android.graphics.SweepGradient
 import android.graphics.fonts.Font
 import android.graphics.fonts.FontVariationAxis
-import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.withMatrix
 import androidx.core.graphics.withTranslation
@@ -505,20 +503,12 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
         canvas().drawBitmap(bitmaps[bitmap], null, rectF, paint)
     }
 
-    override fun mesh(interpolation: Int, patches: Int, data: FloatArray) {
-        if (Build.VERSION.SDK_INT < 34) {
-            throw CommandBufferException("HWUI replay: a mesh needs API 34; the device runs ${Build.VERSION.SDK_INT}")
-        }
-        drawMesh(interpolation, patches, data)
-    }
-
     /**
      * Each patch is four vertices that all carry its corners and colours, so
      * the fragment shader inverts the bilinear patch at every pixel, as
      * Cherenkov's oracle does, rather than interpolating over triangles.
      */
-    @RequiresApi(34)
-    private fun drawMesh(interpolation: Int, patches: Int, data: FloatArray) {
+    override fun mesh(interpolation: Int, patches: Int, data: FloatArray) {
         if (patches == 0) return
         val specification = meshSpecification as MeshSpecification? ?: createMeshSpecification().also { meshSpecification = it }
         // A Mesh keeps its vertex buffer, so each mesh draw is a new resource.
@@ -563,7 +553,6 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
             meshIndices = buffer
         }
 
-    @RequiresApi(34)
     private fun createMeshSpecification(): MeshSpecification =
         MeshSpecification.make(
             arrayOf(

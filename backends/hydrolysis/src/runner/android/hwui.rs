@@ -57,14 +57,6 @@ impl HwuiWindow {
                 "hydrolysis HWUI: nativeCreateSession got a null HwuiPainter".to_owned(),
             ));
         }
-        let api = env
-            .get_static_field(
-                jni::jni_str!("android/os/Build$VERSION"),
-                jni::jni_str!("SDK_INT"),
-                jni::jni_sig!("I"),
-            )?
-            .i()?;
-        let api = u32::try_from(api).expect("Build.VERSION.SDK_INT is never negative");
         let text_object = env
             .call_method(
                 peer,
@@ -82,8 +74,7 @@ impl HwuiWindow {
             )?
             .l()?;
 
-        let surface =
-            HwuiSurface::new(id, api, move || wake()).map_err(|e| JniError(e.to_string()))?;
+        let surface = HwuiSurface::new(id, move || wake()).map_err(|e| JniError(e.to_string()))?;
         // The window starts parked: `set_host_attached` and metrics unhide
         // it the way the GPU band's surface attach does.
         surface.set_hidden(true);
