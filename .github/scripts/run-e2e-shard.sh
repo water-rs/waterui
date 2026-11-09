@@ -528,6 +528,37 @@ collect_simulator_stall_diagnostics() {
   echo "::notice::${example}: simulator stall diagnostics written to ${diag} (uploaded with e2e-logs)."
 }
 
+# A live simulator app that never reports `waterui_first_paint_ms` leaves no
+# evidence behind on its own — collect process state, crash reports and the
+# device log while the wedge still stands, the way the capture-stall
+# diagnostics do.
+collect_no_first_paint_diagnostics() {
+  local diag="${logs_dir}/${platform}-${example}-no-first-paint.log"
+  local diag_deadline_at
+  diag_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
+  {
+    echo "=== no-first-paint diagnostics ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
+    echo "--- shard app process (pid ${app_pid:-unset}) ---"
+    if [[ -n "${app_pid:-}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
+      ps -o pid,stat,etime,command -p "${app_pid}" || true
+      sample "${app_pid}" 3 1 2>&1 | head -60
+    else
+      echo "app pid ${app_pid:-unset} is not running"
+    fi
+    echo "--- crash reports mentioning ${bundle_id} ---"
+    xcrun simctl spawn "${SIMULATOR_UDID}" \
+      log show --last 10m --style compact \
+      --predicate 'process == "ReportCrash" OR eventMessage CONTAINS[c] "crashed"' \
+      2>/dev/null | tail -40 || true
+    echo "--- device log, last 3m ---"
+    "${command_deadline}" run --label "diag:simctl-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 3m --style compact \
+      2>/dev/null | tail -60 || true
+  } >> "${diag}" 2>&1
+  echo "::notice::${example}: no-first-paint diagnostics written to ${diag} (uploaded with e2e-logs)."
+}
+
 # Sends SIGTERM to a LaunchServices-launched pid and waits for it to actually
 # disappear: launch-app's pid is a launchd child, not this shell's, so `wait`
 # can neither reap nor observe it — `kill -0` is the only liveness signal.
@@ -1028,6 +1059,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     kill "${stream_pid}" 2>/dev/null || true
     failures+=("${example}: no first paint")
     if [[ "${platform}" == "ios" ]]; then
+      collect_no_first_paint_diagnostics
       simctl_cleanup terminate "${bundle_id}" || failures+=("${example}: cleanup terminate")
       simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
     else
