@@ -279,15 +279,6 @@ define_class!(
             true
         }
 
-        // The default `canBecomeKeyView` declines — without it a key
-        // window's initial-first-responder pick skips the field and it
-        // never shows its focus ring (typography-rtl parity).
-        // SAFETY: see the module safety note.
-        #[unsafe(method(canBecomeKeyView))]
-        fn can_become_key_view_override(&self) -> bool {
-            true
-        }
-
         // SAFETY: see the module safety note.
         #[unsafe(method_id(inputContext))]
         fn input_context_override(&self) -> Option<Retained<NSTextInputContext>> {
