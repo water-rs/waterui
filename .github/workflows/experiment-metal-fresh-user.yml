@@ -1,0 +1,82 @@
+name: experiment metal fresh user
+
+on:
+  push:
+    branches: [fix/fresh-user-macos-metal]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: metal / ${{ matrix.leg }}
+    runs-on: xcode-27
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        leg:
+          - runner-xcrun-first
+          - runner-download
+          - sudo-showcomponent-first
+          - sudo-download
+          - asuser-download
+    env:
+      E2E_USER: watere2e
+      LEG: ${{ matrix.leg }}
+    steps:
+      - name: Boot state
+        shell: bash
+        run: |
+          set -uo pipefail
+          sw_vers; xcode-select -p; xcodebuild -version
+          echo "--- mounts"; mount | grep -i -E 'metal|cryptex' || echo "(no metal/cryptex mount)"
+          echo "--- assets"; ls -la /System/Library/AssetsV2/com_apple_MobileAsset_MetalToolchain/ || true
+
+      - name: Provision fresh user
+        if: startsWith(matrix.leg, 'sudo') || startsWith(matrix.leg, 'asuser')
+        shell: bash
+        run: |
+          set -euo pipefail
+          pass="$(openssl rand -base64 24)Zx9!"
+          echo "::add-mask::$pass"
+          sudo dscl . -create "/Users/$E2E_USER"
+          sudo dscl . -create "/Users/$E2E_USER" UserShell /bin/bash
+          sudo dscl . -create "/Users/$E2E_USER" RealName "CLI E2E"
+          sudo dscl . -create "/Users/$E2E_USER" UniqueID 601
+          sudo dscl . -create "/Users/$E2E_USER" PrimaryGroupID 20
+          sudo dscl . -create "/Users/$E2E_USER" NFSHomeDirectory "/Users/$E2E_USER"
+          sudo dscl . -passwd "/Users/$E2E_USER" "$pass"
+          sudo dscl . -append /Groups/admin GroupMembership "$E2E_USER"
+          sudo createhomedir -c -u "$E2E_USER"
+
+      - name: Probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          case "$LEG" in
+            runner-*) as() { bash -lc "$1"; } ;;
+            sudo-*) as() { sudo -u "$E2E_USER" -H bash -lc "$1"; } ;;
+            asuser-*) as() { sudo launchctl asuser 601 sudo -u "$E2E_USER" -H bash -lc "$1"; } ;;
+          esac
+          step() { echo "=== $1"; as "$2"; echo "=== $1: exit=$?"; }
+          mounts() { echo "--- mounts after $1"; mount | grep -i -E 'metal' || echo "(no metal mount)"; }
+          step "identity" 'id; getconf DARWIN_USER_TEMP_DIR; launchctl print gui/$(id -u) >/dev/null 2>&1 && echo "gui domain: present" || echo "gui domain: absent"'
+          step "xcrun metal (before)" 'xcrun -v metal --version 2>&1 | tail -15; exit ${PIPESTATUS[0]}'
+          case "$LEG" in
+            *showcomponent-first|runner-xcrun-first)
+              step "showComponent" 'xcodebuild -showComponent MetalToolchain -json 2>&1'
+              ;;
+            *download)
+              start=$(date +%s)
+              step "downloadComponent" 'xcodebuild -downloadComponent MetalToolchain 2>&1'
+              echo "--- mobileasset log"
+              sudo log show --start "@$start" --style compact \
+                --predicate 'process == "mobileassetd" OR subsystem BEGINSWITH "com.apple.MobileAsset" OR subsystem BEGINSWITH "com.apple.mobileasset"' \
+                2>/dev/null | grep -i -E 'metal|catalog|error|fail|session|user' | tail -120
+              step "showComponent" 'xcodebuild -showComponent MetalToolchain -json 2>&1'
+              ;;
+          esac
+          mounts "probe"
+          step "xcrun metal (after)" 'xcrun -v metal --version 2>&1 | tail -15; exit ${PIPESTATUS[0]}'
+          step "xcrun metal nocache (after)" 'xcrun_nocache=1 xcrun metal --version 2>&1 | tail -5; exit ${PIPESTATUS[0]}'
