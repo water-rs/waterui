@@ -384,7 +384,7 @@ pub struct PixelInsertion {
     frame: Binding<TransitionFrame>,
     /// The live-capture effect — held for its lifetime: its drop
     /// un-hides the content and detaches the output.
-    _effect: LiveEffect,
+    effect: LiveEffect,
 }
 
 impl core::fmt::Debug for PixelInsertion {
@@ -411,8 +411,15 @@ impl PixelInsertion {
         Some(Self {
             overlay,
             frame,
-            _effect: effect,
+            effect,
         })
+    }
+
+    /// Whether the effect has presented its first frame — the content is
+    /// actually hidden beneath it only from then on. The run must not
+    /// end before it or the drop's un-hide lands before the hide (§2.7).
+    pub fn presented(&self) -> bool {
+        self.effect.presented()
     }
 
     /// The tick's frame republish — called on every advancing frame
