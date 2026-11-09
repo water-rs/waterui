@@ -353,9 +353,13 @@ mod imp {
         apply_state(&window, declaration.state.snapshot());
         // `alphaValue` is already 0 from construction — ordering in stays
         // invisible until the first presented frame says otherwise.
-        // The leaf tree is mounted before the window becomes key, so AppKit
-        // picks the first key view as first responder, as it does for any
-        // window whose content exists when it is shown.
+        // Ordering in builds the window's key-view loop from the geometry
+        // of its views and makes the first key view first responder, so the
+        // tree is laid out at the content size first, as a window whose
+        // content exists when it is shown always is. Unplaced views all sit
+        // at the origin, which leaves both the initial focus and the Tab
+        // order to an arbitrary tie-break.
+        host.layout_if_needed();
         window.make_key_and_order_front();
         window.display_if_needed();
         #[cfg(feature = "gpu_surface")]
