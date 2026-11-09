@@ -584,7 +584,11 @@ pub trait CapturableSurface {
     /// presentation path that can never run.
     fn can_present(&self) -> bool;
     /// Redirects the surface's redraw requests to `on_redraw`; while
-    /// external, the surface presents nowhere itself.
+    /// external, the surface presents nowhere itself. A surface whose
+    /// owner tears down while a scope is still open calls `on_redraw`
+    /// once more: a [`Deferred`](CaptureError::Deferred) it answered
+    /// can never be replayed by a later redraw of its own, and its
+    /// departure is itself the content change the capture retries on.
     fn begin_external_rendering(&self, on_redraw: Rc<dyn Fn()>);
     /// Ends external rendering; `resume` restarts normal presentation.
     fn end_external_rendering(&self, resume: bool);
