@@ -221,12 +221,12 @@ struct MenuTwin: View {
   private func toolbarButton(_ title: String, icon: String, iconOnly: Bool) -> some View {
     Button {} label: {
       if iconOnly {
-        Text(icon).font(.caption).fontWeight(.bold)
+        Text(icon).font(.caption).bold()
       } else {
         Label {
           Text(title)
         } icon: {
-          Text(icon).font(.caption).fontWeight(.bold)
+          Text(icon).font(.caption).bold()
         }
       }
     }

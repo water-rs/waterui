@@ -101,7 +101,7 @@ private final class PendingRuntime {
 
 /// A host's declared environment for one mount: the snapshot a `SwiftUI`
 /// representable hands the backend — scheme, direction and the six
-/// resolved text styles as `(size, weight, boldWeight, lineHeight)` groups
+/// resolved text styles as `(size, weight, boldWeightCoordinate, lineHeight)` groups
 /// in Body, Title1, Headline, Subheadline, Caption1, Footnote order.
 private struct HostEnvironment: Equatable {
   var dark: Bool
@@ -123,11 +123,30 @@ private struct HostEnvironment: Equatable {
       let traits = CTFontCopyTraits(font) as NSDictionary
       return (traits[kCTFontWeightTrait] as? NSNumber)?.doubleValue ?? 0.0
     }
+    // The bold face keeps the weight trait of the style it came from (the
+    // macOS headline's bold declares Bold and draws Heavy), so its weight is
+    // read from the face: the `wght` axis coordinate, which CoreText omits
+    // when it is the axis default.
+    let weightAxis = NSNumber(value: 0x7767_6874)
+    func weightCoordinate(_ font: CTFont) -> Double {
+      if let value = (CTFontCopyVariation(font) as NSDictionary?)?[weightAxis] as? NSNumber {
+        return value.doubleValue
+      }
+      guard let axes = CTFontCopyVariationAxes(font) as? [NSDictionary],
+        let axis = axes.first(where: {
+          $0[kCTFontVariationAxisIdentifierKey] as? NSNumber == weightAxis
+        }),
+        let value = axis[kCTFontVariationAxisDefaultValueKey] as? NSNumber
+      else {
+        fatalError("the system bold face has no wght variation axis")
+      }
+      return value.doubleValue
+    }
     fonts = [Font.body, .title, .headline, .subheadline, .caption, .footnote]
       .flatMap { style -> [Double] in
         let font = style.resolve(in: context).ctFont
         let bold = style.bold().resolve(in: context).ctFont
-        return [Double(CTFontGetSize(font)), weight(font), weight(bold),
+        return [Double(CTFontGetSize(font)), weight(font), weightCoordinate(bold),
                 Double(CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font))]
       }
   }

@@ -240,7 +240,8 @@ pub use waterui_core::{
 // Selective re-exports only: `waterui::transition` stays free for the
 // `waterui-transition` pixel-effects crate re-export (#1389).
 pub use waterui_core::transition::{
-    AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition,
+    AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition, TransitionContext,
+    TransitionFrame, TransitionGeometry, TransitionPhase, TransitionProperties,
 };
 
 /// Haptic feedback intensity for the `on_*_haptic` modifiers.

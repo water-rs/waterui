@@ -15,7 +15,9 @@ use waterui_core::layout::{LayoutDirection, ProposalSize};
 use waterui_locale::Locale;
 
 /// The `f64`s the ABI packs per host text style: `size`, `weight`,
-/// `bold_weight`, `line_height`, in this order.
+/// `bold_weight_coordinate`, `line_height`, in this order. The bold weight
+/// travels as the `wght` axis coordinate of `SwiftUI`'s bold face, because
+/// that face keeps the weight trait of the style it came from.
 const HOST_FONT_FIELDS: usize = 4;
 
 /// The six platform text styles a `SwiftUI` host resolves and the ABI packs
@@ -83,8 +85,8 @@ impl HostEnvironment {
     /// Reads one ABI snapshot: `dark`/`rtl` from the host's trait
     /// environment, `locale` as a NUL-terminated BCP-47 string, and
     /// `HOST_FONT_STYLES.len() * HOST_FONT_FIELDS` `f64`s from `fonts` — one
-    /// `(size, weight, bold_weight, line_height)` group per style, in that
-    /// order.
+    /// `(size, weight, bold_weight_coordinate, line_height)` group per
+    /// style, in that order.
     ///
     /// # Panics
     /// Panics when `locale` is not valid UTF-8 or a valid BCP-47 tag.
@@ -116,7 +118,7 @@ impl HostEnvironment {
             cocoa_ui::system_font::FontMetrics {
                 size: group[0],
                 weight: group[1],
-                bold_weight: group[2],
+                bold_weight: cocoa_ui::font::weight_at_coordinate(group[0], group[2]),
                 line_height: group[3],
             }
         });
@@ -600,7 +602,8 @@ pub unsafe extern "C" fn waterui_apple_update_visibility(mount: *const c_void) {
 /// `mount` is a live mount handle borrowed on the main thread, created with
 /// a host environment. `host_fonts` points to the readable, initialized
 /// `f64`s [`HostEnvironment::from_abi`] documents — six
-/// `(size, weight, bold_weight, line_height)` groups in its style order.
+/// `(size, weight, bold_weight_coordinate, line_height)` groups in its style
+/// order.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_apple_update_environment(
     mount: *const c_void,
