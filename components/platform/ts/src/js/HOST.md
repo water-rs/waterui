@@ -177,9 +177,10 @@ publishes them as the built-in contexts behind `useTheme()` and `useLocale()`.
 
 `theme` carries `{ colorScheme: "light" | "dark" }` plus the theme's color
 tokens keyed by slot name (`foreground`, `background`, `surface`,
-`surfaceVariant`, `border`, `accent`, `mutedForeground`, `accentForeground`,
-`accentContainer`, `tertiary`, `tertiaryContainer`, `selectionContainer`,
-`selectionForeground`, `error`, `errorForeground`), each
+`surfaceVariant`, `border`, `accent`, `mutedForeground`, `tertiaryForeground`,
+`disabledForeground`, `accentForeground`, `accentContainer`, `tertiary`,
+`tertiaryContainer`, `selectionContainer`, `selectionForeground`,
+`unemphasizedSelection`, `error`, `errorForeground`), each
 `{ red, green, blue, headroom, opacity }` in linear light. A slot the
 environment does not install is absent rather than defaulted. `locale` carries
 `{ identifier, languageCode, textDirection }`.

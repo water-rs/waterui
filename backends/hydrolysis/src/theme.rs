@@ -86,7 +86,8 @@ use waterui::{
 ///
 /// Not a theme: the opaque colour slots a bare application resolves when
 /// neither a style package nor the application installs its own. The scrim
-/// is the same in both schemes and is not part of it.
+/// is the same in both schemes and is not part of it, nor is the disabled
+/// foreground, which derives from the scheme's foreground.
 #[cfg(hydrolysis_runtime)]
 struct Palette {
     background: u32,
@@ -95,6 +96,7 @@ struct Palette {
     border: u32,
     foreground: u32,
     muted_foreground: u32,
+    tertiary_foreground: u32,
     accent: u32,
     accent_container: u32,
     accent_foreground: u32,
@@ -102,9 +104,15 @@ struct Palette {
     tertiary_container: u32,
     selection_container: u32,
     selection_foreground: u32,
+    unemphasized_selection: u32,
     error: u32,
     error_foreground: u32,
 }
+
+/// The disabled foreground is the scheme's foreground at this alpha, the
+/// contrast Material gives disabled content (on-surface at 38%).
+#[cfg(hydrolysis_runtime)]
+const DISABLED_FOREGROUND_ALPHA: f32 = 0.38;
 
 /// Dark content on light surfaces.
 #[cfg(hydrolysis_runtime)]
@@ -115,6 +123,7 @@ const LIGHT: Palette = Palette {
     border: 0xD1_D5_DB,
     foreground: 0x11_18_27,
     muted_foreground: 0x4B_55_63,
+    tertiary_foreground: 0x6B_72_80,
     accent: 0x25_63_EB,
     accent_container: 0xDB_EA_FE,
     accent_foreground: 0xFF_FF_FF,
@@ -122,6 +131,7 @@ const LIGHT: Palette = Palette {
     tertiary_container: 0xED_E9_FE,
     selection_container: 0x25_63_EB,
     selection_foreground: 0xFF_FF_FF,
+    unemphasized_selection: 0xD1_D5_DB,
     error: 0xDC_26_26,
     error_foreground: 0xFF_FF_FF,
 };
@@ -137,6 +147,7 @@ const DARK: Palette = Palette {
     border: 0x4B_55_63,
     foreground: 0xF9_FA_FB,
     muted_foreground: 0x9C_A3_AF,
+    tertiary_foreground: 0x6B_72_80,
     accent: 0x60_A5_FA,
     accent_container: 0x1E_3A_8A,
     accent_foreground: 0x17_25_54,
@@ -144,6 +155,7 @@ const DARK: Palette = Palette {
     tertiary_container: 0x4C_1D_95,
     selection_container: 0x60_A5_FA,
     selection_foreground: 0x17_25_54,
+    unemphasized_selection: 0x4B_55_63,
     error: 0xF8_71_71,
     error_foreground: 0x45_0A_0A,
 };
@@ -223,6 +235,14 @@ pub(crate) fn install_theme_tokens(
                 .border(slot(&scheme, |p| p.border))
                 .foreground(slot(&scheme, |p| p.foreground))
                 .muted_foreground(slot(&scheme, |p| p.muted_foreground))
+                .tertiary_foreground(slot(&scheme, |p| p.tertiary_foreground))
+                .disabled_foreground(
+                    scheme
+                        .map(|scheme| {
+                            color(palette(scheme).foreground).with_alpha(DISABLED_FOREGROUND_ALPHA)
+                        })
+                        .computed(),
+                )
                 .accent(slot(&scheme, |p| p.accent))
                 .accent_container(slot(&scheme, |p| p.accent_container))
                 .accent_foreground(slot(&scheme, |p| p.accent_foreground))
@@ -230,6 +250,7 @@ pub(crate) fn install_theme_tokens(
                 .tertiary_container(slot(&scheme, |p| p.tertiary_container))
                 .selection_container(slot(&scheme, |p| p.selection_container))
                 .selection_foreground(slot(&scheme, |p| p.selection_foreground))
+                .unemphasized_selection(slot(&scheme, |p| p.unemphasized_selection))
                 .error(slot(&scheme, |p| p.error))
                 .error_foreground(slot(&scheme, |p| p.error_foreground))
                 // Scrim: black at 32% over the content beneath a modal layer.
@@ -292,6 +313,46 @@ mod tests {
         assert_eq!(scheme.snapshot(), ColorScheme::Dark);
         assert_eq!(resolved::<Background>(&env), bits(color(DARK.background)));
         assert_eq!(resolved::<Foreground>(&env), bits(color(DARK.foreground)));
+    }
+
+    /// The tertiary, disabled and unemphasized-selection tokens have
+    /// framework defaults that follow the scheme: the disabled foreground is
+    /// the scheme's foreground at the disabled alpha.
+    #[test]
+    fn default_tokens_carry_the_tier_colors() {
+        use waterui::theme::color::{
+            DisabledForeground, TertiaryForeground, UnemphasizedSelection,
+        };
+
+        let appearance = binding(ColorScheme::Light);
+        let mut env = Environment::new();
+        install_theme_tokens(&mut env, None, appearance.clone());
+        assert_eq!(
+            resolved::<TertiaryForeground>(&env),
+            bits(color(LIGHT.tertiary_foreground))
+        );
+        assert_eq!(
+            resolved::<UnemphasizedSelection>(&env),
+            bits(color(LIGHT.unemphasized_selection))
+        );
+        assert_eq!(
+            resolved::<DisabledForeground>(&env),
+            bits(color(LIGHT.foreground).with_alpha(super::DISABLED_FOREGROUND_ALPHA))
+        );
+
+        appearance.set(ColorScheme::Dark);
+        assert_eq!(
+            resolved::<TertiaryForeground>(&env),
+            bits(color(DARK.tertiary_foreground))
+        );
+        assert_eq!(
+            resolved::<UnemphasizedSelection>(&env),
+            bits(color(DARK.unemphasized_selection))
+        );
+        assert_eq!(
+            resolved::<DisabledForeground>(&env),
+            bits(color(DARK.foreground).with_alpha(super::DISABLED_FOREGROUND_ALPHA))
+        );
     }
 
     /// An application that installs its own scheme overrides the host's

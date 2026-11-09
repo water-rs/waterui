@@ -509,6 +509,14 @@ environment_color!(
     MutedForegroundColor,
     "Muted-foreground color key for environment queries."
 );
+environment_color!(
+    TertiaryForegroundColor,
+    "Tertiary-foreground color key for environment queries."
+);
+environment_color!(
+    DisabledForegroundColor,
+    "Disabled-foreground color key for environment queries."
+);
 environment_color!(AccentColor, "Accent color key for environment queries.");
 environment_color!(
     AccentForegroundColor,
@@ -530,6 +538,10 @@ environment_color!(
 environment_color!(
     SelectionForegroundColor,
     "Selection-foreground color key for environment queries."
+);
+environment_color!(
+    UnemphasizedSelectionColor,
+    "Unemphasized-selection color key for environment queries."
 );
 environment_color!(ErrorColor, "Error color key for environment queries.");
 environment_color!(

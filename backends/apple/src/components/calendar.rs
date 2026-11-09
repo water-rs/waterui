@@ -267,7 +267,8 @@ mod appearance {
     use waterui::resolve::Resolvable;
     use waterui::text::styled::StyledStr;
     use waterui::theme::color::{
-        Accent, Border, Foreground, MutedForeground, SelectionContainer, SelectionForeground,
+        Accent, Border, DisabledForeground, Foreground, MutedForeground, SelectionContainer,
+        SelectionForeground, TertiaryForeground, UnemphasizedSelection,
     };
 
     use super::{CalendarLeaf, plain};
@@ -275,7 +276,7 @@ mod appearance {
     use crate::theme::{platform_color, token_color};
 
     /// Every theme token the calendar draws with, by role.
-    fn tokens(env: &waterui::Environment) -> [(CalendarColorRole, Computed<WorkingColor>); 6] {
+    fn tokens(env: &waterui::Environment) -> [(CalendarColorRole, Computed<WorkingColor>); 9] {
         [
             (
                 CalendarColorRole::Foreground,
@@ -284,6 +285,14 @@ mod appearance {
             (
                 CalendarColorRole::Muted,
                 MutedForeground.resolve(env).computed(),
+            ),
+            (
+                CalendarColorRole::Tertiary,
+                TertiaryForeground.resolve(env).computed(),
+            ),
+            (
+                CalendarColorRole::Disabled,
+                DisabledForeground.resolve(env).computed(),
             ),
             (CalendarColorRole::Separator, Border.resolve(env).computed()),
             (CalendarColorRole::Accent, Accent.resolve(env).computed()),
@@ -295,10 +304,14 @@ mod appearance {
                 CalendarColorRole::SelectionForeground,
                 SelectionForeground.resolve(env).computed(),
             ),
+            (
+                CalendarColorRole::UnemphasizedSelection,
+                UnemphasizedSelection.resolve(env).computed(),
+            ),
         ]
     }
 
-    /// The platform colour a role's token draws as: the label tokens as
+    /// The platform colour a role's token draws as: the text tokens as
     /// `AppKit`'s dynamic label colours when they are the theme's own.
     fn color_of(
         env: &waterui::Environment,
@@ -306,7 +319,10 @@ mod appearance {
         token: &Computed<WorkingColor>,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_app_kit::NSColor> {
         match role {
-            CalendarColorRole::Foreground | CalendarColorRole::Muted => token_color(env, token),
+            CalendarColorRole::Foreground
+            | CalendarColorRole::Muted
+            | CalendarColorRole::Tertiary
+            | CalendarColorRole::Disabled => token_color(env, token),
             _ => platform_color(&token.snapshot()),
         }
     }
@@ -316,18 +332,24 @@ mod appearance {
         let [
             foreground,
             muted,
+            tertiary,
+            disabled,
             separator,
             accent,
             selection,
             selection_foreground,
+            unemphasized_selection,
         ] = tokens(env).map(|(role, token)| color_of(env, role, &token));
         CalendarColors {
             foreground,
             muted,
+            tertiary,
+            disabled,
             separator,
             accent,
             selection,
             selection_foreground,
+            unemphasized_selection,
         }
     }
 

@@ -13,9 +13,9 @@
 //! graphical picker's metrics, measured from `NSDatePicker` renders on
 //! macOS 27.
 //!
-//! Days outside the visible month draw in the tertiary label color, days
-//! outside the range are disabled buttons and draw as `AppKit` draws
-//! disabled control text, and today's number draws in the accent color. A selected day sits in a
+//! Days outside the visible month draw in the tertiary color, days outside
+//! the range are disabled buttons and draw in the disabled color, and
+//! today's number draws in the accent color. A selected day sits in a
 //! rounded highlight: the selection color while a day of the calendar has
 //! keyboard focus in the key window, the unemphasized selection color
 //! otherwise. Navigation stays inside the range: ◀ and ▶ disable at its
@@ -132,15 +132,17 @@ const REFERENCE_SUNDAY: DateParts = DateParts {
 
 type TextAttributes = NSDictionary<NSAttributedStringKey, AnyObject>;
 
-/// The theme colours the calendar draws with. The faint text tiers and the
-/// unemphasized highlight are `AppKit`'s own system colours, which follow
-/// the view's appearance.
+/// The theme colours the calendar draws with.
 #[derive(Debug, Clone)]
 pub struct CalendarColors {
     /// Day numbers and the month title.
     pub foreground: Retained<NSColor>,
     /// Weekday symbols, navigation glyphs and decoration dots.
     pub muted: Retained<NSColor>,
+    /// Days outside the shown month, and the dots under them.
+    pub tertiary: Retained<NSColor>,
+    /// Days outside the selectable range.
+    pub disabled: Retained<NSColor>,
     /// The line under the weekday symbols.
     pub separator: Retained<NSColor>,
     /// Today's number.
@@ -149,6 +151,8 @@ pub struct CalendarColors {
     pub selection: Retained<NSColor>,
     /// Text and dots on the focused selection highlight.
     pub selection_foreground: Retained<NSColor>,
+    /// The selection highlight while the calendar is not focused.
+    pub unemphasized_selection: Retained<NSColor>,
 }
 
 /// One of the colours in [`CalendarColors`], for [`CalendarView::set_color`].
@@ -158,6 +162,10 @@ pub enum CalendarColorRole {
     Foreground,
     /// [`CalendarColors::muted`].
     Muted,
+    /// [`CalendarColors::tertiary`].
+    Tertiary,
+    /// [`CalendarColors::disabled`].
+    Disabled,
     /// [`CalendarColors::separator`].
     Separator,
     /// [`CalendarColors::accent`].
@@ -166,6 +174,8 @@ pub enum CalendarColorRole {
     Selection,
     /// [`CalendarColors::selection_foreground`].
     SelectionForeground,
+    /// [`CalendarColors::unemphasized_selection`].
+    UnemphasizedSelection,
 }
 
 /// One of the navigation buttons.
@@ -660,16 +670,15 @@ fn day_look(
         if emphasized {
             colors.selection.clone()
         } else {
-            NSColor::unemphasizedSelectedContentBackgroundColor()
+            colors.unemphasized_selection.clone()
         }
     });
     let text_color = if on_highlight {
         colors.selection_foreground.clone()
     } else if !in_range {
-        // What `AppKit` draws a disabled button's title in.
-        NSColor::disabledControlTextColor()
+        colors.disabled.clone()
     } else if !cell.in_month {
-        NSColor::tertiaryLabelColor()
+        colors.tertiary.clone()
     } else if cell.parts == today {
         colors.accent.clone()
     } else {
@@ -681,7 +690,7 @@ fn day_look(
         } else if cell.in_month && in_range {
             colors.muted.clone()
         } else {
-            NSColor::tertiaryLabelColor()
+            colors.tertiary.clone()
         }
     });
     DayLook {
@@ -1255,11 +1264,16 @@ impl CalendarView {
             match role {
                 CalendarColorRole::Foreground => colors.foreground = color.clone(),
                 CalendarColorRole::Muted => colors.muted = color.clone(),
+                CalendarColorRole::Tertiary => colors.tertiary = color.clone(),
+                CalendarColorRole::Disabled => colors.disabled = color.clone(),
                 CalendarColorRole::Separator => colors.separator = color.clone(),
                 CalendarColorRole::Accent => colors.accent = color.clone(),
                 CalendarColorRole::Selection => colors.selection = color.clone(),
                 CalendarColorRole::SelectionForeground => {
                     colors.selection_foreground = color.clone();
+                }
+                CalendarColorRole::UnemphasizedSelection => {
+                    colors.unemphasized_selection = color.clone();
                 }
             }
         }
@@ -1276,9 +1290,12 @@ impl CalendarView {
                 self.shared.refresh_days(0..GRID_DAYS);
             }
             CalendarColorRole::Separator => self.shared.separator.setFillColor(&color),
-            CalendarColorRole::Accent
+            CalendarColorRole::Tertiary
+            | CalendarColorRole::Disabled
+            | CalendarColorRole::Accent
             | CalendarColorRole::Selection
-            | CalendarColorRole::SelectionForeground => {
+            | CalendarColorRole::SelectionForeground
+            | CalendarColorRole::UnemphasizedSelection => {
                 self.shared.refresh_days(0..GRID_DAYS);
             }
         }
