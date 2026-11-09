@@ -196,8 +196,8 @@ WaterUI is a cross-platform reactive UI framework with native platform bridges a
 ```
 Rust view tree → backend contracts (waterui-backend-core)
   → Apple backend   → AppKit / UIKit, driven through objc2
-  → Hydrolysis      → HWUI RenderNode display lists on Android;
-                      Cherenkov elsewhere (GPU, or CPU on microcontrollers)
+  → Hydrolysis      → HWUI RenderNode display lists or
+                      Cherenkov (GPU, or CPU on microcontrollers)
   → experimental backends (GTK, WinUI, TUI) in their own repositories
 ```
 

@@ -19,7 +19,7 @@ the control means.
 
 The crate is `no_std` (it needs only `alloc`) and holds no rendering code of its
 own. Every control lowers to a configuration struct that a backend projects onto
-a real platform widget — UIKit/AppKit on Apple, Android Views on Android — or
+a real platform widget — UIKit/AppKit on Apple — or
 draws itself in the Hydrolysis and Dew renderers.
 
 ## Installation
