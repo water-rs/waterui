@@ -15,6 +15,8 @@ use cocoa_ui::core_animation::Timing;
 #[cfg(any(platform_timing, frame_progress))]
 use waterui::animation::Animation;
 #[cfg(watcher_animation)]
+use waterui::animation::ChangeAnimation;
+#[cfg(watcher_animation)]
 use waterui::reactive::watcher::Metadata;
 
 /// The kit timing `animation` plays under.
@@ -50,11 +52,12 @@ pub fn timing(animation: &Animation) -> Timing {
 
 /// `withPlatformAnimation`: runs `body` under the platform animation
 /// `metadata` carries — watcher metadata maps to a kit timing through
-/// [`timing`]; metadata without an `Animation` runs `body` directly.
-/// Every component that honors watcher animation metadata funnels here.
+/// [`timing`]; a change that names no animation or disables it runs `body`
+/// directly. Every component that honors watcher animation metadata
+/// funnels here.
 #[cfg(watcher_animation)]
 pub fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
-    let Some(animation) = metadata.try_get::<Animation>() else {
+    let Some(animation) = ChangeAnimation::of(metadata).animation() else {
         return body();
     };
     cocoa_ui::core_animation::animate_with(timing(&animation), body);

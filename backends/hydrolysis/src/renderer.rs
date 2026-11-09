@@ -126,7 +126,7 @@ use waterui::accessibility::{
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
     AccessibilityValue,
 };
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
 use waterui::background::{Background, MaterialBackground, MaterialGroup};
 use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;

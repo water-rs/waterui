@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
 use waterui::component::list::{
     ListConfig, ListItem, ListSection, ListSelection, Move, OnDelete, OnMove,
 };
@@ -1064,10 +1064,10 @@ impl fmt::Debug for RowPayload {
     }
 }
 
-/// Whether `metadata` carries an explicit animation — the `setEditing` /
+/// Whether the change names an explicit animation — the `setEditing` /
 /// reload animation switches read it.
 fn metadata_animated(metadata: &Metadata) -> bool {
-    metadata.try_get::<Animation>().is_some()
+    ChangeAnimation::of(metadata).animation().is_some()
 }
 
 /// Coalesced `contents` notifications: each watch event records the newest

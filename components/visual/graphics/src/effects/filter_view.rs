@@ -16,9 +16,9 @@
 //! an arbitrary GPU effect, which has no portable description.
 //!
 //! Reactive parameters are [`Reactive`] slots: a nami signal on the UI side
-//! feeds a `Send` value slot the render side samples, and a change carrying
-//! a public [`Animation`] in its metadata hands an interpolator to every
-//! watcher. The engine consumes its own `crate::draw::Animation`, so the
+//! feeds a `Send` value slot the render side samples, and a change naming
+//! a public [`Animation`](waterui_core::animation::Animation) in its
+//! metadata hands an interpolator to every watcher. The engine consumes its own `crate::draw::Animation`, so the
 //! metadata type is mapped through the public `curve()`/`duration()`
 //! contract at the watcher boundary.
 //!
@@ -64,7 +64,7 @@ pub use filtrate::{FilterImage, LutImage};
 #[cfg(feature = "gpu")]
 use nami::SignalExt;
 use nami::{Signal, signal::IntoComputed};
-use waterui_core::animation::Animation;
+use waterui_core::animation::ChangeAnimation;
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
@@ -283,9 +283,8 @@ impl ParamGuards {
         });
         let target = Arc::clone(&slot);
         let guard = signal.watch(move |context| {
-            let animation = context
-                .metadata()
-                .try_get::<Animation>()
+            let animation = ChangeAnimation::of(context.metadata())
+                .animation()
                 .map(|animation| engine_animation(&animation));
             let value = context.into_value();
             target.value.store(value.to_bits(), Ordering::Release);
