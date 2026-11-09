@@ -589,6 +589,9 @@ pub enum TextInputPurpose {
 
 pub use waterui_backend_core::input::TouchPhase;
 
+mod input_conventions;
+pub use input_conventions::{InputConventions, MultiClickConfig};
+
 /// The touch-drag scroll gesture's parameters for one window, supplied by
 /// the platform host.
 ///
@@ -2021,6 +2024,14 @@ pub trait PlatformWindow: 'static {
     /// first metrics push — and a `PointerKind::Touch` press arriving
     /// while it holds is a host bug the renderer panics on.
     fn touch_scroll_config(&self) -> Option<TouchScrollConfig>;
+    /// The pointer and keyboard conventions the platform defines and its
+    /// user can change — the double-click interval and distance, the paste
+    /// shortcut. Read afresh with every input batch, so a setting changed
+    /// while the app runs applies to the next press.
+    ///
+    /// A host with no platform settings of its own reports
+    /// [`InputConventions::for_platform`] for the system it runs on.
+    fn input_conventions(&self) -> InputConventions;
     /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
     /// Sets the cursor image the window displays.
@@ -3450,6 +3461,12 @@ impl PlatformWindow for OffscreenWindow {
         Some(TouchScrollConfig::for_platform(ScrollPlatform::native()))
     }
 
+    /// An offscreen surface has no pointer device or user settings, so it
+    /// reports the data defaults of the system it is compiled for.
+    fn input_conventions(&self) -> InputConventions {
+        InputConventions::for_platform(ScrollPlatform::native())
+    }
+
     /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, _state: Option<TextInputState>) {}
 
@@ -3518,9 +3535,10 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, DeviceLoss, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
-        PlatformWindow, PointerButton, PointerKind, RedrawHandle, TextInputPurpose, TextInputState,
-        TouchPhase, TouchScrollConfig, enabled_window_buttons, validated_window_frame,
+        CursorStyle, DeviceLoss, GpuSurfaceWindow, InputConventions, InputEvent, KeyCode, KeyState,
+        Modifiers, MultiClickConfig, PlatformWindow, PointerButton, PointerKind, RedrawHandle,
+        TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, enabled_window_buttons,
+        validated_window_frame,
     };
     #[cfg(not(target_os = "macos"))]
     use super::{SurfaceError, SurfaceFrame, SurfaceProvider, reclaim_device};
@@ -5534,6 +5552,59 @@ mod winit_impl {
         )
     }
 
+    /// The multi-click interval and distance of the desktop the window runs
+    /// on, read at every call so a change the user makes in the system
+    /// settings applies to the next press.
+    ///
+    /// macOS reports the interval (`NSEvent.doubleClickInterval`) and no
+    /// distance — see [`MultiClickConfig::APPLE`]. Windows reports both
+    /// (`GetDoubleClickTime`, and `SM_CXDOUBLECLK`/`SM_CYDOUBLECLK`, the
+    /// width and height of the rectangle centred on the first click, at the
+    /// window's DPI). Linux has no platform-wide value and runs on GTK's
+    /// documented defaults.
+    #[cfg(target_os = "macos")]
+    fn desktop_multi_click_config(_scale_factor: f64) -> MultiClickConfig {
+        MultiClickConfig {
+            interval: std::time::Duration::from_secs_f64(
+                objc2_app_kit::NSEvent::doubleClickInterval(),
+            ),
+            tolerance: MultiClickConfig::APPLE.tolerance,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn desktop_multi_click_config(scale_factor: f64) -> MultiClickConfig {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetricsForDpi, SM_CXDOUBLECLK, SM_CYDOUBLECLK,
+        };
+        // Win32's logical DPI is 96 at a scale factor of 1.
+        let dpi = crate::num_cast::f64_as_u32((scale_factor * 96.0).round());
+        // SAFETY: both functions read system settings and take only plain
+        // integers.
+        let (interval_ms, width_px, height_px) = unsafe {
+            (
+                GetDoubleClickTime(),
+                GetSystemMetricsForDpi(SM_CXDOUBLECLK, dpi),
+                GetSystemMetricsForDpi(SM_CYDOUBLECLK, dpi),
+            )
+        };
+        MultiClickConfig {
+            interval: std::time::Duration::from_millis(u64::from(interval_ms)),
+            // The metric is the rectangle's full extent; the second press
+            // may sit half of it from the first on either side.
+            tolerance: kurbo::Vec2::new(
+                f64::from(width_px) / 2.0 / scale_factor,
+                f64::from(height_px) / 2.0 / scale_factor,
+            ),
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    fn desktop_multi_click_config(_scale_factor: f64) -> MultiClickConfig {
+        MultiClickConfig::GTK
+    }
+
     fn map_scroll_delta(delta: &MouseScrollDelta, scale_factor: f64) -> (f32, f32, bool) {
         assert!(
             scale_factor.is_finite() && scale_factor > 0.0,
@@ -5796,6 +5867,15 @@ mod winit_impl {
             Some(TouchScrollConfig::for_platform(
                 crate::platform::ScrollPlatform::native(),
             ))
+        }
+
+        /// The desktop's own multi-click settings, read at every call; the
+        /// paste shortcut is the compile target's family convention.
+        fn input_conventions(&self) -> InputConventions {
+            InputConventions {
+                multi_click: desktop_multi_click_config(self.window.scale_factor()),
+                ..InputConventions::for_platform(crate::platform::ScrollPlatform::native())
+            }
         }
 
         /// Pushes the focused text input's state to the platform IME.

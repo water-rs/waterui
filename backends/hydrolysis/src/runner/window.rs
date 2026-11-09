@@ -2081,6 +2081,12 @@ where
     runtime
         .renderer
         .set_touch_scroll_config(runtime.platform.touch_scroll_config());
+    // So do the settings the user can change while the app runs: the
+    // double-click interval and distance the presses of this batch are
+    // counted with, and the paste shortcut.
+    runtime
+        .renderer
+        .set_input_conventions(runtime.platform.input_conventions());
     let events = runtime.platform.drain_events();
     // Platform IMEs mark their own keystrokes by what they emit: ownership
     // follows the event order inside the batch (see `ime_owned_events`), so
@@ -2363,13 +2369,20 @@ where
                     let key_env = input_env(runtime, env);
                     let press =
                         KeyPress::new(logical_key.clone(), physical_code, modifiers.into(), repeat);
-                    let outcome = if runtime.renderer.handle_embedded_key(&KeyDelivery {
+                    let delivery = KeyDelivery {
                         pressed: true,
                         logical: &logical_key,
                         code: physical_code,
                         repeat,
                         modifiers,
-                    }) {
+                    };
+                    let outcome = if runtime.renderer.handle_embedded_paste_shortcut(&delivery) {
+                        // The shortcut is the paste command, not a key: the
+                        // surface hears `Paste`, and the text the press
+                        // would pair with is suppressed like any consumed
+                        // press's.
+                        KeyPressOutcome::Consumed
+                    } else if runtime.renderer.handle_embedded_key(&delivery) {
                         // Forwarded, not consumed — the surface owns its
                         // key+text pair; the paired text is still delivered.
                         KeyPressOutcome::ForwardedToSurface
@@ -2439,19 +2452,17 @@ where
                 let changed =
                     !runtime.renderer.take_ime_swallowed_release(physical_code) && !ime_owned && {
                         let key_env = input_env(runtime, env);
-                        runtime.renderer.handle_bubbled_key_release(&KeyDelivery {
+                        let delivery = KeyDelivery {
                             pressed: false,
                             logical: &logical_key,
                             code: physical_code,
                             repeat,
                             modifiers,
-                        }) || runtime.renderer.handle_embedded_key(&KeyDelivery {
-                            pressed: false,
-                            logical: &logical_key,
-                            code: physical_code,
-                            repeat,
-                            modifiers,
-                        }) || runtime.renderer.handle_key_release_with_env(&key, &key_env)
+                        };
+                        runtime.renderer.handle_embedded_paste_shortcut(&delivery)
+                            || runtime.renderer.handle_bubbled_key_release(&delivery)
+                            || runtime.renderer.handle_embedded_key(&delivery)
+                            || runtime.renderer.handle_key_release_with_env(&key, &key_env)
                     };
                 schedule_redraw_or_refresh(runtime, changed);
             }
