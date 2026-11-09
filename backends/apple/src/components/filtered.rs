@@ -2872,6 +2872,30 @@ impl LiveEffect {
         self.capturable.has_presented_frame()
     }
 
+    /// Resolves once the effect owes no first frame any more: it
+    /// presented, its presentation settled as a terminal failure, or it
+    /// stopped participating in first paint — windowless, hidden or
+    /// collapsed, so no frame can come. Every deferral a participant
+    /// answers ends in one of these, so the wait always has an end.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the wait runs on the main thread; the Rc surface it holds is not Send"
+    )]
+    pub fn first_present(&self) -> impl Future<Output = ()> + 'static {
+        let surface = Rc::clone(&self.capturable);
+        core::future::poll_fn(move |cx| {
+            if surface.has_presented_frame()
+                || surface.presentation_failed()
+                || !surface.participates_in_first_paint()
+            {
+                core::task::Poll::Ready(())
+            } else {
+                surface.register_ready_waiter(cx.waker().clone());
+                core::task::Poll::Pending
+            }
+        })
+    }
+
     /// A `captures_content` transition's live-capture effect (§2.7):
     /// `body` is the `TransitionState::body(AnyView::new(()), frame)`
     /// product — a `FilteredView` chain over empty content — realized
