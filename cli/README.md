@@ -129,7 +129,7 @@ A build target is a `TargetPlatform` — an enum of the concrete targets
 is fixed and known, so an enum says so, and the per-target work — scanning for
 devices, building for the triple, packaging into a `.app` or `.apk`, cleaning —
 lives in the module for that platform rather than behind an associated type.
-Android's backend is `Hydrolysis` (self-drawn on HWUI).
+Android's backend is `Hydrolysis`.
 
 ```text
 pub enum TargetPlatform {
