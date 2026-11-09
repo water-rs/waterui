@@ -16,6 +16,7 @@ use waterui::graphics::canvas::{
     RoundedRect, Sampling, Shadow, StrokeStyle,
 };
 use waterui::graphics::color::WorkingColor;
+use waterui::reactive::Signal as _;
 use waterui::reactive::binding;
 use waterui_core::layout::{Affine2, Point, Rect, Size};
 
@@ -243,11 +244,15 @@ fn canvas_animates_a_live_operand_and_records_inserted_items() {
         });
     let _ = app.snapshot();
 
+    // A quarter of the way: the circle near x = 70.
     x.set(220.0);
-    app.pump_for(Duration::from_millis(200));
+    app.pump_for(Duration::from_millis(100));
     app.snapshot()
         .save_png(output("animated_alone_mid.png"))
         .expect("the mid-flight snapshot is writable");
+    // A structural change mid-flight — one bar inserted, one resized —
+    // records only the collection's regions: half-way, the circle is near
+    // x = 120, still moving, not at its end.
     bars.set(vec![
         Bar {
             id: 1,
@@ -262,7 +267,7 @@ fn canvas_animates_a_live_operand_and_records_inserted_items() {
             height: 60.0,
         },
     ]);
-    app.pump_for(Duration::from_millis(200));
+    app.pump_for(Duration::from_millis(100));
     app.snapshot()
         .save_png(output("animated_mid.png"))
         .expect("the mid-flight snapshot is writable");
@@ -270,4 +275,82 @@ fn canvas_animates_a_live_operand_and_records_inserted_items() {
     app.snapshot()
         .save_png(output("animated_end.png"))
         .expect("the settled snapshot is writable");
+}
+
+#[test]
+fn canvas_time_advances_with_pumped_frames() {
+    let seen = std::rc::Rc::new(std::cell::Cell::new(Duration::ZERO));
+    let mut app = ui()
+        .viewport(120, 40)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let seen = std::rc::Rc::clone(&seen);
+            move || {
+                let seen = std::rc::Rc::clone(&seen);
+                Canvas::new(move |cx| {
+                    let time = cx.time();
+                    cx.keep(time.watch(move |change| seen.set(*change.value())));
+                    cx.fill(
+                        time.map(|t| {
+                            Circle::new(
+                                Point::new(t.as_secs_f32().min(1.0).mul_add(100.0, 10.0), 20.0),
+                                8.0,
+                            )
+                        }),
+                        rgb(0.3, 0.8, 1.0),
+                    );
+                })
+            }
+        });
+    let _ = app.snapshot();
+    let start = seen.get();
+    app.pump_for(Duration::from_millis(480));
+    let advanced = seen
+        .get()
+        .checked_sub(start)
+        .expect("the canvas clock never runs backwards");
+    // The clock is the pumped frame clock, not the wall clock: within a
+    // frame of the pumped duration however fast the pumps ran.
+    assert!(
+        advanced >= Duration::from_millis(464) && advanced <= Duration::from_millis(496),
+        "time advanced {advanced:?} over 480 ms of pumped frames"
+    );
+    app.snapshot()
+        .save_png(output("time_480ms.png"))
+        .expect("the clock snapshot is writable");
+}
+
+#[test]
+fn canvas_scope_records_its_region_again() {
+    let formula = binding(String::from("ab"));
+    let mut app = ui()
+        .viewport(200, 60)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let formula = formula.clone();
+            move || {
+                let formula = formula.clone();
+                Canvas::new(move |cx| {
+                    cx.fill(cx.size().map(Rect::from_size), rgb(0.1, 0.1, 0.12));
+                    // One box per character: the shape, not an operand,
+                    // follows the source.
+                    cx.scope(formula, |cx, source: &String| {
+                        for (index, _) in source.chars().enumerate() {
+                            #[expect(clippy::cast_precision_loss, reason = "a few test boxes")]
+                            let left = (index as f32).mul_add(30.0, 10.0);
+                            cx.fill(rect(left, 15.0, 24.0, 30.0), rgb(0.9, 0.7, 0.2));
+                        }
+                    });
+                    cx.fill(rect(170.0, 15.0, 20.0, 30.0), rgb(0.3, 0.5, 1.0));
+                })
+            }
+        });
+    app.snapshot()
+        .save_png(output("scope_before.png"))
+        .expect("the scope snapshot is writable");
+    formula.set(String::from("abcde"));
+    app.pump_for(Duration::from_millis(16));
+    app.snapshot()
+        .save_png(output("scope_after.png"))
+        .expect("the scope snapshot is writable");
 }
