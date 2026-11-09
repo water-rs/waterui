@@ -15,6 +15,7 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
 mod animation_slots;
+mod change_animation;
 mod chrome_primitives;
 mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]

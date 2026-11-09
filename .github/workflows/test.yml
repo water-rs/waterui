@@ -578,17 +578,6 @@ jobs:
       - run: cargo nextest run --timings --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --profile ci
         env:
           MACOSX_DEPLOYMENT_TARGET: "27.0"
-      # The pass above links the debug `water` binary for the CLI's
-      # integration tests; keep it as this revision's CLI (#4010). Failed
-      # tests still leave a usable binary, a failed compile leaves none.
-      - name: Upload debug CLI
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: water-cli-debug-${{ runner.os }}-${{ runner.arch }}
-          path: target/debug/water
-          if-no-files-found: ignore
-          retention-days: 14
       # nextest cannot run doctests, and this workspace has plenty of them.
       - run: cargo test --timings --locked --doc --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui
         env:
@@ -1322,6 +1311,14 @@ jobs:
           cargo clippy --timings --locked --profile ci-check -p cherenkov-bench --all-targets \
             --features skia-metal,vello-classic,vello-hybrid,cherenkov,cherenkov-cpu -- -D warnings
       - run: cargo build --timings --locked --release -p cherenkov-bench --features cherenkov
+      - name: Upload cherenkov-bench (aarch64-apple-darwin, cherenkov)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-bench-aarch64-apple-darwin-cherenkov
+          path: target/release/cherenkov-bench
+          retention-days: 14
+          if-no-files-found: ignore
       # Many timed frames of the map scene on a Metal device: the workload
       # that used to hang the render thread on Apple GPUs.
       - name: Measure the map scene on Metal
@@ -1418,6 +1415,15 @@ jobs:
             build --timings --release -p cherenkov-bench \
             --features vello-classic,vello-hybrid,skia,cherenkov,cherenkov-cpu
           ls -l target/aarch64-linux-android/release/cherenkov-bench
+      # The engine bench for a phone: push it with adb and run it on a device.
+      - name: Upload cherenkov-bench (aarch64-linux-android)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-bench-aarch64-linux-android
+          path: target/aarch64-linux-android/release/cherenkov-bench
+          retention-days: 14
+          if-no-files-found: ignore
       # The Vulkan external-frame device test (#166) runs on a Pixel 9
       # Pro over adb; CI builds and archives the prebuilt binary.
       - name: Build the Vulkan external-frame test for aarch64-linux-android

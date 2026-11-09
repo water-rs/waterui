@@ -23,7 +23,7 @@ use core::cell::RefCell;
 #[cfg(target_os = "ios")]
 use cocoa_ui::Retained;
 use cocoa_ui::{PlatformView, Rect};
-use waterui::animation::Animation;
+use waterui::animation::ChangeAnimation;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::watcher::Metadata;
@@ -330,7 +330,7 @@ fn as_view(progress: &Progress) -> &PlatformView {
 /// Whether `metadata` asks for an animated fill — `WuiProgress` passed the
 /// flag through `UIProgressView.setProgress(_:animated:)`.
 fn should_animate(metadata: &Metadata) -> bool {
-    metadata.try_get::<Animation>().is_some()
+    ChangeAnimation::of(metadata).animation().is_some()
 }
 
 /// A `WorkingColor` as the platform's extended linear Display-P3 color object — the
@@ -641,6 +641,8 @@ fn install_tint(
 
 #[cfg(test)]
 mod tests {
+    use waterui::animation::{Animation, NoAnimation};
+
     use super::*;
 
     #[test]
@@ -713,5 +715,8 @@ mod tests {
     fn should_animate_only_with_animation_metadata() {
         assert!(!should_animate(&Metadata::new()));
         assert!(should_animate(&Metadata::new().with(Animation::Default)));
+        assert!(!should_animate(
+            &Metadata::new().with(Animation::Default).with(NoAnimation)
+        ));
     }
 }
