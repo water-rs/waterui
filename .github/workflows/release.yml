@@ -318,11 +318,6 @@ jobs:
             target/distrib/*${{ matrix.target }}*.zip*
             target/distrib/*${{ matrix.target }}*-dist-manifest.json
 
-      - uses: ./.github/actions/upload-cargo-timings
-        if: always()
-        with:
-          name: release-cli-dist-${{ matrix.target }}
-
   cli-release-assets:
     name: Upload CLI release assets
     needs: [release, cli-dist]
