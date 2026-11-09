@@ -334,7 +334,8 @@ impl core::fmt::Debug for RealizedScene {
 ///
 /// This is the order a launch takes when the declaration lands after the
 /// scene's window displayed: the window is key and visible with the empty
-/// root `windows::connect` gives it, and `realize` then adds the content.
+/// root and the veil `windows::connect` gives it, and `realize` then adds
+/// the content.
 /// The wait is on the root controller's `viewDidAppear:`, the signal the
 /// window displayed.
 ///
@@ -365,6 +366,10 @@ pub fn realize_into_shown_scene(
     let theme = alloc::rc::Rc::new(crate::theme::install(&mut env, controller.color_scheme()));
     let observation =
         controller.observe_color_scheme(move |scheme| crate::theme::refresh(&theme, scheme));
+    let veil = crate::windows::Veil::cover(
+        &window,
+        &waterui::graphics::Color::new(waterui::theme::color::Background).resolve(&env),
+    );
     let host = crate::windows::realize(
         declaration,
         crate::windows::Pending {
@@ -372,6 +377,7 @@ pub fn realize_into_shown_scene(
             window: window.clone(),
             controller,
             observation,
+            veil,
         },
         &env,
         mtm,

@@ -208,6 +208,8 @@ mod imp {
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::uikit::{self, ApplicationHandlers};
     use waterui::app::App;
+    use waterui::graphics::Color;
+    use waterui::theme::color::Background;
     use waterui_backend_core::Environment;
 
     use crate::theme::ThemeSignals;
@@ -282,6 +284,8 @@ mod imp {
             env,
             cocoa_ui::uikit::current_scheme(),
         ));
+        // What a scene window shows before its content has painted.
+        let background = Color::new(Background).resolve(env);
         let locale = crate::locale::install(env, mtm);
 
         // Filled by `prepared`: `build_menus` can fire before `app(env)`
@@ -307,7 +311,7 @@ mod imp {
         // fills it when `prepared` lands.
         let disconnected = Rc::clone(&scene_state);
         let handlers = ApplicationHandlers::new(move |scene| {
-            crate::windows::connect(&scene_state, scene, Rc::clone(&theme), mtm)
+            crate::windows::connect(&scene_state, scene, Rc::clone(&theme), &background, mtm)
         })
         // Releases the scene's host, leaf and keep-alive, as the embedding
         // path's `waterui_apple_scene_disconnect` does.
