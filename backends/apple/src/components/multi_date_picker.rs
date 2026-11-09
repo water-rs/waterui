@@ -11,7 +11,6 @@
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-#[cfg(target_os = "ios")]
 use cocoa_ui::date::CalendarSelectionMode;
 use waterui::component::form::picker::date::Date;
 use waterui::component::form::picker::multi_date::{MultiDatePicker, MultiDatePickerConfig};
@@ -34,7 +33,6 @@ fn toggle_selection(selected: &mut Vec<Date>, day: Date) {
 }
 
 impl CalendarSelection for Binding<Vec<Date>> {
-    #[cfg(target_os = "ios")]
     const MODE: CalendarSelectionMode = CalendarSelectionMode::Multiple;
 
     fn selected(value: &Vec<Date>) -> Vec<Date> {
