@@ -193,10 +193,10 @@ if [[ "${platform}" == "ios" ]]; then
         pgrep -fl "simctl|CoreSimulatorService|SimulatorTrampoline" || true
         for p in $(pgrep -f "simctl.*screenshot|CoreSimulatorService|SimulatorTrampoline"); do
           echo "--- sample ${p} ---"
-          sample "${p}" 3 1 2>&1 | head -50
+          sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
         done
         echo "--- host load ---"
-        ps -Axo pid,pcpu,stat,etime,command | sort -k2 -rn | head -12 || true
+        ps -Axo pid,pcpu,stat,etime,command | sort -k2 -rn | sed -n '1,12p' || true
         echo "--- host memory pressure ---"
         memory_pressure 2>/dev/null | tail -8 || true
         echo "--- CoreSimulator log, last 2m ---"
