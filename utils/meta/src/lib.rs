@@ -139,10 +139,10 @@ pub const fn dir_records(data: &[u8]) -> DirRecords<'_> {
 ///   `debug_assertions`, or `__DWARF,__wmeta,regular,debug` in a release
 ///   build — `#[used]` keeps the static in the object, and the DWARF
 ///   section flag is what lets `ld` strip it from the shipped image;
-/// - on COFF and ELF targets, `.wmeta` and nothing else — the macro adds
-///   no retention attribute there, so the caller's own visibility decides
-///   whether the compiler keeps the static in the object; the linker's
-///   ordinary dead strip removes the record from a linked image.
+/// - on COFF and ELF targets, `.wmeta` plus `#[used]` — the attribute keeps
+///   the record in the object even when nothing references it (a bare
+///   `pub static` survives codegen only while something does), and the
+///   linker's ordinary dead strip still removes it from a linked image.
 #[macro_export]
 macro_rules! dir_static {
     ($(#[$attr:meta])* $vis:vis static $name:ident: [u8; $len:expr] = $value:expr;) => {
@@ -156,7 +156,7 @@ macro_rules! dir_static {
             unsafe(link_section = "__DWARF,__wmeta,regular,debug")
         )]
         #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
-        #[cfg_attr(target_vendor = "apple", used)]
+        #[used]
         $vis static $name: [u8; $len] = $value;
     };
 }
