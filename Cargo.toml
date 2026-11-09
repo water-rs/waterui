@@ -652,7 +652,7 @@ waterui-watcher-set = { path = "utils/watcher-set" }
 # split tabs-bar surface and divider calls (#1982). Drop the git pin once a
 # release has both changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "feat/response-geometry" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "dev" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
 # requirements admit `dev`'s version (0.2). Every waterkit crate the
@@ -725,11 +725,11 @@ wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame",
 # `dev` branch; `Cargo.lock` records the exact commit.
 waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "dev" }
 waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "dev" }
-waterui-chart = { git = "https://github.com/water-rs/chart", branch = "feat/response-geometry" }
+waterui-chart = { git = "https://github.com/water-rs/chart", branch = "dev" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "dev" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "dev" }
 waterui-particle = { git = "https://github.com/water-rs/particle", branch = "dev" }
-waterui-image = { git = "https://github.com/water-rs/image", branch = "feat/response-geometry" }
+waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
