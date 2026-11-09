@@ -321,6 +321,7 @@ impl GhostRun {
                                 }
                                 if let Some(run) = weak_run_present.upgrade()
                                     && run.animation_finished.get()
+                                    && !run.work_in_flight()
                                 {
                                     run.complete();
                                 }
