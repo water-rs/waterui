@@ -1,5 +1,7 @@
 name: experiment metal fresh user
 
+# The nightly `CLI fresh user / macOS` leg through its first build, with the
+# CLI under test from this branch.
 on:
   push:
     branches: [fix/fresh-user-macos-metal]
@@ -8,44 +10,29 @@ permissions:
   contents: read
 
 jobs:
-  probe:
-    name: metal / ${{ matrix.leg }}
+  fresh-user:
+    name: CLI fresh user / macOS (doctor + build)
     runs-on: xcode-27
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        leg:
-          # The fresh user alone: find, show, download, find again.
-          - fresh-full
-          # runner mounts the cryptex first; does the fresh user then see it?
-          - fresh-after-runner-mount
-          # Per-user Xcode first-launch state.
-          - fresh-first-launch
-          # The fresh user given runner's Xcode preference domains.
-          - fresh-runner-prefs
-          # root: no login session either.
-          - root
+    timeout-minutes: 120
     env:
+      RUSTC_WRAPPER: ""
       E2E_USER: watere2e
-      LEG: ${{ matrix.leg }}
-    defaults:
-      run:
-        shell: bash --noprofile --norc {0}
     steps:
-      - name: runner state
-        run: |
-          id -un; xcode-select -p; xcodebuild -version
-          echo "--- mounts"; mount | grep -i metal || echo "(no metal mount)"
-          echo "--- runner dt defaults domains"; defaults domains | tr ',' '\n' | grep -i -E 'dt|xcode|mobileasset|DVT' || true
-          echo "--- runner com.apple.dt.Xcode keys"; defaults read com.apple.dt.Xcode 2>/dev/null | grep -E '^    "?[A-Za-z]' | cut -c1-120 || true
-          echo "--- runner ~/Library/Developer"; ls -la ~/Library/Developer ~/Library/Developer/* 2>&1 | head -40
-          echo "--- runner first launch"; xcodebuild -checkFirstLaunchStatus; echo "exit=$?"
+      - uses: actions/checkout@v4
 
-      - name: Provision fresh user
-        if: matrix.leg != 'root'
+      - name: Setup Rust (CLI build host)
+        uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+
+      - name: Install the CLI under test
+        shell: bash
+        run: cargo install --locked --path cli
+
+      - name: Provision fresh user + rustup bootstrap (macOS)
+        shell: bash
         run: |
-          set -eu
+          set -euo pipefail
           pass="$(openssl rand -base64 24)Zx9!"
           echo "::add-mask::$pass"
           sudo dscl . -create "/Users/$E2E_USER"
@@ -57,47 +44,34 @@ jobs:
           sudo dscl . -passwd "/Users/$E2E_USER" "$pass"
           sudo dscl . -append /Groups/admin GroupMembership "$E2E_USER"
           sudo createhomedir -c -u "$E2E_USER"
+          sudo chmod -R a+rX "$GITHUB_WORKSPACE"
+          p="$GITHUB_WORKSPACE"; while [ "$p" != "/" ]; do sudo chmod o+x "$p"; p="$(dirname "$p")"; done
+          sudo chown -R "$E2E_USER":admin "$(brew --prefix)" "$(brew --repository)"
+          sudo -u "$E2E_USER" -H bash -lc 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --no-modify-path'
+          sudo install -o "$E2E_USER" -g admin -m 0755 "$CARGO_HOME/bin/water" "/Users/$E2E_USER/.cargo/bin/water"
 
-      - name: Probe
+      - name: Doctor, scaffold and build as the fresh user
+        shell: bash
         run: |
-          if [ "$LEG" = root ]; then
-            as() { sudo -H bash -lc "$1"; }
-          else
-            as() { sudo -u "$E2E_USER" -H bash -lc "$1"; }
+          set -euo pipefail
+          sudo -u "$E2E_USER" -H env WATERUI_SRC="$GITHUB_WORKSPACE" bash -s <<'SCRIPT'
+          set -uo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cd "$HOME"
+          fail() { echo "::error::$*"; exit 1; }
+          export WATERUI_DISABLE_SCCACHE=1
+          unset RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER
+          echo "--- xcrun metal before doctor"
+          xcrun metal --version && fail "the fresh user already resolves the Metal Toolchain: the probe exercises nothing"
+          water doctor 2>&1 | tee doctor-before.log
+          grep -q '\[fixable\]' doctor-before.log || fail "doctor found nothing fixable"
+          water doctor --fix --yes 2>&1 | tee doctor-fix.log
+          if grep -q 'Failed to install' doctor-fix.log; then
+            fail "doctor --fix reported failed installs"
           fi
-          step() { echo "=== $1"; as "$2"; echo "=== $1: exit=$?"; }
-          find_metal() {
-            step "xcodebuild -find metal ($1)" 'xcodebuild -find metal 2>&1'
-            step "xcrun metal ($1)" 'xcrun_nocache=1 xcrun metal --version 2>&1'
-            echo "--- mounts ($1)"; mount | grep -i metal || echo "(no metal mount)"
-          }
-          start=$(date +%s)
-          step "identity" 'id -un; getconf DARWIN_USER_TEMP_DIR; xcodebuild -checkFirstLaunchStatus; echo "first launch status=$?"'
-          case "$LEG" in
-            fresh-after-runner-mount)
-              echo "=== runner: xcrun metal"; xcrun metal --version 2>&1; echo "exit=$?"
-              mount | grep -i metal
-              ;;
-            fresh-first-launch)
-              step "runFirstLaunch (user)" 'xcodebuild -runFirstLaunch 2>&1 | tail -20'
-              ;;
-            fresh-runner-prefs)
-              for domain in $(defaults domains | tr ',' '\n' | tr -d ' ' | grep -E '^com\.apple\.dt\.'); do
-                plist="$HOME/Library/Preferences/$domain.plist"
-                [ -f "$plist" ] || continue
-                echo "copying $domain"
-                sudo install -o "$E2E_USER" -g staff -m 0600 "$plist" "/Users/$E2E_USER/Library/Preferences/$domain.plist"
-              done
-              sudo killall -u "$E2E_USER" cfprefsd 2>/dev/null || true
-              ;;
-          esac
-          find_metal "before"
-          step "showComponent" 'xcodebuild -showComponent MetalToolchain -json 2>&1'
-          find_metal "after showComponent"
-          step "downloadComponent" 'xcodebuild -downloadComponent MetalToolchain 2>&1'
-          find_metal "after downloadComponent"
-          echo "=== unified log (xcodebuild, mobileassetd, cryptexd, DVT)"
-          sudo log show --start "@$start" --style compact --info --debug \
-            --predicate 'process == "xcodebuild" OR process == "mobileassetd" OR process == "cryptexd" OR process CONTAINS "MobileAsset" OR subsystem BEGINSWITH "com.apple.dt" OR subsystem BEGINSWITH "com.apple.MobileAsset" OR subsystem BEGINSWITH "com.apple.mobileasset"' \
-            2>/dev/null | grep -i -E 'metal|cryptex|graft|mount|catalog|error|fail|denied|entitle|user|session' | cut -c1-400 | tail -250
-          echo "--- fresh user's ~/Library/Developer"; sudo ls -laR "/Users/$E2E_USER/Library/Developer" 2>&1 | head -40
+          xcrun metal --version >/dev/null || fail "Metal Toolchain still missing after doctor --fix --yes"
+          water doctor 2>&1 | tee doctor-after.log
+          git config --global --add safe.directory '*'
+          water create e2eapp --waterui-path "$WATERUI_SRC" 2>&1 || fail "water create failed"
+          (cd e2eapp && water build --platform macos --backend apple --yes 2>&1) || fail "water build failed"
+          SCRIPT
