@@ -77,10 +77,6 @@ pub enum LastWindowPolicy {
 
 /// An [`App`] taken apart for a runner, see [`App::into_parts`].
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole application parts, so a new field must fail their build instead of being ignored"
-)]
 pub struct AppParts {
     /// The windows opened at startup, in declaration order; possibly none.
     pub windows: Vec<Window>,

@@ -2,8 +2,9 @@
 //!
 //! An embedded surface is a rectangle of the window that draws its own
 //! interactive content and therefore owns the input landing on it: a browser
-//! engine, any [`GpuContentView`](waterui_graphics::GpuContentView) whose
-//! view asks for input with
+//! engine, any [`GpuContentView`](waterui_graphics::GpuContentView) or
+//! [`ExternalFrameView`](waterui_graphics::ExternalFrameView) whose view asks
+//! for input with
 //! [`wants_input_events`](waterui_graphics::GpuContentView::wants_input_events),
 //! or any [`SceneView`](waterui_graphics::SceneView) whose content asks the same
 //! through
@@ -20,7 +21,8 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::gpu_view::GpuContentRuntime;
+#[cfg(hydrolysis_gpu)]
+use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use waterui_graphics::SceneContent;
 use waterui_graphics::input::{
     Code, Key, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
@@ -148,7 +150,19 @@ pub trait SurfaceInputReceiver {
     fn ime_caret(&self) -> Option<kurbo::Rect>;
 }
 
+#[cfg(hydrolysis_gpu)]
 impl SurfaceInputReceiver for GpuContentRuntime {
+    fn input(&mut self, event: &SurfaceInputEvent) {
+        self.view.input(event);
+    }
+
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        self.view.ime_caret()
+    }
+}
+
+#[cfg(hydrolysis_gpu)]
+impl SurfaceInputReceiver for ExternalFrameRuntime {
     fn input(&mut self, event: &SurfaceInputEvent) {
         self.view.input(event);
     }

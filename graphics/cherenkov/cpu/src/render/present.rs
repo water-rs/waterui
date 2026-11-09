@@ -342,7 +342,7 @@ fn tone_map(headroom: f32, rgb: [f32; 3]) -> [f32; 3] {
     reason = "gamut-mapped channels are in [0,1]; the unorm-8 store rounds"
 )]
 pub fn present_srgb8(level: fearless_simd::Level, headroom: f32, pixels: &[[f32; 4]]) -> Vec<u8> {
-    fearless_simd::dispatch!(level, _simd => {
+    cherenkov_simd::dispatch!(level, _simd => {
         let target = headroom.min(1.0);
         let mut out = Vec::with_capacity(pixels.len() * 4);
         for &[r, g, b, a] in pixels {
@@ -372,7 +372,7 @@ pub fn present_linear_p3(
     headroom: f32,
     pixels: &[[f32; 4]],
 ) -> Vec<[f32; 4]> {
-    fearless_simd::dispatch!(level, _simd => pixels
+    cherenkov_simd::dispatch!(level, _simd => pixels
         .iter()
         .map(|&[r, g, b, a]| {
             // The tone map scales straight rgb by a scalar, so premultiplied

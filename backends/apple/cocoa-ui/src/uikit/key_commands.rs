@@ -143,6 +143,14 @@ impl KeyCommandRegistry {
 /// before it drops the previous scope, and a leaf's view leaves its window
 /// before the leaf's state drops. A command that fires after its scope
 /// retired means an owner broke that order, and the registry panics on it.
+///
+/// Mac Catalyst presents a button's menu as an `AppKit` `NSMenu` popup, which
+/// meets neither behaviour: `setMenu:` leaves the popup's rows as they were
+/// and `removeFromSuperview` leaves it tracking. A menu trigger there ends
+/// the popup's tracking itself — when its menu is replaced while open, when
+/// the button leaves its window, and when its owner is dropped — so the popup
+/// closes before the scope retires and none of its rows can be picked
+/// afterwards.
 pub struct KeyCommands {
     registry: Rc<KeyCommandRegistry>,
     action: Sel,

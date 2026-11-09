@@ -11,8 +11,8 @@ use waterui_graphics::filtrate::{
 use waterui_layout::container::FixedContainer;
 use waterui_layout::stack::vstack;
 use waterui_layout::{
-    Layout, Point, ProposalSize, Rect, Size, Spacer, SubView, SubviewPlacement, scroll,
-    scroll_horizontal, spacer, spacer_min,
+    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, Spacer, SubView,
+    SubviewPlacement, UnitPoint, scroll, scroll_horizontal, spacer, spacer_min,
 };
 
 #[derive(Debug)]
@@ -32,6 +32,14 @@ struct ProbeLayout {
 impl Layout for ProbeLayout {
     fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
         axis_size(self.vertical, 160.0, 20.0)
+    }
+
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -231,10 +239,7 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
     }));
     let size = Size::new(160.0, 20.0);
     let rect = SceneRect::new(0.0, 0.0, 160.0, 20.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let ideal = ProposalSize::new(None, Some(20.0));
     under_root_record(&mut renderer, |renderer| {
         retained.place(renderer, ctx, &env, ideal, rect, None);
@@ -284,10 +289,7 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
         .max_width(constraint),
     ));
     let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let proposal = ProposalSize::new(Some(800.0), Some(600.0));
     under_root_record(&mut renderer, |renderer| {
         retained.place(renderer, ctx, &env, proposal, rect, None);
@@ -361,10 +363,7 @@ fn retained_subview_relayouts_when_a_widget_leaf_label_invalidates() {
             .style(style),
         ));
         let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-        let ctx = RenderContext {
-            local: Affine::IDENTITY,
-            bounds: rect,
-        };
+        let ctx = RenderContext::new(Affine::IDENTITY, rect);
         let proposal = ProposalSize::new(Some(800.0), Some(600.0));
         under_root_record(&mut renderer, |renderer| {
             retained.place(renderer, ctx, &env, proposal, rect, None);
@@ -429,6 +428,14 @@ struct RecordingRow {
 }
 
 impl Layout for RecordingRow {
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         let sizes = children
             .iter()
@@ -506,10 +513,7 @@ fn retained_subview_relayouts_when_a_scene_leaves_natural_size_moves() {
         trace: Rc::clone(&trace),
     }));
     let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let proposal = ProposalSize::new(Some(800.0), Some(600.0));
     under_root_record(&mut renderer, |renderer| {
         retained.place(renderer, ctx, &env, proposal, rect, None);
@@ -601,6 +605,14 @@ fn transparent_metadata_preserves_the_selected_proposal() {
 struct PriorityProbe(Rc<Cell<Option<i32>>>);
 
 impl Layout for PriorityProbe {
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         children[0].measure(proposal).size
     }

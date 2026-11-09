@@ -46,7 +46,6 @@ use waterui_ts::engine::JsValue;
 
 use support::{
     Module, assert_same_pixels, mount_error, mount_view_offscreen, rust_pixels, rust_tree,
-    rust_tree_offscreen,
 };
 
 /// Mounts the JSX form and the Rust form and asserts they are one tree.
@@ -1161,7 +1160,7 @@ fn ts_padding_takes_every_shape_the_rust_chain_takes() {
                 children: "Inset",
             })"#,
         ),
-        text("Inset").padding_with(EdgeInsets::new(4.0, 0.0, 16.0, 16.0)),
+        text("Inset").padding_with(EdgeInsets::new(4.0, 16.0, 0.0, 16.0)),
     );
     assert_same(
         "a bare padding",
@@ -1174,18 +1173,25 @@ fn ts_padding_takes_every_shape_the_rust_chain_takes() {
         text("Flush").padding_with(EdgeInsets::all(0.0)),
     );
     // A zero inset and the framework's default inset are both `padding`, so the
-    // equivalence above would also hold if `false` were read as `true`. The two
-    // differ only in where the text lands, so the trees that tell them apart
-    // are the rendered ones.
-    assert_ne!(
-        Module::mount(&module(
-            r#"waterui.jsx("Text", { padding: false, children: "Flush" })"#
-        ))
-        .offscreen_tree(),
-        Module::mount(&module(
-            r#"waterui.jsx("Text", { padding: true, children: "Flush" })"#
-        ))
-        .offscreen_tree(),
+    // equivalence above would also hold if `false` were read as `true`. A
+    // symmetric inset leaves a centred text where it was (`docs/layout-spec.md`
+    // §6), so neither the tree nor the glyphs tell them apart. A colour
+    // background behind the padding fills the padded box once a stack
+    // allocates that box its own answer, and that frame does.
+    let padded = |padding: &str| {
+        Module::mount(&module(&format!(
+            r#"waterui.jsx("VStack", {{
+                children: waterui.jsx("Text", {{
+                    padding: {padding},
+                    background: {{ red: 0, green: 0, blue: 1 }},
+                    children: "Flush",
+                }}),
+            }})"#
+        )))
+        .pixels()
+    };
+    assert!(
+        padded("false") != padded("true"),
         "a padding of false insets nothing, and a bare padding insets by the default"
     );
 }
@@ -1215,37 +1221,47 @@ fn ts_one_padded_edge_follows_its_own_signal() {
 #[test]
 fn ts_modifier_order_is_the_chain_order() {
     // A background is a view, so where it sits in the chain is visible: in the
-    // first form it covers the padded box, in the second only the text. Where
-    // is geometry, so the trees that say the order are the rendered ones.
+    // first form it covers the padded box, in the second only the text. A
+    // text leaf reports and draws its centred response (`docs/layout-spec.md`
+    // §6), which a symmetric padding leaves in place, so a colour background —
+    // filling the box it sits behind — is what renders the order.
     let padding_then_background = Module::mount(&module(
         r#"waterui.jsx("Text", {
             padding: 12,
-            background: waterui.jsx("Text", { children: "behind" }),
+            background: { red: 0, green: 0, blue: 1 },
             children: "Order",
         })"#,
     ))
-    .offscreen_tree();
+    .pixels();
     let background_then_padding = Module::mount(&module(
         r#"waterui.jsx("Text", {
-            background: waterui.jsx("Text", { children: "behind" }),
+            background: { red: 0, green: 0, blue: 1 },
             padding: 12,
             children: "Order",
         })"#,
     ))
-    .offscreen_tree();
-    assert_ne!(
-        padding_then_background, background_then_padding,
+    .pixels();
+    assert!(
+        padding_then_background != background_then_padding,
         "`padding → background` and `background → padding` are different views, as they are in Rust"
     );
-    assert_eq!(
-        padding_then_background,
-        rust_tree_offscreen(text("Order").padding_with(12.0).background(text("behind"))),
-        "the written order is the chain order"
+    assert_same_pixels(
+        "the written order is the chain order",
+        &padding_then_background,
+        &rust_pixels(
+            text("Order")
+                .padding_with(12.0)
+                .background(rgb(0.0, 0.0, 1.0)),
+        ),
     );
-    assert_eq!(
-        background_then_padding,
-        rust_tree_offscreen(text("Order").background(text("behind")).padding_with(12.0)),
-        "and so is the other one"
+    assert_same_pixels(
+        "and so is the other one",
+        &background_then_padding,
+        &rust_pixels(
+            text("Order")
+                .background(rgb(0.0, 0.0, 1.0))
+                .padding_with(12.0),
+        ),
     );
 }
 

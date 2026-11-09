@@ -109,6 +109,91 @@ pub fn text_button_bar_item(
     Some(item)
 }
 
+/// A navigation bar item as a `UIBarButtonItem`.
+///
+/// The action is forwarded to the rendered content's first button. A symbol
+/// icon becomes the item's image. A view icon is measured and framed, then
+/// `view_icon` turns it into an item. A single text button is a title item
+/// the bar draws; any other content is hosted as the item's custom view. The
+/// item follows the button's enabled state and the title signal feeds its
+/// accessibility label.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn button_bar_item(
+    item: &bar::BarItem,
+    keep: &mut crate::contract::KeepAlive,
+    mtm: cocoa_ui::MainThreadMarker,
+    view_icon: impl FnOnce(
+        &crate::contract::NativeLeaf,
+        Option<alloc::rc::Rc<dyn Fn()>>,
+        &mut crate::contract::KeepAlive,
+    ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem>,
+) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem> {
+    use waterui_core::layout::ProposalSize;
+
+    let leaf_button = cocoa_ui::uikit::first_button(item.leaf.view());
+    let action = leaf_button.clone().map(|button| {
+        alloc::rc::Rc::new(move || {
+            button.sendActionsForControlEvents(
+                cocoa_ui::objc2_ui_kit::UIControlEvents::PrimaryActionTriggered,
+            );
+        }) as alloc::rc::Rc<dyn Fn()>
+    });
+    let button = match &item.icon {
+        Some(bar::BarItemIcon::System(symbol)) => {
+            cocoa_ui::uikit::bar_item(mtm, Some(symbol), None, action)
+        }
+        Some(bar::BarItemIcon::View(icon)) => {
+            // The declared icon draws inside the bar's chrome as a template
+            // image the bar tints; a view that cannot render stays hosted as
+            // the item's custom view.
+            let size = icon
+                .layout()
+                .measure(ProposalSize {
+                    width: None,
+                    height: None,
+                })
+                .size;
+            cocoa_ui::view::set_frame(
+                icon.view(),
+                cocoa_ui::geometry::Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(size.width),
+                    f64::from(size.height),
+                ),
+            );
+            view_icon(icon, action, keep)
+        }
+        None => {
+            // A `UIButton` whose configuration carries no title is what the
+            // bar draws as an empty capsule. A single text label becomes the
+            // title the bar draws itself; anything else is hosted, and must
+            // arrive with a real frame because the bar never lays a custom
+            // view out.
+            text_button_bar_item(item, action, mtm).unwrap_or_else(|| {
+                cocoa_ui::view::set_frame(item.leaf.view(), bar::bar_item_frame(item));
+                cocoa_ui::uikit::bar_item(mtm, None, Some(item.leaf.view()), None)
+            })
+        }
+    };
+    // A bar item the chrome draws follows the button's enabled state — the
+    // programmatic `sendActions` the action runs ignores `isEnabled`, so the
+    // bar item is what disables it.
+    if let Some(leaf_button) = &leaf_button {
+        cocoa_ui::uikit::mirror_enabled(leaf_button, &button);
+    }
+    if let Some(title) = &item.title {
+        keep.bind(title, {
+            let button = button.clone();
+            move |title| {
+                cocoa_ui::uikit::bar_item_accessibility_label(&button, &title.to_plain());
+            }
+        });
+    }
+    button
+}
+
 /// What one hosted subtree contributes to a text-button decision.
 #[cfg(target_os = "ios")]
 enum ButtonContent {

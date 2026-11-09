@@ -28,10 +28,6 @@ use crate::{HostedContent, HostedObject, HostedOcclusion};
 /// The controller behind this backend's web views on the web. The backend
 /// installs it as the default controller.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less controller used by name"
-)]
 pub struct WebSystemWebViewController;
 
 impl CustomWebViewController for WebSystemWebViewController {

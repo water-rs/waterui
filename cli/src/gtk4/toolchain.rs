@@ -11,10 +11,6 @@ use crate::toolchain::{
 ///
 /// Verifies that GTK4 development libraries are installed on Linux.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct Gtk4Toolchain;
 
 #[derive(Debug, Clone, Copy)]

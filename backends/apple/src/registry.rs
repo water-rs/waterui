@@ -41,6 +41,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
     // Wave B — pickers.
     #[cfg(feature = "date_picker")]
     crate::components::date_picker::install(dispatcher);
+    #[cfg(feature = "calendar")]
+    crate::components::calendar::install(dispatcher);
     #[cfg(feature = "multi_date_picker")]
     crate::components::multi_date_picker::install(dispatcher);
     #[cfg(feature = "picker")]

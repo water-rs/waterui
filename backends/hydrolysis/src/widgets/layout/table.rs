@@ -190,7 +190,7 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
                 .unwrap_or(0);
         }
     }
-    let viewport = ctx.map_or(kurbo::Rect::ZERO, |ctx| ctx.bounds);
+    let viewport = ctx.map_or(kurbo::Rect::ZERO, |ctx| ctx.bounds());
     let layout_metrics = theme.map(|theme| theme.table_metrics());
     let table_metrics = {
         let state_ref = state.borrow();

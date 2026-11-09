@@ -34,7 +34,7 @@ pub struct DatePickerRenderState<E: crate::text::TextEngine> {
 impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
     pub(crate) fn from_config(config: DatePickerConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
         }
     }
@@ -83,10 +83,10 @@ pub fn date_picker_accessibility<E: crate::text::TextEngine>(
     #[cfg(feature = "accessibility")]
     {
         let disabled = renderer.read_signal(&widget_disabled(env));
-        let value = date_picker.ty.format_value(
+        let value = date_picker.ty().format_value(
             renderer
-                .read_signal(&date_picker.value)
-                .clamp(*date_picker.range.start(), *date_picker.range.end()),
+                .read_signal(date_picker.value())
+                .clamp(*date_picker.range().start(), *date_picker.range().end()),
         );
         let default_label = Some(value.clone());
         let mut node = AccessibilityNode::new(
@@ -112,16 +112,16 @@ pub fn date_picker_accessibility<E: crate::text::TextEngine>(
             node.add_action(AccessibilityAction::SetValue);
         }
         let origin = ctx.map(|ctx| {
-            crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds))
+            crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds()))
         });
         if let Some(node_id) = renderer.register_accessibility_leaf(
             ctx,
             node,
             env,
             (!disabled).then(|| AccessibilityActionTarget::DatePicker {
-                value: date_picker.value.clone(),
-                range: date_picker.range.clone(),
-                ty: date_picker.ty,
+                value: date_picker.value().clone(),
+                range: date_picker.range().clone(),
+                ty: date_picker.ty(),
                 origin,
                 // The popup opens in the picker's own environment
                 // (water-rs/hydrolysis#140).
@@ -160,12 +160,12 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
         0.0
     };
     let current = state
-        .measure_signal(&config.value)
-        .clamp(*config.range.start(), *config.range.end());
+        .measure_signal(config.value())
+        .clamp(*config.range().start(), *config.range().end());
     let candidates = [
-        config.ty.format_value(*config.range.start()),
-        config.ty.format_value(current),
-        config.ty.format_value(*config.range.end()),
+        config.ty().format_value(*config.range().start()),
+        config.ty().format_value(current),
+        config.ty().format_value(*config.range().end()),
     ];
     let mut field_text_width: f64 = 0.0;
     let mut field_text_height: f64 = 0.0;
@@ -233,9 +233,9 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     let (value_binding, range, ty) = {
         let date_picker = &state.config;
         (
-            date_picker.value.clone(),
-            date_picker.range.clone(),
-            date_picker.ty,
+            date_picker.value().clone(),
+            date_picker.range().clone(),
+            date_picker.ty(),
         )
     };
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);

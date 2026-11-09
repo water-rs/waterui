@@ -19,7 +19,9 @@ use waterui::Str;
 use waterui::animation::Animation;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 use waterui_map::{Annotation, Coordinate, MapConfig, MapStatus, MapStyle, Region};
 
 use crate::contract::NativeLeaf;
@@ -47,10 +49,10 @@ const fn kit_region(region: &Region) -> cocoa_ui::map::Region {
 /// A `waterui_map::Annotation` as the kit's pin value.
 fn kit_annotation(annotation: &Annotation) -> cocoa_ui::map::Annotation {
     cocoa_ui::map::Annotation {
-        coordinate: kit_coordinate(&annotation.coordinate),
-        title: annotation.title.as_str().to_owned(),
+        coordinate: kit_coordinate(&annotation.coordinate()),
+        title: annotation.title().as_str().to_owned(),
         subtitle: annotation
-            .subtitle
+            .get_subtitle()
             .as_ref()
             .map(|text| text.as_str().to_owned()),
     }
@@ -115,6 +117,14 @@ impl core::fmt::Debug for MapSubView {
 }
 
 impl SubView for MapSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(320.0),
@@ -137,11 +147,11 @@ impl SubView for MapSubView {
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<MapConfig>(|config, ctx| {
         let map = MapView::new(ctx.mtm());
-        map.set_style(kit_style(config.style));
-        map.set_interactive(config.interactivity.is_interactive());
-        map.set_shows_compass(config.compass_visibility.is_visible());
-        map.set_shows_scale(config.scale_visibility.is_visible());
-        map.set_shows_user_location(config.user_location_visibility.is_visible());
+        map.set_style(kit_style(config.style()));
+        map.set_interactive(config.interactivity().is_interactive());
+        map.set_shows_compass(config.compass_visibility().is_visible());
+        map.set_shows_scale(config.scale_visibility().is_visible());
+        map.set_shows_user_location(config.user_location_visibility().is_visible());
 
         let state = Rc::new(RefCell::new(MapState {
             markers: Vec::new(),
@@ -153,10 +163,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The region snapshot applies unanimated at mount; each change
         // animates only when the watcher metadata asks for it — `bind`
         // cannot see the metadata, so the watch is explicit.
-        map.set_region(kit_region(&config.region.snapshot()), false);
+        map.set_region(kit_region(&config.region().snapshot()), false);
         {
             let map = map.clone();
-            leaf.watch(&config.region, move |change| {
+            leaf.watch(config.region(), move |change| {
                 map.set_region(kit_region(change.value()), animated(change.metadata()));
             });
         }
@@ -164,12 +174,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The initial annotation set: the watcher fires on change only.
         {
             let mut state = state.borrow_mut();
-            reconcile_annotations(&map, &mut state, &config.annotations.snapshot());
+            reconcile_annotations(&map, &mut state, &config.annotations().snapshot());
         }
         {
             let map = map.clone();
             let state = Rc::clone(&state);
-            leaf.watch(&config.annotations, move |change| {
+            leaf.watch(config.annotations(), move |change| {
                 let mut state = state.borrow_mut();
                 reconcile_annotations(&map, &mut state, change.value());
             });
@@ -177,7 +187,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // An application-supplied location replaces `CoreLocation` tracking,
         // so the map never shows two disagreeing positions.
-        if let Some(location) = &config.user_location {
+        if let Some(location) = config.user_location() {
             map.set_shows_user_location(false);
             let map = map.clone();
             leaf.bind(location, move |value| {
@@ -193,7 +203,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // `status` is caller-observed only: no binding means no allocation
         // and no delegate beyond what region/location watches installed.
-        if let Some(status) = &config.status {
+        if let Some(status) = config.status() {
             let status = status.clone();
             let observation = map.on_load_status(move |load| {
                 status.set(map_status(&load));

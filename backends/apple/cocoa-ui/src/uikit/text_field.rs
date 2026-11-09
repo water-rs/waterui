@@ -160,8 +160,45 @@ define_class!(
                     ),
             )
         }
+
+        // SAFETY: `sizeThatFits:` is `UIView`'s declared signature; the
+        // override keeps `super`'s width and floors the height at the
+        // idiom's canonical field height.
+        #[unsafe(method(sizeThatFits:))]
+        fn size_that_fits(&self, size: CGSize) -> CGSize {
+            // SAFETY: `super` answers the control's own fitting size.
+            let mut fitting: CGSize = unsafe { msg_send![super(self), sizeThatFits: size] };
+            fitting.height = fitting.height.max(canonical_field_height(self));
+            fitting
+        }
+
+        // SAFETY: `intrinsicContentSize` is `UIView`'s declared signature;
+        // the override floors the height the same way `sizeThatFits:` does.
+        #[unsafe(method(intrinsicContentSize))]
+        fn intrinsic_content_size(&self) -> CGSize {
+            // SAFETY: `super` answers the control's own intrinsic size.
+            let mut size: CGSize = unsafe { msg_send![super(self), intrinsicContentSize] };
+            size.height = size.height.max(canonical_field_height(self));
+            size
+        }
     }
 );
+
+/// The field height the Mac Catalyst pad idiom's own convention holds —
+/// there the platform's plain field is 23 pt while a borderless
+/// `UITextField` measures 21.5, so its reports floor at 23 (#3722). A
+/// physical iPad and every other idiom already agree with `UIKit`'s
+/// measure, so the floor releases everywhere regular iOS runs.
+fn canonical_field_height(field: &UITextField) -> CGFloat {
+    if cfg!(target_abi = "macabi")
+        && objc2_ui_kit::UIDevice::currentDevice(field.mtm()).userInterfaceIdiom()
+            == objc2_ui_kit::UIUserInterfaceIdiom::Pad
+    {
+        23.0
+    } else {
+        0.0
+    }
+}
 
 impl TextField {
     /// An empty, chromeless, enabled single-line field.

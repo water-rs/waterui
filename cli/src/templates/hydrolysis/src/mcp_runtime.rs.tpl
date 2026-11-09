@@ -23,9 +23,9 @@ pub(crate) fn run() {
             builder_env.insert(hydrolysis::DeclaredFonts::default());
             ui()
                 .environment(builder_env)
-                .viewport(config.width, config.height)
+                .viewport(config.width(), config.height())
                 .runtime(RuntimeFlavor::Application)
-                .scale_factor(config.scale_factor)
+                .scale_factor(config.scale_factor())
                 .theme(hydrolysis_m3::Material3::defaults())
                 .mount_app(app)
         },

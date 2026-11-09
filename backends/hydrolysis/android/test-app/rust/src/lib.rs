@@ -13,17 +13,25 @@
 use std::rc::Rc;
 
 use waterui::app::App;
+#[cfg(not(feature = "filter-probe"))]
 use waterui::component::text_field::{ContentType, KeyboardType};
+#[cfg(not(feature = "filter-probe"))]
 use waterui::form::secure::Secure;
+#[cfg(not(feature = "filter-probe"))]
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::window::{Window, WindowState};
+#[cfg(not(feature = "filter-probe"))]
 use waterui_core::Native;
+
+#[cfg(feature = "filter-probe")]
+mod filter_probe;
 
 /// The bindings arrive owned so the returned view holds no borrow of the
 /// window closure's locals; each is only borrowed in the body, which the
 /// pedantic lint reads as `needless_pass_by_value`.
+#[cfg(not(feature = "filter-probe"))]
 #[allow(clippy::needless_pass_by_value)]
 fn app_view(
     count: Binding<i32>,
@@ -89,13 +97,20 @@ fn build_app() -> App {
             "Hydrolysis Test App",
             binding(WindowState::Normal),
             move || {
-                let count = binding(0);
-                let enabled = binding(false);
-                let name = binding("");
-                let code = binding("");
-                let password = binding(waterui::form::secure::Secure::new(String::new()));
-                let volume = binding(0.5);
-                app_view(count, enabled, name, code, password, volume)
+                #[cfg(feature = "filter-probe")]
+                {
+                    filter_probe::view()
+                }
+                #[cfg(not(feature = "filter-probe"))]
+                {
+                    let count = binding(0);
+                    let enabled = binding(false);
+                    let name = binding("");
+                    let code = binding("");
+                    let password = binding(waterui::form::secure::Secure::new(String::new()));
+                    let volume = binding(0.5);
+                    app_view(count, enabled, name, code, password, volume)
+                }
             },
         )],
         waterui::configure_environment!(Environment::new()),

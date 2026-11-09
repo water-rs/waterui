@@ -51,24 +51,68 @@ struct CefHelperInfoPlistTemplate<'a> {
 
 /// Apple Info.plist usage-description entry for a macOS app bundle.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct MacOsUsageDescription {
     /// Raw Info.plist key such as `NSCameraUsageDescription`.
-    pub plist_key: &'static str,
+    plist_key: &'static str,
     /// User-facing reason declared in `Water.toml`.
-    pub description: String,
+    description: String,
+}
+impl MacOsUsageDescription {
+    /// A `MacOsUsageDescription` carrying each of its fields.
+    #[must_use]
+    pub const fn new(plist_key: &'static str, description: String) -> Self {
+        Self {
+            plist_key,
+            description,
+        }
+    }
+
+    /// Raw Info.plist key such as `NSCameraUsageDescription`.
+    #[must_use]
+    pub const fn plist_key(&self) -> &'static str {
+        self.plist_key
+    }
+
+    /// User-facing reason declared in `Water.toml`.
+    #[must_use]
+    pub fn description(&self) -> &str {
+        &self.description
+    }
 }
 
 /// The two names a macOS `.app` bundle carries.
 #[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
 pub struct MacOsAppNames<'a> {
     /// Human-readable bundle name — `<app_name>.app` and `CFBundleName`.
-    pub app_name: &'a str,
+    app_name: &'a str,
     /// Shipped `Contents/MacOS` and `CFBundleExecutable` name — the product
     /// name, not the artifact's file name, which may carry a build-internal
     /// tag.
-    pub executable_name: &'a str,
+    executable_name: &'a str,
+}
+impl<'a> MacOsAppNames<'a> {
+    /// A `MacOsAppNames` carrying each of its fields.
+    #[must_use]
+    pub const fn new(app_name: &'a str, executable_name: &'a str) -> Self {
+        Self {
+            app_name,
+            executable_name,
+        }
+    }
+
+    /// Human-readable bundle name — `<app_name>.app` and `CFBundleName`.
+    #[must_use]
+    pub const fn app_name(&self) -> &'a str {
+        self.app_name
+    }
+
+    /// Shipped `Contents/MacOS` and `CFBundleExecutable` name — the product
+    /// name, not the artifact's file name, which may carry a build-internal
+    /// tag.
+    #[must_use]
+    pub const fn executable_name(&self) -> &'a str {
+        self.executable_name
+    }
 }
 
 /// Package a compiled binary as a macOS `.app` bundle.
@@ -157,17 +201,54 @@ pub enum MacOsSigning {
 /// What a macOS distribution package signs and notarizes with.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct DistributionSigning {
     /// The Apple Developer team the package signs for — the certificate
     /// subject OU the Developer ID Application identity must carry.
-    pub team_id: String,
+    team_id: String,
     /// The `xcrun notarytool` keychain profile the submission authenticates
     /// with.
-    pub notary_profile: String,
+    notary_profile: String,
     /// The entitlements applied to the outermost bundle, when the project
     /// declares any.
-    pub entitlements: Option<PathBuf>,
+    entitlements: Option<PathBuf>,
+}
+
+#[cfg(target_os = "macos")]
+impl DistributionSigning {
+    /// A `DistributionSigning` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        team_id: String,
+        notary_profile: String,
+        entitlements: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            team_id,
+            notary_profile,
+            entitlements,
+        }
+    }
+
+    /// The Apple Developer team the package signs for — the certificate
+    /// subject OU the Developer ID Application identity must carry.
+    #[must_use]
+    pub fn team_id(&self) -> &str {
+        &self.team_id
+    }
+
+    /// The `xcrun notarytool` keychain profile the submission authenticates
+    /// with.
+    #[must_use]
+    pub fn notary_profile(&self) -> &str {
+        &self.notary_profile
+    }
+
+    /// The entitlements applied to the outermost bundle, when the project
+    /// declares any.
+    #[must_use]
+    pub fn entitlements(&self) -> Option<&Path> {
+        self.entitlements.as_deref()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -200,8 +281,8 @@ impl DistributionSigning {
             )
         })?;
         Ok(Self {
-            team_id: config.team_id.clone(),
-            notary_profile: config.notary_profile.clone(),
+            team_id: config.team_id().to_owned(),
+            notary_profile: config.notary_profile().to_owned(),
             entitlements,
         })
     }
@@ -1232,10 +1313,7 @@ mod tests {
                 &binary,
                 &crate::project_types::AppleBundleIdentifier::try_from("dev.waterui.demo")
                     .expect("bundle identifier"),
-                super::MacOsAppNames {
-                    app_name: "Demo",
-                    executable_name: "demo-hydrolysis",
-                },
+                super::MacOsAppNames::new("Demo", "demo-hydrolysis"),
                 &[],
                 None,
                 b"fake-icns-bytes",

@@ -11,7 +11,10 @@ use nami::{Computed, Signal};
 use waterui_core::layout::LayoutInvalidationCallback;
 use waterui_core::{AnyView, View};
 use waterui_layout::container::FixedContainer;
-use waterui_layout::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement};
+use waterui_layout::{
+    Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, StretchAxis, SubView,
+    SubviewPlacement, UnitPoint,
+};
 
 /// The width-to-height ratio a video answers by before its source reports
 /// its size: 16:9.
@@ -50,6 +53,15 @@ impl FitVideoLayout {
 impl Layout for FitVideoLayout {
     fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
         self.size(proposal)
+    }
+
+    /// Anchored top-leading: `place` positions the picture at `bounds`' origin.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(

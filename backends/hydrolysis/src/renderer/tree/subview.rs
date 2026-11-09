@@ -7,6 +7,7 @@
 use super::*;
 use crate::theme::WidgetTheme;
 use std::rc::Rc;
+use waterui_core::layout::{LayoutError, ResolvedExtent};
 
 /// A [`SubView`] adapter that measures a child [`RenderNode`] **on demand** at
 /// whatever proposal the real [`Layout`] passes — the node analogue of
@@ -161,6 +162,27 @@ impl<E: crate::text::TextEngine> SubView for NodeSubView<'_, E> {
             .borrow_mut()
             .push((proposal, dimensions.clone()));
         dimensions
+    }
+    /// Dispatches through [`RenderNode::resolve_extent`], so containers answer
+    /// their layout's rule over their retained children and wrappers forward.
+    /// A leaf (and a resolved text subtree, which must stay worker-safe)
+    /// answers its stretch-applied [`Self::measure`] centred in `bounds`.
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        if self.resolved_text.is_none() {
+            let resolved = {
+                let mut state = self.state.borrow_mut();
+                self.node
+                    .resolve_extent(&mut state, &self.env, &self.theme, bounds, proposal)?
+            };
+            if let Some(resolved) = resolved {
+                return Ok(resolved);
+            }
+        }
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
     fn stretch_axis(&self) -> StretchAxis {
         self.stretch

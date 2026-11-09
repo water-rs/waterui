@@ -34,7 +34,7 @@ pub fn unsupported_system_icon(icon: &SystemIcon) -> ! {
     panic!(
         "SystemIcon `{}` is unsupported on Hydrolysis because self-drawn backends have no \
          OS-supplied icon catalog; use a packaged WaterUI icon crate",
-        icon.name.as_str()
+        icon.name().as_str()
     )
 }
 
@@ -136,10 +136,12 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<PickerConfig>);
         $macro!(Native<Dynamic>);
         $macro!(Native<SystemIcon>);
+        #[cfg(hydrolysis_gpu)]
         $macro!(Native<GpuContentView>);
+        #[cfg(hydrolysis_gpu)]
         $macro!(Native<ExternalFrameView>);
         $macro!(Native<PlatformView>);
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         $macro!(Native<crate::HostedView>);
         $macro!(Native<SceneView>);
         $macro!(Native<FilteredView>);

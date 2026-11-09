@@ -486,7 +486,8 @@ fn sample_pixel<S: Simd>(simd: S, img: &CpuImage, u: f32, v: f32, sampling: Samp
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
-impl<'a, S: Simd> SpanKernel<'a, S> for ImageEval<'a> {
+// SAFETY: run writes every output pixel before returning.
+unsafe impl<'a, S: Simd> SpanKernel<'a, S> for ImageEval<'a> {
     /// One `LANES`-wide block from device x-centres `xs` on row `dy`'s
     /// centre: `outer`'s chain inverses and `inv` map each lane into
     /// image pixel space, the per-axis extend modes decide the covered

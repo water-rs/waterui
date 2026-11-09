@@ -19,11 +19,46 @@ use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 #[non_exhaustive]
 pub struct Snapshot {
     /// Frame width in pixels.
-    pub width: u32,
+    width: u32,
     /// Frame height in pixels.
-    pub height: u32,
+    height: u32,
     /// Pixel data in RGBA8 row-major order.
-    pub rgba8: Vec<u8>,
+    rgba8: Vec<u8>,
+}
+
+impl Snapshot {
+    /// Creates a Snapshot from its parts.
+    #[must_use]
+    pub const fn new(width: u32, height: u32, rgba8: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            rgba8,
+        }
+    }
+
+    /// Frame width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Frame height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Pixel data in RGBA8 row-major order.
+    #[must_use]
+    pub const fn rgba8(&self) -> &[u8] {
+        self.rgba8.as_slice()
+    }
+
+    /// Pixel data in RGBA8 row-major order, for editing in place.
+    pub const fn rgba8_mut(&mut self) -> &mut [u8] {
+        self.rgba8.as_mut_slice()
+    }
 }
 
 impl Snapshot {

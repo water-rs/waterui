@@ -1,0 +1,48 @@
+name: Check out the consumed browsers repository
+description: >-
+  Check out water-rs/browsers at the revision the committed Cargo.lock pins
+  for the browser engine crates, so the runtime scripts live beside the
+  consumed crate — never a floating branch tip.
+outputs:
+  rev:
+    description: The Cargo.lock-pinned water-rs/browsers commit.
+    value: ${{ steps.browsers.outputs.rev }}
+runs:
+  using: composite
+  steps:
+    # Ubuntu 22.04's python3 predates tomllib (3.11); a current stable
+    # interpreter reads the lockfile.
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.x'
+    - name: Resolve the pinned browsers revision
+      id: browsers
+      shell: bash
+      run: |
+        rev="$(python3 - <<'PY'
+        import tomllib
+        with open('Cargo.lock', 'rb') as f:
+            lock = tomllib.load(f)
+        sources = {
+            p['name']: p['source'] for p in lock['package']
+            if p['name'] in ('waterui-browser-cef', 'waterui-browser-wpe')
+        }
+        assert len(sources) == 2, sources
+        # Both engines must come from the same git checkout: a split source
+        # would stage one engine's runtime against the other's bridge.
+        assert all(s.startswith('git+') for s in sources.values()), sources
+        git_sources = set(sources.values())
+        assert len(git_sources) == 1, sources
+        source = git_sources.pop()
+        prefix, _, rev = source.partition('#')
+        assert prefix == 'git+https://github.com/water-rs/browsers?branch=dev', source
+        assert len(rev) == 40 and all(c in '0123456789abcdef' for c in rev), source
+        print(rev)
+        PY
+        )"
+        echo "rev=$rev" >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@v4
+      with:
+        repository: water-rs/browsers
+        path: browsers
+        ref: ${{ steps.browsers.outputs.rev }}

@@ -390,7 +390,12 @@ as in section 4.1 (P3, unclipped, HDR-FLIP where the reference exceeds SDR white
    must not change identity, and its value must not rise. Basis: the
    maxima are concentrated in exactly the geometry a coverage change
    would hit first (`stroke-join-continuous-sharp-round` for `flip_max`,
-   `stroke-dash-hdr` for `max_local_error`).
+   `stroke-dash-hdr` for `max_local_error`). The bound is calibrated
+   against the CPU sweep as threshold 2's `flip_mean` ceiling is: a
+   scene whose sweep value already exceeds the maximum's holds the
+   sweep's own value instead, because the route did not make it the
+   worst scene. The dense dash scenes of water-rs/waterui#2544 measure
+   above `glyph-stroke-dashed` on the sweep itself.
 4. **Independent polygon-coverage gate.** Supply both coverage routes
    and the independent f64 area oracle with identical finite f32
    device-space line segments, contour closure and fill rule. Use the

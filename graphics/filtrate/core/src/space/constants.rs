@@ -128,6 +128,27 @@ const fn f32_spacing(value: f64) -> f64 {
     f64::from_bits((biased_exponent - 23) << 52)
 }
 
+/// `value` rounded to the nearest integer, halves away from zero — what
+/// `f64::round` does, which `core` lacks. `value` stays far below `2^52`
+/// here (an entry over its row's `f32` spacing), so the truncation and the
+/// remainder are exact.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "a magnitude below 2^52 round-trips through i64 exactly"
+)]
+const fn round(value: f64) -> f64 {
+    let truncated = value as i64 as f64;
+    let remainder = value - truncated;
+    if remainder >= 0.5 {
+        truncated + 1.0
+    } else if remainder <= -0.5 {
+        truncated - 1.0
+    } else {
+        truncated
+    }
+}
+
 /// Whether `value` is exactly the `f64` widening of `narrow`.
 const fn widens_to(narrow: f32, value: f64) -> bool {
     (narrow as f64).to_bits() == value.to_bits()
@@ -160,7 +181,7 @@ const fn narrow_unit_row(row: [f64; 3]) -> [f32; 3] {
     column = 0;
     while column < 3 {
         if column != pivot {
-            let rounded = (row[column] / spacing).round() * spacing;
+            let rounded = round(row[column] / spacing) * spacing;
             out[column] = rounded as f32;
             assert!(widens_to(out[column], rounded), "an entry is not an f32");
             rest += rounded;

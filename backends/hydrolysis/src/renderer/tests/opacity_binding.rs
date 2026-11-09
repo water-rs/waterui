@@ -56,10 +56,10 @@ fn an_opacity_binding_change_reaches_the_flushed_alpha() {
 
     let painted = runtime
         .pump_at(true, at)
-        .snapshot
+        .into_snapshot()
         .expect("the mount frame captures a snapshot");
     assert!(
-        count_rgb(&painted.rgba8, RED, 2) > 0,
+        count_rgb(painted.rgba8(), RED, 2) > 0,
         "the fully opaque color must paint on the first frame"
     );
 
@@ -67,14 +67,14 @@ fn an_opacity_binding_change_reaches_the_flushed_alpha() {
     at += Duration::from_millis(16);
     let result = runtime.pump_at(true, at);
     assert!(
-        !result.rebuilt,
+        !result.rebuilt(),
         "a binding write must not rebuild the view tree"
     );
     let faded = result
-        .snapshot
+        .snapshot()
         .expect("the post-write frame captures a snapshot");
     assert_eq!(
-        count_rgb(&faded.rgba8, RED, 2),
+        count_rgb(faded.rgba8(), RED, 2),
         0,
         "opacity 0.0 must reach the flushed layer's alpha on the next frame"
     );
@@ -83,15 +83,16 @@ fn an_opacity_binding_change_reaches_the_flushed_alpha() {
     at += Duration::from_millis(16);
     let half = runtime
         .pump_at(true, at)
-        .snapshot
+        .into_snapshot()
         .expect("the restore frame captures a snapshot");
     assert_eq!(
-        count_rgb(&half.rgba8, RED, 2),
+        count_rgb(half.rgba8(), RED, 2),
         0,
         "alpha 0.5 blends over the window background — the pure source stays absent"
     );
     assert_ne!(
-        half.rgba8, faded.rgba8,
+        half.rgba8(),
+        faded.rgba8(),
         "alpha 0.5 must repaint every pixel the transparent frame left at the background"
     );
 }

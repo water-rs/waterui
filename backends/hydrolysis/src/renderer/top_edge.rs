@@ -73,9 +73,9 @@ impl<E: crate::text::TextEngine> LayerVisitor<E> for TopEdge {
         }
     }
 
-    fn open_clip(&mut self, world: Affine, clip: &cherenkov::ShapeData) {
+    fn open_clip(&mut self, world: Affine, clip: &cherenkov_record::ShapeData) {
         self.clips.push(match clip {
-            cherenkov::ShapeData::Rect(rect) if axis_aligned(world) => {
+            cherenkov_record::ShapeData::Rect(rect) if axis_aligned(world) => {
                 Some(world.transform_rect_bbox(*rect))
             }
             _ => None,

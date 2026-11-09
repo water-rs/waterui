@@ -194,9 +194,9 @@ impl TestMachine {
     /// (file lookup only; `-`/`.` cannot appear in a Unix `${}` expansion).
     /// Staging also makes `--exists`/`--atleast-version` pass.
     ///
-    /// Only the `#[cfg(target_os = "linux")]` test modules probe pkg-config
-    /// modules, so the helper is compiled there only.
-    #[cfg(target_os = "linux")]
+    /// Only the Unix test modules probe pkg-config modules, so the helper is
+    /// compiled there only.
+    #[cfg(unix)]
     pub fn respond_pkg_config_module(&self, module: &str, modversion: &str) {
         self.respond(&format!("PKG_CONFIG_{module}"), modversion);
     }

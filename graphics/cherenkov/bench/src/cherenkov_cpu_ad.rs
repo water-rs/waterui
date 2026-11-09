@@ -533,6 +533,8 @@ pub struct Cherenkov {
     present: Option<PresentKind>,
     /// The scene's declared display headroom for `submit`'s presentation.
     headroom: f32,
+    /// When the last submit's raster work ended.
+    completed: crate::ObservedCompletion,
 }
 
 /// The features this slice executes faithfully.
@@ -1384,6 +1386,7 @@ impl Cherenkov {
             counters: Counters::default(),
             present: None,
             headroom: 1.0,
+            completed: crate::ObservedCompletion::default(),
         })
     }
 }
@@ -1587,7 +1590,9 @@ impl Engine for Cherenkov {
             render_error,
         )?;
         let phases = self.engine.stats().phases;
-        let render_seconds = render_at.elapsed().as_secs_f64();
+        let rendered = std::time::Instant::now();
+        let render_seconds = rendered.duration_since(render_at).as_secs_f64();
+        self.completed.record(rendered);
         let readback_at = std::time::Instant::now();
         let image = if readback {
             let rb = self
@@ -1603,25 +1608,21 @@ impl Engine for Cherenkov {
                 // the comparison — the same interchange the GPU adapter
                 // uses on its presented texture.
                 Some(PresentKind::SrgbHw | PresentKind::SrgbShader) => {
-                    cherenkov_cpu::present_srgb8(
-                        cherenkov_cpu::Level::new(),
-                        self.headroom,
-                        &rb.pixels,
-                    )
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|texel| {
-                        let encoded = texel.map(|v| f64::from(v) / 255.0);
-                        let p3 = presented_srgb_to_working(encoded);
-                        [p3[0] as f32, p3[1] as f32, p3[2] as f32, p3[3] as f32]
-                    })
-                    .collect()
+                    cherenkov_cpu::present_srgb8(cherenkov_cpu::detect(), self.headroom, &rb.pixels)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|texel| {
+                            let encoded = texel.map(|v| f64::from(v) / 255.0);
+                            let p3 = presented_srgb_to_working(encoded);
+                            [p3[0] as f32, p3[1] as f32, p3[2] as f32, p3[3] as f32]
+                        })
+                        .collect()
                 }
                 // Extended linear Display P3 tone-maps to the display
                 // headroom, like the GPU's `LinearP3` destination.
                 Some(PresentKind::LinearP3) => cherenkov_cpu::present_linear_p3(
-                    cherenkov_cpu::Level::new(),
+                    cherenkov_cpu::detect(),
                     self.headroom,
                     &rb.pixels,
                 ),
@@ -1656,6 +1657,16 @@ impl Engine for Cherenkov {
         })
     }
 
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(
+            "the host instant Engine::render returned, after the CPU raster work it ran ended",
+        )
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        self.completed.take(Self::NAME)
+    }
+
     fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
         let timings = self.engine.finish_timings().map_err(render_error)?;
         Ok(self.timings.samples(timings))
@@ -1669,15 +1680,16 @@ impl Engine for Cherenkov {
     fn counters(&self) -> Counters {
         let mut counters = self.counters.clone();
         let stats = self.engine.stats();
-        let memory = self.engine.memory();
         counters.dispatches = Some(stats.draws);
         counters.passes = Some(stats.passes);
-        counters.memory_gpu_bytes = Some(memory.gpu.0);
-        counters.memory_cpu_bytes = Some(memory.cpu.0);
-        counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
-        counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
-        counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
-        counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        if let Ok(memory) = self.engine.memory() {
+            counters.memory_gpu_bytes = Some(memory.gpu.0);
+            counters.memory_cpu_bytes = Some(memory.cpu.0);
+            counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
+            counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
+            counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
+            counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        }
         counters
     }
 
@@ -1704,13 +1716,18 @@ impl Engine for Cherenkov {
     fn memory(&self) -> AdapterMemory {
         let usage = self.engine.memory();
         AdapterMemory {
-            engine: Reading::Measured(EngineBytes {
-                cpu_bytes: usage.cpu.0,
-                gpu_bytes: usage.gpu.0,
-                backdrop_capture_bytes: usage.backdrop_captures.0,
-                filter_target_bytes: usage.filter_targets.0,
-                filter_image_bytes: usage.filter_images.0,
-            }),
+            engine: usage.map_or_else(
+                |error| Reading::unavailable(error.to_string()),
+                |usage| {
+                    Reading::Measured(EngineBytes {
+                        cpu_bytes: usage.cpu.0,
+                        gpu_bytes: usage.gpu.0,
+                        backdrop_capture_bytes: usage.backdrop_captures.0,
+                        filter_target_bytes: usage.filter_targets.0,
+                        filter_image_bytes: usage.filter_images.0,
+                    })
+                },
+            ),
             wgpu_allocator: Reading::unavailable("cherenkov-cpu has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("cherenkov-cpu has no Skia budget"),
             vk_memory_budget: Reading::unavailable("cherenkov-cpu has no Vulkan device"),

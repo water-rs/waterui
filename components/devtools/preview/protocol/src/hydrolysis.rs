@@ -16,11 +16,31 @@ pub const MCP_RUN_CONFIG_ENV: &str = "WATERUI_HYDROLYSIS_MCP_RUN_CONFIG";
 #[non_exhaustive]
 pub struct McpRunConfig {
     /// Viewport width in logical units.
-    pub width: u32,
+    width: u32,
     /// Viewport height in logical units.
-    pub height: u32,
+    height: u32,
     /// Display scale factor applied to the runtime.
-    pub scale_factor: f64,
+    scale_factor: f64,
+}
+
+impl McpRunConfig {
+    /// Viewport width in logical units.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Viewport height in logical units.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Display scale factor applied to the runtime.
+    #[must_use]
+    pub const fn scale_factor(&self) -> f64 {
+        self.scale_factor
+    }
 }
 
 impl McpRunConfig {

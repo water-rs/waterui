@@ -38,6 +38,7 @@ impl Blur {
         device: &wgpu::Device,
         delivery: super::shaders::ShaderDelivery,
         format: wgpu::TextureFormat,
+        cache: &super::PipelineCache,
     ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("silhouette blur"),
@@ -77,8 +78,9 @@ impl Blur {
                 })],
             }),
             multiview_mask: None,
-            cache: None,
+            cache: cache.handle.as_ref(),
         });
+        cache.persist();
         Self {
             pipeline,
             layout,

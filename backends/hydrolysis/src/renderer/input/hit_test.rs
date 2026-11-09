@@ -239,7 +239,7 @@ pub struct ScrollTarget<E: crate::text::TextEngine> {
 pub struct NativeViewOcclusion {
     /// The hosted content's interaction key and runtime: focus requests
     /// for the key move platform focus into it.
-    #[cfg(hydrolysis_hosted)]
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
     pub(crate) hosted: (InteractionKey, Rc<crate::hosted::HostedRuntime>),
     /// The subview's rect in window hit-test space.
     pub bounds: kurbo::Rect,
@@ -247,7 +247,7 @@ pub struct NativeViewOcclusion {
     /// paints above it.
     pub(crate) order: usize,
     /// Shared with the platform's view host. Rects are in window hit-test space.
-    #[cfg(hydrolysis_hosted)]
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
     pub(crate) sink: crate::hosted::HostedOcclusion,
 }
 
@@ -514,6 +514,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             placement: crate::platform_view::PlatformViewPlacement,
             frame: kurbo::Rect,
             clip: kurbo::Rect,
+            /// The overscroll stretches warping the view and the window
+            /// region it draws into while they show.
+            stretches: Vec<crate::platform_view::PlacementStretch>,
+            stretch_region: Option<kurbo::Rect>,
             #[cfg(any(test, hydrolysis_hwui))]
             owner: Weak<mount::NodeCell<E>>,
             #[cfg(any(test, hydrolysis_hwui))]
@@ -801,6 +805,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 let (transform, clip, _alpha) = entry.region.placement.resolved_chain(false);
                 let frame = crate::renderer::transformed_rect(transform, entry.region.local);
                 let clipped = clip.map_or(frame, |clip| frame.intersect(clip));
+                // The warp moves the view's content past its frame, inside
+                // the stretching viewports: the host lays the view out in
+                // the frame joined with them, cut by the paint chain's clip.
+                let resolved = entry.region.placement.resolved_stretches();
+                let stretch_region = (!resolved.is_empty()).then(|| {
+                    let joined = resolved
+                        .iter()
+                        .fold(frame, |joined, stretch| joined.union(stretch.viewport));
+                    clip.map_or(joined, |clip| joined.intersect(clip))
+                });
+                let stretches = resolved
+                    .into_iter()
+                    .map(|stretch| crate::platform_view::PlacementStretch {
+                        params: stretch.params,
+                        strength: stretch.strength,
+                    })
+                    .collect();
                 orders.push(entry.order.clone());
                 staged_platform.push(StagedPlatform {
                     order: entry.order.clone(),
@@ -808,6 +829,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     placement: entry.payload.placement.clone(),
                     frame,
                     clip: clipped,
+                    stretches,
+                    stretch_region,
                     #[cfg(any(test, hydrolysis_hwui))]
                     owner: entry.owner.clone(),
                     #[cfg(any(test, hydrolysis_hwui))]
@@ -957,21 +980,36 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     reason = "window coordinates fit f32 — same cast dev's placement math used"
                 )]
                 {
-                    placement.x = staged.frame.x0 as f32;
-                    placement.y = staged.frame.y0 as f32;
-                    placement.width = staged.frame.width() as f32;
-                    placement.height = staged.frame.height() as f32;
-                    placement.clip = (clipped != staged.frame).then(|| {
+                    placement.set_x(staged.frame.x0 as f32);
+                    placement.set_y(staged.frame.y0 as f32);
+                    placement.set_width(staged.frame.width() as f32);
+                    placement.set_height(staged.frame.height() as f32);
+                    placement.set_clip((clipped != staged.frame).then(|| {
                         [
                             clipped.x0 as f32,
                             clipped.y0 as f32,
                             clipped.width() as f32,
                             clipped.height() as f32,
                         ]
-                    });
-                    placement.order = rank(&staged.order) as u32;
+                    }));
+                    placement.set_order(rank(&staged.order) as u32);
                 }
-                placement.visible = !clipped.is_zero_area();
+                placement.set_visible(!clipped.is_zero_area());
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "window coordinates fit f32 — same cast as the frame above"
+                )]
+                placement.set_stretch(
+                    staged.stretches,
+                    staged.stretch_region.map(|region| {
+                        [
+                            region.x0 as f32,
+                            region.y0 as f32,
+                            region.width() as f32,
+                            region.height() as f32,
+                        ]
+                    }),
+                );
                 crate::renderer::MaterializedPlatformView {
                     table: staged.table,
                     placement,
@@ -1054,6 +1092,70 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             self.hit_test.active_press_bounds = None;
             self.hit_test.active_press_origin = None;
         }
+    }
+
+    /// The topmost placed platform view whose frame and clip cover `point`
+    /// (window logical coordinates, the space the placements are in) —
+    /// `None` when no view is drawn there. The
+    /// GPU band's ordered hit test asks this instead of an encoder record.
+    #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
+    // Alive only on Android's GPU painter — HWUI asks its encoder instead.
+    #[cfg_attr(
+        not(all(target_os = "android", hydrolysis_gpu_painter)),
+        allow(dead_code)
+    )]
+    pub(crate) fn platform_view_at(&self, point: kurbo::Point) -> Option<u64> {
+        self.materialized_platform_views
+            .iter()
+            .filter(|staged| {
+                let placement = &staged.placement;
+                let (x, y, w, h) = (
+                    f64::from(placement.x()),
+                    f64::from(placement.y()),
+                    f64::from(placement.width()),
+                    f64::from(placement.height()),
+                );
+                let inside = kurbo::Rect::new(x, y, x + w, y + h).contains(point)
+                    && placement.clip().is_none_or(|clip| {
+                        let (cx, cy, cw, ch) = (
+                            f64::from(clip[0]),
+                            f64::from(clip[1]),
+                            f64::from(clip[2]),
+                            f64::from(clip[3]),
+                        );
+                        kurbo::Rect::new(cx, cy, cx + cw, cy + ch).contains(point)
+                    });
+                placement.visible() && inside
+            })
+            .max_by_key(|staged| staged.placement.order())
+            .map(|staged| staged.placement.id())
+    }
+
+    /// Whether Hydrolysis takes the hit at `point` (window hit-test space)
+    /// over the platform view placed as `view` — an interactive target
+    /// painted above the view covers the point. The same rule hosted planes
+    /// publish ([`HitTestState::interactive_regions_above`]).
+    ///
+    /// # Panics
+    ///
+    /// When this frame placed no platform view `view`: the caller names a
+    /// view the same frame's placements bound.
+    #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
+    #[cfg_attr(all(not(target_os = "android"), not(test)), expect(dead_code))]
+    pub(crate) fn platform_view_occluded(&self, view: u64, point: kurbo::Point) -> bool {
+        let placed = self
+            .materialized_platform_views
+            .iter()
+            .find(|placed| placed.placement.id() == view)
+            .unwrap_or_else(|| {
+                panic!("hydrolysis: platform view {view} is not placed in the current frame")
+            });
+        self.hit_test
+            .interactive_regions_above(
+                placed.placement.order() as usize,
+                &self.text_editing.text_input_targets,
+            )
+            .any(|bounds| bounds.contains(point))
     }
 }
 
@@ -1156,7 +1258,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
     /// Publishes, for each registered native subview, the rects where
     /// `WaterUI`-drawn interactive content sits above it.
     #[cfg_attr(
-        not(hydrolysis_hosted),
+        not(all(hydrolysis_hosted, hydrolysis_gpu)),
         expect(
             clippy::unused_self,
             clippy::missing_const_for_fn,
@@ -1164,36 +1266,52 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
         )
     )]
     fn publish_native_view_occlusion(&self, text_inputs: &[TextInputTarget<E>]) {
-        #[cfg(not(hydrolysis_hosted))]
+        #[cfg(not(all(hydrolysis_hosted, hydrolysis_gpu)))]
         let _ = text_inputs;
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         for occlusion in &self.native_view_occlusions {
-            let above = |order: usize, bounds: kurbo::Rect| {
-                (order > occlusion.order)
-                    .then(|| bounds.intersect(occlusion.bounds))
-                    .filter(|overlap| !overlap.is_zero_area())
-            };
             let rects: Vec<kurbo::Rect> = self
-                .pointer_targets
-                .iter()
-                .filter_map(|target| above(target.order, target.bounds))
-                .chain(
-                    text_inputs
-                        .iter()
-                        .filter_map(|target| above(target.order, target.bounds)),
-                )
-                .chain(self.embedded_input_targets.iter().filter_map(|target| {
-                    above(
-                        target.order,
-                        target
-                            .inverse_transform
-                            .inverse()
-                            .transform_rect_bbox(target.local_bounds),
-                    )
-                }))
+                .interactive_regions_above(occlusion.order, text_inputs)
+                .map(|bounds| bounds.intersect(occlusion.bounds))
+                .filter(|overlap| !overlap.is_zero_area())
                 .collect();
             occlusion.sink.publish(rects);
         }
+    }
+
+    /// The window hit-test rects of every interactive target painted above
+    /// a native view flushed at `order` — pointer targets, text inputs and
+    /// embedded input targets. This is the one rule deciding where
+    /// Hydrolysis takes a hit over a native view: a hosted plane publishes
+    /// these rects, and an Android platform view is refused at a point one
+    /// of them covers. Self-drawn content that registered no target never
+    /// blocks a native view. Embedded targets answer their transformed
+    /// bounding box, as every rect here is axis-aligned.
+    #[cfg(any(hydrolysis_hosted, hydrolysis_gpu_painter, test))]
+    fn interactive_regions_above<'a>(
+        &'a self,
+        order: usize,
+        text_inputs: &'a [TextInputTarget<E>],
+    ) -> impl Iterator<Item = kurbo::Rect> + 'a {
+        self.pointer_targets
+            .iter()
+            .map(|target| (target.order, target.bounds))
+            .chain(
+                text_inputs
+                    .iter()
+                    .map(|target| (target.order, target.bounds)),
+            )
+            .chain(self.embedded_input_targets.iter().map(|target| {
+                (
+                    target.order,
+                    target
+                        .inverse_transform
+                        .inverse()
+                        .transform_rect_bbox(target.local_bounds),
+                )
+            }))
+            .filter(move |(above, _)| *above > order)
+            .map(|(_, bounds)| bounds)
     }
 
     pub(crate) fn cursor_style_at(&self, point: kurbo::Point) -> CursorStyle {
@@ -1204,9 +1322,12 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
             .map_or(CursorStyle::Arrow, |target| target.style)
     }
 
+    /// Reconciles every hover target with the pointer. `None` means the
+    /// pointer left the window: no target contains it, so every active
+    /// hover ends and its exit handler runs.
     pub(crate) fn sync_hover_targets(
         &mut self,
-        point: kurbo::Point,
+        point: Option<kurbo::Point>,
         env: &Environment,
         dispatch_move: bool,
         now: Instant,
@@ -1219,7 +1340,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
             if !self.interaction.key_active(&target.slot.key) {
                 continue;
             }
-            let contains = target.bounds.contains(point);
+            let contains = point.is_some_and(|point| target.bounds.contains(point));
             let slot_hovering = self.interaction.hovering(&target.slot);
             if contains != slot_hovering {
                 self.interaction.set_hovering(&target.slot, contains);
@@ -1254,6 +1375,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
             }
             if contains
                 && dispatch_move
+                && let Some(point) = point
                 && let Some(on_move) = target.on_move.as_mut()
                 && (on_move.borrow_mut())(target.to_local * point, env)
             {
@@ -2422,7 +2544,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         drag_changed |= drag_hover_changed;
         refresh_requested |= drag_hover_changed;
         let hover = if pointer_kind == PointerKind::Mouse {
-            self.hit_test.sync_hover_targets(point, env, true, at)
+            self.hit_test.sync_hover_targets(Some(point), env, true, at)
         } else {
             HoverSync::default()
         };
@@ -2447,7 +2569,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub fn sync_pointer_hover_state(&mut self, x: f32, y: f32, env: &Environment) -> bool {
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
-        let hover = self.hit_test.sync_hover_targets(point, env, false, at);
+        let hover = self
+            .hit_test
+            .sync_hover_targets(Some(point), env, false, at);
         let changed = hover.handler_changed;
         self.hit_test.interaction.mark_hover_sync(&hover);
         tracing::trace!(
@@ -2634,6 +2758,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// semantic runtime's keyboard contract. Rendered runtimes keep the
     /// [`KeyboardActivation::PressRelease`] default.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn use_semantic_keyboard_activation(&mut self) {
         self.hit_test.keyboard_activation = KeyboardActivation::Semantic;
     }
@@ -2644,6 +2769,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// no target is dead even when a frame happens to emit no pointer
     /// targets at all.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn use_semantic_walk(&mut self) {
         self.semantic_walk = true;
     }
@@ -2788,7 +2914,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         #[cfg(feature = "accessibility")] node: Option<AccessibilityNodeId>,
         visible: bool,
     ) -> bool {
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         if let Some(focus) = &focus {
             for (key, runtime) in self
                 .hit_test
@@ -3671,7 +3797,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) -> bool {
         self.registries();
         if self.hit_test.active_pointer != Some((pointer_id, pointer_kind)) {
-            return false;
+            // A hovering mouse leaving the window holds no press, but its
+            // hover still ends.
+            return pointer_kind == PointerKind::Mouse && self.end_hover(env);
         }
         let at = self.frame_instant();
         let mut refresh_requested =
@@ -3701,43 +3829,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .gesture_engine
             .handle_pointer_cancel(frame_instant, env);
         refresh_requested |= gesture_changed;
-        let mut hover_visual_changed = false;
-        let mut hover_chrome_keys = Vec::new();
-        let mut hover_paint_keys = Vec::new();
-        let hit_test = &mut self.core.hit_test;
-        for target in &mut hit_test.hover_targets {
-            if !hit_test.interaction.key_active(&target.slot.key) {
-                continue;
-            }
-            let hovering = hit_test.interaction.hovering(&target.slot);
-            if !hovering {
-                continue;
-            }
-            hit_test.interaction.set_hovering(&target.slot, false);
-            let paint = target.handles.as_ref().is_some_and(|handles| {
-                handles.set_hovering(false, at);
-                let repaint = handles.repaint().is_some();
-                hover_visual_changed |= repaint;
-                repaint
-            });
-            let chrome = target
-                .on_exit
-                .as_mut()
-                .is_some_and(|on_exit| (on_exit.borrow_mut())(env));
-            refresh_requested |= chrome;
-            if chrome {
-                hover_chrome_keys.push(target.slot.key.clone());
-            } else if paint {
-                hover_paint_keys.push(target.slot.key.clone());
-            }
-        }
-        self.hit_test
-            .interaction
-            .mark_owners(&hover_chrome_keys, Dirty::LAYOUT);
-        self.hit_test
-            .interaction
-            .mark_owners(&hover_paint_keys, Dirty::PAINT);
-        refresh_requested || hover_visual_changed
+        refresh_requested |= self.end_hover(env);
+        refresh_requested
+    }
+
+    /// Ends every active hover — the pointer left the window — running exit
+    /// handlers and clearing hover state; returns whether anything changed.
+    fn end_hover(&mut self, env: &Environment) -> bool {
+        let at = self.frame_instant();
+        let hover = self.hit_test.sync_hover_targets(None, env, false, at);
+        self.hit_test.interaction.mark_hover_sync(&hover);
+        hover.handler_changed || hover.visual_changed
     }
 
     /// Handles a scroll event at `(x, y)` with deltas `(dx, dy)`; `is_line_delta` selects line vs pixel units.
@@ -4033,7 +4135,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     .hit_test
                     .touch_scroll_config
                     .expect(NO_TOUCH_SCROLL_CONFIG);
-                let slop = f64::from(config.touch_slop);
+                let slop = f64::from(config.touch_slop());
                 if dominant.abs() <= slop {
                     self.hit_test.touch_scroll = TouchScrollGesture::Pending(pending);
                     return false;
@@ -4047,7 +4149,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         pending.origin,
                         displacement_x,
                         displacement_y,
-                        config.physics.overscroll,
+                        config.physics().overscroll(),
                     )
                 };
                 // A caught motion is taken over only by a drag of its own
@@ -4078,7 +4180,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     kurbo::Point::new(pending.origin.x, pending.origin.y + slop.copysign(dominant))
                 };
                 let claim = handle.begin_gesture();
-                let stretch = match config.physics.overscroll {
+                let stretch = match config.physics().overscroll() {
                     Overscroll::Stretch(stretch) => Some(
                         taken_over
                             .and_then(ScrollMotion::into_stretch)
@@ -4092,7 +4194,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     owner: owner.clone(),
                     last: point,
                     tracker: pending.tracker,
-                    overscroll: config.physics.overscroll,
+                    overscroll: config.physics().overscroll(),
                     stretch,
                 });
                 let changed = drag.scroll_by(anchor.x - point.x, anchor.y - point.y, at);

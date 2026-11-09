@@ -32,14 +32,7 @@ pub struct ProgressRenderState<E: crate::text::TextEngine> {
 
 impl<E: crate::text::TextEngine> ProgressRenderState<E> {
     pub(crate) fn from_config(config: ProgressConfig) -> Self {
-        let ProgressConfig {
-            label,
-            value_label,
-            value,
-            style,
-            four_color,
-            ..
-        } = config;
+        let (label, value_label, value, style, four_color) = config.into_parts();
         Self {
             label: RetainedSubview::new(label),
             value_label: RetainedSubview::new(value_label),
@@ -134,7 +127,7 @@ pub fn measure_progress_node<E: crate::text::TextEngine>(
                 waterui_text::font::Font::default()
                     .resolve(env)
                     .snapshot()
-                    .size,
+                    .size(),
             )
             .max(metrics.label_height);
             let value_label_height = if state.measure_signal(&render_state.value).is_finite() {

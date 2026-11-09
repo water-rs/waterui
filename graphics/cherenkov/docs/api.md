@@ -630,6 +630,7 @@ tx[&web_layer].content(web.at(Size::new(width, height)));
 ```
 
 - **The engine does YUV conversion and tone mapping** for external frames when it composites them itself.
+- **A frame tells its producer when the engine is done with its planes.** `frame.on_release(|| pool.recycle(slot))` installs a `FnOnce() + Send` hook that runs exactly once, at the point the engine will never read the planes again. A `Yuv` or `Rgb` frame keeps the hook in its public `release: Option<FrameRelease>` field, shared by every clone; it runs when the last clone drops — the render thread replacing or detaching the frame or tearing its surface or engine down, or the producer dropping a frame it never published — and every engine read of the planes has been submitted on the shared queue by then, so producer work submitted on the same queue afterwards (a copy into the slot, say) is ordered after those reads. A `Native` frame's hook travels with its Vulkan generation's release and runs once the release submission has completed and its objects are destroyed, not when the frame value drops. A second `on_release` on one frame panics. A system compositor plane that showed the frame on Apple platforms keeps its own reference to the buffer past the release.
 - **Custom GPU content composites like any other layer:** it can be clipped, filtered, animated and used as a backdrop source.
 - **Hosted system layers never composite:** the engine places the host's own view (macOS) or layer on a plane, so a filter, a backdrop or a blend that would need its pixels is an error (`RenderError::Unplaceable`), not a fallback.
 - **The map records `Content`, not `GpuContent`.** Each tile is a frozen `Picture` and the camera is the layer transform, so pinch-zoom and fling run in the engine. Tessellation is refreshed at the new zoom level once the gesture settles.
@@ -643,8 +644,10 @@ no copy, no conversion texture.
 ```rust
 // Metal (apple): an MTLTexture — typically IOSurface- or CVPixelBuffer-
 // backed — wraps through wgpu-hal; the caller keeps ownership and lifetime.
+// `usage` declares what wgpu may do with it: TEXTURE_BINDING always, plus
+// COPY_DST for a pool texture the producer copies into.
 let plane = unsafe {
-    interop::metal::import_texture(&device, mtl_texture, format)
+    interop::metal::import_texture(&device, mtl_texture, format, TextureUsages::TEXTURE_BINDING)
 };
 
 // WebGPU (wasm32): a foreign GPUTexture wraps through
@@ -659,9 +662,11 @@ let plane = interop::web::import_texture(&device, &queue, interop::web::WebTextu
 
 - **`interop::metal::import_texture` is `unsafe`.** The `MTLTexture` must be
   live on the same `MTLDevice` the engine wraps (or its peer group), `format`
-  must be byte-compatible with its pixel format, and the texture must stay
-  alive and unwritten — except by the producer — for as long as a frame
-  referencing it can be in flight.
+  must be byte-compatible with its pixel format, its own `MTLTextureUsage`
+  must allow every use `usage` declares, and the texture must stay alive and
+  unwritten — except by the producer — for as long as a frame referencing it
+  can be in flight. A `usage` without `TEXTURE_BINDING` panics: the engine
+  samples every plane.
 - **`interop::web::import_texture` validates the provider contract** by
   reflection — an actual `GPUTexture` (a `GPUExternalTexture` is
   `InvalidWebTexture::NotATexture`), the owning-device token

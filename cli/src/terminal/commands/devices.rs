@@ -227,23 +227,22 @@ fn display_ios_devices(shell: &Shell, physical: &[ApplePhysicalDevice], devs: &[
         for device in physical {
             let reachable = device.usability().is_ok();
             let state_icon = if reachable { "●" } else { "○" };
-            let transport = match device.transport {
+            let transport = match device.transport() {
                 waterui_cli::apple::physical::Transport::Wired => "USB",
                 waterui_cli::apple::physical::Transport::LocalNetwork => "Wi-Fi",
                 waterui_cli::apple::physical::Transport::Other => "?",
             };
             let os = device
-                .os_version
-                .as_ref()
+                .os_version()
                 .map_or_else(String::new, |v| format!(" — iOS {v}"));
             line!(
                 shell,
                 "  {} {} [{}]{} ({})",
                 state_icon,
-                device.name,
+                device.name(),
                 transport,
                 os,
-                device.identifier
+                device.identifier()
             );
         }
     }
@@ -253,8 +252,12 @@ fn display_ios_devices(shell: &Shell, physical: &[ApplePhysicalDevice], devs: &[
     }
 
     for sim in devs {
-        let state_icon = if sim.state == "Booted" { "●" } else { "○" };
-        line!(shell, "  {} {} ({})", state_icon, sim.name, sim.udid);
+        let state_icon = if sim.state() == "Booted" {
+            "●"
+        } else {
+            "○"
+        };
+        line!(shell, "  {} {} ({})", state_icon, sim.name(), sim.udid());
     }
 
     if devs.is_empty() && physical.is_empty() {
@@ -355,17 +358,17 @@ fn json_ios_devices(
     physical
         .iter()
         .map(|device| JsonIosDevice {
-            name: device.name.clone(),
-            udid: device.udid.clone(),
-            state: format!("{:?}", device.tunnel_state),
+            name: device.name().to_owned(),
+            udid: device.udid().to_owned(),
+            state: format!("{:?}", device.tunnel_state()),
             available: device.usability().is_ok(),
             kind: "device",
         })
         .chain(devices.iter().map(|sim| JsonIosDevice {
-            name: sim.name.clone(),
-            udid: sim.udid.clone(),
-            state: sim.state.clone(),
-            available: sim.is_available,
+            name: sim.name().to_owned(),
+            udid: sim.udid().to_owned(),
+            state: sim.state().to_owned(),
+            available: sim.is_available(),
             kind: "simulator",
         }))
         .collect()

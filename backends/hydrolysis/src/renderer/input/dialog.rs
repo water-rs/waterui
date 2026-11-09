@@ -234,10 +234,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.register_hit_test_occluder(window);
         content.place_detached(
             self,
-            RenderContext {
-                local: transform,
-                bounds: window,
-            },
+            RenderContext::new(transform, window),
             &front.env,
             proposal,
             window,

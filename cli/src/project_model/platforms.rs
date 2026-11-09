@@ -48,10 +48,22 @@ impl PlatformName {
 /// Backend selection for a single platform.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct PlatformConfig {
     /// Backend this project requires for the platform.
-    pub backend: TargetBackend,
+    backend: TargetBackend,
+}
+impl PlatformConfig {
+    /// A `PlatformConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(backend: TargetBackend) -> Self {
+        Self { backend }
+    }
+
+    /// Backend this project requires for the platform.
+    #[must_use]
+    pub const fn backend(&self) -> &TargetBackend {
+        &self.backend
+    }
 }
 
 pub(super) fn deserialize<'de, D>(
@@ -91,7 +103,7 @@ pub fn resolve_backend(
     explicit: Option<TargetBackend>,
 ) -> Result<TargetBackend> {
     let declared = project
-        .platforms
+        .platforms()
         .iter()
         .find(|(name, _)| name.target() == platform)
         .map(|(_, config)| config.backend);
@@ -198,9 +210,9 @@ mod tests {
     #[test]
     fn absent_declarations_stay_absent_when_serialized() {
         let project = manifest("");
-        assert!(project.platforms.is_empty());
+        assert!(project.platforms().is_empty());
         assert!(
-            !toml::to_string(&Manifest::new(project.package))
+            !toml::to_string(&Manifest::new(project.into_package()))
                 .unwrap()
                 .contains("platforms")
         );

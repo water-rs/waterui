@@ -25,11 +25,11 @@ use crate::render::filter::FilterKey;
 use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRaster, glyph_key};
 use crate::render::gpu_cov::CoverageLimit;
 use crate::render::instance::{
-    ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
-    FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
-    KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
-    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE, PAINT_RADIAL, PAINT_SOLID,
-    PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
+    BLEND_CODE_SHIFT, ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC,
+    FLAG_HAS_CLIP, FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION,
+    Globals, Instance, KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN,
+    KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE,
+    PAINT_RADIAL, PAINT_SOLID, PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -698,7 +698,10 @@ impl ContentData {
     }
 
     pub fn replace(&mut self, list: cherenkov::Picture) -> cherenkov::Picture {
-        let previous = self.retained.replace(list);
+        let (previous, changed) = self.retained.replace(list);
+        if !changed {
+            return previous;
+        }
         self.range = None;
         self.pictures = None;
         self.storage.instances.clear();
@@ -999,6 +1002,33 @@ struct GeometryEntry {
     used: u64,
 }
 
+/// One joined batch, kept as a symbol so Callgrind can include worker work.
+#[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+#[inline(never)]
+fn prepare_geometry_batch(
+    jobs: FxHashMap<GeometryKey, (NonZeroU64, OutlineRef<'_>, Affine, f64)>,
+    surface: (f64, f64),
+) -> Vec<(NonZeroU64, GeometryEntry)> {
+    use rayon::prelude::*;
+    jobs.into_par_iter()
+        .map(|(key, (digest, outline, raster, tolerance))| {
+            let mut geometry = RetainedGeometry::new(outline.build(tolerance), raster, key.rule);
+            let [.., x, y] = raster.as_coeffs();
+            if path::grid(geometry.placed(Vec2::new(x, y)).1, surface).is_some() {
+                geometry.state.resolve();
+            }
+            (
+                digest,
+                GeometryEntry {
+                    key,
+                    geometry,
+                    used: 0,
+                },
+            )
+        })
+        .collect()
+}
+
 /// A content's retained CPU-route path geometry
 /// (water-rs/waterui#3306), keyed by [`GeometryKey::digest`]: a
 /// re-recorded or re-placed path reuses its flattened,
@@ -1031,15 +1061,15 @@ impl GeometryCache {
         &mut self,
         digest: NonZeroU64,
         key: GeometryKey,
-        build: impl FnOnce() -> RetainedGeometry,
-    ) -> &mut RetainedGeometry {
+        build: impl FnOnce() -> Option<RetainedGeometry>,
+    ) -> Option<&mut RetainedGeometry> {
         let entry = match self.entries.entry(digest) {
             std::collections::hash_map::Entry::Occupied(slot) => {
                 let entry = slot.into_mut();
                 if entry.key != key {
                     *entry = GeometryEntry {
                         key,
-                        geometry: build(),
+                        geometry: build()?,
                         used: 0,
                     };
                 }
@@ -1047,11 +1077,11 @@ impl GeometryCache {
             }
             std::collections::hash_map::Entry::Vacant(slot) => slot.insert(GeometryEntry {
                 key,
-                geometry: build(),
+                geometry: build()?,
                 used: 0,
             }),
         };
-        &mut entry.geometry
+        Some(&mut entry.geometry)
     }
 
     /// Reconcile liveness after a successful walk that flagged or
@@ -1096,15 +1126,8 @@ impl EmissionStorage {
         self.picture_domains.retain(|index, entry| {
             matches!(ops.get(*index), Some(Op::BeginPicture { picture, .. }) if entry.matches_source(picture))
         });
-        self.gpu_paths.retain(|index, _| {
-            matches!(
-                ops.get(*index),
-                Some(Op::Path {
-                    gpu_candidate: true,
-                    ..
-                })
-            )
-        });
+        self.gpu_paths
+            .retain(|index, _| matches!(ops.get(*index), Some(Op::Path { .. })));
     }
 
     /// Reclaim obsolete ranges after patches without rebuilding valid leaves.
@@ -1757,12 +1780,18 @@ struct Isolation {
 }
 
 impl Isolation {
-    /// Whether the scope composites identically to drawing its items
-    /// under the intersected coverage — opacity 1, `Normal` blend,
-    /// linear storage, no filter: the scopes `run_clipped` opens, whose
-    /// segments a part boundary may split across engine parts.
-    fn clip_only(&self) -> bool {
-        self.filter.is_none()
+    /// Whether a part boundary may split the scope's segments across
+    /// engine parts: opacity 1, `Normal` blend, linear storage, and either
+    /// no filter — the scopes `run_clipped` opens, which composite
+    /// identically to drawing their items under the intersected coverage —
+    /// or a pure coordinate remap, which commutes with the source-over of
+    /// the segments: the filtered whole is the filtered segments composed
+    /// in paint order, up to edge filtering. Each segment's scope filters
+    /// in the same device space (the filter's parameters are device-space
+    /// and the scratch covers the surface).
+    fn splittable(&self) -> bool {
+        self.filter
+            .is_none_or(cherenkov::FilterId::is_coordinate_remap)
             && self.opacity >= 1.0
             && self.blend == cherenkov::BlendMode::Normal
             && self.storage == cherenkov::BlendSpace::Linear
@@ -1784,6 +1813,10 @@ pub struct Lowering<'a> {
     pub pictures: Option<PictureInputs<'a>>,
     pub picture_realize: Vec<super::projective::Realize>,
     pub picture_composed: Vec<LocalKey>,
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    pub(super) preparation: Option<&'a rayon::ThreadPool>,
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    geometry_miss: bool,
     frame: &'a mut Frame,
     anchor_scratch: &'a mut AnchorScratch,
     /// Path emission buffers, owned by the surface so their capacity
@@ -1929,6 +1962,10 @@ impl<'a> Lowering<'a> {
             frame,
             anchor_scratch,
             raster_scratch,
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            preparation: None,
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            geometry_miss: false,
             width: size.0 as f32,
             height: size.1 as f32,
             transform: Affine::IDENTITY,
@@ -2601,15 +2638,17 @@ impl<'a> Lowering<'a> {
     /// Ends the current engine part at a promoted layer's paint position and
     /// starts the next one, transparent, for everything painted above it.
     ///
-    /// A part boundary inside clip-only isolations splits each enclosing
+    /// A part boundary inside splittable isolations splits each enclosing
     /// scope: its already-drawn segment composites into the current part,
     /// and the scope reopens over the new part with a fresh scratch pass,
     /// so its tail composites the second segment there. A clip-only
     /// composite is identical to drawing each item under the intersected
-    /// coverage, so the split is exact.
+    /// coverage, so that split is exact; a coordinate-remap filter scope
+    /// filters each segment in the same device space, which composes to the
+    /// filtered whole up to edge filtering ([`Isolation::splittable`]).
     ///
     /// # Panics
-    /// When lowering is inside an isolation that is not clip-only or a
+    /// When lowering is inside an isolation that is not splittable or a
     /// projective local image: eligibility keeps every promoted layer at
     /// the surface level, so this is an engine defect.
     fn next_part(&mut self) {
@@ -2622,7 +2661,7 @@ impl<'a> Lowering<'a> {
             let innermost = self
                 .isolations
                 .last()
-                .filter(|entry| entry.scratch == self.depth - 1 && entry.clip_only());
+                .filter(|entry| entry.scratch == self.depth - 1 && entry.splittable());
             assert!(
                 innermost.is_some(),
                 "a promoted layer must composite at the surface level"
@@ -3742,7 +3781,7 @@ impl<'a> Lowering<'a> {
         }
         let code = blend_code(blend);
         if code != 0 || cross {
-            inst.meta[3] |= code << 16;
+            inst.meta[3] |= code << BLEND_CODE_SHIFT;
             self.set_pipeline(PipelineKind::Replace);
         }
         self.set_source(Some(source));
@@ -4359,7 +4398,7 @@ impl<'a> Lowering<'a> {
         inst.grad[1] = y0 as f32;
         inst.meta[2] = self.frame.stops.len() as u32;
         self.frame.stops.extend(placement.record());
-        inst.meta[3] |= code << 16;
+        inst.meta[3] |= code << BLEND_CODE_SHIFT;
         self.set_pipeline(PipelineKind::Projective { replace: code != 0 });
         self.set_source(Some(Source::Projected(placement.key)));
         self.push_instance(&inst);
@@ -4608,6 +4647,99 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
+    /// Prepare independent CPU-route geometry before ordered leaf emission.
+    /// The pool owns only geometry work; atlas updates and painting stay here.
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    fn prepare_paths(
+        &self,
+        source: &cherenkov::DisplayList,
+        ops: &[Op],
+        emissions: &[Realization<Emission>],
+        storage: &mut EmissionStorage,
+        glyphs: &GlyphContext<'_>,
+    ) {
+        let Some(pool) = self.preparation else {
+            return;
+        };
+        if self.coverage_route == path::CoverageRoute::Gpu {
+            return;
+        }
+        let mut jobs = FxHashMap::default();
+        for (op, emission) in ops.iter().zip(emissions) {
+            if matches!(
+                op,
+                Op::BeginClip { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. } | Op::End
+            ) {
+                break;
+            }
+            let Op::Path {
+                local,
+                rule,
+                outline,
+                paint,
+                complexity,
+                ..
+            } = op
+            else {
+                continue;
+            };
+            if emission.valid
+                && emission
+                    .data
+                    .as_ref()
+                    .is_some_and(|e| e.transform == self.transform)
+                || matches!(paint, ResolvedPaint::Shader(_))
+            {
+                continue;
+            }
+            let raster = self.transform * *local;
+            let outline = outline.get(source);
+            if self.compute.is_some()
+                && self.coverage_route == path::CoverageRoute::Automatic
+                && outline.gpu_candidate(*complexity, raster)
+            {
+                continue;
+            }
+            let tolerance = path::FLATTEN / raster.spectral_norm().max(1e-12);
+            let content = outline.content(tolerance);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "surface extents fit u32"
+            )]
+            let placement =
+                path::placement(content, raster, (self.width as u32, self.height as u32));
+            if glyphs.atlas.path(placement.key).is_some()
+                || glyphs.atlas.path(placement.key_exact()).is_some()
+                || self.pending_paths.contains_key(&placement.key)
+                || self.pending_paths.contains_key(&placement.key_exact())
+            {
+                continue;
+            }
+            let key = GeometryKey::new(content, *rule, placement.raster);
+            let digest = key.digest();
+            if storage
+                .geometry
+                .entries
+                .get(&digest)
+                .is_some_and(|entry| entry.key == key)
+                || !self.path_visible(outline.bounds(), raster)
+            {
+                continue;
+            }
+            jobs.entry(key)
+                .or_insert((digest, outline, placement.raster, tolerance));
+        }
+        // One path has no independent peer: its existing lazy builder avoids
+        // dispatch and temporary result storage.
+        if jobs.len() < 2 {
+            return;
+        }
+        let surface = (f64::from(self.width), f64::from(self.height));
+        let prepared = pool.install(|| prepare_geometry_batch(jobs, surface));
+        storage.geometry.entries.extend(prepared);
+    }
+
     /// Consecutive leaves share provenance; their operation indices follow
     /// from the run's first index instead of being copied into every record.
     fn command_run(
@@ -4619,11 +4751,19 @@ impl<'a> Lowering<'a> {
         (layer, range): (LayerId, Range<usize>),
         glyphs: &GlyphContext<'_>,
     ) -> Result<(usize, bool), RenderError> {
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        let mut prepared = false;
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        {
+            self.geometry_miss = false;
+        }
         let first_command = self.frame.commands.len();
         let first_instance = self.frame.instances.len();
         let mut i = range.start;
         let mut changed = false;
-        for (op, cache) in ops[range.clone()].iter().zip(&mut emissions[range.clone()]) {
+        while i < range.end {
+            let op = &ops[i];
+            let cache = &mut emissions[i];
             if matches!(
                 op,
                 Op::BeginPicture { .. }
@@ -4636,6 +4776,17 @@ impl<'a> Lowering<'a> {
             }
             changed |= self.leaf((i, op), ops.get(i + 1), cache, storage, glyphs, source)?;
             i += 1;
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            if !prepared && self.geometry_miss {
+                self.prepare_paths(
+                    source,
+                    &ops[i..range.end],
+                    &emissions[i..range.end],
+                    storage,
+                    glyphs,
+                );
+                prepared = true;
+            }
         }
         self.frame
             .command_sources
@@ -4709,17 +4860,17 @@ impl<'a> Lowering<'a> {
             (replaced, emission.revision)
         } else {
             // An unchanged retained emission has already passed visibility testing.
-            if let Op::Glyphs { local, bounds, .. } = op {
-                // Coverage cells carry a one-pixel apron and integer rounding can
-                // extend another pixel beyond the outline. Cull against this
-                // target, including the enlarged target of a silhouette capture.
-                let placed = (self.transform * *local).transform_rect_bbox(*bounds);
+            let visibility = match op {
+                Op::Glyphs { local, bounds, .. } => Some((*local, *bounds)),
+                _ => None,
+            };
+            if let Some((local, bounds)) = visibility {
+                // Include the atlas apron and integer rounding. The active
+                // target includes filter/silhouette capture expansion.
+                let placed = (self.transform * local).transform_rect_bbox(bounds);
                 let visible = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
                 if placed.inflate(2.0, 2.0).intersect(visible).is_zero_area() {
-                    // Offscreen emissions must not pin their old atlas shelves.
-                    // The existing storage compaction reclaims their ranges.
                     *cache = Realization::default();
-                    // Keep operation indices stable within this command run.
                     self.frame.commands.push(super::damage::Command {
                         instances_end: self.frame.instances.len(),
                         revision: self.frame.revision,
@@ -4742,6 +4893,18 @@ impl<'a> Lowering<'a> {
             revision,
         });
         Ok(changed)
+    }
+
+    fn path_visible(&self, bounds: Rect, raster: Affine) -> bool {
+        let placed = raster.transform_rect_bbox(bounds).inflate(2.0, 2.0);
+        !placed
+            .intersect(Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.width),
+                f64::from(self.height),
+            ))
+            .is_zero_area()
     }
 
     /// The automatic route's predicate (decisions R1 and R2): a path
@@ -4775,6 +4938,7 @@ impl<'a> Lowering<'a> {
             rule,
             outline,
             paint,
+            complexity,
             ..
         } = op
         else {
@@ -4782,20 +4946,21 @@ impl<'a> Lowering<'a> {
         };
         let outline = outline.get(source);
         let raster = self.transform * *local;
+        if !outline.gpu_candidate(*complexity, raster) {
+            return Ok(false);
+        }
         let tolerance = path::FLATTEN / raster.spectral_norm().max(1e-12);
         let content = outline.content(tolerance);
-        let coefficients = raster.as_coeffs();
-        let linear = [
-            coefficients[0],
-            coefficients[1],
-            coefficients[2],
-            coefficients[3],
-        ];
+        let [a, b, c, d, tx, ty] = raster.as_coeffs();
+        let linear = [a, b, c, d];
         let linear_bits = linear.map(f64::to_bits);
         if cached
             .get(&index)
             .is_none_or(|entry| entry.content != content || entry.linear != linear_bits)
         {
+            if !self.path_visible(outline.bounds(), raster) {
+                return Ok(true);
+            }
             let surface = (f64::from(self.width), f64::from(self.height));
             let linear_affine = Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]);
             let prepared = match outline {
@@ -4827,14 +4992,14 @@ impl<'a> Lowering<'a> {
             };
             cached.insert(index, prepared);
         }
-        let prepared = cached
-            .get(&index)
-            .expect("prepared GPU geometry")
-            .path
-            .placed(
-                Vec2::new(coefficients[4], coefficients[5]),
-                (f64::from(self.width), f64::from(self.height)),
-            );
+        let geometry = &cached.get(&index).expect("prepared GPU geometry").path;
+        if geometry.bound.segments < path::GPU_ROUTE_MIN_ELEMENTS {
+            return Ok(false);
+        }
+        let prepared = geometry.placed(
+            Vec2::new(tx, ty),
+            (f64::from(self.width), f64::from(self.height)),
+        );
         if prepared.bound.empty {
             return Ok(true);
         }
@@ -4929,13 +5094,7 @@ impl<'a> Lowering<'a> {
         // retains like any other leaf's instances (#3081).
         let emitted_gpu = self.compute.is_some()
             && self.coverage_route == path::CoverageRoute::Automatic
-            && matches!(
-                op,
-                Op::Path {
-                    gpu_candidate: true,
-                    ..
-                }
-            )
+            && matches!(op, Op::Path { .. })
             && self.automatic_gpu_leaf(op, source, &mut storage.gpu_paths, index)?;
         let realized = if emitted_gpu {
             Ok(None)
@@ -5300,7 +5459,10 @@ impl<'a> Lowering<'a> {
                     OutlineRef::Fill { elements, content } => self.path(
                         content,
                         *rule,
-                        || BezPath::from_vec(elements.to_vec()),
+                        (
+                            || BezPath::from_vec(elements.to_vec()),
+                            || OutlineRef::Fill { elements, content }.bounds(),
+                        ),
                         paint,
                         glyphs,
                         geometry,
@@ -5318,7 +5480,7 @@ impl<'a> Lowering<'a> {
                         self.path(
                             outline.content(tolerance),
                             *rule,
-                            || outline.build(tolerance),
+                            (|| outline.build(tolerance), || outline.bounds()),
                             paint,
                             glyphs,
                             geometry,
@@ -5695,7 +5857,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         content: u64,
         rule: FillRule,
-        make: impl FnOnce() -> BezPath,
+        (make, bounds): (impl FnOnce() -> BezPath, impl FnOnce() -> Rect),
         paint: &ResolvedPaint,
         glyphs: &GlyphContext<'_>,
         geometry: &mut GeometryCache,
@@ -5736,9 +5898,8 @@ impl<'a> Lowering<'a> {
         if let Some(emit) = hit {
             // A hit needs no `GeometryKey`: the stored digest the
             // miss recorded marks ownership the same way.
-            let geometry = emit.geometry;
             self.replay(emit, None, pl.offset, paint, shader_data.as_ref());
-            return Ok(geometry);
+            return Ok(emit.geometry);
         }
         if let Some(&pending) = self
             .pending_paths
@@ -5757,9 +5918,19 @@ impl<'a> Lowering<'a> {
             let key = GeometryKey::new(content, rule, pl.raster);
             let digest = key.digest();
             let entry = geometry.entry(digest, key, || {
+                if !self.path_visible(bounds(), self.transform) {
+                    return None;
+                }
+                #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+                {
+                    self.geometry_miss = true;
+                }
                 let local = shader_path.unwrap_or_else(|| make.take().expect("path factory")());
-                RetainedGeometry::new(local, pl.raster, rule)
+                Some(RetainedGeometry::new(local, pl.raster, rule))
             });
+            let Some(entry) = entry else {
+                return Ok(None);
+            };
             let (to_device, device_bbox) = entry.placed(Vec2::new(e, f));
             let Some(grid @ (x0, y0, ..)) =
                 path::grid(device_bbox, (f64::from(self.width), f64::from(self.height)))
@@ -7000,6 +7171,12 @@ mod tests {
         caches
             .get_mut(&root)
             .expect("root content")
+            .replace(picture(10.0));
+        assert!(!caches[&root].retained.realizations().is_empty());
+        assert_eq!(draw(&mut caches), 0, "equivalent replacement stays clean");
+        caches
+            .get_mut(&root)
+            .expect("root content")
             .replace(picture(70.0));
         assert!(caches[&root].retained.realizations().is_empty());
         let moved = draw(&mut caches);
@@ -7126,6 +7303,7 @@ mod tests {
             Stroke,
             Dashed,
             ShaderStroke,
+            RoundedStroke,
         }
 
         let (device, _queue) = device_and_queue().expect("coverage test device");
@@ -7157,6 +7335,7 @@ mod tests {
             (true, Kind::Dashed, false, false),
             (false, Kind::Dashed, true, false),
             (true, Kind::ShaderStroke, true, true),
+            (true, Kind::RoundedStroke, true, true),
         ] {
             let op = match kind {
                 Kind::Fill => {
@@ -7175,7 +7354,7 @@ mod tests {
                     Op::Path {
                         local: Affine::IDENTITY,
                         rule: FillRule::NonZero,
-                        gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
+                        complexity: path::Complexity::of(&elements),
                         outline: super::super::prepared::Outline::Fill {
                             content: path::hash_elements(&elements, FillRule::NonZero as u64),
                             elements: elements.into(),
@@ -7183,8 +7362,14 @@ mod tests {
                         paint: ResolvedPaint::Solid([1.0; 4]),
                     }
                 }
-                Kind::Stroke | Kind::Dashed | Kind::ShaderStroke => {
-                    let lines = if large { 2100 } else { 8 };
+                Kind::Stroke | Kind::Dashed | Kind::ShaderStroke | Kind::RoundedStroke => {
+                    let lines = if kind == Kind::RoundedStroke {
+                        400
+                    } else if large {
+                        2100
+                    } else {
+                        8
+                    };
                     let mut geometry = BezPath::new();
                     geometry.move_to((0.0, 0.0));
                     for index in 0..lines {
@@ -7192,21 +7377,27 @@ mod tests {
                         let y = f64::from(index % 2).mul_add(1.5, f64::from(index / 40) * 2.0);
                         geometry.line_to((x, y));
                     }
+                    if kind == Kind::RoundedStroke {
+                        geometry.apply_affine(Affine::translate((8.0, 8.0)) * Affine::scale(0.5));
+                    }
                     let shape = ShapeData::Path {
                         elements: geometry.into_iter().collect(),
                         rule: FillRule::NonZero,
                     };
-                    let mut stroke = kurbo::Stroke::new(1.0);
+                    let mut stroke = if kind == Kind::RoundedStroke {
+                        kurbo::Stroke::new(8.0)
+                            .with_join(kurbo::Join::Round)
+                            .with_caps(kurbo::Cap::Round)
+                    } else {
+                        kurbo::Stroke::new(1.0)
+                    };
                     if kind == Kind::Dashed {
                         stroke = stroke.with_dashes(0.5, [3.0, 2.0]);
                     }
-                    let ShapeData::Path { elements, .. } = &shape else {
-                        unreachable!("the stroked shape is a path")
-                    };
                     Op::Path {
                         local: Affine::IDENTITY,
                         rule: FillRule::NonZero,
-                        gpu_candidate: path::stroke_gpu_candidate(elements.len(), &stroke),
+                        complexity: path::Complexity::of_shape(&shape),
                         outline: super::super::prepared::Outline::Stroke { shape, stroke },
                         paint: if kind == Kind::ShaderStroke {
                             ResolvedPaint::Shader(Box::new(
@@ -7235,9 +7426,9 @@ mod tests {
             let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
             let mut previous_geometry = None;
             let mut previous_draw = std::ptr::null();
-            if has_compute && large {
-                // A culled GPU candidate must not outline/rasterize on the CPU,
-                // and its empty retained emission must not hide it after a move.
+            {
+                // Offscreen paths prepare neither CPU nor GPU geometry, and
+                // become visible normally when moved back into the target.
                 let mut frame = Frame::default();
                 let mut anchors = AnchorScratch::default();
                 let mut raster = path::EmitScratch::new();
@@ -7246,7 +7437,7 @@ mod tests {
                     (128, 128),
                     &mut anchors,
                     &mut raster,
-                    Some(test_limit()),
+                    has_compute.then(test_limit),
                 );
                 lowering.begin_pass(Target::Part(0), None);
                 lowering.transform = Affine::translate((1000.25, 1000.25));
@@ -7263,7 +7454,16 @@ mod tests {
                 assert_eq!(lowering.paths_rasterized(), 0);
                 assert!(lowering.pending.is_empty());
                 assert!(lowering.frame.instances.is_empty());
-                assert!(cache.data.as_ref().unwrap().geometry.is_none());
+                assert!(
+                    cache
+                        .data
+                        .as_ref()
+                        .expect("empty emission retained")
+                        .geometry
+                        .is_none()
+                );
+                assert!(retained.storage.geometry.entries.is_empty());
+                assert!(retained.storage.gpu_paths.is_empty());
             }
 
             let templates_before = retained.storage.templates.len();
@@ -7329,7 +7529,8 @@ mod tests {
                     );
                     // A compute stroke ships records and no outline; a
                     // fill, or a shader-painted stroke, ships elements.
-                    let compute_stroke = matches!(kind, Kind::Stroke | Kind::Dashed);
+                    let compute_stroke =
+                        matches!(kind, Kind::Stroke | Kind::Dashed | Kind::RoundedStroke);
                     assert_eq!(prepared.path.strokes.is_empty(), !compute_stroke);
                     assert_eq!(prepared.path.elements.is_empty(), compute_stroke);
                     assert_eq!(prepared.path.dash.is_some(), kind == Kind::Dashed);
@@ -8594,15 +8795,76 @@ mod tests {
         );
     }
 
-    /// A promoted layer under an isolation that is not clip-only still
-    /// fails the lowering: neither a translucent ancestor nor a blended
-    /// one can straddle a part boundary.
+    /// A promoted layer under a coordinate-remap filter splits the filter
+    /// scope at its part boundary: the content beneath it is filtered into
+    /// part 0, the content above it into part 1, each by its own scratch
+    /// pass carrying the same filter.
+    #[test]
+    fn a_promoted_layer_inside_a_remap_filter_splits_the_filtered_scope() {
+        use cherenkov::testing::LayerOp;
+        let [holder, below, video, overlay, above] = [1, 2, 3, 4, 5].map(LayerId::new);
+        let mut tree = tree_of(
+            &[holder, below, video, overlay, above],
+            &[
+                (None, holder),
+                (Some(holder), below),
+                (Some(holder), video),
+                (Some(holder), overlay),
+                (None, above),
+            ],
+        );
+        let filter = cherenkov::FilterId::new(7).with_coordinate_remap(true);
+        tree.apply(LayerOp::Filter(holder, Some(filter)));
+        let Some(frame) = lower_promoted(
+            &tree,
+            [
+                (below, square(0.0, 0.0)),
+                (overlay, square(8.0, 0.0)),
+                (above, square(16.0, 0.0)),
+            ],
+            video,
+        ) else {
+            return;
+        };
+        assert_eq!(
+            frame
+                .passes
+                .iter()
+                .map(|p| (p.target, p.clear, p.ranges.len()))
+                .collect::<Vec<_>>(),
+            [
+                (Target::Part(0), Some([0.0, 0.0, 0.0, 1.0]), 0),
+                (Target::Scratch(0), Some([0.0; 4]), 1),
+                (Target::Part(0), None, 1),
+                (Target::Part(1), Some([0.0; 4]), 0),
+                (Target::Scratch(0), Some([0.0; 4]), 1),
+                (Target::Part(1), None, 2),
+            ]
+        );
+        let filtered: Vec<(usize, FilterKey)> = frame
+            .passes
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.target == Target::Scratch(0))
+            .map(|(index, _)| (index, FilterKey::Layer(7)))
+            .collect();
+        assert_eq!(
+            frame.filters, filtered,
+            "every region's scratch runs the same filter"
+        );
+    }
+
+    /// A promoted layer under an isolation that is not splittable still
+    /// fails the lowering: neither a translucent ancestor, a blended one
+    /// nor a filter that is not a coordinate remap can straddle a part
+    /// boundary.
     #[test]
     fn a_promoted_layer_inside_a_non_clip_isolation_still_panics() {
         use cherenkov::Prop;
         use cherenkov::testing::LayerOp;
         let [holder, video, above] = [1, 2, 3].map(LayerId::new);
         for style in [
+            LayerOp::Filter(holder, Some(cherenkov::FilterId::new(7))),
             LayerOp::Opacity(
                 holder,
                 Prop {

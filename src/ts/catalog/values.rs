@@ -116,15 +116,47 @@ fn translate(env: &waterui_core::Environment, locale: &Locale, key: &Str) -> Tex
 #[non_exhaustive]
 pub struct ColorValue {
     /// Red, in linear light. Outside 0–1 for a wide-gamut colour.
-    pub red: f32,
+    red: f32,
     /// Green, in linear light.
-    pub green: f32,
+    green: f32,
     /// Blue, in linear light.
-    pub blue: f32,
+    blue: f32,
     /// The extended-range headroom; `1` for an ordinary colour.
-    pub headroom: Option<f32>,
+    headroom: Option<f32>,
     /// Alpha; `1` when the colour is opaque.
-    pub opacity: Option<f32>,
+    opacity: Option<f32>,
+}
+
+impl ColorValue {
+    /// Red, in linear light. Outside 0–1 for a wide-gamut colour.
+    #[must_use]
+    pub const fn red(&self) -> f32 {
+        self.red
+    }
+
+    /// Green, in linear light.
+    #[must_use]
+    pub const fn green(&self) -> f32 {
+        self.green
+    }
+
+    /// Blue, in linear light.
+    #[must_use]
+    pub const fn blue(&self) -> f32 {
+        self.blue
+    }
+
+    /// The extended-range headroom; `1` for an ordinary colour.
+    #[must_use]
+    pub const fn headroom(&self) -> Option<f32> {
+        self.headroom
+    }
+
+    /// Alpha; `1` when the colour is opaque.
+    #[must_use]
+    pub const fn opacity(&self) -> Option<f32> {
+        self.opacity
+    }
 }
 
 impl From<ColorValue> for WorkingColor {
@@ -178,7 +210,6 @@ pub fn color_of(value: &Computed<ColorValue>) -> Color {
 /// `gap` without the object being rebuilt — the same thing a Rust author
 /// composes by hand when one edge of a `Computed<EdgeInsets>` moves.
 #[derive(Debug, Clone, TsType)]
-#[non_exhaustive]
 pub struct EdgeValues {
     /// The top inset.
     pub top: Option<Computed<f32>>,
@@ -211,7 +242,7 @@ impl EdgeValues {
             .zip(&leading)
             .zip(&trailing)
             .map(|(((top, bottom), leading), trailing)| {
-                EdgeInsets::new(top, bottom, leading, trailing)
+                EdgeInsets::new(top, leading, bottom, trailing)
             })
             .computed()
     }
@@ -336,17 +367,50 @@ impl IntoJs for BackgroundValue {
 #[non_exhaustive]
 pub struct ShadowValue {
     /// The shadow's colour; black when it is left out, as `Shadow::splat` uses.
-    pub color: Option<ColorValue>,
+    color: Option<ColorValue>,
     /// The horizontal offset, in points.
-    pub x: Option<f32>,
+    x: Option<f32>,
     /// The vertical offset, in points.
-    pub y: Option<f32>,
+    y: Option<f32>,
     /// The blur radius, in points.
-    pub radius: f32,
+    radius: f32,
     /// The corner radius of the view casting the shadow, so the silhouette
     /// follows its shape.
     #[ts(rename = "cornerRadius")]
-    pub corner_radius: Option<f32>,
+    corner_radius: Option<f32>,
+}
+
+impl ShadowValue {
+    /// The shadow's colour; black when it is left out, as `Shadow::splat` uses.
+    #[must_use]
+    pub const fn color(&self) -> Option<ColorValue> {
+        self.color
+    }
+
+    /// The horizontal offset, in points.
+    #[must_use]
+    pub const fn x(&self) -> Option<f32> {
+        self.x
+    }
+
+    /// The vertical offset, in points.
+    #[must_use]
+    pub const fn y(&self) -> Option<f32> {
+        self.y
+    }
+
+    /// The blur radius, in points.
+    #[must_use]
+    pub const fn radius(&self) -> f32 {
+        self.radius
+    }
+
+    /// The corner radius of the view casting the shadow, so the silhouette
+    /// follows its shape.
+    #[must_use]
+    pub const fn corner_radius(&self) -> Option<f32> {
+        self.corner_radius
+    }
 }
 
 /// The border `border` draws, which is the Rust [`Border`] spelled as an
@@ -357,12 +421,32 @@ pub struct ShadowValue {
 #[non_exhaustive]
 pub struct BorderValue {
     /// The border's colour.
-    pub color: ColorValue,
+    color: ColorValue,
     /// The stroke width, in points.
-    pub width: f32,
+    width: f32,
     /// The corner radius, in points; square corners when left out.
     #[ts(rename = "cornerRadius")]
-    pub corner_radius: Option<f32>,
+    corner_radius: Option<f32>,
+}
+
+impl BorderValue {
+    /// The border's colour.
+    #[must_use]
+    pub const fn color(&self) -> ColorValue {
+        self.color
+    }
+
+    /// The stroke width, in points.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+
+    /// The corner radius, in points; square corners when left out.
+    #[must_use]
+    pub const fn corner_radius(&self) -> Option<f32> {
+        self.corner_radius
+    }
 }
 
 /// A shape named by a string, for the shapes that carry no parameter.
@@ -386,7 +470,16 @@ pub struct RoundedShape {
     /// The corner radius, as a fraction of the shorter side: `0.5` is fully
     /// rounded, which is what [`ShapeName::Capsule`] says directly.
     #[ts(rename = "cornerRadius")]
-    pub corner_radius: f32,
+    corner_radius: f32,
+}
+
+impl RoundedShape {
+    /// The corner radius, as a fraction of the shorter side: `0.5` is fully
+    /// rounded, which is what [`ShapeName::Capsule`] says directly.
+    #[must_use]
+    pub const fn corner_radius(&self) -> f32 {
+        self.corner_radius
+    }
 }
 
 /// What `clip` accepts: a named shape, or a rounded rectangle's radius.
@@ -454,10 +547,6 @@ impl IntoJs for ShapeValue {
 /// a `WaterUI` view could not fetch is a typed error naming it rather than a
 /// picture that silently never appears.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "newtype over the URL it crosses as"
-)]
 pub struct UrlValue(pub Url);
 
 impl TsType for UrlValue {
@@ -759,7 +848,28 @@ impl<Args> IntoJs for JsAction<Args> {
 pub struct PickerOption {
     /// The value written into the picker's `value` signal when this option is
     /// chosen.
-    pub value: Str,
+    value: Str,
     /// The option's label, localized like any other text.
-    pub label: TextContent,
+    label: TextContent,
+}
+
+impl PickerOption {
+    /// The value written into the picker's `value` signal when this option is
+    /// chosen.
+    #[must_use]
+    pub const fn value(&self) -> &Str {
+        &self.value
+    }
+
+    /// The option's label, localized like any other text.
+    #[must_use]
+    pub const fn label(&self) -> &TextContent {
+        &self.label
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Str, TextContent) {
+        (self.value, self.label)
+    }
 }

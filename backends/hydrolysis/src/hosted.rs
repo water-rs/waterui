@@ -121,6 +121,7 @@ impl NativeView for HostedView {
 
 pub struct HostedRuntime {
     pub content: Rc<dyn HostedContent>,
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub hosted: cherenkov::Hosted<cherenkov_gpu::Gpu>,
     pub focused: Computed<bool>,
     pub occlusion: HostedOcclusion,

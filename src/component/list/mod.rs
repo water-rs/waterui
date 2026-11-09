@@ -43,18 +43,10 @@ pub struct Move {
 
 /// Per-row delete payload injected into list delete handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "handler payload newtype destructured in handler parameters"
-)]
 pub struct ListDelete(pub usize);
 
 /// Per-row move payload injected into list move handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "handler payload newtype destructured in handler parameters"
-)]
 pub struct ListMove(pub Move);
 
 impl_extractor!(ListDelete);
@@ -166,24 +158,87 @@ impl<Id: 'static + Ord + Clone> ListSelection<Id> {
 #[non_exhaustive]
 pub struct ListConfig {
     /// Content items to be displayed in the list.
-    pub contents: SharedAnyViews<ListItem>,
+    contents: SharedAnyViews<ListItem>,
     /// The list's selection bindings, keyed by the same erased row ids
     /// `contents.get_id` returns. `ListSelection::None` when the list is not
     /// selectable.
-    pub selection: ListSelection<RawId>,
+    selection: ListSelection<RawId>,
     /// Read-only signal for edit mode state.
-    pub editing: Computed<bool>,
+    editing: Computed<bool>,
     /// Optional callback when any item is deleted.
-    pub on_delete: Option<OnDelete>,
+    on_delete: Option<OnDelete>,
     /// Optional callback when items are moved/reordered.
-    pub on_move: Option<OnMove>,
+    on_move: Option<OnMove>,
     /// Optional programmatic item-index scroll controller.
-    pub scroll_controller: Option<ScrollController<usize>>,
+    scroll_controller: Option<ScrollController<usize>>,
     /// Whether rows carry semantic section markers.
-    pub uses_sections: bool,
+    uses_sections: bool,
     /// The minimum height of a row, from [`ListMinRowHeight`] in the list's
     /// environment. `None` uses the theme's one-line row height.
-    pub min_row_height: Option<f32>,
+    min_row_height: Option<f32>,
+}
+
+impl ListConfig {
+    /// Content items to be displayed in the list.
+    #[must_use]
+    pub const fn contents(&self) -> &SharedAnyViews<ListItem> {
+        &self.contents
+    }
+
+    /// The list's selection bindings, keyed by the same erased row ids
+    /// `contents.get_id` returns. `ListSelection::None` when the list is not
+    /// selectable.
+    #[must_use]
+    pub const fn selection(&self) -> &ListSelection<RawId> {
+        &self.selection
+    }
+
+    /// Read-only signal for edit mode state.
+    #[must_use]
+    pub const fn editing(&self) -> &Computed<bool> {
+        &self.editing
+    }
+
+    /// Optional callback when any item is deleted.
+    #[must_use]
+    pub const fn on_delete(&self) -> Option<&OnDelete> {
+        self.on_delete.as_ref()
+    }
+
+    /// Takes the `on_delete` out of the value, leaving none behind.
+    pub const fn take_on_delete(&mut self) -> Option<OnDelete> {
+        self.on_delete.take()
+    }
+
+    /// Optional callback when items are moved/reordered.
+    #[must_use]
+    pub const fn on_move(&self) -> Option<&OnMove> {
+        self.on_move.as_ref()
+    }
+
+    /// Takes the `on_move` out of the value, leaving none behind.
+    pub const fn take_on_move(&mut self) -> Option<OnMove> {
+        self.on_move.take()
+    }
+
+    /// Optional programmatic item-index scroll controller.
+    #[must_use]
+    pub const fn scroll_controller(&self) -> Option<&ScrollController<usize>> {
+        self.scroll_controller.as_ref()
+    }
+
+    /// Whether rows carry semantic section markers.
+    #[must_use]
+    pub const fn uses_sections(&self) -> bool {
+        self.uses_sections
+    }
+
+    /// The minimum height of a row, from [`ListMinRowHeight`] in the list's
+    /// environment. `None` uses the theme's one-line row height.
+    #[must_use]
+    pub const fn min_row_height(&self) -> Option<f32> {
+        self.min_row_height
+    }
 }
 
 impl_debug!(ListConfig);
@@ -194,10 +249,6 @@ impl_debug!(ListConfig);
 /// against. `0.0` sizes each row to its content plus its insets. Set it with
 /// [`ViewExt::list_min_row_height`](crate::ViewExt::list_min_row_height).
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment newtype over the minimum row height"
-)]
 pub struct ListMinRowHeight(pub f32);
 
 /// Marks the subtree below it as a navigation container's sidebar column.
@@ -208,10 +259,6 @@ pub struct ListMinRowHeight(pub f32);
 /// accent fill, and a selected row keeping its own colors rather than
 /// re-theming onto `SelectionForeground`.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment marker used by presence"
-)]
 #[doc(hidden)]
 pub struct SidebarContent;
 
@@ -886,9 +933,39 @@ where
 #[non_exhaustive]
 pub struct ListSection {
     /// Title shown above the section.
-    pub label: Option<Text>,
+    label: Option<Text>,
     /// Footer text shown below the section.
-    pub footer: Option<Text>,
+    footer: Option<Text>,
+}
+
+impl ListSection {
+    /// Title shown above the section.
+    #[must_use]
+    pub const fn label(&self) -> Option<&Text> {
+        self.label.as_ref()
+    }
+
+    /// Footer text shown below the section.
+    #[must_use]
+    pub const fn get_footer(&self) -> Option<&Text> {
+        self.footer.as_ref()
+    }
+
+    /// Sets the title shown above the section.
+    pub fn set_label(&mut self, label: Option<Text>) {
+        self.label = label;
+    }
+
+    /// Sets the footer text shown below the section.
+    pub fn set_footer(&mut self, footer: Option<Text>) {
+        self.footer = footer;
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Option<Text>, Option<Text>) {
+        (self.label, self.footer)
+    }
 }
 
 impl ListSection {
@@ -943,16 +1020,78 @@ impl ListSection {
 #[non_exhaustive]
 pub struct ListItem {
     /// The view content to display for this item.
-    pub content: AnyView,
+    content: AnyView,
     /// Read-only signal indicating whether this item can be deleted.
-    pub deletable: Computed<bool>,
+    deletable: Computed<bool>,
     /// When `Some`, this item starts a new logical section. The backend uses
     /// this marker to group subsequent items into native chrome (iOS inset
     /// grouped sections, macOS group rows, Material section headers).
-    pub section: Option<ListSection>,
+    section: Option<ListSection>,
     /// The insets between the row's edges and its content. `None` uses the
     /// theme's row insets.
-    pub insets: Option<EdgeInsets>,
+    insets: Option<EdgeInsets>,
+}
+
+impl ListItem {
+    /// The view content to display for this item.
+    #[must_use]
+    pub const fn content(&self) -> &AnyView {
+        &self.content
+    }
+
+    /// Takes the `content` out of the value.
+    pub fn into_content(self) -> AnyView {
+        self.content
+    }
+
+    /// Takes the `content` out of the item, leaving an empty view behind.
+    pub fn take_content(&mut self) -> AnyView {
+        core::mem::take(&mut self.content)
+    }
+
+    /// Sets the `content`.
+    pub fn set_content(&mut self, content: AnyView) {
+        self.content = content;
+    }
+
+    /// Read-only signal indicating whether this item can be deleted.
+    #[must_use]
+    pub const fn get_deletable(&self) -> &Computed<bool> {
+        &self.deletable
+    }
+
+    /// When `Some`, this item starts a new logical section. The backend uses
+    /// this marker to group subsequent items into native chrome (iOS inset
+    /// grouped sections, macOS group rows, Material section headers).
+    #[must_use]
+    pub const fn get_section(&self) -> Option<&ListSection> {
+        self.section.as_ref()
+    }
+
+    /// Takes the `section` out of the value.
+    #[must_use]
+    pub fn into_section(self) -> Option<ListSection> {
+        self.section
+    }
+
+    /// The insets between the row's edges and its content. `None` uses the
+    /// theme's row insets.
+    #[must_use]
+    pub const fn get_insets(&self) -> Option<&EdgeInsets> {
+        self.insets.as_ref()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(
+        self,
+    ) -> (
+        AnyView,
+        Computed<bool>,
+        Option<ListSection>,
+        Option<EdgeInsets>,
+    ) {
+        (self.content, self.deletable, self.section, self.insets)
+    }
 }
 
 impl NativeView for ListItem {}

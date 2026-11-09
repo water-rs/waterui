@@ -13,6 +13,7 @@ use target_lexicon::Triple;
 use tracing::info;
 
 use super::facts::{Fact, Facts, Scope};
+use crate::apple_targets::{AppleConfig, AppleDeploymentTargets};
 use crate::build::{BuildProgress, RustLinkage};
 use crate::framework::{
     CheckoutMember, FrameworkChannel, ResolvedFramework, local_checkout_members,
@@ -239,7 +240,14 @@ impl Project {
             .into_iter()
             .map(|(file, contents)| (file, Some(contents)))
             .collect();
-        apply_channel_selection(host, &path, framework, updates).await?;
+        apply_channel_selection(
+            host,
+            &path,
+            framework,
+            previous.apple().deployment_targets(),
+            updates,
+        )
+        .await?;
         Self::open_for_preview_build(host, path)
             .await
             .map_err(Into::into)
@@ -416,10 +424,19 @@ impl Project {
     /// variants invalidating each other whenever a developer alternates `water run`
     /// and `water package`.
     ///
+    /// Explicit Cargo target-directory environment overrides use Cargo's resolved
+    /// directory directly for compilation and artifact lookup. Without an override,
+    /// each linkage retains its managed shared cache.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the shared build-cache directory cannot be resolved.
+    /// Returns an error when Cargo metadata or the shared cache cannot be resolved.
     pub async fn water_target_dir(&self, linkage: RustLinkage) -> eyre::Result<PathBuf> {
+        if self.host().env("CARGO_TARGET_DIR").is_some()
+            || self.host().env("CARGO_BUILD_TARGET_DIR").is_some()
+        {
+            return self.target_dir().await;
+        }
         let variant = match linkage {
             RustLinkage::SharedRuntime => "shared",
             RustLinkage::Static => "static",
@@ -1193,6 +1210,7 @@ impl Project {
             manifest_directory: package.manifest_directory.clone(),
             native_source,
             webkit_version: package.declared.version.clone(),
+            identity: package.declared.identity.clone(),
             bridge_abi: package.declared.bridge_abi,
             target: target.clone(),
         })
@@ -1441,34 +1459,101 @@ pub enum FailToCreateProject {
 
 /// Options for creating a new `WaterUI` project.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct CreateOptions {
     /// Application display name (e.g., "Water Example").
-    pub name: String,
+    name: String,
     /// Bundle identifier (e.g., "dev.waterui.waterexample").
-    pub bundle_identifier: BundleIdentifier,
+    bundle_identifier: BundleIdentifier,
     /// Path to local `WaterUI` repository for development.
-    pub waterui_path: Option<PathBuf>,
+    waterui_path: Option<PathBuf>,
     /// Framework channel, mutually exclusive with a local source path and a
     /// manifest file.
-    pub channel: Option<FrameworkChannel>,
+    channel: Option<FrameworkChannel>,
     /// A certified `framework.json` on disk, mutually exclusive with a channel
     /// and a local source path: the project pins the channel and revision the
     /// manifest declares.
-    pub framework_manifest: Option<PathBuf>,
+    framework_manifest: Option<PathBuf>,
     /// An already-resolved framework selection — how a support app inherits
     /// the host project's framework exactly. Mutually exclusive with every
     /// resolving source above.
-    pub framework: Option<ResolvedFramework>,
+    framework: Option<ResolvedFramework>,
     /// The `Water.lock` bytes `framework` was resolved against: a caller
     /// passing `framework` carries the host project's lock verbatim, so the
     /// scaffolded project's `Water.lock`/`Cargo.lock` match it.
-    pub framework_lock: Option<Vec<u8>>,
+    framework_lock: Option<Vec<u8>>,
     /// Author name for Cargo.toml.
-    pub author: String,
+    author: String,
     /// The declared web frontend: `Some` generates the `include_web!` root
     /// view and writes `[web] package_manager`.
-    pub web: Option<WebScaffold>,
+    web: Option<WebScaffold>,
+}
+impl CreateOptions {
+    /// Application display name (e.g., "Water Example").
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Bundle identifier (e.g., "dev.waterui.waterexample").
+    #[must_use]
+    pub const fn bundle_identifier(&self) -> &BundleIdentifier {
+        &self.bundle_identifier
+    }
+
+    /// Path to local `WaterUI` repository for development.
+    #[must_use]
+    pub fn waterui_path(&self) -> Option<&Path> {
+        self.waterui_path.as_deref()
+    }
+
+    /// Framework channel, mutually exclusive with a local source path and a
+    /// manifest file.
+    #[must_use]
+    pub const fn channel(&self) -> Option<&FrameworkChannel> {
+        self.channel.as_ref()
+    }
+
+    /// A certified `framework.json` on disk, mutually exclusive with a channel
+    /// and a local source path: the project pins the channel and revision the
+    /// manifest declares.
+    #[must_use]
+    pub fn framework_manifest(&self) -> Option<&Path> {
+        self.framework_manifest.as_deref()
+    }
+
+    /// An already-resolved framework selection — how a support app inherits
+    /// the host project's framework exactly. Mutually exclusive with every
+    /// resolving source above.
+    #[must_use]
+    pub const fn framework(&self) -> Option<&ResolvedFramework> {
+        self.framework.as_ref()
+    }
+
+    /// Record the resolved framework and backend selection.
+    pub fn set_framework(&mut self, framework: Option<ResolvedFramework>) {
+        self.framework = framework;
+    }
+
+    /// The `Water.lock` bytes `framework` was resolved against: a caller
+    /// passing `framework` carries the host project's lock verbatim, so the
+    /// scaffolded project's `Water.lock`/`Cargo.lock` match it.
+    #[must_use]
+    pub fn framework_lock(&self) -> Option<&[u8]> {
+        self.framework_lock.as_deref()
+    }
+
+    /// Author name for Cargo.toml.
+    #[must_use]
+    pub fn author(&self) -> &str {
+        &self.author
+    }
+
+    /// The declared web frontend: `Some` generates the `include_web!` root
+    /// view and writes `[web] package_manager`.
+    #[must_use]
+    pub const fn web(&self) -> Option<&WebScaffold> {
+        self.web.as_ref()
+    }
 }
 
 impl CreateOptions {
@@ -1511,6 +1596,20 @@ impl CreateOptions {
         self
     }
 
+    /// Resolves the framework from an already resolved selection.
+    #[must_use]
+    pub fn with_framework(mut self, framework: Option<ResolvedFramework>) -> Self {
+        self.framework = framework;
+        self
+    }
+
+    /// Resolves the framework from a lockfile entry.
+    #[must_use]
+    pub fn with_framework_lock(mut self, framework_lock: Option<Vec<u8>>) -> Self {
+        self.framework_lock = framework_lock;
+        self
+    }
+
     /// Declares the web frontend the scaffold wires in.
     #[must_use]
     pub fn with_web(mut self, web: Option<WebScaffold>) -> Self {
@@ -1521,13 +1620,26 @@ impl CreateOptions {
 
 /// How `create`/`init` wires a declared web frontend into the scaffold.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct WebScaffold {
     /// The package manager written to `[web] package_manager`.
-    pub package_manager: web::PackageManager,
+    package_manager: web::PackageManager,
     /// The `include_web!` argument: `"web"` for the conventional layout, or a
     /// path relative to the project root for a frontend referenced in place.
-    pub include_arg: String,
+    include_arg: String,
+}
+impl WebScaffold {
+    /// The package manager written to `[web] package_manager`.
+    #[must_use]
+    pub const fn package_manager(&self) -> &web::PackageManager {
+        &self.package_manager
+    }
+
+    /// The `include_web!` argument: `"web"` for the conventional layout, or a
+    /// path relative to the project root for a frontend referenced in place.
+    #[must_use]
+    pub fn include_arg(&self) -> &str {
+        &self.include_arg
+    }
 }
 
 impl WebScaffold {
@@ -1954,8 +2066,10 @@ impl Project {
             .resolve_framework(host)
             .await
             .map_err(FailToCreateProject::Framework)?;
+        let apple = Self::scaffold_apple_config(&options, &framework)
+            .map_err(FailToCreateProject::Framework)?;
         let cargo_config = framework
-            .cargo_config(&path)
+            .cargo_config(&path, apple.deployment_targets())
             .await
             .map_err(FailToCreateProject::Framework)?;
 
@@ -2025,7 +2139,7 @@ impl Project {
                 .map_err(FailToCreateProject::Scaffold)?;
         }
 
-        let manifest = Self::scaffold_manifest(&options, framework, assets_path);
+        let manifest = Self::scaffold_manifest(&options, framework, assets_path, apple);
 
         // Save Water.toml
         manifest.save(&path).await?;
@@ -2071,12 +2185,30 @@ impl Project {
         })
     }
 
+    /// The `[apple]` section a scaffold records. A bundled web frontend
+    /// installs a navigation policy, which only compiles at the Apple OS
+    /// version the framework names; the project declares it so every build and
+    /// the generated Cargo config agree.
+    fn scaffold_apple_config(
+        options: &CreateOptions,
+        framework: &ResolvedFramework,
+    ) -> eyre::Result<AppleConfig> {
+        if options.web.is_some() {
+            Ok(AppleConfig::new(
+                framework.web_frontend_apple_deployment_targets()?,
+            ))
+        } else {
+            Ok(AppleConfig::default())
+        }
+    }
+
     /// The `Water.toml` a scaffold records: the create options' identity and
     /// web section, the resolved framework's channel when it names one.
     fn scaffold_manifest(
         options: &CreateOptions,
         framework: ResolvedFramework,
         assets_path: String,
+        apple: AppleConfig,
     ) -> Manifest {
         Manifest {
             package: Package {
@@ -2102,9 +2234,11 @@ impl Project {
             app: None,
             theme: None,
             launch: None,
-            web: options.web.as_ref().map(|scaffold| web::WebConfig {
-                package_manager: scaffold.package_manager,
-            }),
+            web: options
+                .web
+                .as_ref()
+                .map(|scaffold| web::WebConfig::new(scaffold.package_manager)),
+            apple,
             signing: SigningConfig::default(),
             assets: None,
             app_values: crate::assets::AppValuesConfig::default(),
@@ -2460,11 +2594,18 @@ async fn apply_channel_selection(
     host: &Host,
     root: &Path,
     framework: ResolvedFramework,
+    declared: &AppleDeploymentTargets,
     mut updates: Vec<(PathBuf, Option<Vec<u8>>)>,
 ) -> eyre::Result<()> {
     updates.push((
         root.join(".cargo/config.toml"),
-        Some(framework.cargo_config(root).await?.to_string().into_bytes()),
+        Some(
+            framework
+                .cargo_config(root, declared)
+                .await?
+                .to_string()
+                .into_bytes(),
+        ),
     ));
     let mut previous = BTreeMap::new();
     for file in updates
@@ -2819,6 +2960,9 @@ impl Fact for CargoTree {
 pub(crate) struct WpeRuntimeMetadata {
     /// The `WebKit` version the package pins.
     pub version: String,
+    /// The published runtime's identity — the `wpe-runtime-<version>-<identity>`
+    /// release tag water-rs/browsers publishes its artifacts under.
+    pub identity: String,
     /// The bridge ABI the package declares.
     pub bridge_abi: u32,
     /// The package-relative directory the bridge sources live in.
@@ -2895,19 +3039,13 @@ impl Fact for WpeRuntimePackage {
     }
 }
 
-/// The `waterui-browser-wpe` package `root_package_id`'s resolved graph for
-/// `target` reaches through normal dependency edges — pure over the
-/// `cargo metadata` document so synthetic graphs exercise it directly.
-///
-/// Normal edges only: dev and build dependencies do not reach the runtime
-/// the application actually links. Candidates deduplicate on package id — a
-/// diamond reaching one package through two parents is not an ambiguity —
-/// while two distinct versions error.
-fn select_wpe_package<'m>(
+/// Every package reachable from the root through normal dependency edges —
+/// dev and build dependencies excluded — deduplicated by package ID. The
+/// graph's root package is not itself part of the result.
+pub(crate) fn normal_dependency_packages<'m>(
     metadata: &'m cargo_metadata::Metadata,
     root_package_id: &str,
-    target: &str,
-) -> eyre::Result<&'m cargo_metadata::Package> {
+) -> eyre::Result<Vec<&'m cargo_metadata::Package>> {
     let resolve = metadata
         .resolve
         .as_ref()
@@ -2919,13 +3057,11 @@ fn select_wpe_package<'m>(
         .ok_or_else(|| {
             eyre::eyre!("the resolved graph holds no node for root package {root_package_id}")
         })?;
-    let mut found = std::collections::BTreeMap::new();
+    let mut packages = std::collections::BTreeMap::new();
     let mut stack = vec![root];
     let mut visited = std::collections::BTreeSet::new();
+    visited.insert(root.id.clone());
     while let Some(node) = stack.pop() {
-        if !visited.insert(node.id.clone()) {
-            continue;
-        }
         for dependency in node.deps.iter().filter(|dependency| {
             dependency
                 .dep_kinds
@@ -2942,9 +3078,7 @@ fn select_wpe_package<'m>(
                         dependency.pkg
                     )
                 })?;
-            if package.name.as_str() == "waterui-browser-wpe" {
-                found.entry(package.id.to_string()).or_insert(package);
-            }
+            packages.entry(package.id.to_string()).or_insert(package);
             let next = resolve
                 .nodes
                 .iter()
@@ -2955,10 +3089,33 @@ fn select_wpe_package<'m>(
                         dependency.pkg
                     )
                 })?;
-            stack.push(next);
+            if visited.insert(next.id.clone()) {
+                stack.push(next);
+            }
         }
     }
-    match found.values().collect::<Vec<_>>().as_slice() {
+    Ok(packages.into_values().collect())
+}
+
+/// The `waterui-browser-wpe` package `root_package_id`'s resolved graph for
+/// `target` reaches through normal dependency edges — pure over the
+/// `cargo metadata` document so synthetic graphs exercise it directly.
+///
+/// Normal edges only: dev and build dependencies do not reach the runtime
+/// the application actually links. Candidates deduplicate on package id — a
+/// diamond reaching one package through two parents is not an ambiguity —
+/// while two distinct versions error.
+fn select_wpe_package<'m>(
+    metadata: &'m cargo_metadata::Metadata,
+    root_package_id: &str,
+    target: &str,
+) -> eyre::Result<&'m cargo_metadata::Package> {
+    let found: Vec<&'m cargo_metadata::Package> =
+        normal_dependency_packages(metadata, root_package_id)?
+            .into_iter()
+            .filter(|package| package.name.as_str() == "waterui-browser-wpe")
+            .collect();
+    match found.as_slice() {
         [package] => Ok(*package),
         [] => eyre::bail!(
             "the resolved graph for {target} reaches no waterui-browser-wpe through normal edges"
@@ -3607,62 +3764,175 @@ struct WateruiPatchesRecord<'a> {
 
 /// Configuration for a `WaterUI` project persisted to `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[non_exhaustive]
 pub struct Manifest {
     /// Package information.
-    pub package: Package,
+    package: Package,
     /// Per-platform backend declarations (`[platforms.<platform>]`).
     #[serde(
         default,
         skip_serializing_if = "BTreeMap::is_empty",
         deserialize_with = "super::platforms::deserialize"
     )]
-    pub platforms: BTreeMap<PlatformName, PlatformConfig>,
+    platforms: BTreeMap<PlatformName, PlatformConfig>,
     /// Hydrolysis backend selections (`[hydrolysis]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hydrolysis: Option<crate::backend::HydrolysisConfig>,
+    hydrolysis: Option<crate::backend::HydrolysisConfig>,
     /// Path to local `WaterUI` repository for dev mode.
     /// When set, all backends will use this path instead of the published versions.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub waterui_path: Option<String>,
+    waterui_path: Option<String>,
     /// The `[patch]` entries the CLI last copied from the `waterui_path`
     /// checkout into the project's `Cargo.toml`. Every other entry there is
     /// the project's own — an override of a checkout entry included — which
     /// the next copy keeps.
     #[serde(default, skip_serializing_if = "cargo_toml::PatchSet::is_empty")]
-    pub waterui_patches: cargo_toml::PatchSet,
+    waterui_patches: cargo_toml::PatchSet,
     /// Exact framework and backend selection, resolved only by explicit version operations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub framework: Option<ResolvedFramework>,
+    framework: Option<ResolvedFramework>,
     /// Permission configuration.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub permissions: BTreeMap<PermissionKey, PermissionEntry>,
+    permissions: BTreeMap<PermissionKey, PermissionEntry>,
     /// App-only configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app: Option<AppConfig>,
+    app: Option<AppConfig>,
     /// Cross-platform app theme slots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub theme: Option<ThemeConfig>,
+    theme: Option<ThemeConfig>,
     /// The launch screen shown until the app's first frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub launch: Option<LaunchConfig>,
+    launch: Option<LaunchConfig>,
     /// Web-frontend toolchain declarations (`[web]`); only the CLI reads this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub web: Option<web::WebConfig>,
+    web: Option<web::WebConfig>,
+    /// Apple platform declarations (`[apple]`): the deployment targets the
+    /// project runs on.
+    #[serde(default, skip_serializing_if = "AppleConfig::is_empty")]
+    apple: AppleConfig,
     /// Assets the project bundles beyond what dependency crates declare for
     /// themselves (`[assets]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assets: Option<AssetsConfig>,
+    assets: Option<AssetsConfig>,
     /// Distribution signing configuration (`[signing]`).
     #[serde(default, skip_serializing_if = "SigningConfig::is_empty")]
-    pub signing: SigningConfig,
+    signing: SigningConfig,
     /// Values dependency crates request from the app (`[app_values]`):
     /// the Firebase configuration, Apple Pay merchant IDs, the Cast receiver.
     #[serde(
         default,
         skip_serializing_if = "crate::assets::AppValuesConfig::is_empty"
     )]
-    pub app_values: crate::assets::AppValuesConfig,
+    app_values: crate::assets::AppValuesConfig,
+}
+impl Manifest {
+    /// Package information.
+    #[must_use]
+    pub const fn package(&self) -> &Package {
+        &self.package
+    }
+
+    /// Per-platform backend declarations (`[platforms.<platform>]`).
+    #[must_use]
+    pub const fn platforms(&self) -> &BTreeMap<PlatformName, PlatformConfig> {
+        &self.platforms
+    }
+
+    /// Replace the per-platform backend declarations.
+    pub fn set_platforms(&mut self, platforms: BTreeMap<PlatformName, PlatformConfig>) {
+        self.platforms = platforms;
+    }
+
+    /// Hydrolysis backend selections (`[hydrolysis]`).
+    #[must_use]
+    pub const fn hydrolysis(&self) -> Option<&crate::backend::HydrolysisConfig> {
+        self.hydrolysis.as_ref()
+    }
+
+    /// Path to local `WaterUI` repository for dev mode.
+    #[must_use]
+    pub fn waterui_path(&self) -> Option<&str> {
+        self.waterui_path.as_deref()
+    }
+
+    /// The `[patch]` entries the CLI last copied from the `waterui_path`
+    /// checkout into the project's `Cargo.toml`.
+    #[must_use]
+    pub const fn waterui_patches(&self) -> &cargo_toml::PatchSet {
+        &self.waterui_patches
+    }
+
+    /// Exact framework and backend selection, resolved only by explicit
+    /// version operations.
+    #[must_use]
+    pub const fn framework(&self) -> Option<&ResolvedFramework> {
+        self.framework.as_ref()
+    }
+
+    /// Record the resolved framework and backend selection.
+    pub fn set_framework(&mut self, framework: Option<ResolvedFramework>) {
+        self.framework = framework;
+    }
+
+    /// Permission configuration.
+    #[must_use]
+    pub const fn permissions(&self) -> &BTreeMap<PermissionKey, PermissionEntry> {
+        &self.permissions
+    }
+
+    /// App-only configuration.
+    #[must_use]
+    pub const fn app(&self) -> Option<&AppConfig> {
+        self.app.as_ref()
+    }
+
+    /// Cross-platform app theme slots.
+    #[must_use]
+    pub const fn theme(&self) -> Option<&ThemeConfig> {
+        self.theme.as_ref()
+    }
+
+    /// The launch screen shown until the app's first frame.
+    #[must_use]
+    pub const fn launch(&self) -> Option<&LaunchConfig> {
+        self.launch.as_ref()
+    }
+
+    /// Web-frontend toolchain declarations (`[web]`).
+    #[must_use]
+    pub const fn web(&self) -> Option<&web::WebConfig> {
+        self.web.as_ref()
+    }
+
+    /// Apple platform declarations (`[apple]`).
+    #[must_use]
+    pub const fn apple(&self) -> &AppleConfig {
+        &self.apple
+    }
+
+    /// Assets the project bundles beyond what dependency crates declare
+    /// (`[assets]`).
+    #[must_use]
+    pub const fn assets(&self) -> Option<&AssetsConfig> {
+        self.assets.as_ref()
+    }
+
+    /// Distribution signing configuration (`[signing]`).
+    #[must_use]
+    pub const fn signing(&self) -> &SigningConfig {
+        &self.signing
+    }
+
+    /// Values dependency crates request from the app (`[app_values]`).
+    #[must_use]
+    pub const fn app_values(&self) -> &crate::assets::AppValuesConfig {
+        &self.app_values
+    }
+
+    /// Takes the package information out of the value.
+    #[must_use]
+    pub fn into_package(self) -> Package {
+        self.package
+    }
 }
 
 /// Distribution signing configuration (`[signing]`).
@@ -3674,14 +3944,35 @@ pub struct Manifest {
 /// secrets — passwords are read from the environment at package time.
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct SigningConfig {
     /// macOS Developer ID distribution signing (`[signing.macos]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub macos: Option<MacosSigningConfig>,
+    macos: Option<MacosSigningConfig>,
     /// Android release signing (`[signing.android]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub android: Option<AndroidSigningConfig>,
+    android: Option<AndroidSigningConfig>,
+}
+impl SigningConfig {
+    /// A `SigningConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        macos: Option<MacosSigningConfig>,
+        android: Option<AndroidSigningConfig>,
+    ) -> Self {
+        Self { macos, android }
+    }
+
+    /// macOS Developer ID distribution signing (`[signing.macos]`).
+    #[must_use]
+    pub const fn macos(&self) -> Option<&MacosSigningConfig> {
+        self.macos.as_ref()
+    }
+
+    /// Android release signing (`[signing.android]`).
+    #[must_use]
+    pub const fn android(&self) -> Option<&AndroidSigningConfig> {
+        self.android.as_ref()
+    }
 }
 
 impl SigningConfig {
@@ -3695,14 +3986,37 @@ impl SigningConfig {
 /// macOS Developer ID distribution signing (`[signing.macos]`).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct MacosSigningConfig {
     /// The Apple Developer team the package signs for — matched against the
     /// Developer ID Application certificate's subject organizational unit.
-    pub team_id: String,
+    team_id: String,
     /// The `notarytool` keychain profile the submission authenticates with,
     /// created with `xcrun notarytool store-credentials`.
-    pub notary_profile: String,
+    notary_profile: String,
+}
+impl MacosSigningConfig {
+    /// A `MacosSigningConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(team_id: String, notary_profile: String) -> Self {
+        Self {
+            team_id,
+            notary_profile,
+        }
+    }
+
+    /// The Apple Developer team the package signs for — matched against the
+    /// Developer ID Application certificate's subject organizational unit.
+    #[must_use]
+    pub fn team_id(&self) -> &str {
+        &self.team_id
+    }
+
+    /// The `notarytool` keychain profile the submission authenticates with,
+    /// created with `xcrun notarytool store-credentials`.
+    #[must_use]
+    pub fn notary_profile(&self) -> &str {
+        &self.notary_profile
+    }
 }
 
 /// Permission entry in `[permissions]`.
@@ -3825,6 +4139,7 @@ impl Manifest {
             theme: None,
             launch: None,
             web: None,
+            apple: AppleConfig::default(),
             assets: None,
             signing: SigningConfig::default(),
             app_values: crate::assets::AppValuesConfig::default(),
@@ -3860,6 +4175,7 @@ pub struct ResolvedWpeRuntime {
     manifest_directory: std::path::PathBuf,
     native_source: std::path::PathBuf,
     webkit_version: String,
+    identity: String,
     bridge_abi: u32,
     target: Triple,
 }
@@ -3896,6 +4212,13 @@ impl ResolvedWpeRuntime {
         &self.webkit_version
     }
 
+    /// The published runtime's identity — with `webkit_version` it names the
+    /// `wpe-runtime-<version>-<identity>` release water-rs/browsers publishes.
+    #[must_use]
+    pub fn identity(&self) -> &str {
+        &self.identity
+    }
+
     /// The bridge ABI the package's producer metadata declares — the value a
     /// source build asserts the headers agree with.
     #[must_use]
@@ -3920,11 +4243,12 @@ impl ResolvedWpeRuntime {
     ) -> Self {
         Self {
             package_name: "waterui-browser-wpe".to_owned(),
-            package_version: "0.5.1".to_owned(),
+            package_version: "0.1.0".to_owned(),
             manifest_directory,
             native_source,
             webkit_version: "2.52.5".to_owned(),
-            bridge_abi: 4,
+            identity: "0123456789abcdef".to_owned(),
+            bridge_abi: 5,
             target,
         }
     }
@@ -3932,14 +4256,42 @@ impl ResolvedWpeRuntime {
 
 /// Browser engines that must be staged for one resolved application graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct BrowserRuntimePlan {
     /// The resolved WPE package, when the standard `WebView` engine is WPE.
-    pub wpe: Option<ResolvedWpeRuntime>,
+    wpe: Option<ResolvedWpeRuntime>,
     /// Whether the standard `WebView` resolved to the CEF engine.
-    pub cef_webview: bool,
+    cef_webview: bool,
     /// Whether the independent full Chromium component is linked.
-    pub chromium: bool,
+    chromium: bool,
+}
+impl BrowserRuntimePlan {
+    /// A `BrowserRuntimePlan` carrying each of its fields.
+    #[must_use]
+    pub const fn new(wpe: Option<ResolvedWpeRuntime>, cef_webview: bool, chromium: bool) -> Self {
+        Self {
+            wpe,
+            cef_webview,
+            chromium,
+        }
+    }
+
+    /// The resolved WPE package, when the standard `WebView` engine is WPE.
+    #[must_use]
+    pub const fn wpe(&self) -> Option<&ResolvedWpeRuntime> {
+        self.wpe.as_ref()
+    }
+
+    /// Whether the standard `WebView` resolved to the CEF engine.
+    #[must_use]
+    pub const fn cef_webview(&self) -> bool {
+        self.cef_webview
+    }
+
+    /// Whether the independent full Chromium component is linked.
+    #[must_use]
+    pub const fn chromium(&self) -> bool {
+        self.chromium
+    }
 }
 
 impl BrowserRuntimePlan {
@@ -4037,11 +4389,23 @@ pub struct UnsupportedWebViewBackend {
 /// `[assets]` section in `Water.toml`: assets the project bundles beyond what
 /// dependency crates declare through `[package.metadata.waterui.assets]`.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[non_exhaustive]
 pub struct AssetsConfig {
     /// Font families to bundle, one `[[assets.font]]` table per family.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub font: Vec<FontConfig>,
+    font: Vec<FontConfig>,
+}
+impl AssetsConfig {
+    /// A `AssetsConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(font: Vec<FontConfig>) -> Self {
+        Self { font }
+    }
+
+    /// Font families to bundle, one `[[assets.font]]` table per family.
+    #[must_use]
+    pub fn font(&self) -> &[FontConfig] {
+        &self.font
+    }
 }
 
 /// One `[[assets.font]]` declaration in `Water.toml`.
@@ -4052,48 +4416,142 @@ pub struct AssetsConfig {
 /// cache, since builds perform no network access. A declaration sets at most
 /// one source.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[non_exhaustive]
 pub struct FontConfig {
     /// Font family name.
-    pub name: String,
+    name: String,
     /// Font file relative to the project root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_path: Option<String>,
+    local_path: Option<String>,
     /// URL the font — or an archive containing it — is fetched from when
     /// pre-seeding the font cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remote_path: Option<String>,
+    remote_path: Option<String>,
     /// The platforms whose builds bundle the font; absent bundles it on
     /// every platform. An unknown name fails to parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub platforms: Option<Vec<waterui_assets_planner::FontPlatform>>,
+    platforms: Option<Vec<waterui_assets_planner::FontPlatform>>,
+}
+impl FontConfig {
+    /// A `FontConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        name: String,
+        local_path: Option<String>,
+        remote_path: Option<String>,
+        platforms: Option<Vec<waterui_assets_planner::FontPlatform>>,
+    ) -> Self {
+        Self {
+            name,
+            local_path,
+            remote_path,
+            platforms,
+        }
+    }
+
+    /// Font family name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Font file relative to the project root.
+    #[must_use]
+    pub fn local_path(&self) -> Option<&str> {
+        self.local_path.as_deref()
+    }
+
+    /// URL the font — or an archive containing it — is fetched from when
+    /// pre-seeding the font cache.
+    #[must_use]
+    pub fn remote_path(&self) -> Option<&str> {
+        self.remote_path.as_deref()
+    }
+
+    /// The platforms whose builds bundle the font; absent bundles it on
+    /// every platform. An unknown name fails to parse.
+    #[must_use]
+    pub fn platforms(&self) -> Option<&[waterui_assets_planner::FontPlatform]> {
+        self.platforms.as_deref()
+    }
 }
 
 /// App-specific configuration in `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[non_exhaustive]
 pub struct AppConfig {
     /// Optional crate name overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub crates: Option<AppCrates>,
+    crates: Option<AppCrates>,
+}
+impl AppConfig {
+    /// A `AppConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(crates: Option<AppCrates>) -> Self {
+        Self { crates }
+    }
+
+    /// Optional crate name overrides.
+    #[must_use]
+    pub const fn crates(&self) -> Option<&AppCrates> {
+        self.crates.as_ref()
+    }
 }
 
 /// Crate name overrides for the generated crates (`[app.crates]`).
 #[derive(Debug, Serialize, Clone, Default)]
-#[non_exhaustive]
 pub struct AppCrates {
     /// Optional override crate name for the generated Apple companion crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub apple: Option<CrateName>,
+    apple: Option<CrateName>,
     /// Optional override crate name for generated GTK backend crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gtk: Option<CrateName>,
+    gtk: Option<CrateName>,
     /// Optional override crate name for generated hydrolysis backend crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hydrolysis: Option<CrateName>,
+    hydrolysis: Option<CrateName>,
     /// Optional override crate name for generated `WinUI` backend crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub winui: Option<CrateName>,
+    winui: Option<CrateName>,
+}
+impl AppCrates {
+    /// A `AppCrates` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        apple: Option<CrateName>,
+        gtk: Option<CrateName>,
+        hydrolysis: Option<CrateName>,
+        winui: Option<CrateName>,
+    ) -> Self {
+        Self {
+            apple,
+            gtk,
+            hydrolysis,
+            winui,
+        }
+    }
+
+    /// Optional override crate name for the generated Apple companion crate.
+    #[must_use]
+    pub const fn apple(&self) -> Option<&CrateName> {
+        self.apple.as_ref()
+    }
+
+    /// Optional override crate name for generated GTK backend crate.
+    #[must_use]
+    pub const fn gtk(&self) -> Option<&CrateName> {
+        self.gtk.as_ref()
+    }
+
+    /// Optional override crate name for generated hydrolysis backend crate.
+    #[must_use]
+    pub const fn hydrolysis(&self) -> Option<&CrateName> {
+        self.hydrolysis.as_ref()
+    }
+
+    /// Optional override crate name for generated `WinUI` backend crate.
+    #[must_use]
+    pub const fn winui(&self) -> Option<&CrateName> {
+        self.winui.as_ref()
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -4158,21 +4616,20 @@ mod removed_ffi_override_tests {
 
 /// `[package]` section in `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[non_exhaustive]
 pub struct Package {
     /// Human-readable name of the application (e.g., "Water Demo").
-    pub name: String,
+    name: String,
     /// Bundle identifier for the application (e.g., "dev.waterui.waterdemo").
-    pub bundle_identifier: BundleIdentifier,
+    bundle_identifier: BundleIdentifier,
     /// Path to assets directory relative to project root. Defaults to "assets".
     #[serde(
         default = "default_assets_path",
         skip_serializing_if = "is_default_assets_path"
     )]
-    pub assets_path: String,
+    assets_path: String,
     /// Whether to build as an accessory (headless) app on macOS.
     #[serde(default, skip_serializing_if = "is_false")]
-    pub accessory: bool,
+    accessory: bool,
     /// Whether the crate is embedded into a host application rather than
     /// owning the app entry itself.
     ///
@@ -4180,9 +4637,8 @@ pub struct Package {
     /// host's build system consumes (an AAR on Android) instead of a runnable
     /// app, and `water run`/`water package` refuse.
     #[serde(default, skip_serializing_if = "is_false")]
-    pub embedded: bool,
+    embedded: bool,
 }
-
 impl Package {
     /// The section of an app named `name` under `bundle_identifier`, with
     /// assets in the default directory, owning its entry, and not an
@@ -4196,6 +4652,37 @@ impl Package {
             accessory: false,
             embedded: false,
         }
+    }
+
+    /// Human-readable name of the application.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Bundle identifier for the application.
+    #[must_use]
+    pub const fn bundle_identifier(&self) -> &BundleIdentifier {
+        &self.bundle_identifier
+    }
+
+    /// Path to assets directory relative to project root.
+    #[must_use]
+    pub fn assets_path(&self) -> &str {
+        &self.assets_path
+    }
+
+    /// Whether to build as an accessory (headless) app on macOS.
+    #[must_use]
+    pub const fn accessory(&self) -> bool {
+        self.accessory
+    }
+
+    /// Whether the crate is embedded into a host application rather than
+    /// owning the app entry itself.
+    #[must_use]
+    pub const fn embedded(&self) -> bool {
+        self.embedded
     }
 }
 
@@ -4331,7 +4818,7 @@ mod channel_tests {
             let mut metadata = toml::toml! {
                 [package.metadata.waterui]
                 minimum-cli-version = "0.1.4"
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
             };
             metadata["package"]["metadata"]["waterui"]["minimum-cli-version"] =
@@ -4409,6 +4896,7 @@ mod channel_tests {
                     &Host::current(),
                     root,
                     crate::framework::test_fixtures::stable_framework(),
+                    &AppleDeploymentTargets::default(),
                     updates
                 )
                 .await
@@ -4789,6 +5277,53 @@ mod target_graph_tests {
     }
 
     #[test]
+    fn a_web_frontend_scaffold_declares_the_web_deployment_targets() {
+        smol::block_on(async {
+            let machine = TestMachine::new();
+            machine.install("cargo");
+            machine.install("git");
+            let root = machine.root().join("app");
+            machine.respond("CARGO_METADATA", &cargo_metadata_json(&root, &root));
+            let host = machine.host(std::iter::empty::<(&str, &str)>());
+            let options = super::CreateOptions::new(
+                "Demo App".into(),
+                "dev.waterui.demo".try_into().unwrap(),
+                "Test".into(),
+            );
+            let options = super::CreateOptions {
+                framework: Some(crate::framework::test_fixtures::stable_framework()),
+                ..options
+            }
+            .with_web(Some(super::WebScaffold::new(
+                crate::web::PackageManager::Bun,
+                "web",
+            )));
+            Project::create(&host, &root, options).await.unwrap();
+
+            let water: Manifest =
+                Manifest::parse(&std::fs::read_to_string(root.join("Water.toml")).unwrap())
+                    .unwrap();
+            for platform in crate::apple_targets::APPLE_PLATFORMS {
+                assert_eq!(
+                    water
+                        .apple()
+                        .deployment_targets()
+                        .declared(platform)
+                        .map(crate::apple_targets::AppleVersion::as_str),
+                    Some("27.0"),
+                    "{platform}"
+                );
+            }
+            let config: toml::Value =
+                toml::from_str(&std::fs::read_to_string(root.join(".cargo/config.toml")).unwrap())
+                    .unwrap();
+            for variable in ["MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET"] {
+                assert_eq!(config["env"][variable].as_str(), Some("27.0"));
+            }
+        });
+    }
+
+    #[test]
     fn create_writes_apple_deployment_env_and_channel_updates_preserve_user_config() {
         smol::block_on(async {
             let machine = TestMachine::new();
@@ -4835,9 +5370,15 @@ mod target_graph_tests {
                 toml::Value::String("27.0".into());
             selection["metadata"]["apple-deployment-targets"]["ios"] =
                 toml::Value::String("28.0".into());
-            super::apply_channel_selection(&host, &root, selection.try_into().unwrap(), Vec::new())
-                .await
-                .unwrap();
+            super::apply_channel_selection(
+                &host,
+                &root,
+                selection.try_into().unwrap(),
+                &crate::apple_targets::AppleDeploymentTargets::default(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
             let updated = std::fs::read_to_string(&config_path).unwrap();
             assert!(updated.contains("# user comment"));
             let config: toml::Value = toml::from_str(&updated).unwrap();
@@ -4886,6 +5427,37 @@ mod target_graph_tests {
         );
         machine.respond("CARGO_METADATA", &cargo_metadata_json(&root, &root));
         root
+    }
+
+    #[test]
+    fn explicit_cargo_target_directory_is_used_by_application_builds() {
+        for variable in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
+            let machine = TestMachine::new();
+            let root = fixture(&machine);
+            let target = machine.root().join("external-target");
+            let mut metadata: serde_json::Value =
+                serde_json::from_str(&cargo_metadata_json(&root, &root)).unwrap();
+            metadata["target_directory"] = serde_json::json!(target);
+            machine.respond("CARGO_METADATA", &metadata.to_string());
+            let host = machine.host([(variable, target.as_os_str())]);
+            smol::block_on(async {
+                let project = Project::open_for_build(&host, &root, ManagedBackends::NONE)
+                    .await
+                    .unwrap();
+                for linkage in [
+                    crate::build::RustLinkage::Static,
+                    crate::build::RustLinkage::SharedRuntime,
+                ] {
+                    assert_eq!(project.water_target_dir(linkage).await.unwrap(), target);
+                }
+                assert!(
+                    !crate::water_dir::shared_target_dir_path(&host)
+                        .await
+                        .unwrap()
+                        .exists()
+                );
+            });
+        }
     }
 
     /// An online open would fetch the font instead of failing, so the strict
@@ -6276,7 +6848,7 @@ mod wpe_metadata_tests {
     use cargo_metadata::{Metadata, MetadataCommand};
     use serde_json::{Value, json};
 
-    use super::select_wpe_package;
+    use super::{normal_dependency_packages, select_wpe_package};
 
     fn package(id: &str, name: &str, version: &str) -> Value {
         json!({
@@ -6431,10 +7003,33 @@ mod wpe_metadata_tests {
     }
 
     #[test]
+    fn normal_dependency_packages_exclude_the_root_dev_edges_and_unreachable_nodes() {
+        // `right` is a resolved node no edge from the root reaches, `wpe-two`
+        // hangs off a dev edge, and `wpe-one` is reached through a diamond.
+        let metadata = graph(&[
+            node(
+                "app",
+                &[("left", None), ("wpe-one", None), ("wpe-two", Some("dev"))],
+            ),
+            node("left", &[("wpe-one", None)]),
+            node("right", &[("wpe-one", None)]),
+            node("wpe-one", &[]),
+            node("wpe-two", &[]),
+        ]);
+        let ids: Vec<_> = normal_dependency_packages(&metadata, "app")
+            .unwrap()
+            .iter()
+            .map(|package| package.id.repr.clone())
+            .collect();
+        assert_eq!(ids, ["left", "wpe-one"]);
+    }
+
+    #[test]
     fn wpe_runtime_metadata_rejects_an_out_of_range_abi() {
         let declared: Result<super::WpeRuntimeMetadata, _> =
             serde_json::from_value(serde_json::json!({
                 "version": "2.52.5",
+                "identity": "d6117ebfbc001792",
                 "bridge-abi": 4_294_967_300_u64,
                 "native-source": "native"
             }));
@@ -6444,11 +7039,29 @@ mod wpe_metadata_tests {
         );
         let valid: super::WpeRuntimeMetadata = serde_json::from_value(serde_json::json!({
             "version": "2.52.5",
-            "bridge-abi": 4,
+            "identity": "d6117ebfbc001792",
+            "bridge-abi": 5,
             "native-source": "native"
         }))
         .expect("a valid producer contract must decode");
-        assert_eq!(valid.bridge_abi, 4);
+        assert_eq!(valid.bridge_abi, 5);
         assert_eq!(valid.native_source, std::path::Path::new("native"));
+    }
+
+    #[test]
+    fn wpe_runtime_metadata_rejects_a_missing_identity() {
+        let declared: Result<super::WpeRuntimeMetadata, _> =
+            serde_json::from_value(serde_json::json!({
+                "version": "2.52.5",
+                "bridge-abi": 5,
+                "native-source": "native"
+            }));
+        let error = declared
+            .expect_err("a package predating the published-runtime contract is an error")
+            .to_string();
+        assert!(
+            error.contains("identity"),
+            "the error must name the missing key: {error}"
+        );
     }
 }

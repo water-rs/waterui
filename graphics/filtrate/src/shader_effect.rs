@@ -123,7 +123,7 @@ use filtrate_core::{FilterParam, WatchGuard};
 
 use crate::effect::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderError,
-    EffectRenderResult, EffectSetupError, EffectSetupResult, RetainedMemory,
+    EffectRenderResult, EffectSetupError, EffectSetupResult, RetainedMemory, TextureViews,
 };
 use crate::executor::{animation::ParamAnimator, filterable, sampler, uniforms::UniformBuffers};
 
@@ -183,6 +183,8 @@ struct Resources {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniforms: UniformBuffers,
+    /// Views of the host's input and output textures.
+    views: TextureViews,
     /// Bind groups of recent encodes, keyed by everything they bind that
     /// varies: the input view and the uniform buffer.
     bind_groups: Vec<CachedBindGroup>,
@@ -483,29 +485,27 @@ async fn build(
         });
     }
 
-    let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let layout = ctx
-        .device
-        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    // Creating the pipeline compiles it, which runs off the GPU host thread
+    // (see `crate::compile`).
+    let entries = layout_entries(input_filterable);
+    let module = module.clone();
+    let output_format = ctx.output_format;
+    let cache = ctx.pipelines.driver().cloned();
+    let (pipeline, layout) = crate::compile::validated(ctx.device, move |device| {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shader effect layout"),
-            entries: &layout_entries(input_filterable),
+            entries: &entries,
         });
-    let shader = ctx
-        .device
-        .create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader effect"),
-            source: wgpu::ShaderSource::Naga(Cow::Owned(module.clone())),
+            source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
         });
-    let pipeline_layout = ctx
-        .device
-        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("shader effect pipeline layout"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-    let pipeline = ctx
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("shader effect pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -518,7 +518,7 @@ async fn build(
                 module: &shader,
                 entry_point: Some(FRAGMENT_ENTRY_POINT),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: ctx.output_format,
+                    format: output_format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -531,14 +531,15 @@ async fn build(
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: cache.as_ref(),
         });
-    if let Some(error) = error_scope.pop().await {
-        return Err(EffectSetupError::PipelineValidation {
-            pass: 0,
-            message: error.to_string(),
-        });
-    }
+        (pipeline, layout)
+    })
+    .await
+    .map_err(|error| EffectSetupError::PipelineValidation {
+        pass: 0,
+        message: error.to_string(),
+    })?;
 
     Ok(Resources {
         input_format: ctx.input_format,
@@ -554,6 +555,7 @@ async fn build(
             },
         ),
         uniforms: UniformBuffers::new("shader effect uniforms"),
+        views: TextureViews::new(),
         bind_groups: Vec::new(),
     })
 }
@@ -568,16 +570,19 @@ fn uniform_words(
     for (index, value) in animator.current_values().iter().enumerate() {
         params[index / 4][index % 4] = *value;
     }
+    let (output_width, output_height) = output.size();
+    let (input_width, input_height) = input.size();
+    let timing = input.timing();
     bytemuck::cast(ShaderEffectUniforms {
-        resolution: [u32_to_f32(output.width), u32_to_f32(output.height)],
-        input_resolution: [u32_to_f32(input.width), u32_to_f32(input.height)],
-        time: input.timing.presentation_time().as_secs_f32(),
-        time_delta: input.timing.delta().as_secs_f32(),
+        resolution: [u32_to_f32(output_width), u32_to_f32(output_height)],
+        input_resolution: [u32_to_f32(input_width), u32_to_f32(input_height)],
+        time: timing.presentation_time().as_secs_f32(),
+        time_delta: timing.delta().as_secs_f32(),
         #[expect(
             clippy::cast_possible_truncation,
             reason = "the WGSL frame counter is the host sequence wrapping at 2^32"
         )]
-        frame: input.timing.sequence() as u32,
+        frame: timing.sequence() as u32,
         param_count: u32::try_from(animator.param_count())
             .expect("the parameter count is bounded by SHADER_EFFECT_MAX_PARAMS"),
         params,
@@ -687,31 +692,33 @@ impl Effect for ShaderEffect {
             Setup::Failed(error) => return Err(EffectRenderError::SetupFailed(error.clone())),
             Setup::Ready(pipeline) => pipeline,
         };
-        if input.format != pipeline.input_format || output.format != pipeline.output_format {
+        if input.format() != pipeline.input_format || output.format() != pipeline.output_format {
             return Err(EffectRenderError::FormatMismatch {
-                input: input.format,
-                output: output.format,
+                input: input.format(),
+                output: output.format(),
                 setup_input: pipeline.input_format,
                 setup_output: pipeline.output_format,
             });
         }
-        let parameters_animating = self.animator.update(input.timing.delta());
-        let sequence = input.timing.sequence();
+        let parameters_animating = self.animator.update(input.timing().delta());
+        let sequence = input.timing().sequence();
         let uniforms = pipeline.uniforms.select(
-            input.device,
-            input.queue,
+            input.device(),
+            input.queue(),
             uniform_words(&self.animator, input, output).to_vec(),
             sequence,
         );
+        let input_view = pipeline.views.view(input.texture(), sequence);
+        let output_view = pipeline.views.view(output.texture(), sequence);
         // A handle clone: the pass below also borrows the pipeline.
         let bind_group = pipeline
-            .bind_group(input.device, &input.view, uniforms, sequence)
+            .bind_group(input.device(), &input_view, uniforms, sequence)
             .clone();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shader effect pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output.view,
+                    view: &output_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {

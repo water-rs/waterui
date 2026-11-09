@@ -17,7 +17,9 @@ use waterui::navigation::{
 };
 use waterui_core::IgnorableMetadata;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
 
 use cocoa_ui::PlatformView;
 
@@ -51,6 +53,14 @@ impl core::fmt::Debug for PassthroughSubView {
 }
 
 impl SubView for PassthroughSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.child.layout().measure(proposal)
     }

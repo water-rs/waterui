@@ -153,7 +153,7 @@ macro_rules! impl_label_style_methods {
             /// technology regardless of the chosen visual mode.
             #[must_use]
             pub const fn label_style(mut self, mode: $crate::label::LabelDisplayMode) -> Self {
-                self.0.label.set_display_mode(mode);
+                self.0.label_mut().set_display_mode(mode);
                 self
             }
 
@@ -679,13 +679,19 @@ impl Label {
     /// a native backend payload.
     #[must_use]
     pub fn resolve(mut self, env: &Environment) -> Self {
+        self.resolve_in_place(env);
+        self
+    }
+
+    /// Resolves environment-dependent label presentation in place. See
+    /// [`Label::resolve`] for the owning variant.
+    pub fn resolve_in_place(&mut self, env: &Environment) {
         self.display_mode = self.effective_display_mode(env);
         let accessibility_text = self
             .accessibility_text
             .as_ref()
             .unwrap_or_else(|| self.semantic_text());
-        self.accessibility_label = Some(accessibility_text.resolve(env).content);
-        self
+        self.accessibility_label = Some(accessibility_text.resolve(env).into_content());
     }
 }
 
@@ -829,7 +835,7 @@ mod tests {
         label
             .semantic_text()
             .resolve(env)
-            .content
+            .content()
             .snapshot()
             .to_plain()
             .into_string()

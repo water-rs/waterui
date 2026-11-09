@@ -6,6 +6,7 @@
 use super::*;
 use kurbo::Shape as _;
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
@@ -205,6 +206,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             || self.has_active_touch_fling()
     }
 
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn measurement_cache_stats(&self) -> (u32, u32) {
         self.state.measurement.stats()
     }
@@ -422,13 +424,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let visible = self.record_alpha() > 0.0;
         let below = layered.below.into_picture();
         if !below.display_list().is_empty() {
-            self.scene_mut().draw_picture(ctx.local, below);
+            self.scene_mut().draw_picture(ctx.local(), below);
         }
         for run in layered.runs {
-            self.program().push_chrome(run.material, ctx.local, visible);
+            self.program()
+                .push_chrome(run.material, ctx.local(), visible);
             let above = run.above.into_picture();
             if !above.display_list().is_empty() {
-                self.scene_mut().draw_picture(ctx.local, above);
+                self.scene_mut().draw_picture(ctx.local(), above);
             }
         }
     }
@@ -444,7 +447,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         ctx: RenderContext,
         source: &Rc<dyn crate::renderer::chrome::LiveSource>,
     ) {
-        self.program().push_live(Rc::clone(source), ctx.local);
+        self.program().push_live(Rc::clone(source), ctx.local());
     }
 
     /// Records `core`'s node into its own program (§C): the parent's list
@@ -487,10 +490,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 .push(mount::ProgramBuilder::new(Rc::clone(&cell)));
             record(
                 renderer,
-                RenderContext {
-                    local: kurbo::Affine::IDENTITY,
-                    bounds,
-                },
+                RenderContext::new(kurbo::Affine::IDENTITY, bounds),
             );
             let program = renderer
                 .program
@@ -618,18 +618,20 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.pop_placement_scope();
     }
 
-    pub(crate) fn set_host_redraw_handle(&mut self, handle: RedrawHandle) {
+    pub(crate) fn set_host_redraw_handle(&mut self, handle: HostRedraw) {
         self.host_redraw_handle = Some(handle);
     }
 
     /// The engine's scheduling answer from the last presented frame, drained
     /// once so one pump consumes it: `Next::At` asks the host for the frame
     /// an in-flight animation needs, `Next::Idle` parks the display link.
-    pub(crate) const fn take_engine_next(&mut self) -> Option<cherenkov::Next> {
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) const fn take_engine_next(&mut self) -> Option<Next> {
         self.engine_next.take()
     }
 
     /// The engine work the last commit did.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) const fn mount_stats(&self) -> mount::MountStats {
         self.last_mount_stats
     }

@@ -54,7 +54,7 @@ pub struct PickerRenderState<E: crate::text::TextEngine> {
 impl<E: crate::text::TextEngine> PickerRenderState<E> {
     pub(crate) fn from_config(config: PickerConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(menu_picker_label_view(&config.label)),
+            label_view: RetainedSubview::new(menu_picker_label_view(config.label())),
             config,
             menu_open: Rc::new(Cell::new(false)),
         }
@@ -116,14 +116,14 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
         let picker = &state.config;
         let menu_open = Rc::clone(&state.menu_open);
         let disabled = renderer.read_signal(&widget_disabled(env));
-        let items = renderer.read_signal(&picker.items);
+        let items = renderer.read_signal(picker.items());
         assert!(
             !(items.is_empty()),
             "hydrolysis picker requires at least one item"
         );
-        match picker.style {
+        match picker.style() {
             PickerStyle::Automatic | PickerStyle::Menu => {
-                let selected = renderer.read_signal(&picker.selection);
+                let selected = renderer.read_signal(picker.selection());
                 let selected_index = items
                     .iter()
                     .position(|item| item.tag == selected)
@@ -153,7 +153,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 );
                 let default_label =
                     crate::renderer::SemanticCore::<E>::accessibility_label_from_label(
-                        &picker.label,
+                        picker.label(),
                         env,
                     );
                 let label = renderer.resolve_accessibility_label(env, default_label);
@@ -180,7 +180,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                     let metrics = theme.picker_metrics(PickerStyle::Menu);
                     let row_height = menu_picker_row_height(max_item_text_height, metrics);
                     let popup_rect =
-                        menu_picker_popup_rect(ctx.bounds, row_height, items.len(), metrics);
+                        menu_picker_popup_rect(ctx.bounds(), row_height, items.len(), metrics);
                     (ctx, row_height, popup_rect)
                 });
                 for (index, item) in items.iter().enumerate() {
@@ -202,7 +202,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                     }
                     let option_target =
                         (!disabled).then(|| AccessibilityActionTarget::PickerSelect {
-                            selection: picker.selection.clone(),
+                            selection: picker.selection().clone(),
                             target: item.tag,
                         });
                     let option_id = match option_geometry {
@@ -242,11 +242,11 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                             tag: item.tag,
                         })
                         .collect();
-                    let selection = picker.selection.clone();
+                    let selection = picker.selection().clone();
                     let open = Rc::clone(&menu_open);
                     let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
                         let metrics = theme.picker_metrics(PickerStyle::Menu);
-                        let bounds = renderer.resolve_window_rect(ctx.bounds);
+                        let bounds = renderer.resolve_window_rect(ctx.bounds());
                         (
                             crate::widgets::util::popup_anchor(bounds),
                             bounds.width(),
@@ -301,7 +301,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 });
                 let trigger_id = match ctx {
                     Some(ctx) => {
-                        let bounds = ctx.bounds;
+                        let bounds = ctx.bounds();
                         renderer.register_accessibility_node(node, bounds, env, action_target)
                     }
                     None => renderer.register_accessibility_node_semantic(node, env, action_target),
@@ -322,7 +322,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 );
                 let default_label =
                     crate::renderer::SemanticCore::<E>::accessibility_label_from_label(
-                        &picker.label,
+                        picker.label(),
                         env,
                     );
                 let group_label = renderer.resolve_accessibility_label(env, default_label);
@@ -335,7 +335,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 let geometry = ctx
                     .as_ref()
                     .zip(theme)
-                    .map(|(ctx, theme)| (ctx, theme.picker_metrics(picker.style)));
+                    .map(|(ctx, theme)| (ctx, theme.picker_metrics(picker.style())));
                 // The group heading offsets the option rows exactly as the
                 // render path lays them out, so emitted row bounds overlay the
                 // drawn rows — the same presence rule: measured height > 0.
@@ -347,9 +347,9 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                             .height,
                     )
                 });
-                let selected = renderer.read_signal(&picker.selection);
+                let selected = renderer.read_signal(picker.selection());
                 let mut row_y = geometry.map(|(ctx, metrics)| {
-                    ctx.bounds.y0
+                    ctx.bounds().y0
                         + metrics.vertical_inset
                         + if group_label_height > 0.0 {
                             group_label_height + metrics.label_spacing
@@ -374,25 +374,25 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 let label_heights: Vec<f32> = labels.iter().map(|(_, size)| size.height).collect();
                 for (index, (item, (label, label_size))) in items.iter().zip(labels).enumerate() {
                     let row_rect = geometry.map(|(ctx, metrics)| {
-                        if picker.style == PickerStyle::Segmented {
+                        if picker.style() == PickerStyle::Segmented {
                             let row_height =
                                 segmented_row_height(metrics, label_heights.iter().copied());
                             let (_, segment_row) =
-                                segmented_label_area(ctx.bounds, group_label_height, row_height);
+                                segmented_label_area(ctx.bounds(), group_label_height, row_height);
                             let segment_width =
                                 segment_row.width() / crate::num_cast::usize_as_f64(items.len());
                             let x0 = segment_width
                                 .mul_add(crate::num_cast::usize_as_f64(index), segment_row.x0);
                             kurbo::Rect::new(x0, segment_row.y0, x0 + segment_width, segment_row.y1)
                         } else {
-                            let y = row_y.unwrap_or(ctx.bounds.y0);
+                            let y = row_y.unwrap_or_else(|| ctx.bounds().y0);
                             let row_height =
                                 f64::from(label_size.height).max(metrics.radio_indicator_size);
                             let rect = kurbo::Rect::new(
-                                ctx.bounds.x0,
+                                ctx.bounds().x0,
                                 y,
-                                ctx.bounds.x1,
-                                (y + row_height).min(ctx.bounds.y1),
+                                ctx.bounds().x1,
+                                (y + row_height).min(ctx.bounds().y1),
                             );
                             row_y = Some(rect.y1 + metrics.radio_row_spacing);
                             rect
@@ -421,7 +421,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                     }
                     let option_target =
                         (!disabled).then(|| AccessibilityActionTarget::PickerSelect {
-                            selection: picker.selection.clone(),
+                            selection: picker.selection().clone(),
                             target: item.tag,
                         });
                     let child_id = match row_rect {
@@ -454,7 +454,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 }
                 match ctx {
                     Some(ctx) => {
-                        let group_bounds = ctx.bounds;
+                        let group_bounds = ctx.bounds();
                         let _ =
                             renderer.register_accessibility_node(group, group_bounds, env, None);
                     }
@@ -535,9 +535,9 @@ pub fn render_picker_parts<E: crate::text::TextEngine>(
     let (items_signal, selection, style) = {
         let picker = state.borrow();
         (
-            picker.config.items.clone(),
-            picker.config.selection.clone(),
-            picker.config.style,
+            picker.config.items().clone(),
+            picker.config.selection().clone(),
+            picker.config.style(),
         )
     };
     let items = ctx.renderer_mut().read_signal(&items_signal);

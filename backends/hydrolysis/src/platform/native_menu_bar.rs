@@ -213,19 +213,19 @@ impl<'a> Builder<'a> {
 /// equivalent fails `MenuBar::new` with `UnmappableKey`, which panics.
 fn menu_shortcut(shortcut: &Shortcut) -> MenuShortcut {
     let mut mods = Modifiers::empty();
-    if shortcut.modifiers.command() {
+    if shortcut.modifiers().command() {
         mods |= Modifiers::COMMAND;
     }
-    if shortcut.modifiers.control() {
+    if shortcut.modifiers().control() {
         mods |= Modifiers::CONTROL;
     }
-    if shortcut.modifiers.option() {
+    if shortcut.modifiers().option() {
         mods |= Modifiers::ALT;
     }
-    if shortcut.modifiers.shift() {
+    if shortcut.modifiers().shift() {
         mods |= Modifiers::SHIFT;
     }
-    let key = match shortcut.key.to_key() {
+    let key = match shortcut.key().to_key() {
         // An uppercase character equivalent implies Shift; Shift comes only
         // from the shortcut's modifiers.
         Key::Character(character) => Key::Character(character.to_lowercase()),
@@ -235,7 +235,7 @@ fn menu_shortcut(shortcut: &Shortcut) -> MenuShortcut {
 }
 
 fn command_title(command: &ResolvedCommand) -> String {
-    command.label.content.snapshot().to_plain().to_string()
+    command.label.content().snapshot().to_plain().to_string()
 }
 
 /// Builds one bar [`Command`]: `checked` reflects `selected` (the gutter
@@ -386,7 +386,7 @@ fn product_name() -> String {
 
 /// A resolved menu's title in plain text.
 fn menu_title(menu: &ResolvedNestedMenu) -> String {
-    menu.label.content.snapshot().to_plain().to_string()
+    menu.label.content().snapshot().to_plain().to_string()
 }
 
 /// A resolved `Menu`'s `Submenu`, its items resolved recursively.

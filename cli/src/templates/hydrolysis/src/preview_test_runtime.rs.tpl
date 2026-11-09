@@ -14,8 +14,8 @@ pub(crate) fn run() {
     hydrolysis::init_tracing();
     let config = PreviewRunConfig::load_from_env()
         .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}"));
-    match config.mode {
-        PreviewRunMode::Semantic => run_semantic(config.width, config.height),
+    match config.mode() {
+        PreviewRunMode::Semantic => run_semantic(config.width(), config.height()),
         PreviewRunMode::Image { .. } | PreviewRunMode::Scenario { .. } => panic!(
             "hydrolysis preview test: render runs require the preview binary (waterui-preview-mode)"
         ),

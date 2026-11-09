@@ -21,15 +21,20 @@
 //! `objc2-ui-kit` is generated from do not declare it. The class is looked
 //! up by name in the process's own `AppKit`, which every Catalyst process
 //! loads, and messaged with the signatures `AppKit` declares for it —
-//! `+sharedApplication`, `-activationPolicy`, `-setActivationPolicy:` and
-//! `-isActive` — on the main thread `AppKit` requires.
+//! `+sharedApplication`, `-activationPolicy`, `-setActivationPolicy:`,
+//! `-isActive`, `-nextEventMatchingMask:untilDate:inMode:dequeue:` and
+//! `-sendEvent:` — on the main thread `AppKit` requires.
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{MainThreadMarker, msg_send};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
 
 /// `NSApplicationActivationPolicyProhibited`.
 const ACTIVATION_POLICY_PROHIBITED: isize = 2;
+
+/// `NSEventMaskAny` — every event type.
+const EVENT_MASK_ANY: u64 = u64::MAX;
 
 /// The process's `NSApplication`, held at the `Prohibited` activation
 /// policy — the proof a scene-less `UIWindow` needs before it may be
@@ -94,6 +99,69 @@ impl BackgroundApplication {
     pub fn is_active(&self) -> bool {
         // SAFETY: `-isActive` answers `BOOL`.
         unsafe { msg_send![&*self.application, isActive] }
+    }
+}
+
+/// The `AppKit` event loop of a running Catalyst application — the
+/// `-[NSApplication run]` loop `UIApplicationMain` installs.
+///
+/// `AppKit` dispatches by pulling: `nextEventMatchingMask:untilDate:inMode:
+/// dequeue:` then `sendEvent:`. The launch Apple event, the activation
+/// events and the `UIKit` Mac-helper machinery that connects a
+/// `UIWindowScene` all travel only through that dispatch, so a nested
+/// `CFRunLoop` turn on the main thread starves them — events enqueue but
+/// nothing dequeues or sends them while a harness block owns the thread
+/// (water-rs/waterui#3358). [`EventLoop::turn`] performs one real pull.
+///
+/// Unlike [`BackgroundApplication`] nothing is brought up: the running
+/// application's `NSApplication` already exists by the time a pump can
+/// ask for it.
+#[derive(Debug)]
+pub struct EventLoop {
+    application: Retained<AnyObject>,
+}
+
+impl EventLoop {
+    /// The running application's event loop.
+    ///
+    /// # Panics
+    ///
+    /// When the process has no `AppKit` application class — every
+    /// Catalyst process loads `AppKit`, so an absence is fatal.
+    #[must_use]
+    pub fn running(_mtm: MainThreadMarker) -> Self {
+        let class = AnyClass::get(c"NSApplication")
+            .expect("a Mac Catalyst process loads AppKit's NSApplication");
+        // SAFETY: `+[NSApplication sharedApplication]` answers the
+        // process's application object; the marker proves the main thread
+        // `AppKit` requires.
+        let application: Retained<AnyObject> = unsafe { msg_send![class, sharedApplication] };
+        Self { application }
+    }
+
+    /// One event-loop turn: dequeues the next event — waiting at most
+    /// until `deadline`, which services the main run loop in the default
+    /// mode — and dispatches it through `sendEvent:`.
+    pub fn turn(&self, deadline: &NSDate) {
+        // SAFETY: `-nextEventMatchingMask:untilDate:inMode:dequeue:`
+        // takes an `NSEventMask` (`NSUInteger`), an `NSDate *`, an
+        // `NSRunLoopMode` (`NSString *`) and a `BOOL`, and answers
+        // `NSEvent *` or nil; `-sendEvent:` takes the `NSEvent *`. Both
+        // run on the application's main thread.
+        let event: Option<Retained<AnyObject>> = unsafe {
+            msg_send![
+                &*self.application,
+                nextEventMatchingMask: EVENT_MASK_ANY,
+                untilDate: deadline,
+                inMode: NSDefaultRunLoopMode,
+                dequeue: true
+            ]
+        };
+        if let Some(event) = event {
+            // SAFETY: `-sendEvent:` takes the `NSEvent *` just dequeued,
+            // on the same main thread.
+            let () = unsafe { msg_send![&*self.application, sendEvent: &*event] };
+        }
     }
 }
 

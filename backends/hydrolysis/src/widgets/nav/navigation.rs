@@ -25,6 +25,7 @@ use waterui::navigation::{
     resolve_navigation_root,
 };
 use waterui::theme::color::{Background, Surface};
+use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
@@ -43,6 +44,43 @@ fn navigation_leading_reserve(env: &Environment) -> f64 {
 fn back_button_title_reserve(theme: &Rc<dyn crate::theme::WidgetTheme>) -> f64 {
     let metrics = theme.navigation_metrics();
     metrics.back_button_size + metrics.title_leading_inset
+}
+
+/// The x the bar's leading toolbar group starts at. A pushed page's back
+/// button owns the bar's leading edge, so the group starts at the button's
+/// trailing edge plus the bar's inter-item gap; on a root page it starts at
+/// the bar inset (water-rs/waterui#1939 — without the offset a pushed
+/// `Cancellation` item paints under the button).
+fn navigation_leading_items_x0(
+    bar_x0: f64,
+    leading_reserve: f64,
+    metrics: &crate::theme::NavigationMetrics,
+) -> f64 {
+    if leading_reserve > 0.0 {
+        bar_x0 + metrics.back_button_leading_inset + metrics.back_button_size + metrics.item_spacing
+    } else {
+        bar_x0 + metrics.horizontal_inset
+    }
+}
+
+/// The x the bar title starts at for a measured leading-group width and the
+/// pushed page's back-button reserve — the single rule the visual flush and
+/// the accessibility emission share so their title rects agree.
+fn navigation_title_x0(
+    bar_x0: f64,
+    leading_width: f64,
+    leading_reserve: f64,
+    metrics: &crate::theme::NavigationMetrics,
+) -> f64 {
+    if leading_width > 0.0 {
+        navigation_leading_items_x0(bar_x0, leading_reserve, metrics)
+            + leading_width
+            + metrics.item_spacing
+    } else if leading_reserve > 0.0 {
+        bar_x0 + metrics.horizontal_inset + leading_reserve + metrics.item_spacing
+    } else {
+        bar_x0 + metrics.title_leading_inset
+    }
 }
 
 /// The environment a page is presented under: `base`, plus the stack's
@@ -108,13 +146,36 @@ fn navigation_slot_is_empty(view: &AnyView) -> bool {
     }
 }
 
+/// The environment a bar item builds, measures and renders under: `env`
+/// with labels defaulting to icon-only, as the platform bars present them.
+/// An explicit `LabelDisplayMode` keeps precedence; the title stays the
+/// button's accessible name.
+pub fn toolbar_item_env(env: &Environment) -> Environment {
+    if env
+        .get::<LabelDisplayMode>()
+        .is_none_or(|mode| matches!(mode, LabelDisplayMode::Automatic))
+    {
+        env.extending(LabelDisplayMode::IconOnly)
+    } else {
+        env.clone()
+    }
+}
+
+/// `content` scoped to [`toolbar_item_env`]. The scope is baked into the
+/// view because an environment snapshot in the content replaces the
+/// environment wholesale, so build, measure and render all see one scope.
+pub fn toolbar_item_view(content: AnyView, env: &Environment) -> AnyView {
+    let (content, scoped) = crate::renderer::flatten_environment_metadata_owned(content, env);
+    AnyView::new(Metadata::new(content, toolbar_item_env(&scoped)))
+}
+
 impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
     pub(crate) fn from_view(navigation: NavigationView, env: &Environment) -> Self {
         let NavigationView { bar, content, .. } = navigation;
         let Bar {
             title,
             subtitle,
-            toolbar,
+            mut toolbar,
             search,
             color,
             hidden,
@@ -129,9 +190,10 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let mut leading = Vec::new();
         let mut trailing = Vec::new();
         let mut bottom = Vec::new();
-        for item in toolbar.items {
-            let retained = RetainedSubview::new(item.content);
-            match item.placement {
+        for item in toolbar.take_items() {
+            let (placement, content, ..) = item.into_parts();
+            let retained = RetainedSubview::new(toolbar_item_view(content, env));
+            match placement {
                 NavigationToolbarPlacement::Principal => principal.push(retained),
                 NavigationToolbarPlacement::Cancellation
                 | NavigationToolbarPlacement::TopBarLeading => leading.push(retained),
@@ -148,9 +210,9 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             // A search field shows only its placeholder, so the prompt doubles
             // as the accessible name and the visible label is suppressed.
             RetainedSubview::new(AnyView::new(
-                TextField::new(search.prompt.clone(), &search.text)
+                TextField::new(search.prompt().clone(), search.text())
                     .hide_label()
-                    .prompt(search.prompt.clone()),
+                    .prompt(search.prompt().clone()),
             ))
         });
         Self {
@@ -291,10 +353,10 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
                     let bar_height =
                         navigation_base_bar_height_for_display_mode(display_mode, theme);
                     let bar_rect = kurbo::Rect::new(
-                        ctx.bounds.x0,
-                        ctx.bounds.y0,
-                        ctx.bounds.x1,
-                        (ctx.bounds.y0 + bar_height).min(ctx.bounds.y1),
+                        ctx.bounds().x0,
+                        ctx.bounds().y0,
+                        ctx.bounds().x1,
+                        (ctx.bounds().y0 + bar_height).min(ctx.bounds().y1),
                     );
                     let title_height = if matches!(display_mode, NavigationTitleDisplayMode::Large)
                     {
@@ -307,13 +369,27 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
                     } else {
                         (bar_height - title_height).mul_add(0.5, bar_rect.y0)
                     };
-                    let title_leading = navigation_leading_reserve(env);
+                    // The same leading-slot rule the flush uses, so the
+                    // title node's bounds match the rendered title —
+                    // including the leading group's width and the pushed
+                    // page's back-button offset (water-rs/waterui#1939).
+                    let leading_width = f64::from(
+                        measure_retained_toolbar_group(
+                            &state.leading,
+                            renderer.state_mut(),
+                            env,
+                            theme,
+                        )
+                        .width,
+                    );
+                    let title_leading = navigation_title_x0(
+                        bar_rect.x0,
+                        leading_width,
+                        navigation_leading_reserve(env),
+                        &metrics,
+                    );
                     let title_rect = kurbo::Rect::new(
-                        if title_leading > 0.0 {
-                            bar_rect.x0 + metrics.horizontal_inset + title_leading
-                        } else {
-                            bar_rect.x0 + metrics.title_leading_inset
-                        },
+                        title_leading.min(bar_rect.x1),
                         title_y0,
                         bar_rect.x1 - metrics.title_trailing_inset,
                         title_y0 + title_height,
@@ -652,10 +728,12 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
         };
         let leading_width = f64::from(leading_size.width);
         let trailing_width = f64::from(trailing_size.width);
+        let leading_reserve = navigation_leading_reserve(env);
+        let leading_x0 = navigation_leading_items_x0(bar_rect.x0, leading_reserve, &metrics);
         let leading_rect = kurbo::Rect::new(
-            bar_rect.x0 + metrics.horizontal_inset,
+            leading_x0,
             bar_rect.y0,
-            (bar_rect.x0 + metrics.horizontal_inset + leading_width).min(bar_rect.x1),
+            (leading_x0 + leading_width).min(bar_rect.x1),
             (bar_rect.y0 + base_bar_height).min(bar_rect.y1),
         );
         let trailing_rect = kurbo::Rect::new(
@@ -694,12 +772,7 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
         } else {
             (base_bar_height - title_height).mul_add(0.5, bar_rect.y0)
         };
-        let effective_leading_width = leading_width.max(navigation_leading_reserve(env));
-        let title_x0 = if effective_leading_width > 0.0 {
-            bar_rect.x0 + metrics.horizontal_inset + effective_leading_width + metrics.item_spacing
-        } else {
-            bar_rect.x0 + metrics.title_leading_inset
-        };
+        let title_x0 = navigation_title_x0(bar_rect.x0, leading_width, leading_reserve, &metrics);
         let title_x1 = if trailing_width > 0.0 {
             bar_rect.x1 - metrics.horizontal_inset - trailing_width - metrics.item_spacing
         } else {
@@ -1989,10 +2062,7 @@ fn record_navigation_page<E: crate::text::TextEngine>(
         renderer.push_accessibility_suppression();
     }
     renderer.begin_navigation_page(presented.matched);
-    let page_ctx = RenderContext {
-        local: renderer.program().origin(),
-        bounds,
-    };
+    let page_ctx = RenderContext::new(renderer.program().origin(), bounds);
     let record = |renderer: &mut HydrolysisRenderer<E>, page_ctx: RenderContext| {
         record_page_body(
             renderer, state, slot_key, identity, env, size, safe_area, background, page_ctx,
@@ -2028,8 +2098,8 @@ fn record_page_body<E: crate::text::TextEngine>(
     background: Paint,
     page_ctx: RenderContext,
 ) {
-    let origin = page_ctx.local;
-    let bounds = page_ctx.bounds;
+    let origin = page_ctx.local();
+    let bounds = page_ctx.bounds();
     renderer
         .scene_mut()
         .fill_paint(peniko::Fill::NonZero, origin, background, &bounds);
@@ -2308,7 +2378,7 @@ fn present_page_transition<E: crate::text::TextEngine>(
         page_area,
         PagePresentation {
             layer: transform * local,
-            alpha: paint.properties.opacity,
+            alpha: paint.properties.opacity(),
             clip: Some(local.transform_rect_bbox(paint_bounds)),
             clip_space: transform,
             hit,
@@ -2404,8 +2474,8 @@ fn present_navigation_pages<E: crate::text::TextEngine>(
             },
         ),
         NavigationPresentation::Layers(resolved) => {
-            let outgoing = (&from, &from_env, resolved.outgoing);
-            let incoming = (&to, &to_env, resolved.incoming);
+            let outgoing = (&from, &from_env, resolved.outgoing());
+            let incoming = (&to, &to_env, resolved.incoming());
             let order = match direction {
                 NavigationTransitionDirection::Push => [outgoing, incoming],
                 NavigationTransitionDirection::Pop => [incoming, outgoing],
@@ -2422,7 +2492,7 @@ fn present_navigation_pages<E: crate::text::TextEngine>(
                     page_area.clone(),
                     PagePresentation {
                         layer: transform * local,
-                        alpha: layer.opacity,
+                        alpha: layer.opacity(),
                         clip: Some(local.transform_rect_bbox(paint_bounds)),
                         clip_space: transform,
                         hit: page.identity == active_identity,
@@ -2498,7 +2568,7 @@ pub fn navigation_stack_accessibility<E: crate::text::TextEngine>(
                 let metrics = theme
                     .expect("rendered navigation stack accessibility passes the theme")
                     .navigation_metrics();
-                let back_bounds = navigation_back_button_rect(ctx.bounds, metrics);
+                let back_bounds = navigation_back_button_rect(ctx.bounds(), metrics);
                 let _ = renderer.register_accessibility_node(
                     back_node,
                     back_bounds,

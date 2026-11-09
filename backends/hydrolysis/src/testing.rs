@@ -13,7 +13,7 @@ use waterui::Environment;
 /// *not* a [`crate::Style`]: it carries no widget theme, so tests that mount
 /// widgets on the rendered runtime must still supply a real style.
 pub fn install_theme(env: &mut Environment) {
-    crate::theme::install_theme_tokens(env, None);
+    crate::theme::install_theme_tokens(env, None, waterui::theme::ColorScheme::Light);
 }
 
 /// Returns the root directory Hydrolysis's own test artifacts are written
@@ -54,8 +54,8 @@ mod test_style {
         BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
         ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
         ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
-        TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
+        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
         WidgetInteractionState, WidgetTheme,
     };
     use kurbo::{BezPath, Point, Rect};
@@ -518,20 +518,12 @@ mod test_style {
                 bar_height: 48.0,
                 button_min_width: 48.0,
                 button_horizontal_inset: 16.0,
-                active_indicator_height: 3.0,
-                active_indicator_radius: 3.0,
                 icon_label_spacing: 4.0,
             }
         }
         fn draw_tabs_bar(&self, _recorder: &mut Recorder, _surface: Rect) {}
         fn draw_tabs_bar_divider(&self, _recorder: &mut Recorder, _divider: Rect) {}
-        fn draw_tabs_highlight(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _layout: TabItemLayout,
-        ) {
-        }
+        fn draw_tabs_highlight(&self, _recorder: &mut Recorder, _item: TabItemGeometry) {}
         fn draw_scroll_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn divider_metrics(&self) -> DividerMetrics {

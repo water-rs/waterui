@@ -64,6 +64,12 @@ fn paint(paint: &ResolvedPaint, images: &FxHashMap<u64, GpuImage>) -> ColorRange
     }
 }
 
+/// Whether a filter can leave the range of its content. A pure coordinate
+/// remap only moves pixels, so its output range is its content's.
+fn filters_range(filter: Option<cherenkov::FilterId>) -> bool {
+    filter.is_some_and(|filter| !filter.is_coordinate_remap())
+}
+
 /// Upper bound for the output range of a prepared layer. Unbounded shader,
 /// filter and encoded-space blend operations retain extended-range output.
 pub(super) fn of_ops(ops: &[Op], images: &FxHashMap<u64, GpuImage>) -> ColorRange {
@@ -86,7 +92,7 @@ pub(super) fn of_op(op: &Op, images: &FxHashMap<u64, GpuImage>) -> ColorRange {
             space,
             filter,
             ..
-        } if filter.is_some()
+        } if filters_range(*filter)
             || *blend == BlendMode::PlusLighter
             || *space == BlendSpace::SrgbEncoded =>
         {
@@ -131,7 +137,7 @@ pub(super) fn parts(
         }
         let node = tree.layer(id);
         if !plan.planes.iter().any(|plane| plane.layer == id) {
-            let range = if node.filter.is_some()
+            let range = if filters_range(node.filter)
                 || node.backdrop.is_some()
                 || node.blend == BlendMode::PlusLighter
                 || bindings.contains_key(&id)
@@ -190,6 +196,42 @@ mod tests {
             working([0.4, 0.1, 0.0, 0.25], 0.25),
             ColorRange::HighDynamicRange
         );
+    }
+
+    #[test]
+    fn a_coordinate_remap_filter_keeps_its_content_range() {
+        use cherenkov::testing::LayerOp;
+        use cherenkov::{FilterId, LayerId, SurfaceTree};
+
+        let layer = LayerId::new(1);
+        let classify = |filter: FilterId| {
+            let mut tree = SurfaceTree::new();
+            tree.apply(LayerOp::Create(layer));
+            tree.apply(LayerOp::Push {
+                parent: tree.root(),
+                child: layer,
+            });
+            tree.apply(LayerOp::Filter(layer, Some(filter)));
+            let plan = super::super::planes::Plan::default();
+            let mut ranges = Vec::new();
+            parts(
+                &tree,
+                &mut FxHashMap::default(),
+                &FxHashMap::default(),
+                &FxHashMap::default(),
+                &plan,
+                cherenkov::WorkingColor::BLACK,
+                &mut ranges,
+            );
+            ranges
+        };
+        // An empty remap-filtered layer adds nothing above the black clear,
+        // whose own range is `WideGamut`.
+        assert_eq!(
+            classify(FilterId::new(1).with_coordinate_remap(true)),
+            [ColorRange::WideGamut]
+        );
+        assert_eq!(classify(FilterId::new(1)), [ColorRange::HighDynamicRange]);
     }
 
     #[test]

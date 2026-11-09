@@ -156,7 +156,7 @@ impl<B: Backend> Engine<B> {
 
     /// The images the backend admits: the largest image in each
     /// dimension (the device's texture limit) and the image budget, the
-    /// texels every registered image holds together (the backend's memory
+    /// bytes every registered image holds together (the backend's memory
     /// budget). Read once off the live device and budget when the engine
     /// is created; it never changes.
     ///
@@ -199,10 +199,13 @@ impl<B: Backend> Engine<B> {
 
     /// The engine's current memory usage.
     ///
-    #[must_use]
-    pub fn memory(&self) -> MemoryUsage {
+    /// # Errors
+    /// [`RenderError::Thread`] when the render thread cannot answer — a
+    /// reply it already lost marks it gone — so an unmeasurable engine is
+    /// an error, never a fabricated zero usage.
+    pub fn memory(&self) -> Result<MemoryUsage, RenderError> {
         let Some(reply_sender) = self.memory_reply.borrow_mut().take() else {
-            return MemoryUsage::default();
+            return Err(RenderError::Thread);
         };
         if let Err(error) = self.tx.send(Message::Memory {
             reply: reply_sender,
@@ -210,13 +213,13 @@ impl<B: Backend> Engine<B> {
             if let Message::Memory { reply } = error.0 {
                 *self.memory_reply.borrow_mut() = Some(reply);
             }
-            return MemoryUsage::default();
+            return Err(RenderError::Thread);
         }
         let Ok(reply) = self.memory_reply_rx.recv() else {
-            return MemoryUsage::default();
+            return Err(RenderError::Thread);
         };
         *self.memory_reply.borrow_mut() = Some(reply.sender);
-        reply.usage
+        Ok(reply.usage)
     }
 
     /// Reports system memory pressure. `Critical` drops every cache.
@@ -282,7 +285,7 @@ impl<B: Backend> Engine<B> {
     where
         B: Uploads<F>,
     {
-        let texels = self.images.admit(image.width(), image.height(), 0)?;
+        let bytes = self.images.admit::<F>(image.width(), image.height(), 0)?;
         let id = ImageId::new(Self::alloc(&self.next_image));
         let upload = image.into_upload();
         let resource = ResourceId::Image(id);
@@ -290,12 +293,12 @@ impl<B: Backend> Engine<B> {
             resource,
             Box::new(move |r: &mut B::Renderer| r.add_image(id, upload)),
         )?;
-        self.images.settle(0, texels);
+        self.images.settle(0, bytes);
         Ok(Image::new(
             id,
             Rc::clone(&self.replace_image),
             Rc::clone(&self.images),
-            texels,
+            bytes,
             self.on_release(resource, move |r| r.remove_image(id)),
         ))
     }
@@ -352,6 +355,32 @@ impl<B: Backend> Engine<B> {
             next_frame: Rc::downgrade(&surface.next_frame),
         });
         Ok(surface)
+    }
+
+    /// Sets or clears the band of host window `window` on `surface`: the
+    /// content painted above the mark naming that window
+    /// ([`LayerEdit::host_window`](crate::LayerEdit::host_window)) and
+    /// beneath the next mark presents into `target`, which the host stacks
+    /// right above the window (water-rs/waterui#2225). `None` leaves the
+    /// region with no band, and its content is not shown. A renderer
+    /// without a band realization panics on the render thread
+    /// ([`Renderer::set_band`](crate::Renderer::set_band)).
+    ///
+    /// # Errors
+    /// [`SurfaceError::Lost`] when the render thread is gone.
+    pub fn set_band(
+        &self,
+        surface: &Surface<B>,
+        window: u64,
+        target: Option<impl Into<B::Target>>,
+    ) -> Result<(), SurfaceError> {
+        self.tx
+            .send(Message::SetBand {
+                id: surface.id(),
+                window,
+                target: target.map(Into::into),
+            })
+            .map_err(|_| SurfaceError::Lost)
     }
 
     /// The number of surfaces still alive, for leak testing.
@@ -536,7 +565,8 @@ impl<B: Filters> Engine<B> {
     where
         B: Runs<F>,
     {
-        let id = FilterId::new(Self::alloc(&self.next_filter));
+        let id = FilterId::new(Self::alloc(&self.next_filter))
+            .with_coordinate_remap(F::COORDINATE_REMAP);
         (self.post)(Message::Resource(Box::new(move |r: &mut B::Renderer| {
             B::add_filter(r, id, filter);
         })));
@@ -1120,5 +1150,30 @@ mod tests {
         drop(surface);
         let _ = engine.render(FrameTime::now()).unwrap();
         assert!(matches!(peer.next_frame(), Next::At { .. }));
+    }
+
+    /// A memory query distinguishes a failed measurement from a successful
+    /// zero: the `Null` renderer owns nothing and answers an all-zero
+    /// [`MemoryUsage`] through `Ok`, while an engine whose render thread is
+    /// gone reports [`RenderError::Thread`] — never a fabricated zero —
+    /// and the reply channel stays unusable after the loss.
+    #[test]
+    fn memory_distinguishes_failure_from_zero_usage() {
+        let (events, _rx) = std::sync::mpsc::channel();
+        let mut engine = Engine::<Null>::new(NullConfig {
+            events,
+            reject: std::collections::HashSet::default(),
+            image_limits: crate::ImageLimits::UNLIMITED,
+        })
+        .unwrap();
+
+        let usage = engine.memory().unwrap();
+        assert_eq!(usage, MemoryUsage::default());
+
+        engine.tx.send(Message::Shutdown).unwrap();
+        engine.thread.take().unwrap().join().unwrap();
+
+        assert!(matches!(engine.memory(), Err(RenderError::Thread)));
+        assert!(matches!(engine.memory(), Err(RenderError::Thread)));
     }
 }

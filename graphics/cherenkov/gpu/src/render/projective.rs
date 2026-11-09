@@ -483,6 +483,7 @@ impl Entry {
 /// The projective pipelines and their layouts, built on the first frame
 /// that composes a projective layer.
 pub struct Pipelines {
+    cache: super::PipelineCache,
     /// The composite's group-1 layout.
     pub layout: wgpu::BindGroupLayout,
     /// The composite's pipeline layout and module, kept for the formats
@@ -511,6 +512,7 @@ impl Pipelines {
         device: &wgpu::Device,
         delivery: super::shaders::ShaderDelivery,
         layout0: &wgpu::BindGroupLayout,
+        cache: super::PipelineCache,
     ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cherenkov projective 1"),
@@ -544,6 +546,7 @@ impl Pipelines {
         });
         let mip_program = delivery.mip_program(device);
         Self {
+            cache,
             layout,
             composite_layout: pipeline_layout,
             program,
@@ -571,6 +574,7 @@ impl Pipelines {
                 &self.mip_program,
                 format,
                 None,
+                &self.cache,
             )
         });
         let cell = &mut self.composite[super::format_slot(format)];
@@ -596,6 +600,7 @@ impl Pipelines {
                     color: component,
                     alpha: component,
                 }),
+                &self.cache,
             )
         }));
     }
@@ -619,8 +624,9 @@ pub(super) fn quad_pipeline(
     program: &super::shaders::RenderProgram,
     format: wgpu::TextureFormat,
     blend: Option<wgpu::BlendState>,
+    cache: &super::PipelineCache,
 ) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(program.fragment_entry),
         layout: Some(layout),
         vertex: wgpu::VertexState {
@@ -647,8 +653,10 @@ pub(super) fn quad_pipeline(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
-        cache: None,
-    })
+        cache: cache.handle.as_ref(),
+    });
+    cache.persist();
+    pipeline
 }
 
 #[cfg(test)]

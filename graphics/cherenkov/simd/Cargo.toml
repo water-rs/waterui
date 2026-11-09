@@ -1,0 +1,23 @@
+[package]
+name = "cherenkov-simd"
+version = "0.0.0"
+description = "Shared SIMD dispatch and math for the graphics stack"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../README.md"
+keywords = ["graphics", "simd", "rasterizer"]
+categories = ["graphics", "no-std"]
+
+[features]
+default = ["std"]
+std = ["fearless_simd/std"]
+
+[dependencies]
+fearless_simd = { version = "1.1", default-features = false, features = ["libm"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+libm = { version = "0.2", default-features = false }

@@ -113,7 +113,7 @@ fn capture_until_settled(runtime: &mut HeadlessRuntime) -> crate::HeadlessSnapsh
     let mut snapshot = None;
     for _ in 0..64 {
         let result = runtime.pump_at(true, Instant::now());
-        if let Some(frame) = result.snapshot {
+        if let Some(frame) = result.into_snapshot() {
             snapshot = Some(frame);
         }
         if runtime.is_settled() {
@@ -152,13 +152,13 @@ fn is_ink(px: [u8; 4]) -> bool {
 /// The rightmost ink column inside `row` in the captured frame, if any.
 fn rightmost_ink(snapshot: &crate::HeadlessSnapshot, row: kurbo::Rect) -> Option<u32> {
     let x0 = crate::num_cast::f64_as_u32(row.x0.max(0.0));
-    let x1 = (crate::num_cast::f64_as_u32(row.x1)).min(snapshot.width - 1);
+    let x1 = (crate::num_cast::f64_as_u32(row.x1)).min(snapshot.width() - 1);
     let y0 = crate::num_cast::f64_as_u32(row.y0.max(0.0));
-    let y1 = (crate::num_cast::f64_as_u32(row.y1)).min(snapshot.height - 1);
+    let y1 = (crate::num_cast::f64_as_u32(row.y1)).min(snapshot.height() - 1);
     (x0..=x1).rev().find(|x| {
         (y0..=y1).any(|y| {
-            let index = ((y * snapshot.width + *x) * 4) as usize;
-            is_ink(snapshot.rgba8[index..index + 4].try_into().expect("rgba"))
+            let index = ((y * snapshot.width() + *x) * 4) as usize;
+            is_ink(snapshot.rgba8()[index..index + 4].try_into().expect("rgba"))
         })
     })
 }

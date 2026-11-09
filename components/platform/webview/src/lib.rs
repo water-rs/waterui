@@ -79,9 +79,26 @@ pub use script::{
     raw_evaluation,
 };
 #[cfg(not(target_arch = "wasm32"))]
+mod navigation;
+/// The Apple OS version `WebViewOpen::navigation_policy` needs, as `(major,
+/// minor)`: `WKNavigationAction.mainFrameNavigation` is public from there. The
+/// `web-frontend-apple-deployment-targets` framework metadata names the same
+/// version for every Apple platform, which the tests check.
+#[cfg(not(target_arch = "wasm32"))]
+const NAVIGATION_POLICY_OS: (u16, u16) = (27, 0);
+#[cfg(not(target_arch = "wasm32"))]
+type NavigationPolicyOs =
+    waterui_apple_os::AppleOs<{ NAVIGATION_POLICY_OS.0 }, { NAVIGATION_POLICY_OS.1 }>;
+#[cfg(not(target_arch = "wasm32"))]
+pub use navigation::{NavigationDecision, NavigationPolicy, NavigationRequest, stay_on_origin};
+#[cfg(not(target_arch = "wasm32"))]
 mod origins;
 #[cfg(not(target_arch = "wasm32"))]
 pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy, OriginRule};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod webkit;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use webkit::AnsweredNavigations;
 
 #[cfg(not(target_arch = "wasm32"))]
 /// An object whose methods and state are exposed to the page.
@@ -455,6 +472,8 @@ impl WebView {
             state: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             bridge_origins: BridgeOrigins::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            navigation_policy: None,
         }
     }
 
@@ -493,6 +512,7 @@ impl WebView {
             event_watchers: Vec::new(),
             state: Vec::new(),
             bridge_origins: BridgeOrigins::default(),
+            navigation_policy: None,
         }
     }
 
@@ -856,6 +876,8 @@ pub struct WebViewOpen {
     state: Vec<state::PendingField>,
     #[cfg(not(target_arch = "wasm32"))]
     bridge_origins: BridgeOrigins,
+    #[cfg(not(target_arch = "wasm32"))]
+    navigation_policy: Option<NavigationPolicy>,
 }
 
 impl fmt::Debug for WebViewOpen {
@@ -872,7 +894,8 @@ impl fmt::Debug for WebViewOpen {
         #[cfg(not(target_arch = "wasm32"))]
         debug
             .field("state_fields", &self.state.len())
-            .field("bridge_origins", &self.bridge_origins);
+            .field("bridge_origins", &self.bridge_origins)
+            .field("navigation_policy", &self.navigation_policy.is_some());
         debug.finish()
     }
 }
@@ -908,7 +931,7 @@ impl WebViewOpen {
         match self
             .scripts
             .iter_mut()
-            .find(|existing| existing.key == script.key)
+            .find(|existing| existing.key() == script.key())
         {
             Some(existing) => *existing = script,
             None => self.scripts.push(script),
@@ -998,6 +1021,56 @@ impl WebViewOpen {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Sets the policy deciding the navigations the page initiates.
+    ///
+    /// The engine asks synchronously — `WKWebView`'s
+    /// `decidePolicyForNavigationAction`, Android's `shouldOverrideUrlLoading`
+    /// — for link activations, `window.location` writes, form submissions,
+    /// `window.open` and subframe loads. Loads the application directs — the
+    /// target the view was opened at and every write to its URL signal —
+    /// are never consulted, and server redirects belong to
+    /// [`redirects_enabled`](Self::redirects_enabled), not this policy.
+    /// Calling it again replaces the earlier policy.
+    ///
+    /// Android's `WebView` never offers a `POST` form submission or an
+    /// `http(s)` subframe load to its hook, so on Android the policy does
+    /// not see those navigations.
+    ///
+    /// On `WKWebView` a *subframe's* server redirect is offered to the
+    /// policy with `is_main_frame == false`: the engine re-asks the hook
+    /// for every redirect, and exposes no public signal marking a
+    /// subframe's action as one, so the policy sees it as an ordinary
+    /// subframe navigation.
+    ///
+    /// # Apple OS 27
+    ///
+    /// `WKWebView` tells the load the application issued from the page's own
+    /// through `WKNavigationAction.mainFrameNavigation`, public API from
+    /// macOS and iOS 27. A build targeting an earlier Apple OS does not
+    /// compile a call to this method: the policy's type must satisfy
+    /// [`waterui_apple_os::Available`], which holds only when the deployment
+    /// target reaches OS 27. Raise the platform under
+    /// `[apple.deployment-targets]` in `Water.toml` to `27.0`; other targets
+    /// are unaffected. `include_web!` installs [`stay_on_origin`] through this
+    /// method and needs the same.
+    pub fn navigation_policy<F>(self, policy: F) -> Self
+    where
+        F: Fn(&NavigationRequest) -> NavigationDecision + Send + Sync + 'static,
+        F: waterui_apple_os::Available<NavigationPolicyOs, NavigationPolicy>,
+    {
+        self.with_navigation_policy(NavigationPolicy::new(policy))
+    }
+
+    /// Installs `policy`, replacing the earlier one. The gate on
+    /// [`navigation_policy`](Self::navigation_policy) is the only thing it
+    /// leaves out.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn with_navigation_policy(mut self, policy: NavigationPolicy) -> Self {
+        self.navigation_policy = Some(policy);
+        self
+    }
+
     /// Observes web view events.
     ///
     /// The subscription lives as long as the web view, so there is no guard to
@@ -1065,6 +1138,8 @@ impl WebViewOpen {
             state,
             #[cfg(not(target_arch = "wasm32"))]
             bridge_origins,
+            #[cfg(not(target_arch = "wasm32"))]
+            navigation_policy,
         } = self;
         // Everything a document may receive before its first line of script
         // is resolved here, before the engine creates anything: the URL the
@@ -1100,17 +1175,16 @@ impl WebViewOpen {
         #[cfg(not(target_arch = "wasm32"))]
         let mirror = (!state.is_empty()).then(|| state::prepare(state));
         #[cfg(not(target_arch = "wasm32"))]
-        let config = WebViewConfig {
+        let config = WebViewConfig::new(
             asset_server,
-            // For an asset-origin view `initial` is the resolved entry URL, so
-            // `BridgeOrigins::Initial` narrows to the asset origin.
-            bridge_origins: OriginPolicy::new(bridge_origins, &initial),
+            OriginPolicy::new(bridge_origins, &initial),
+            navigation_policy,
             scripts,
-            state: mirror
+            mirror
                 .as_ref()
                 .map(state::Mirror::declarations)
                 .unwrap_or_default(),
-        };
+        );
         #[cfg(target_arch = "wasm32")]
         let config = WebViewConfig::default();
         let webview = controller.open_with(config);
@@ -1268,6 +1342,36 @@ mod tests {
         }
     }
 
+    /// `include_web!` installs `stay_on_origin` and an application's own
+    /// call has to win — the builder keeps the last policy it was given.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_later_navigation_policy_replaces_the_earlier_one() {
+        use super::{NavigationDecision, NavigationRequest, stay_on_origin};
+
+        use super::NavigationPolicy;
+
+        // Through the crate-internal setter: the public method is gated on the
+        // Apple deployment target, which has nothing to do with replacement.
+        let open = WebView::open("https://waterui.dev")
+            .with_navigation_policy(NavigationPolicy::new(stay_on_origin))
+            .with_navigation_policy(NavigationPolicy::new(|_| NavigationDecision::Cancel));
+        let request = NavigationRequest::new(
+            "https://waterui.dev/docs".parse().expect("a valid URL"),
+            Some("https://waterui.dev".parse().expect("a valid URL")),
+            true,
+            true,
+        );
+        // `stay_on_origin` would allow this same-origin navigation; the
+        // replacement does not.
+        assert!(
+            !open
+                .navigation_policy
+                .expect("a policy was configured")
+                .allows(&request)
+        );
+    }
+
     #[test]
     fn navigation_subscription_does_not_repeat_synchronous_emission() {
         let replacement = Url::new("https://waterui.dev/docs");
@@ -1286,5 +1390,29 @@ mod tests {
         source.set(next.clone());
 
         assert_eq!(*navigations.borrow(), vec![replacement, next]);
+    }
+
+    /// The framework metadata `water create` reads to scaffold a web frontend
+    /// project names the Apple OS version `navigation_policy` is gated on, for
+    /// every Apple platform.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn web_frontend_deployment_targets_match_the_navigation_policy_gate() {
+        let manifest: toml::Value =
+            toml::from_str(include_str!("../../../../Cargo.toml")).expect("a valid root manifest");
+        let targets =
+            manifest["package"]["metadata"]["waterui"]["web-frontend-apple-deployment-targets"]
+                .as_table()
+                .expect("the framework declares web-frontend-apple-deployment-targets");
+        let (major, minor) = super::NAVIGATION_POLICY_OS;
+        let gate = format!("{major}.{minor}");
+        assert_eq!(
+            targets.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["ios", "macos", "tvos", "visionos", "watchos"],
+            "every Apple platform is declared"
+        );
+        for (platform, version) in targets {
+            assert_eq!(version.as_str(), Some(gate.as_str()), "{platform}");
+        }
     }
 }

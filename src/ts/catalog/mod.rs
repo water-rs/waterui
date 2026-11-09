@@ -42,10 +42,12 @@ mod attributes;
 mod values;
 
 use suiteki::Str;
+#[cfg(debug_assertions)]
+use waterui_ts::schema::dir_entry;
 use waterui_ts::schema::{
     CatalogSchema, ChildrenSlot, ComponentSchema, ModifierSchema, RuntimePart, TsType, TypeSchema,
-    attributes_of, catalog_encoded_len, contract_hash, dir_entry, encode_catalog,
-    encode_runtime_half, payload, runtime_half_encoded_len,
+    attributes_of, catalog_encoded_len, contract_hash, encode_catalog, encode_runtime_half,
+    payload, runtime_half_encoded_len,
 };
 
 #[cfg(feature = "media")]
@@ -284,13 +286,13 @@ const fn modifier(name: &'static str, summary: &'static str) -> ModifierSchema {
 /// The value shape [`Modifiers`] declares for `name`.
 const fn modifier_value(name: &str) -> &'static TypeSchema {
     let fields = match Modifiers::SCHEMA {
-        TypeSchema::Struct(schema) => schema.fields,
+        TypeSchema::Struct(schema) => schema.fields(),
         _ => panic!("the modifier table is an object type"),
     };
     let mut index = 0;
     while index < fields.len() {
-        if str_eq(fields[index].name, name) {
-            return &fields[index].ty;
+        if str_eq(fields[index].name(), name) {
+            return fields[index].ty();
         }
         index += 1;
     }
@@ -337,6 +339,7 @@ pub static waterui_meta_ts_catalog: [u8; CATALOG_RECORD_LEN] =
     dir_entry::<CATALOG_RECORD_LEN>(b"waterui_meta_ts_catalog", CATALOG_ENCODED);
 
 /// The record's length: the name, NUL, the encoded catalog, NUL.
+#[cfg(debug_assertions)]
 const CATALOG_RECORD_LEN: usize = b"waterui_meta_ts_catalog".len() + ENCODED.len() + 1;
 
 /// The encoded catalog without its terminator: the exact bytes the CLI
@@ -379,6 +382,7 @@ pub static waterui_meta_ts_runtime_catalog: [u8; RUNTIME_CATALOG_RECORD_LEN] =
     );
 
 /// The record's length: the name, NUL, the encoded half, NUL.
+#[cfg(debug_assertions)]
 const RUNTIME_CATALOG_RECORD_LEN: usize =
     b"waterui_meta_ts_runtime_catalog".len() + CATALOG_HALF.len() + 1;
 
@@ -390,18 +394,18 @@ pub const CATALOG_HALF_ENCODED: &[u8] = payload(&CATALOG_HALF);
 #[must_use]
 pub fn component_named(name: &str) -> Option<&'static ComponentSchema> {
     CATALOG
-        .components
+        .components()
         .iter()
-        .find(|component| component.name == name)
+        .find(|component| component.name() == name)
 }
 
 /// Every component name, for the error an unknown tag raises.
 #[must_use]
 pub fn component_names() -> Vec<&'static str> {
     CATALOG
-        .components
+        .components()
         .iter()
-        .map(|component| component.name)
+        .map(ComponentSchema::name)
         .collect()
 }
 
@@ -412,10 +416,10 @@ pub fn component_names() -> Vec<&'static str> {
 #[must_use]
 pub fn attribute_names(component: &ComponentSchema) -> Vec<&'static str> {
     component
-        .attributes
-        .fields
+        .attributes()
+        .fields()
         .iter()
-        .map(|field| field.name)
+        .map(waterui_ts::schema::FieldSchema::name)
         .collect()
 }
 
@@ -423,8 +427,8 @@ pub fn attribute_names(component: &ComponentSchema) -> Vec<&'static str> {
 #[must_use]
 pub fn modifier_names() -> Vec<Str> {
     CATALOG
-        .modifiers
+        .modifiers()
         .iter()
-        .map(|modifier| Str::from_static(modifier.name))
+        .map(|modifier| Str::from_static(modifier.name()))
         .collect()
 }

@@ -285,7 +285,7 @@ async fn run_capture_by_pid(
     }
 
     // Filter to only normal windows (layer 0)
-    let normal_windows: Vec<_> = windows.iter().filter(|w| w.layer == 0).collect();
+    let normal_windows: Vec<_> = windows.iter().filter(|w| w.layer() == 0).collect();
 
     if normal_windows.is_empty() {
         error!(
@@ -302,12 +302,12 @@ async fn run_capture_by_pid(
         smol::fs::create_dir_all(&dir).await?;
 
         for (i, window) in normal_windows.iter().enumerate() {
-            let filename = if window.name.is_empty() {
+            let filename = if window.name().is_empty() {
                 format!("window_{i}.png")
             } else {
                 // Sanitize window name for filename
                 let safe_name: String = window
-                    .name
+                    .name()
                     .chars()
                     .map(|c| {
                         if c.is_alphanumeric() || c == '-' || c == '_' {
@@ -321,12 +321,12 @@ async fn run_capture_by_pid(
             };
             let path = dir.join(&filename);
 
-            match screenshot_window(&Host::current(), window.window_id, &path).await {
+            match screenshot_window(&Host::current(), window.window_id(), &path).await {
                 Ok(()) => {
                     success!(
                         shell,
                         "Window {i} \"{}\" saved to {}",
-                        window.name,
+                        window.name(),
                         path.display()
                     );
                 }
@@ -361,13 +361,13 @@ async fn run_capture_by_pid(
         let window = &normal_windows[index];
         let output_path = output.unwrap_or_else(capture::generate_screenshot_filename);
 
-        match screenshot_window(&Host::current(), window.window_id, &output_path).await {
+        match screenshot_window(&Host::current(), window.window_id(), &output_path).await {
             Ok(()) => {
                 success!(
                     shell,
                     "Screenshot saved to {} (window \"{}\" from PID {pid})",
                     output_path.display(),
-                    window.name
+                    window.name()
                 );
                 Ok(())
             }
@@ -394,7 +394,7 @@ fn print_diff_result(
     result: &gesture::GestureResult,
     diff_output: Option<&std::path::Path>,
 ) {
-    if let Some(diff) = &result.diff {
+    if let Some(diff) = result.diff() {
         if let Some(path) = diff_output {
             success!(shell, "Diff image saved to {}", path.display());
         }

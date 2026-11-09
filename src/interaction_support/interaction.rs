@@ -33,7 +33,17 @@ pub struct Hittable {
     /// Whether hit testing is enabled.
     /// `true` means the view responds to touch events (default behavior).
     /// `false` means touch events pass through the view.
-    pub enabled: Computed<bool>,
+    enabled: Computed<bool>,
+}
+
+impl Hittable {
+    /// Whether hit testing is enabled.
+    /// `true` means the view responds to touch events (default behavior).
+    /// `false` means touch events pass through the view.
+    #[must_use]
+    pub const fn enabled(&self) -> &Computed<bool> {
+        &self.enabled
+    }
 }
 
 impl MetadataKey for Hittable {}

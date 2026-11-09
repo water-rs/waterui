@@ -244,7 +244,6 @@ impl BrowserSurface {
             crate::renderer::FrameRenderTarget {
                 adapter: &context.shared_device.adapter,
                 device: &context.shared_device.device,
-                queue: &context.shared_device.queue,
                 device_loss: self.handles.clone(),
                 gpu_context_id: context.context_id,
                 shared_device: context.shared_device.clone(),
@@ -562,22 +561,22 @@ impl PlatformWindow for BrowserWindow {
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
         if let Some(state) = state {
-            self.ime_input.set_type(match state.purpose {
+            self.ime_input.set_type(match state.purpose() {
                 TextInputPurpose::Normal => "text",
                 TextInputPurpose::Password => "password",
             });
             let style = self.ime_input.style();
             style
-                .set_property("left", &format!("{}px", state.x))
+                .set_property("left", &format!("{}px", state.x()))
                 .expect("hydrolysis web platform: failed to place IME input");
             style
-                .set_property("top", &format!("{}px", state.y))
+                .set_property("top", &format!("{}px", state.y()))
                 .expect("hydrolysis web platform: failed to place IME input");
             style
-                .set_property("width", &format!("{}px", state.width.max(1.0)))
+                .set_property("width", &format!("{}px", state.width().max(1.0)))
                 .expect("hydrolysis web platform: failed to size IME input width");
             style
-                .set_property("height", &format!("{}px", state.height.max(1.0)))
+                .set_property("height", &format!("{}px", state.height().max(1.0)))
                 .expect("hydrolysis web platform: failed to size IME input height");
             let _ = self.ime_input.focus();
         } else {
@@ -804,8 +803,8 @@ impl Viewport {
         let inset = |property: &str| crate::num_cast::f64_as_f32(length(property));
         waterui_layout::padding::EdgeInsets::new(
             inset("padding-top"),
-            crate::num_cast::f64_as_f32(length("padding-bottom") + extension),
             inset("padding-left"),
+            crate::num_cast::f64_as_f32(length("padding-bottom") + extension),
             inset("padding-right"),
         )
     }
@@ -1325,7 +1324,7 @@ fn composition_text(event: CompositionEvent) -> String {
     event.data().unwrap_or_default()
 }
 
-fn add_event_listener(
+pub fn add_event_listener(
     target: &web_sys::EventTarget,
     event_name: &str,
     handler: impl 'static + FnMut(Event),

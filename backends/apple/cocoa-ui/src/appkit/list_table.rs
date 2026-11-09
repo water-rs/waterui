@@ -5,7 +5,7 @@
 //! [`InnerTable`] (`table_view()`) holds a single `content` column and
 //! answers the `NSTableViewDataSource`/`NSTableViewDelegate` callbacks by
 //! forwarding to the [`TableSource`] the consumer installs; the scroll view
-//! owns the scroll chrome (vertical scroller, autohide, top content inset)
+//! owns the scroll chrome (vertical scroller, autohide, content insets)
 //! and is flipped so document space is top-left origin. `InnerTable` also
 //! bounds the accessibility rows it vends to realized or selected rows so
 //! an assistive tree walk cannot materialize every row of a large list.
@@ -51,17 +51,23 @@ use objc2_app_kit::{
     NSView,
 };
 use objc2_foundation::{
-    NSArray, NSEdgeInsets, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotFound, NSNotification,
+    NSArray, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotFound, NSNotification,
     NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString,
 };
 
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Point};
 use crate::notification::NotificationObserver;
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
 
 /// The table's content-bearing column identifier.
 const COLUMN_IDENTIFIER: &str = "content";
+
+/// The space the list gains between its top safe-area edge and the first
+/// row — `SwiftUI`'s breathing room above the first row, which scrolls
+/// away with the rows.
+const TOP_GAP: f64 = 10.0;
 
 /// The data the wrapped `NSTableView` reads rows from — the list's model.
 ///
@@ -148,6 +154,8 @@ pub struct TableViewIvars {
     flight: Rc<ScrollFlight>,
     /// Ends a flight when the user's live scroll reports a bounds change.
     live_scroll: RefCell<Vec<NotificationObserver>>,
+    /// How the list was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl TableViewIvars {
@@ -163,6 +171,7 @@ impl TableViewIvars {
             sidebar: Cell::new(false),
             flight: ScrollFlight::new(mtm),
             live_scroll: RefCell::new(Vec::new()),
+            geometry: ResponseGeometry::default(),
         }
     }
 }
@@ -468,20 +477,54 @@ define_class!(
             true
         }
 
-        /// Keeps `AppKit`'s layout — its clip corrections counted as the
-        /// flight's own writes — then reports it so the consumer can
-        /// track the content width onto the column.
+        /// Keeps `AppKit`'s resize, counted as the flight's own writes: it
+        /// re-tiles the clip and resizes the table with it, and the clip's
+        /// re-clamp to the new document frame is `AppKit`'s correction,
+        /// never the user's scroll.
+        #[unsafe(method(setFrameSize:))]
+        fn set_frame_size_override(&self, new_size: NSSize) {
+            guarded("TableView setFrameSize", || {
+                self.ivars().flight.own_writes(|| {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
+                });
+            });
+        }
+
+        /// Commits the list's response geometry, insets the rows by the
+        /// safe area and the list's top gap, keeps `AppKit`'s layout — its
+        /// clip corrections counted as the flight's own writes — then
+        /// reports it so the consumer can track the content width onto the
+        /// column. The commit opens the pass: resolving the response
+        /// measures the table's own content, which must not re-enter
+        /// `AppKit` from inside its layout.
         #[unsafe(method(layout))]
         fn layout_override(&self) {
             guarded("TableView layout", || {
+                self.ivars().geometry.commit(self);
                 self.ivars().flight.own_writes(|| {
-                    // SAFETY: see the module safety note.
-                    let _: () = unsafe { msg_send![super(self), layout] };
+                    super::scroll::layout_with_safe_area_insets(self, TOP_GAP, || {
+                        // SAFETY: see the module safety note.
+                        let _: () = unsafe { msg_send![super(self), layout] };
+                    });
                 });
                 if let Some(handler) = self.ivars().layout.borrow().as_ref().cloned() {
                     handler(self);
                 }
             });
+        }
+
+        /// The response rectangle, or what `.a11y_geometry` names, once
+        /// the list's placement committed one.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("TableView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         /// Window changes swap the consumer's key-state observation and
@@ -514,10 +557,17 @@ define_class!(
     }
 );
 
+impl ReportsResponse for TableView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
+
 impl TableView {
     /// A list-shaped table: one `content` column, no header, `fullWidth`
     /// rows, zero intercell spacing, text-background fill, autohiding
-    /// vertical scroller, and a 10pt top content inset that scrolls away.
+    /// vertical scroller, and content inset by the safe area plus a top
+    /// gap that scrolls away.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(TableViewIvars::new(mtm));
@@ -550,13 +600,8 @@ impl TableView {
         this.setHasVerticalScroller(true);
         this.setAutohidesScrollers(true);
         this.setDrawsBackground(false);
+        // `-layout` insets the rows by the safe area and the list's gap.
         this.setAutomaticallyAdjustsContentInsets(false);
-        this.setContentInsets(NSEdgeInsets {
-            top: 10.0,
-            left: 0.0,
-            bottom: 0.0,
-            right: 0.0,
-        });
         this.ivars().table.replace(Some(table.into_super()));
         this.ivars()
             .live_scroll
@@ -660,6 +705,8 @@ type SeparatorHandler = Rc<dyn Fn(&TableRowView) -> (f64, f64)>;
 pub struct TableRowViewIvars {
     /// `(leading, trailing)` insets for the hairline; `None` draws none.
     separator: RefCell<Option<SeparatorHandler>>,
+    /// Whether the hairline paints — a section's last member draws none.
+    shows_separator: Cell<bool>,
 }
 
 impl fmt::Debug for TableRowViewIvars {
@@ -716,6 +763,9 @@ define_class!(
         fn draw_rect(&self, dirty_rect: NSRect) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), drawRect: dirty_rect] };
+            if !self.ivars().shows_separator.get() {
+                return;
+            }
             let Some(handler) = self.ivars().separator.borrow().as_ref().cloned() else {
                 return;
             };
@@ -751,6 +801,14 @@ impl TableRowView {
     pub fn set_separator_handler(&self, handler: Option<SeparatorHandler>) {
         self.ivars().separator.replace(handler);
         self.setNeedsDisplay(true);
+    }
+
+    /// Whether the row paints its separator. A changed answer marks the
+    /// row dirty so a gained or lost hairline redraws.
+    pub fn set_shows_separator(&self, shows: bool) {
+        if self.ivars().shows_separator.replace(shows) != shows {
+            self.setNeedsDisplay(true);
+        }
     }
 }
 
@@ -976,6 +1034,7 @@ impl TableView {
         deletes: &[usize],
         moves: &[(usize, usize)],
         inserts: &[usize],
+        claimed_inserts: &[usize],
         animated: bool,
     ) {
         let animation = if animated {
@@ -994,6 +1053,12 @@ impl TableView {
             );
         }
         table.insertRowsAtIndexes_withAnimation(&index_set(inserts), animation);
+        // Rows whose own structural transition replaces the row animation
+        // insert with no effect.
+        table.insertRowsAtIndexes_withAnimation(
+            &index_set(claimed_inserts),
+            NSTableViewAnimationOptions::EffectNone,
+        );
         table.endUpdates();
     }
 
@@ -1053,15 +1118,19 @@ impl TableView {
         self.ivars().flight.jump_to(self, point);
     }
 
-    /// The clip position that puts `row`'s top edge at the clip's top —
-    /// `rectOfRow` is exact (the table answers `heightOfRow` for every
-    /// row), and the clip's constraint clamps it, so a last-screenful row
-    /// lands at the document's end rather than past it.
+    /// The clip position that puts `row`'s top edge at the inset content
+    /// edge — below the window toolbar the table's `contentInsets` carry
+    /// ([`layout_with_safe_area_insets`](super::scroll::layout_with_safe_area_insets)),
+    /// not at the clip's own top. `rectOfRow` is exact (the table answers
+    /// `heightOfRow` for every row), and the clip's constraint clamps it,
+    /// so a last-screenful row lands at the document's end rather than
+    /// past it.
     fn row_top(&self, row: usize) -> Point {
         self.layoutSubtreeIfNeeded();
+        let inset = EdgeInsets::from(self.contentInsets());
         ScrollFlight::constrained(
             &self.contentView(),
-            Point::new(0.0, self.rect_of_row(row).origin.y),
+            Point::new(-inset.left, self.rect_of_row(row).origin.y - inset.top),
         )
     }
 
@@ -1133,21 +1202,30 @@ impl TableView {
         self.ivars().flight.in_flight()
     }
 
+    /// Installs a stepped clock on this surface's scroll flights and
+    /// returns it — the native test suite's hand on flight time. Call it
+    /// before the surface's first flight.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn install_manual_scroll_clock(&self) -> Rc<crate::native_test::ManualScrollClock> {
+        self.ivars().flight.install_manual_clock()
+    }
+
     /// Whether the scroll view is in a window.
     #[must_use]
     pub fn in_window(&self) -> bool {
         self.window().is_some()
     }
 
-    /// Runs `handler` once per row view currently materialized.
-    pub fn enumerate_row_views(&self, handler: impl Fn(&NSTableRowView) + 'static) {
-        let block = block2::RcBlock::new(
-            move |row_view: NonNull<NSTableRowView>, _index: NSInteger| {
+    /// Runs `handler` once per row view currently materialized, with the
+    /// row's index.
+    pub fn enumerate_row_views(&self, handler: impl Fn(usize, &NSTableRowView) + 'static) {
+        let block =
+            block2::RcBlock::new(move |row_view: NonNull<NSTableRowView>, index: NSInteger| {
                 // SAFETY: `AppKit` lends a live row view for the block's
                 // duration.
-                unsafe { handler(row_view.as_ref()) };
-            },
-        );
+                unsafe { handler(index.cast_unsigned(), row_view.as_ref()) };
+            });
         self.table_view()
             .enumerateAvailableRowViewsUsingBlock(&block);
     }

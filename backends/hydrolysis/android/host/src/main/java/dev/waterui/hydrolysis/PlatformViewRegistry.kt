@@ -11,6 +11,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.core.view.isVisible
 import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * The embedded-native-view registry: a transparent [FrameLayout] laid out on
@@ -81,8 +82,7 @@ class PlatformViewRegistry internal constructor(
                 hostView?.requestFrame()
             }
 
-            override fun dispatchDraw(canvas: Canvas) {
-                val content = orderedContent ?: return super.dispatchDraw(canvas)
+            private fun drawOrdered(canvas: Canvas, content: OrderedContent) {
                 // The painter re-records every bound view's portal before the
                 // root draws — the views themselves draw through their
                 // owning RenderNode's place in the retained tree.
@@ -108,7 +108,27 @@ class PlatformViewRegistry internal constructor(
              *  stays with it through MOVE/UP even when the order changes. */
             private var nativeTarget: View? = null
 
+            /** Set while `super.dispatchDraw` runs: drawing is paint order. */
+            private var drawingChildren = false
+
+            override fun dispatchDraw(canvas: Canvas) {
+                val content = orderedContent
+                if (content != null) return drawOrdered(canvas, content)
+                // Without a painter the children are the paint order — the
+                // GPU band's views and bands interleave by child index — so
+                // the touch reorder below must not reach them. ViewGroup asks
+                // `getChildDrawingOrder` for both drawing and its reversed
+                // touch dispatch, and the draw runs inside this call.
+                drawingChildren = true
+                try {
+                    super.dispatchDraw(canvas)
+                } finally {
+                    drawingChildren = false
+                }
+            }
+
             override fun getChildDrawingOrder(childCount: Int, drawingPosition: Int): Int {
+                if (drawingChildren) return drawingPosition
                 val target = nativeTarget
                 val chosen = target?.let { indexOfChild(it) } ?: -1
                 if (chosen < 0) return drawingPosition
@@ -131,7 +151,8 @@ class PlatformViewRegistry internal constructor(
             }
 
             override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
-                val content = orderedContent ?: return super.onInterceptTouchEvent(event)
+                val content = (orderedContent ?: orderedHitTest)
+                    ?: return super.onInterceptTouchEvent(event)
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                     // The retained tree answers who owns the point — alpha,
                     // transforms, clips and scroll already composed there;
@@ -145,7 +166,7 @@ class PlatformViewRegistry internal constructor(
 
             @SuppressLint("ClickableViewAccessibility")
             override fun onTouchEvent(event: MotionEvent): Boolean {
-                if (orderedContent != null && !nativeGesture) {
+                if ((orderedContent != null || orderedHitTest != null) && !nativeGesture) {
                     return hostView?.onTouchEvent(event) ?: false
                 }
                 return super.onTouchEvent(event)
@@ -185,6 +206,8 @@ class PlatformViewRegistry internal constructor(
     private var pendingJson: String? = null
     private var appliedJson: String? = null
     private var orderedContent: OrderedContent? = null
+    private var orderedHitTest: OrderedHitTest? = null
+    private var splittingSuppressed = false
     private val slotClip = Rect()
     private val inverse = Matrix()
     private val point = FloatArray(2)
@@ -203,13 +226,9 @@ class PlatformViewRegistry internal constructor(
      * restored when the painter is removed.
      */
     internal fun setOrderedContent(content: OrderedContent?) {
-        if (content != null && orderedContent == null) {
-            savedSplitting = container.isMotionEventSplittingEnabled
-            container.isMotionEventSplittingEnabled = false
-        } else if (content == null && orderedContent != null) {
-            container.isMotionEventSplittingEnabled = savedSplitting
-        }
-        if (content == null && orderedContent != null) {
+        val hadContent = orderedContent != null
+        orderedContent = content
+        if (content == null && hadContent) {
             for (slot in slots.values) {
                 if (slot.nativeGeometry) {
                     slot.nativeGeometry = false
@@ -218,8 +237,40 @@ class PlatformViewRegistry internal constructor(
                 }
             }
         }
-        orderedContent = content
+        syncSplitting()
         container.invalidate()
+    }
+
+    /**
+     * The GPU band's ordered hit test: the gesture-ownership answers the
+     * touch paths need when the surfaces draw outside this container — a
+     * painter that draws entries here installs the richer [OrderedContent]
+     * instead (water-rs/waterui#2225). Splitting stays off for the same
+     * reason: children are not stacked in paint order there either.
+     */
+    internal fun setOrderedHitTest(hitTest: OrderedHitTest?) {
+        orderedHitTest = hitTest
+        syncSplitting()
+    }
+
+    /**
+     * While an ordered answer is installed — a painter's content or the
+     * GPU band's hit test — motion-event splitting is off: with it on,
+     * ViewGroup would route a second pointer's DOWN to the topmost *child*
+     * under it, a slot that can sit behind topmost self-drawn content,
+     * splitting one logical gesture across two owners. The prior value is
+     * restored when the last ordered answer is removed.
+     */
+    private fun syncSplitting() {
+        val suppressed = orderedContent != null || orderedHitTest != null
+        if (suppressed == splittingSuppressed) return
+        splittingSuppressed = suppressed
+        if (suppressed) {
+            savedSplitting = container.isMotionEventSplittingEnabled
+            container.isMotionEventSplittingEnabled = false
+        } else {
+            container.isMotionEventSplittingEnabled = savedSplitting
+        }
     }
 
     /**
@@ -302,9 +353,10 @@ class PlatformViewRegistry internal constructor(
      * path and let the a11y provider own everything else.
      */
     internal fun coversPixel(x: Float, y: Float): Boolean {
-        orderedContent?.let { content ->
+        (orderedContent ?: orderedHitTest)?.let { content ->
             // The retained tree decides: the pixel is a platform hit only
-            // when its topmost entry under it is a platform view.
+            // when a platform view is drawn there and no interactive target
+            // above it takes the point.
             val id = content.platformViewAt(x, y) ?: return false
             return slotAt(id, x, y) != null
         }
@@ -352,6 +404,8 @@ class PlatformViewRegistry internal constructor(
                     clip = clip,
                     order = entry.optLong("order", 0L),
                     visible = entry.optBoolean("visible", true),
+                    stretches = stretches(entry),
+                    stretchRegion = entry.optJSONArray("stretch_region")?.floats(4),
                 )
             )
         }
@@ -380,23 +434,87 @@ class PlatformViewRegistry internal constructor(
         container.invalidate()
     }
 
+    /**
+     * The overscroll stretches of a placement entry, outermost first: the
+     * stretch filter's parameters the engine warps the surrounding content
+     * with, for the slot's [OverscrollStretchEffect] to warp the view by.
+     */
+    private fun stretches(entry: JSONObject): List<OverscrollStretch> {
+        val array = entry.optJSONArray("stretches") ?: return emptyList()
+        return List(array.length()) { index ->
+            val stretch = array.getJSONObject(index)
+            OverscrollStretch(
+                params = stretch.getJSONArray("params").floats(OverscrollStretch.PARAMS),
+                strength = stretch.getDouble("strength").toFloat(),
+            )
+        }
+    }
+
+    private fun JSONArray.floats(count: Int): FloatArray {
+        check(length() == count) { "hydrolysis: expected $count numbers, got ${length()}" }
+        return FloatArray(count) { getDouble(it).toFloat() }
+    }
+
+    /**
+     * Creates the [RegionBand] a GPU host inserts right after the platform
+     * view whose placement id it is given — the View that shows the
+     * self-drawn content painted above that view (water-rs/waterui#2225).
+     * The id is the one the engine names the band by. `null` on hosts whose
+     * painter draws that content in order itself: platform views keep
+     * their contiguous child order.
+     */
+    var bandFactory: ((Long) -> RegionBand)? = null
+
+    /** The live bands, keyed by the placement id of the view each sits above. */
+    private val bands = mutableMapOf<Long, RegionBand>()
+
+    /** The band above the platform view whose placement id is [view], while one is mounted. */
+    internal fun band(view: Long): RegionBand? = bands[view]
+
     private fun orderChanged(wanted: List<Placement>): Boolean {
+        val step = if (bandFactory != null) 2 else 1
         var i = 0
         for (placement in wanted) {
             val slot = slots[placement.id] ?: continue
-            if (container.indexOfChild(slot.view) != i) return true
+            if (container.indexOfChild(slot.view) != i * step) return true
             i++
         }
-        return container.childCount != i
+        return container.childCount != i * step
     }
 
     private fun orderSlots(wanted: List<Placement>) {
-        for ((index, placement) in wanted.withIndex()) {
+        // Platform view `i` sits at index `2i` under a band factory, its
+        // own band at `2i + 1` — a View drawing in child order, above the
+        // platform views before it and beneath the ones after, which is
+        // exactly where the content above that view's mark paints. The band
+        // is named by the view's placement id, the id the engine marks the
+        // view's layer with, so a view the engine plans no region for (one
+        // clipped away entirely) keeps an empty band rather than shifting
+        // every later region onto the wrong view (water-rs/waterui#2225).
+        val factory = bandFactory
+        val live = HashSet<Long>()
+        var index = 0
+        for (placement in wanted) {
             val slot = slots[placement.id] ?: continue
             if (container.indexOfChild(slot.view) != index) {
                 container.removeView(slot.view)
                 container.addView(slot.view, index)
             }
+            index++
+            if (factory != null) {
+                live.add(placement.id)
+                val band = bands.getOrPut(placement.id) { factory(placement.id) }
+                if (container.indexOfChild(band) != index) {
+                    container.removeView(band)
+                    container.addView(band, index)
+                }
+                index++
+            }
+        }
+        // Bands above views no longer ordered here are stale.
+        val stale = bands.keys.filter { it !in live }
+        for (view in stale) {
+            bands.remove(view)?.let(container::removeView)
         }
     }
 
@@ -505,6 +623,13 @@ class PlatformViewRegistry internal constructor(
         val density = context.resources.displayMetrics.density
         fun px(value: Float) = (value * density).toInt()
 
+        if (placement.stretches.isNotEmpty()) {
+            applyStretch(slot, density)
+            view.visibility = if (placement.visible) View.VISIBLE else View.INVISIBLE
+            return
+        }
+        endStretch(slot)
+
         val params = view.layoutParams as FrameLayout.LayoutParams
         val width = px(placement.width)
         val height = px(placement.height)
@@ -519,17 +644,88 @@ class PlatformViewRegistry internal constructor(
             params.topMargin = top
             view.layoutParams = params
         }
-        view.clipBounds =
-            placement.clip?.let { clip ->
-                Rect(
-                    px(clip[0]) - left,
-                    px(clip[1]) - top,
-                    px(clip[2]) - left,
-                    px(clip[3]) - top,
-                )
-            }
+        view.clipBounds = placement.clip?.let { slotClip(it, density, left, top) }
         view.visibility = if (placement.visible) View.VISIBLE else View.INVISIBLE
     }
+
+    /**
+     * The slot-local `clipBounds` of a placement `clip` — window logical
+     * `[x, y, width, height]` — for a slot whose origin sits at host pixel
+     * (`left`, `top`).
+     */
+    private fun slotClip(clip: FloatArray, density: Float, left: Int, top: Int): Rect =
+        Rect(
+            (clip[0] * density).toInt() - left,
+            (clip[1] * density).toInt() - top,
+            ((clip[0] + clip[2]) * density).toInt() - left,
+            ((clip[1] + clip[3]) * density).toInt() - top,
+        )
+
+    /**
+     * Lays the slot out for the overscroll stretches its placement carries
+     * and warps it by them. The engine stretches the self-drawn content
+     * around the view in its own passes; the view is a real View it cannot
+     * warp, so the slot draws through the same stretch as a RenderEffect
+     * ([OverscrollStretchEffect]). The warp carries the view's content past
+     * its frame, so the slot takes the placement's stretch region and the
+     * mounted view keeps its frame size and window position inside it
+     * ([StretchLayout]), clipped by the region as an unstretched slot is by
+     * its clip. Touches keep the frame's unwarped geometry: a stretch shows
+     * while a scroll gesture owns the pointer or a fling settles.
+     */
+    private fun applyStretch(slot: Slot, density: Float) {
+        val placement = slot.placement
+        val region =
+            placement.stretchRegion
+                ?: error("hydrolysis: platform view ${placement.id} is stretched without a region")
+        val layout =
+            StretchLayout.of(
+                floatArrayOf(placement.x, placement.y, placement.width, placement.height),
+                region,
+                density,
+            )
+        val view = slot.view
+        val params = view.layoutParams as FrameLayout.LayoutParams
+        if (params.width != layout.regionWidth || params.height != layout.regionHeight ||
+            params.leftMargin != layout.regionLeft || params.topMargin != layout.regionTop
+        ) {
+            params.width = layout.regionWidth
+            params.height = layout.regionHeight
+            params.leftMargin = layout.regionLeft
+            params.topMargin = layout.regionTop
+            view.layoutParams = params
+        }
+        view.clipBounds = null
+        val mounted = slot.mounted.layoutParams as FrameLayout.LayoutParams
+        if (mounted.width != layout.mountedWidth || mounted.height != layout.mountedHeight ||
+            mounted.leftMargin != layout.mountedLeft || mounted.topMargin != layout.mountedTop
+        ) {
+            mounted.width = layout.mountedWidth
+            mounted.height = layout.mountedHeight
+            mounted.leftMargin = layout.mountedLeft
+            mounted.topMargin = layout.mountedTop
+            slot.mounted.layoutParams = mounted
+        }
+        val effect =
+            slot.stretch ?: OverscrollStretchEffect(stretchSource).also { slot.stretch = it }
+        effect.update(view, placement.stretches, density, layout.regionLeft, layout.regionTop)
+    }
+
+    /** Draws `slot` unstretched again, its mounted view filling it. */
+    private fun endStretch(slot: Slot) {
+        val effect = slot.stretch ?: return
+        slot.stretch = null
+        effect.clear(slot.view)
+        val mounted = slot.mounted.layoutParams as FrameLayout.LayoutParams
+        mounted.width = ViewGroup.LayoutParams.MATCH_PARENT
+        mounted.height = ViewGroup.LayoutParams.MATCH_PARENT
+        mounted.leftMargin = 0
+        mounted.topMargin = 0
+        slot.mounted.layoutParams = mounted
+    }
+
+    /** The AGSL source, read once when the first stretch shows. */
+    private val stretchSource: String by lazy { OverscrollStretchShader.source() }
 
     /**
      * Lays the slot out in the binding's pixel space. A translation-only
@@ -564,14 +760,8 @@ class PlatformViewRegistry internal constructor(
         // NativeSlot's override compares and copies — no allocation here.
         view.animationMatrix = if (translationOnly) null else slot.nativeTransform
         view.clipBounds =
-            slot.placement.clip?.let { clip ->
-                val density = context.resources.displayMetrics.density
-                Rect(
-                    (clip[0] * density).toInt() - offsetX,
-                    (clip[1] * density).toInt() - offsetY,
-                    ((clip[0] + clip[2]) * density).toInt() - offsetX,
-                    ((clip[1] + clip[3]) * density).toInt() - offsetY,
-                )
+            slot.placement.clip?.let {
+                slotClip(it, context.resources.displayMetrics.density, offsetX, offsetY)
             }
         if (view.isLayoutRequested || view.width != width ||
             view.height != height || view.left != offsetX || view.top != offsetY
@@ -618,6 +808,9 @@ class PlatformViewRegistry internal constructor(
         var nativeWidth = 0
         var nativeHeight = 0
         val nativeTransform = Matrix()
+
+        /** The overscroll stretch this slot draws through while its placement carries one. */
+        var stretch: OverscrollStretchEffect? = null
     }
 
     private class Placement(
@@ -628,8 +821,13 @@ class PlatformViewRegistry internal constructor(
         val y: Float,
         val width: Float,
         val height: Float,
+        /** The clip cutting the frame, in window logical units: `[x, y, width, height]`. */
         val clip: FloatArray?,
         val order: Long,
         val visible: Boolean,
+        /** The overscroll stretches warping the view, outermost first. */
+        val stretches: List<OverscrollStretch>,
+        /** The window region the warped view draws into: `[x, y, width, height]`. */
+        val stretchRegion: FloatArray?,
     )
 }

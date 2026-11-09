@@ -153,17 +153,19 @@ pub struct InnerProgram<E: crate::text::TextEngine> {
 
 /// A producer-backed node's content, installed by the target at commit.
 pub enum ProducerContent {
-    #[cfg(hydrolysis_hosted)]
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
     Hosted {
         runtime: Rc<crate::hosted::HostedRuntime>,
         bounds: kurbo::Rect,
     },
     Scene(SceneContentSource),
+    #[cfg(hydrolysis_gpu)]
     Gpu {
         runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
         bounds: kurbo::Rect,
         visible: bool,
     },
+    #[cfg(hydrolysis_gpu)]
     External {
         runtime: Rc<RefCell<crate::gpu_view::ExternalFrameRuntime>>,
         bounds: kurbo::Rect,
@@ -424,6 +426,12 @@ impl<E: crate::text::TextEngine> ProgramBuilder<E> {
             self.scopes.is_empty() && self.program.inner.is_none(),
             "hydrolysis program: the inner layer opens once, outside every scope"
         );
+        // The viewport's placement states the stretch too, so a platform
+        // view inside resolves the warp its host applies to it.
+        anchor.set_stretch(stretch.map(|direction| super::stretch::ShownStretch {
+            viewport,
+            direction,
+        }));
         self.program.inner = Some(InnerProgram {
             viewport,
             offset,

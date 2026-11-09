@@ -31,8 +31,8 @@ use nami::{Computed, Signal, SignalExt, watcher::BoxWatcherGuard};
 use waterui_core::{IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews};
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement, UnitPoint,
-    container::FixedContainer,
+    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    SubviewPlacement, UnitPoint, container::FixedContainer,
 };
 
 // ============================================================================
@@ -43,7 +43,6 @@ use crate::{
 ///
 /// Children are responsible for their own positioning (via `PositionedLayout`).
 #[derive(Debug, Clone, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less layout used by name")]
 pub struct AbsoluteLayout;
 
 impl Layout for AbsoluteLayout {
@@ -58,6 +57,16 @@ impl Layout for AbsoluteLayout {
             proposal.width.unwrap_or(0.0),
             proposal.height.unwrap_or(0.0),
         )
+    }
+
+    /// The canvas's answer at the bounds' origin. It is not a union of the
+    /// positioned children.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -199,10 +208,6 @@ impl PinConstraints {
 // ============================================================================
 
 /// Layout that positions a single child within received bounds.
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "frozen layout contract (docs/layout-spec.md): the layout is exactly its anchor and its target"
-)]
 pub struct PositionedLayout {
     /// Anchor point on the child (0.0-1.0)
     pub anchor: UnitPoint,
@@ -228,6 +233,16 @@ impl Layout for PositionedLayout {
             proposal.width.unwrap_or(0.0),
             proposal.height.unwrap_or(0.0),
         )
+    }
+
+    /// A positioning wrapper is a canvas: its answer at the bounds' origin.
+    /// The positioned child's own response belongs to the child.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -513,8 +528,10 @@ pub trait PositionExt: View + Sized {
 
     /// Position view's center at fractional location in parent.
     ///
-    /// The anchor point on the view matches the target position.
-    /// e.g., `UnitPoint::CENTER` means view's center at parent's center.
+    /// The omitted anchor is the view's centre: `UnitPoint::TOP_TRAILING`
+    /// puts the view's centre on the parent's top-trailing corner. Name the
+    /// anchor with [`position_in_anchor`](Self::position_in_anchor) to place
+    /// another point of the view there.
     ///
     /// # Example
     ///
@@ -525,7 +542,7 @@ pub trait PositionExt: View + Sized {
     /// # }
     /// ```
     fn position_in(self, position: UnitPoint) -> PositionedChild<Self> {
-        self.position_in_anchor(position, position)
+        self.position_in_anchor(UnitPoint::CENTER, position)
     }
 
     /// Position view's anchor at fractional location in parent.
@@ -700,6 +717,7 @@ mod tests {
     use super::*;
     use crate::StretchAxis;
     use crate::ViewDimensions;
+    use crate::{LayoutError, Rect, ResolvedExtent};
     use alloc::vec;
     use core::cell::Cell;
     use waterui_core::MainThreadBound;
@@ -710,6 +728,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -740,6 +765,13 @@ mod tests {
     }
 
     impl SubView for ProposalAwareView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.last_width.set(proposal.width);
             self.last_height.set(proposal.height);

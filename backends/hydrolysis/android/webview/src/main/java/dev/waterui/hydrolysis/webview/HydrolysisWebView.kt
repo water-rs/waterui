@@ -251,6 +251,7 @@ private constructor(
             url: String,
             isMainFrame: Boolean,
             isRedirect: Boolean,
+            hasGesture: Boolean,
         ): Boolean
 
         @JvmStatic
@@ -759,13 +760,14 @@ private constructor(
                 return false
             }
             // `true` cancels the request: a server redirect while redirects
-            // are disabled. Cancelling it ends the load, which is the
-            // blocked navigation's stop.
+            // are disabled, or a navigation-policy refusal. Cancelling it
+            // ends the load, which is the blocked navigation's stop.
             return nativeShouldOverrideUrlLoading(
                 handle,
                 request.url.toString(),
                 request.isForMainFrame,
                 request.isRedirect,
+                request.hasGesture(),
             )
         }
 

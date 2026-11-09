@@ -32,9 +32,9 @@ pub trait Formatter<T>: Clone {
 #[non_exhaustive]
 pub struct TextConfig {
     /// The rich text content to be displayed.
-    pub content: Computed<StyledStr>,
+    content: Computed<StyledStr>,
     /// Paragraph alignment for multiline layout.
-    pub paragraph_alignment: Computed<HorizontalAlignment>,
+    paragraph_alignment: Computed<HorizontalAlignment>,
     /// Maximum number of laid-out lines, or `None` for no limit.
     ///
     /// Text that does not fit the limit is truncated at its last visible
@@ -42,7 +42,51 @@ pub struct TextConfig {
     /// machinery provides one. This is `SwiftUI`'s `lineLimit`: a control
     /// label capped at one line stays a label under compression instead of
     /// folding into a paragraph.
-    pub line_limit: Option<NonZeroUsize>,
+    line_limit: Option<NonZeroUsize>,
+}
+
+impl TextConfig {
+    /// The rich text content to be displayed.
+    #[must_use]
+    pub const fn content(&self) -> &Computed<StyledStr> {
+        &self.content
+    }
+
+    /// Paragraph alignment for multiline layout.
+    #[must_use]
+    pub const fn paragraph_alignment(&self) -> &Computed<HorizontalAlignment> {
+        &self.paragraph_alignment
+    }
+
+    /// Maximum number of laid-out lines, or `None` for no limit.
+    ///
+    /// Text that does not fit the limit is truncated at its last visible
+    /// line — with a trailing ellipsis where the backend's native text
+    /// machinery provides one. This is `SwiftUI`'s `lineLimit`: a control
+    /// label capped at one line stays a label under compression instead of
+    /// folding into a paragraph.
+    #[must_use]
+    pub const fn line_limit(&self) -> Option<NonZeroUsize> {
+        self.line_limit
+    }
+
+    /// Takes the rich text content out of the value.
+    #[must_use]
+    pub fn into_content(self) -> Computed<StyledStr> {
+        self.content
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Computed<StyledStr>,
+        Computed<HorizontalAlignment>,
+        Option<NonZeroUsize>,
+    ) {
+        (self.content, self.paragraph_alignment, self.line_limit)
+    }
 }
 
 impl TextConfig {
@@ -547,9 +591,17 @@ impl Text {
         })
     }
 
-    /// Sets the font to bold.
+    /// Asks for the platform's bold face of the font, which each backend
+    /// resolves from its platform's definition; [`Self::weight`] with
+    /// [`FontWeight::Bold`] is an exact weight of 700 instead. Text with no
+    /// font or text style takes the platform's plain bold (Bold on macOS),
+    /// while a text style takes its own bold (`.body()` is Semibold on
+    /// macOS). See [`Font::bold`](crate::font::Font::bold).
     pub fn bold(self) -> Self {
-        self.weight(FontWeight::Bold)
+        self.map_config(|mut config| {
+            config.content = config.content.map(StyledStr::bold).computed();
+            config
+        })
     }
 
     /// Asks for the platform's fixed-pitch face, keeping the font's slot,

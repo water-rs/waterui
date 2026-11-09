@@ -80,10 +80,6 @@ impl Default for Color {
 
 /// A colour already in the working space: resolves to itself.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "newtype over a working-space color: the wrapped color is the whole value"
-)]
 pub struct Working(pub WorkingColor);
 
 impl Resolvable for Working {
@@ -478,10 +474,6 @@ macro_rules! environment_color {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
         #[derive(Debug, Clone, Copy)]
-        #[expect(
-            clippy::exhaustive_structs,
-            reason = "field-less color token resolved by type and used by name"
-        )]
         pub struct $name;
 
         impl Resolvable for $name {
@@ -517,6 +509,14 @@ environment_color!(
     MutedForegroundColor,
     "Muted-foreground color key for environment queries."
 );
+environment_color!(
+    TertiaryForegroundColor,
+    "Tertiary-foreground color key for environment queries."
+);
+environment_color!(
+    DisabledForegroundColor,
+    "Disabled-foreground color key for environment queries."
+);
 environment_color!(AccentColor, "Accent color key for environment queries.");
 environment_color!(
     AccentForegroundColor,
@@ -538,6 +538,10 @@ environment_color!(
 environment_color!(
     SelectionForegroundColor,
     "Selection-foreground color key for environment queries."
+);
+environment_color!(
+    UnemphasizedSelectionColor,
+    "Unemphasized-selection color key for environment queries."
 );
 environment_color!(ErrorColor, "Error color key for environment queries.");
 environment_color!(
@@ -570,10 +574,6 @@ impl_constant!(ColorScheme);
 
 /// Environment key that resolves to the installed [`ColorScheme`].
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less environment key used by name"
-)]
 pub struct CurrentColorScheme;
 
 impl Resolvable for CurrentColorScheme {
@@ -606,7 +606,6 @@ macro_rules! color_const {
         paste! {
             #[derive(Debug, Clone, Copy)]
             #[doc=$doc]
-            #[expect(clippy::exhaustive_structs, reason = "field-less color token resolved by type and used by name")]
             pub struct $name;
 
             impl $name {

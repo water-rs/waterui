@@ -22,6 +22,12 @@
 //! [`OffscreenFormat`] the host asked for — `LinearF16` stores f16
 //! directly, rounding once where readback used to round.
 //!
+//! Firmware builds can enable `bounded-bins` to scan items per band and
+//! rescan vertical boundaries instead of retaining per-frame item bins or
+//! geometry-sized coverage scratch. Bin queries allocate no item lists;
+//! coverage scratch depends on width and band/filter-window height. This
+//! does not bound retained scene geometry, filter nesting, or image storage.
+//!
 //! Measured on the render corpus, f16 output storage costs +0.0013 mean
 //! FLIP versus keeping f32 (0.00406 vs 0.00278).
 //!
@@ -41,7 +47,6 @@
 //! ```
 #![expect(
     clippy::exhaustive_enums,
-    clippy::exhaustive_structs,
     reason = "publish = false: no semver surface until #2687 makes the crate publishable"
 )]
 
@@ -49,7 +54,6 @@ mod names;
 mod render;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-mod topology;
 
 use cherenkov::{Backend, EngineError, Offscreen, OffscreenFormat};
 
@@ -70,9 +74,7 @@ pub struct RasterInfo {
 pub struct RasterConfig {
     /// Positive worker count for the banded rasterizer. An explicit count
     /// takes precedence over `RAYON_NUM_THREADS`, which must also be positive.
-    /// Otherwise Apple uses the highest-performance physical core class;
-    /// Android uses the highest-capacity class in the current CPU affinity;
-    /// other native platforms use their available parallelism. Automatic
+    /// Otherwise the host's available parallelism is used. Automatic
     /// discovery is unsupported on WebAssembly.
     pub threads: Option<usize>,
     /// Memory budgets; only `budget.cpu` is used for resident images and cached glyph masks.
@@ -164,7 +166,7 @@ pub enum BandPixels<'a> {
     F16(&'a [[half::f16; 4]]),
 }
 
-pub use fearless_simd::Level;
+pub use cherenkov_simd::{Level, detect};
 pub use render::present::{present_linear_p3, present_srgb8};
 
 /// The CPU raster backend: renders the shared front end's layer trees

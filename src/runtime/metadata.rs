@@ -59,14 +59,37 @@ pub mod context_menu {
     #[non_exhaustive]
     pub struct ContextMenu {
         /// The menu items to display in the context menu.
-        pub items: Computed<Vec<MenuItem>>,
+        items: Computed<Vec<MenuItem>>,
         /// The custom preview shown while the menu is open. `None` uses
         /// the platform's default presentation of the source view.
-        pub preview: Option<AnyView>,
+        preview: Option<AnyView>,
         /// An interactive view presented alongside the menu — a
         /// pointer-interactive `NSMenuItem` view row on macOS, alongside
         /// the preview and commands in a native popover on iOS.
-        pub accessory: Option<AnyView>,
+        accessory: Option<AnyView>,
+    }
+
+    impl ContextMenu {
+        /// The menu items to display in the context menu.
+        #[must_use]
+        pub const fn items(&self) -> &Computed<Vec<MenuItem>> {
+            &self.items
+        }
+
+        /// The custom preview shown while the menu is open. `None` uses
+        /// the platform's default presentation of the source view.
+        #[must_use]
+        pub const fn get_preview(&self) -> Option<&AnyView> {
+            self.preview.as_ref()
+        }
+
+        /// An interactive view presented alongside the menu — a
+        /// pointer-interactive `NSMenuItem` view row on macOS, alongside
+        /// the preview and commands in a native popover on iOS.
+        #[must_use]
+        pub const fn get_accessory(&self) -> Option<&AnyView> {
+            self.accessory.as_ref()
+        }
     }
 
     impl MetadataKey for ContextMenu {}
@@ -152,10 +175,6 @@ pub mod context_menu {
     /// Resolved context menu metadata consumed by the native backends.
     #[doc(hidden)]
     #[derive(Debug)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "backends destructure the whole resolved context menu, so a new field must fail their build instead of being ignored"
-    )]
     pub struct ResolvedContextMenu {
         /// The resolved menu items for the current environment.
         pub items: Computed<Vec<ResolvedMenuItem>>,
@@ -179,9 +198,28 @@ pub mod context_menu {
     #[non_exhaustive]
     pub struct ContextMenuView<Content> {
         /// The wrapped content view.
-        pub content: Content,
+        content: Content,
         /// The context menu to resolve.
-        pub menu: ContextMenu,
+        menu: ContextMenu,
+    }
+
+    impl<Content> ContextMenuView<Content> {
+        /// Wraps `content` with the `menu` to resolve against the environment.
+        pub const fn new(content: Content, menu: ContextMenu) -> Self {
+            Self { content, menu }
+        }
+
+        /// The wrapped content view.
+        #[must_use]
+        pub const fn content(&self) -> &Content {
+            &self.content
+        }
+
+        /// The context menu to resolve.
+        #[must_use]
+        pub const fn menu(&self) -> &ContextMenu {
+            &self.menu
+        }
     }
 
     impl<Content: View> View for ContextMenuView<Content> {
@@ -298,10 +336,6 @@ pub mod anchored_overlay {
     /// );
     /// ```
     #[derive(Debug)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "backends destructure the whole anchored overlay, so a new field must fail their build instead of being ignored"
-    )]
     pub struct AnchoredOverlay {
         /// Builds a fresh view for each presentation next to the anchor.
         pub content: AnyViewBuilder,
@@ -432,7 +466,7 @@ pub mod anchored_overlay {
     ///     .gap(4.0)
     ///     .flip(true)
     ///     .clamp(Clamp::Window { margin: 2.0 });
-    /// assert_eq!(placement.edge, AnchorEdge::Top);
+    /// assert_eq!(placement.get_edge(), AnchorEdge::Top);
     /// ```
     ///
     /// The defaults describe a dropdown: below the anchor, centered, no gap,
@@ -442,26 +476,59 @@ pub mod anchored_overlay {
     /// use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, EdgeAlignment};
     ///
     /// let default = AnchorPlacement::default();
-    /// assert_eq!(default.edge, AnchorEdge::Bottom);
-    /// assert_eq!(default.alignment, EdgeAlignment::Center);
-    /// assert_eq!(default.gap, 0.0);
-    /// assert!(default.flip);
-    /// assert_eq!(default.clamp, Clamp::Window { margin: 0.0 });
+    /// assert_eq!(default.get_edge(), AnchorEdge::Bottom);
+    /// assert_eq!(default.get_alignment(), EdgeAlignment::Center);
+    /// assert_eq!(default.get_gap(), 0.0);
+    /// assert!(default.get_flip());
+    /// assert_eq!(default.get_clamp(), Clamp::Window { margin: 0.0 });
     /// ```
     #[derive(Debug, Clone, Copy, PartialEq)]
     #[non_exhaustive]
     pub struct AnchorPlacement {
         /// The edge of the anchor the overlay is placed against.
-        pub edge: AnchorEdge,
+        edge: AnchorEdge,
         /// How the overlay lines up with the anchor along that edge.
-        pub alignment: EdgeAlignment,
+        alignment: EdgeAlignment,
         /// The distance between the anchor and the overlay, in points.
-        pub gap: f32,
+        gap: f32,
         /// Whether the overlay moves to the opposite edge when the preferred
         /// edge has no room for it.
-        pub flip: bool,
+        flip: bool,
         /// How the overlay is kept inside the window.
-        pub clamp: Clamp,
+        clamp: Clamp,
+    }
+
+    impl AnchorPlacement {
+        /// The edge of the anchor the overlay is placed against.
+        #[must_use]
+        pub const fn get_edge(&self) -> AnchorEdge {
+            self.edge
+        }
+
+        /// How the overlay lines up with the anchor along that edge.
+        #[must_use]
+        pub const fn get_alignment(&self) -> EdgeAlignment {
+            self.alignment
+        }
+
+        /// The distance between the anchor and the overlay, in points.
+        #[must_use]
+        pub const fn get_gap(&self) -> f32 {
+            self.gap
+        }
+
+        /// Whether the overlay moves to the opposite edge when the preferred
+        /// edge has no room for it.
+        #[must_use]
+        pub const fn get_flip(&self) -> bool {
+            self.flip
+        }
+
+        /// How the overlay is kept inside the window.
+        #[must_use]
+        pub const fn get_clamp(&self) -> Clamp {
+            self.clamp
+        }
     }
 
     impl Default for AnchorPlacement {
@@ -725,10 +792,6 @@ pub mod secure {
     ///
     /// User would be forbidden to take a screenshot of the view that has this metadata.
     #[derive(Debug)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less metadata marker inserted by name"
-    )]
     pub struct Secure;
 
     impl MetadataKey for Secure {}
@@ -773,10 +836,6 @@ pub mod secure {
     /// However, in some cases, you may want to apply standard dynamic range color for certain views,
     /// for instance, user avatar.
     #[derive(Debug)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less metadata marker inserted by name"
-    )]
     pub struct StandardDynamicRange;
     impl MetadataKey for StandardDynamicRange {}
 
@@ -800,10 +859,6 @@ pub mod secure {
     ///
     /// But if your parent view applied `StandardDynamicRange` metadata, you would use this metadata to override it.
     #[derive(Debug)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less metadata marker inserted by name"
-    )]
     pub struct HighDynamicRange;
     impl MetadataKey for HighDynamicRange {}
 

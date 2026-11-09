@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::project::Project;
+use crate::project_model::apple_targets::{APPLE_PLATFORMS, AppleDeploymentTargets, AppleVersion};
 use crate::project_model::facts::{Disk, Fact, Facts, InputFiles, Scope};
 use crate::toolchain::{Host, git};
 use cargo_lock::{Dependency as LockedDependency, Lockfile};
@@ -187,14 +188,38 @@ impl fmt::Display for ResolvedFramework {
 /// registry release, so the manifest records the pin — git URL, commit and
 /// declared version — by name instead of emitting `scaffold` entries for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ExperimentalPackage {
     /// The repository the framework pins the package to.
-    pub git: String,
+    git: String,
     /// The pinned commit.
-    pub rev: String,
+    rev: String,
     /// The declared version requirement.
-    pub version: String,
+    version: String,
+}
+impl ExperimentalPackage {
+    /// A `ExperimentalPackage` carrying each of its fields.
+    #[must_use]
+    pub const fn new(git: String, rev: String, version: String) -> Self {
+        Self { git, rev, version }
+    }
+
+    /// The repository the framework pins the package to.
+    #[must_use]
+    pub fn git(&self) -> &str {
+        &self.git
+    }
+
+    /// The pinned commit.
+    #[must_use]
+    pub fn rev(&self) -> &str {
+        &self.rev
+    }
+
+    /// The declared version requirement.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -407,7 +432,7 @@ impl ResolvedFramework {
         manifest: &crate::project::Manifest,
         project_root: &Path,
     ) -> Result<Self> {
-        if let Some(framework) = &manifest.framework {
+        if let Some(framework) = manifest.framework() {
             return framework.clone().validated().map_err(|error| {
                 eyre!(
                     "Water.toml records a framework selection waterui-cli {} cannot scaffold: {error:#}",
@@ -415,7 +440,7 @@ impl ResolvedFramework {
                 )
             });
         }
-        let Some(waterui_path) = &manifest.waterui_path else {
+        let Some(waterui_path) = &manifest.waterui_path() else {
             bail!(
                 "the project records no framework selection; run `water channel` \
                  to select one or point `waterui_path` at a checkout"
@@ -781,8 +806,47 @@ impl ResolvedFramework {
             .ok_or_else(|| eyre!("{} declares an invalid {key}: {value}", self.origin()))
     }
 
+    /// The deployment targets a project that bundles a web frontend declares:
+    /// the `web-frontend-apple-deployment-targets` the framework's
+    /// `[package.metadata.waterui]` names, for every Apple platform. The gate
+    /// on the navigation policy `include_web!` installs needs them.
+    ///
+    /// # Errors
+    /// Returns an error when the framework does not declare the key (a
+    /// revision from before the gate), or declares an invalid version.
+    pub(crate) fn web_frontend_apple_deployment_targets(&self) -> Result<AppleDeploymentTargets> {
+        const KEY: &str = "package.metadata.waterui.web-frontend-apple-deployment-targets";
+        let table = self
+            .metadata
+            .get("web-frontend-apple-deployment-targets")
+            .and_then(toml::Value::as_table)
+            .ok_or_else(|| eyre!("{} does not declare {KEY}", self.origin()))?;
+        let mut targets = AppleDeploymentTargets::default();
+        for platform in APPLE_PLATFORMS {
+            let version = table
+                .get(platform)
+                .and_then(toml::Value::as_str)
+                .ok_or_else(|| eyre!("{} does not declare {KEY}.{platform}", self.origin()))?;
+            targets.declare(
+                platform,
+                AppleVersion::parse(version).wrap_err_with(|| {
+                    format!("{} declares an invalid {KEY}.{platform}", self.origin())
+                })?,
+            );
+        }
+        Ok(targets)
+    }
+
     /// Update only the CLI-owned deployment entries, preserving user config.
-    pub(crate) async fn cargo_config(&self, root: &Path) -> Result<toml_edit::DocumentMut> {
+    ///
+    /// The entries carry the *effective* targets: what `declared` raises
+    /// above the framework's floor, so the project's own `cargo` commands
+    /// build against what the CLI builds against.
+    pub(crate) async fn cargo_config(
+        &self,
+        root: &Path,
+        declared: &AppleDeploymentTargets,
+    ) -> Result<toml_edit::DocumentMut> {
         let path = root.join(".cargo/config.toml");
         let mut config = match smol::fs::read_to_string(&path).await {
             Ok(contents) => contents.parse::<toml_edit::DocumentMut>()?,
@@ -803,10 +867,36 @@ impl ResolvedFramework {
         ] {
             env.insert(
                 variable,
-                toml_edit::value(self.apple_deployment_target(platform)?),
+                toml_edit::value(declared.effective(self, platform)?),
             );
         }
         Ok(config)
+    }
+
+    /// Brings the project's `.cargo/config.toml` deployment entries in line
+    /// with the effective targets, rewriting the file only when they differ.
+    ///
+    /// The CLI's own cargo processes carry the targets in their environment,
+    /// which wins over the file; this keeps the `cargo` commands a user runs
+    /// by hand building against what the CLI builds against after
+    /// `Water.toml` changes.
+    pub(crate) async fn sync_cargo_config(
+        &self,
+        root: &Path,
+        declared: &AppleDeploymentTargets,
+    ) -> Result<()> {
+        let path = root.join(".cargo/config.toml");
+        let wanted = self.cargo_config(root, declared).await?.to_string();
+        let current = match smol::fs::read_to_string(&path).await {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        if current.as_deref() != Some(wanted.as_str()) {
+            smol::fs::create_dir_all(root.join(".cargo")).await?;
+            smol::fs::write(&path, wanted).await?;
+        }
+        Ok(())
     }
 
     /// The framework manifest the selection's metadata was read from, as a
@@ -1351,6 +1441,9 @@ impl ResolvedFramework {
         features: &[String],
     ) -> Result<()> {
         self.validate_cli(project.host())?;
+        let deployment_targets = project.manifest().apple().deployment_targets();
+        self.sync_cargo_config(project.root(), deployment_targets)
+            .await?;
         let project_lockfile = project.lockfile_path().await?;
         let project_lock: Lockfile = smol::fs::read_to_string(&project_lockfile).await?.parse()?;
         // Cargo resolves a member's lockfile at the workspace root, so the
@@ -2328,6 +2421,25 @@ pub(crate) fn checkout_member_packages(root: &Path) -> Result<Vec<CheckoutMember
         return Ok(Vec::new());
     };
     workspace_members(&mut Disk, root, &toml::from_slice(&manifest)?)
+}
+
+/// The `[patch]` tables that resolve the checkout's own dependency graph.
+///
+/// A crate rooted outside the checkout at `checkout` declares them: the
+/// checkout's root tables plus a path entry for every framework member, each
+/// path absolute. Cargo honours `[patch]` only at the root of the workspace it builds, so
+/// such a crate otherwise takes every split component the checkout pins to
+/// git — `waterkit-*`, `suiteki` — from crates.io instead, a graph the
+/// checkout's source was never compiled against.
+///
+/// # Errors
+/// Returns an error when the checkout's root manifest cannot be read or
+/// parsed, or declares no `[workspace]`.
+pub fn checkout_patch_tables(checkout: &Path) -> Result<PatchSet> {
+    let members = checkout_member_packages(checkout)?;
+    Ok(crate::templates::local_framework_patches(
+        checkout, checkout, &members,
+    )?)
 }
 
 /// Every package the `[workspace]` of `manifest`, the root manifest at
@@ -3341,7 +3453,8 @@ pub(crate) mod test_fixtures {
             rust_version: None,
             metadata: toml::toml! {
                 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
-                android-min-api-level = 31
+                web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -3444,7 +3557,8 @@ pub(crate) mod test_fixtures {
             rust_version: None,
             metadata: toml::toml! {
                 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
-                android-min-api-level = 31
+                web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -5318,7 +5432,7 @@ mod tests {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -5386,9 +5500,31 @@ mod tests {
         let mut framework = test_fixtures::dev_framework();
         framework.metadata["apple-deployment-targets"]["ios"] = toml::Value::String("27.1".into());
         let triple = "aarch64-apple-ios-macabi".parse().unwrap();
+        let none = AppleDeploymentTargets::default();
         assert_eq!(
-            crate::apple::platform::apple_deployment_target_env(&framework, &triple).unwrap(),
-            Some(("IPHONEOS_DEPLOYMENT_TARGET", "27.1"))
+            crate::apple::platform::apple_deployment_target_env(&framework, &none, &triple)
+                .unwrap(),
+            Some(("IPHONEOS_DEPLOYMENT_TARGET", "27.1".to_owned()))
+        );
+        // A project declaration above the floor reaches the environment; the
+        // other platform keeps the floor.
+        let mut declared = AppleDeploymentTargets::default();
+        declared.declare("ios", AppleVersion::parse("28.0").unwrap());
+        assert_eq!(
+            crate::apple::platform::apple_deployment_target_env(&framework, &declared, &triple)
+                .unwrap(),
+            Some(("IPHONEOS_DEPLOYMENT_TARGET", "28.0".to_owned()))
+        );
+        let host = "aarch64-apple-darwin".parse().unwrap();
+        assert_eq!(
+            crate::apple::platform::apple_deployment_target_env(&framework, &declared, &host)
+                .unwrap(),
+            Some(("MACOSX_DEPLOYMENT_TARGET", "26.0".to_owned()))
+        );
+        declared.declare("ios", AppleVersion::parse("25.0").unwrap());
+        assert!(
+            crate::apple::platform::apple_deployment_target_env(&framework, &declared, &triple)
+                .is_err()
         );
         for invalid in ["", " 26.0", "26.", "26.a"] {
             framework.metadata["apple-deployment-targets"]["ios"] =
@@ -5398,8 +5534,91 @@ mod tests {
     }
 
     #[test]
+    fn cargo_config_carries_the_effective_deployment_targets() {
+        smol::block_on(async {
+            let framework = stable_framework();
+            let root = tempfile::tempdir().unwrap();
+            let mut declared = AppleDeploymentTargets::default();
+            declared.declare("ios", AppleVersion::parse("27.0").unwrap());
+            let config = framework
+                .cargo_config(root.path(), &declared)
+                .await
+                .unwrap();
+            assert_eq!(
+                config["env"]["IPHONEOS_DEPLOYMENT_TARGET"].as_str(),
+                Some("27.0")
+            );
+            assert_eq!(
+                config["env"]["MACOSX_DEPLOYMENT_TARGET"].as_str(),
+                Some("26.0")
+            );
+            declared.declare("macos", AppleVersion::parse("25.0").unwrap());
+            assert!(
+                framework
+                    .cargo_config(root.path(), &declared)
+                    .await
+                    .is_err()
+            );
+        });
+    }
+
+    #[test]
+    fn building_syncs_the_cargo_config_to_a_changed_declaration() {
+        smol::block_on(async {
+            let framework = stable_framework();
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join(".cargo/config.toml");
+            let mut declared = AppleDeploymentTargets::default();
+            framework
+                .sync_cargo_config(root.path(), &declared)
+                .await
+                .unwrap();
+            let config: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                config["env"]["IPHONEOS_DEPLOYMENT_TARGET"].as_str(),
+                Some("26.0")
+            );
+
+            declared.declare("ios", AppleVersion::parse("27.0").unwrap());
+            framework
+                .sync_cargo_config(root.path(), &declared)
+                .await
+                .unwrap();
+            let config: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                config["env"]["IPHONEOS_DEPLOYMENT_TARGET"].as_str(),
+                Some("27.0")
+            );
+        });
+    }
+
+    #[test]
+    fn web_frontend_deployment_targets_cover_every_apple_platform() {
+        let targets = stable_framework()
+            .web_frontend_apple_deployment_targets()
+            .unwrap();
+        for platform in APPLE_PLATFORMS {
+            assert_eq!(targets.declared(platform).unwrap().as_str(), "27.0");
+        }
+        let mut missing = stable_framework();
+        missing
+            .metadata
+            .remove("web-frontend-apple-deployment-targets");
+        let error = missing
+            .web_frontend_apple_deployment_targets()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("web-frontend-apple-deployment-targets"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn android_min_api_level_is_required_framework_metadata() {
-        assert_eq!(stable_framework().android_min_api_level().unwrap(), 31);
+        assert_eq!(stable_framework().android_min_api_level().unwrap(), 33);
 
         let mut missing = stable_framework();
         missing.metadata.remove("android-min-api-level");
@@ -5436,17 +5655,12 @@ mod tests {
     fn a_rejected_recorded_selection_reports_the_inner_error() {
         let mut framework = stable_framework();
         framework.metadata.remove("android-min-api-level");
-        let mut manifest = crate::project::Manifest::new(crate::project::Package {
-            name: "Water Example".to_string(),
-            bundle_identifier: crate::project_types::BundleIdentifier::try_from(
-                "dev.waterui.waterexample",
-            )
-            .expect("bundle identifier"),
-            assets_path: "assets".to_string(),
-            accessory: false,
-            embedded: false,
-        });
-        manifest.framework = Some(framework);
+        let mut manifest = crate::project::Manifest::new(crate::project::Package::new(
+            "Water Example",
+            crate::project_types::BundleIdentifier::try_from("dev.waterui.waterexample")
+                .expect("bundle identifier"),
+        ));
+        manifest.set_framework(Some(framework));
 
         let scratch = tempfile::tempdir().unwrap();
         let facts = Facts::new(
@@ -5789,7 +6003,7 @@ mod tests {
         let repository = framework_repository();
         let revision = "a".repeat(40);
         let lock_sha256 = "f".repeat(64);
-        let metadata = toml::toml! { android-min-api-level = 31 android-gradle-version = "9.7.1" };
+        let metadata = toml::toml! { android-min-api-level = 33 android-gradle-version = "9.7.1" };
         let mut scaffold = BTreeMap::from([
             ("waterui-version".to_owned(), "0.4.1".to_owned()),
             ("waterui-winui-version".to_owned(), "0.1.0".to_owned()),
@@ -6581,7 +6795,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             scaffold: BTreeMap::new(),
             experimental_packages: BTreeMap::new(),
             metadata: toml::toml! {
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -6703,7 +6917,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             },
             "metadata": {
                 "minimum-cli-version": "0.1.0",
-                "android-min-api-level": 31,
+                "android-min-api-level": 33,
                 "android-gradle-version": "9.7.1",
                 "apple-backend-path": "backends/apple",
                 "hydrolysis-path": "backends/hydrolysis",

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use eyre::{Context as _, bail};
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
 use smol::fs;
 use walkdir::WalkDir;
 use zenwave::{Client as _, Method};
@@ -214,7 +215,7 @@ async fn stage_into(
     fs::create_dir_all(&layout.runtime_root).await?;
 
     let stage_wpe = async {
-        if let Some(wpe) = &plan.wpe {
+        if let Some(wpe) = plan.wpe() {
             stage_wpe(host, &configuration, wpe, platform, &layout.runtime_root).await?;
         }
         Ok::<(), eyre::Report>(())
@@ -231,7 +232,7 @@ async fn stage_into(
 
 fn engines(plan: &BrowserRuntimePlan) -> BTreeSet<RuntimeEngine> {
     let mut engines = BTreeSet::new();
-    if plan.wpe.is_some() {
+    if plan.wpe().is_some() {
         engines.insert(RuntimeEngine::Wpe);
     }
     if plan.requires_cef() {
@@ -251,8 +252,9 @@ async fn stage_wpe(
         bail!("WPE runtime staging is Linux-only");
     }
     let architecture = wpe.target().architecture.to_string();
-    let manifest_url = runtime_manifest_url(configuration, wpe.webkit_version());
-    let manifest = download_manifest(&manifest_url).await?;
+    let release_tag = format!("wpe-runtime-{}-{}", wpe.webkit_version(), wpe.identity());
+    let manifest_url = runtime_manifest_url(configuration, wpe.webkit_version(), wpe.identity());
+    let manifest = download_manifest(&manifest_url, &release_tag).await?;
     // The artifact pin is the resolved package's declared WebKit version, not
     // a CLI-side default — the package's producer metadata is the pin.
     let artifact = select_artifact(
@@ -267,26 +269,51 @@ async fn stage_wpe(
     // application bundle — with the packaged bridge, extension and header
     // excluded; only engine runtime files stage, and the bridge the package
     // builds fresh from source replaces them.
-    let sdk_root = sdk_cache_root(host, &artifact.sha256).await?;
-    if !sdk_cache_ready(&sdk_root, &artifact.sha256).await? {
+    let sdk_inputs = SdkCacheInputs {
+        archive_sha256: artifact.sha256.clone(),
+    };
+    let sdk_root = sdk_cache_root(host, &sdk_inputs).await?;
+    if !sdk_cache_ready(&sdk_root, &sdk_inputs).await? {
         let candidate = sdk_root
             .parent()
             .expect("the SDK cache entry has a parent")
             .join(format!(
                 "{}.candidate.{}",
-                artifact.sha256,
+                sdk_key(&sdk_inputs)?,
                 uuid::Uuid::new_v4()
             ));
-        extract_verified_zip(
-            &archive,
-            &artifact.sha256,
-            &candidate,
-            &wpe::SDK_NATIVE_EXCLUDES,
-        )
-        .await?;
-        fs::write(candidate.join(".extracted"), artifact.sha256.as_bytes()).await?;
+        let prepared: eyre::Result<()> = async {
+            extract_verified_zip(
+                &archive,
+                &artifact.sha256,
+                &candidate,
+                &wpe::SDK_NATIVE_EXCLUDES,
+            )
+            .await?;
+            fs::write(
+                candidate.join(".extracted"),
+                serde_json::to_vec(&sdk_inputs)?,
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = prepared {
+            match fs::remove_dir_all(&candidate).await {
+                Ok(()) => return Err(error),
+                Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(error);
+                }
+                Err(cleanup) => {
+                    return Err(error).wrap_err(format!(
+                        "cleaning up the failed SDK candidate {} also failed: {cleanup}",
+                        candidate.display()
+                    ));
+                }
+            }
+        }
         wpe::publish_candidate(&candidate, &sdk_root, || async {
-            if !sdk_cache_ready(&sdk_root, &artifact.sha256).await? {
+            if !sdk_cache_ready(&sdk_root, &sdk_inputs).await? {
                 bail!("the concurrently published WPE SDK cache has no completion record");
             }
             Ok(())
@@ -309,22 +336,46 @@ async fn stage_wpe(
     Ok(())
 }
 
-async fn sdk_cache_ready(root: &Path, sha256: &str) -> eyre::Result<bool> {
+/// The SDK cache identity: the verified archive digest alone — the packaged
+/// descriptors already resolve `${pcfiledir}`-relative, so extraction is the
+/// only transform a cache entry records.
+#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
+struct SdkCacheInputs {
+    archive_sha256: String,
+}
+
+fn sdk_key(inputs: &SdkCacheInputs) -> eyre::Result<String> {
+    Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(
+        inputs,
+    )?)))
+}
+
+async fn sdk_cache_ready(root: &Path, inputs: &SdkCacheInputs) -> eyre::Result<bool> {
     match fs::read(root.join(".extracted")).await {
-        Ok(record) if record == sha256.as_bytes() => Ok(true),
-        Ok(_) => bail!("the cached WPE SDK completion record has the wrong archive digest"),
+        Ok(record) => {
+            let recorded: SdkCacheInputs = serde_json::from_slice(&record)
+                .wrap_err("the cached WPE SDK completion record is malformed")?;
+            if recorded == *inputs {
+                Ok(true)
+            } else {
+                bail!("the cached WPE SDK completion record has different inputs")
+            }
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
 }
 
-/// The build host's immutable SDK cache for one verified archive digest.
-async fn sdk_cache_root(host: &crate::toolchain::Host, sdk_sha256: &str) -> eyre::Result<PathBuf> {
+/// The build host's immutable SDK cache for one verified archive + layout.
+async fn sdk_cache_root(
+    host: &crate::toolchain::Host,
+    inputs: &SdkCacheInputs,
+) -> eyre::Result<PathBuf> {
     let root = host
         .cache_dir()
         .ok_or_else(|| eyre::eyre!("platform does not expose a cache directory"))?
         .join("waterui/browser-runtimes/wpe-sdk")
-        .join(sdk_sha256);
+        .join(sdk_key(inputs)?);
     fs::create_dir_all(root.parent().expect("the SDK cache has a parent")).await?;
     Ok(root)
 }
@@ -452,12 +503,15 @@ async fn remove_staged(layout: &RuntimeLayout) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn download_manifest(url: &str) -> eyre::Result<ArtifactManifest> {
+async fn download_manifest(url: &str, release_tag: &str) -> eyre::Result<ArtifactManifest> {
     let mut client = zenwave::client();
     let response = client.method(Method::GET, url)?.await?;
     if !response.status().is_success() {
+        // A 404 means this browsers revision's runtime has not been published
+        // yet — its `dev` push run is still in progress or failed — so the
+        // error names the tag the CLI looked for.
         bail!(
-            "browser runtime manifest returned HTTP {} from {url}",
+            "WPE runtime release {release_tag} returned HTTP {} for {url}",
             response.status()
         );
     }
@@ -846,14 +900,18 @@ async fn write_cef_sbom(path: &Path, version: &str, created: &str) -> eyre::Resu
     .await
 }
 
-/// The WPE runtime is built and published by the framework repository's
-/// `WPE Runtime` workflow on a `browser-wpe-runtime/v<version>` tag, so the
-/// manifest is bound to the WPE version this CLI expects, not to the CLI
-/// release.
-fn runtime_manifest_url(configuration: &SourceConfiguration, wpe_version: &str) -> String {
+/// The WPE runtime is built and published by water-rs/browsers on a
+/// `wpe-runtime-<version>-<identity>` tag, so the manifest is bound to the
+/// exact runtime the resolved package's producer metadata declares, not to
+/// the CLI release.
+fn runtime_manifest_url(
+    configuration: &SourceConfiguration,
+    wpe_version: &str,
+    identity: &str,
+) -> String {
     format!(
-        "{}/browser-wpe-runtime/v{}/browser-runtime-manifest.json",
-        configuration.release_base_url, wpe_version
+        "{}/wpe-runtime-{wpe_version}-{identity}/browser-runtime-manifest.json",
+        configuration.release_base_url
     )
 }
 
@@ -898,8 +956,31 @@ mod tests {
     use crate::platform::TargetPlatform;
 
     use crate::project::BrowserRuntimePlan;
-    #[cfg(unix)]
     use std::io::Write as _;
+
+    #[test]
+    fn sdk_cache_ready_distinguishes_missing_matching_and_foreign_markers() {
+        smol::block_on(async {
+            let root = tempfile::tempdir().unwrap();
+            let marker = root.path().join(".extracted");
+            let inputs = super::SdkCacheInputs {
+                archive_sha256: "ab".repeat(32),
+            };
+            assert!(!super::sdk_cache_ready(root.path(), &inputs).await.unwrap());
+
+            std::fs::write(&marker, serde_json::to_vec(&inputs).unwrap()).unwrap();
+            assert!(super::sdk_cache_ready(root.path(), &inputs).await.unwrap());
+
+            let other = super::SdkCacheInputs {
+                archive_sha256: "cd".repeat(32),
+            };
+            std::fs::write(&marker, serde_json::to_vec(&other).unwrap()).unwrap();
+            assert!(super::sdk_cache_ready(root.path(), &inputs).await.is_err());
+
+            std::fs::write(&marker, "ab".repeat(32)).unwrap();
+            assert!(super::sdk_cache_ready(root.path(), &inputs).await.is_err());
+        });
+    }
 
     #[test]
     fn cef_rejects_intel_apple_and_preserves_other_intel_targets() {
@@ -918,11 +999,7 @@ mod tests {
 
     #[test]
     fn chromium_and_cef_share_one_runtime() {
-        let engines = engines(&BrowserRuntimePlan {
-            wpe: None,
-            cef_webview: true,
-            chromium: true,
-        });
+        let engines = engines(&BrowserRuntimePlan::new(None, true, true));
         assert_eq!(
             engines.into_iter().collect::<Vec<_>>(),
             [RuntimeEngine::Cef]
@@ -959,11 +1036,8 @@ mod tests {
         let configuration: SourceConfiguration =
             toml::from_str(super::SOURCE_CONFIG).expect("source configuration must parse");
         assert_eq!(
-            runtime_manifest_url(&configuration, "2.52.5"),
-            format!(
-                "https://github.com/water-rs/waterui/releases/download/browser-wpe-runtime/v{}/browser-runtime-manifest.json",
-                "2.52.5"
-            )
+            runtime_manifest_url(&configuration, "2.54.2", "d6117ebfbc001792"),
+            "https://github.com/water-rs/browsers/releases/download/wpe-runtime-2.54.2-d6117ebfbc001792/browser-runtime-manifest.json"
         );
     }
 

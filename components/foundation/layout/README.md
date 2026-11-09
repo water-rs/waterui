@@ -4,7 +4,7 @@ Layout building blocks for arranging views in WaterUI applications.
 
 ## Overview
 
-`waterui-layout` provides the fundamental layout primitives used to compose user interfaces in WaterUI. Unlike traditional UI frameworks that manually calculate positions, this crate implements a declarative, constraint-based layout system inspired by SwiftUI's layout protocol. All components render to native platform widgets (UIKit/AppKit on Apple, Android View on Android) rather than drawing custom pixels.
+`waterui-layout` provides the fundamental layout primitives used to compose user interfaces in WaterUI. Unlike traditional UI frameworks that manually calculate positions, this crate implements a declarative, constraint-based layout system inspired by SwiftUI's layout protocol.
 
 The crate bridges the declarative `View` trait with the imperative, backend-driven layout pass through the `Layout` trait, enabling flexible composition of stacks, spacers, frames, and scrollable containers. All layout values use logical pixels (points/dp) matching design tool specifications exactly, with native backends handling density-aware conversion to physical pixels.
 
@@ -217,7 +217,7 @@ pub fn constrained_content() -> impl View {
 - **`Padding`** - Insets child with edge spacing
   - `EdgeInsets::all(f32)` - Equal padding on all edges
   - `EdgeInsets::symmetric(vertical, horizontal)` - Symmetric padding
-  - `EdgeInsets::new(top, bottom, leading, trailing)` - Custom edges
+  - `EdgeInsets::new(top, leading, bottom, trailing)` - Custom edges
 
 ### Advanced Layouts
 

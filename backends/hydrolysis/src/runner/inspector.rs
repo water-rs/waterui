@@ -21,6 +21,7 @@ use super::window::{FrameMode, FrameProfile};
 ///
 /// `refresh_rate_hz` is the rate the window runtime last observed from its
 /// platform; a window with no known rate reports at the headless pacing.
+#[cfg(hydrolysis_gpu_painter)]
 pub(super) fn publish_frame(
     environment: &Environment,
     mode: FrameMode,
@@ -35,18 +36,18 @@ pub(super) fn publish_frame(
         return;
     }
 
-    let phases = &profile.phases;
-    let counters = &profile.counters;
+    let phases = &profile.phases();
+    let counters = &profile.counters();
     let refresh_hz = refresh_rate_hz.unwrap_or_else(|| waterui::task::RefreshRate::HEADLESS.hz());
 
     recorder.record(FrameSample {
         kind: frame_kind(mode),
         // Everything up to a laid-out tree: building the root view value,
         // dispatching it into scene state, and finishing layout.
-        layout_us: micros(phases.build_content + phases.scene_dispatch + phases.scene_finish),
+        layout_us: micros(phases.build_content() + phases.scene_dispatch() + phases.scene_finish()),
         // Acquiring the target and submitting encoded work.
-        encode_us: micros(phases.acquire + phases.render),
-        present_us: micros(phases.present),
+        encode_us: micros(phases.acquire() + phases.render()),
+        present_us: micros(phases.present()),
         total_us: micros(total),
         budget_us: budget_us(refresh_hz),
         #[expect(
@@ -54,12 +55,13 @@ pub(super) fn publish_frame(
             reason = "a display refresh rate is far inside f32 range"
         )]
         refresh_hz: refresh_hz as f32,
-        layers: counters.scene_layers,
-        clip_depth: counters.max_clip_depth,
+        layers: counters.scene_layers(),
+        clip_depth: counters.max_clip_depth(),
     });
 }
 
 /// How much of the pipeline the frame ran, from the mode it was scheduled with.
+#[cfg(hydrolysis_gpu_painter)]
 const fn frame_kind(mode: FrameMode) -> FrameKind {
     match mode {
         FrameMode::Idle => FrameKind::Idle,
@@ -71,6 +73,7 @@ const fn frame_kind(mode: FrameMode) -> FrameKind {
 ///
 /// Zero means "unknown" to the protocol, which reports no budget usage rather
 /// than pretending the frame was perfectly on budget.
+#[cfg(hydrolysis_gpu_painter)]
 fn budget_us(refresh_hz: f64) -> u32 {
     if refresh_hz <= 0.0 {
         return 0;
@@ -78,6 +81,7 @@ fn budget_us(refresh_hz: f64) -> u32 {
     micros(Duration::from_secs_f64(1.0 / refresh_hz))
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 fn micros(duration: Duration) -> u32 {
     u32::try_from(duration.as_micros()).unwrap_or(u32::MAX)
 }

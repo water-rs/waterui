@@ -27,6 +27,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::fmt;
 use core::future::Future;
 
@@ -72,6 +73,15 @@ pub enum EffectSetupError {
     PipelineValidation {
         /// The pass index.
         pass: usize,
+        /// The full wgpu validation diagnostic.
+        message: String,
+    },
+    /// A pipeline building the shape's signed distance field hit a wgpu
+    /// validation error.
+    #[error("shape field {pass} pipeline validation failed: {message}")]
+    ShapeFieldValidation {
+        /// The field pass: `seed`, `step` or `resolve`.
+        pass: &'static str,
         /// The full wgpu validation diagnostic.
         message: String,
     },
@@ -131,9 +141,6 @@ pub enum EffectRenderError {
         /// The output's width and height.
         output: (u32, u32),
     },
-    /// A stage reads the clip shape, but the input carries no texture for it.
-    #[error("a stage reads the clip shape's {0:?}, but the input provides none")]
-    MissingShape(filtrate_core::ShapeInput),
 }
 
 /// Result returned by filter setup.
@@ -268,75 +275,180 @@ impl fmt::Debug for EffectContext<'_> {
     }
 }
 
-/// The clip shape of the content being filtered, for stages that declare a
-/// [`ShapeInput`](filtrate_core::ShapeInput). Both textures have the input's
-/// size.
-#[derive(Debug, Clone, Default)]
-pub struct ShapeTextures {
-    /// The clip shape's signed distance field, in pixels, negative inside.
-    pub sdf: Option<wgpu::TextureView>,
-    /// The clip shape's coverage mask, in the red channel.
-    pub mask: Option<wgpu::TextureView>,
+/// The accessors [`EffectInput`] and [`EffectOutput`] share: the device
+/// and queue, the texture, and what the texture itself says about its
+/// format and size. Neither carries a view; an effect binds its textures
+/// through [`TextureViews`].
+macro_rules! texture_accessors {
+    ($ty:ident) => {
+        impl<'a> $ty<'a> {
+            /// The wgpu device.
+            #[must_use]
+            pub const fn device(&self) -> &'a wgpu::Device {
+                self.device
+            }
+
+            /// The wgpu queue.
+            #[must_use]
+            pub const fn queue(&self) -> &'a wgpu::Queue {
+                self.queue
+            }
+
+            /// The texture.
+            #[must_use]
+            pub const fn texture(&self) -> &'a wgpu::Texture {
+                self.texture
+            }
+
+            /// The texture's format.
+            #[must_use]
+            pub fn format(&self) -> wgpu::TextureFormat {
+                self.texture.format()
+            }
+
+            /// The texture's width and height in pixels.
+            #[must_use]
+            pub fn size(&self) -> (u32, u32) {
+                (self.texture.width(), self.texture.height())
+            }
+        }
+
+        impl fmt::Debug for $ty<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_struct(stringify!($ty))
+                    .field("format", &self.format())
+                    .field("size", &self.size())
+                    .finish_non_exhaustive()
+            }
+        }
+    };
 }
 
-/// Input texture provided during effect rendering.
+/// The texture an effect reads for one frame.
 pub struct EffectInput<'a> {
-    /// The wgpu device.
-    pub device: &'a wgpu::Device,
-    /// The wgpu queue.
-    pub queue: &'a wgpu::Queue,
-    /// The captured view's texture.
-    pub texture: &'a wgpu::Texture,
-    /// A view into the input texture.
-    pub view: wgpu::TextureView,
-    /// The texture format.
-    pub format: wgpu::TextureFormat,
-    /// Width of the input texture in pixels.
-    pub width: u32,
-    /// Height of the input texture in pixels.
-    pub height: u32,
-    /// Deterministic host-selected timing for this frame.
-    pub timing: EffectFrameTiming,
-    /// The clip shape, for filters that read it.
-    pub shape: ShapeTextures,
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    texture: &'a wgpu::Texture,
+    timing: EffectFrameTiming,
+    /// The display scale the input texture renders at — device pixels per
+    /// point. Parameters a stage declares as lengths
+    /// ([`ParamSource::Length`](filtrate_core::ParamSource::Length)) arrive
+    /// at the shader multiplied by it: a blur radius or offset declared in
+    /// points lands in device pixels.
+    length_scale: f32,
 }
 
-impl fmt::Debug for EffectInput<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EffectInput")
-            .field("format", &self.format)
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .field("timing", &self.timing)
-            .finish_non_exhaustive()
+impl<'a> EffectInput<'a> {
+    /// Reads `texture` this frame, at `timing`, with `length_scale`
+    /// device pixels per point for the parameters a stage declares as
+    /// lengths.
+    #[must_use]
+    pub const fn new(
+        device: &'a wgpu::Device,
+        queue: &'a wgpu::Queue,
+        texture: &'a wgpu::Texture,
+        timing: EffectFrameTiming,
+        length_scale: f32,
+    ) -> Self {
+        Self {
+            device,
+            queue,
+            texture,
+            timing,
+            length_scale,
+        }
+    }
+
+    /// The deterministic host-selected timing of this frame.
+    #[must_use]
+    pub const fn timing(&self) -> EffectFrameTiming {
+        self.timing
+    }
+
+    /// The display scale the input texture renders at — device pixels
+    /// per point.
+    #[must_use]
+    pub const fn length_scale(&self) -> f32 {
+        self.length_scale
     }
 }
 
-/// Output texture provided during effect rendering.
+texture_accessors!(EffectInput);
+
+/// The texture an effect writes for one frame.
 pub struct EffectOutput<'a> {
-    /// The wgpu device.
-    pub device: &'a wgpu::Device,
-    /// The wgpu queue.
-    pub queue: &'a wgpu::Queue,
-    /// The output texture to write to.
-    pub texture: &'a wgpu::Texture,
-    /// A view into the output texture.
-    pub view: wgpu::TextureView,
-    /// The texture format.
-    pub format: wgpu::TextureFormat,
-    /// Width of the output texture in pixels.
-    pub width: u32,
-    /// Height of the output texture in pixels.
-    pub height: u32,
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    texture: &'a wgpu::Texture,
 }
 
-impl fmt::Debug for EffectOutput<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EffectOutput")
-            .field("format", &self.format)
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .finish_non_exhaustive()
+impl<'a> EffectOutput<'a> {
+    /// Writes `texture` this frame.
+    #[must_use]
+    pub const fn new(
+        device: &'a wgpu::Device,
+        queue: &'a wgpu::Queue,
+        texture: &'a wgpu::Texture,
+    ) -> Self {
+        Self {
+            device,
+            queue,
+            texture,
+        }
+    }
+}
+
+texture_accessors!(EffectOutput);
+
+/// Default views of the textures an effect is handed, kept while the host
+/// keeps handing them.
+///
+/// [`EffectInput`] and [`EffectOutput`] carry textures, not views. A host
+/// renders through the same textures frame after frame, so an effect that
+/// binds them through this cache creates a view only for a texture it was
+/// not handed in the previous frame, and drops the view of a texture that
+/// went a whole frame unused.
+#[derive(Debug, Default)]
+pub struct TextureViews {
+    entries: Vec<CachedView>,
+}
+
+#[derive(Debug)]
+struct CachedView {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    last_used: u64,
+}
+
+impl TextureViews {
+    /// An empty cache.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// The default view of `texture` for the frame `sequence` (the
+    /// [`EffectFrameTiming::sequence`] of the frame being encoded).
+    pub fn view(&mut self, texture: &wgpu::Texture, sequence: u64) -> wgpu::TextureView {
+        self.entries
+            .retain(|cached| cached.last_used.saturating_add(1) >= sequence);
+        if let Some(cached) = self
+            .entries
+            .iter_mut()
+            .find(|cached| cached.texture == *texture)
+        {
+            cached.last_used = sequence;
+            return cached.view.clone();
+        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.entries.push(CachedView {
+            texture: texture.clone(),
+            view: view.clone(),
+            last_used: sequence,
+        });
+        view
     }
 }
 

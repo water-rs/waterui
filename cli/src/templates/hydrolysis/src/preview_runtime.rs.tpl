@@ -27,14 +27,14 @@ pub(crate) fn run() {
     hydrolysis::init_tracing();
     let config = PreviewRunConfig::load_from_env()
         .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
-    match config.mode {
-        PreviewRunMode::Image { ref output } => {
+    match config.mode() {
+        PreviewRunMode::Image { output } => {
             run_image(output, &config);
         }
         PreviewRunMode::Scenario {
-            ref output_dir,
-            ref captures_ms,
-            ref events,
+            output_dir,
+            captures_ms,
+            events,
         } => run_scenario(output_dir, captures_ms, events, &config),
         PreviewRunMode::Semantic => panic!(
             "hydrolysis preview: semantic runs require the preview test binary (waterui-preview-test-mode)"
@@ -53,7 +53,7 @@ struct Preview {
 fn mount(config: &PreviewRunConfig) -> Preview {
     let ledger = ContentLedger::new();
     Preview {
-        runtime: new_runtime(config.width, config.height, &ledger),
+        runtime: new_runtime(config.width(), config.height(), &ledger),
         ledger,
         content_deadline: config.content_deadline(),
     }
@@ -122,7 +122,7 @@ fn settle(preview: &mut Preview, at: Instant) {
     let deadline = Instant::now() + preview.content_deadline;
     let mut pumps = 0usize;
     loop {
-        if preview.runtime.pump_at(false, at).rebuilt {
+        if preview.runtime.pump_at(false, at).rebuilt() {
             pumps += 1;
             assert!(
                 pumps < MAX_PUMPS,
@@ -147,7 +147,7 @@ fn settle(preview: &mut Preview, at: Instant) {
                 });
             }
             let _ = preview.runtime.wait_for_local_work(deadline - now);
-            if preview.runtime.pump_at(false, at).rebuilt {
+            if preview.runtime.pump_at(false, at).rebuilt() {
                 break;
             }
         }
@@ -175,7 +175,7 @@ fn run_image(output_path: &Path, config: &PreviewRunConfig) {
     settle(&mut preview, frame_at);
     let result = preview.runtime.pump_at(true, frame_at);
     let snapshot = result
-        .snapshot
+        .into_snapshot()
         .unwrap_or_else(|| panic!("hydrolysis preview: static capture produced no snapshot"));
     write_snapshot_png(snapshot, output_path);
 }
@@ -201,8 +201,8 @@ fn run_scenario(
     let _ = preview.runtime.pump_at(false, started_at);
     let mut event_index = 0usize;
     for capture_ms in captures_ms {
-        while event_index < events.len() && events[event_index].at_ms <= *capture_ms {
-            let event_at = started_at + Duration::from_millis(events[event_index].at_ms);
+        while event_index < events.len() && events[event_index].at_ms() <= *capture_ms {
+            let event_at = started_at + Duration::from_millis(events[event_index].at_ms());
             preview
                 .runtime
                 .push_input_event(input_event(events[event_index]));
@@ -215,7 +215,7 @@ fn run_scenario(
         // capture settles by the same rule: the tree quiet *and* nothing owed.
         settle(&mut preview, capture_at);
         let result = preview.runtime.pump_at(true, capture_at);
-        let Some(snapshot) = result.snapshot else {
+        let Some(snapshot) = result.into_snapshot() else {
             panic!("hydrolysis preview: scenario capture at {capture_ms}ms produced no snapshot");
         };
         write_snapshot_png(
@@ -229,43 +229,41 @@ fn write_snapshot_png(snapshot: hydrolysis::HeadlessSnapshot, path: &Path) {
     // The alpha convention comes from the surface that presented the
     // capture — `Opaque` reads like `Straight` to the flattener, and
     // nothing else is produced.
-    let alpha = match snapshot.output_alpha {
+    let (width, height, rgba8, output_alpha) = snapshot.into_parts();
+    let alpha = match output_alpha {
         hydrolysis::OutputAlpha::Premultiplied => Alpha::Premultiplied,
         hydrolysis::OutputAlpha::Opaque | hydrolysis::OutputAlpha::Straight => Alpha::Straight,
     };
-    write_png(path, snapshot.width, snapshot.height, snapshot.rgba8, alpha)
+    write_png(path, width, height, rgba8, alpha)
         .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
 }
 
 fn input_event(event: ScenarioEvent) -> InputEvent {
-    let button = match event.button {
+    let button = match event.button() {
         ScenarioPointerButton::Primary => PointerButton::Primary,
         ScenarioPointerButton::Secondary => PointerButton::Secondary,
         ScenarioPointerButton::Middle => PointerButton::Middle,
-        _ => panic!(
-            "hydrolysis preview: unsupported pointer button {:?}",
-            event.button
-        ),
+        other => panic!("hydrolysis preview: unsupported pointer button {other:?}"),
     };
-    match event.kind {
+    match event.kind() {
         ScenarioEventKind::PointerMove => InputEvent::PointerMove {
             id: 0,
             kind: PointerKind::Mouse,
-            x: event.x,
-            y: event.y,
+            x: event.x(),
+            y: event.y(),
         },
         ScenarioEventKind::PointerDown => InputEvent::PointerDown {
             id: 0,
             kind: PointerKind::Mouse,
-            x: event.x,
-            y: event.y,
+            x: event.x(),
+            y: event.y(),
             button,
         },
         ScenarioEventKind::PointerUp => InputEvent::PointerUp {
             id: 0,
             kind: PointerKind::Mouse,
-            x: event.x,
-            y: event.y,
+            x: event.x(),
+            y: event.y(),
             button,
         },
         ScenarioEventKind::PointerCancel => InputEvent::PointerCancel {
@@ -273,16 +271,13 @@ fn input_event(event: ScenarioEvent) -> InputEvent {
             kind: PointerKind::Mouse,
         },
         ScenarioEventKind::Scroll => InputEvent::Scroll {
-            x: event.x,
-            y: event.y,
-            dx: event.dx,
-            dy: event.dy,
-            is_line_delta: event.is_line_delta,
+            x: event.x(),
+            y: event.y(),
+            dx: event.dx(),
+            dy: event.dy(),
+            is_line_delta: event.is_line_delta(),
         },
-        _ => panic!(
-            "hydrolysis preview: unsupported scenario event {:?}",
-            event.kind
-        ),
+        other => panic!("hydrolysis preview: unsupported scenario event {other:?}"),
     }
 }
 

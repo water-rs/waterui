@@ -2,6 +2,7 @@
 //! each `VARIANT` pipeline, so a Metal or D3D regression shows on Linux.
 
 use cherenkov::__engine_test as split_test;
+use cherenkov_shader::SPIRV_WRITER_FLAGS;
 use naga::back::{hlsl, msl, spv};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{Module, front::wgsl};
@@ -70,7 +71,11 @@ split_test! {
 fn every_variant_emits_spirv() {
     for variant in 0..ENGINE_SOURCES.len() {
         let (module, info) = composed(variant);
-        let mut writer = spv::Writer::new(&spv::Options::default())
+        let options = spv::Options {
+            flags: SPIRV_WRITER_FLAGS,
+            ..spv::Options::default()
+        };
+        let mut writer = spv::Writer::new(&options)
             .unwrap_or_else(|e| panic!("variant {variant}: spv: {e}"));
         let mut words = Vec::new();
         writer
@@ -132,8 +137,11 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
     };
     msl::write_string(module, info, &options, &msl::PipelineOptions::default())
         .unwrap_or_else(|e| panic!("{name}: msl: {e}"));
-    let mut writer =
-        spv::Writer::new(&spv::Options::default()).unwrap_or_else(|e| panic!("{name}: spv: {e}"));
+    let spv_options = spv::Options {
+        flags: SPIRV_WRITER_FLAGS,
+        ..spv::Options::default()
+    };
+    let mut writer = spv::Writer::new(&spv_options).unwrap_or_else(|e| panic!("{name}: spv: {e}"));
     let mut words = Vec::new();
     writer
         .write(module, info, None, &None, &mut words)

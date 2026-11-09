@@ -15,6 +15,7 @@ use accesskit::{
 use hydrolysis::InputEvent;
 use waterui::Binding;
 use waterui::ViewExt as _;
+use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
 use waterui::graphics::color::Srgb;
@@ -295,8 +296,8 @@ mod token_probe {
         BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
         ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
         ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
-        TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
+        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
         WidgetInteractionState, WidgetTheme,
     };
     use kurbo::{BezPath, Point, Rect};
@@ -740,20 +741,12 @@ mod token_probe {
                 bar_height: 48.0,
                 button_min_width: 48.0,
                 button_horizontal_inset: 16.0,
-                active_indicator_height: 3.0,
-                active_indicator_radius: 3.0,
                 icon_label_spacing: 4.0,
             }
         }
         fn draw_tabs_bar(&self, _recorder: &mut Recorder, _surface: Rect) {}
         fn draw_tabs_bar_divider(&self, _recorder: &mut Recorder, _divider: Rect) {}
-        fn draw_tabs_highlight(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _layout: TabItemLayout,
-        ) {
-        }
+        fn draw_tabs_highlight(&self, _recorder: &mut Recorder, _item: TabItemGeometry) {}
         fn draw_scroll_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn divider_metrics(&self) -> DividerMetrics {
@@ -865,13 +858,18 @@ fn styled_semantic_mount_installs_style_tokens_over_framework_defaults() {
 }
 
 /// `UiBuilder<Styled<S>>::mount_app` honours the builder's viewport and scale
-/// factor over the window's declared frame: the full-window content reports
+/// factor over the window's declared frame: the window content is allocated
 /// `320x240` logical points — not the `800x600` `Window::new` declares — and
 /// the scale factor stays a capture concern, so bounds read back in logical
-/// points.
+/// points. A text root reports its centred response by default
+/// (`docs/layout-spec.md` §6), so the label names its allocation (§7.2) to
+/// report the frame the mount assigned.
 #[test]
 fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
-    let app = waterui::app::App::new(|| text("app content").body(), waterui::Environment::new());
+    let app = waterui::app::App::new(
+        || text("app content").a11y_geometry(AccessibilityGeometry::Allocation),
+        waterui::Environment::new(),
+    );
     let mut app = ui()
         .theme(token_probe::TokenProbeStyle)
         .viewport(320, 240)
@@ -883,10 +881,15 @@ fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
 
 /// The free `mount_app(app, style)` convenience is the builder form with the
 /// viewport sized from the window's declared frame — `Window::new`'s default
-/// `800x600` here, not the builder's `390x844` default.
+/// `800x600` here, not the builder's `390x844` default. The label names its
+/// allocation (`docs/layout-spec.md` §7.2) so it reports that frame rather
+/// than the text's centred response.
 #[test]
 fn free_mount_app_mounts_at_the_window_frame() {
-    let app = waterui::app::App::new(|| text("app content").body(), waterui::Environment::new());
+    let app = waterui::app::App::new(
+        || text("app content").a11y_geometry(AccessibilityGeometry::Allocation),
+        waterui::Environment::new(),
+    );
     let mut app = mount_app(app, token_probe::TokenProbeStyle);
     let bounds = app.query().role(Role::LABEL).single().bounds();
     assert_eq!(bounds, NodeBounds::new(0.0, 0.0, 800.0, 600.0));

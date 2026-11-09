@@ -10,10 +10,6 @@ use super::{Srgb, linear_to_srgb, p3_to_linear_srgb, srgb_to_linear};
 /// P3 is a wider color gamut than sRGB, commonly used in modern displays.
 /// Component values are in the range 0.0 to 1.0.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a Display P3 color: its three channels are the whole value"
-)]
 pub struct P3 {
     /// Red component (0.0 to 1.0)
     pub red: f32,

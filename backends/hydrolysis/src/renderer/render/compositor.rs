@@ -14,10 +14,6 @@ use std::sync::Arc;
 /// SDR, single-scale display, the headless contract `waterui-testing`
 /// drives.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a host describes every field of the frame it presents; a new field must fail its build instead of taking a default"
-)]
 pub struct HydrolysisRenderTarget<'a> {
     /// The adapter the frame's device was requested on; the shared engine is
     /// created against what it can actually run.
@@ -49,7 +45,6 @@ pub struct HydrolysisRenderTarget<'a> {
 pub struct FrameRenderTarget<'a> {
     pub adapter: &'a wgpu::Adapter,
     pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
     pub device_loss: crate::platform::DeviceLoss,
     /// The device-creation chain the frame's handles belong to — the engine
     /// pool key.
@@ -74,7 +69,6 @@ impl<'a> HydrolysisRenderTarget<'a> {
         FrameRenderTarget {
             adapter: self.adapter,
             device: self.device,
-            queue: self.queue,
             device_loss: device_loss.clone(),
             gpu_context_id: context.context_id,
             shared_device: context.shared_device.clone(),
@@ -221,7 +215,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let rendered = crate::engine::engine_await!(window.surface.render());
         self.take_applied_filter_metrics();
         self.cherenkov_window = Some(window);
-        self.engine_next = Some(rendered?);
+        self.engine_next = Some(rendered?.into());
         let content_range = self.cherenkov_window.as_ref().expect("rendered window").surface.content_range();
         Ok(EngineFrame { headroom, content_range })
     }
@@ -296,7 +290,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
 
     /// Commits directly into the Android compositor target, without a
     /// host-acquired texture or a full-window presentation copy.
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
     pub(crate) fn render_android_frame(
         &mut self,
         target: &FrameRenderTarget<'_>,
@@ -306,6 +300,8 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             state,
             window: native_window,
             window_slot,
+            transparent,
+            band_commits,
         } = engine_target;
         if !window_slot
             .as_ref()
@@ -320,6 +316,8 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 native_window,
                 (target.width, target.height),
                 self.host_wake(),
+                transparent,
+                band_commits.clone(),
             );
             *window_slot = Some(CherenkovWindow::new(
                 surface,
@@ -344,7 +342,10 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     }
 
     /// The common completion path for engine-presented native windows.
-    #[cfg(any(target_os = "android", all(target_os = "macos", hydrolysis_winit)))]
+    #[cfg(any(
+        all(target_os = "android", not(hydrolysis_hwui)),
+        all(target_os = "macos", hydrolysis_winit)
+    ))]
     fn render_presented_window<S: crate::engine::EngineSurface>(
         &mut self,
         window: &mut CherenkovWindow<S, crate::text::ParleyEngine>,
@@ -356,16 +357,13 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         self.take_applied_filter_metrics();
         #[cfg(feature = "frame-profile")]
         {
-            self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 2);
-            self.finish_gpu_frame_profile_with(
-                window.gpu_profiler.as_ref(),
-                target.device,
-                target.queue,
-            );
+            let queue = &target.shared_device.queue;
+            self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, queue, 2);
+            self.finish_gpu_frame_profile_with(window.gpu_profiler.as_ref(), target.device, queue);
         }
         #[cfg(not(feature = "frame-profile"))]
         let _ = target;
-        self.engine_next = Some(rendered?);
+        self.engine_next = Some(rendered?.into());
         Ok(())
     }
 
@@ -431,7 +429,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let rendered = window.surface.render().await;
         self.take_applied_filter_metrics();
         *window_slot = Some(window);
-        self.engine_next = Some(rendered?);
+        self.engine_next = Some(rendered?.into());
         Ok(())
     }
 
@@ -473,7 +471,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let frame = window.surface.core().begin_frame();
 
         #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 0);
+        self.gpu_profile_mark(
+            window.gpu_profiler.as_ref(),
+            target.device,
+            &target.shared_device.queue,
+            0,
+        );
 
         let surface = window.surface.core_mut();
         surface.resize((target.width, target.height));
@@ -486,7 +489,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         self.commit_mount(&mut window.mount, &window.host, target.display_scale);
 
         #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 1);
+        self.gpu_profile_mark(
+            window.gpu_profiler.as_ref(),
+            target.device,
+            &target.shared_device.queue,
+            1,
+        );
 
         frame
     }
@@ -556,8 +564,7 @@ impl<S: crate::engine::EngineSurface, E: crate::text::TextEngine> CherenkovWindo
             metrics,
             surface: core.engine_surface_weak(),
             materials: mount::MaterialTerms::resolve(&state.engine, materials),
-            device: target.device.clone(),
-            queue: target.queue.clone(),
+            shared_device: target.shared_device.clone(),
         };
         Self {
             surface,

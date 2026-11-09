@@ -20,9 +20,23 @@ use crate::{
 #[non_exhaustive]
 pub struct LivePhotoSource {
     /// The URL for the still image component of the live photo.
-    pub image: Url,
+    image: Url,
     /// The URL for the video component of the live photo.
-    pub video: Url,
+    video: Url,
+}
+
+impl LivePhotoSource {
+    /// The URL for the still image component of the live photo.
+    #[must_use]
+    pub const fn image(&self) -> &Url {
+        &self.image
+    }
+
+    /// The URL for the video component of the live photo.
+    #[must_use]
+    pub const fn video(&self) -> &Url {
+        &self.video
+    }
 }
 
 /// Events emitted by the `LivePhoto` component.

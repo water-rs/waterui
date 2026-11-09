@@ -154,15 +154,12 @@ mod kernels_bench {
 
     fn encode_setup(len: usize) -> (cherenkov_cpu::Level, Vec<[f32; 4]>) {
         (
-            cherenkov_cpu::Level::new(),
+            cherenkov_cpu::detect(),
             cases::conversion_pixels(len, false),
         )
     }
     fn decode_setup(len: usize) -> (cherenkov_cpu::Level, Vec<[f32; 4]>) {
-        (
-            cherenkov_cpu::Level::new(),
-            cases::conversion_pixels(len, true),
-        )
+        (cherenkov_cpu::detect(), cases::conversion_pixels(len, true))
     }
 
     #[library_benchmark]

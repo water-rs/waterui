@@ -58,6 +58,7 @@ impl ResolvedTextLayoutInput {
     /// The spans that paint a background, as `(range, colour)` pairs — the
     /// background contract a layout carries out of the input it was shaped
     /// from.
+    #[cfg(hydrolysis_gpu_painter)]
     pub(in crate::text) fn background_spans(&self) -> Box<[(Range<usize>, [u8; 4])]> {
         self.spans
             .iter()
@@ -67,6 +68,7 @@ impl ResolvedTextLayoutInput {
 
     /// The same shaping defaults respelled over different text — how the
     /// ellipsis probe and each truncated re-shape mint their inputs.
+    #[cfg(hydrolysis_gpu_painter)]
     pub(in crate::text) fn respell(
         &self,
         plain: String,
@@ -106,7 +108,9 @@ impl ResolvedTextLayoutInput {
 #[derive(Clone)]
 pub(in crate::text) struct ResolvedFontSpec {
     pub(in crate::text) size: f32,
-    pub(in crate::text) weight: TextFontWeight,
+    /// The weight the run is shaped at, on the CSS 1–1000 scale, with the
+    /// platform bold trait already resolved ([`shaped_weight`]).
+    pub(in crate::text) weight: u16,
     pub(in crate::text) line_height: Option<f32>,
     pub(in crate::text) letter_spacing: f32,
     pub(in crate::text) family: Option<String>,
@@ -191,28 +195,26 @@ pub(in crate::text) fn span_cache_key(
 
 pub(in crate::text) fn font_spec(font: &waterui_text::font::ResolvedFont) -> ResolvedFontSpec {
     ResolvedFontSpec {
-        size: font.size,
-        weight: font.weight,
-        line_height: font.line_height,
-        letter_spacing: font.letter_spacing,
-        family: font.family.as_deref().map(String::from),
+        size: font.size(),
+        weight: shaped_weight(font),
+        line_height: font.line_height(),
+        letter_spacing: font.letter_spacing(),
+        family: font.family().map(ToString::to_string),
     }
 }
 
 fn resolve_text_style(style: &TextStyle, env: &Environment) -> ResolvedTextStyleSpec {
     ResolvedTextStyleSpec {
-        font: font_spec(&style.font.resolve(env).snapshot()),
+        font: font_spec(&style.get_font().resolve(env).snapshot()),
         foreground: style
-            .foreground
-            .clone()
+            .get_foreground()
             .map(|color| working_color_to_rgba8(color.resolve(env).snapshot())),
         background: style
-            .background
-            .clone()
+            .get_background()
             .map(|color| working_color_to_rgba8(color.resolve(env).snapshot())),
-        italic: style.italic,
-        underline: style.underline,
-        strikethrough: style.strikethrough,
+        italic: style.get_italic(),
+        underline: style.get_underline(),
+        strikethrough: style.get_strikethrough(),
     }
 }
 
@@ -235,14 +237,14 @@ pub(in crate::text) fn text_layout_locale(env: &Environment) -> String {
 fn text_layout_font_cache_key(font: &ResolvedFontSpec) -> TextLayoutFontCacheKey {
     TextLayoutFontCacheKey {
         size: font.size.to_bits(),
-        weight: font_weight(font.weight),
+        weight: font.weight,
         line_height: font.line_height.map(f32::to_bits),
         letter_spacing: font.letter_spacing.to_bits(),
         family: font.family.clone(),
     }
 }
 
-pub(in crate::text) const fn font_weight(weight: TextFontWeight) -> u16 {
+const fn font_weight(weight: TextFontWeight) -> u16 {
     match weight {
         TextFontWeight::Thin => 100,
         TextFontWeight::UltraLight => 200,
@@ -255,6 +257,49 @@ pub(in crate::text) const fn font_weight(weight: TextFontWeight) -> u16 {
         TextFontWeight::Black => 900,
     }
 }
+
+/// The CSS weight a resolved font is shaped at: its weight, or under the
+/// platform bold trait the weight its theme declares for the face, else
+/// the platform's own bold of its weight ([`platform_bold`]).
+fn shaped_weight(font: &waterui_text::font::ResolvedFont) -> u16 {
+    let weight = font_weight(font.weight());
+    if !font.bold() {
+        return weight;
+    }
+    font.bold_weight()
+        .map_or_else(|| platform_bold(weight), font_weight)
+}
+
+/// Android's bold of a `weight`: the bold typeface style adds 300 to the
+/// base weight, clamped to 1000 (`computeRelativeStyle` in hwui's
+/// `Typeface.cpp`), which is what `Typeface.create(base, BOLD)` and a bold
+/// `StyleSpan` produce.
+#[cfg(target_os = "android")]
+const fn platform_bold(weight: u16) -> u16 {
+    android_bold(weight)
+}
+
+/// The bold of the desktop text stacks Hydrolysis runs beside —
+/// `DWRITE_FONT_WEIGHT_BOLD`, `FC_WEIGHT_BOLD` and `PANGO_WEIGHT_BOLD` are
+/// all the absolute weight 700, whatever the base weight.
+#[cfg(not(target_os = "android"))]
+const fn platform_bold(_weight: u16) -> u16 {
+    DESKTOP_BOLD
+}
+
+/// See [`platform_bold`] on Android.
+#[cfg(any(test, target_os = "android"))]
+const fn android_bold(weight: u16) -> u16 {
+    if weight + 300 > 1000 {
+        1000
+    } else {
+        weight + 300
+    }
+}
+
+/// See [`platform_bold`] off Android.
+#[cfg(any(test, not(target_os = "android")))]
+const DESKTOP_BOLD: u16 = 700;
 
 /// Everything that identifies a shaped layout except the width it is fitted to.
 ///
@@ -375,9 +420,60 @@ impl core::fmt::Debug for ResolvedTextLayoutInput {
 
 #[cfg(test)]
 mod tests {
-    use super::text_layout_locale;
+    use super::{DESKTOP_BOLD, android_bold, shaped_weight, text_layout_locale};
+    use nami::Signal;
     use waterui_core::Environment;
     use waterui_locale::locales;
+    use waterui_text::font::{Body, Font, FontWeight, ResolvedFont};
+
+    fn resolve(slot: ResolvedFont, font: &Font) -> ResolvedFont {
+        let env = Environment::new()
+            .store::<Body, nami::Computed<ResolvedFont>>(nami::Computed::constant(slot));
+        font.resolve(&env).snapshot()
+    }
+
+    /// Android's bold typeface style is relative: 300 over the base weight,
+    /// clamped to 1000.
+    #[test]
+    fn android_bold_adds_300_to_the_base_weight() {
+        assert_eq!(android_bold(400), 700);
+        assert_eq!(android_bold(500), 800);
+        assert_eq!(android_bold(700), 1000);
+        assert_eq!(android_bold(900), 1000);
+    }
+
+    #[test]
+    fn explicit_weight_700_is_exact_and_bold_follows_the_slot_declaration() {
+        let slot = ResolvedFont::new(16.0, FontWeight::Medium);
+        assert_eq!(
+            shaped_weight(&resolve(
+                slot.clone(),
+                &Font::new(Body).weight(FontWeight::Bold)
+            )),
+            700
+        );
+        assert_eq!(shaped_weight(&resolve(slot.clone(), &Font::new(Body))), 500);
+
+        let declared = slot.with_bold_weight(FontWeight::SemiBold);
+        assert_eq!(
+            shaped_weight(&resolve(declared, &Font::new(Body).bold())),
+            600
+        );
+    }
+
+    /// Without a declaration the bold is the host platform's own.
+    #[test]
+    fn undeclared_bold_is_the_platform_bold() {
+        let shaped = shaped_weight(&resolve(
+            ResolvedFont::new(16.0, FontWeight::Medium),
+            &Font::new(Body).bold(),
+        ));
+        if cfg!(target_os = "android") {
+            assert_eq!(shaped, android_bold(500));
+        } else {
+            assert_eq!(shaped, DESKTOP_BOLD);
+        }
+    }
 
     #[test]
     fn text_layout_locale_uses_environment_locale() {

@@ -205,34 +205,18 @@ pub enum AndroidToolchainError {
 
 /// Android SDK toolchain component.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct AndroidSdk;
 
 /// Android Platform-Tools (`adb`) toolchain component.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct AndroidPlatformTools;
 
 /// Android SDK platform packages (`platforms/android-*`) used for compilation.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct AndroidSdkPlatforms;
 
 /// Android SDK build-tools packages (`build-tools;*`) used for D8/Kotlin dexing.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct AndroidBuildTools;
 
 /// Rust targets required for Android cross-compilation.
@@ -267,26 +251,14 @@ impl Default for AndroidRustTargets {
 
 /// An Android NDK toolchain component.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct AndroidNdk;
 
 /// Java toolchain component for Android development.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct Java;
 
 /// Kotlin toolchain component for Android development.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct Kotlin;
 
 /// A `kotlinc` whose `-version` probe reported a compatible version.

@@ -17,7 +17,6 @@
 //!   on the render thread.
 #![expect(
     clippy::exhaustive_enums,
-    clippy::exhaustive_structs,
     reason = "publish = false: no semver surface until #2687 makes the crate publishable"
 )]
 
@@ -41,6 +40,8 @@ mod message;
 mod resource;
 mod surface;
 mod text;
+#[cfg(feature = "workers")]
+pub mod workers;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -114,8 +115,8 @@ pub use cherenkov_record::{
     AnimationStart, BackdropEffect, BackdropId, BackdropOuter, BackdropOuterError, BackdropSample,
     BackdropSampling, BackdropShaderEffect, BackdropShaderId, BackdropShaderSource, BackdropSpec,
     BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError, CaptureScale,
-    CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install, Layer,
-    LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
+    CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, ImageStorage, Install,
+    Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
     LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
     RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared,
     SurfaceId, SurfaceTree, Target, Transaction, snap_animating,

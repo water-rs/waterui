@@ -6,9 +6,9 @@ import android.graphics.Canvas
  * A painter that draws the session's top-level content in the host's own
  * `dispatchDraw`, interleaved with the embedded platform views in session
  * order, instead of through a band beneath them (the HWUI painter). Touches
- * follow the same order: the topmost entry under the pointer owns the
- * gesture, so a platform view drawn beneath session content does not receive
- * the touches that content covers.
+ * follow the same order: a platform view under the pointer owns the gesture
+ * unless an interactive target of the session's content is painted above it
+ * there; non-interactive content never takes a platform view's touches.
  */
 /**
  * Records one platform view's own display list into the painter's canvas —
@@ -24,7 +24,18 @@ fun interface PlatformViewRecorder {
     fun drawLocal(id: Long, canvas: Canvas, width: Int, height: Int, transform: android.graphics.Matrix)
 }
 
-interface OrderedContent {
+/**
+ * The paint-order hit query the touch paths ask: the platform view the
+ * retained tree places under host pixel (`x`, `y`), `null` when none is
+ * drawn there or an interactive target above it takes the point. Split
+ * from [OrderedContent] so the GPU painter — whose base surface draws outside the
+ * container — still answers gesture ownership (water-rs/waterui#2225).
+ */
+fun interface OrderedHitTest {
+    fun platformViewAt(x: Float, y: Float): Long?
+}
+
+interface OrderedContent : OrderedHitTest {
     /** The entries, bottom first. */
     val entryCount: Int
 
@@ -53,9 +64,10 @@ interface OrderedContent {
      * The platform view the retained tree places under host pixel (`x`, `y`)
      * — the authoritative answer for gesture ownership: ancestor alpha,
      * transforms, clips and scroll compose exactly as drawn. `null` means
-     * self-drawn content or nothing covers the point.
+     * no view is drawn there or an interactive target painted above it
+     * takes the point; non-interactive content never does.
      */
-    fun platformViewAt(x: Float, y: Float): Long?
+    override fun platformViewAt(x: Float, y: Float): Long?
 }
 
 /** The ordered hit test, apart from views so the JVM tests it. */

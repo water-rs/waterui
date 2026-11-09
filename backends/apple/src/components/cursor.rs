@@ -16,7 +16,10 @@ use waterui::cursor::Cursor;
 #[cfg(target_os = "macos")]
 use waterui::cursor::CursorStyle;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -55,6 +58,18 @@ impl core::fmt::Debug for CursorSubView {
 }
 
 impl SubView for CursorSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state
+            .borrow()
+            .child
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.borrow().child.layout().measure(proposal)
     }
@@ -155,7 +170,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     }
                 },
             );
-            leaf.bind(&metadata.value.style, {
+            leaf.bind(metadata.value.style(), {
                 move |style| {
                     current.set(style);
                     if host.is_pointer_inside() {
@@ -171,7 +186,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             // rounded-rect pointer shape; the style signal does not
             // change it — `UIKit` has no cursor vocabulary.
             leaf.keep(uikit::PointerInteraction::rounded_rect(&host));
-            let _ = &metadata.value.style;
+            let _ = metadata.value.style();
         }
 
         leaf.keep(state);

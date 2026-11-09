@@ -5,6 +5,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+#[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::platform_view::PlatformView;
 use core::any::Any;
@@ -69,22 +70,25 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let core = renderer.new_core();
                 let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
                 let guards = [
-                    config.content.watch({
+                    config.content().watch({
                         let invalidate = Rc::clone(&invalidate);
                         move |_| invalidate()
                     }),
-                    config.paragraph_alignment.watch(move |_| invalidate()),
+                    config.paragraph_alignment().watch(move |_| invalidate()),
                 ];
+                let (content, alignment, line_limit) = config.into_parts();
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
                     accessibility_identity: Rc::new(()),
                     core,
-                    content: config.content,
-                    alignment: config.paragraph_alignment,
-                    line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
+                    content,
+                    alignment,
+                    line_limit: line_limit.map(core::num::NonZeroUsize::get),
                     layout_dirty,
+                    geometry: None,
                     _guards: guards,
+                    tap_span_targets: RefCell::new(Vec::new()),
                 }));
             }
             Err(view) => view,
@@ -578,9 +582,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let view = match view.downcast::<Metadata<GestureObserver>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                let GestureObserver {
-                    gesture, action, ..
-                } = value;
+                let (gesture, action) = value.into_parts();
                 // A node has no `content` at flush, so resolve the two
                 // content-derived pieces now (the default a11y label string and
                 // the gesture group identity) and store them in the effect.
@@ -617,13 +619,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<ScrollView>>() {
             Ok(scroll) => {
-                let ScrollViewParts {
-                    axis,
-                    content,
-                    controller,
-                    offset,
-                    ..
-                } = (*scroll).into_inner().into_inner();
+                let (axis, content, controller, offset) =
+                    (*scroll).into_inner().into_inner().into_parts();
                 let content = normalize_layout_view(content, env);
                 // A scroll surface owns §7.1 for its subtree: the layout
                 // pass hands the surface its facts and the child lays out
@@ -660,12 +657,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // new content and a per-frame re-flush re-binds the *same* runtime. Holding
         // the runtime in a frame-ordered slot instead lets the ordering drift out of
         // step with the tree and hand a leaf another leaf's runtime.
+        #[cfg(hydrolysis_gpu)]
         let view = match view.downcast::<Native<GpuContentView>>() {
             Ok(view) => {
                 return Self::build_gpu_content((*view).into_inner(), renderer);
             }
             Err(view) => view,
         };
+        #[cfg(hydrolysis_gpu)]
         let view = match view.downcast::<Native<ExternalFrameView>>() {
             Ok(view) => {
                 return Self::build_external_frame((*view).into_inner(), renderer);
@@ -801,7 +800,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(webview) => AnyView::new(*webview),
             Err(view) => view,
         };
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         let view = match view.downcast::<Native<crate::hosted::HostedView>>() {
             Ok(hosted) => return Self::build_hosted((*hosted).into_inner(), env, renderer),
             Err(view) => view,
@@ -1052,7 +1051,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             entries,
             placed: Vec::new(),
             #[cfg(feature = "accessibility")]
-            resolved: Rect::from_size(Size::zero()),
+            geometry: None,
             ghosts: Vec::new(),
             ghost_placed: Vec::new(),
             reduce_motion: env
@@ -1150,6 +1149,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             core,
             safe_area: None,
             #[cfg(feature = "accessibility")]
+            geometry: None,
+            #[cfg(feature = "accessibility")]
             accessibility_container_env,
             extent_index: RefCell::new(VirtualExtentIndex::default()),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
@@ -1199,6 +1200,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// view keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
     /// producer inside is taken exactly once, when the node's install layer
     /// first commits it on the window's engine.
+    #[cfg(hydrolysis_gpu)]
     fn build_gpu_content(view: GpuContentView, renderer: &SemanticCore<E>) -> Self {
         Self::GpuContent(Box::new(GpuContentNode {
             accessibility_identity: Rc::new(()),
@@ -1211,6 +1213,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Build an `ExternalFrameView` node owning its [`ExternalFrameRuntime`] —
     /// the view keeps its UI-side hooks (measure, a11y); the compositor starts
     /// the stream's source the first time a persistent mount installs it.
+    #[cfg(hydrolysis_gpu)]
     fn build_external_frame(view: ExternalFrameView, renderer: &SemanticCore<E>) -> Self {
         Self::ExternalFrame(Box::new(ExternalFrameNode {
             accessibility_identity: Rc::new(()),
@@ -1356,7 +1359,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             accessibility_child_env,
             placed: Vec::new(),
             #[cfg(feature = "accessibility")]
-            resolved: Rect::from_size(Size::zero()),
+            geometry: None,
             layout_dirty,
             _guards: guards,
         }))

@@ -50,20 +50,13 @@ impl HwuiWindow {
         id: SurfaceId,
         theme: Rc<dyn WidgetTheme>,
         wake: Rc<dyn Fn()>,
+        effect_wake: std::sync::Arc<dyn Fn() + Send + Sync>,
     ) -> Result<(Self, HydrolysisRenderer<AndroidTextEngine>), JniError> {
         if peer.is_null() {
             return Err(JniError(
                 "hydrolysis HWUI: nativeCreateSession got a null HwuiPainter".to_owned(),
             ));
         }
-        let api = env
-            .get_static_field(
-                jni::jni_str!("android/os/Build$VERSION"),
-                jni::jni_str!("SDK_INT"),
-                jni::jni_sig!("I"),
-            )?
-            .i()?;
-        let api = u32::try_from(api).expect("Build.VERSION.SDK_INT is never negative");
         let text_object = env
             .call_method(
                 peer,
@@ -81,8 +74,7 @@ impl HwuiWindow {
             )?
             .l()?;
 
-        let surface =
-            HwuiSurface::new(id, api, move || wake()).map_err(|e| JniError(e.to_string()))?;
+        let surface = HwuiSurface::new(id, move || wake()).map_err(|e| JniError(e.to_string()))?;
         // The window starts parked: `set_host_attached` and metrics unhide
         // it the way the GPU band's surface attach does.
         surface.set_hidden(true);
@@ -96,10 +88,10 @@ impl HwuiWindow {
         let renderer = HydrolysisRenderer::with_engine(theme, text);
         let resources = Rc::new(
             crate::hwui::HwuiResources::over_jni(env, &sink_object, surface.encoder())
-                .map_err(|e| JniError(e.to_string()))?,
+                .map_err(JniError)?,
         );
         let painter = JniPainter::new(env, peer).map_err(JniError)?;
-        let (mount, host) = renderer.mount_hwui(&surface, resources);
+        let (mount, host) = renderer.mount_hwui(&surface, resources, effect_wake);
         Ok((
             Self {
                 surface,
@@ -128,10 +120,11 @@ impl HwuiWindow {
         runtime.platform.apply_properties(&runtime.window);
         let background = SurfaceBackground::of(&runtime.window, env);
         assert!(
-            !background.blurs_behind(),
+            background.behind_level().is_none(),
             "hydrolysis HWUI: behind-window material is unsupported \
              (water-rs/waterui#1899)"
         );
+        runtime.platform.set_transparent(background.transparent());
         runtime.renderer.set_window_backdrop(background.backdrop());
         pump_window_scene(runtime, env, drain);
         self.surface
@@ -148,10 +141,10 @@ impl HwuiWindow {
             .surface
             .frame(cherenkov_record::Instant::now(), scale)
             .map_err(|e| JniError(e.to_string()))?;
-        let animating = frame.content_animating || frame.sampling.rate.is_some();
+        let animating = frame.content_animating() || frame.sampling().rate.is_some();
         self.painter
-            .replay(frame.words, frame.clear)
-            .map_err(|e| JniError(e.to_string()))?;
+            .replay(frame.words(), frame.clear())
+            .map_err(JniError)?;
         sync_platform_input(runtime);
         if runtime.renderer.take_redraw_request() || animating || self.surface.has_pending() {
             runtime.request_redraw();

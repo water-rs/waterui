@@ -43,6 +43,7 @@ pub struct Bind {
 /// The reduce pipeline's layout and its pipelines by target format,
 /// built on the first frame that reduces a levelled capture.
 pub struct Pipelines {
+    cache: super::PipelineCache,
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     program: super::shaders::RenderProgram,
@@ -53,7 +54,11 @@ pub struct Pipelines {
 
 impl Pipelines {
     /// The layout and module; pipelines are built per format on demand.
-    pub fn new(device: &wgpu::Device, delivery: super::shaders::ShaderDelivery) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        delivery: super::shaders::ShaderDelivery,
+        cache: super::PipelineCache,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cherenkov reduce"),
             entries: &super::layout_entries(super::bindings::REDUCE_GROUP0),
@@ -64,6 +69,7 @@ impl Pipelines {
             immediate_size: 0,
         });
         Self {
+            cache,
             layout,
             pipeline_layout,
             program: delivery.reduce_program(device),
@@ -86,6 +92,7 @@ impl Pipelines {
                 &self.program,
                 format,
                 None,
+                &self.cache,
             );
             self.by_format.push((format, pipeline));
             self.by_format.len() - 1

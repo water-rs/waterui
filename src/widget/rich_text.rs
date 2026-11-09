@@ -5,8 +5,8 @@ use suiteki::Str;
 use waterui_core::{AnyView, Environment, View};
 use waterui_graphics::color::Blue;
 use waterui_layout::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
-    ViewDimensions,
+    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    SubviewPlacement, UnitPoint, ViewDimensions,
     container::FixedContainer,
     stack::{HStack, HorizontalAlignment, VStack, hstack},
 };
@@ -484,6 +484,15 @@ impl MarkdownTableLayout {
 impl Layout for MarkdownTableLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         self.measure(proposal.width, children).size
+    }
+
+    /// Anchored top-leading: `place` lays the table out from `bounds`' origin.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -1271,6 +1280,7 @@ impl Default for InlineGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui_layout::ResolvedExtent;
 
     /// Collects a document's elements into a shape that is easy to assert on.
     fn plain_text_of(elements: &[RichTextElement]) -> String {
@@ -1336,6 +1346,14 @@ mod tests {
     }
 
     impl SubView for MockTableCell {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let width = proposal
                 .width
@@ -1626,11 +1644,15 @@ fn main() {
 
         fn find_code_chunk(elements: &[RichTextElement]) -> bool {
             elements.iter().any(|el| match el {
-                RichTextElement::Text(styled) => styled
-                    .clone()
-                    .into_chunks()
-                    .into_iter()
-                    .any(|(txt, style)| txt.as_str() == "cargo run" && style.background.is_some()),
+                RichTextElement::Text(styled) => {
+                    styled
+                        .clone()
+                        .into_chunks()
+                        .into_iter()
+                        .any(|(txt, style)| {
+                            txt.as_str() == "cargo run" && style.get_background().is_some()
+                        })
+                }
                 RichTextElement::Group { elements, .. } => find_code_chunk(elements),
                 _ => false,
             })

@@ -46,6 +46,7 @@ members = [
     "graphics/cherenkov/scene",
     "graphics/cherenkov/oracle",
     "graphics/cherenkov/stroke",
+    "graphics/cherenkov/simd",
     "graphics/cherenkov/bench",
     "graphics/filtrate",
     "graphics/filtrate/core",
@@ -89,9 +90,15 @@ categories = ["gui"]
 minimum-cli-version = "0.4.6"
 # Native Apple deployment targets, carried into every project's Cargo config.
 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
+# The Apple deployment targets a project that bundles a web frontend declares:
+# `include_web!` installs a navigation policy, which needs `WKNavigationAction.
+# mainFrameNavigation`, public from OS 27. `water create` writes these under
+# `[apple.deployment-targets]` in `Water.toml`; the webview crate's tests check
+# them against the version its navigation-policy gate requires.
+web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
 # The Android API floor the native runtime supports; the backend's Gradle
 # `minSdk` must agree.
-android-min-api-level = 31
+android-min-api-level = 33
 # The Gradle release every project this framework assembles runs — the
 # scaffolded `gradle-wrapper.properties` renders it and the in-tree Hydrolysis
 # host pins it, so the version CI exercises is the one users' `./gradlew`
@@ -164,11 +171,10 @@ clippy.nursery = "warn"
 clippy.cargo = "warn"
 # Every `unsafe` must state why it is sound, in a form the compiler checks.
 clippy.undocumented_unsafe_blocks = "warn"
-# Public types are `#[non_exhaustive]` unless deliberately closed, so adding
-# a variant or a field is not a breaking change; a closed type says why
-# through an item-level `expect`.
+# Public enums are `#[non_exhaustive]` unless deliberately closed, so adding
+# a variant is not a breaking change; a closed enum says why through an
+# item-level `expect`.
 clippy.exhaustive_enums = "warn"
-clippy.exhaustive_structs = "warn"
 clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 
@@ -255,9 +261,10 @@ waterui-math = "0.2.0"
 waterui-layout = { version = "0.5.1", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.5.1", path = "components/foundation/navigation" }
 waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
+waterui-widgets = { version = "0.5.1", path = "components/platform/widgets" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
-waterui-browser-cef = { version = "0.5.1", path = "components/platform/browser-cef", default-features = false }
-waterui-browser-wpe = { version = "0.5.1", path = "components/platform/browser-wpe", default-features = false }
+waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "dev", default-features = false }
+waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "dev", default-features = false }
 wgpu-external-frame = "0.4.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
@@ -268,6 +275,7 @@ waterui-icons-native = { version = "0.5.1", path = "components/icon/native" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }
 waterui-map = { version = "0.5.1", path = "components/data/map" }
 waterui-meta = { version = "0.5.1", path = "utils/meta" }
+waterui-apple-os = { version = "0.5.1", path = "utils/apple-os" }
 waterkit-location = "0.2"
 waterkit-screen = "0.2"
 waterkit-audio = { version = "0.2", default-features = false }
@@ -345,8 +353,11 @@ serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
 # 30, the exact minor `cherenkov-gpu` builds against: an application can link
 # only one wgpu, and every `wgpu` type that crosses between the engine and a
-# `GpuContent` producer must be one type.
-wgpu = "30.0.1"
+# `GpuContent` producer must be one type. Only target-neutral features live
+# here: a workspace dependency cannot be target-specific, so each crate that
+# creates a GPU instance enables its target's one native backend (`dx12` on
+# Windows, `metal` on Apple, `vulkan` on Linux and Android) in a target table.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "webgpu"] }
 parley = { version = "0.12", default-features = false }
 kurbo = "0.13"
 skrifa = "0.48.0"
@@ -372,7 +383,7 @@ quick-xml = "0.42"
 mathcat = { version = "0.7.5", features = ["include-zip"] }
 toml = "1.1.8"
 lyon = "1.0"
-wgpu-hal = { version = "30.0.1", features = ["gles", "metal"] }
+wgpu-hal = { version = "30.0.1", default-features = false, features = ["metal"] }
 # Must match the `glow` version wgpu-hal links against, or GLES handles from
 # `wgpu::hal::gles` fail to unify with locally created ones.
 # Tracks whatever `wgpu-hal` links, not the newest release: the GTK backend
@@ -469,6 +480,8 @@ remote = ["waterui-internal/remote", "waterui-dylib?/remote"]
 # link it. The backend without one selects this.
 video-gpu = ["waterui-internal/video-gpu", "waterui-dylib?/video-gpu"]
 webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
+# The `WidgetKit` authoring surface (`waterui::widgets`, `#[waterui::widget]`).
+widgets = ["waterui-internal/widgets", "waterui-dylib?/widgets"]
 # TypeScript views: the embedded JavaScript engine, the signal bridge, the
 # `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose
 # encoded contract the `water` CLI reads back out of a debug artifact.
@@ -596,8 +609,6 @@ lto = "thin"
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
 shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "dev" }
-# Evaluate SIMD exponential constants at compile time until wide releases the fix.
-wide = { git = "https://github.com/lexoliu/wide", branch = "perf/f32x4-exp-const" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
@@ -627,6 +638,12 @@ waterui-inspector-protocol = { path = "components/devtools/inspector/protocol" }
 waterui-locale = { path = "utils/locale" }
 waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
+# The browser engine crates live in water-rs/browsers and declare
+# `waterui-chromium` and `waterui-watcher-set` against the registry; both
+# must resolve to the in-tree members or the engine traits split across two
+# copies of each.
+waterui-chromium = { path = "components/platform/chromium" }
+waterui-watcher-set = { path = "utils/watcher-set" }
 # `hydrolysis-m3` declares its renderer requirement against the registry;
 # this entry makes it resolve to the in-tree backend so the graph carries
 # exactly one hydrolysis. The registry 0.3.1 theme implements the
@@ -711,7 +728,7 @@ waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "dev" }
 waterui-chart = { git = "https://github.com/water-rs/chart", branch = "dev" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "dev" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "dev" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "bf663af85211d1f0bcce511b94ac435efad046a6" }
+waterui-particle = { git = "https://github.com/water-rs/particle", branch = "dev" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }

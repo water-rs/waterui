@@ -1517,11 +1517,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         metrics.horizontal_padding,
                         metrics.vertical_padding,
                     );
-                    let ctx = RenderContext {
-                        local: transform,
-                        bounds: overlay.bounds,
-                    }
-                    .child(
+                    let ctx = RenderContext::new(transform, overlay.bounds).child(
                         kurbo::Affine::translate((text_rect.x0, text_rect.y0)),
                         kurbo::Rect::new(0.0, 0.0, text_rect.width(), text_rect.height()),
                     );
@@ -2409,7 +2405,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         env: &Environment,
         press: &KeyPress,
     ) -> KeyPressOutcome {
-        if self.handle_keyboard_key_down(key, &press.key, modifiers, env) {
+        if self.handle_keyboard_key_down(key, press.key(), modifiers, env) {
             return KeyPressOutcome::Consumed;
         }
         if self.handle_key(key, modifiers) {
@@ -2475,7 +2471,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             if result == KeyHandling::Handled {
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
-                    key = ?press.key,
+                    key = ?press.key(),
                     "key consumed by an on_key_press ancestor"
                 );
                 return KeyPressOutcome::Consumed;
@@ -2490,17 +2486,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             let embedded = self.hit_test.embedded_input_targets[index].clone();
             embedded.sink.key(&KeyDelivery {
                 pressed: true,
-                logical: &press.key,
-                code: press.code,
-                repeat: press.repeat,
-                modifiers: Modifiers::from(press.modifiers),
+                logical: press.key(),
+                code: press.code(),
+                repeat: press.repeat(),
+                modifiers: Modifiers::from(press.modifiers()),
             });
             // The release belongs to the sink that saw the press, not to
             // whichever surface holds focus when it arrives.
             self.hit_test.bubbled_key_sinks.push(BubbledKeySink {
-                logical: press.key.clone(),
-                code: press.code,
-                modifiers: Modifiers::from(press.modifiers),
+                logical: press.key().clone(),
+                code: press.code(),
+                modifiers: Modifiers::from(press.modifiers()),
                 sink: embedded.sink,
             });
             // Forwarded, not consumed: the surface owns the key+text pair

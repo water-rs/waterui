@@ -37,29 +37,29 @@ fn ts_every_component_the_host_builds_is_in_the_catalog() {
     // agreeing is what makes the published table usable: a tag the catalog
     // advertises and the table cannot build would be a promise nothing keeps.
     let catalog = decode_catalog(CATALOG_ENCODED).expect("the catalog decodes");
-    for component in &catalog.components {
+    for component in catalog.components() {
         assert!(
-            !component.summary.is_empty(),
+            !component.summary().is_empty(),
             "<{}> is published without a summary, and the summary is what a \
              generated `.d.ts` shows an author",
-            component.name
+            component.name()
         );
     }
-    for modifier in &catalog.modifiers {
+    for modifier in catalog.modifiers() {
         assert!(
-            !modifier.summary.is_empty(),
+            !modifier.summary().is_empty(),
             "`{}` is published without a summary",
-            modifier.name
+            modifier.name()
         );
     }
     assert_eq!(
-        catalog.components.len(),
-        CATALOG.components.len(),
+        catalog.components().len(),
+        CATALOG.components().len(),
         "the decoded catalog carries every component the registry holds"
     );
     assert_eq!(
-        catalog.modifiers.len(),
-        CATALOG.modifiers.len(),
+        catalog.modifiers().len(),
+        CATALOG.modifiers().len(),
         "the decoded catalog carries every modifier the registry holds"
     );
 }

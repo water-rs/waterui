@@ -7,6 +7,11 @@
 // WaterUI markdown chrome reproduced here (heading levels consume the
 // framework's semantic font slots, resolved to platform text styles):
 //   # -> .title bold, ## -> .headline bold, ### -> .body bold
+//   Every bold here — headings, table header cells, the code block's
+//   language name — is WaterUI's `.bold()`, the platform bold, which is
+//   SwiftUI's `.bold()`, not `.fontWeight(.bold)`: a text style takes its
+//   own bold (iOS headline bold is Semibold, macOS headline bold is Heavy),
+//   and unstyled text the plain bold (Bold on macOS).
 //   fenced blocks get a header row (language name + Copy) over the
 //   SurfaceVariant fill, and the code text is the syntect base16-ocean.light
 //   palette at Body.size(14).monospaced() (components/foundation/text/src/
@@ -35,11 +40,11 @@ struct MarkdownTwin: View {
             ZStack {
                 ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                Text("WaterUI Markdown").font(.title).fontWeight(.bold)
+                Text("WaterUI Markdown").font(.title).bold()
                 Text("WaterUI supports rendering **Markdown** content natively across all platforms.")
 
                 heading("Text Formatting")
-                Text("You can use **bold**, *italic*, and `inline code` in your text. Combine them for ***bold italic*** text.")
+                Text(inlineCodeRuns("You can use **bold**, *italic*, and `inline code` in your text. Combine them for ***bold italic*** text."))
 
                 heading("Code Blocks")
                 Text("Here's a Rust example:")
@@ -72,13 +77,13 @@ struct MarkdownTwin: View {
                 ])
 
                 heading("Lists")
-                Text("Unordered List").font(.body).fontWeight(.bold)
+                Text("Unordered List").font(.body).bold()
                 VStack(alignment: .leading, spacing: 10) {
                     bullet("First item")
                     bullet("Second item")
                     bullet("Third item")
                 }
-                Text("Ordered List").font(.body).fontWeight(.bold)
+                Text("Ordered List").font(.body).bold()
                 VStack(alignment: .leading, spacing: 10) {
                     numbered(1, "Step one")
                     numbered(2, "Step two")
@@ -88,7 +93,9 @@ struct MarkdownTwin: View {
                 heading("Blockquotes")
                 HStack(spacing: 0) {
                     Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 3)
-                    Text("WaterUI brings the power of native UI to Rust developers.\nBuild once, run everywhere.")
+                    // The example's two quote lines are a CommonMark soft
+                    // break, which renders as a space.
+                    Text("WaterUI brings the power of native UI to Rust developers. Build once, run everywhere.")
                         .foregroundStyle(.secondary)
                         .padding(.leading, 10)
                 }
@@ -96,9 +103,9 @@ struct MarkdownTwin: View {
                 heading("Tables")
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                     GridRow {
-                        Text("Platform").fontWeight(.bold)
-                        Text("Backend").fontWeight(.bold)
-                        Text("Status").fontWeight(.bold)
+                        Text("Platform").bold()
+                        Text("Backend").bold()
+                        Text("Status").bold()
                     }
                     wuiDivider()
                     GridRow { Text("iOS"); Text("SwiftUI"); Text("Ready") }
@@ -126,7 +133,7 @@ struct MarkdownTwin: View {
     }
 
     private func heading(_ s: String) -> some View {
-        Text(s).font(.headline).fontWeight(.bold)
+        Text(s).font(.headline).bold()
     }
 
     // The example emits `hstack((text("• "), item))` / `hstack((text("{}. "),
@@ -152,7 +159,7 @@ struct MarkdownTwin: View {
     private func codeBlock(_ lang: String, _ spans: [(String, CodeSpanColor)]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(lang).fontWeight(.bold).foregroundStyle(.secondary)
+                Text(lang).bold().foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 Text("Copy").foregroundStyle(.blue)
             }
@@ -166,6 +173,24 @@ struct MarkdownTwin: View {
         }
         .padding(14)
         .background(codeSurface)
+    }
+
+    /// The example's inline code: WaterUI's `inline_code_style`
+    /// monospaces the run over a `SurfaceVariant` fill
+    /// (components/foundation/text/src/styled.rs), which the markdown
+    /// initializer drops — paint it on the code presentation intent
+    /// (water-rs/waterui#3593).
+    private func inlineCodeRuns(_ source: String) -> AttributedString {
+        var attributed: AttributedString
+        do {
+            attributed = try AttributedString(markdown: source)
+        } catch {
+            preconditionFailure("inline-code markdown literal failed to parse: \(error)")
+        }
+        for run in attributed.runs where run.inlinePresentationIntent?.contains(.code) == true {
+            attributed[run.range].backgroundColor = .tertiarySystemFill
+        }
+        return attributed
     }
 
     /// `Color::new(SurfaceVariantColor)`: the Apple backend resolves the slot

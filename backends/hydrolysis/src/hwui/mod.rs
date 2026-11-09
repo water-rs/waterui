@@ -40,6 +40,7 @@ mod buffer;
 mod color;
 #[cfg(test)]
 mod contract;
+pub(crate) mod effects;
 mod encoder;
 mod fonts;
 mod geometry;
@@ -191,20 +192,6 @@ pub enum HwuiError {
         layer: u64,
         /// What it asks for.
         what: String,
-    },
-    /// The layer needs a newer Android than the device runs.
-    #[error(
-        "HWUI target: layer {layer} draws {what}, which needs API {needs}; the device runs API {device}"
-    )]
-    RequiresApi {
-        /// The layer.
-        layer: u64,
-        /// The feature.
-        what: &'static str,
-        /// The API level it needs.
-        needs: u32,
-        /// The device's API level.
-        device: u32,
     },
     /// The layer names a resource not registered with this target.
     #[error(

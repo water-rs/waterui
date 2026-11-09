@@ -484,7 +484,10 @@ mod tests {
         } else {
             "Quit"
         };
-        assert_eq!(command.label.content.snapshot().to_plain().as_str(), label);
+        assert_eq!(
+            command.label.content().snapshot().to_plain().as_str(),
+            label
+        );
         assert_eq!(command.shortcut, Some(Shortcut::new('q').command()));
 
         command.action.call(&env);

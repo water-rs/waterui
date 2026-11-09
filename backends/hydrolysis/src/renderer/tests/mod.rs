@@ -34,6 +34,7 @@ mod gesture_surface;
 mod gpu_surface_direct;
 mod gpu_surface_idle;
 mod gpu_surface_input;
+mod group_opacity;
 mod image_ingest;
 mod ime;
 mod interaction_state;
@@ -74,6 +75,8 @@ mod popup_windows;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod registrations;
 mod render_identity;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod response_geometry;
 mod retained_scene;
 mod scene_offer;
 #[cfg(feature = "accessibility")]
@@ -88,6 +91,7 @@ mod structural_transitions;
 mod tab_item_layout;
 mod teardown_order;
 mod text_ink;
+mod text_measure_direction;
 mod top_edge;
 mod touch_scroll;
 mod tree;
@@ -121,7 +125,7 @@ use waterui_layout::{Divider, scroll};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
-use waterui_navigation::tab::{Tab, TabsLayout};
+use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
@@ -129,8 +133,8 @@ use crate::theme::{
     InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
     PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
     RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics, StepperEnd, StepperMetrics,
-    TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
-    ToggleMetrics, WidgetInteractionState,
+    TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
+    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -262,9 +266,20 @@ pub fn pumped_test_environment() -> Environment {
 }
 
 fn themed_test_environment() -> Environment {
+    test_environment_with_scheme(waterui::theme::ColorScheme::Light)
+}
+
+/// [`themed_test_environment`] with the installed colour scheme set to
+/// `scheme` — the same install the runners perform, so the default colour
+/// tokens are signals over it. A test passes a binding it owns when the
+/// point is that a scheme flip re-resolves them, the way a platform
+/// appearance flip does on a live runner.
+pub fn test_environment_with_scheme(
+    scheme: impl nami::signal::IntoComputed<waterui::theme::ColorScheme>,
+) -> Environment {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     let mut env = Environment::new();
-    crate::testing::install_theme(&mut env);
+    crate::theme::install_theme_tokens(&mut env, None, scheme);
     crate::localization::install(&mut env);
     // The runners seed the chord table; a test that mounts menus resolves
     // shortcuts through the same path (water-rs/hydrolysis#247).
@@ -393,6 +408,7 @@ pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
         .host
         .engine
         .memory()
+        .expect("the render thread answers memory queries")
         .backdrop_captures
         .0
 }
@@ -2875,6 +2891,11 @@ pub struct ChromePlan {
     pub captures: Vec<(CaptureClass, MaterialCapture)>,
     /// The materials `draw_interaction_state_layer` records per call.
     pub draws: Vec<ChromeDraw>,
+    /// Scene fills `draw_interaction_state_layer` records after the
+    /// materials — each lands in the segment above the last member, so a
+    /// test can mount a keyed mount and a scene segment over it in one
+    /// program (water-rs/waterui#2002).
+    pub fills: Vec<(kurbo::RoundedRect, Paint)>,
     /// When set, `draw_interaction_state_layer` records the materials
     /// this resolves from the live `WidgetInteractionState` instead —
     /// how a theme whose uniforms depend on the press is written.
@@ -3007,6 +3028,9 @@ impl WidgetTheme for MinimalTestTheme {
                 chrome.capture,
                 chrome.effect.clone(),
             );
+        }
+        for (shape, paint) in &self.chrome.fills {
+            draw.fill(*shape, paint.clone());
         }
     }
 
@@ -3366,16 +3390,11 @@ impl WidgetTheme for MinimalTestTheme {
         self.forced_tab_item_layout
             .unwrap_or(TabItemLayout::Vertical)
     }
-    fn tabs_metrics(&self, layout: TabItemLayout) -> TabsMetrics {
+    fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
         TabsMetrics {
             bar_height: 48.0,
             button_min_width: 48.0,
             button_horizontal_inset: 16.0,
-            active_indicator_height: match layout {
-                TabItemLayout::Vertical => 3.0,
-                TabItemLayout::Horizontal => 40.0,
-            },
-            active_indicator_radius: 3.0,
             icon_label_spacing: 4.0,
         }
     }
@@ -3385,10 +3404,38 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_tabs_bar_divider(&self, _draw: &mut Recorder, divider: Rect) {
         self.tabs_bar_divider_draws.borrow_mut().push(divider);
     }
-    fn draw_tabs_highlight(&self, _draw: &mut Recorder, bounds: Rect, layout: TabItemLayout) {
+    fn draw_tabs_highlight(&self, _draw: &mut Recorder, item: TabItemGeometry) {
+        // This theme's indicator is a strip: 40 thick and the item's whole
+        // extent, centered, for horizontal items; otherwise 3 thick along the
+        // bar item's top (the sidebar item's trailing edge), as wide (tall) as
+        // the title.
+        let thickness: f64 = match item.layout {
+            TabItemLayout::Vertical => 3.0,
+            TabItemLayout::Horizontal => 40.0,
+        };
+        let bounds = item.bounds;
+        let strip = if matches!(item.layout, TabItemLayout::Horizontal) {
+            let height = thickness.min(bounds.height());
+            let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
+            Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
+        } else if matches!(item.placement, NativeTabStyle::Sidebar) {
+            Rect::new(
+                (bounds.x1 - thickness).max(bounds.x0),
+                item.title.y0,
+                bounds.x1,
+                item.title.y1,
+            )
+        } else {
+            Rect::new(
+                item.title.x0,
+                bounds.y0,
+                item.title.x1,
+                (bounds.y0 + thickness).min(bounds.y1),
+            )
+        };
         self.tabs_highlight_draws
             .borrow_mut()
-            .push((bounds, layout));
+            .push((strip, item.layout));
     }
     fn draw_scroll_indicator(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
@@ -4160,6 +4207,43 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
     approx::assert_relative_eq!(draws[0].y0, -2.0);
 }
 
+/// A tab's `badge` count draws the theme's count badge on the item; a tab
+/// without one, or with a zero count, draws none (water-rs/waterui#3709).
+#[test]
+fn tab_badge_draws_only_for_a_nonzero_count() {
+    let env = test_environment();
+    let log = env
+        .get::<BadgeDrawLog>()
+        .expect("badge draw log is installed")
+        .clone();
+    let bounds = Rect::new(0.0, 0.0, 480.0, 480.0);
+    // The renderer retains tab state by node, so each variant captures on a
+    // fresh renderer.
+    let capture = |badge: Option<i32>| {
+        log.0.borrow_mut().clear();
+        let inbox = Tab::new("Inbox", || NavigationView::new("Inbox", text("One")));
+        let inbox = match badge {
+            Some(count) => inbox.badge(count),
+            None => inbox,
+        };
+        let tab_items = waterui_core::views::SharedAnyViews::new(vec![inbox]);
+        let snapshot = waterui_core::views::Views::snapshot(&tab_items);
+        let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
+            .expect("a non-empty tab set reports an id");
+        let tabs = TabsLayout::new(Binding::container(first), tab_items);
+        let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+            badge_draws: Rc::clone(&log.0),
+            ..Default::default()
+        });
+        capture_root_window(&mut renderer, tabs, &env, bounds);
+        log.0.borrow().len()
+    };
+
+    assert_eq!(capture(None), 0, "an unbadged tab draws no badge");
+    assert_eq!(capture(Some(0)), 0, "a zero count draws no badge");
+    assert_eq!(capture(Some(3)), 1, "a counted tab draws one count badge");
+}
+
 /// water-rs/hydrolysis#51: after the single-child collapse the surviving
 /// element reports the labelled container's resolved extent — the size it
 /// answered to the placement proposal, centred on the assigned frame — not
@@ -4225,7 +4309,7 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
     let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let measured = measure_view_dimensions_with_proposal(
         &normalize_layout_view(
-            AnyView::new(button("OK").padding_with([0.0, 0.0, 20.0, 0.0])),
+            AnyView::new(button("OK").padding_with([0.0, 20.0, 0.0, 0.0])),
             &env,
         ),
         ProposalSize::new(Some(160.0), Some(160.0)),
@@ -4236,7 +4320,7 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
     .size;
     let mut renderer = test_renderer();
     let view = button("OK")
-        .padding_with([0.0, 0.0, 20.0, 0.0])
+        .padding_with([0.0, 20.0, 0.0, 0.0])
         .a11y_label("Named");
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
 
@@ -4275,11 +4359,12 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
 }
 
 /// A labelled container with several semantic children stands as a `Group`
-/// and reports the frame it was assigned — the frozen contract makes the
-/// assigned frame the view's frame (water-rs/hydrolysis#51 amendment).
+/// and reports its own response rectangle — the stack's answer centred in the
+/// frame it was assigned — never the descendants' union and never the whole
+/// assigned frame (`docs/layout-spec.md` §7.2).
 #[cfg(feature = "accessibility")]
 #[test]
-fn a_labelled_container_that_stands_reports_its_assigned_frame() {
+fn a_labelled_container_that_stands_reports_its_response_rectangle() {
     let env = test_environment();
     let mut renderer = test_renderer();
     let view = vstack((text("A"), text("B"))).a11y_label("Named");
@@ -4295,11 +4380,16 @@ fn a_labelled_container_that_stands_reports_its_assigned_frame() {
         .expect("the labelled element must exist");
     assert_eq!(node.role(), AccessibilityNodeRole::Group);
     let bounds = node.bounds().expect("the element must carry bounds");
+    let (center_x, center_y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
     assert!(
-        (bounds.width() - 160.0).abs() < 0.5 && (bounds.height() - 160.0).abs() < 0.5,
-        "a standing container reports its assigned frame, got {}x{}",
-        bounds.width(),
-        bounds.height(),
+        bounds.width() < 80.0
+            && bounds.height() < 80.0
+            && (center_x - 80.0).abs() < 0.5
+            && (center_y - 80.0).abs() < 0.5,
+        "a standing container reports its answer centred in the assigned frame, got {bounds:?}",
     );
 }
 

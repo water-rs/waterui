@@ -310,19 +310,19 @@ impl AxisFling {
         extent: f64,
         from: Instant,
     ) -> Option<Self> {
-        let bounce = match physics.overscroll {
+        let bounce = match physics.overscroll() {
             // An axis with nothing to scroll does not bounce — the band's
             // `drag` documents why.
-            Overscroll::RubberBand(band) => (extent > 0.0).then_some(band.bounce),
+            Overscroll::RubberBand(band) => (extent > 0.0).then_some(band.bounce()),
             Overscroll::Clamped | Overscroll::Stretch(_) => None,
         };
-        match physics.deceleration {
+        match physics.deceleration() {
             FlingDeceleration::OverScrollerSpline(spline) => Some(SplineFling::new(
                 velocity,
                 start,
                 extent,
-                spline.physical_coeff,
-                spline.friction,
+                spline.physical_coeff(),
+                spline.friction(),
                 from,
             ))
             // A run whose clamped destination is already the offset —
@@ -397,11 +397,11 @@ impl TouchFling {
         at: Instant,
     ) -> Option<Self> {
         let metrics = handle.metrics();
-        let max = f64::from(config.max_fling_velocity);
-        let min = f64::from(config.min_fling_velocity);
-        let physics = config.physics;
+        let max = f64::from(config.max_fling_velocity());
+        let min = f64::from(config.min_fling_velocity());
+        let physics = config.physics();
         assert_eq!(
-            matches!(physics.overscroll, Overscroll::Stretch(_)),
+            matches!(physics.overscroll(), Overscroll::Stretch(_)),
             stretch.is_some(),
             "a release carries a stretch exactly under stretch edges"
         );
@@ -431,21 +431,20 @@ impl TouchFling {
                     .filter(|_| extent > 0.0);
                 return (fling, impact);
             }
-            if let Overscroll::RubberBand(band) = physics.overscroll
+            if let Overscroll::RubberBand(band) = physics.overscroll()
                 && !(0.0..=extent).contains(&start)
             {
                 let edge = start.clamp(0.0, extent);
                 let overscroll = start - edge;
-                let then =
-                    band.release
-                        .handover(overscroll, offset_velocity)
-                        .and_then(|handover| {
-                            let from = at + Duration::from_secs_f64(handover.seconds);
-                            inside(handover.velocity, edge, from)
-                                .map(|fling| (from, Box::new(fling)))
-                        });
+                let then = band
+                    .release()
+                    .handover(overscroll, offset_velocity)
+                    .and_then(|handover| {
+                        let from = at + Duration::from_secs_f64(handover.seconds);
+                        inside(handover.velocity, edge, from).map(|fling| (from, Box::new(fling)))
+                    });
                 let release = AxisFling::Release {
-                    spring: SpringFling::new(edge, overscroll, offset_velocity, band.release, at),
+                    spring: SpringFling::new(edge, overscroll, offset_velocity, band.release(), at),
                     then,
                 };
                 return (Some(release), None);
@@ -492,7 +491,7 @@ impl TouchFling {
         }
         Some(Self {
             claim,
-            overscroll: physics.overscroll,
+            overscroll: physics.overscroll(),
             x,
             y,
         })

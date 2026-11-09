@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use waterui_core::MainThreadBound;
+use waterui_core::layout::{LayoutError, ResolvedExtent};
 
 /// Layout proxy that measures a child view through the hydrolysis renderer.
 ///
@@ -137,6 +138,34 @@ impl<E: crate::text::TextEngine> SubView for HydroSubview<'_, E> {
         dimensions
     }
 
+    /// Dispatches through [`resolve_view_extent`], so containers answer their
+    /// layout's rule over their children and wrappers forward. A leaf (and a
+    /// resolved text leaf, which must stay worker-safe) answers its
+    /// stretch-applied [`Self::measure`] centred in `bounds`.
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        if self.resolved_text.is_none() {
+            let resolved = {
+                let mut state = self.state.borrow_mut();
+                resolve_view_extent(
+                    *self.view,
+                    bounds,
+                    proposal,
+                    &mut state,
+                    &self.env,
+                    &self.theme,
+                )?
+            };
+            if let Some(resolved) = resolved {
+                return Ok(resolved);
+            }
+        }
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn stretch_axis(&self) -> StretchAxis {
         self.stretch_axis
     }
@@ -185,11 +214,11 @@ fn try_resolve_text_leaf(
         let resolved = text.resolve(&scoped_env);
         return Some((
             resolve_text_layout_input(
-                &resolved.content.snapshot(),
-                resolved.paragraph_alignment.snapshot(),
+                &resolved.content().snapshot(),
+                resolved.paragraph_alignment().snapshot(),
                 &scoped_env,
             ),
-            resolved.line_limit.map(core::num::NonZeroUsize::get),
+            resolved.line_limit().map(core::num::NonZeroUsize::get),
         ));
     }
 
@@ -197,11 +226,11 @@ fn try_resolve_text_leaf(
         let config = text.as_inner();
         return Some((
             resolve_text_layout_input(
-                &config.content.snapshot(),
-                config.paragraph_alignment.snapshot(),
+                &config.content().snapshot(),
+                config.paragraph_alignment().snapshot(),
                 &scoped_env,
             ),
-            config.line_limit.map(core::num::NonZeroUsize::get),
+            config.line_limit().map(core::num::NonZeroUsize::get),
         ));
     }
 

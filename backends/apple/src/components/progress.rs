@@ -31,10 +31,14 @@ use waterui::reactive::{Signal, SignalExt};
 use waterui::resolve::Resolvable;
 use waterui::theme::color::{Accent, AccentContainer, Border, Tertiary, TertiaryContainer};
 use waterui_backend_core::Environment;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -197,18 +201,18 @@ fn measure_height(sizes: ChildSizes, control: Size) -> f64 {
     height
 }
 
-/// Lays out the children inside `view`'s bounds: label at the top,
-/// indicator centered when round or full-width when linear, value label at
-/// the bottom — `WuiProgress.performLayout` as manual frames.
+/// Lays out the children inside the `response` rectangle: label at the
+/// top, indicator centered when round or full-width when linear, value
+/// label at the bottom — `WuiProgress.performLayout` as manual frames.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the layout contract is f32; measured points always fit"
 )]
-fn layout_children(view: &PlatformView, state: &ProgressState) {
+fn layout_children(response: Rect, state: &ProgressState) {
     let Some(children) = &state.children else {
         return;
     };
-    let width = cocoa_ui::view::bounds(view).size.width;
+    let width = response.size.width;
     let sizes = child_sizes(children, Some(width as f32), state.value);
     let control = control_size(&state.progress, state.variant);
 
@@ -216,7 +220,7 @@ fn layout_children(view: &PlatformView, state: &ProgressState) {
     let label_width = f64::from(sizes.label.width).min(width);
     cocoa_ui::view::set_frame(
         children.label.view(),
-        Rect::new(0.0, y, label_width, f64::from(sizes.label.height)),
+        Rect::new(0.0, y, label_width, f64::from(sizes.label.height)).translated(response.origin),
     );
     y += f64::from(sizes.label.height);
     if sizes.label.height > 0.0 {
@@ -232,7 +236,8 @@ fn layout_children(view: &PlatformView, state: &ProgressState) {
     };
     cocoa_ui::view::set_frame(
         as_view(&state.progress),
-        Rect::new(control_x, y, control_width, f64::from(control.height)),
+        Rect::new(control_x, y, control_width, f64::from(control.height))
+            .translated(response.origin),
     );
     y += f64::from(control.height);
 
@@ -241,7 +246,8 @@ fn layout_children(view: &PlatformView, state: &ProgressState) {
         let value_width = f64::from(sizes.value_label.width).min(width);
         cocoa_ui::view::set_frame(
             children.value_label.view(),
-            Rect::new(0.0, y, value_width, f64::from(sizes.value_label.height)),
+            Rect::new(0.0, y, value_width, f64::from(sizes.value_label.height))
+                .translated(response.origin),
         );
     } else {
         cocoa_ui::view::set_frame(children.value_label.view(), Rect::ZERO);
@@ -262,6 +268,14 @@ impl core::fmt::Debug for ProgressSubView {
 }
 
 impl SubView for ProgressSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(
@@ -491,7 +505,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host = HostView::new(mtm, Rect::ZERO);
         let host_view: &PlatformView = &host;
 
-        let variant = if is_round(config.style) {
+        let variant = if is_round(config.style()) {
             ProgressVariant::Circular
         } else {
             ProgressVariant::Linear
@@ -506,13 +520,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
         }
         cocoa_ui::view::add_subview(host_view, as_view(&progress));
 
-        let value = config.value.snapshot();
+        let value = config.value().snapshot();
+        let (label, value_label, value_signal, _, four_color) = config.into_parts();
         let children = Children {
             label: ctx
-                .render(waterui_backend_core::AnyView::new(config.label))
+                .render(waterui_backend_core::AnyView::new(label))
                 .mount(host_view),
             value_label: ctx
-                .render(waterui_backend_core::AnyView::new(config.value_label))
+                .render(waterui_backend_core::AnyView::new(value_label))
                 .mount(host_view),
         };
 
@@ -527,12 +542,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
             cycling: false,
             track: None,
             #[cfg(target_os = "ios")]
-            four_color: config.four_color,
+            four_color,
         }));
 
         host.set_layout_handler({
             let state = Rc::clone(&state);
-            move |view| layout_children(view, &state.borrow())
+            move |view| layout_children(proposal::response(view), &state.borrow())
         });
 
         let mut leaf = NativeLeaf::new(
@@ -544,7 +559,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // Signal → indicator: a value change selects determinate or
         // indeterminate drawing and refreshes the value label's visibility.
-        leaf.watch(&config.value, {
+        leaf.watch(&value_signal, {
             let state = Rc::clone(&state);
             let host = cocoa_ui::view::retain_base(host_view);
             move |change| {
@@ -556,7 +571,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // Theme → tint: the accent is the indicator's color; the border is
         // the bar's track. `four_color` widens the palette with the
         // container and tertiary slots the cycle steps through.
-        install_tint(&mut leaf, &state, ctx.env(), config.four_color);
+        install_tint(&mut leaf, &state, ctx.env(), four_color);
 
         // The initial value applies without animation.
         apply_value(&state, host_view, value, false);

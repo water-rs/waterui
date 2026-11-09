@@ -437,4 +437,3 @@ The `FormBuilder` derive macro is provided by `waterui-macros`, which is automat
 - This crate is `#![no_std]` compatible (uses `extern crate alloc`)
 - All code examples in this README are extracted from actual source code or documentation
 - The crate follows `WaterUI`'s layout contract system - see component source for detailed layout behavior
-- Forms are rendered to native platform widgets (UIKit/AppKit on Apple, Android View on Android)

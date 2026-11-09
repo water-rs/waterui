@@ -13,7 +13,7 @@
 use suiteki::Str;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{AssetServer, OriginPolicy, ScriptInjectionTime, StateDeclarations};
+use crate::{AssetServer, NavigationPolicy, OriginPolicy, ScriptInjectionTime, StateDeclarations};
 
 /// Creation-time configuration for a web view.
 ///
@@ -30,16 +30,107 @@ pub struct WebViewConfig {
     #[cfg(not(target_arch = "wasm32"))]
     /// The server behind the engine's local asset origin, when the view was
     /// opened with one.
-    pub asset_server: Option<AssetServer>,
+    asset_server: Option<AssetServer>,
     #[cfg(not(target_arch = "wasm32"))]
     /// Which documents may reach the bridge, for the view's whole life.
-    pub bridge_origins: OriginPolicy,
+    bridge_origins: OriginPolicy,
+    #[cfg(not(target_arch = "wasm32"))]
+    /// The policy that decides navigations the page initiates; `None`
+    /// allows them all.
+    navigation_policy: Option<NavigationPolicy>,
     #[cfg(not(target_arch = "wasm32"))]
     /// The application's scripts, in the order they run. Keys are unique.
-    pub scripts: Vec<UserScript>,
+    scripts: Vec<UserScript>,
     #[cfg(not(target_arch = "wasm32"))]
     /// The keys the page mirrors — names and writability, never values.
-    pub state: StateDeclarations,
+    state: StateDeclarations,
+}
+
+impl WebViewConfig {
+    /// Creates a `WebViewConfig` from its parts.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn new(
+        asset_server: Option<AssetServer>,
+        bridge_origins: OriginPolicy,
+        navigation_policy: Option<NavigationPolicy>,
+        scripts: Vec<UserScript>,
+        state: StateDeclarations,
+    ) -> Self {
+        Self {
+            asset_server,
+            bridge_origins,
+            navigation_policy,
+            scripts,
+            state,
+        }
+    }
+
+    /// The server behind the engine's local asset origin, when the view was
+    /// opened with one.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn asset_server(&self) -> Option<&AssetServer> {
+        self.asset_server.as_ref()
+    }
+
+    /// Sets the `asset_server`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_asset_server(&mut self, asset_server: Option<AssetServer>) {
+        self.asset_server = asset_server;
+    }
+
+    /// Which documents may reach the bridge, for the view's whole life.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn bridge_origins(&self) -> &OriginPolicy {
+        &self.bridge_origins
+    }
+
+    /// The policy that decides navigations the page initiates; `None`
+    /// allows them all.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn navigation_policy(&self) -> Option<&NavigationPolicy> {
+        self.navigation_policy.as_ref()
+    }
+
+    /// The application's scripts, in the order they run. Keys are unique.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn scripts(&self) -> &[UserScript] {
+        self.scripts.as_slice()
+    }
+
+    /// The keys the page mirrors — names and writability, never values.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn state(&self) -> &StateDeclarations {
+        &self.state
+    }
+
+    /// Splits the configuration into its parts, in declaration order: the
+    /// asset server, the bridge origins, the navigation policy, the scripts
+    /// and the state declarations.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Option<AssetServer>,
+        OriginPolicy,
+        Option<NavigationPolicy>,
+        Vec<UserScript>,
+        StateDeclarations,
+    ) {
+        (
+            self.asset_server,
+            self.bridge_origins,
+            self.navigation_policy,
+            self.scripts,
+            self.state,
+        )
+    }
 }
 
 impl Default for WebViewConfig {
@@ -51,6 +142,8 @@ impl Default for WebViewConfig {
             asset_server: None,
             #[cfg(not(target_arch = "wasm32"))]
             bridge_origins: OriginPolicy::deny_all(),
+            #[cfg(not(target_arch = "wasm32"))]
+            navigation_policy: None,
             #[cfg(not(target_arch = "wasm32"))]
             scripts: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -66,6 +159,10 @@ impl std::fmt::Debug for WebViewConfig {
         debug
             .field("asset_server", &self.asset_server.as_ref().map(|_| ".."))
             .field("bridge_origins", &self.bridge_origins)
+            .field(
+                "navigation_policy",
+                &self.navigation_policy.as_ref().map(|_| ".."),
+            )
             .field("scripts", &self.scripts)
             .field("state", &self.state);
         debug.finish()
@@ -169,11 +266,32 @@ impl DocumentScripts {
 #[non_exhaustive]
 pub struct UserScript {
     /// Names the script. Injecting again under the key replaces it.
-    pub key: Str,
+    key: Str,
     /// The program.
-    pub source: Str,
+    source: Str,
     /// When in a document's load it runs.
-    pub time: ScriptInjectionTime,
+    time: ScriptInjectionTime,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl UserScript {
+    /// Names the script. Injecting again under the key replaces it.
+    #[must_use]
+    pub const fn key(&self) -> &Str {
+        &self.key
+    }
+
+    /// The program.
+    #[must_use]
+    pub const fn source(&self) -> &Str {
+        &self.source
+    }
+
+    /// When in a document's load it runs.
+    #[must_use]
+    pub const fn time(&self) -> ScriptInjectionTime {
+        self.time
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

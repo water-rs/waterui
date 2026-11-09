@@ -7,16 +7,19 @@
 //! - [`fonts`]: resource font registration and CJK fallbacks
 //! - [`diagnostics`]: opt-in frame timing reports
 
-#[cfg(feature = "accessibility")]
+#[cfg(all(feature = "accessibility", hydrolysis_gpu_painter))]
 use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
+#[cfg(hydrolysis_gpu_painter)]
 use executor_core::try_init_local_executor;
 use nami::Signal as _;
 #[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
+#[cfg(hydrolysis_gpu_painter)]
+use std::collections::VecDeque;
 use std::time::Duration;
-use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 #[cfg(hydrolysis_run)]
 use waterui::app::App;
 #[cfg(all(
@@ -28,16 +31,21 @@ use waterui::app::AppParts;
 use waterui::component::table::TableConfig;
 use waterui::window::Window;
 use waterui::window::WindowManager;
+#[cfg(hydrolysis_gpu_painter)]
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::Retain;
+#[cfg(hydrolysis_gpu_painter)]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::key::KeyPress;
 use waterui_core::view::Hook;
+#[cfg(hydrolysis_gpu_painter)]
 use waterui_text::FontCollection;
 
-#[cfg(target_os = "android")]
+// The JNI host exists only where a painter does: a painter-less Android
+// build ships none of the session bridge the Kotlin side calls into.
+#[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
 pub mod android;
 /// The Android accessibility publish protocol — consecutive-tree event
 /// diffing and explore-by-touch hit testing — compiled on Android for the
@@ -66,19 +74,25 @@ pub mod android_metrics;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod content_tests;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
+#[cfg_attr(
+    hydrolysis_hwui,
+    expect(dead_code, reason = "the GPU pump is the sole diagnostics consumer")
+)]
 mod diagnostics;
 /// The `InputConnection` protocol state machine — compiled on Android for the
 /// JNI bridge and on host for its tests; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod editing;
+#[cfg(hydrolysis_gpu_painter)]
 mod executor;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 mod headless;
 pub mod ime;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 pub mod menu_bar;
 #[cfg(hydrolysis_winit)]
 pub mod placement;
+#[cfg(hydrolysis_gpu_painter)]
 mod semantic;
 /// The windowed runner's SIGINT/SIGTERM/SIGHUP contract on Unix — compiled
 /// where the winit runner needs it, and in test builds for its child-process
@@ -102,16 +116,26 @@ mod winit_runner;
 #[cfg(hydrolysis_wayland_platform)]
 mod x11_state_watch;
 
-use diagnostics::{RenderDiagnostics, RenderDiagnosticsConfig, RenderPhaseSample, elapsed_or_zero};
-#[cfg(not(target_arch = "wasm32"))]
+use diagnostics::{RenderDiagnostics, RenderDiagnosticsConfig};
+#[cfg(hydrolysis_gpu_painter)]
+use diagnostics::{RenderPhaseSample, elapsed_or_zero};
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
+#[cfg(hydrolysis_gpu_painter)]
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
 // Bare wasm has no window model until `web` compiles the browser runner.
-#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
-use window::{RuntimeWindow, advance_runtime, handle_input_events};
+#[cfg(all(
+    any(not(target_arch = "wasm32"), feature = "web"),
+    hydrolysis_gpu_painter
+))]
+use window::RuntimeWindow;
+#[cfg(all(
+    any(not(target_arch = "wasm32"), feature = "web"),
+    hydrolysis_gpu_painter
+))]
+use window::{advance_runtime, handle_input_events};
 // One frame's entry is shared by the winit pump, the headless `run`, the
 // `#[cfg(test)]` suite, and the browser runner; the Android host reaches it
 // through `window::` itself, so it stays out of this re-export.
@@ -123,13 +147,17 @@ use window::{RuntimeWindow, advance_runtime, handle_input_events};
 ))]
 use window::render_window;
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use window::{FrameReader, render_window_with_capture};
 // `runtime_window_origin` is reached by the winit runner and by headless's
 // accessibility-action path.
 #[cfg(any(
     hydrolysis_winit,
-    all(not(target_arch = "wasm32"), feature = "accessibility")
+    all(
+        not(target_arch = "wasm32"),
+        feature = "accessibility",
+        hydrolysis_gpu_painter
+    )
 ))]
 use window::runtime_window_origin;
 // The winit runner pumps events and window semantics through these.
@@ -148,9 +176,10 @@ use window::{
 // Frame and tree profiles are published to the inspector endpoint, which exists
 // only where `waterui::inspector` does.
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
 mod inspector;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 pub use window::HeadlessSnapshot;
 #[cfg(hydrolysis_winit)]
 pub use window::window_requires_transparency;
@@ -158,15 +187,19 @@ pub use window::{FrameCounters, FramePhases, FrameProfile};
 
 use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use crate::readback::readback_surface_texture_rgba8;
+#[cfg(hydrolysis_gpu_painter)]
+use crate::renderer::FontFamilyResolution;
+#[cfg(hydrolysis_gpu_painter)]
+use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::{
-    FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome,
-    SemanticCore,
+    HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome, SemanticCore,
 };
-use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry, PopupWindowManager};
+use crate::renderer::{MenuShortcutRegistry, PopupWindowManager};
+#[cfg(hydrolysis_gpu_painter)]
 use crate::text::ParleyEngine;
 use crate::time::Instant;
 
@@ -184,6 +217,14 @@ use crate::time::Instant;
 /// keeps a subscription for one unread frame, and an idle window runs no
 /// frame to re-register it (water-rs/waterui#2131).
 ///
+/// `background` is watched resolved, not raw: the resolved signal covers a
+/// write to the declaration and everything the resolution reads — the theme
+/// colour an `Opaque` or `Color` background resolves through — so a theme
+/// switch repaints the clear colour of a window whose content reads no
+/// theme token. `env`'s installed colour scheme is watched alongside: a
+/// material background resolves to a constant, while its clear colour is
+/// tinted in the scheme (water-rs/waterui#3548).
+///
 /// Both window kinds hold the returned guards as their last field so they
 /// drop after the core — whose teardown owns every frame-scoped
 /// subscription — in the outermost scope, the same tail position the
@@ -192,8 +233,13 @@ use crate::time::Instant;
 /// The runtime's own writes land on the same flag — a resize writes
 /// `frame`, so that write is one bounded extra frame, not a loop: the
 /// frame the flag arms performs no further write to the declaration.
+///
+/// `env` must carry the installed theme — colour scheme and colour slots —
+/// the resolved background reads; every runner installs it before mounting
+/// a window.
 fn subscribe_window_declaration_signals<E: crate::text::TextEngine>(
     window: &Window,
+    env: &Environment,
     core: &SemanticCore<E>,
 ) -> Vec<Retain> {
     let mut watches = vec![
@@ -201,7 +247,8 @@ fn subscribe_window_declaration_signals<E: crate::text::TextEngine>(
         core.refresh_watch(&window.frame),
         core.refresh_watch(&window.state),
         core.refresh_watch(&window.style),
-        core.refresh_watch(&window.background),
+        core.refresh_watch(&window.resolved_background(env)),
+        core.refresh_watch(&waterui::theme::current_color_scheme(env)),
         core.refresh_watch(&window.level),
         core.refresh_watch(&window.attention),
         core.refresh_watch(&window.icon),
@@ -375,7 +422,9 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     // headless host renders no chrome, so there is no surface to draw.
     menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
-    crate::theme::install_theme_tokens(&mut env, Some(&style));
+    // A headless host has no platform appearance: the scheme is Light
+    // unless the application installs its own.
+    crate::theme::install_theme_tokens(&mut env, Some(&style), waterui::theme::ColorScheme::Light);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     // The application's fonts, discovered once. Every window's renderer is
     // seeded from this collection, and a self-drawn component that typesets
@@ -413,7 +462,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         renderer.set_window_id(shortcuts.mint_window_id());
         renderer.set_window_closable(window.closable);
         let mut runtime =
-            RuntimeWindow::new_gpu(window, platform, renderer, render_diagnostics_config);
+            RuntimeWindow::new_gpu(window, platform, renderer, render_diagnostics_config, &env);
         render_window(&mut runtime, &env, &mut || local_executor.drain());
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
     }

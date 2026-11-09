@@ -48,7 +48,7 @@ fn popup_menu_node(
         }
         ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
-            let styled = menu.label.content.snapshot() + StyledStr::plain(" ›");
+            let styled = menu.label.content().snapshot() + StyledStr::plain(" ›");
             let plain_label = styled.to_plain().to_string();
             let semantic_text = menu.semantic_label.semantic_text().clone();
             let label = SemanticLabel::new(semantic_text, move || {
@@ -72,7 +72,7 @@ fn popup_menu_node(
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
 fn command_node(command: ResolvedCommand) -> PopupMenuNode {
-    let mut styled = command.label.content.snapshot();
+    let mut styled = command.label.content().snapshot();
     if command.selected.snapshot() {
         styled = StyledStr::plain("✓ ") + styled;
     }
@@ -282,7 +282,7 @@ pub fn render_shape_parts<E: crate::text::TextEngine>(
         let resolved = shape.borrow();
         (
             resolved_shape_to_path(&resolved, bounds),
-            resolved.fill.clone(),
+            resolved.fill().clone(),
         )
     };
     let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
@@ -333,7 +333,7 @@ pub fn render_morph_shape_parts<E: crate::text::TextEngine>(
     let renderer = ctx.renderer_mut();
     let (path, fill) = {
         let resolved = shape.borrow();
-        let progress = if let Some(progress) = resolved.progress.as_ref() {
+        let progress = if let Some(progress) = resolved.progress() {
             renderer.resolve_owned_scalar(
                 progress,
                 shape,
@@ -341,9 +341,9 @@ pub fn render_morph_shape_parts<E: crate::text::TextEngine>(
                 cherenkov_record::tree::RATE_FAST,
             )
         } else {
-            renderer.sample_morph_progress(resolved.animation, shape)
+            renderer.sample_morph_progress(resolved.animation(), shape)
         };
-        let fill = renderer.read_signal(&resolved.fill);
+        let fill = renderer.read_signal(resolved.fill());
         (
             resolved_morph_shape_to_path(&resolved, progress, bounds),
             waterui_graphics::draw::Paint::Solid(fill),

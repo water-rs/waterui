@@ -156,6 +156,12 @@ interface CommandSink {
 
     fun releaseRuntimeShader(runtimeShader: Int)
 
+    /**
+     * Rebuilds the platform `RenderEffect` chain `effect` names from `count`
+     * stages of `kind + 12 float values` each.
+     */
+    fun defineEffect(effect: Int, count: Int, kinds: IntArray, values: FloatArray)
+
     fun releaseEffect(effect: Int)
 
     fun releaseTextLayout(layout: Int)

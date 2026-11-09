@@ -40,7 +40,7 @@ pub struct ColorPickerRenderState<E: crate::text::TextEngine> {
 impl<E: crate::text::TextEngine> ColorPickerRenderState<E> {
     pub(crate) fn from_config(config: ColorPickerConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
         }
     }
@@ -90,14 +90,14 @@ pub fn color_picker_accessibility<E: crate::text::TextEngine>(
     {
         let disabled = renderer.read_signal(&widget_disabled(env));
         let label = color_picker
-            .label
+            .label()
             .semantic_text()
             .resolve(env)
-            .content
+            .content()
             .snapshot()
             .to_plain()
             .to_string();
-        let value = format!("{:?}", renderer.read_signal(&color_picker.value));
+        let value = format!("{:?}", renderer.read_signal(color_picker.value()));
         let mut node = AccessibilityNode::new(
             crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
@@ -121,12 +121,12 @@ pub fn color_picker_accessibility<E: crate::text::TextEngine>(
         // node carries the anchor; a semantic node carries none and mounts the
         // same window with no placement at all.
         let origin = ctx.map(|ctx| {
-            crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds))
+            crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds()))
         });
         let action_target = (!disabled).then(|| {
-            let value = color_picker.value.clone();
-            let support_alpha = color_picker.support_alpha;
-            let support_hdr = color_picker.support_hdr;
+            let value = color_picker.value().clone();
+            let support_alpha = color_picker.support_alpha();
+            let support_hdr = color_picker.support_hdr();
             // The popup opens in the picker's environment layered over the
             // dispatch's (water-rs/hydrolysis#140).
             let picker_env = env.clone();
@@ -160,7 +160,7 @@ pub fn color_picker_accessibility<E: crate::text::TextEngine>(
         });
         let node_id = match ctx {
             Some(ctx) => {
-                let bounds = ctx.bounds;
+                let bounds = ctx.bounds();
                 renderer.register_accessibility_node(node, bounds, env, action_target)
             }
             None => renderer.register_accessibility_node_semantic(node, env, action_target),
@@ -231,7 +231,7 @@ fn measure_color_picker_intrinsic<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let input_metrics = theme.input_field_metrics();
-    let label_size = measure_label_intrinsic(&color_picker.label, state, env, theme);
+    let label_size = measure_label_intrinsic(color_picker.label(), state, env, theme);
     let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
         f64::from(label_size.height).max(input_metrics.label_height)
     } else {
@@ -261,9 +261,9 @@ pub fn render_color_picker_parts<E: crate::text::TextEngine>(
     let (value_binding, support_alpha, support_hdr) = {
         let color_picker = &state.config;
         (
-            color_picker.value.clone(),
-            color_picker.support_alpha,
-            color_picker.support_hdr,
+            color_picker.value().clone(),
+            color_picker.support_alpha(),
+            color_picker.support_hdr(),
         )
     };
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);

@@ -26,8 +26,6 @@ import android.graphics.Shader
 import android.graphics.SweepGradient
 import android.graphics.fonts.Font
 import android.graphics.fonts.FontVariationAxis
-import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.withMatrix
 import androidx.core.graphics.withTranslation
@@ -74,6 +72,12 @@ internal class Table<T : Any>(private val kind: String) {
     operator fun get(id: Int): T =
         (items.getOrNull(id) ?: throw CommandBufferException("HWUI replay: $kind ${Integer.toUnsignedString(id)} is not live")) as T
 
+    /** Replaces the live `id`'s item; a dead id is a replay error. */
+    fun replace(id: Int, item: T) {
+        get(id)
+        items[id] = item
+    }
+
     fun contains(id: Int): Boolean = items.getOrNull(id) != null
 
     fun remove(id: Int): T {
@@ -106,14 +110,16 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
     private val nodes = Table<RenderNode>("node")
     private val paths = Table<Path>("path")
     private val shaders = Table<Shader>("shader")
-    /** Each shader's [SamplingKind] below API 33, or [NO_SAMPLING]. */
-    private var shaderSampling = IntArray(16) { NO_SAMPLING }
     /** The program each runtime shader definition draws from. */
     private val runtimeOwners = Table<RuntimeShaderProgram>("runtime shader definition")
     private val fonts = Table<Font>("font")
     private val bitmaps = Table<Bitmap>("bitmap")
     private val programs = Table<RuntimeShaderProgram>("runtime shader")
     private val effects = Table<RenderEffect>("effect")
+    /** Builds the platform chains `DefineEffect` records describe. */
+    private val nativeEffects = NativeEffects()
+    /** The effect each node currently draws through: `defineEffect` rebinding needs it. */
+    private val effectBindings = HashMap<Int, Int>()
 
     private var canvas: RecordingCanvas? = null
     private var recording: RenderNode? = null
@@ -235,9 +241,6 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
      */
     @CalledFromNative
     fun registerRuntimeShader(id: Int, source: String, uniformNames: Array<String>, uniformSizes: IntArray) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            throw CommandBufferException("HWUI registration: runtime shaders need API 33; this device is API ${Build.VERSION.SDK_INT}")
-        }
         val program = RuntimeShaderProgram(source, uniformNames, uniformSizes)
         program.idle.add(RuntimeShader(source))
         programs.put(id, program)
@@ -272,12 +275,13 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
         nodes.clear()
         paths.clear()
         shaders.clear()
-        shaderSampling.fill(NO_SAMPLING)
         runtimeOwners.clear()
         fonts.clear()
         bitmaps.clear()
         programs.clear()
         effects.clear()
+        nativeEffects.clear()
+        effectBindings.clear()
         hostCount = 0
     }
 
@@ -322,6 +326,7 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
 
     override fun releaseNode(node: Int) {
         bindings.remove(node)
+        effectBindings.remove(node)
         nodes.remove(node)
     }
 
@@ -383,7 +388,25 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
     }
 
     override fun setEffect(node: Int, effect: Int) {
-        nodes[node].setRenderEffect(if (effect == Protocol.NONE) null else effects[effect])
+        if (effect == Protocol.NONE) {
+            nodes[node].setRenderEffect(null)
+            effectBindings.remove(node)
+        } else {
+            nodes[node].setRenderEffect(effects[effect])
+            effectBindings[node] = effect
+        }
+    }
+
+    override fun defineEffect(effect: Int, count: Int, kinds: IntArray, values: FloatArray) {
+        val chain = nativeEffects.build(effect, count, kinds, values)
+        if (effects.contains(effect)) {
+            effects.replace(effect, chain)
+            for ((node, bound) in effectBindings) {
+                if (bound == effect) nodes[node].setRenderEffect(chain)
+            }
+        } else {
+            effects.put(effect, chain)
+        }
     }
 
     override fun record(node: Int, width: Int, height: Int) {
@@ -480,20 +503,12 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
         canvas().drawBitmap(bitmaps[bitmap], null, rectF, paint)
     }
 
-    override fun mesh(interpolation: Int, patches: Int, data: FloatArray) {
-        if (Build.VERSION.SDK_INT < 34) {
-            throw CommandBufferException("HWUI replay: a mesh needs API 34; the device runs ${Build.VERSION.SDK_INT}")
-        }
-        drawMesh(interpolation, patches, data)
-    }
-
     /**
      * Each patch is four vertices that all carry its corners and colours, so
      * the fragment shader inverts the bilinear patch at every pixel, as
      * Cherenkov's oracle does, rather than interpolating over triangles.
      */
-    @RequiresApi(34)
-    private fun drawMesh(interpolation: Int, patches: Int, data: FloatArray) {
+    override fun mesh(interpolation: Int, patches: Int, data: FloatArray) {
         if (patches == 0) return
         val specification = meshSpecification as MeshSpecification? ?: createMeshSpecification().also { meshSpecification = it }
         // A Mesh keeps its vertex buffer, so each mesh draw is a new resource.
@@ -538,7 +553,6 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
             meshIndices = buffer
         }
 
-    @RequiresApi(34)
     private fun createMeshSpecification(): MeshSpecification =
         MeshSpecification.make(
             arrayOf(
@@ -604,31 +618,17 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
 
     override fun defineBitmapShader(shader: Int, matrix: FloatArray, bitmap: Int, tileX: Int, tileY: Int, sampling: Int) {
         val built = BitmapShader(bitmaps[bitmap], tileMode(tileX), tileMode(tileY))
-        if (Build.VERSION.SDK_INT >= 33) {
-            built.filterMode =
-                if (sampling == SamplingKind.LINEAR) BitmapShader.FILTER_MODE_LINEAR else BitmapShader.FILTER_MODE_NEAREST
-        } else {
-            // Below API 33 the paint's filter flag samples the shader's bitmap.
-            if (shader >= shaderSampling.size) {
-                val grown = IntArray(maxOf(shaderSampling.size * 2, shader + 1)) { NO_SAMPLING }
-                shaderSampling.copyInto(grown)
-                shaderSampling = grown
-            }
-            shaderSampling[shader] = sampling
-        }
+        built.filterMode =
+            if (sampling == SamplingKind.LINEAR) BitmapShader.FILTER_MODE_LINEAR else BitmapShader.FILTER_MODE_NEAREST
         putShader(shader, matrix, built)
     }
 
     override fun defineRuntimeShader(shader: Int, matrix: FloatArray, runtimeShader: Int, uniformCount: Int, uniforms: FloatArray) {
-        if (Build.VERSION.SDK_INT < 33) {
-            throw CommandBufferException("HWUI replay: a runtime shader needs API 33; the device runs ${Build.VERSION.SDK_INT}")
-        }
         val program = programs[runtimeShader]
         putShader(shader, matrix, runtimeShader(program, uniformCount, uniforms))
         runtimeOwners.put(shader, program)
     }
 
-    @RequiresApi(33)
     private fun runtimeShader(program: RuntimeShaderProgram, uniformCount: Int, uniforms: FloatArray): Shader {
         if (uniformCount != program.floats) {
             throw CommandBufferException("HWUI replay: a runtime shader carries $uniformCount uniform floats; its program declares ${program.floats}")
@@ -652,11 +652,8 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
 
     override fun releaseShader(shader: Int) {
         val released = shaders.remove(shader)
-        if (shader < shaderSampling.size) shaderSampling[shader] = NO_SAMPLING
         if (runtimeOwners.contains(shader)) runtimeOwners.remove(shader).idle.add(released)
     }
-
-    private fun shaderSamplingOf(shader: Int): Int = if (shader < shaderSampling.size) shaderSampling[shader] else NO_SAMPLING
 
     override fun releaseFont(font: Int) {
         fonts.remove(font)
@@ -671,7 +668,11 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
     }
 
     override fun releaseEffect(effect: Int) {
+        if (effectBindings.containsValue(effect)) {
+            throw CommandBufferException("HWUI replay: effect $effect is released while nodes still draw through it")
+        }
         effects.remove(effect)
+        nativeEffects.release(effect)
     }
 
     override fun releaseTextLayout(layout: Int) = text.release(layout)
@@ -706,11 +707,6 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
             return
         }
         paint.shader = shaders[wire.shader]
-        val sampling = shaderSamplingOf(wire.shader)
-        // API 33+ samples through the shader's own filter mode (`shaderOf`).
-        if (sampling != NO_SAMPLING && Build.VERSION.SDK_INT < 33) {
-            paint.isFilterBitmap = sampling == SamplingKind.LINEAR
-        }
         paint.setColor(Color.pack(0f, 0f, 0f, wire.alpha, extendedSrgb))
     }
 
@@ -763,7 +759,6 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
     }
 
     private companion object {
-        const val NO_SAMPLING = -1
         /** Position, the patch's four corners and its four colours. */
         const val MESH_STRIDE = 104
         val MESH_TRIANGLES = intArrayOf(0, 1, 3, 0, 3, 2)

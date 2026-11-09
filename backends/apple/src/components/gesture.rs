@@ -19,6 +19,12 @@
 //! Composed gestures mirror too: `Then` arms the second recognizer once the
 //! first fires, `Simultaneous` fires on either, and `Exclusive` fires at
 //! most once per 50 ms window.
+//!
+//! A composition containing a `Tap` also makes the host operable to
+//! assistive clients — `AXPress` on an `AXGroup` on `AppKit`,
+//! `accessibilityActivate` on a `Button`-trait element whose descendants'
+//! accessibility merges into it on `UIKit` — and runs the same action
+//! the tap recognizer fires.
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -36,13 +42,15 @@ use waterui::gesture::{
     MagnificationEvent, PointerButton, RotationEvent, TapEvent,
 };
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
 
-#[cfg(target_os = "macos")]
 use cocoa_ui::accessibility::{self as a11y, Role};
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::gesture::GestureAttachment;
@@ -89,6 +97,18 @@ impl core::fmt::Debug for GestureSubView {
 }
 
 impl SubView for GestureSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state
+            .borrow()
+            .child
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.borrow().child.layout().measure(proposal)
     }
@@ -269,8 +289,8 @@ fn pressed_button(
 fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<GestureAttachment> {
     match gesture {
         Gesture::Tap(tap) => {
-            let buttons = button_mask(tap.buttons);
-            let count = tap.count;
+            let buttons = button_mask(tap.get_buttons());
+            let count = tap.count();
             #[cfg(target_os = "ios")]
             {
                 vec![kit::tap(host, count as usize, buttons, {
@@ -303,9 +323,9 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             }
         }
         Gesture::LongPress(long_press) => {
-            let seconds = f64::from(long_press.duration) / 1000.0;
-            let duration = long_press.duration as f32;
-            let buttons = button_mask(long_press.buttons);
+            let seconds = f64::from(long_press.duration()) / 1000.0;
+            let duration = long_press.duration() as f32;
+            let buttons = button_mask(long_press.get_buttons());
             #[cfg(target_os = "ios")]
             {
                 vec![kit::long_press(host, seconds, buttons, {
@@ -338,8 +358,8 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             }
         }
         Gesture::Drag(drag) => {
-            let min_distance = f64::from(drag.min_distance);
-            let buttons = button_mask(drag.buttons);
+            let min_distance = f64::from(drag.min_distance());
+            let buttons = button_mask(drag.get_buttons());
             let started = Rc::new(Cell::new(false));
             macro_rules! pan_handler {
                 ($rec:ident, $recognizer:ty, $button:expr) => {{
@@ -389,7 +409,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             }
         }
         Gesture::Magnification(magnification) => {
-            let initial_scale = magnification.initial_scale;
+            let initial_scale = magnification.initial_scale();
             // Both platforms report a cumulative factor since the gesture
             // began — `UIPinchGestureRecognizer.scale` directly, and `1 +
             // NSMagnificationGestureRecognizer.magnification` on `AppKit`,
@@ -509,14 +529,18 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             {
                 // `NSRotationGestureRecognizer` reports radians and no
                 // velocity: the angle delta between updates over their
-                // wall-clock interval.
+                // wall-clock interval. Its sign follows `NSEvent.rotation`
+                // — counter-clockwise positive, per Apple's Event
+                // documentation — the opposite of the contract's
+                // clockwise-positive convention, so both the angle and
+                // its derived velocity negate (#3706).
                 vec![kit::rotation(
                     host,
                     rotation_handler!(
                         recognizer,
-                        recognizer.rotation() as f32,
+                        -(recognizer.rotation() as f32),
                         |previous: f32, dt: f32| {
-                            (recognizer.rotation() as f32 - previous) / dt.max(f32::EPSILON)
+                            (-(recognizer.rotation() as f32) - previous) / dt.max(f32::EPSILON)
                         }
                     ),
                 )]
@@ -568,11 +592,11 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
     }
 }
 
-/// Whether a press — an assistive client's `AXPress` — activates the
-/// gesture's action: a `Tap` anywhere in the composition is what makes
-/// the host operable; long-presses, drags and the two-finger gestures
-/// describe activations a press does not stand in for.
-#[cfg(target_os = "macos")]
+/// Whether an assistive client's activation — `AXPress` on `AppKit`,
+/// `accessibilityActivate` on `UIKit` — activates the gesture's action: a
+/// `Tap` anywhere in the composition is what makes the host operable;
+/// long-presses, drags and the two-finger gestures describe activations a
+/// press does not stand in for.
 fn activates_on_press(gesture: &Gesture) -> bool {
     match gesture {
         Gesture::Tap(_) => true,
@@ -618,8 +642,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
 
         let env = ctx.env().clone();
-        let action = Rc::new(RefCell::new(metadata.value.action));
-        let observer_gesture = metadata.value.gesture.clone();
+        let (observer_gesture, action) = metadata.value.into_parts();
+        let activates = activates_on_press(&observer_gesture);
+        let attach_gesture = observer_gesture.clone();
+        let action = Rc::new(RefCell::new(action));
         let on_recognized: Recognized = Rc::new(move |payload| {
             // The shared gesture contract: the observed `Gesture` and the
             // completing recognizer's event go into the action's
@@ -637,16 +663,17 @@ pub fn install(dispatcher: &mut Dispatcher) {
             (action.borrow_mut())(&action_env);
         });
 
-        // `AXPress` on the wrapper runs the gesture's action — a `Tap`
-        // anywhere in the composition is what makes the host operable to
-        // assistive clients (water-rs/waterui#1490). The synthesized event
-        // is a primary tap at the host's center, the point an assistive
-        // activation stands for.
-        #[cfg(target_os = "macos")]
-        if activates_on_press(&metadata.value.gesture) {
+        // An assistive client's activation — `AXPress` on `AppKit`,
+        // `accessibilityActivate` on `UIKit` — on the wrapper runs the
+        // gesture's action: a `Tap` anywhere in the composition is what
+        // makes the host operable (water-rs/waterui#1490,
+        // water-rs/waterui#2975). The synthesized event is a primary tap
+        // at the host's center, the point an assistive activation stands
+        // for.
+        if activates {
             let on_recognized = Rc::clone(&on_recognized);
-            host.set_accessibility_press_handler(move |pressed_host| {
-                let bounds = view::bounds(pressed_host);
+            let activate = move |activated_host: &HostView| {
+                let bounds = view::bounds(activated_host);
                 on_recognized(GesturePayload::Tap(TapEvent::new(
                     gesture_point(
                         bounds.origin.x + bounds.size.width / 2.0,
@@ -656,15 +683,28 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     PointerButton::Primary,
                 )));
                 true
-            });
-            let host_view: &NSView = &host;
-            a11y::set_role(
-                ProtocolObject::<dyn NSAccessibility>::from_ref(host_view),
-                Role::Group,
-            );
+            };
+            #[cfg(target_os = "macos")]
+            {
+                host.set_accessibility_press_handler(activate);
+                let host_view: &NSView = &host;
+                a11y::set_role(
+                    ProtocolObject::<dyn NSAccessibility>::from_ref(host_view),
+                    Role::Group,
+                );
+            }
+            #[cfg(target_os = "ios")]
+            {
+                host.set_accessibility_activate_handler(activate);
+                a11y::set_role(&host, Role::Button);
+                // A `Button` element reads as a leaf to `VoiceOver`, so
+                // the content's labels and nested activatable elements
+                // merge into the host (SwiftUI `children: .combine`).
+                host.set_combines_accessibility_children(true);
+            }
         }
 
-        let attachments = attach(&host, &metadata.value.gesture, on_recognized);
+        let attachments = attach(&host, &attach_gesture, on_recognized);
 
         let mut leaf = NativeLeaf::new(
             &*host,
@@ -682,9 +722,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::gesture::PointerButtons;
-    #[cfg(target_os = "macos")]
-    use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
+    use waterui::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
 
     #[test]
     fn button_mask_carries_pointer_button_bits_verbatim() {
@@ -756,18 +794,18 @@ mod tests {
         );
         let opened = report(GestureState::Changed, (15.0, 0.0))
             .expect("crossing the threshold opens the drag");
-        assert_eq!(opened.phase, GesturePhase::Started);
-        assert_eq!(opened.location, GesturePoint::new(20.0, 30.0));
-        assert_eq!(opened.translation, GesturePoint::new(15.0, 0.0));
-        assert_eq!(opened.velocity, GesturePoint::new(100.0, -50.0));
-        assert_eq!(opened.button, PointerButton::Primary);
+        assert_eq!(opened.phase(), GesturePhase::Started);
+        assert_eq!(opened.location(), GesturePoint::new(20.0, 30.0));
+        assert_eq!(opened.translation(), GesturePoint::new(15.0, 0.0));
+        assert_eq!(opened.velocity(), GesturePoint::new(100.0, -50.0));
+        assert_eq!(opened.button(), PointerButton::Primary);
 
         let updated =
             report(GestureState::Changed, (25.0, 0.0)).expect("an open drag reports its changes");
-        assert_eq!(updated.phase, GesturePhase::Updated);
+        assert_eq!(updated.phase(), GesturePhase::Updated);
 
         let ended = report(GestureState::Ended, (25.0, 0.0)).expect("an open drag reports its end");
-        assert_eq!(ended.phase, GesturePhase::Ended);
+        assert_eq!(ended.phase(), GesturePhase::Ended);
         assert!(
             report(GestureState::Ended, (25.0, 0.0)).is_none(),
             "an ended sequence disarms the gate"
@@ -793,8 +831,8 @@ mod tests {
         report(GestureState::Changed, (15.0, 0.0), (0.0, 0.0)).unwrap();
         let cancelled = report(GestureState::Cancelled, (15.0, 0.0), (500.0, 0.0))
             .expect("an open drag reports its cancellation");
-        assert_eq!(cancelled.phase, GesturePhase::Cancelled);
-        assert_eq!(cancelled.velocity, GesturePoint::new(0.0, 0.0));
+        assert_eq!(cancelled.phase(), GesturePhase::Cancelled);
+        assert_eq!(cancelled.velocity(), GesturePoint::new(0.0, 0.0));
         assert!(
             report(GestureState::Cancelled, (15.0, 0.0), (0.0, 0.0)).is_none(),
             "a cancelled sequence disarms the gate"
@@ -821,8 +859,8 @@ mod tests {
         assert!(!started.get());
     }
 
-    /// Only a `Tap` in the composition makes the host answer `AXPress`.
-    #[cfg(target_os = "macos")]
+    /// Only a `Tap` in the composition makes the host answer an assistive
+    /// activation.
     #[test]
     fn activates_on_press_searches_the_composition_for_a_tap() {
         let tap: Gesture = TapGesture::new().into();

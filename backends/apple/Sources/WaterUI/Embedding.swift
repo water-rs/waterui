@@ -101,8 +101,8 @@ private final class PendingRuntime {
 
 /// A host's declared environment for one mount: the snapshot a `SwiftUI`
 /// representable hands the backend — scheme, direction and the six
-/// resolved text styles as `(size, weight, lineHeight)` triples in Body,
-/// Title1, Headline, Subheadline, Caption1, Footnote order.
+/// resolved text styles as `(size, weight, boldWeightCoordinate, lineHeight)` groups
+/// in Body, Title1, Headline, Subheadline, Caption1, Footnote order.
 private struct HostEnvironment: Equatable {
   var dark: Bool
   var rtl: Bool
@@ -112,18 +112,41 @@ private struct HostEnvironment: Equatable {
   /// Resolves the environment's own text styles through `Font.resolve(in:)`
   /// against its `fontResolutionContext` — the host's content-size
   /// category included — and reads size, weight and face metrics off each
-  /// resolved `CTFont`.
+  /// resolved `CTFont`, plus the weight `SwiftUI` gives the style's bold
+  /// (`style.bold()`), the platform bold of that text style.
   init(_ environment: EnvironmentValues) {
     dark = environment.colorScheme == .dark
     rtl = environment.layoutDirection == .rightToLeft
     locale = environment.locale.identifier(.bcp47)
     let context = environment.fontResolutionContext
+    func weight(_ font: CTFont) -> Double {
+      let traits = CTFontCopyTraits(font) as NSDictionary
+      return (traits[kCTFontWeightTrait] as? NSNumber)?.doubleValue ?? 0.0
+    }
+    // The bold face keeps the weight trait of the style it came from (the
+    // macOS headline's bold declares Bold and draws Heavy), so its weight is
+    // read from the face: the `wght` axis coordinate, which CoreText omits
+    // when it is the axis default.
+    let weightAxis = NSNumber(value: 0x7767_6874)
+    func weightCoordinate(_ font: CTFont) -> Double {
+      if let value = (CTFontCopyVariation(font) as NSDictionary?)?[weightAxis] as? NSNumber {
+        return value.doubleValue
+      }
+      guard let axes = CTFontCopyVariationAxes(font) as? [NSDictionary],
+        let axis = axes.first(where: {
+          $0[kCTFontVariationAxisIdentifierKey] as? NSNumber == weightAxis
+        }),
+        let value = axis[kCTFontVariationAxisDefaultValueKey] as? NSNumber
+      else {
+        fatalError("the system bold face has no wght variation axis")
+      }
+      return value.doubleValue
+    }
     fonts = [Font.body, .title, .headline, .subheadline, .caption, .footnote]
       .flatMap { style -> [Double] in
         let font = style.resolve(in: context).ctFont
-        let traits = CTFontCopyTraits(font) as NSDictionary
-        let weight = (traits[kCTFontWeightTrait] as? NSNumber)?.doubleValue ?? 0.0
-        return [Double(CTFontGetSize(font)), weight,
+        let bold = style.bold().resolve(in: context).ctFont
+        return [Double(CTFontGetSize(font)), weight(font), weightCoordinate(bold),
                 Double(CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font))]
       }
   }

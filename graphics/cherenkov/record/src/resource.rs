@@ -39,54 +39,96 @@ impl std::fmt::Display for ResourceId {
     }
 }
 
-/// The images a render target admits: the largest image in each
-/// dimension, and the texels every registered image holds together.
-///
-/// The target reports it once, when its renderer is initialized, and it
-/// does not change afterwards. A registration the limits do not
-/// [`admit`](Self::admits) alone, or that would take the registered images
-/// together past [`max_texels`](Self::max_texels), is rejected before any
-/// work is queued, so the content that made it sees the error instead of
-/// a failed render.
+/// Storage costs selected by a renderer for registered image formats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ImageStorage {
+    /// Bytes per stored RGBA8 pixel.
+    pub rgba8: u8,
+    /// Bytes per stored RGBA16F pixel.
+    pub rgba16f: u8,
+    /// Whether ASTC remains compressed in storage.
+    pub astc4x4: bool,
+    /// Whether ETC2 remains compressed in storage.
+    pub etc2: bool,
+    /// Whether BC7 remains compressed in storage.
+    pub bc7: bool,
+}
+
+impl ImageStorage {
+    /// Uncompressed GPU storage, decoding compressed sources to RGBA8.
+    pub const GPU: Self = Self {
+        rgba8: 4,
+        rgba16f: 8,
+        astc4x4: false,
+        etc2: false,
+        bc7: false,
+    };
+
+    /// CPU storage: every source decodes to four f32 channels.
+    pub const CPU: Self = Self {
+        rgba8: 16,
+        rgba16f: 16,
+        ..Self::GPU
+    };
+
+    /// Stored bytes, including complete compressed blocks at image edges.
+    #[must_use]
+    pub fn bytes(self, width: u32, height: u32, format: crate::ImageFormat) -> u128 {
+        use crate::ImageFormat as F;
+        let compressed = match format {
+            F::Astc4x4 => self.astc4x4,
+            F::Etc2Rgba => self.etc2,
+            F::Bc7 => self.bc7,
+            F::Rgba8 | F::Rgba16F => false,
+        };
+        if compressed {
+            u128::from(width.div_ceil(4)) * u128::from(height.div_ceil(4)) * 16
+        } else {
+            let pixel = if format == F::Rgba16F {
+                self.rgba16f
+            } else {
+                self.rgba8
+            };
+            u128::from(width) * u128::from(height) * u128::from(pixel)
+        }
+    }
+}
+
+/// Immutable dimensions, storage costs and shared byte budget for registered images.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageLimits {
     /// Largest admitted width or height, in pixels.
     pub max_dimension: u32,
-    /// The image budget: the largest texel count (`width * height`) the
-    /// registered images hold together, and so also the largest single
-    /// image.
-    pub max_texels: u64,
+    /// Maximum stored bytes held by all registered images together.
+    pub max_bytes: u64,
+    /// The renderer's storage costs, including device compression support.
+    pub storage: ImageStorage,
 }
 
 impl ImageLimits {
-    /// No limit: every size is admitted.
+    /// Unbounded dimensions and byte budget, using uncompressed GPU storage.
     pub const UNLIMITED: Self = Self {
         max_dimension: u32::MAX,
-        max_texels: u64::MAX,
+        max_bytes: u64::MAX,
+        storage: ImageStorage::GPU,
     };
 
-    /// Whether a `width` × `height` image fits the limits on its own,
-    /// with no other image registered.
+    /// Whether an image fits on its own.
     #[must_use]
-    pub fn admits(&self, width: u32, height: u32) -> bool {
+    pub fn admits<F: crate::Format>(&self, width: u32, height: u32) -> bool {
         width != 0
             && height != 0
             && width <= self.max_dimension
             && height <= self.max_dimension
-            && u64::from(width) * u64::from(height) <= self.max_texels
+            && self.storage.bytes(width, height, F::FORMAT) <= u128::from(self.max_bytes)
     }
 
-    /// Checks a `width` × `height` image against the limits: `Ok` when
-    /// it is admitted, [`ResourceError::TooLarge`] naming these limits
-    /// when it is not. Runs wherever a registration or replacement is
-    /// made.
+    /// Checks dimensions and stored bytes before queuing an upload.
     ///
     /// # Errors
-    ///
-    /// [`ResourceError::TooLarge`] with the requested size and these
-    /// limits, when `width` × `height` is not admitted.
-    pub fn check(&self, width: u32, height: u32) -> Result<(), ResourceError> {
-        if self.admits(width, height) {
+    /// Returns [`ResourceError::TooLarge`] when the image does not fit alone.
+    pub fn check<F: crate::Format>(&self, width: u32, height: u32) -> Result<(), ResourceError> {
+        if self.admits::<F>(width, height) {
             Ok(())
         } else {
             Err(ResourceError::TooLarge {
@@ -97,22 +139,25 @@ impl ImageLimits {
         }
     }
 
-    /// Checks a `width` × `height` image beside `others`, the texels the
-    /// other registered images hold, which never exceed
-    /// [`max_texels`](Self::max_texels): `Ok` with the image's texel count
-    /// when the limits admit it alone and the images together stay
-    /// within [`max_texels`](Self::max_texels).
+    /// Checks an image beside `others` stored bytes, which are already within the budget.
     ///
     /// # Errors
+    /// Returns [`ResourceError::TooLarge`] when the image does not fit alone,
+    /// or [`ResourceError::OverBudget`] when it does not fit beside the others.
     ///
-    /// [`ResourceError::TooLarge`] when the limits do not admit the image
-    /// alone, [`ResourceError::OverBudget`] with the texels left when the
-    /// images together would exceed the budget.
-    pub fn check_beside(&self, width: u32, height: u32, others: u64) -> Result<u64, ResourceError> {
-        self.check(width, height)?;
-        let texels = u64::from(width) * u64::from(height);
-        let available = self.max_texels - others;
-        if texels > available {
+    /// # Panics
+    /// Panics if `others` exceeds the budget; callers pass admitted resident bytes.
+    pub fn check_beside<F: crate::Format>(
+        &self,
+        width: u32,
+        height: u32,
+        others: u64,
+    ) -> Result<u64, ResourceError> {
+        self.check::<F>(width, height)?;
+        let bytes = u64::try_from(self.storage.bytes(width, height, F::FORMAT))
+            .expect("admitted bytes fit the u64 budget");
+        let available = self.max_bytes - others;
+        if bytes > available {
             return Err(ResourceError::OverBudget {
                 width,
                 height,
@@ -120,58 +165,44 @@ impl ImageLimits {
                 limits: *self,
             });
         }
-        Ok(texels)
+        Ok(bytes)
     }
 
-    /// The largest admitted size at `width`:`height`'s aspect ratio, to
-    /// integer precision. `(0, 0)` when the limits admit nothing — a
-    /// zero `max_dimension` or `max_texels` — and a side under a pixel
-    /// keeps one pixel, with the texel bound carried by the side the
-    /// ratio left standing.
+    /// Largest size at the requested aspect ratio that fits alone, to integer precision.
+    /// Returns `(0, 0)` when no pixel fits. Subpixel sides retain one pixel.
     ///
     /// # Panics
-    ///
-    /// Never: `fit` only shrinks its `u32` inputs, so the narrowing
-    /// conversions cannot fail.
+    /// Never: the result only shrinks the input dimensions.
     #[must_use]
-    pub fn fit(&self, width: u32, height: u32) -> (u32, u32) {
-        if self.admits(width, height) {
+    pub fn fit<F: crate::Format>(&self, width: u32, height: u32) -> (u32, u32) {
+        if self.admits::<F>(width, height) {
             return (width, height);
         }
-        if width == 0 || height == 0 || self.max_dimension == 0 || self.max_texels == 0 {
+        if width == 0 || height == 0 || !self.admits::<F>(1, 1) {
             return (0, 0);
         }
-        let (mut w, mut h) = (u128::from(width), u128::from(height));
-        let max = u128::from(self.max_dimension);
-        let texels = u128::from(self.max_texels);
-        // Each bound scales uniformly and floors, so the pair it leaves
-        // is still admitted. The dimension bound applies to the long
-        // side; the texel bound scales each side by `sqrt(T / (w·h))`.
-        let long = w.max(h);
-        if long > max {
-            w = w * max / long;
-            h = h * max / long;
+        let long = width.max(height);
+        let size = |side: u32| {
+            (
+                u32::try_from(u64::from(width) * u64::from(side) / u64::from(long))
+                    .expect("shrinks width")
+                    .max(1),
+                u32::try_from(u64::from(height) * u64::from(side) / u64::from(long))
+                    .expect("shrinks height")
+                    .max(1),
+            )
+        };
+        let (mut low, mut high) = (1, long.min(self.max_dimension));
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            let (w, h) = size(middle);
+            if self.admits::<F>(w, h) {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
         }
-        if w != 0 && h != 0 && w * h > texels {
-            let (a, b) = (w, h);
-            w = (a * texels / b).isqrt();
-            h = (b * texels / a).isqrt();
-        }
-        // Only a side floored to zero needs repair: one pixel, with the
-        // texel bound carried by the side the ratio left standing.
-        if w == 0 {
-            w = 1;
-            h = h.min(texels).max(1);
-        }
-        if h == 0 {
-            h = 1;
-            w = w.min(texels).max(1);
-        }
-        // `fit` only shrinks a `u32` size, so each side still fits `u32`.
-        (
-            u32::try_from(w).expect("fit only shrinks a u32 size"),
-            u32::try_from(h).expect("fit only shrinks a u32 size"),
-        )
+        size(low)
     }
 }
 
@@ -179,8 +210,8 @@ impl std::fmt::Display for ImageLimits {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} px/side, {} texels",
-            self.max_dimension, self.max_texels
+            "{} px/side, {} bytes",
+            self.max_dimension, self.max_bytes
         )
     }
 }
@@ -211,36 +242,55 @@ mod tests {
 
     const LIMITS: ImageLimits = ImageLimits {
         max_dimension: 16384,
-        max_texels: 6_291_456,
+        max_bytes: 6_291_456 * 4,
+        storage: super::ImageStorage::GPU,
     };
 
     #[test]
-    fn admits_checks_each_dimension_and_the_texel_count() {
-        assert!(LIMITS.admits(1, 1));
-        assert!(LIMITS.admits(16384, 1));
-        assert!(LIMITS.admits(2508, 2508));
-        assert!(!LIMITS.admits(16385, 1));
-        assert!(!LIMITS.admits(1, 16385));
-        assert!(!LIMITS.admits(4096, 4096));
-        assert!(!LIMITS.admits(0, 4));
-        assert!(!LIMITS.admits(4, 0));
+    fn admission_checks_dimensions_and_stored_bytes() {
+        assert!(LIMITS.admits::<crate::Rgba8>(1, 1));
+        assert!(LIMITS.admits::<crate::Rgba8>(16384, 1));
+        assert!(LIMITS.admits::<crate::Rgba8>(2508, 2508));
+        assert!(!LIMITS.admits::<crate::Rgba8>(16385, 1));
+        assert!(!LIMITS.admits::<crate::Rgba8>(1, 16385));
+        assert!(!LIMITS.admits::<crate::Rgba8>(4096, 4096));
+        assert!(!LIMITS.admits::<crate::Rgba8>(0, 4));
+        assert!(!LIMITS.admits::<crate::Rgba8>(4, 0));
+        let bytes = ImageLimits {
+            max_bytes: 64,
+            max_dimension: 16,
+            storage: super::ImageStorage {
+                bc7: true,
+                ..super::ImageStorage::GPU
+            },
+        };
+        assert_eq!(bytes.check_beside::<crate::Rgba8>(4, 4, 0).unwrap(), 64);
+        assert!(!bytes.admits::<crate::Rgba16F>(4, 4));
+        assert_eq!(bytes.check_beside::<crate::Bc7>(5, 5, 0).unwrap(), 64);
+        assert_eq!(bytes.fit::<crate::Bc7>(16, 16), (8, 8));
+        let cpu = ImageLimits {
+            storage: super::ImageStorage::CPU,
+            ..bytes
+        };
+        assert_eq!(cpu.check_beside::<crate::Rgba8>(2, 2, 0).unwrap(), 64);
+        assert!(!cpu.admits::<crate::Bc7>(4, 4));
     }
 
     #[test]
     fn an_admitted_size_is_its_own_fit() {
-        assert_eq!(LIMITS.fit(64, 64), (64, 64));
-        assert_eq!(LIMITS.fit(16384, 1), (16384, 1));
+        assert_eq!(LIMITS.fit::<crate::Rgba8>(64, 64), (64, 64));
+        assert_eq!(LIMITS.fit::<crate::Rgba8>(16384, 1), (16384, 1));
     }
 
     #[test]
     fn fit_scales_to_the_binding_limit() {
         // The dimension binds: 20000px of width becomes 16384 and the
         // height scales by the same ratio.
-        assert_eq!(LIMITS.fit(20000, 16), (16384, 13));
+        assert_eq!(LIMITS.fit::<crate::Rgba8>(20000, 16), (16384, 13));
         // The texel budget binds below the dimension: the 16384 square
         // the dimension would leave still holds too many texels.
-        assert_eq!(LIMITS.fit(32768, 32768), (2508, 2508));
-        assert_eq!(LIMITS.fit(4096, 4096), (2508, 2508));
+        assert_eq!(LIMITS.fit::<crate::Rgba8>(32768, 32768), (2508, 2508));
+        assert_eq!(LIMITS.fit::<crate::Rgba8>(4096, 4096), (2508, 2508));
     }
 
     #[test]
@@ -250,17 +300,19 @@ mod tests {
         assert_eq!(
             ImageLimits {
                 max_dimension: 16384,
-                max_texels: 100,
+                max_bytes: 100 * 4,
+                storage: super::ImageStorage::GPU,
             }
-            .fit(20000, 1),
+            .fit::<crate::Rgba8>(20000, 1),
             (100, 1)
         );
         assert_eq!(
             ImageLimits {
                 max_dimension: u32::MAX,
-                max_texels: 6_291_456,
+                max_bytes: 6_291_456 * 4,
+                storage: super::ImageStorage::GPU,
             }
-            .fit(100_000_000, 1),
+            .fit::<crate::Rgba8>(100_000_000, 1),
             (6_291_456, 1)
         );
     }
@@ -274,25 +326,30 @@ mod tests {
             (
                 ImageLimits {
                     max_dimension: u32::MAX,
-                    max_texels: 6_291_456,
+                    max_bytes: 6_291_456 * 4,
+                    storage: super::ImageStorage::GPU,
                 },
                 (100_000_000, 1),
             ),
         ] {
-            let (w, h) = limits.fit(size.0, size.1);
-            assert!(limits.admits(w, h), "{limits:?}.fit{size:?} = ({w}, {h})");
+            let (w, h) = limits.fit::<crate::Rgba8>(size.0, size.1);
+            assert!(
+                limits.admits::<crate::Rgba8>(w, h),
+                "{limits:?}.fit{size:?} = ({w}, {h})"
+            );
         }
     }
 
     #[test]
     fn fit_reports_zero_when_nothing_is_admitted() {
-        assert_eq!(LIMITS.fit(0, 16), (0, 0));
+        assert_eq!(LIMITS.fit::<crate::Rgba8>(0, 16), (0, 0));
         assert_eq!(
             ImageLimits {
                 max_dimension: 0,
-                max_texels: 16,
+                max_bytes: 16 * 4,
+                storage: super::ImageStorage::GPU,
             }
-            .fit(4, 4),
+            .fit::<crate::Rgba8>(4, 4),
             (0, 0)
         );
     }

@@ -27,7 +27,7 @@ vello-cpu = ["dep:vello_cpu", "dep:vello_common", "vello_cpu/multithreading"]
 # (#2691). `skia-bindings/no-compile` turns the source-build fallback into
 # a panic so every bench build linking Skia must use the prebuilt binaries.
 skia = ["dep:skia-safe", "dep:ash", "dep:skia-bindings"]
-skia-metal = ["dep:skia-safe", "dep:objc2", "dep:objc2-metal", "dep:skia-bindings"]
+skia-metal = ["dep:skia-safe", "dep:objc2", "dep:objc2-metal", "objc2-metal/block2", "dep:block2", "dep:skia-bindings"]
 # The platform-buffer producers `external-cost` uses are target-gated
 # below; their `dep:` entries resolve only on the matching target.
 cherenkov = [
@@ -60,21 +60,21 @@ clap = { version = "4", features = ["derive"] }
 # The fork pinned in the workspace `[patch.crates-io]` declares 0.11.0.
 vello = { version = "0.11", default-features = false, optional = true, features = ["wgpu", "wgpu-profiler"] }
 vello_gpu = { version = "0.3", default-features = false, optional = true, features = ["wgpu", "text"] }
-vello_cpu = { version = "0.3", default-features = false, optional = true, features = ["std", "text", "u8_pipeline"] }
+vello_cpu = { version = "0.3", default-features = false, optional = true, features = ["std", "text", "png", "u8_pipeline"] }
 vello_common = { version = "0.3", default-features = false, optional = true, features = ["std"] }
 skia-safe = { version = "0.153", optional = true }
 # `no-compile` unifies onto skia-safe's transitive skia-bindings.
 skia-bindings = { version = "0.153", optional = true, default-features = false, features = ["no-compile"] }
 ash = { version = "0.38", optional = true }
 
-wgpu = { version = "30.0.1", optional = true }
+wgpu = { workspace = true, optional = true }
 pollster = { version = "1.0", optional = true }
 peniko = "0.6"
 skrifa = "0.48"
 read-fonts = "0.45"
 bytemuck = "1"
 half = { version = "2", optional = true }
-glifo = { version = "0.4", optional = true }
+glifo = { version = "0.4", optional = true, features = ["png"] }
 # Minimal surface: CPU list + brand string for `cpu_model`.
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 
@@ -87,6 +87,11 @@ libc = "0.2"
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-sys = { version = "0.6", optional = true }
 
+# Each native target renders through its one wgpu backend (see the workspace
+# `wgpu` entry), also for the vello adapters that do not link `cherenkov-gpu`.
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["dx12"] }
+
 # The Skia GPU backend set for this target, declared on a second `skia-safe`
 # entry under the platform table: Cargo merges same-name declarations, so
 # whichever adapter feature enabled `dep:skia-safe` gets the prebuilt combo
@@ -95,12 +100,16 @@ ndk-sys = { version = "0.6", optional = true }
 # off the feature lists above: the union is what `--all-features` asks for.
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 skia-safe = { version = "0.153", optional = true, features = ["vulkan", "ganesh"] }
+wgpu = { workspace = true, optional = true, features = ["vulkan"] }
 
 # `external-cost`'s `CVPixelBuffer`/`IOSurface` producer (#168) and
 # skia-metal's Metal handle plumbing.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 skia-safe = { version = "0.153", optional = true, features = ["metal", "graphite"] }
+wgpu = { workspace = true, optional = true, features = ["metal"] }
 objc2 = { version = "0.6.3", optional = true, default-features = false }
+# skia-metal's completion marker: `MTLCommandBuffer::addCompletedHandler`.
+block2 = { version = "0.6.2", optional = true, default-features = false, features = ["alloc"] }
 objc2-metal = { version = "0.3.2", optional = true, default-features = false, features = [
     "MTLDevice", "MTLCommandQueue", "MTLCommandBuffer",
     # `CFTimeInterval` for `MTLCommandBuffer::GPUStartTime`/`GPUEndTime`.

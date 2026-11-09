@@ -2,10 +2,11 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-pub use crate::text::{
-    FontFamilyResolution, ResolvedTextLayoutInput, TailMark, TextService, resolve_text_layout_input,
-};
+#[cfg(hydrolysis_gpu_painter)]
+pub use crate::text::FontFamilyResolution;
+pub use crate::text::{ResolvedTextLayoutInput, TailMark, TextService, resolve_text_layout_input};
 
+#[cfg(hydrolysis_gpu_painter)]
 mod compositor;
 mod measurement;
 mod measurement_cache;
@@ -14,7 +15,9 @@ mod state;
 mod subview;
 mod view_helpers;
 
+#[cfg(hydrolysis_gpu_painter)]
 pub use compositor::HydrolysisRenderTarget;
+#[cfg(hydrolysis_gpu_painter)]
 pub use compositor::{CherenkovWindow, FrameRenderTarget};
 pub use measurement::*;
 pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};
@@ -27,6 +30,5 @@ pub use view_helpers::*;
 pub use view_helpers::{
     anchor_point, circle_arc_path, effective_stretch_axis, estimate_layout_intrinsic,
     gesture_group_identity, normalize_layout_view, normalize_view_for_render, passthrough_content,
-    path_commands_to_path, resolved_shape_to_path, rgba8_to_peniko, transformed_rect,
-    working_color_to_rgba8,
+    path_commands_to_path, resolved_shape_to_path, transformed_rect, working_color_to_rgba8,
 };

@@ -2,15 +2,16 @@
 //! reconciled by id) and [`LazyStackNode`] (viewport-virtualized lazy stack).
 
 #[cfg(feature = "accessibility")]
-use super::layout::kurbo_rect;
-#[cfg(feature = "accessibility")]
-use super::layout::resolved_content_rect;
+use super::layout::accessibility_rect;
+use super::layout::placed_layout;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::WidgetTheme;
 use std::rc::Rc;
 
 use nami::collection::CollectionChange;
+use waterui_core::layout::{LayoutError, PlacementInput, ResolvedExtent, resolve_layout_extent};
 use waterui_core::transition::{Ghost, GhostSlot, TransitionSpec};
 use waterui_core::views::ViewSnapshot;
 
@@ -145,12 +146,13 @@ pub struct CollectionNode<E: crate::text::TextEngine> {
     /// a transition each frame holds the entry's full extent at its re-stacked
     /// position; flush clips it to the presence factor.
     pub(super) placed: Vec<Rect>,
-    /// The extent this collection resolved at layout — the size it answered to
-    /// the selected proposal, centred on the assigned frame — kept beside
-    /// `placed` so a naming-scope owner reports its own extent when the
-    /// parent assigned more than it answered (water-rs/hydrolysis#51).
+    /// The geometry this collection was committed with at its last layout,
+    /// its response resolved by `place_layout` — kept beside `placed` so a
+    /// naming-scope owner reports its response rectangle when the parent
+    /// assigned more than it answered (water-rs/hydrolysis#51). `None` until
+    /// the first layout.
     #[cfg(feature = "accessibility")]
-    pub(super) resolved: Rect,
+    pub(super) geometry: Option<PlacedGeometry>,
     /// Detached removals still animating out, each anchored after the live id
     /// it followed (`None` = before the first live entry). A ghost's node is
     /// out of semantics, accessibility, focus and hit-testing — it only keeps
@@ -207,6 +209,11 @@ pub struct LazyStackNode<E: crate::text::TextEngine> {
     /// storage, so a stack inside an unchanged retained sub-view still hands
     /// each materialized item its context at flush.
     pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
+    /// The geometry this stack was committed with at its last layout, its
+    /// response resolved by the stack rule from the lazy measurement; read
+    /// by the naming scope it owns. `None` until the first layout.
+    #[cfg(feature = "accessibility")]
+    pub(super) geometry: Option<PlacedGeometry>,
     /// The unshielded environment when this stack carries accessibility naming
     /// metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -348,17 +355,37 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
         ViewDimensions::new(self.layout.size_that_fits(proposal, &refs))
     }
 
+    /// The collection's response geometry: its layout's rule over the same
+    /// members [`Self::measure`] hands it, ghost slots included.
+    pub(super) fn resolve_extent(
+        &self,
+        state: &mut HydroState<E>,
+        theme: &Rc<dyn WidgetTheme>,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let cell = RefCell::new(state);
+        let subs: Vec<NodeSubView<E>> = self
+            .entries
+            .iter()
+            .map(|entry| NodeSubView::new(&entry.node, &cell, &self.env, theme))
+            .collect();
+        let order = self.slot_order();
+        let refs = slot_refs(&order, &subs, &self.ghosts);
+        resolve_layout_extent(&*self.layout, bounds, proposal, &refs)
+    }
+
     pub(super) fn layout(
         &mut self,
         renderer: &mut HydrolysisRenderer<E>,
         safe_area: Option<&safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
-        size: Size,
+        bounds: Rect,
     ) {
         let env = self.env.clone();
         let theme = renderer.theme();
         let order = self.slot_order();
-        let (placements, mut frozen, priorities) = {
+        let (placement, mut frozen, priorities) = {
             let cell = RefCell::new(&mut renderer.state);
             let subs: Vec<NodeSubView<E>> = self
                 .entries
@@ -370,51 +397,53 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
             // the container's membership only reflows when a ghost's clock
             // completes and its slot is released.
             let refs = slot_refs(&order, &subs, &self.ghosts);
-            // Only the accessibility scope reads `resolved` — skip the measure
-            // in builds without it.
-            #[cfg(feature = "accessibility")]
-            {
-                self.resolved =
-                    resolved_content_rect(self.layout.size_that_fits(proposal, &refs), size);
-            }
-            let placed = self.layout.place(Rect::from_size(size), proposal, &refs);
+            let placement = placed_layout(&*self.layout, bounds, proposal, &refs);
             // Freeze each live entry's placed dimensions (size plus explicit
             // guides at the placed proposal) while `subs` is still borrowed —
             // the removal ghost keeps them fixed afterward.
             let mut frozen: Vec<Option<ViewDimensions>> = vec![None; self.entries.len()];
-            for (slot, placement) in order.iter().zip(&placed) {
+            for (slot, child) in order.iter().zip(&placement.children) {
                 if let CollectionSlot::Entry(index) = *slot {
-                    frozen[index] = Some(frozen_placement_dimensions(&subs[index], placement));
+                    frozen[index] = Some(frozen_placement_dimensions(&subs[index], child));
                 }
             }
-            (placed, frozen, priorities)
+            (placement, frozen, priorities)
         };
+        #[cfg(feature = "accessibility")]
+        {
+            self.geometry = Some(PlacedGeometry {
+                proposal,
+                answer: placement.answer,
+                allocation: Rect::from_size(*bounds.size()),
+                response_rect: placement.response_rect,
+            });
+        }
         let mut entry_frames = vec![None; self.entries.len()];
         let mut ghost_frames = vec![None; self.ghosts.len()];
-        for (slot, placement) in order.iter().zip(&placements) {
+        for (slot, child) in order.iter().zip(&placement.children) {
             match *slot {
-                CollectionSlot::Entry(index) => entry_frames[index] = Some(placement),
-                CollectionSlot::Ghost(index) => ghost_frames[index] = Some(placement),
+                CollectionSlot::Entry(index) => entry_frames[index] = Some(child),
+                CollectionSlot::Ghost(index) => ghost_frames[index] = Some(child),
             }
         }
-        for (index, (entry, placement)) in self.entries.iter_mut().zip(&entry_frames).enumerate() {
-            let Some(placement) = placement else { continue };
+        for (index, (entry, child)) in self.entries.iter_mut().zip(&entry_frames).enumerate() {
+            let Some(child) = child else { continue };
             if let Some(dimensions) = frozen[index].take() {
                 entry.last_measured.replace((dimensions, priorities[index]));
             }
-            let child_area = safe_area.map(|area| area.child(placement.frame));
+            let child_area = safe_area.map(|area| area.child(child.frame));
             entry.node.layout(
                 renderer,
                 &env,
                 child_area,
-                placement.proposal,
-                *placement.frame.size(),
+                child.proposal,
+                *child.frame.size(),
             );
         }
         let empty_frame = Rect::from_size(Size::new(0.0, 0.0));
         self.placed = entry_frames
             .into_iter()
-            .map(|placement| placement.map_or(empty_frame, |p| p.frame))
+            .map(|child| child.map_or(empty_frame, |p| p.frame))
             .collect();
         self.ghost_placed = ghost_frames
             .into_iter()
@@ -426,11 +455,11 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
-            let (bounds, extent) = (
-                ctx.bounds,
-                renderer.resolve_window_rect(kurbo_rect(self.resolved)),
-            );
-            let scope = renderer.begin_accessibility_container(bounds, Some(extent), env);
+            let geometry = self
+                .geometry
+                .expect("hydrolysis collection flushed before its layout");
+            let scope =
+                renderer.begin_accessibility_container(accessibility_rect(env, &geometry), env);
             renderer.pop_accessibility_owner();
             scope
         });
@@ -683,6 +712,9 @@ pub struct RowPlacement {
     pub content: kurbo::Rect,
     /// The proposal the content was placed at.
     pub proposal: ProposalSize,
+    /// The stretch the row measured with, kept so its ghost is re-placed
+    /// with the same cross-axis behavior.
+    pub stretch: StretchAxis,
 }
 
 /// The transition state of one realized row.
@@ -1365,6 +1397,25 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         ViewDimensions::new(size)
     }
 
+    /// The stack's response geometry: the stack rule for its axis and
+    /// alignment, which reads no children, over the answer [`Self::measure`]
+    /// derives from the lazy measurement state.
+    pub(super) fn resolve_extent(
+        &self,
+        state: &mut HydroState<E>,
+        theme: &Rc<dyn WidgetTheme>,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let answer = self.measure(state, theme, proposal).size;
+        let rect = self.axis.resolve_extent(PlacementInput {
+            bounds,
+            proposal,
+            answer,
+        })?;
+        Ok(ResolvedExtent { answer, rect })
+    }
+
     /// Resolves the visible window from the enclosing scroll's pushed viewport and
     /// re-dispatches only those items at their placed rects. Bounded by visible rows.
     pub(super) fn flush(
@@ -1385,20 +1436,20 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
-            // A lazy stack places its items at flush (offset-dependent), so no
-            // resolved extent is cached for it — `None` keeps the surviving
-            // child's own bounds on collapse.
-            let bounds = ctx.bounds;
-            let scope = renderer.begin_accessibility_container(bounds, None, env);
+            let geometry = self
+                .geometry
+                .expect("hydrolysis lazy stack flushed before its layout");
+            let scope =
+                renderer.begin_accessibility_container(accessibility_rect(env, &geometry), env);
             renderer.pop_accessibility_owner();
             scope
         });
         let cross = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => {
-                Some(crate::num_cast::f64_as_f32(ctx.bounds.width()))
+                Some(crate::num_cast::f64_as_f32(ctx.bounds().width()))
             }
             LazyStackAxisConfig::Horizontal { .. } => {
-                Some(crate::num_cast::f64_as_f32(ctx.bounds.height()))
+                Some(crate::num_cast::f64_as_f32(ctx.bounds().height()))
             }
         };
         let theme = renderer.theme();
@@ -1408,28 +1459,27 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         self.prepare_extent_index(&mut renderer.state, count);
         let total_extent_before = self.extent_index.borrow().total_extent();
         self.item_cache.borrow_mut().begin_frame();
-        let visible = renderer
-            .lazy
-            .lazy_viewport_stack
-            .last()
-            .map_or(ctx.bounds, |viewport| {
-                (renderer.record_world(ctx.local).inverse() * viewport.transform)
+        let visible = renderer.lazy.lazy_viewport_stack.last().map_or_else(
+            || ctx.bounds(),
+            |viewport| {
+                (renderer.record_world(ctx.local()).inverse() * viewport.transform)
                     .transform_rect_bbox(viewport.bounds)
-            });
+            },
+        );
         let (visible_start, visible_end) = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => {
-                (visible.y0 - ctx.bounds.y0, visible.y1 - ctx.bounds.y0)
+                (visible.y0 - ctx.bounds().y0, visible.y1 - ctx.bounds().y0)
             }
             LazyStackAxisConfig::Horizontal { .. }
                 if self.axis.direction().snapshot().is_right_to_left() =>
             {
                 (
-                    ctx.bounds.x0 + ctx.bounds.x1 - visible.x1,
-                    ctx.bounds.x0 + ctx.bounds.x1 - visible.x0,
+                    ctx.bounds().x0 + ctx.bounds().x1 - visible.x1,
+                    ctx.bounds().x0 + ctx.bounds().x1 - visible.x0,
                 )
             }
             LazyStackAxisConfig::Horizontal { .. } => {
-                (visible.x0 - ctx.bounds.x0, visible.x1 - ctx.bounds.x0)
+                (visible.x0 - ctx.bounds().x0, visible.x1 - ctx.bounds().x0)
             }
         };
         self.visible_span.set(Some((visible_start, visible_end)));
@@ -1519,13 +1569,13 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             self.transitions.track(id, subview, renderer);
             measured
         };
-        let child_rect = place_lazy_stack_item(&self.axis, stretch, size, ctx.bounds, cursor);
+        let child_rect = place_lazy_stack_item(&self.axis, stretch, size, ctx.bounds(), cursor);
         // The item's frame in the context the stack recorded at layout:
         // `child_rect` resolves in `ctx.bounds` space — the same layout-fact
         // mapping `WidgetRenderContext` and the collection layout loop share
         // through `SafeAreaLayout::hosted_frame`.
         let item_area =
-            stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
+            stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds(), child_rect)));
         let slot = kurbo_size(child_rect);
         self.transitions.place(
             id,
@@ -1533,6 +1583,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
                 slot: child_rect,
                 content: kurbo::Rect::from_origin_size(kurbo::Point::ZERO, child_rect.size()),
                 proposal,
+                stretch,
             },
         );
         let row = self.transitions.row(id);
@@ -1589,8 +1640,8 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             ..
         } = &mut *ghost;
         let proposal = &placement.proposal;
-        let rect = place_lazy_stack_item(&self.axis, StretchAxis::None, size, ctx.bounds, cursor);
-        let area = stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds, rect)));
+        let rect = place_lazy_stack_item(&self.axis, placement.stretch, size, ctx.bounds(), cursor);
+        let area = stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds(), rect)));
         let delta = kurbo::Affine::translate((rect.x0, rect.y0));
         let child_ctx = ctx.child(
             delta,
@@ -1676,6 +1727,14 @@ mod tests {
     struct GuidedSubView;
 
     impl SubView for GuidedSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             // Distinguishes measuring at the placed proposal from measuring
             // at the parent's container proposal.

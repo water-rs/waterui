@@ -34,7 +34,7 @@ pub struct TextFieldRenderState<E: crate::text::TextEngine> {
 impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
     pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
         }
@@ -72,7 +72,7 @@ pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
 impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
     pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
         }
@@ -130,7 +130,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedTextField
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let text_field = view.as_inner();
-        let label_size = measure_label_intrinsic(&text_field.label, state, env, theme);
+        let label_size = measure_label_intrinsic(text_field.label(), state, env, theme);
         ViewDimensions::new(measure_text_field_size_with_label_size(
             text_field, label_size, state, env, theme, proposal,
         ))
@@ -155,7 +155,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SecureFieldConfig
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let secure_field = view.as_inner();
-        let label_size = measure_label_intrinsic(&secure_field.label, state, env, theme);
+        let label_size = measure_label_intrinsic(secure_field.label(), state, env, theme);
         ViewDimensions::new(measure_secure_field_size_with_label_size(
             secure_field,
             label_size,
@@ -223,12 +223,12 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
         let text_field = &state.config;
         (
-            text_field.label.clone(),
-            text_field.value.clone(),
-            text_field.prompt.content.clone(),
-            text_field.selection_menu.clone(),
-            text_field.line_limit,
-            text_field.on_submit.clone(),
+            text_field.label().clone(),
+            text_field.value().clone(),
+            text_field.prompt().content().clone(),
+            text_field.selection_menu().clone(),
+            text_field.line_limit(),
+            text_field.on_submit().cloned(),
         )
     };
     #[cfg(feature = "accessibility")]
@@ -298,7 +298,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
                 line_limit,
             }),
         ) {
-            if let Some(content_type) = state.config.content_type {
+            if let Some(content_type) = state.config.content_type() {
                 ctx.renderer_mut()
                     .register_accessibility_content_type(node_id, content_type);
             }
@@ -632,7 +632,7 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     // flushed under the animated transform each frame.
     let (label, value_binding) = {
         let secure_field = &state.config;
-        (secure_field.label.clone(), secure_field.value.clone())
+        (secure_field.label().clone(), secure_field.value().clone())
     };
     #[cfg(feature = "accessibility")]
     let default_accessibility_label =
@@ -1147,12 +1147,12 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
     let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
         let text_field = &state.config;
         (
-            text_field.label.clone(),
-            text_field.value.clone(),
-            text_field.prompt.content.clone(),
-            text_field.selection_menu.clone(),
-            text_field.line_limit,
-            text_field.on_submit.clone(),
+            text_field.label().clone(),
+            text_field.value().clone(),
+            text_field.prompt().content().clone(),
+            text_field.selection_menu().clone(),
+            text_field.line_limit(),
+            text_field.on_submit().cloned(),
         )
     };
     let default_accessibility_label =
@@ -1198,7 +1198,7 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
                 line_limit,
             }),
         ) {
-            if let Some(content_type) = state.config.content_type {
+            if let Some(content_type) = state.config.content_type() {
                 renderer.register_accessibility_content_type(node_id, content_type);
             }
             renderer.push_pending_text_input_accessibility_node(node_id);
@@ -1264,7 +1264,7 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
     let mut state = state.borrow_mut();
     let (label, value_binding) = {
         let secure_field = &state.config;
-        (secure_field.label.clone(), secure_field.value.clone())
+        (secure_field.label().clone(), secure_field.value().clone())
     };
     let default_accessibility_label =
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);

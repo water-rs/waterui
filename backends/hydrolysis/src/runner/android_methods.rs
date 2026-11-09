@@ -21,12 +21,15 @@ pub enum HostMethodId {
     CursorAnchorInfo,
     BackAvailable,
     PlatformViewFocus,
+    Translucency,
+    BandShow,
+    BandClear,
 }
 
 impl HostMethodId {
     /// Every id, in table order — the per-variant `dead_code` exemption for
     /// non-Android test builds and the test's order check both read it.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 12] = [
         Self::RequestRedraw,
         Self::SoftInput,
         Self::AccessibilityTreeChanged,
@@ -36,6 +39,9 @@ impl HostMethodId {
         Self::CursorAnchorInfo,
         Self::BackAvailable,
         Self::PlatformViewFocus,
+        Self::Translucency,
+        Self::BandShow,
+        Self::BandClear,
     ];
 }
 
@@ -85,6 +91,18 @@ pub const HOST_METHODS: &[HostMethod] = &[
         name: "onNativePlatformViewFocus",
         signature: "()Z",
     },
+    HostMethod {
+        name: "onNativeTranslucency",
+        signature: "(ZZI)V",
+    },
+    HostMethod {
+        name: "onNativeBandShow",
+        signature: "(JLjava/lang/String;)V",
+    },
+    HostMethod {
+        name: "onNativeBandClear",
+        signature: "(J)V",
+    },
 ];
 
 const _: () = assert!(
@@ -115,6 +133,8 @@ mod tests {
     fn kotlin_type_to_jni(kotlin: &str, method: &str) -> &'static str {
         match kotlin {
             "Boolean" => "Z",
+            "Int" => "I",
+            "Long" => "J",
             "String" => "Ljava/lang/String;",
             other => {
                 panic!("@CalledFromNative method {method} takes an unmapped Kotlin type {other}")

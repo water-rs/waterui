@@ -24,7 +24,9 @@ use crate::platform::{
 
 use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 
-/// The JNI schema this build of the runner speaks — `nativeInit` returns it
+/// The JNI schema this build of the runner speaks — `nativeInit` returns it.
+/// 24 adds `DefineEffect` (`effect, stage_count, kind + 12 floats` stages)
+/// for native `RenderEffect` chains (#1750).
 /// and the Kotlin `NativeBridge` refuses a mismatch, so a stale native
 /// library cannot load against a newer host.
 /// Schema history: 1 = initial surface/input/IME events; 2 =
@@ -40,7 +42,7 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// level) and logging init moves out of the app cdylib's `JNI_OnLoad`; 7 =
 /// `nativeSetMetrics` carries the `ViewConfiguration` touch-scroll
 /// parameters (slop, min/max fling velocity, scroll friction); 8 =
-/// `nativeCreateSession` drops `sdkInt`. The API floor is 31, so
+/// `nativeCreateSession` drops `sdkInt`. The API floor is 33, so
 /// `ANativeWindow_setFrameRate` is linked directly; 9 = `nativeBackEvent`
 /// and `onNativeBackAvailable` carry system back into the navigation stack
 /// and report whether a back target is registered; 10 = `nativeSetMetrics`
@@ -72,7 +74,16 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// `BindPlatformView` op binds a platform view inside its owner's `RenderNode`.
 /// 21->22 = `nativePlatformViewHitTest` answers the retained tree's platform
 /// view under a host pixel — the HWUI painter's ordered-input query.
-pub const JNI_SCHEMA: jint = 22;
+/// 23 = `nativeCreateSession` carries the configuration's night-mode flag so
+/// the colour-scheme signal starts on the real `uiMode`, and
+/// `nativeSetColorScheme` reports every later change (water-rs/waterui#3544).
+/// 25 = the GPU band edge: `nativeBandAttached` / `nativeBandDetached` carry
+/// each band `View`'s `ImageReader` surface, keyed by the placement id of the
+/// platform view it sits above; `onNativeBandShow` tells a band to show its
+/// newest image in a named colour space and `onNativeBandClear` to show
+/// nothing (water-rs/waterui#2225). 26 = the HWUI `DefineEffect` wire carries
+/// the overscroll stretch stage kind.
+pub const JNI_SCHEMA: jint = 26;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -84,7 +95,7 @@ impl From<jni::errors::Error> for JniError {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl From<super::gpu::GpuError> for JniError {
     fn from(error: super::gpu::GpuError) -> Self {
         Self(error.0)
@@ -421,6 +432,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
     context: JObject<'local>,
     painter: JObject<'local>,
     services_ptr: jlong,
+    night: jboolean,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
         let vm = env.get_java_vm()?;
@@ -448,6 +460,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             host_view,
             &painter,
             metrics,
+            night,
             services(services_ptr),
         )?;
         Ok(Box::into_raw(Box::new(SessionBox {
@@ -566,7 +579,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeFrameDeadl
     })
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAttached<'local>(
     mut env: EnvUnowned<'local>,
@@ -620,7 +633,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
     })
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceChanged<'local>(
     mut env: EnvUnowned<'local>,
@@ -640,7 +653,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceCha
     });
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDestroyed<'local>(
     mut env: EnvUnowned<'local>,
@@ -650,6 +663,88 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDes
 ) {
     guard(&mut env, |_env| {
         session(session_ptr).surface_detached(crate::num_cast::i64_as_u64(generation));
+        Ok(())
+    });
+}
+
+/// A band `View` created the `ImageReader` behind it — the surface the
+/// engine presents the self-drawn content above the embedded platform view
+/// whose placement id is `view` into (water-rs/waterui#2225). The band's
+/// own counter numbers each reader, so a stale detach never clears a
+/// newer one.
+#[cfg(hydrolysis_gpu_painter)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBandAttached<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    view: jlong,
+    surface: JObject<'local>,
+    width: jint,
+    height: jint,
+    generation: jlong,
+) {
+    guard(&mut env, |env| {
+        let view = crate::num_cast::i64_as_u64(view);
+        let (Ok(width @ 1..), Ok(height @ 1..)) = (u32::try_from(width), u32::try_from(height))
+        else {
+            return Err(JniError(format!(
+                "hydrolysis android: the band above view {view} has a {width}x{height} reader"
+            )));
+        };
+        let window = unsafe {
+            // SAFETY: env is a live JNI environment and `surface` is the
+            // band's `ImageReader` surface; the call acquires the reference
+            // the attachment owns. See the matching cast in
+            // `nativeSurfaceAttached`.
+            ndk::native_window::NativeWindow::from_surface(env.get_raw().cast(), surface.as_raw())
+        };
+        let Some(window) = window else {
+            return Err(JniError(
+                "hydrolysis android: band ANativeWindow_fromSurface returned null".to_owned(),
+            ));
+        };
+        session(session_ptr).band_attached(
+            view,
+            window,
+            width,
+            height,
+            crate::num_cast::i64_as_u64(generation),
+        );
+        Ok(())
+    });
+}
+
+/// A band `View`'s reader `generation` is about to close.
+#[cfg(hydrolysis_gpu_painter)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBandDetached<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    view: jlong,
+    generation: jlong,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).band_detached(
+            crate::num_cast::i64_as_u64(view),
+            crate::num_cast::i64_as_u64(generation),
+        );
+        Ok(())
+    });
+}
+
+/// The configuration's night-mode flag — pushed by the host at bind and on
+/// every `onConfigurationChanged`, into the session's colour-scheme signal.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorScheme<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    night: jboolean,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).set_night_mode(night);
         Ok(())
     });
 }
@@ -671,9 +766,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible
 
 /// The retained tree's platform view under host pixel (`x`, `y`) — the
 /// ordered hit test the Kotlin host's gesture dispatch asks before latching
-/// a native gesture. `0` means content or nothing covers the point. HWUI
-/// builds only: the GPU path's slots own their own hit order.
-#[cfg(hydrolysis_hwui)]
+/// a native gesture. `0` means no view is drawn there or an interactive
+/// target painted above it takes the point; non-interactive content never
+/// blocks a view.
+#[cfg(any(hydrolysis_hwui, hydrolysis_gpu_painter))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformViewHitTest<
     'local,
@@ -684,13 +780,20 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
     x: jfloat,
     y: jfloat,
 ) -> jlong {
+    use crate::platform::PlatformWindow as _;
+
     guard_val(&mut env, 0, |_env| {
-        let id = session(session_ptr)
-            .hwui
-            .surface
-            .encoder()
-            .platform_view_at(kurbo::Point::new(f64::from(x), f64::from(y)))
+        let session = session(session_ptr);
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
+        let scale = session.runtime.platform.scale_factor();
+        #[cfg(hydrolysis_hwui)]
+        let id = session
+            .runtime
+            .renderer
+            .platform_view_hit(session.hwui.surface.encoder(), point, scale)
             .map_err(|e| JniError(e.to_string()))?;
+        #[cfg(hydrolysis_gpu_painter)]
+        let id = session.runtime.renderer.platform_view_hit_gpu(point, scale);
         Ok(id.map_or(0, |id| i64::from_ne_bytes(id.to_ne_bytes())))
     })
 }
@@ -714,7 +817,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHostAtt
 
 /// The host's continuous-work and touch demand. The session combines these
 /// with the current engine content-rate range before voting on its window.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetFrameDemand<'local>(
     mut env: EnvUnowned<'local>,

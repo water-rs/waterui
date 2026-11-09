@@ -191,7 +191,8 @@ mod imp {
                 // `AppKit`'s own `terminate:` would arrive as a cancellable
                 // quit; the session filed a required request instead.
                 false
-            });
+            })
+            .will_terminate(|_| crate::windows::close_all());
         application.run(handlers);
         std::process::exit(0);
     }
@@ -261,6 +262,7 @@ mod imp {
         // delegate registered at launch; the watch rebuilds on every change.
         // The guard lives for the process.
         core::mem::forget(crate::menus::install_declared(
+            mtm,
             &parts.menu_bar,
             &app_env,
             &launch.declared,
@@ -303,9 +305,13 @@ mod imp {
         // Scenes may connect before the asynchronous preparation finishes:
         // `connect` builds the platform window eagerly and the declaration
         // fills it when `prepared` lands.
+        let disconnected = Rc::clone(&scene_state);
         let handlers = ApplicationHandlers::new(move |scene| {
             crate::windows::connect(&scene_state, scene, Rc::clone(&theme), mtm)
         })
+        // Releases the scene's host, leaf and keep-alive, as the embedding
+        // path's `waterui_apple_scene_disconnect` does.
+        .scene_did_disconnect(move |id| disconnected.disconnect(id))
         .build_menus(build_menus)
         .did_finish_launching(move |_| {
             let env_ptr = launch.env;

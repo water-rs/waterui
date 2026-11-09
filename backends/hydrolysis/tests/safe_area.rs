@@ -14,9 +14,11 @@
 
 use std::time::Duration;
 
+use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
 use waterui::graphics::color::Srgb;
 use waterui::id::SelfId;
+use waterui::layout::LayoutDirection;
 use waterui::layout::frame::Frame;
 use waterui::layout::padding::EdgeInsets;
 use waterui::layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
@@ -34,11 +36,11 @@ use support::{
 
 /// The window insets these tests publish — a status bar at the top, a
 /// navigation bar at the bottom and a small cutout on the leading edge.
-const SAFE_INSETS: EdgeInsets = EdgeInsets::new(48.0, 34.0, 8.0, 8.0);
+const SAFE_INSETS: EdgeInsets = EdgeInsets::new(48.0, 8.0, 34.0, 8.0);
 
 /// A keyboard region on the bottom edge, published separately from the
 /// container insets the way an Android host reports `ime` next to `system_bars`.
-const KEYBOARD_INSETS: EdgeInsets = EdgeInsets::new(0.0, 336.0, 0.0, 0.0);
+const KEYBOARD_INSETS: EdgeInsets = EdgeInsets::new(0.0, 0.0, 336.0, 0.0);
 
 /// The window-space y where the keyboard band starts for the test viewport.
 const KEYBOARD_TOP: f64 = 508.0;
@@ -53,13 +55,16 @@ fn card(label: &'static str) -> impl View {
 /// A labelled probe carrying an `.ignore_safe_area` release: the label's
 /// bounds land on the released boundary only when the edge its frame
 /// touches is reachable — a covered edge releases nothing, so the frame
-/// discriminates the two.
+/// discriminates the two. The probe reports its allocation, the frame the
+/// release moves, not the answer-sized response inside it.
 fn edge_probe(
     view: impl View,
     label: impl signal::IntoComputed<Str>,
     ignore: impl Into<IgnoreSafeArea>,
 ) -> impl View {
-    view.ignore_safe_area(ignore).a11y_label(label)
+    view.ignore_safe_area(ignore)
+        .a11y_label(label)
+        .a11y_geometry(AccessibilityGeometry::Allocation)
 }
 
 fn env_with_insets(insets: &Binding<EdgeInsets>) -> Environment {
@@ -78,13 +83,15 @@ fn env_with_keyboard(
 }
 
 /// §7.1 "Layout avoids the regions": the root lays out inside the deepest
-/// region on every edge.
+/// region on every edge. The root fixtures here end in a spacer that fills
+/// the column, so their first child starts at the region's top edge instead
+/// of in a block centred in it (`docs/layout-spec.md` §4.2).
 #[test]
 fn root_content_stays_inside_the_safe_area() {
     let insets = waterui::binding(SAFE_INSETS);
     let mut app = mount_rendered(
         env_with_insets(&insets),
-        move || vstack((card("inbox"),)).alignment(HorizontalAlignment::Leading),
+        move || vstack((card("inbox"), spacer())).alignment(HorizontalAlignment::Leading),
         390,
         844,
     );
@@ -107,7 +114,7 @@ fn ignore_safe_area_all_reaches_the_window_origin() {
     let mut app = mount_rendered(
         env_with_insets(&insets),
         move || {
-            vstack((card("chrome"),))
+            vstack((card("chrome"), spacer()))
                 .alignment(HorizontalAlignment::Leading)
                 .ignore_safe_area(EdgeSet::ALL)
         },
@@ -130,7 +137,7 @@ fn ignore_safe_area_releases_only_the_flagged_edges() {
     let mut app = mount_rendered(
         env_with_insets(&insets),
         move || {
-            vstack((card("header"),))
+            vstack((card("header"), spacer()))
                 .alignment(HorizontalAlignment::Leading)
                 .ignore_safe_area(EdgeSet::TOP)
         },
@@ -149,6 +156,63 @@ fn ignore_safe_area_releases_only_the_flagged_edges() {
     );
 }
 
+/// §1's direction resolution reaches the safe area's regions: a `leading`
+/// inset sits on the window's *right* edge under right-to-left — the
+/// physical right edge is the leading one — where the same value sits on
+/// the left under left-to-right (water-rs/waterui#1827).
+#[test]
+fn a_leading_inset_sits_on_the_right_under_right_to_left() {
+    let insets = waterui::binding(EdgeInsets::new(0.0, 30.0, 0.0, 0.0));
+    let mut env = env_with_insets(&insets);
+    env.insert(LayoutDirection::RightToLeft);
+    let mut app = mount_rendered(
+        env,
+        move || vstack((card("edge"),)).alignment(HorizontalAlignment::Leading),
+        390,
+        844,
+    );
+
+    // The text is leading-aligned: under right-to-left the leading edge is
+    // the right one, and the 30-unit leading inset sits there.
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "edge");
+    assert!(
+        (bounds.x1 - 360.0).abs() <= 1.0,
+        "the leading edge should inset 30 on the right (x1 = 360), got {bounds:?}"
+    );
+}
+
+/// `.ignore_safe_area(leading)` releases the *leading* edge — under
+/// right-to-left the physical right edge, not the left
+/// (water-rs/waterui#1827). The published insets here are asymmetric so
+/// the released edge is discriminable from the untouched trailing one.
+#[test]
+fn a_leading_release_reaches_the_right_edge_under_right_to_left() {
+    let insets = waterui::binding(EdgeInsets::new(0.0, 30.0, 0.0, 10.0));
+    let mut env = env_with_insets(&insets);
+    env.insert(LayoutDirection::RightToLeft);
+    let mut app = mount_rendered(
+        env,
+        move || {
+            vstack((card("released"),))
+                .alignment(HorizontalAlignment::Leading)
+                .ignore_safe_area(EdgeSet::new(false, true, false, false))
+        },
+        390,
+        844,
+    );
+
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "released");
+    assert!(
+        (bounds.x1 - 390.0).abs() <= 1.0,
+        "the leading release should reach the window's right edge, got {bounds:?}"
+    );
+    assert!(
+        bounds.x0 >= 9.0,
+        "the trailing edge — physical left under right-to-left — stays \
+         inset by the trailing depth, got {bounds:?}"
+    );
+}
+
 /// §7.1 "touches": a release applies only on an edge the wrapper's laid-out
 /// frame ends on. The first child of a vstack ends on the top boundary and
 /// its TOP declaration releases it to the window edge; the second child ends
@@ -160,8 +224,13 @@ fn an_ignore_releases_only_on_an_edge_the_frame_touches() {
         env_with_insets(&insets),
         move || {
             vstack((
-                card("top-touches").ignore_safe_area(EdgeSet::TOP),
-                card("below").ignore_safe_area(EdgeSet::TOP),
+                card("top-touches")
+                    .ignore_safe_area(EdgeSet::TOP)
+                    .a11y_geometry(AccessibilityGeometry::Allocation),
+                card("below")
+                    .ignore_safe_area(EdgeSet::TOP)
+                    .a11y_geometry(AccessibilityGeometry::Allocation),
+                spacer(),
             ))
             .alignment(HorizontalAlignment::Leading)
         },
@@ -192,13 +261,13 @@ fn a_safe_area_change_relays_out_the_root() {
     let insets = waterui::binding(SAFE_INSETS);
     let mut app = mount_rendered(
         env_with_insets(&insets),
-        move || vstack((card("inbox"),)).alignment(HorizontalAlignment::Leading),
+        move || vstack((card("inbox"), spacer())).alignment(HorizontalAlignment::Leading),
         390,
         844,
     );
     let first = node_bounds(app.tree(), "inbox");
 
-    insets.set(EdgeInsets::new(80.0, 34.0, 24.0, 8.0));
+    insets.set(EdgeInsets::new(80.0, 24.0, 34.0, 8.0));
     app.settle();
 
     let moved = node_bounds(app.tree(), "inbox");
@@ -233,11 +302,13 @@ fn navigation_page_targets_follow_the_safe_area() {
     let insets = waterui::binding(SAFE_INSETS);
     let mut app = mount_rendered(env_with_insets(&insets), stack, 390, 844);
     let shifted = node_bounds_with_role(app.tree(), Role::Button, "Open Detail");
-    // The link is centred in the page, so the horizontal insets move it by
-    // half their difference; the top inset moves it down whole.
+    // The link is centred in the page on both axes — the page's column
+    // centres its block (`docs/layout-spec.md` §4.2) — so each pair of
+    // opposite insets moves it by half their difference.
     let expected_x =
         unshifted.x0 + (f64::from(SAFE_INSETS.leading()) - f64::from(SAFE_INSETS.trailing())) / 2.0;
-    let expected_y = unshifted.y0 + f64::from(SAFE_INSETS.top());
+    let expected_y =
+        unshifted.y0 + (f64::from(SAFE_INSETS.top()) - f64::from(SAFE_INSETS.bottom())) / 2.0;
     assert!(
         (shifted.x0 - expected_x).abs() <= 1.0 && (shifted.y0 - expected_y).abs() <= 1.0,
         "the page's link should sit inside the safe area at ({expected_x}, {expected_y}): \
@@ -665,7 +736,7 @@ fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
         "the field's bottom lands exactly on the keyboard boundary, got {cleared:?}"
     );
 
-    keyboard.set(EdgeInsets::new(0.0, 400.0, 0.0, 0.0));
+    keyboard.set(EdgeInsets::new(0.0, 0.0, 400.0, 0.0));
     app.pump_for(Duration::from_millis(500));
 
     let tracked = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
@@ -854,7 +925,7 @@ fn a_fractional_geometry_still_touches_the_boundary() {
     // 2.75x-density container insets: nothing in this geometry is an
     // integer — not the boundary (844 - 24.38), not the release amounts,
     // not the composer's measured text height.
-    const FRACTIONAL_INSETS: EdgeInsets = EdgeInsets::new(47.24, 24.38, 8.2, 8.6);
+    const FRACTIONAL_INSETS: EdgeInsets = EdgeInsets::new(47.24, 8.2, 24.38, 8.6);
     let container = waterui::binding(FRACTIONAL_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let mut app = {
@@ -1090,7 +1161,13 @@ fn an_ignore_top_inside_navigation_content_stays_below_the_bar() {
         move || {
             NavigationView::new(
                 "Hero",
-                vstack((card("hero").ignore_safe_area(EdgeSet::TOP), card("below"))),
+                // The trailing spacer fills the page column, so the hero's
+                // frame ends on the page's top edge.
+                vstack((
+                    card("hero").ignore_safe_area(EdgeSet::TOP),
+                    card("below"),
+                    spacer(),
+                )),
             )
         },
         390,
@@ -1330,7 +1407,7 @@ fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
     app.pump_for(Duration::from_millis(500));
     app.pump_for(Duration::from_secs(1));
 
-    keyboard.set(EdgeInsets::new(0.0, 400.0, 0.0, 0.0));
+    keyboard.set(EdgeInsets::new(0.0, 0.0, 400.0, 0.0));
     // One frame — not a settle. The clearance must already be painted.
     app.pump_for(Duration::from_millis(16));
 
@@ -1502,7 +1579,7 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
     for (bottom_inset, keyboard_top, covers_band) in
         [(60.0_f32, 784.0, false), (336.0, KEYBOARD_TOP, true)]
     {
-        keyboard.set(EdgeInsets::new(0.0, bottom_inset, 0.0, 0.0));
+        keyboard.set(EdgeInsets::new(0.0, 0.0, bottom_inset, 0.0));
         app.settle();
 
         let bar = node_bounds_only_role(app.tree(), Role::TabList);
@@ -1881,8 +1958,8 @@ fn a_lazy_stack_outside_a_scroll_gives_items_a_context() {
     let laid = node_bounds(app.tree(), "lazy-3");
     keyboard.set(EdgeInsets::new(
         0.0,
-        f64_as_f32(844.0 - (laid.y0 + laid.height())),
         0.0,
+        f64_as_f32(844.0 - (laid.y0 + laid.height())),
         0.0,
     ));
     app.pump_for(Duration::from_millis(500));

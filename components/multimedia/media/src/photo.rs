@@ -698,7 +698,7 @@ mod tests {
             ledger
                 .outstanding()
                 .iter()
-                .map(|entry| (entry.view, entry.detail.to_string()))
+                .map(|entry| (entry.view(), entry.detail().to_string()))
                 .collect::<Vec<_>>(),
             vec![("Photo", initial.as_str().to_owned())],
             "the initial source is owed from mount, before Appear"
@@ -717,7 +717,7 @@ mod tests {
             ledger
                 .outstanding()
                 .iter()
-                .map(|entry| entry.detail.to_string())
+                .map(|entry| entry.detail().to_string())
                 .collect::<Vec<_>>(),
             vec![next.as_str().to_owned()],
             "a new source releases the previous entry and owes its own"
@@ -910,7 +910,7 @@ mod tests {
             .expect_err("the owed capture fails with the refusal");
         assert!(
             failure
-                .source
+                .get_source()
                 .to_string()
                 .contains("the scene backend rejected the image"),
             "{failure}"
@@ -1037,7 +1037,7 @@ mod tests {
             ledger
                 .outstanding()
                 .iter()
-                .map(|entry| entry.detail.to_string())
+                .map(|entry| entry.detail().to_string())
                 .collect::<Vec<_>>(),
             vec![next.as_str().to_owned()],
             "the previous source's entry was released"

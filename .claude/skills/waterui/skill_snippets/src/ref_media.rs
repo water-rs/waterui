@@ -110,7 +110,7 @@ pub fn media_controller_prose() {
     use waterui::video::{MediaItem, MediaItemId, PlaybackSession, Playlist, Url};
 
     let item = MediaItem::from(Url::parse("https://waterui.dev/a.mp4").expect("valid url"));
-    let id: MediaItemId = item.id;
+    let id: MediaItemId = item.get_id();
     let session = PlaybackSession::new(Playlist::new(item, Vec::new()));
     let controller = session.controller();
 

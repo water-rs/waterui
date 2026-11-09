@@ -65,10 +65,6 @@ use crate::Binding;
 
 /// A struct that represents a focused state based on a binding to a boolean value.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "metadata newtype; backends destructure the wrapped binding"
-)]
 pub struct Focused(pub Binding<bool>);
 
 impl MetadataKey for Focused {}

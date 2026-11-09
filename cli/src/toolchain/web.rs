@@ -15,18 +15,10 @@ pub fn wasm32_target() -> SelectedToolchainTargets {
 
 /// `wasm-pack` binary for packaging browser bundles.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct WasmPack;
 
 /// Installation plan for `wasm-pack`.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct WasmPackInstallation;
 
 impl Toolchain for WasmPack {
@@ -60,19 +52,11 @@ impl Installation for WasmPackInstallation {
 /// invokes for frontend builds and scaffolding. Doctor checks the declared
 /// manager only — it never substitutes another.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a newtype over the package manager it names"
-)]
 pub struct PackageManagerToolchain(pub PackageManager);
 
 /// Installation plan for a declared package manager, using its official
 /// installer.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a newtype over the package manager it names"
-)]
 pub struct PackageManagerInstallation(pub PackageManager);
 
 impl Toolchain for PackageManagerToolchain {

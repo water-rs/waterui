@@ -341,7 +341,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
         .env(MCP_RUN_CONFIG_ENV, &config_path)
         .env("WATERUI_ASSETS_ROOT", &assets_root)
         .env("WATERUI_PROJECT_DIR", project.root())
-        .env("WATERUI_APP_NAME", &project.manifest().package.name)
+        .env("WATERUI_APP_NAME", project.manifest().package().name())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());

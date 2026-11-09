@@ -2,7 +2,7 @@ name: Modern bash
 
 description: >-
   Makes a Homebrew bash >= 4.2 the first `bash` on PATH for the rest of the
-  job. The macos-26 image ships only Apple's /bin/bash 3.2.57, whose SIGCHLD
+  job. The macOS runner images ship only Apple's /bin/bash 3.2.57, whose SIGCHLD
   handler lacks SA_RESTART — a builtin write that races a background child's
   exit fails with EINTR (#2683), and the e2e shard keeps background children
   alive by design. The .github/scripts e2e scripts assert the floor

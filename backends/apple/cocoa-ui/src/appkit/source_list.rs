@@ -22,12 +22,12 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSControlTextEditingDelegate, NSImage, NSScrollView, NSTableCellView, NSTableColumn,
-    NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewRowSizeStyle,
-    NSTableViewStyle, NSView,
+    NSColor, NSControlTextEditingDelegate, NSImage, NSLayoutConstraint, NSScrollView,
+    NSTableCellView, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
+    NSTableViewRowSizeStyle, NSTableViewStyle, NSTextField, NSView,
 };
 use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSIndexSet, NSNotification, NSObjectProtocol, NSString};
+use objc2_foundation::{NSArray, NSIndexSet, NSNotification, NSObjectProtocol, NSString};
 
 use crate::appkit::segmented::Segment;
 
@@ -107,13 +107,24 @@ define_class!(
             let cell = NSTableCellView::new(self.mtm());
             let segments = self.ivars().segments.borrow();
             if let Some(segment) = segments.get(row.cast_unsigned()) {
-                let label = segment.badge.as_ref().map_or_else(
-                    || segment.label.clone(),
-                    |badge| format!("{} ({badge})", segment.label),
-                );
                 // SAFETY: `textField` reads the cell's outlets.
                 if let Some(field) = unsafe { cell.textField() } {
-                    field.setStringValue(&NSString::from_str(&label));
+                    field.setStringValue(&NSString::from_str(&segment.label));
+                }
+                // `SwiftUI` draws a sidebar badge as a trailing count in
+                // the row — a secondary-colored label pinned to the
+                // trailing edge (water-rs/waterui#3591).
+                if let Some(badge) = &segment.badge {
+                    let field = NSTextField::labelWithString(&NSString::from_str(badge), self.mtm());
+                    field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+                    field.setTranslatesAutoresizingMaskIntoConstraints(false);
+                    cell.addSubview(&field);
+                    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+                        field
+                            .trailingAnchor()
+                            .constraintEqualToAnchor_constant(&cell.trailingAnchor(), -10.0),
+                        field.centerYAnchor().constraintEqualToAnchor(&cell.centerYAnchor()),
+                    ]));
                 }
                 let image = segment
                     .symbol

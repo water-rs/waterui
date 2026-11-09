@@ -19,9 +19,34 @@ use waterui_text::styled::StyledStr;
 #[non_exhaustive]
 pub struct RenderContext {
     /// The transform placing the widget's local drawing space in the scene.
-    pub local: kurbo::Affine,
+    local: kurbo::Affine,
     /// The widget's bounds in its local space.
-    pub bounds: kurbo::Rect,
+    bounds: kurbo::Rect,
+}
+
+impl RenderContext {
+    /// Creates a `RenderContext` from its parts.
+    #[must_use]
+    pub const fn new(local: kurbo::Affine, bounds: kurbo::Rect) -> Self {
+        Self { local, bounds }
+    }
+
+    /// The transform placing the widget's local drawing space in the scene.
+    #[must_use]
+    pub const fn local(&self) -> kurbo::Affine {
+        self.local
+    }
+
+    /// Sets the `local`.
+    pub const fn set_local(&mut self, local: kurbo::Affine) {
+        self.local = local;
+    }
+
+    /// The widget's bounds in its local space.
+    #[must_use]
+    pub const fn bounds(&self) -> kurbo::Rect {
+        self.bounds
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

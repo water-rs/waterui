@@ -14,6 +14,7 @@ categories = ["gui"]
 waterui-core.workspace = true
 waterui-layout.workspace = true
 waterui-url.workspace = true
+waterui-apple-os.workspace = true
 suiteki = { workspace = true, features = ["serde"] }
 waterui-watcher-set.workspace = true
 thiserror.workspace = true
@@ -31,6 +32,15 @@ tiny_http = { version = "0.12", optional = true }
 # page in a cross-origin frame, so the web build has none.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cookie = "0.18.2"
+robius-open.workspace = true
+
+# `AnsweredNavigations` holds weak `WKNavigation`s — the type exists only
+# where `WKWebView` does.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2.workspace = true
+objc2-web-kit = { version = "0.3.2", default-features = false, features = [
+    "WKNavigation",
+] }
 
 [features]
 # The checks an engine's real-engine suite runs against the contracts this
@@ -38,7 +48,9 @@ cookie = "0.18.2"
 conformance = ["dep:tiny_http"]
 
 [dev-dependencies]
+divan = "0.1"
 tempfile = "3.27"
+toml.workspace = true
 # `#[js_api]` expands to `::waterui::webview::…` paths, so testing it means
 # reaching this crate back through the facade the way an application does.
 waterui = { path = "../../..", features = ["webview"] }

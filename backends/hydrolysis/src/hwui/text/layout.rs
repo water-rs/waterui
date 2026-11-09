@@ -78,10 +78,10 @@ impl<P: PlatformText> HwuiTextLayout<P> {
         ids: &TextLayoutIds,
         request: &ShapeRequest<'_>,
     ) -> Result<Self, HwuiError> {
-        let index = Utf16Index::new(request.text)?;
+        let index = Utf16Index::new(request.text())?;
         let packed = request.pack(&index)?;
         let id = ids.acquire()?;
-        let reply = match provider.shape(id, request.text, &packed) {
+        let reply = match provider.shape(id, request.text(), &packed) {
             Ok(reply) => reply,
             Err(error) => {
                 ids.forget(id);

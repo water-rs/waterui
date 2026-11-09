@@ -6,12 +6,17 @@ no Swift implementation or shared C wire API. `Tests/migration.rs` contains the
 Both run on the real process main thread under `native-test`.
 
 Source migration is not a runtime pass: cloud verification must build and run the
-native target and the reference app on the same simulator/runtime. Run
-`.github/scripts/prepare-native-reference.sh <artifact-directory>` once and export
-its stdout path as `WATERUI_REFERENCE_METRICS`. The target runner forwards it to
-the simulator process. Missing metrics fail the tests. The Swift app is only a
-live platform reference, never part of the backend implementation. Its output is
-generated, not committed; completion comes from native layout callbacks.
+native target and the reference app on the same destination. Run
+`WATERUI_REFERENCE_DESTINATION=<simulator|catalyst> .github/scripts/prepare-native-reference.sh <artifact-directory>`
+once and export its stdout path as `WATERUI_REFERENCE_METRICS`. `simulator` needs
+`WATERUI_IOS_SIM_UDID` and its target runner forwards the path to the simulator
+process; `catalyst` builds the host as a Mac Catalyst app and runs it in the
+current macOS GUI session. `WATERUI_REFERENCE_STEP=build` only builds and signs
+`<artifact-directory>/NativeReference.app`; `WATERUI_REFERENCE_STEP=run` runs an
+existing bundle there (a Catalyst bundle may be built on one Mac and run on
+another). Missing metrics fail the tests. The Swift app is only a live platform
+reference, never part of the backend implementation. Its output is generated,
+not committed; completion comes from native layout callbacks.
 
 ## Removed wire contracts (six cases)
 

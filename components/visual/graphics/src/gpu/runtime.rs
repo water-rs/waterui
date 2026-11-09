@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use alloc::vec::Vec;
 use core::fmt;
+use core::mem::ManuallyDrop;
 #[cfg(not(target_arch = "wasm32"))]
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +13,7 @@ use std::sync::Mutex;
 
 use wgpu::{Adapter, Device, Instance, Queue, TextureFormat};
 
-use super::external::{ExternalFrameStream, FrameReceiver};
+use super::external::{ExternalFrameStream, FrameReceiver, PresentedSize};
 use super::{GpuContent, GpuContentView, RedrawHandle, Shared};
 use crate::draw::kurbo::Affine;
 use crate::offscreen::{OffscreenImage, OffscreenSize};
@@ -32,6 +33,16 @@ pub enum GpuRuntimeError {
     /// No adapter satisfied the request.
     #[error("no compatible GPU adapter: {0}")]
     Adapter(#[from] wgpu::RequestAdapterError),
+    /// The target's only GPU backend (Vulkan, DX12 or Metal) has no usable
+    /// adapter.
+    #[error("{required} ({source})")]
+    UnsupportedDevice {
+        /// The backend the target requires.
+        required: cherenkov_gpu::RequiredBackend,
+        /// Why the adapter request failed.
+        #[source]
+        source: wgpu::RequestAdapterError,
+    },
     /// The adapter refuses passthrough shaders, which the precompiled
     /// shaders this device loads require on Vulkan, Metal and Direct3D 12
     /// (cherenkov issue #57; shaderloom native artifacts).
@@ -171,7 +182,16 @@ type LossWakeup = Box<dyn Fn() + Send + Sync>;
 #[derive(Debug)]
 pub struct SharedGpuContext {
     generation: u64,
-    instance: Instance,
+    /// Never dropped: it lives as long as the process. Dropping a wgpu
+    /// `Instance` drops wgpu-hal's `libloading` handles for `libEGL` /
+    /// `libvulkan`, which `dlclose`s the driver they loaded. Mesa's software
+    /// drivers (llvmpipe, lavapipe — every GPU-less CI runner, container and
+    /// VM) and the LLVM inside them register `atexit` destructors, and once
+    /// the mapping is gone the process dies inside `exit()` after the last
+    /// context has been torn down cleanly. A driver has to outlive the process
+    /// by construction, so this is not a leak; the device is still dropped
+    /// with the context.
+    instance: ManuallyDrop<Instance>,
     adapter: Adapter,
     device: Device,
     queue: Queue,
@@ -204,8 +224,13 @@ impl SharedGpuContext {
         )
     )]
     pub async fn new(generation: u64) -> Result<Self, GpuRuntimeError> {
-        let instance =
-            Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        let enabled = cherenkov_gpu::GpuConfig::default().backends;
+        // Validates `WGPU_BACKEND` against the target: a request for another
+        // backend than the target's required one panics instead of leaving
+        // no backend.
+        descriptor.backends = cherenkov_gpu::backends_from_env().unwrap_or(enabled) & enabled;
+        let instance = Instance::new(descriptor);
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -213,7 +238,11 @@ impl SharedGpuContext {
                 compatible_surface: None,
                 apply_limit_buckets: false,
             })
-            .await?;
+            .await
+            .map_err(|source| match cherenkov_gpu::REQUIRED_BACKEND {
+                Some(required) => GpuRuntimeError::UnsupportedDevice { required, source },
+                None => GpuRuntimeError::Adapter(source),
+            })?;
         // cherenkov's fixed shaders are precompiled and load through wgpu's
         // passthrough API on Vulkan and Metal (cherenkov issue #57), and
         // shaderloom-compiled component shaders load native artifacts the
@@ -248,7 +277,7 @@ impl SharedGpuContext {
         let device_loss = DeviceLoss::observe(&device);
         Ok(Self {
             generation,
-            instance,
+            instance: ManuallyDrop::new(instance),
             adapter,
             device,
             queue,
@@ -268,7 +297,7 @@ impl SharedGpuContext {
 
     /// The instance surfaces are created from.
     #[must_use]
-    pub const fn instance(&self) -> &Instance {
+    pub fn instance(&self) -> &Instance {
         &self.instance
     }
 
@@ -288,6 +317,18 @@ impl SharedGpuContext {
     #[must_use]
     pub const fn queue(&self) -> &Queue {
         &self.queue
+    }
+
+    /// The generation's whole device-creation chain, as the engine and
+    /// external-frame importers take it.
+    #[must_use]
+    pub fn shared_device(&self) -> SharedDevice {
+        SharedDevice {
+            instance: self.instance().clone(),
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+        }
     }
 
     /// The device-lost reason recorded by the callback, once the driver reports
@@ -408,6 +449,47 @@ struct RuntimeInner {
     /// state it was waiting on.
     #[cfg(not(target_arch = "wasm32"))]
     published: event_listener::Event,
+    /// Outstanding [`GpuRuntime::hold_rebuild_for_testing`] holds with the
+    /// condition the rebuild thread waits on: while the count is nonzero a
+    /// finished rebuild parks before publishing its fresh context, so a
+    /// test can order a frame against the publication.
+    #[cfg(not(target_arch = "wasm32"))]
+    rebuild_holds: (Mutex<usize>, std::sync::Condvar),
+}
+
+/// A testing hold on a [`GpuRuntime`] context rebuild.
+///
+/// While the guard lives, a device-loss rebuild that finishes waits before
+/// publishing its fresh context: `context_after` waiters stay parked and
+/// frames keep observing the lost context. Dropping the guard releases the
+/// hold; the rebuild publishes and the parked waits wake.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct RebuildHold {
+    inner: Shared<RuntimeInner>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl fmt::Debug for RebuildHold {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RebuildHold")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for RebuildHold {
+    fn drop(&mut self) {
+        let (holds, released) = &self.inner.rebuild_holds;
+        let mut holds = holds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *holds -= 1;
+        if *holds == 0 {
+            drop(holds);
+            released.notify_all();
+        }
+    }
 }
 
 impl fmt::Debug for GpuRuntime {
@@ -446,6 +528,8 @@ impl GpuRuntime {
             rebuild_exhausted: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             published: event_listener::Event::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            rebuild_holds: (Mutex::new(0), std::sync::Condvar::new()),
         });
         #[cfg(not(target_arch = "wasm32"))]
         Self::arm_rebuild_wakeup(&inner);
@@ -582,6 +666,27 @@ impl GpuRuntime {
         }
     }
 
+    /// Holds the next context publication until the returned guard drops.
+    ///
+    /// A device-loss rebuild still runs its driver work and finishes
+    /// installing its wakeup, but it waits on this hold before swapping the
+    /// fresh context in: `context()` keeps answering the lost context and
+    /// `context_after` waiters stay parked. Use it to order a frame against
+    /// the publication deterministically.
+    #[doc(hidden)]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn hold_rebuild_for_testing(&self) -> RebuildHold {
+        *self
+            .inner
+            .rebuild_holds
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        RebuildHold {
+            inner: Shared::clone(&self.inner),
+        }
+    }
+
     /// Spawns the context rebuild, once per device loss.
     ///
     /// `request_adapter`/`request_device` are driver calls that take tens of
@@ -663,6 +768,18 @@ impl GpuRuntime {
                             "GPU device was lost; recreated the runtime context"
                         );
                         Self::install_rebuild_wakeup(&fresh.device_loss(), &worker);
+                        // A testing hold gates the publication: the fresh
+                        // context stays uninstalled while a test orders a
+                        // frame against the rebuild.
+                        let (holds, released) = &worker.rebuild_holds;
+                        let holds = holds
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        drop(
+                            released
+                                .wait_while(holds, |holds| *holds != 0)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        );
                         // Only this thread replaces the slot: `rebuild_in_flight`
                         // stays set until the store below, so no second writer
                         // can interleave.
@@ -774,12 +891,7 @@ impl GpuRuntime {
         context: &SharedGpuContext,
     ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
         Engine::new(GpuConfig {
-            device: Some(SharedDevice {
-                instance: context.instance().clone(),
-                adapter: context.adapter().clone(),
-                device: context.device().clone(),
-                queue: context.queue().clone(),
-            }),
+            device: Some(context.shared_device()),
             ..GpuConfig::default()
         })
     }
@@ -802,12 +914,7 @@ impl GpuRuntime {
         context: &SharedGpuContext,
     ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
         Engine::new(GpuConfig {
-            device: Some(SharedDevice {
-                instance: context.instance().clone(),
-                adapter: context.adapter().clone(),
-                device: context.device().clone(),
-                queue: context.queue().clone(),
-            }),
+            device: Some(context.shared_device()),
             ..GpuConfig::default()
         })
         .await
@@ -1376,7 +1483,7 @@ impl ExternalFrameRenderer {
         host.surface.update(|tx| {
             tx[host.surface.root()].push(&layer);
         });
-        let frames = stream.start(host.context.device(), host.context.queue(), redraw);
+        let frames = stream.start(&host.context.shared_device(), redraw);
         Self {
             host,
             layer,
@@ -1397,13 +1504,18 @@ impl ExternalFrameRenderer {
         self.host.context.generation()
     }
 
-    /// Resizes the surface, installs the newest published frame, and keeps
-    /// the frame stretched to the surface.
+    /// Resizes the surface, reports the size it presents at for `display`
+    /// to the source, installs the newest published frame, and keeps the
+    /// frame stretched to the surface.
     ///
     /// # Errors
     /// When the engine rejects the size.
-    fn prepare(&mut self, size: OffscreenSize) -> Result<(), HostedLayerError> {
+    fn prepare(&mut self, size: OffscreenSize, display: Display) -> Result<(), HostedLayerError> {
         let resized = self.host.resize(size)?;
+        self.frames.report_presented(PresentedSize {
+            pixels: size,
+            scale: display.scale,
+        });
         let frame = self.frames.take();
         if frame.is_none() && !resized {
             return Ok(());
@@ -1442,7 +1554,7 @@ impl ExternalFrameRenderer {
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
         let _frame = self.host.surface.begin_frame();
-        self.prepare(size)?;
+        self.prepare(size, display)?;
         self.host.render(display, target_time)
     }
 
@@ -1462,7 +1574,7 @@ impl ExternalFrameRenderer {
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
         let _frame = self.host.surface.begin_frame();
-        self.prepare(size)?;
+        self.prepare(size, display)?;
         self.host.render(display, target_time).await
     }
 

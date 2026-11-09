@@ -178,6 +178,73 @@ class SessionTeardownTest {
         assertEquals(0, ShadowNativeBridge.deadlineQueries)
     }
 
+    /**
+     * #3319: `showSoftInput` builds the input connection synchronously, and
+     * its `nativeEditingState` pull would re-enter the session the frame
+     * still holds borrowed — so a soft-input request made inside a native
+     * call reaches the host view only when the outermost call returns, and
+     * only the latest request.
+     */
+    @Test
+    fun aSoftInputRequestInsideANativeCallReachesTheHostWhenItReturns() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {})
+        val host = SoftInputRecordingHostView(activity, session)
+        activity.setContentView(host)
+        ShadowNativeBridge.onFrame = {
+            session.onNativeSoftInput(true)
+            // A later request replaces the earlier one inside the frame.
+            session.onNativeSoftInput(false)
+            assertTrue(host.softInputRequests.isEmpty())
+            0L
+        }
+
+        session.onNativeRequestRedraw()
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+
+        assertEquals(listOf(false), host.softInputRequests)
+        session.destroy()
+    }
+
+    /**
+     * #1966: the translucency listeners switch the Activity window and
+     * recreate the band's surface, whose callbacks re-enter the session — so
+     * a change the frame reports reaches them only when the frame returns.
+     */
+    @Test
+    fun aTranslucencyChangeInsideANativeCallReachesTheListenersWhenItReturns() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {})
+        val seen = mutableListOf<HydrolysisSession.Translucency>()
+        session.addTranslucencyListener { seen += it }
+        seen.clear()
+        ShadowNativeBridge.onFrame = {
+            session.onNativeTranslucency(true, false, 0)
+            assertTrue(seen.isEmpty())
+            0L
+        }
+
+        session.onNativeRequestRedraw()
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+
+        assertEquals(listOf(HydrolysisSession.Translucency(true, false, 0)), seen)
+        session.destroy()
+    }
+
+    @Test
+    fun aSoftInputRequestOutsideANativeCallReachesTheHostAtOnce() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {})
+        val host = SoftInputRecordingHostView(activity, session)
+        activity.setContentView(host)
+
+        session.onNativeSoftInput(true)
+        session.onNativeSoftInput(false)
+
+        assertEquals(listOf(true, false), host.softInputRequests)
+        session.destroy()
+    }
+
     @Test
     fun childrenDetachBeforeTheDeferredTeardown() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
@@ -525,6 +592,16 @@ class RecordingHostView(context: Context, session: HydrolysisSession) :
     }
 }
 
+/** A host view that records the soft-input requests the session sends it. */
+class SoftInputRecordingHostView(context: Context, session: HydrolysisSession) :
+    HydrolysisHostView(context, session) {
+    val softInputRequests = mutableListOf<Boolean>()
+
+    override fun setSoftInputVisible(visible: Boolean) {
+        softInputRequests += visible
+    }
+}
+
 /** The standalone host over the shadowed library, recording its sessions. */
 class RecordingHydrolysisActivity : HydrolysisActivity() {
     val sessions = mutableListOf<HydrolysisSession>()
@@ -581,6 +658,12 @@ class ShadowNativeBridge {
         /** Every `nativeSetVisible` call, in order. */
         val visibilities = mutableListOf<Boolean>()
 
+        /** The night-mode flag each `nativeCreateSession` carried. */
+        val createNightModes = mutableListOf<Boolean>()
+
+        /** Every `nativeSetColorScheme` push, in order. */
+        val colorSchemes = mutableListOf<Boolean>()
+
         /** Every `nativeBackEvent` phase, in order. */
         val backEvents = mutableListOf<Int>()
 
@@ -611,6 +694,8 @@ class ShadowNativeBridge {
             deadlineNanos = 0L
             highRefreshDemands.clear()
             visibilities.clear()
+            createNightModes.clear()
+            colorSchemes.clear()
             backEvents.clear()
             onDestroy = {}
             onFrame = { 0L }
@@ -644,9 +729,18 @@ class ShadowNativeBridge {
             @Suppress("UNUSED_PARAMETER") context: Context,
             @Suppress("UNUSED_PARAMETER") painter: SessionPainter?,
             @Suppress("UNUSED_PARAMETER") uiThreadServices: Long,
+            nightMode: Boolean,
         ): Long {
             sessions += 1
+            createNightModes += nightMode
             return SESSION_PTR
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean) {
+            assertLive(sessionPtr)
+            colorSchemes += nightMode
         }
 
         @JvmStatic

@@ -308,7 +308,7 @@ pub fn limits_are_explicit_errors<B: Backend + ProjectiveLayers>(config: impl Fn
 
 /// Every byte the engine holds, on the device and on the host.
 fn resident<B: Backend + ProjectiveLayers>(engine: &Engine<B>) -> u64 {
-    let memory = engine.memory();
+    let memory = engine.memory().unwrap();
     memory.gpu.0 + memory.cpu.0
 }
 

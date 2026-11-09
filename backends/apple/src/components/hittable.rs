@@ -12,7 +12,10 @@ use cocoa_ui::Rect;
 use cocoa_ui::view;
 use waterui::interaction::Hittable;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -50,6 +53,18 @@ impl core::fmt::Debug for HittableSubView {
 }
 
 impl SubView for HittableSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state
+            .borrow()
+            .child
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.borrow().child.layout().measure(proposal)
     }
@@ -116,7 +131,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf.keep(sink_guard);
 
         // `enabled` watcher → `applyHitTesting`.
-        leaf.bind(&metadata.value.enabled, {
+        leaf.bind(metadata.value.enabled(), {
             let state = Rc::clone(&state);
             move |enabled| {
                 let state = state.borrow();

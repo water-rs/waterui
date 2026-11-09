@@ -447,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
 
     record = sub.add_parser("record", help="build one leg's JSON record")
     record.add_argument("--platform", required=True)
-    record.add_argument("--runner", default="", help="the runs-on label, e.g. macos-latest")
+    record.add_argument("--runner", default="", help="the runs-on label, e.g. xcode-27")
     record.add_argument("--status", default="unknown", help="the job status at record time")
     record.add_argument("--timings", help="the leg's timings.tsv")
     record.add_argument("--rustc", help="the fresh user's `rustc -vV` output")

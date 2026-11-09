@@ -43,10 +43,6 @@ type GestureRecognizerHandle = Rc<RefCell<GestureBinding>>;
 /// Where a gesture target sits in the window: the rectangle it is hit-tested
 /// against and the mapping from window space into its own local space.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a placement is its hit rectangle and its local mapping; nothing else describes it"
-)]
 pub struct GesturePlacement {
     /// Hit-test rectangle in window coordinates (logical pixels).
     pub bounds: kurbo::Rect,
@@ -267,25 +263,25 @@ fn gesture_point(point: kurbo::Point) -> GesturePoint {
 fn localize_gesture_payload(payload: GesturePayload, to_local: kurbo::Affine) -> GesturePayload {
     match payload {
         GesturePayload::Tap(mut event) => {
-            event.location = local_gesture_point(event.location, to_local);
+            event.set_location(local_gesture_point(event.location(), to_local));
             GesturePayload::Tap(event)
         }
         GesturePayload::LongPress(mut event) => {
-            event.location = local_gesture_point(event.location, to_local);
+            event.set_location(local_gesture_point(event.location(), to_local));
             GesturePayload::LongPress(event)
         }
         GesturePayload::Drag(mut event) => {
-            event.location = local_gesture_point(event.location, to_local);
-            event.translation = local_gesture_vector(event.translation, to_local);
-            event.velocity = local_gesture_vector(event.velocity, to_local);
+            event.set_location(local_gesture_point(event.location(), to_local));
+            event.set_translation(local_gesture_vector(event.translation(), to_local));
+            event.set_velocity(local_gesture_vector(event.velocity(), to_local));
             GesturePayload::Drag(event)
         }
         GesturePayload::Magnification(mut event) => {
-            event.center = local_gesture_point(event.center, to_local);
+            event.set_center(local_gesture_point(event.center(), to_local));
             GesturePayload::Magnification(event)
         }
         GesturePayload::Rotation(mut event) => {
-            event.center = local_gesture_point(event.center, to_local);
+            event.set_center(local_gesture_point(event.center(), to_local));
             GesturePayload::Rotation(event)
         }
     }
@@ -1387,9 +1383,9 @@ const fn map_touch_phase_to_gesture_phase(phase: TouchPhase) -> GesturePhase {
 /// which run the hit-test with no button filter.
 fn gesture_buttons(gesture: &Gesture) -> PointerButtons {
     match gesture {
-        Gesture::Tap(tap) => tap.buttons,
-        Gesture::LongPress(long_press) => long_press.buttons,
-        Gesture::Drag(drag) => drag.buttons,
+        Gesture::Tap(tap) => tap.get_buttons(),
+        Gesture::LongPress(long_press) => long_press.get_buttons(),
+        Gesture::Drag(drag) => drag.get_buttons(),
         Gesture::Then(pair) => gesture_buttons(pair.first()) | gesture_buttons(pair.then()),
         Gesture::Simultaneous(pair) => {
             gesture_buttons(pair.first()) | gesture_buttons(pair.second())
@@ -1415,14 +1411,14 @@ const fn gesture_input_instant(input: GestureInput) -> Instant {
 
 fn build_gesture_detector(gesture: &Gesture) -> Box<dyn GestureDetector> {
     match gesture {
-        Gesture::Tap(tap) => Box::new(TapDetector::new(tap.count, tap.buttons)),
+        Gesture::Tap(tap) => Box::new(TapDetector::new(tap.count(), tap.get_buttons())),
         Gesture::LongPress(long_press) => Box::new(LongPressDetector::new(
-            Duration::from_millis(u64::from(long_press.duration)),
-            long_press.buttons,
+            Duration::from_millis(u64::from(long_press.duration())),
+            long_press.get_buttons(),
         )),
-        Gesture::Drag(drag) => Box::new(DragDetector::new(drag.min_distance, drag.buttons)),
+        Gesture::Drag(drag) => Box::new(DragDetector::new(drag.min_distance(), drag.get_buttons())),
         Gesture::Magnification(magnification) => {
-            Box::new(MagnificationDetector::new(magnification.initial_scale))
+            Box::new(MagnificationDetector::new(magnification.initial_scale()))
         }
         Gesture::Rotation(_) => Box::new(RotationDetector::new()),
         Gesture::Then(pair) => Box::new(ThenDetector::new(
@@ -1502,10 +1498,7 @@ mod tests {
         });
         assert!(matches!(
             started.recognized,
-            Some(GesturePayload::Drag(DragEvent {
-                phase: GesturePhase::Started,
-                ..
-            }))
+            Some(GesturePayload::Drag(event)) if event.phase() == GesturePhase::Started
         ));
 
         let updated = detector.input(GestureInput::PointerMove {
@@ -1514,10 +1507,7 @@ mod tests {
         });
         assert!(matches!(
             updated.recognized,
-            Some(GesturePayload::Drag(DragEvent {
-                phase: GesturePhase::Updated,
-                ..
-            }))
+            Some(GesturePayload::Drag(event)) if event.phase() == GesturePhase::Updated
         ));
 
         let ended = detector.input(GestureInput::PointerUp {
@@ -1526,10 +1516,7 @@ mod tests {
         });
         assert!(matches!(
             ended.recognized,
-            Some(GesturePayload::Drag(DragEvent {
-                phase: GesturePhase::Ended,
-                ..
-            }))
+            Some(GesturePayload::Drag(event)) if event.phase() == GesturePhase::Ended
         ));
     }
 
@@ -1547,8 +1534,8 @@ mod tests {
         });
         assert!(matches!(
             started.recognized,
-            Some(GesturePayload::Magnification(MagnificationEvent { scale, .. }))
-                if (scale - 1.0).abs() < f32::EPSILON
+            Some(GesturePayload::Magnification(event))
+                if (event.scale() - 1.0).abs() < f32::EPSILON
         ));
 
         let updated = detector.input(GestureInput::Magnification {
@@ -1559,8 +1546,8 @@ mod tests {
         });
         assert!(matches!(
             updated.recognized,
-            Some(GesturePayload::Magnification(MagnificationEvent { scale, .. }))
-                if (scale - 1.1).abs() < 0.0001
+            Some(GesturePayload::Magnification(event))
+                if (event.scale() - 1.1).abs() < 0.0001
         ));
 
         let ended = detector.input(GestureInput::Magnification {
@@ -1571,10 +1558,8 @@ mod tests {
         });
         assert!(matches!(
             ended.recognized,
-            Some(GesturePayload::Magnification(MagnificationEvent {
-                phase: GesturePhase::Ended,
-                ..
-            }))
+            Some(GesturePayload::Magnification(event))
+                if event.phase() == GesturePhase::Ended
         ));
     }
 
@@ -1690,7 +1675,7 @@ mod tests {
         });
         assert!(matches!(
             started.recognized,
-            Some(GesturePayload::Rotation(event)) if event.angle == 0.0
+            Some(GesturePayload::Rotation(event)) if event.angle() == 0.0
         ));
 
         let moved = detector.input(GestureInput::Rotation {
@@ -1701,8 +1686,8 @@ mod tests {
         });
         match moved.recognized {
             Some(GesturePayload::Rotation(event)) => {
-                assert!((event.angle - 0.5).abs() < 1e-6);
-                assert!(event.velocity > 0.0);
+                assert!((event.angle() - 0.5).abs() < 1e-6);
+                assert!(event.velocity() > 0.0);
             }
             other => panic!("expected a rotation payload, got {:?}", other.is_some()),
         }
@@ -1715,7 +1700,7 @@ mod tests {
         });
         assert!(matches!(
             ended.recognized,
-            Some(GesturePayload::Rotation(event)) if (event.angle - 0.75).abs() < 1e-6
+            Some(GesturePayload::Rotation(event)) if (event.angle() - 0.75).abs() < 1e-6
         ));
     }
 
@@ -1910,7 +1895,7 @@ mod tests {
                     let event = env
                         .get::<TapEvent>()
                         .expect("tap action missing TapEvent in environment");
-                    middle_button.set(Some(event.button));
+                    middle_button.set(Some(event.button()));
                     middle_hits.set(middle_hits.get() + 1);
                 }),
                 0,
@@ -2116,7 +2101,7 @@ mod tests {
                     let event = env
                         .get::<DragEvent>()
                         .expect("drag action missing DragEvent in environment");
-                    last_button.set(Some(event.button));
+                    last_button.set(Some(event.button()));
                 }),
                 0,
                 1,
@@ -2244,7 +2229,7 @@ mod tests {
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
                     let event = env.get::<TapEvent>().expect("tap action missing TapEvent");
-                    tap.set(Some(event.location));
+                    tap.set(Some(event.location()));
                 }),
                 0,
                 0,
@@ -2288,17 +2273,17 @@ mod tests {
         let event = drag.borrow().clone().expect("drag did not fire");
         // The location maps as a point; the 40-point window translation and
         // its velocity map through the linear part only, halving them.
-        assert_eq!(event.location, GesturePoint::new(30.0, 10.0));
-        assert_eq!(event.translation, GesturePoint::new(20.0, 0.0));
+        assert_eq!(event.location(), GesturePoint::new(30.0, 10.0));
+        assert_eq!(event.translation(), GesturePoint::new(20.0, 0.0));
         assert!(
-            (event.velocity.x - 1250.0).abs() < 1.0,
+            (event.velocity().x - 1250.0).abs() < 1.0,
             "{:?}",
-            event.velocity
+            event.velocity()
         );
         assert!(
-            event.velocity.y.abs() < f32::EPSILON,
+            event.velocity().y.abs() < f32::EPSILON,
             "{:?}",
-            event.velocity
+            event.velocity()
         );
     }
 }

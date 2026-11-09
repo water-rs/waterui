@@ -125,6 +125,7 @@ pub fn restore_a11y_naming_scope<E: crate::text::TextEngine>(
         AccessibilityValue,
         AccessibilityRole,
         AccessibilityChildren,
+        AccessibilityGeometry,
         ScopedAccessibilityIdentifier,
         // The claim identity travels with the name: carrying the label without
         // it would let the leaf render the name that a container above still
@@ -214,6 +215,9 @@ pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
         AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole, E>,
         AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>,
         AccessibilityChildren => a11y_scoped_env::<AccessibilityChildren>,
+        // The geometry source names the element the way a label does: the
+        // node that represents the wrapped view reads it from the scope.
+        AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>,
         AccessibilityState => a11y_scoped_env_for_state,
         AccessibilityStateSignal => a11y_scoped_env::<AccessibilityStateSignal>,
     )
@@ -361,6 +365,7 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         AccessibilityRole,
         AccessibilityHidden,
         AccessibilityChildren,
+        AccessibilityGeometry,
         AccessibilityState,
         AccessibilityStateSignal
     );
@@ -536,7 +541,8 @@ fn normalize_layout_view_with_budget(
         AccessibilityLabel,
         AccessibilityValue,
         AccessibilityRole,
-        AccessibilityChildren
+        AccessibilityChildren,
+        AccessibilityGeometry
     );
 
     // Hidden and (reactive) state have *subtree* semantics: every emission
@@ -615,13 +621,7 @@ fn normalize_layout_view_with_budget(
         let native = *view
             .downcast::<Native<ScrollView>>()
             .expect("layout normalization failed to downcast Native<ScrollView>");
-        let waterui_layout::scroll::ScrollViewParts {
-            axis,
-            content,
-            controller,
-            offset,
-            ..
-        } = native.into_inner().into_inner();
+        let (axis, content, controller, offset) = native.into_inner().into_inner().into_parts();
         let normalized_content = normalize_layout_view_with_budget(content, env, remaining);
         let scroll = ScrollView::new(axis, normalized_content);
         let scroll = match controller {
@@ -644,12 +644,15 @@ fn normalize_layout_view_with_budget(
             normalize_layout_view_with_budget(navigation.bar.title, env, remaining);
         navigation.bar.subtitle =
             normalize_layout_view_with_budget(navigation.bar.subtitle, env, remaining);
-        for item in &mut navigation.bar.toolbar.items {
-            item.content = normalize_layout_view_with_budget(
-                core::mem::take(&mut item.content),
+        for item in navigation.bar.toolbar.items_mut() {
+            // Normalization resolves a label against the environment, so the
+            // bar scope has to wrap the item before it runs.
+            let content = normalize_layout_view_with_budget(
+                crate::widgets::nav::navigation::toolbar_item_view(item.take_content(), env),
                 env,
                 remaining,
             );
+            item.set_content(content);
         }
         navigation.content = normalize_layout_view_with_budget(navigation.content, env, remaining);
         return AnyView::new(Native::new(navigation));
@@ -724,8 +727,8 @@ pub fn interaction_focus_ring<E: crate::text::TextEngine>(
 /// into ellipse segments on wide containers, which violates the Material
 /// corner shape (e.g. a 4dp snackbar radius smeared across a 1500px bar).
 pub fn resolved_shape_to_path(shape: &ResolvedShape, bounds: kurbo::Rect) -> kurbo::BezPath {
-    shape_kind_path(shape.kind, bounds)
-        .unwrap_or_else(|| path_commands_to_path(&shape.commands, bounds))
+    shape_kind_path(shape.kind(), bounds)
+        .unwrap_or_else(|| path_commands_to_path(shape.commands(), bounds))
 }
 
 /// Bounds-aware path for the structured shape kinds; `None` for custom paths,
@@ -756,8 +759,8 @@ pub fn resolved_morph_shape_to_path(
     bounds: kurbo::Rect,
 ) -> kurbo::BezPath {
     let min_side = crate::num_cast::f64_as_f32(bounds.width().min(bounds.height()).max(0.0));
-    let from = shape_kind_radii(shape.from, min_side);
-    let to = shape_kind_radii(shape.to, min_side);
+    let from = shape_kind_radii(*shape.from(), min_side);
+    let to = shape_kind_radii(*shape.to(), min_side);
     let progress = progress.clamp(0.0, 1.0);
     let radii = [
         lerp(from[0], to[0], progress),
@@ -1007,6 +1010,7 @@ pub fn working_color_to_rgba8(color: waterui_graphics::draw::WorkingColor) -> [u
     ]
 }
 
+#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
 pub fn rgba8_to_peniko(color: [u8; 4]) -> peniko::Color {
     peniko::Color::new([
         f32::from(color[0]) / 255.0,

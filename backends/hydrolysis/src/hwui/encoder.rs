@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use waterui_graphics::draw::color::WorkingColor;
-use waterui_graphics::draw::kurbo::{Affine, Rect, Vec2};
+use waterui_graphics::draw::kurbo::{Affine, Point, Rect, Vec2};
 use waterui_graphics::draw::tree::Sampling;
 use waterui_graphics::draw::{
     BlendMode, ChangeSet, ContentOp, LayerId, LayerNode, LayerOp, Op as TreeOp, Picture, Realize,
@@ -26,6 +26,7 @@ use waterui_graphics::draw::{
 use waterui_graphics::draw::{ResourceId, TextLayoutId};
 
 use super::buffer::{CommandBuffer, Field};
+use super::effects::Effects;
 use super::geometry::{
     Decomposed, Tilted, affine_matrix, decompose, floor_i32, homography_matrix, intersect,
     is_integral, multiply, project_rect, tilt, union,
@@ -35,6 +36,7 @@ use super::lower::{
     extent, set_position,
 };
 use super::protocol::{Op, clip as clip_kind, host};
+use super::resources::Kind;
 use super::resources::SharedRegistry;
 use super::text::TextLayoutIds;
 use super::{HwuiError, HwuiTarget};
@@ -59,11 +61,31 @@ mod hit;
 #[non_exhaustive]
 pub struct PlatformViewBinding {
     /// The layer whose node hosts the view.
-    pub layer: LayerId,
+    layer: LayerId,
     /// The placement id of the view.
-    pub view: u64,
+    view: u64,
     /// The view's bounds in the layer's local coordinates.
-    pub bounds: kurbo::Rect,
+    bounds: kurbo::Rect,
+}
+
+impl PlatformViewBinding {
+    /// The layer whose node hosts the view.
+    #[must_use]
+    pub const fn layer(&self) -> LayerId {
+        self.layer
+    }
+
+    /// The placement id of the view.
+    #[must_use]
+    pub const fn view(&self) -> u64 {
+        self.view
+    }
+
+    /// The view's bounds in the layer's local coordinates.
+    #[must_use]
+    pub const fn bounds(&self) -> kurbo::Rect {
+        self.bounds
+    }
 }
 
 impl PlatformViewBinding {
@@ -83,9 +105,29 @@ impl PlatformViewBinding {
 #[non_exhaustive]
 pub struct Recycle {
     /// The emptied op vector.
-    pub ops: Vec<TreeOp<HwuiTarget>>,
+    ops: Vec<TreeOp<HwuiTarget>>,
     /// The pictures this commit replaced.
-    pub recycled: Vec<(LayerId, Picture)>,
+    recycled: Vec<(LayerId, Picture)>,
+}
+
+impl Recycle {
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<TreeOp<HwuiTarget>>, Vec<(LayerId, Picture)>) {
+        (self.ops, self.recycled)
+    }
+
+    /// The emptied op vector.
+    #[must_use]
+    pub const fn ops(&self) -> &[TreeOp<HwuiTarget>] {
+        self.ops.as_slice()
+    }
+
+    /// The pictures this commit replaced.
+    #[must_use]
+    pub const fn recycled(&self) -> &[(LayerId, Picture)] {
+        self.recycled.as_slice()
+    }
 }
 
 /// One encoded frame.
@@ -93,13 +135,39 @@ pub struct Recycle {
 #[non_exhaustive]
 pub struct Frame<'a> {
     /// The command buffer, header included.
-    pub words: &'a [u32],
+    words: &'a [u32],
     /// What sampling the tree's animations reported.
-    pub sampling: Sampling,
+    sampling: Sampling,
     /// Whether recorded-content operands still animate.
-    pub content_animating: bool,
+    content_animating: bool,
     /// The window clear the frame asks the host to draw first.
-    pub clear: Option<u64>,
+    clear: Option<u64>,
+}
+
+impl<'a> Frame<'a> {
+    /// The command buffer, header included.
+    #[must_use]
+    pub const fn words(&self) -> &'a [u32] {
+        self.words
+    }
+
+    /// What sampling the tree's animations reported.
+    #[must_use]
+    pub const fn sampling(&self) -> &Sampling {
+        &self.sampling
+    }
+
+    /// Whether recorded-content operands still animate.
+    #[must_use]
+    pub const fn content_animating(&self) -> bool {
+        self.content_animating
+    }
+
+    /// The window clear the frame asks the host to draw first.
+    #[must_use]
+    pub const fn clear(&self) -> Option<u64> {
+        self.clear
+    }
 }
 
 /// How a layer's node sits in its parent's list.
@@ -150,6 +218,7 @@ struct Sent {
     alpha: Option<f32>,
     composite: Option<(u32, bool)>,
     clip: Option<(u32, [i32; 4], f32)>,
+    effect: Option<u32>,
 }
 
 /// The platform view bound inside a layer's own `RenderNode`: its retained
@@ -221,6 +290,7 @@ impl LayerState {
                 alpha: Some(1.0),
                 composite: Some((blend_code(BlendMode::Normal), false)),
                 clip: Some((clip_kind::NONE, [0; 4], 0.0)),
+                effect: Some(u32::MAX),
                 ..Sent::default()
             },
         }
@@ -301,25 +371,27 @@ pub struct Encoder {
     platform_scale: f64,
     clear: Option<WorkingColor>,
     content_animating: bool,
-    api_level: u32,
+    effects: Effects,
 }
 
 impl Encoder {
-    /// An encoder for a device at `api_level`, mirroring an empty tree.
+    /// An encoder mirroring an empty tree.
     ///
     /// # Errors
     ///
     /// [`HwuiError::Encoding`] if the root node cannot be created.
-    pub fn new(api_level: u32) -> Result<Self, HwuiError> {
+    pub fn new() -> Result<Self, HwuiError> {
         let tree = SurfaceTree::new();
         let root = tree.root();
+        let registry = SharedRegistry::new();
+        let effects = Effects::new(registry.clone());
         let mut encoder = Self {
             tree,
             buffer: CommandBuffer::new(),
             open: false,
             pools: Pools::new(),
             caches: Caches::default(),
-            registry: SharedRegistry::new(),
+            registry,
             text_layouts: TextLayoutIds::new(),
             scratch: Scratch::default(),
             layers: BTreeMap::new(),
@@ -331,7 +403,7 @@ impl Encoder {
             host_dirty: true,
             clear: None,
             content_animating: false,
-            api_level,
+            effects,
         };
         encoder.create_layer(root)?;
         Ok(encoder)
@@ -348,6 +420,13 @@ impl Encoder {
     #[must_use]
     pub(crate) const fn registry(&self) -> &SharedRegistry {
         &self.registry
+    }
+
+    /// The effect registrations, shared with the resource owner
+    /// ([`HwuiResources`](super::HwuiResources)).
+    #[must_use]
+    pub(crate) const fn effects(&self) -> &Effects {
+        &self.effects
     }
 
     /// The platform text layout ids, shared with every layout the text
@@ -409,7 +488,6 @@ impl Encoder {
             registry: &self.registry,
             text_layouts: &self.text_layouts,
             scratch: &mut self.scratch,
-            api_level: self.api_level,
             layer,
         }
     }
@@ -595,11 +673,13 @@ impl Encoder {
             }
         }
         let sampling = self.tree.sample(time, scale);
+        self.content_animating |= self.effects.encode(time, &mut self.buffer)?;
         let mut pending = std::mem::take(&mut self.pending);
         let layers = self.encode_layers(&mut pending);
         pending.reset();
         self.pending = pending;
         layers?;
+        self.resolve_effect_origins(time)?;
         self.registry.drain_releases(&mut self.buffer)?;
         let layers = &self.layers;
         self.text_layouts.drain_releases(&mut self.buffer, |raw| {
@@ -767,6 +847,50 @@ impl Encoder {
         Ok(multiply(multiply(self.world_rows(parent)?, scroll), local))
     }
 
+    /// Tells every effect that draws in window device pixels (the overscroll
+    /// stretch) where its node's top-left corner sits there, and redefines
+    /// the effects that moved: the node's origin is the layer's extent
+    /// origin carried through the layer's world transform, which only the
+    /// encoder knows once the frame's layers are settled.
+    ///
+    /// # Errors
+    ///
+    /// [`HwuiError::Unsupported`] when the world transform is not a
+    /// translation and scale: the platform filters in a scale-only layer
+    /// space, in which the stretch's device-space frame no longer holds.
+    fn resolve_effect_origins(
+        &mut self,
+        time: waterui_graphics::draw::Instant,
+    ) -> Result<(), HwuiError> {
+        let mut moved = false;
+        for (&raw, state) in &self.layers {
+            let Some(wire) = state.sent.effect.filter(|wire| *wire != u32::MAX) else {
+                continue;
+            };
+            if !self.effects.takes_origin(wire) {
+                continue;
+            }
+            let world = flat_affine(self.world_rows(LayerId::new(raw))?)
+                .filter(|world| {
+                    let [_, b, c, _, _, _] = world.as_coeffs();
+                    b == 0.0 && c == 0.0
+                })
+                .ok_or_else(|| HwuiError::Unsupported {
+                    layer: raw,
+                    what: "draws an overscroll stretch under a rotated, skewed or projective pose"
+                        .to_owned(),
+                })?;
+            let origin = world * Point::new(f64::from(state.origin[0]), f64::from(state.origin[1]));
+            moved |= self
+                .effects
+                .set_origin(wire, [f32_of(origin.x), f32_of(origin.y)]);
+        }
+        if moved {
+            self.content_animating |= self.effects.encode(time, &mut self.buffer)?;
+        }
+        Ok(())
+    }
+
     /// Emits a `BindPlatformView` for every binding whose
     /// `(binding, density, world matrix)` moved — alpha-only ancestor
     /// changes resend nothing; a moved ancestor rewrites the matrix.
@@ -904,7 +1028,6 @@ impl Encoder {
                 registry: &self.registry,
                 text_layouts: &self.text_layouts,
                 scratch: &mut self.scratch,
-                api_level: self.api_level,
                 layer: raw,
             };
             let inner = if needs_inner {
@@ -954,6 +1077,20 @@ impl Encoder {
             )?;
             state.sent.composite = Some(composite);
         }
+        let effect = match self.tree.layer(LayerId::new(raw)).filter {
+            Some(filter) => self
+                .registry
+                .lock()
+                .resolve(Kind::Effect, filter.raw(), raw)?,
+            None => u32::MAX,
+        };
+        if state.sent.effect != Some(effect) {
+            self.buffer.op(
+                Op::SetEffect,
+                &[Field::U("node", state.outer), Field::U("effect", effect)],
+            )?;
+            state.sent.effect = Some(effect);
+        }
         Ok(())
     }
 
@@ -961,14 +1098,6 @@ impl Encoder {
     fn refuse(&self, id: LayerId) -> Result<(), HwuiError> {
         let raw = id.raw();
         let node = self.tree.layer(id);
-        if node.filter.is_some() {
-            return Err(HwuiError::Unsupported {
-                layer: raw,
-                what:
-                    "filters its subtree; filter lowering to RenderEffect is water-rs/waterui#1750"
-                        .to_owned(),
-            });
-        }
         if node.backdrop.is_some() {
             return Err(HwuiError::Unsupported {
                 layer: raw,
@@ -1107,7 +1236,11 @@ impl Encoder {
         let state = self.layers.get_mut(&raw).expect("listed");
         let (left, transform) = node_transform(state.placement, state.origin);
         let [l, t, r, b] = bounds(left, state.size);
-        let clips = !matches!(state.content, Content::None) && state.children.is_empty();
+        // A filtered leaf keeps its implicit clip off: the native blur must
+        // not be cut at node bounds. Explicit clip modes still apply.
+        let clips = !matches!(state.content, Content::None)
+            && state.children.is_empty()
+            && self.tree.layer(LayerId::new(raw)).filter.is_none();
         let position = [l, t, r, b, i32::from(clips)];
         let clip = match state.clip_mode {
             ClipMode::Node(kind, [cl, ct, cr, cb], radius) => {
@@ -1171,7 +1304,6 @@ impl Encoder {
             registry,
             text_layouts,
             scratch,
-            api_level,
             platform_scale,
             ..
         } = self;
@@ -1184,7 +1316,6 @@ impl Encoder {
             registry,
             text_layouts,
             scratch,
-            api_level: *api_level,
             layer: raw,
         };
         let mut owned = Owned::default();

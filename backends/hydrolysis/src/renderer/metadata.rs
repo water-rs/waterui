@@ -45,10 +45,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // does, and fall back to the unit-space commands only for a custom path.
         // The commands are normalized per axis, so resolving them against a
         // non-square rect makes every circular corner elliptical.
-        let clip_path = shape_kind_path(value.kind(), ctx.bounds)
-            .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds));
-        let clip = if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds)
-            .or_else(|| regular_clip_shape(value.commands(), ctx.bounds))
+        let clip_path = shape_kind_path(value.kind(), ctx.bounds())
+            .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds()));
+        let clip = if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds())
+            .or_else(|| regular_clip_shape(value.commands(), ctx.bounds()))
         {
             match regular_clip {
                 RegularClipShape::Rect(rect) => ScopeClip::Rect(rect),
@@ -83,66 +83,66 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         render_content(renderer);
 
-        if border.width <= 0.0 {
+        if border.width() <= 0.0 {
             return;
         }
 
-        let paint = || Paint::Solid(border.color.resolve(env).snapshot());
-        let width = f64::from(border.width);
+        let paint = || Paint::Solid(border.color().resolve(env).snapshot());
+        let width = f64::from(border.width());
 
-        if border.edges.all() && border.corner_radius > 0.0 {
+        if border.get_edges().all() && border.get_corner_radius() > 0.0 {
             let rounded =
-                kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
+                kurbo::RoundedRect::from_rect(ctx.bounds(), f64::from(border.get_corner_radius()));
             let stroke = kurbo::Stroke::new(width);
             renderer
                 .scene_mut()
-                .stroke_paint(&stroke, ctx.local, paint(), &rounded);
+                .stroke_paint(&stroke, ctx.local(), paint(), &rounded);
             return;
         }
 
-        if border.edges.top {
+        if border.get_edges().top {
             let top = kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y0,
-                ctx.bounds.x1,
-                ctx.bounds.y0 + width,
+                ctx.bounds().x0,
+                ctx.bounds().y0,
+                ctx.bounds().x1,
+                ctx.bounds().y0 + width,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &top);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &top);
         }
-        if border.edges.bottom {
+        if border.get_edges().bottom {
             let bottom = kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y1 - width,
-                ctx.bounds.x1,
-                ctx.bounds.y1,
+                ctx.bounds().x0,
+                ctx.bounds().y1 - width,
+                ctx.bounds().x1,
+                ctx.bounds().y1,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &bottom);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &bottom);
         }
-        if border.edges.leading {
+        if border.get_edges().leading {
             let leading = kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y0,
-                ctx.bounds.x0 + width,
-                ctx.bounds.y1,
+                ctx.bounds().x0,
+                ctx.bounds().y0,
+                ctx.bounds().x0 + width,
+                ctx.bounds().y1,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &leading);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &leading);
         }
-        if border.edges.trailing {
+        if border.get_edges().trailing {
             let trailing = kurbo::Rect::new(
-                ctx.bounds.x1 - width,
-                ctx.bounds.y0,
-                ctx.bounds.x1,
-                ctx.bounds.y1,
+                ctx.bounds().x1 - width,
+                ctx.bounds().y0,
+                ctx.bounds().x1,
+                ctx.bounds().y1,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &trailing);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &trailing);
         }
     }
 
@@ -156,22 +156,22 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         shadow: &Shadow,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let blur = f64::from(shadow.radius.max(0.0));
-        let offset_x = f64::from(shadow.offset.x);
-        let offset_y = f64::from(shadow.offset.y);
+        let blur = f64::from(shadow.radius().max(0.0));
+        let offset_x = f64::from(shadow.offset().x);
+        let offset_y = f64::from(shadow.offset().y);
         let shadow_rect = kurbo::Rect::new(
-            ctx.bounds.x0 + offset_x,
-            ctx.bounds.y0 + offset_y,
-            ctx.bounds.x1 + offset_x,
-            ctx.bounds.y1 + offset_y,
+            ctx.bounds().x0 + offset_x,
+            ctx.bounds().y0 + offset_y,
+            ctx.bounds().x1 + offset_x,
+            ctx.bounds().y1 + offset_y,
         );
-        let shadow_color = shadow.color.resolve(env).snapshot();
+        let shadow_color = shadow.color().resolve(env).snapshot();
 
         // The silhouette states the caster's shape. `kind_clip_shape` — the
         // same resolver a clip uses to decide between the uniform rounded-rect
         // fast path and the general path route — answers whether the shadow can
         // feed the engine's blurred-rounded-rect primitive directly.
-        let silhouette = &shadow.silhouette;
+        let silhouette = &shadow.silhouette();
         let uniform_radius = match kind_clip_shape(silhouette.kind(), shadow_rect) {
             Some(RegularClipShape::RoundedRect { corner_width, .. }) => Some(corner_width),
             Some(RegularClipShape::Rect(_)) => Some(0.0),
@@ -179,7 +179,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         };
         match uniform_radius {
             Some(corner_radius) => renderer.scene_mut().blurred_rounded_rect(
-                ctx.local,
+                ctx.local(),
                 shadow_rect,
                 shadow_color,
                 corner_radius,
@@ -187,7 +187,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             ),
             None => Self::draw_blurred_silhouette(
                 renderer,
-                ctx.local,
+                ctx.local(),
                 silhouette,
                 shadow_rect,
                 shadow_color,
@@ -255,8 +255,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         {
             let theme = renderer.theme();
-            renderer.scene_mut().record_picture(ctx.local, |draw| {
-                theme.draw_text_context_menu_panel(&mut *draw, ctx.bounds);
+            renderer.scene_mut().record_picture(ctx.local(), |draw| {
+                theme.draw_text_context_menu_panel(&mut *draw, ctx.bounds());
             });
         }
         render_content(renderer);
@@ -318,7 +318,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &Hittable,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let enabled = renderer.read_signal(&value.enabled);
+        let enabled = renderer.read_signal(value.enabled());
         if enabled {
             render_content(renderer);
             return;
@@ -340,8 +340,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &Cursor,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let style = renderer.read_signal(&value.style);
-        let bounds = ctx.bounds;
+        let style = renderer.read_signal(value.style());
+        let bounds = ctx.bounds();
         renderer.register_cursor_target(bounds, style);
         render_content(renderer);
     }
@@ -396,7 +396,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // modifier chain. Every dispatch arm — a11y Activate, `layered_action`,
         // the press slot, keyboard activation, hover — applies this same
         // `captured_env.layered_on(runtime_env)` rule.
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         let disabled = env
             .get::<waterui_core::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
@@ -578,7 +578,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 local_interaction_state(interaction, renderer.current_hit_transform());
             {
                 let theme = renderer.theme();
-                let layer_bounds = style.state_layer_bounds(ctx.bounds);
+                let layer_bounds = style.state_layer_bounds(ctx.bounds());
                 let radii = *style.state_layer_radii.resolve(state);
                 let ring =
                     interaction_focus_ring(renderer, env, layer_bounds, radii, &style, state);
@@ -786,7 +786,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         let event = handler.borrow().event();
         let interaction_key = InteractionKey::for_rc(&handler, 0);
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         match event {
             Event::HoverEnter => {
                 let captured_env = env.clone();
@@ -839,7 +839,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &ContextMenuEffect<E>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         renderer.register_context_menu_target(
             bounds,
             value.items.clone(),
@@ -865,7 +865,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &AnchoredOverlayEffect<E>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = renderer.resolve_window_rect(ctx.bounds);
+        let bounds = renderer.resolve_window_rect(ctx.bounds());
         let presented = renderer.read_signal(&value.is_presented);
         renderer
             .popup_menu
@@ -922,7 +922,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &Rc<Draggable>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         renderer.register_draggable_target(bounds, Rc::clone(value));
         render_content(renderer);
     }
@@ -938,7 +938,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         handles: &DropDestinationHandles,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         renderer.register_drop_destination_handles(bounds, handles, env);
         render_content(renderer);
     }

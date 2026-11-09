@@ -37,6 +37,7 @@ mod appearance;
 mod application;
 mod badge;
 pub mod button;
+mod calendar;
 mod color_view;
 mod color_well;
 pub mod colors;
@@ -68,6 +69,7 @@ mod window;
 #[cfg(feature = "dialog")]
 pub use alert::SheetAlert;
 pub use animate::{run_animation, set_animated_alpha};
+pub(crate) use appearance::color_scheme_of;
 pub use appearance::{
     ColorSchemeObservation, effective_color_scheme, observe_effective_appearance,
 };
@@ -77,6 +79,9 @@ pub use application::{
 };
 pub use badge::BadgeView;
 pub use button::Button;
+pub use calendar::{
+    CalendarColorRole, CalendarColors, CalendarNavigation, CalendarNavigationLabels, CalendarView,
+};
 pub use color_view::ColorView;
 pub use color_well::ColorWell;
 pub use colors::AppColor;

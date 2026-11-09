@@ -162,9 +162,10 @@ pub async fn asset_origin_serves_bundled_content_with(
     let origin = controller
         .asset_origin()
         .expect("an engine that serves bundled assets reports the origin it serves them under");
-    let webview = controller.open_with(WebViewConfig {
-        asset_server: Some(server),
-        ..WebViewConfig::default()
+    let webview = controller.open_with({
+        let mut literal = WebViewConfig::default();
+        literal.set_asset_server(Some(server));
+        literal
     });
     let handle = webview.handle().clone();
     assert!(
@@ -280,7 +281,7 @@ pub async fn assert_bundled_site(origin: &str, evaluate: impl AsyncFn(&str) -> V
 #[must_use]
 pub fn bundled_site_server() -> AssetServer {
     Arc::new(|request: &AssetRequest| {
-        match request.path.as_str() {
+        match request.path().as_str() {
             "/" | "/index.html" => AssetResponse::ok(
                 "text/html",
                 include_bytes!("conformance/index.html").to_vec(),

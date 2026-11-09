@@ -43,8 +43,9 @@ use waterui_navigation::NavigationView;
 
 use crate::{
     accessibility::{
-        self, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
-        AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityValue,
+        self, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
+        AccessibilityIdentifier, AccessibilityLabel, AccessibilityRole, AccessibilityState,
+        AccessibilityValue,
     },
     background::IntoBackground,
     border::Border,
@@ -485,7 +486,7 @@ pub trait ViewExt: View + Sized {
     /// let query = binding::<Str>(Str::default());
     /// field("Search", &query).on_key_press(
     ///     |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
-    ///         if press.key == Key::Named(NamedKey::Escape) {
+    ///         if press.key() == &Key::Named(NamedKey::Escape) {
     ///             open.set(false);
     ///             KeyHandling::Handled
     ///         } else {
@@ -615,7 +616,7 @@ pub trait ViewExt: View + Sized {
     /// Adds padding to this view with custom edge insets.
     ///
     /// `EdgeInsets` converts from a single `f32` (every edge), a
-    /// `(vertical, horizontal)` pair and a `[top, bottom, leading, trailing]`
+    /// `(vertical, horizontal)` pair and a `[top, leading, bottom, trailing]`
     /// array, so the common shapes need no constructor:
     ///
     /// ```rust
@@ -623,7 +624,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("a").padding_with(16.0);
     /// text!("b").padding_with((8.0, 16.0));
-    /// text!("c").padding_with([4.0, 12.0, 16.0, 16.0]);
+    /// text!("c").padding_with([4.0, 16.0, 12.0, 16.0]);
     /// ```
     ///
     /// # Arguments
@@ -739,6 +740,21 @@ pub trait ViewExt: View + Sized {
     /// Overrides whether this view is hidden from assistive technologies.
     fn a11y_hidden(self, hidden: bool) -> IgnorableMetadata<AccessibilityHidden> {
         IgnorableMetadata::new(self, accessibility::AccessibilityHidden::new(hidden))
+    }
+
+    /// Chooses which rectangle this view's accessibility element reports.
+    ///
+    /// An element reports the view's own answer, positioned in its assigned
+    /// frame, by default. `AccessibilityGeometry::Allocation` reports the
+    /// whole assigned frame — a canvas whose drawing fills it, or a gap a
+    /// stack allocated to a spacer — and `AccessibilityGeometry::Region`
+    /// an explicit rectangle in the view's own coordinates. Hit testing,
+    /// focus and drawing are unaffected.
+    fn a11y_geometry(
+        self,
+        geometry: AccessibilityGeometry,
+    ) -> IgnorableMetadata<AccessibilityGeometry> {
+        IgnorableMetadata::new(self, geometry)
     }
 
     /// Controls how descendants contribute semantics for this view.
@@ -1152,10 +1168,7 @@ pub trait ViewExt: View + Sized {
         self,
         menu: impl crate::metadata::context_menu::IntoContextMenu,
     ) -> crate::metadata::context_menu::ContextMenuView<Self> {
-        crate::metadata::context_menu::ContextMenuView {
-            content: self,
-            menu: menu.into_context_menu(),
-        }
+        crate::metadata::context_menu::ContextMenuView::new(self, menu.into_context_menu())
     }
 
     /// Presents `overlay` next to this view, above all other content in the

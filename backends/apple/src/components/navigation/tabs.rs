@@ -16,7 +16,9 @@ use waterui::navigation::{
     tab::{Tab, TabIcon, TabRole},
 };
 use waterui_core::id::Id;
-use waterui_core::layout::{StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
 
 use super::extract_title_text;
 
@@ -28,7 +30,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
 struct Fill;
 
 impl SubView for Fill {
-    fn measure(&self, _proposal: waterui_core::layout::ProposalSize) -> ViewDimensions {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(waterui_core::layout::Size::new(0.0, 0.0))
     }
 
@@ -75,11 +85,12 @@ struct Mounted {
 /// Renders one tab once: the pane, the label's extracted text and the icon's
 /// leaf the platform chrome still binds.
 fn mount_tab(id: Id, tab: Tab, renderer: &crate::contract::Renderer) -> Mounted {
-    let pane = renderer.render(waterui_backend_core::AnyView::new(tab.content.build()));
-    let label_leaf = renderer.render(tab.label.build());
+    let (label, icon, content, badge, enabled, role) = tab.into_parts();
+    let pane = renderer.render(waterui_backend_core::AnyView::new(content.build()));
+    let label_leaf = renderer.render(label.build());
     let label = extract_title_text(label_leaf.view());
-    let (symbol, icon_leaf) = match tab.icon {
-        Some(TabIcon::System(icon)) => (Some(icon.name.to_string()), None),
+    let (symbol, icon_leaf) = match icon {
+        Some(TabIcon::System(icon)) => (Some(icon.name().to_string()), None),
         Some(TabIcon::View(icon)) => (None, Some(renderer.render(icon.build()))),
         None => (None, None),
     };
@@ -91,9 +102,9 @@ fn mount_tab(id: Id, tab: Tab, renderer: &crate::contract::Renderer) -> Mounted 
         label: label.unwrap_or_default(),
         symbol,
         icon_leaf,
-        badge: tab.badge,
-        enabled: tab.enabled,
-        is_search: matches!(tab.role, TabRole::Search),
+        badge,
+        enabled,
+        is_search: matches!(role, TabRole::Search),
         keep: core::cell::RefCell::new(crate::contract::KeepAlive::default()),
     }
 }
@@ -308,17 +319,17 @@ mod platform {
             BTreeMap::<Id, Retained<TabContentController>>::new(),
         ));
         {
-            let snapshot = layout.tabs.snapshot();
+            let snapshot = layout.tabs().snapshot();
             let _ = reconcile_tabs(
                 &mut mounted.borrow_mut(),
                 &snapshot,
                 &renderer,
-                &layout.selection,
+                layout.selection(),
             );
         }
         refresh(mtm, &env, &tabs, &mounted, &controllers);
 
-        tabs.setTabBarMinimizeBehavior(match layout.minimize_behavior {
+        tabs.setTabBarMinimizeBehavior(match layout.get_minimize_behavior() {
             TabBarMinimizeBehavior::Automatic => UITabBarMinimizeBehavior::Automatic,
             TabBarMinimizeBehavior::Never => UITabBarMinimizeBehavior::Never,
             TabBarMinimizeBehavior::OnScrollDown => UITabBarMinimizeBehavior::OnScrollDown,
@@ -330,7 +341,7 @@ mod platform {
         // view renders once into a host whose intrinsic measure forwards
         // the child's answer, then UIKit owns the capsule's placement,
         // sizing and collapse.
-        if let Some(accessory) = layout.bottom_accessory.take() {
+        if let Some(accessory) = layout.take_bottom_accessory() {
             let accessory_host = HostView::new(mtm, Rect::ZERO);
             let mounted = Rc::new(ctx.render(accessory).mount(&accessory_host));
             accessory_host.set_measure_handler({
@@ -380,24 +391,35 @@ mod platform {
                         width,
                         height,
                     );
-                    crate::proposal::deliver(sub, proposal);
+                    crate::proposal::deliver(
+                        sub,
+                        crate::proposal::Placement::platform_hosted(proposal),
+                    );
                     view::set_frame(sub, frame);
                 }
             });
-            // The capsule installs when the current transaction commits —
-            // after the first frame, never inside the launch commit. On
+            // The capsule installs once this turn's transaction has
+            // committed — after the first frame, never inside the launch
+            // commit, including when the tabs are built during scene
+            // connection. On
             // iOS 26 an accessory installed during the scene's own
             // presentation can have its materialise transition dropped,
             // leaving the pocket flat and tinting the content's labels for
             // the rest of the process; installing into the already-live
             // tab bar is the path a now-playing bar appearing mid-run
             // takes — the same deferred install the parity twin declares.
+            // The closure holds the slot weakly: `BottomAccessory` owns the
+            // only strong reference, so tearing the tabs down before the
+            // commit makes the upgrade fail and cancels the install.
             let accessory = Rc::new(core::cell::OnceCell::new());
-            cocoa_ui::core_animation::on_commit({
+            cocoa_ui::core_animation::on_commit(mtm, {
                 let tabs = tabs.clone();
                 let accessory_host = accessory_host.clone();
-                let accessory = Rc::clone(&accessory);
+                let accessory = Rc::downgrade(&accessory);
                 move || {
+                    let Some(accessory) = accessory.upgrade() else {
+                        return;
+                    };
                     let capsule = UITabAccessory::initWithContentView(mtm.alloc(), &accessory_host);
                     tabs.setBottomAccessory(Some(&capsule));
                     let _ = accessory.set(capsule);
@@ -413,7 +435,7 @@ mod platform {
 
         // Two-way selection.
         tabs.set_select_handler({
-            let selection = layout.selection.clone();
+            let selection = layout.selection().clone();
             let mounted = mounted.clone();
             move |index| {
                 // Copy the id under a short borrow — `selection.set` runs user
@@ -425,7 +447,7 @@ mod platform {
                 }
             }
         });
-        keep.bind(&layout.selection, {
+        keep.bind(layout.selection(), {
             let tabs = tabs.clone();
             let mounted = mounted.clone();
             move |id| {
@@ -439,9 +461,9 @@ mod platform {
         // Membership changes re-key the mounted set by tab id: a surviving
         // tab keeps its controller — pane, navigation state, surfaces — the
         // array is re-set in the new order.
-        keep.keep(layout.tabs.watch(.., {
+        keep.keep(layout.tabs().watch(.., {
             let mounted = mounted.clone();
-            let selection = layout.selection.clone();
+            let selection = layout.selection().clone();
             let tabs = tabs.clone();
             move |ctx, _change| {
                 let snapshot = ctx.into_value();
@@ -500,6 +522,7 @@ mod platform {
     use core::cell::RefCell;
 
     use crate::contract::{NativeLeaf, RenderContext};
+    use crate::native_layout::LayoutContext;
     use cocoa_ui::appkit::{HostView, Segment, SegmentedControl, SourceList, WindowToolbar};
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
     use cocoa_ui::{Rect, view};
@@ -520,6 +543,7 @@ mod platform {
                 image: None,
                 enabled: tab.enabled.snapshot(),
                 badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
+                is_search: tab.is_search,
             })
             .collect()
     }
@@ -533,17 +557,22 @@ mod platform {
     )]
     pub(super) fn tabs_leaf(layout: TabsLayout, ctx: &RenderContext) -> NativeLeaf {
         let mtm = ctx.mtm();
+        // The host places each pane against the safe area itself
+        // (`region_frame`): a scroll surface reaches under the window
+        // toolbar, anything else stays clear of it (§7.1). So the window
+        // root hands it the whole window rather than the safe-area rect.
         let host = HostView::new(mtm, Rect::ZERO);
+        host.set_manages_safe_area(true);
         let mut keep = KeepAlive::default();
         let renderer = ctx.renderer();
         let mounted: Rc<RefCell<Vec<Mounted>>> = Rc::new(RefCell::new(Vec::new()));
         {
-            let snapshot = layout.tabs.snapshot();
+            let snapshot = layout.tabs().snapshot();
             let _ = reconcile_tabs(
                 &mut mounted.borrow_mut(),
                 &snapshot,
                 &renderer,
-                &layout.selection,
+                layout.selection(),
             );
         }
         keep.keep(mounted.clone());
@@ -551,13 +580,13 @@ mod platform {
             view::add_subview(&host, tab.pane.view());
         }
 
-        let sidebar = matches!(layout.style, NativeTabStyle::Sidebar);
+        let sidebar = matches!(layout.get_style(), NativeTabStyle::Sidebar);
         let chrome = if sidebar {
             let list = SourceList::new(mtm);
             list.set_segments(&segments(&mounted.borrow()));
             view::add_subview(&host, list.view());
             list.set_select_handler({
-                let selection = layout.selection.clone();
+                let selection = layout.selection().clone();
                 let mounted = mounted.clone();
                 move |index| {
                     // Short borrow — `selection.set` runs watchers that may
@@ -576,7 +605,7 @@ mod platform {
             control.set_segments(&segments(&mounted.borrow()));
             view::add_subview(&host, &control);
             control.set_select_handler({
-                let selection = layout.selection.clone();
+                let selection = layout.selection().clone();
                 let mounted = mounted.clone();
                 move |index| {
                     // Short borrow — `selection.set` runs watchers that may
@@ -612,11 +641,11 @@ mod platform {
                 }
             }
         };
-        let selected = layout.selection.snapshot();
+        let selected = layout.selection().snapshot();
         let index = mounted.borrow().iter().position(|tab| tab.id == selected);
         show(index);
 
-        keep.bind(&layout.selection, {
+        keep.bind(layout.selection(), {
             let show = show.clone();
             let mounted = mounted.clone();
             move |id| {
@@ -630,11 +659,11 @@ mod platform {
         // pane mounts and joins the host, the segments rebuild in the new
         // order — a surviving tab's Mounted — pane, navigation state,
         // surfaces — is never touched.
-        keep.keep(layout.tabs.watch(.., {
+        keep.keep(layout.tabs().watch(.., {
             let mounted = mounted.clone();
             let host = host.clone();
             let chrome = chrome.clone();
-            let selection = layout.selection.clone();
+            let selection = layout.selection().clone();
             let show = show.clone();
             move |ctx, _change| {
                 let snapshot = ctx.into_value();
@@ -699,15 +728,20 @@ mod platform {
 
         host.set_layout_handler({
             move |host| {
-                let bounds = cocoa_ui::view::bounds(host);
+                let host_view: &cocoa_ui::PlatformView = host;
+                let context = LayoutContext::of(host_view);
+                let bounds = view::bounds(host);
+                let place = |content: &cocoa_ui::PlatformView, region: Rect| {
+                    view::set_frame(content, context.region_frame(content, region));
+                };
                 if sidebar {
                     let width = 220.0_f64.min(bounds.size.width / 2.0);
-                    view::set_frame(
+                    place(
                         chrome.view(),
                         Rect::new(bounds.origin.x, bounds.origin.y, width, bounds.size.height),
                     );
                     for tab in mounted.borrow().iter() {
-                        view::set_frame(
+                        place(
                             tab.pane.view(),
                             Rect::new(
                                 bounds.origin.x + width,
@@ -719,27 +753,32 @@ mod platform {
                     }
                 } else if in_toolbar.get() {
                     for tab in mounted.borrow().iter() {
-                        view::set_frame(tab.pane.view(), bounds);
+                        place(tab.pane.view(), bounds);
                     }
                 } else {
                     let height = view::fitting_size(chrome.view()).height;
-                    view::set_frame(
+                    // `HostView` is flipped: the smallest y is the top edge,
+                    // so the strip docks at the safe rect's top and the
+                    // panes fill what lies below it.
+                    let strip_top = context.safe_rect().origin.y + 8.0;
+                    let panes_top = strip_top + height + 8.0;
+                    place(
                         chrome.view(),
                         Rect::new(
                             bounds.origin.x + 8.0,
-                            bounds.origin.y + bounds.size.height - height - 8.0,
+                            strip_top,
                             bounds.size.width - 16.0,
                             height,
                         ),
                     );
                     for tab in mounted.borrow().iter() {
-                        view::set_frame(
+                        place(
                             tab.pane.view(),
                             Rect::new(
                                 bounds.origin.x,
-                                bounds.origin.y,
+                                panes_top,
                                 bounds.size.width,
-                                bounds.size.height - height - 8.0,
+                                bounds.origin.y + bounds.size.height - panes_top,
                             ),
                         );
                     }

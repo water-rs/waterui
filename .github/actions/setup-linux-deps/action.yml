@@ -69,13 +69,57 @@ runs:
         fi
         echo "packages=$packages" >> "$GITHUB_OUTPUT"
 
-    - name: Install native dependencies
+    # The mirror's throughput varies by orders of magnitude between runs
+    # (#3439), so the downloaded archives are cached and apt fetches only
+    # what the cache lacks. Archives, not installed files: dpkg still
+    # installs every package. The key is the exact set of archives this
+    # install resolves to against the refreshed index.
+    - name: Resolve package archives
+      id: archives
       shell: bash
       env:
         PACKAGES: ${{ steps.pkgs.outputs.packages }}
       run: |
+        set -euo pipefail
         read -ra packages <<< "$PACKAGES"
-        sudo DEBIAN_FRONTEND=noninteractive apt-get --yes install "${packages[@]}"
+        dir="$RUNNER_TEMP/apt-archives"
+        mkdir -p "$dir/partial" "$RUNNER_TEMP/apt-empty/partial"
+        uris="$(sudo apt-get --yes --print-uris -qq -o Dir::Cache::Archives="$RUNNER_TEMP/apt-empty" install "${packages[@]}" | sort)"
+        prefix="apt-archives-${ImageOS}-$(dpkg --print-architecture)-"
+        {
+          echo "dir=$dir"
+          echo "prefix=$prefix"
+          echo "key=$prefix$(printf '%s' "$uris" | sha256sum | cut -d' ' -f1)"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore package archives
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.archives.outputs.dir }}
+        key: ${{ steps.archives.outputs.key }}
+        restore-keys: ${{ steps.archives.outputs.prefix }}
+
+    - name: Install native dependencies
+      shell: bash
+      env:
+        PACKAGES: ${{ steps.pkgs.outputs.packages }}
+        ARCHIVES: ${{ steps.archives.outputs.dir }}
+      run: |
+        read -ra packages <<< "$PACKAGES"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get --yes -o Dir::Cache::Archives="$ARCHIVES" -o APT::Keep-Downloaded-Packages=true install "${packages[@]}"
+        # apt leaves its lock and partial/ root-only; the cache save runs as
+        # the runner user.
+        sudo chown -R "$(id -u):$(id -g)" "$ARCHIVES"
+
+    # Pull requests restore what dev and main pushes saved; they never save,
+    # so cache capacity stays with the compile caches.
+    - name: Save package archives
+      if: steps.restore.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.archives.outputs.dir }}
+        key: ${{ steps.archives.outputs.key }}
 
     - name: Verify native dependencies are installed
       shell: bash

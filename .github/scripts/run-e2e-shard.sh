@@ -59,7 +59,6 @@ baselines_dir="${BASELINES_DIR:-${workspace}/backends/apple/Tests/E2EBaselines}"
 record_dir="${RECORD_DIR:-${workspace}/e2e-baselines}"
 record="${RECORD:-0}"
 prebuilt_dir="${PREBUILT_DIR:-}"
-flip_tolerances="${FLIP_TOLERANCES:-${baselines_dir}/parity-budgets.json}"
 reference_dir="${workspace}/backends/apple/Tests/E2EReference"
 command_deadline="${workspace}/.github/scripts/run-with-deadline.py"
 receipts_file="${logs_dir}/command-receipts-${platform}-${shard_index}.jsonl"
@@ -179,6 +178,88 @@ if [[ "${platform}" == "ios" ]]; then
   fi
   xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
 
+  # A screenshot command still running this long is mid-stall, not slow —
+  # a healthy answer lands in ~0.5 s. The sampler fires inside the command
+  # bound, so the wedge's stacks land in the log while the guilty process is
+  # still alive (#1539). A 30 s scoped capture leaves ~15 s of collection
+  # headroom after the sample fires.
+  # Diagnostic collectors share one bounded budget — defined before the
+  # sampler because its subshell inherits it at launch time.
+  DIAG_DEADLINE_S=30
+  stall_sampler_start() {
+    local diag="$1"
+    (
+      # Each sampler marks itself with a per-invocation file, so a later
+      # capture's sleep cannot be mistaken for an earlier one's collection.
+      sleep 15
+      touch "${diag}.fired.${BASHPID}"
+      {
+        echo "=== screenshot stall sample $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
+        echo "--- simctl / CoreSimulator processes ---"
+        pgrep -fl "simctl|CoreSimulatorService|SimulatorTrampoline" || true
+        # The wedged `simctl` itself goes first: on a 30 s scoped capture the
+        # bound may kill it while service stacks are still being collected.
+        for p in $(pgrep -f "simctl io .* screenshot"); do
+          echo "--- sample ${p} ---"
+          sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
+        done
+        for p in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline"); do
+          echo "--- sample ${p} ---"
+          sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
+        done
+        echo "--- host load ---"
+        ps -Axo pid,pcpu,stat,etime,command | sort -k2 -rn | sed -n '1,12p' || true
+        echo "--- host memory pressure ---"
+        memory_pressure 2>/dev/null | tail -8 || true
+        echo "--- CoreSimulator log, last 2m ---"
+        "${command_deadline}" run --label "diag:stall-log-show" \
+          --deadline-at "$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")" \
+          --receipt "${receipts_file}" \
+          -- log show --last 2m --style compact \
+          --predicate 'subsystem CONTAINS[c] "CoreSimulator"' \
+          2>/dev/null | tail -40 || true
+      } >> "${diag}" 2>&1
+    ) </dev/null >/dev/null 2>&1 &
+    echo $!
+  }
+  # Every pid under a root, leaves first — enumerated while the tree's
+  # parentage is still intact.
+  subtree_pids() {
+    local p
+    for p in $(pgrep -P "$1" 2>/dev/null); do
+      subtree_pids "$p"
+      echo "$p"
+    done
+  }
+  # A sampler that already fired is mid-collection — give it a bounded grace
+  # to finish writing; a still-sleeping one is cancelled. The stop signals
+  # the whole tree at once: a grandchild the deadline supervisor spawned
+  # (`log show`) is enumerated before it could reparent, and a `pkill -P`
+  # sweep alone would never reach it.
+  stall_sampler_stop() {
+    local pid="$1" diag="${2:-}"
+    if kill -0 "${pid}" 2>/dev/null; then
+      if [[ -e "${diag}.fired.${pid}" ]]; then
+        local deadline=$(( SECONDS + 20 ))
+        while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do
+          sleep 0.5
+        done
+      fi
+      local tree
+      tree="$(subtree_pids "${pid}")"
+      kill ${tree} "${pid}" 2>/dev/null || true
+    fi
+    rm -f "${diag}.fired.${pid}"
+  }
+
+  # An iOS capture is the whole display (macOS captures the app's own window),
+  # so a SpringBoard notification banner lands in the frame and reads as a
+  # divergence from the app's own baseline and from the SwiftUI twin. Booting
+  # out the delivery daemon stops every banner for this boot, so it runs after
+  # the reboot above.
+  xcrun simctl spawn "${SIMULATOR_UDID}" \
+    launchctl bootout system/com.apple.usernotificationsd 2>/dev/null || true
+
   # Pin the status bar for the whole shard — WaterUI and twin captures alike —
   # so the clock, battery and signal pixels compare equal on every shot. The
   # override persists until it is cleared at the end of the shard (the EXIT
@@ -213,7 +294,25 @@ if [[ "${platform}" == "macos" ]]; then
     echo "::error::Failed to compile launch-app.swift."
     exit 1
   fi
+  if ! swiftc -O -o "${swift_tools_dir}/display-scale" \
+       "${workspace}/.github/scripts/display-scale.swift"; then
+    echo "::error::Failed to compile display-scale.swift."
+    exit 1
+  fi
 fi
+
+# Every macOS app the shard captures, example and SwiftUI twin alike, starts
+# with these argument-domain defaults. AppKit blinks the insertion point of a
+# focused text field, and a window focuses its first key view as it orders
+# in, so any first screen with a text field alternates between two frames
+# forever: typography-rtl never settled, on either side, and each side was
+# photographed in whichever phase the deadline hit. Holding the insertion
+# point on (the on period is in milliseconds; ~28 h outlasts any capture)
+# keeps the caret in the frame, where the comparison sees it.
+macos_capture_args=(
+  -NSTextInsertionPointBlinkPeriodOn 100000000
+  -NSTextInsertionPointBlinkPeriodOff 0
+)
 
 # One frame from the current platform target. macOS captures need the pid that
 # owns the window; the running example is the default, the SwiftUI reference
@@ -235,10 +334,15 @@ capture_frame() {
     # Removing the prior file first means a command that exits 0 without
     # writing cannot let a stale frame pass as this capture.
     rm -f "${target}"
+    local sampler_pid capture_rc
+    sampler_pid="$(stall_sampler_start "${logs_dir}/${platform}-${example}-stall-sample.log")"
     "${command_deadline}" run --label "capture:simctl-io-screenshot" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
       --max-seconds "${COMMAND_BOUND_S}" \
-      -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null || return
+      -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null
+    capture_rc=$?
+    stall_sampler_stop "${sampler_pid}" "${logs_dir}/${platform}-${example}-stall-sample.log"
+    (( capture_rc == 0 )) || return
   else
     local window_id
     window_id="$("${command_deadline}" run --label "capture:window-id" \
@@ -476,7 +580,6 @@ simctl_cleanup() {
 # under DIAG_DEADLINE_S — a wedged channel must not stall the collection —
 # and the output lands in logs_dir, which the e2e-logs artifact bundle
 # already ships.
-DIAG_DEADLINE_S=30
 collect_simulator_stall_diagnostics() {
   local reason="$1"
   local diag="${logs_dir}/${platform}-${example}-stall-diagnostics.log"
@@ -514,6 +617,39 @@ collect_simulator_stall_diagnostics() {
       2>/dev/null | tail -60 || true
   } >> "${diag}" 2>&1
   echo "::notice::${example}: simulator stall diagnostics written to ${diag} (uploaded with e2e-logs)."
+}
+
+# A live simulator app that never reports `waterui_first_paint_ms` leaves no
+# evidence behind on its own — collect process state, crash reports and the
+# device log while the wedge still stands, the way the capture-stall
+# diagnostics do.
+collect_no_first_paint_diagnostics() {
+  local diag="${logs_dir}/${platform}-${example}-no-first-paint.log"
+  local diag_deadline_at
+  diag_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
+  {
+    echo "=== no-first-paint diagnostics ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
+    echo "--- shard app process (pid ${app_pid:-unset}) ---"
+    if [[ -n "${app_pid:-}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
+      ps -o pid,stat,etime,command -p "${app_pid}" || true
+      sample "${app_pid}" 3 1 2>&1 | sed -n '1,60p' || true
+    else
+      echo "app pid ${app_pid:-unset} is not running"
+    fi
+    echo "--- crash reports mentioning ${bundle_id} ---"
+    "${command_deadline}" run --label "diag:crash-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl spawn "${SIMULATOR_UDID}" \
+      log show --last 10m --style compact \
+      --predicate 'process == "ReportCrash" OR eventMessage CONTAINS[c] "crashed"' \
+      2>/dev/null | tail -40 || true
+    echo "--- device log, last 3m ---"
+    "${command_deadline}" run --label "diag:simctl-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 3m --style compact \
+      2>/dev/null | tail -60 || true
+  } >> "${diag}" 2>&1
+  echo "::notice::${example}: no-first-paint diagnostics written to ${diag} (uploaded with e2e-logs)."
 }
 
 # Sends SIGTERM to a LaunchServices-launched pid and waits for it to actually
@@ -663,7 +799,7 @@ capture_reference() {
     if ! ref_pid="$("${command_deadline}" run --label "launch:reference" \
         --deadline-at "${launch_deadline_at}" --receipt "${receipts_file}" \
         -- "${swift_tools_dir}/launch-app" "${reference_app}" \
-        -E2EExample "${example}" -E2ETitle "${title}")"; then
+        -E2EExample "${example}" -E2ETitle "${title}" "${macos_capture_args[@]}")"; then
       kill "${ref_stream_pid}" 2>/dev/null || true
       return 1
     fi
@@ -700,6 +836,29 @@ if [[ -z "${comparison_os_major}" ]]; then
   exit 1
 fi
 
+# Pixels per point of every capture this job takes, which sizes the twin
+# comparison's block in points: the simulated device's screen scale on iOS,
+# the runner's single display on macOS.
+if [[ "${platform}" == "ios" ]]; then
+  device_type_bundle="$(python3 -c '
+import json, subprocess, sys
+devices = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "--json"]))
+kind = next(d["deviceTypeIdentifier"] for group in devices["devices"].values()
+            for d in group if d.get("udid") == sys.argv[1])
+types = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devicetypes", "--json"]))
+print(next(t["bundlePath"] for t in types["devicetypes"] if t["identifier"] == kind))
+' "${SIMULATOR_UDID}")" || device_type_bundle=""
+  capture_scale="$(plutil -extract capabilities.ScreenDimensionsCapability.main-screen-scale raw \
+    "${device_type_bundle}/Contents/Resources/capabilities.plist")" || capture_scale=""
+  capture_scale="${capture_scale%.000000}"
+else
+  capture_scale="$("${swift_tools_dir}/display-scale")" || capture_scale=""
+fi
+if [[ ! "${capture_scale}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::Cannot derive the ${platform} capture scale for twin comparison (got '${capture_scale}')." >&2
+  exit 1
+fi
+
 # Final checks have the same per-command bound and receipt trail as capture.
 run_comparison() {
   local label="$1" output="$2"
@@ -717,7 +876,7 @@ comparison_summary() {
 import json, sys
 with open(sys.argv[1]) as stream:
     comparison = json.load(stream)
-json.dump({key: comparison[key] for key in ("metric", "flip_mean", "flip_max", "max_local_error", "limits")},
+json.dump({key: comparison[key] for key in ("metric", "flip_mean", "flip_max", "max_local_error", "max_block_flip_mean", "limits")},
           sys.stdout)
 ' "$1"
 }
@@ -886,7 +1045,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     launch_deadline_at="$("${command_deadline}" deadline --seconds "${LAUNCH_DEADLINE_S}")"
     if ! app_pid="$("${command_deadline}" run --label "launch:app" \
         --deadline-at "${launch_deadline_at}" --receipt "${receipts_file}" \
-        -- "${swift_tools_dir}/launch-app" "${app_path}")"; then
+        -- "${swift_tools_dir}/launch-app" "${app_path}" "${macos_capture_args[@]}")"; then
       kill "${stream_pid}" 2>/dev/null || true
       echo "::error::${example} packaged app failed to launch (${platform})."
       failures+=("${example}: launch")
@@ -993,6 +1152,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     kill "${stream_pid}" 2>/dev/null || true
     failures+=("${example}: no first paint")
     if [[ "${platform}" == "ios" ]]; then
+      collect_no_first_paint_diagnostics
       simctl_cleanup terminate "${bundle_id}" || failures+=("${example}: cleanup terminate")
       simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
     else
@@ -1118,10 +1278,14 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       # artifacts; a human reviews the whole images.
       report+=("| \`${example}\` (parity) | VISUAL REVIEW REQUIRED | pair in e2e-shots artifacts | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     else
+      # A twin is a second implementation, not a second route to the same
+      # pixels: it is gated by the comparer's twin FLIP limits, which accept
+      # edge offsets of up to 2 px and reject missing, extra or misplaced
+      # elements, judged over 8 pt blocks at the capture scale.
       parity_rc=0
       run_comparison "${example}:parity" "${parity_json}" \
         compare "${ref_shot}" "${shot}" "${parity_diff}" "${comparison_args[@]}" \
-        --tolerances "${flip_tolerances}" ${parity_record_flag:+"${parity_record_flag}"} || parity_rc=$?
+        --limits twin --scale "${capture_scale}" ${parity_record_flag:+"${parity_record_flag}"} || parity_rc=$?
       parity_out=""
       if (( parity_rc == 0 || parity_rc == 1 )); then
         parity_out="$(comparison_summary "${parity_json}")"

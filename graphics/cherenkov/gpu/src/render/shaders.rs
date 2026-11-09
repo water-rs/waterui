@@ -11,8 +11,8 @@
 //! Delivery by backend:
 //!
 //! - **Vulkan** gets naga's SPIR-V emission. The `.spv` artifacts exist
-//!   only on the non-Apple, non-wasm targets where wgpu compiles its
-//!   Vulkan backend (issue #241), so SPIR-V is embedded there only.
+//!   only on the Linux and Android targets, where GPU rendering is
+//!   Vulkan-only (issue #241), so SPIR-V is embedded there only.
 //! - **Metal** gets a `.metallib` compiled by `xcrun` during the build.
 //! - **DX12** gets DXIL compiled by `dxc` during the build, embedded on
 //!   Windows targets only, where wgpu compiles its DX12 backend (issue
@@ -203,11 +203,11 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
 
 /// The `.spv` artifacts, embedded only where a Vulkan backend can exist.
 ///
-/// wgpu compiles its Vulkan backend on exactly the non-Apple, non-wasm
-/// targets (issue #241): Apple builds load `.metallib`s and wasm keeps
-/// WGSL, so neither produces nor embeds these bytes. `build.rs` emits the
-/// `cherenkov_spirv` cfg on
-/// exactly those targets, so the condition lives in one place (issue #241).
+/// GPU rendering is Vulkan-only on exactly the Linux and Android targets
+/// (issue #241): Apple builds load `.metallib`s, Windows loads DXIL and wasm
+/// keeps WGSL, so none of them produces nor embeds these bytes. `build.rs`
+/// emits the `cherenkov_spirv` cfg on exactly those targets, so the
+/// condition lives in one place (issue #241).
 #[cfg(cherenkov_spirv)]
 pub mod spirv {
     /// naga SPIR-V for the nine `VARIANT` specializations of
@@ -254,9 +254,15 @@ pub mod spirv {
     #[cfg(all(cherenkov_spirv, unix))]
     pub const EXTERNAL_NATIVE: &[u8] =
         include_bytes!(concat!(env!("OUT_DIR"), "/external_native.spv"));
-    /// `engine_tile.spv` — the tile executor's module for a draw whose
-    /// source is another slot: input attachment index 0 is the draw's
-    /// own slot and index 1 the source (issue #2191).
+    /// The Vulkan tile executor's simple-only module.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_SIMPLE: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_simple.spv"));
+    /// Simple-only module with the source attached to the target slot.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_SIMPLE_SELF: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_simple_self.spv"));
+    /// The remaining short-paint tile entries, reading another slot.
     #[cfg(all(cherenkov_spirv, unix))]
     pub const TILE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile.spv"));
     /// `engine_tile_self.spv` — the same module for a draw that sources
@@ -626,9 +632,9 @@ pub enum ShaderDelivery {
     /// `create_shader_module_passthrough`.
     ///
     /// Exists only where `build.rs` emits `.spv` artifacts — the
-    /// `cherenkov_spirv` targets (issue #241): on Apple and wasm there is
-    /// no Vulkan backend to deliver them to, so the variant does not
-    /// exist there.
+    /// `cherenkov_spirv` targets (issue #241): on Apple, Windows and wasm
+    /// there is no Vulkan backend to deliver them to, so the variant does
+    /// not exist there.
     #[cfg(cherenkov_spirv)]
     Spirv,
     /// A compiled `.metallib` through `create_shader_module_passthrough`.
@@ -656,8 +662,8 @@ pub fn delivery(
     let delivery = match backend {
         #[cfg(cherenkov_spirv)]
         wgpu::Backend::Vulkan => ShaderDelivery::Spirv,
-        // wgpu compiles no Vulkan backend off `cherenkov_spirv` targets,
-        // so a Vulkan adapter cannot exist there: this is the single
+        // GPU rendering compiles no Vulkan backend off `cherenkov_spirv`
+        // targets, so a Vulkan adapter cannot exist there: this is the single
         // fail-fast arm, reached only through a non-engine device.
         #[cfg(not(cherenkov_spirv))]
         wgpu::Backend::Vulkan => {

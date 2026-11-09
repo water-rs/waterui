@@ -16,17 +16,21 @@ use alloc::string::String;
 use core::cell::RefCell;
 
 use cocoa_ui::slider::ValueAnimation;
-use cocoa_ui::{PlatformView, Rect, Retained};
+use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::animation::Animation;
 use waterui::component::slider::SliderConfig;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -149,17 +153,16 @@ fn child_sizes(children: &Children) -> ChildSizes {
     }
 }
 
-/// Lays out the children inside `view`'s bounds: the label at top-leading,
-/// then the slider row — min label, track, max label — below it. Manual
-/// frames replicate `WuiSlider`'s `AutoLayout` constraints, with the whole
-/// arrangement mirrored when the view is right-to-left (leading and
-/// trailing swap edges).
-fn layout_children(view: &PlatformView, state: &SliderState) {
+/// Lays out the children inside the `response` rectangle: the label at
+/// top-leading, then the slider row — min label, track, max label — below
+/// it. Manual frames replicate `WuiSlider`'s `AutoLayout` constraints, with
+/// the whole arrangement mirrored when the view is right-to-left (leading
+/// and trailing swap edges).
+fn layout_children(view: &PlatformView, response: Rect, state: &SliderState) {
     let Some(children) = &state.children else {
         return;
     };
-    let bounds = cocoa_ui::view::bounds(view);
-    let width = bounds.size.width;
+    let width = response.size.width;
     let sizes = child_sizes(children);
     let slider_height = track_height(&state.slider);
     let rtl = cocoa_ui::view::is_right_to_left(view);
@@ -168,7 +171,7 @@ fn layout_children(view: &PlatformView, state: &SliderState) {
     // right-to-left `NSLayoutConstraint` pass would give.
     let place = |child: &PlatformView, x: f64, y: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, y, w, h));
+        view::set_frame(child, Rect::new(x, y, w, h).translated(response.origin));
     };
 
     place(
@@ -224,6 +227,14 @@ impl core::fmt::Debug for SliderSubView {
 }
 
 impl SubView for SliderSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(
@@ -318,37 +329,38 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // relative to it, so a bare slider draws at the platform's regular
         // track like a bare `NSSlider`/`UISlider` does.
         slider.set_control_size(platform_control_size(
-            config.size,
+            config.size(),
             waterui::component::ControlSize::ExtraSmall,
         ));
-        slider.set_range(*config.range.start(), *config.range.end());
+        slider.set_range(*config.range().start(), *config.range().end());
         slider.set_value(
             clamped(
-                config.value.snapshot(),
-                *config.range.start(),
-                *config.range.end(),
+                config.value().snapshot(),
+                *config.range().start(),
+                *config.range().end(),
             ),
             None,
         );
         host.add_subview(as_view(&slider));
 
-        let range = config.range.clone();
+        let range = config.range().clone();
         let action = slider.install_action({
-            let binding = config.value.clone();
+            let binding = config.value().clone();
             move |value| binding.set(value)
         });
 
         // The label's semantic text is announced on the control itself; the
         // visual label child is hidden from the accessibility tree below.
-        let accessibility_label = config.label.accessibility_label();
+        let accessibility_label = config.label().accessibility_label();
 
         let host_view: &PlatformView = &host;
+        let (label, min_value_label, max_value_label, _, value, ..) = config.into_parts();
         let children = Children {
             label: ctx
-                .render(waterui_backend_core::AnyView::new(config.label))
+                .render(waterui_backend_core::AnyView::new(label))
                 .mount(host_view),
-            min_label: ctx.render(config.min_value_label).mount(host_view),
-            max_label: ctx.render(config.max_value_label).mount(host_view),
+            min_label: ctx.render(min_value_label).mount(host_view),
+            max_label: ctx.render(max_value_label).mount(host_view),
         };
         cocoa_ui::view::hide_from_accessibility(children.label.view());
 
@@ -361,7 +373,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         host.set_layout_handler({
             let state = Rc::clone(&state);
             move |view| {
-                layout_children(view, &state.borrow());
+                layout_children(view, proposal::response(view), &state.borrow());
             }
         });
 
@@ -374,7 +386,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // Signal → control: push binding changes (clamped into range) with
         // the animation the watcher metadata carries.
-        leaf.watch(&config.value, {
+        leaf.watch(&value, {
             let slider = slider.clone();
             move |ctx| {
                 let animation = value_animation(ctx.metadata());

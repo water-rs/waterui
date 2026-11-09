@@ -14,7 +14,6 @@ use crate::{frame::Frame, stack};
 /// colour scheme on every backend.
 #[derive(Debug, Clone, Copy)]
 #[must_use]
-#[expect(clippy::exhaustive_structs, reason = "field-less view used by name")]
 pub struct Divider;
 
 impl View for Divider {

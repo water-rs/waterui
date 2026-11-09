@@ -236,6 +236,10 @@ pub struct NodeLayers<E: crate::text::TextEngine> {
     scopes: Vec<ScopeLayer<E>>,
     committed: Committed<E>,
     inner_committed: Committed<E>,
+    /// The frame's external-host-window mark: the placement id of the
+    /// platform view the cell hosts — the compositor opens a presentation
+    /// band above each marked layer (water-rs/waterui#2225).
+    host_window: Option<u64>,
     content_held: Option<HeldResources>,
     /// The frame's material request as last lowered — the terms a
     /// no-program commit re-keys its membership by (the mount's display
@@ -283,6 +287,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
         clippy::unnecessary_wraps,
         reason = "a join resolver answers `Option` because a member may be absent; a material member is always its node's frame layer"
     )]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) const fn frame_layer(layers: &Self, _: LayerId) -> Option<&Layer> {
         Some(layers.frame())
     }
@@ -358,6 +363,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
 
     /// The member layer `id` names — a `ChromeMaterial` member anywhere
     /// in this node's lists — the layer a rebuilt chrome group re-points.
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn member_layer(&self, id: LayerId) -> Option<&Layer> {
         self.members
             .iter()
@@ -450,6 +456,7 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> 
     scope_anchors: &'m mut ScopeAnchors<E>,
     graveyard: &'m mut Vec<Box<dyn Any>>,
     stats: &'m mut MountStats,
+    #[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
     wakes: &'m mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
 }
 
@@ -844,6 +851,7 @@ fn node_want<'a, E: crate::text::TextEngine>(
 /// `Affine::scale(scale_factor)`), so the display scale lives in
 /// `transform` and must not be multiplied in again
 /// (water-rs/waterui#2935).
+#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
 fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u32) {
     let [a, b, c, d, _, _] = transform.as_coeffs();
     let x_scale = a.hypot(b);
@@ -860,6 +868,7 @@ fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u3
     size
 }
 
+#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
 fn install_transform(bounds: kurbo::Rect, pixels: (u32, u32)) -> kurbo::Affine {
     kurbo::Affine::translate((bounds.x0, bounds.y0))
         * kurbo::Affine::scale_non_uniform(
@@ -925,6 +934,7 @@ pub fn commit_cell<T: LayerTarget<E>, E: crate::text::TextEngine>(
                 scopes: Vec::new(),
                 committed: Vec::new(),
                 inner_committed: Vec::new(),
+                host_window: None,
                 content_held: None,
                 install_gpu: false,
                 material_request: None,
@@ -1041,6 +1051,26 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
             scroll: kurbo::Vec2::ZERO,
         },
     );
+    // A platform-view leaf's frame marks where its external host window
+    // sits in the committed tree, named by the placement id the host
+    // orders and identifies the window by, so the band above it is the
+    // one the host stacks above that window (water-rs/waterui#2225). A
+    // cell holds at most one placement: the leaf is its own layer node
+    // and registers once per record, and each record purges the cell's
+    // previous registrations.
+    let host_window = cell.registrations.borrow().as_ref().and_then(|regs| {
+        let placements = &regs.platform_view_placements;
+        assert!(
+            placements.len() <= 1,
+            "a cell holds one platform-view placement, found {}",
+            placements.len()
+        );
+        placements.first().map(|entry| entry.payload.placement.id())
+    });
+    if layers.host_window != host_window {
+        cx.tx[&layers.frame].host_window(host_window);
+        layers.host_window = host_window;
+    }
     commit_material(cx, layers, material.as_ref(), canvas);
     // The children's install canvas: this frame when it carries a
     // filter — a backdrop group never shares a capture across filtered
@@ -1239,18 +1269,20 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
     producer: Option<&ProducerContent>,
 ) -> Option<HeldResources> {
     match producer {
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         Some(ProducerContent::Hosted { runtime, bounds }) => {
             mount_hosted(cx, layers, runtime, *bounds);
         }
         Some(ProducerContent::Scene(source)) => {
             return Some(mount_scene(cx, cell, &layers.frame, source));
         }
+        #[cfg(hydrolysis_gpu)]
         Some(ProducerContent::Gpu {
             runtime,
             bounds,
             visible,
         }) => mount_gpu(cx, cell, layers, runtime, *bounds, *visible),
+        #[cfg(hydrolysis_gpu)]
         Some(ProducerContent::External {
             runtime,
             bounds,
@@ -1306,6 +1338,7 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
 }
 
 /// Ensures the node's install layer; returns whether it was just created.
+#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
 fn ensure_install<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     layers: &mut NodeLayers<E>,
@@ -1321,7 +1354,7 @@ fn ensure_install<T: LayerTarget<E>, E: crate::text::TextEngine>(
 
 /// Binds hosted content to the install layer at the node's extent; the
 /// engine places the platform object from the layer tree's geometry.
-#[cfg(hydrolysis_hosted)]
+#[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 fn mount_hosted<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     layers: &mut NodeLayers<E>,
@@ -1347,6 +1380,7 @@ fn mount_hosted<T: LayerTarget<E>, E: crate::text::TextEngine>(
 }
 
 /// Binds a GPU producer to the install layer at the node's pixel size.
+#[cfg(hydrolysis_gpu)]
 fn mount_gpu<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     cell: &Rc<NodeCell<E>>,
@@ -1382,6 +1416,7 @@ fn mount_gpu<T: LayerTarget<E>, E: crate::text::TextEngine>(
 }
 
 /// Starts or ticks an external-frame source on the install layer.
+#[cfg(hydrolysis_gpu)]
 fn mount_external<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     cell: &Rc<NodeCell<E>>,
@@ -1402,8 +1437,19 @@ fn mount_external<T: LayerTarget<E>, E: crate::text::TextEngine>(
     if runtime.receiver.is_none() {
         cx.stats.installs += 1;
     }
+    // The extent the install layer covers on screen: a source without a
+    // natural size renders at exactly this many pixels.
+    let world = cx.window_transform * cell.placement().resolved_transform(false);
+    let (width, height) = gpu_content_pixels(world, bounds);
+    let presented = waterui_graphics::gpu::PresentedSize {
+        pixels: waterui_graphics::OffscreenSize::try_from_pixels(width, height)
+            .expect("a layer's pixel extent is at least one pixel on each axis"),
+        scale: cx.display_scale,
+    };
     let wake = (cx.wakes)(cell);
-    if let Some(pixels) = T::mount_external_frame(cx.host, cx.tx, install, &mut runtime, wake) {
+    if let Some(pixels) =
+        T::mount_external_frame(cx.host, cx.tx, install, &mut runtime, presented, wake)
+    {
         write_props(
             cx.tx,
             install,

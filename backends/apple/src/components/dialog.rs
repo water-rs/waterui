@@ -33,7 +33,9 @@ use waterui::reactive::{Binding, Computed, Signal};
 use waterui::text::StyledStr;
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -209,6 +211,14 @@ impl core::fmt::Debug for DialogSubView {
 }
 
 impl SubView for DialogSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }
@@ -283,7 +293,7 @@ fn present(state: &Rc<DialogState>) {
             action
                 .title()
                 .resolve(&state.env)
-                .content
+                .content()
                 .snapshot()
                 .to_semantic()
                 .as_ref(),
@@ -341,7 +351,7 @@ fn present(state: &Rc<DialogState>) {
         let title = action
             .title()
             .resolve(&state.env)
-            .content
+            .content()
             .snapshot()
             .to_semantic()
             .to_string();
@@ -445,10 +455,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
             child: mounted,
             env: ctx.env().clone(),
             is_presented: dialog.is_presented().clone(),
-            title: dialog.title().resolve(ctx.env()).content,
+            title: dialog.title().resolve(ctx.env()).into_content(),
             message: dialog
                 .message_text()
-                .map(|message| message.resolve(ctx.env()).content),
+                .map(|message| message.resolve(ctx.env()).into_content()),
             dialog,
             alert: RefCell::new(None),
         });

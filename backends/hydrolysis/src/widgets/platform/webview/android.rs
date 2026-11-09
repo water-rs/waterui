@@ -36,9 +36,9 @@ use nami::watcher::BoxWatcherGuard;
 use waterui_core::{Computed, Str};
 use waterui_webview::{
     ASSET_HTTPS_ORIGIN, AssetServer, BackendEvent, Cookie, CustomWebViewController,
-    DOCUMENT_START_SCRIPT, DocumentScripts, ScriptInjectionTime, ScriptMessageHandler, Url,
-    UserScript, WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle,
-    assets, bridge,
+    DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy, NavigationRequest,
+    ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet,
+    WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets, bridge,
 };
 
 use crate::runner::android::jni::{JniError, get_string, guard, guard_val};
@@ -172,6 +172,12 @@ pub(super) struct SharedState {
     /// The navigation event state machine every navigation callback feeds;
     /// it also knows the main-frame URL the cookie path stores against.
     navigation: RefCell<NavigationTracker>,
+    /// The policy deciding navigations the page initiates; `None` allows
+    /// them all. Chromium never offers an application-started load —
+    /// `loadUrl`, history, reload — to `shouldOverrideUrlLoading` except for
+    /// its server redirects, which `isRedirect` marks, so nothing here needs
+    /// marking.
+    navigation_policy: Option<NavigationPolicy>,
 }
 
 impl SharedState {
@@ -250,18 +256,18 @@ impl SharedState {
                 return;
             }
         };
-        let request_id = request.id;
-        let Some(handler) = self.handlers.borrow().get(&request.name).cloned() else {
+        let request_id = request.id();
+        let Some(handler) = self.handlers.borrow().get(request.name()).cloned() else {
             // Page script reached a name nothing registered for; it still
             // awaits an answer, and rejecting is the same shape the Kotlin
             // runtime gives it.
             tracing::warn!(
-                handler = %request.name,
+                handler = %request.name(),
                 "android webview: a bridge message named an unregistered handler"
             );
             self.post_bridge_reply(
                 &reply_proxy,
-                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name()))
                     .message(request_id),
             );
             return;
@@ -270,7 +276,7 @@ impl SharedState {
         // future completes rather than when this callback returns.
         let weak = Rc::downgrade(&self);
         spawn_local(async move {
-            let reply = match handler(&request.payload).await {
+            let reply = match handler(request.payload()).await {
                 Ok(reply) => bridge::Reply::from(reply),
                 Err(message) => bridge::Reply::Failure(message),
             };
@@ -367,14 +373,15 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         let instance = self.next_instance.get() + 1;
         self.next_instance.set(instance);
 
-        let origin_rules = androidx_origin_rules(&config.bridge_origins);
+        let origin_rules = androidx_origin_rules(config.bridge_origins());
         let scripts = DocumentScripts::new(&config);
+        let (asset_server, _, navigation_policy, _, _) = config.into_parts();
 
-        // `config.asset_server` crosses as a leaked `Box` Kotlin hands
+        // The config's asset server crosses as a leaked `Box` Kotlin hands
         // back to `nativeAssetServerAcquire`/`nativeFreeAssetServer`. The
         // `AssetServer` inside is already an `Arc` — the box is a handle,
         // not a second refcount.
-        let asset_server = config.asset_server.map_or(0, |server| {
+        let asset_server = asset_server.map_or(0, |server| {
             Box::into_raw(Box::new(AssetServerHandle {
                 server,
                 response: Arc::clone(&self.asset_response),
@@ -391,6 +398,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
             pending: RefCell::new(PendingCalls::default()),
             origin_rules,
             navigation: RefCell::new(NavigationTracker::default()),
+            navigation_policy,
         });
         let native_handle = Box::into_raw(Box::new(Rc::downgrade(&shared))) as jlong;
 
@@ -674,10 +682,10 @@ impl HandleInner {
         ]
         .into_iter()
         .chain(self.shared.scripts.borrow().iter().map(|script| {
-            if script.time == ScriptInjectionTime::DocumentEnd {
-                compose_document_end(&script.source)
+            if script.time() == ScriptInjectionTime::DocumentEnd {
+                compose_document_end(script.source())
             } else {
-                script.source.to_string()
+                script.source().to_string()
             }
         }))
         .collect();
@@ -1037,9 +1045,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
     });
 }
 
-/// `shouldOverrideUrlLoading`, answered by the tracker: `true` cancels the
-/// request — a server redirect while redirects are disabled. A subframe
-/// request is the page's own and passes before its URL is read.
+/// `shouldOverrideUrlLoading`, answered by the navigation policy and the
+/// tracker: `true` cancels the request — a policy refusal, or a server
+/// redirect while redirects are disabled. The policy is consulted for every
+/// request that is not a server redirect. Chromium offers this hook only
+/// page-initiated `GET` navigations and their redirects, and of subframes
+/// only those to a non-`http(s)`/`about` scheme
+/// (`AwContentBrowserClient::ShouldOverrideUrlLoading`); a subframe request
+/// that passes the policy still leaves the tracker out of it.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeShouldOverrideUrlLoading<
     'local,
@@ -1050,16 +1063,30 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
     url: JString<'local>,
     is_main_frame: jboolean,
     is_redirect: jboolean,
+    has_gesture: jboolean,
 ) -> jboolean {
     guard_val(&mut env, false, |env| {
         let Some(shared) = shared_from_handle(handle) else {
             tracing::debug!("android webview: a request on a released view passed");
             return Ok(false);
         };
+        let url = parse_url(&get_string(env, &url)?, "a request for")?;
+        if let Some(policy) = shared.navigation_policy.as_ref()
+            && !is_redirect
+        {
+            let request = NavigationRequest::new(
+                url.clone(),
+                shared.navigation.borrow().current_url().cloned(),
+                is_main_frame,
+                has_gesture,
+            );
+            if !policy.allows(&request) {
+                return Ok(true);
+            }
+        }
         if !is_main_frame {
             return Ok(false);
         }
-        let url = parse_url(&get_string(env, &url)?, "a request for")?;
         let block = shared.navigate(|tracker| {
             let decision = tracker.request(url, is_redirect);
             (decision.events, decision.block)
@@ -1483,14 +1510,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         // newline-joined `Name: value` header block Kotlin splits again on
         // the other side, and the body bytes.
         let headers = response
-            .headers
+            .headers()
             .iter()
             .map(|(name, value)| format!("{name}: {value}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let status = jint::from(response.status);
+        let status = jint::from(response.status());
         let headers = env.new_string(headers)?;
-        let body = env.byte_array_from_slice(&response.body)?;
+        let body = env.byte_array_from_slice(response.body())?;
         // SAFETY: `init` is `<init>` resolved on `handle.response.class` at
         // session create, and the arguments match its
         // `(ILjava/lang/String;[B)V` signature.

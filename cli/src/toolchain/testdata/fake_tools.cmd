@@ -392,6 +392,7 @@ exit /b 0
 :xcodebuild
 set "args=!args_dequoted!"
 call :contains args version && (echo Xcode %WATERUI_FAKE_XCODE_VERSION% & echo Build version 16F6 & exit /b 0)
+if "!args_dequoted!"=="-showComponent MetalToolchain -json" (call :respond XCODEBUILD_SHOW_METAL_TOOLCHAIN & exit /b !errorlevel!)
 exit /b 0
 
 :xcode_select
@@ -401,6 +402,8 @@ exit /b 0
 :xcrun
 set "args=!args_dequoted!"
 call :contains args --show-sdk-path && (call :respond XCRUN_SDK_PATH & exit /b !errorlevel!)
+if "!args_dequoted!"=="--find metal" (call :respond XCRUN_FIND_METAL & exit /b !errorlevel!)
+if "!args_dequoted!"=="metal --version" (call :respond XCRUN_METAL_VERSION & exit /b !errorlevel!)
 if "!args_dequoted!"=="simctl list --json" (call :respond XCRUN_SIMCTL_DEVICES & exit /b !errorlevel!)
 if "!args_dequoted!"=="simctl delete unavailable" exit /b 0
 if "!args:~0,14!"=="simctl create " exit /b 0
