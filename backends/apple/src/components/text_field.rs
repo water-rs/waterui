@@ -39,7 +39,7 @@ use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
 #[cfg(target_os = "macos")]
 use waterui::text::font::Body;
-use waterui::text::font::{FontDesign, FontWeight, ResolvedFont};
+use waterui::text::font::ResolvedFont;
 use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
 use waterui_core::interaction::Disabled;
@@ -48,6 +48,7 @@ use waterui_core::layout::{
     StretchAxis, SubView, ViewDimensions,
 };
 
+use super::font::platform_font;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 
@@ -151,72 +152,6 @@ fn platform_color(color: &WorkingColor) -> Retained<PlatformColor> {
             f64::from(alpha),
         )
     }
-}
-
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
-/// The comma-separated candidates of a CSS-style family list — as in `text`.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names — the same rule as `text`.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-    italic: bool,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size());
-    let weight = platform_weight(resolved.weight());
-    let mut font = match resolved.family() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
-        }
-        _ => match resolved.design() {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
-    };
-    if italic && let Some(italic_font) = cocoa_ui::font::italic_variant(&font) {
-        font = italic_font;
-    }
-    font
 }
 
 /// The attributed string the current chunks render into — `text`'s builder

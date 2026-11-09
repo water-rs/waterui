@@ -70,10 +70,13 @@ discussion. In short:
   and respect accessibility text-size scaling.
 - Use **font slots** when you need to pass the choice around as a value:
   `.font(Title)`, `.font(font::Caption)`.
-- Use **direct overrides** (`.size(f32)`, `.bold()`, `.italic()`,
+- Use **direct overrides** (`.size(f32)`, `.weight(..)`, `.italic()`,
   explicit `Font` construction) for fixed-layout cases that should NOT
   follow Theme scaling: posters, splash screens, examples that demonstrate
   a specific visual.
+- `.bold()` is not a weight: it asks for the platform's bold face of the
+  font, which each backend resolves (Semibold for Apple body text). Use
+  `.weight(FontWeight::Bold)` for an exact weight of 700.
 
 These are different abstraction layers; do not collapse them.
 

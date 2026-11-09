@@ -48,6 +48,18 @@ pub mod filtered;
 pub mod fixed_container;
 #[cfg(feature = "focused")]
 pub mod focused;
+#[cfg(any(
+    feature = "date_picker",
+    feature = "image",
+    feature = "list",
+    feature = "multi_date_picker",
+    feature = "picker",
+    feature = "plain",
+    feature = "secure_field",
+    feature = "text",
+    feature = "text_field"
+))]
+mod font;
 #[cfg(feature = "gesture")]
 pub mod gesture;
 #[cfg(feature = "glass_background")]

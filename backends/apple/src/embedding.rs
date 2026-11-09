@@ -14,9 +14,12 @@ use waterui::{Environment, app::App, reactive::Binding};
 use waterui_core::layout::{LayoutDirection, ProposalSize};
 use waterui_locale::Locale;
 
+/// The `f64`s the ABI packs per host text style: `size`, `weight`,
+/// `bold_weight`, `line_height`, in this order.
+const HOST_FONT_FIELDS: usize = 4;
+
 /// The six platform text styles a `SwiftUI` host resolves and the ABI packs
-/// as 18 `f64` triples — `size`, `weight`, `line_height` per style, in this
-/// order.
+/// as [`HOST_FONT_FIELDS`] `f64`s per style, in this order.
 const HOST_FONT_STYLES: [cocoa_ui::system_font::TextStyle; 6] = [
     cocoa_ui::system_font::TextStyle::Body,
     cocoa_ui::system_font::TextStyle::Title1,
@@ -79,15 +82,17 @@ pub struct HostEnvironment {
 impl HostEnvironment {
     /// Reads one ABI snapshot: `dark`/`rtl` from the host's trait
     /// environment, `locale` as a NUL-terminated BCP-47 string, and
-    /// `HOST_FONT_STYLES.len() * 3` `f64`s from `fonts` — one
-    /// `(size, weight, line_height)` triple per style, in that order.
+    /// `HOST_FONT_STYLES.len() * HOST_FONT_FIELDS` `f64`s from `fonts` — one
+    /// `(size, weight, bold_weight, line_height)` group per style, in that
+    /// order.
     ///
     /// # Panics
     /// Panics when `locale` is not valid UTF-8 or a valid BCP-47 tag.
     ///
     /// # Safety
     /// `locale` is a live NUL-terminated string and `fonts` points to
-    /// eighteen readable, initialized `f64`s for the duration of the call.
+    /// `HOST_FONT_STYLES.len() * HOST_FONT_FIELDS` readable, initialized
+    /// `f64`s for the duration of the call.
     #[must_use]
     pub unsafe fn from_abi(
         dark: bool,
@@ -101,14 +106,19 @@ impl HostEnvironment {
             .expect("the host locale is valid UTF-8")
             .parse::<Locale>()
             .expect("the host locale is a valid BCP-47 tag");
-        // SAFETY: the caller contract supplies the eighteen readable doubles.
-        let slice = unsafe { std::slice::from_raw_parts(fonts, HOST_FONT_STYLES.len() * 3) };
-        // `HOST_FONT_STYLES` is the index contract: triple `i` carries the
+        // SAFETY: the caller contract supplies the readable doubles.
+        let slice =
+            unsafe { std::slice::from_raw_parts(fonts, HOST_FONT_STYLES.len() * HOST_FONT_FIELDS) };
+        // `HOST_FONT_STYLES` is the index contract: group `i` carries the
         // metrics of style `i`.
-        let fonts = std::array::from_fn(|index| cocoa_ui::system_font::FontMetrics {
-            size: slice[index * 3],
-            weight: slice[index * 3 + 1],
-            line_height: slice[index * 3 + 2],
+        let fonts = std::array::from_fn(|index| {
+            let group = &slice[index * HOST_FONT_FIELDS..(index + 1) * HOST_FONT_FIELDS];
+            cocoa_ui::system_font::FontMetrics {
+                size: group[0],
+                weight: group[1],
+                bold_weight: group[2],
+                line_height: group[3],
+            }
         });
         Self {
             scheme: if dark {
@@ -588,9 +598,9 @@ pub unsafe extern "C" fn waterui_apple_update_visibility(mount: *const c_void) {
 ///
 /// # Safety
 /// `mount` is a live mount handle borrowed on the main thread, created with
-/// a host environment. `host_fonts` points to eighteen readable, initialized
-/// `f64`s — six `(size, weight, line_height)` triples in
-/// [`HostEnvironment`]'s style order.
+/// a host environment. `host_fonts` points to the readable, initialized
+/// `f64`s [`HostEnvironment::from_abi`] documents — six
+/// `(size, weight, bold_weight, line_height)` groups in its style order.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_apple_update_environment(
     mount: *const c_void,
@@ -601,7 +611,7 @@ pub unsafe extern "C" fn waterui_apple_update_environment(
 ) {
     MainThreadMarker::new().expect("environment updates run on the main thread");
     // SAFETY: the caller borrows a live mount and passes a live locale
-    // string and eighteen readable doubles per the documented ABI.
+    // string and the readable doubles per the documented ABI.
     let mount = unsafe { &*mount.cast::<Mount>() };
     let scope = mount
         .host_scope

@@ -589,14 +589,18 @@ fn wire(
         let state = Rc::clone(state);
         move |font: waterui::text::font::ResolvedFont| {
             #[cfg(target_os = "macos")]
-            state.borrow().picker.set_font(&platform_font(mtm, &font));
+            state
+                .borrow()
+                .picker
+                .set_font(&super::font::platform_font(mtm, &font, false));
             #[cfg(target_os = "ios")]
             {
-                let _ = mtm;
                 let borrowed = state.borrow();
                 if let Some(seconds) = &borrowed.seconds {
                     seconds.font_size.set(f64::from(font.size()));
-                    seconds.font_weight.set(platform_weight(font.weight()));
+                    seconds
+                        .font_weight
+                        .set(super::font::resolved_weight(mtm, &font));
                     set_seconds_text(seconds);
                 }
             }
@@ -651,23 +655,6 @@ fn wire(
     }
 }
 
-/// The platform weight of a `FontWeight` on the `NSFont`/`UIFont` scale.
-const fn platform_weight(weight: waterui::text::font::FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    use waterui::text::font::FontWeight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
 /// A `WorkingColor` as the platform's extended linear Display-P3 color object — the
 /// `toUIColor`/`toNSColor` semantics sibling ports use.
 #[cfg(target_os = "ios")]
@@ -680,45 +667,6 @@ fn platform_color(color: &waterui::graphics::color::WorkingColor) -> Retained<pl
             f64::from(blue),
             f64::from(alpha),
         )
-    }
-}
-
-/// The platform face a resolved font names — the `Body` resolved font
-/// applied to the control's text.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic.
-#[cfg(target_os = "macos")]
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &waterui::text::font::ResolvedFont,
-) -> Retained<cocoa_ui::Font> {
-    use waterui::text::font::FontDesign;
-    let size = f64::from(resolved.size());
-    let weight = platform_weight(resolved.weight());
-    match resolved.family() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family
-                .split(',')
-                .map(str::trim)
-                .filter(|candidate| !candidate.is_empty())
-            {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| panic!("WaterUI: font family '{family}' not found"))
-        }
-        _ => match resolved.design() {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
     }
 }
 
