@@ -2262,7 +2262,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "attach the track to the operand's own signal")]
+    #[should_panic(expected = "attach the track to the operand's or property's own signal")]
     fn a_keyframe_track_of_another_type_panics() {
         let paint = Driven::new(solid(0., 0., 0.));
         let _content = Content::record(&LayoutSize::new(), |c| {
