@@ -105,6 +105,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSUUID",
     "NSDateFormatter",
     "NSFormatter",
+    "NSNumberFormatter",
     "NSDateInterval",
     "NSDictionary",
     "NSEnumerator",
