@@ -541,12 +541,14 @@ collect_no_first_paint_diagnostics() {
     echo "--- shard app process (pid ${app_pid:-unset}) ---"
     if [[ -n "${app_pid:-}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
       ps -o pid,stat,etime,command -p "${app_pid}" || true
-      sample "${app_pid}" 3 1 2>&1 | head -60
+      sample "${app_pid}" 3 1 2>&1 | sed -n '1,60p' || true
     else
       echo "app pid ${app_pid:-unset} is not running"
     fi
     echo "--- crash reports mentioning ${bundle_id} ---"
-    xcrun simctl spawn "${SIMULATOR_UDID}" \
+    "${command_deadline}" run --label "diag:crash-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl spawn "${SIMULATOR_UDID}" \
       log show --last 10m --style compact \
       --predicate 'process == "ReportCrash" OR eventMessage CONTAINS[c] "crashed"' \
       2>/dev/null | tail -40 || true
