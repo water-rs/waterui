@@ -173,13 +173,13 @@ struct RemindersTwin: View {
         Spacer(minLength: 0)
         Text("\(dest.count)")
           .font(.headline)
-          .fontWeight(.bold)
+          .bold()
           .foregroundStyle(.white)
       }
       Spacer(minLength: 0)
       Text(dest.title)
         .font(.body)
-        .fontWeight(.bold)
+        .bold()
         .foregroundStyle(.white)
     }
     .padding(10)
@@ -210,7 +210,7 @@ struct RemindersTwin: View {
         // list's accent color, leading-aligned — no date line underneath.
         Text((selection ?? .today).title)
           .font(.system(size: 32))
-          .fontWeight(.bold)
+          .bold()
           .foregroundStyle((selection ?? .today).color)
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(EdgeInsets(top: 14, leading: 18, bottom: 12, trailing: 18))
@@ -236,7 +236,7 @@ struct RemindersTwin: View {
     VStack(spacing: 10) {
       Text(title)
         .font(.caption)
-        .fontWeight(.bold)
+        .bold()
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(EdgeInsets(top: 8, leading: 18, bottom: 0, trailing: 18))
