@@ -59,8 +59,8 @@ mod platform {
     use crate::components::navigation::bar::{
         BarItem, BarState, bar_color, bar_item_frame, search_prompt,
     };
-    use crate::theme::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext};
+    use crate::theme::platform_color;
 
     use super::Fill;
     use alloc::rc::Rc;
@@ -353,8 +353,8 @@ mod platform {
     use crate::components::navigation::bar::{
         BarItem, BarItemIcon, BarState, bar_color, bar_item_frame, search_prompt,
     };
-    use crate::theme::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext};
+    use crate::theme::platform_color;
 
     use super::Fill;
     use alloc::rc::Rc;

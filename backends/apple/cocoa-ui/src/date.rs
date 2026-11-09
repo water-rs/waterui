@@ -257,7 +257,10 @@ impl YearMonth {
     #[must_use]
     pub const fn first_weekday(self) -> i32 {
         const MONTH_OFFSETS: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-        assert!(1 <= self.month && self.month <= 12, "a month is 1 through 12");
+        assert!(
+            1 <= self.month && self.month <= 12,
+            "a month is 1 through 12"
+        );
         let year = if self.month < 3 {
             self.year - 1
         } else {
@@ -269,11 +272,9 @@ impl YearMonth {
         )]
         let offset = MONTH_OFFSETS[(self.month - 1) as usize];
         // The day of the month is 1; Sunday is 0.
-        let weekday = (year + year.div_euclid(4) - year.div_euclid(100)
-            + year.div_euclid(400)
-            + offset
-            + 1)
-            .rem_euclid(7);
+        let weekday =
+            (year + year.div_euclid(4) - year.div_euclid(100) + year.div_euclid(400) + offset + 1)
+                .rem_euclid(7);
         weekday + 1
     }
 }
