@@ -664,7 +664,7 @@ mod tests {
                 Some(ContentChange::Update(updates)) => {
                     let _ = self.0.apply(updates);
                 }
-                Some(ContentChange::Edit(edit)) => self.0.edit(edit),
+                Some(ContentChange::Edit(edit)) => self.0.edit(*edit),
                 Some(ContentChange::Replace(_)) => panic!("an installed content never resends"),
                 None => {}
             }

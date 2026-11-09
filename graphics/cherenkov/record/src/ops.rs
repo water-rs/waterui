@@ -106,7 +106,10 @@ pub enum ContentOp {
     Update(Vec<SlotUpdate>),
     /// A live content's regions edited in place, then slot updates: the
     /// target applies it to the list it holds ([`Picture::edit`]).
-    Edit(Edit),
+    ///
+    /// Boxed like [`ContentChange::Edit`](crate::ContentChange::Edit), so
+    /// the op keeps the size and layout of the frequent variants.
+    Edit(Box<Edit>),
     /// A shared immutable picture.
     Picture(Picture),
 }

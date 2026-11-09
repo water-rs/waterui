@@ -1151,7 +1151,12 @@ impl Recorder {
 
     /// The index the next command is recorded at.
     fn here(&self) -> u32 {
-        u32::try_from(self.list.len()).expect("a display list holds at most u32::MAX commands")
+        Self::end_of(&self.list)
+    }
+
+    /// The index the next command recorded into `list` lands at.
+    fn end_of(list: &DisplayList) -> u32 {
+        u32::try_from(list.len()).expect("a display list holds at most u32::MAX commands")
     }
 
     /// Records `body` as a region: a part of the content that can later
@@ -1356,8 +1361,10 @@ impl Recorder {
     #[must_use]
     #[inline]
     pub(crate) fn finish(mut self) -> Content {
-        if let Some(levels) = self.levels.take() {
-            self.finish_regions(levels);
+        // Moved out, not taken: a recording without regions then leaves
+        // no `Option<Levels>` behind to drop.
+        if let Some(levels) = self.levels {
+            Self::finish_regions(&self.live, &self.list, levels);
         }
         self.list.trim_spare();
         let picture = match self.picture.take() {
@@ -1373,18 +1380,17 @@ impl Recorder {
     /// Closes the top level of a recording that opened regions: the
     /// table learns the root's segments, and the content keeps what the
     /// top level kept.
-    fn finish_regions(&self, Levels { mut frames, .. }: Levels) {
+    fn finish_regions(live: &LiveState, list: &DisplayList, Levels { mut frames, .. }: Levels) {
         let mut top = frames.pop().expect("a recording has its own level");
         assert!(frames.is_empty(), "every region closed");
-        let end = self.here();
+        let end = Self::end_of(list);
         top.close_run(end);
-        self.live
-            .regions
+        live.regions
             .borrow_mut()
             .as_mut()
             .expect("a recording with regions made their table")
             .finish_root(top.segments, end);
-        self.live.guards.borrow_mut().extend(top.kept);
+        live.guards.borrow_mut().extend(top.kept);
     }
 
     /// Subscribes to a value's later changes, which update operand `convert`
@@ -1969,7 +1975,7 @@ impl Content {
             return Some(ContentChange::Replace(self.picture.clone()));
         }
         if let Some(splices) = splices {
-            return Some(ContentChange::Edit(Edit { splices, updates }));
+            return Some(ContentChange::Edit(Box::new(Edit { splices, updates })));
         }
         (!updates.is_empty()).then_some(ContentChange::Update(updates))
     }
@@ -2000,7 +2006,10 @@ pub enum ContentChange {
     /// New values for slots, sent when signals change afterwards.
     Update(Vec<SlotUpdate>),
     /// Regions recorded, removed or moved in place, then slot updates.
-    Edit(Edit),
+    ///
+    /// Boxed: an edit is rare, and unboxed it would double the size of
+    /// every change and [`ContentOp`](crate::ops::ContentOp) a frame sends.
+    Edit(Box<Edit>),
 }
 
 impl From<ContentChange> for crate::ops::ContentOp {

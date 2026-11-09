@@ -613,7 +613,7 @@ impl Encoder {
                         reason: format!("layer {} edits regions of no live content", id.raw()),
                     });
                 };
-                picture.edit(edit);
+                picture.edit(*edit);
                 Content::Live(picture.clone())
             }
         };

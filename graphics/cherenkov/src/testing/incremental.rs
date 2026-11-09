@@ -87,7 +87,7 @@ fn apply_structural_edit<R: Renderer>(
         list.splice(splice);
     }
     let _ = list.apply(edit.updates.clone());
-    let _ = renderer.set_content(surface, layer, Some(ContentOp::Edit(edit)));
+    let _ = renderer.set_content(surface, layer, Some(ContentOp::Edit(Box::new(edit))));
     1
 }
 

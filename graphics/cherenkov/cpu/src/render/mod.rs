@@ -589,7 +589,7 @@ impl Renderer for RasterRenderer {
                 // The edit lowers the content again: its geometry is
                 // offered for reuse first, as a replacement's is.
                 lower::harvest(&mut self.geometry, content);
-                content.edit(edit);
+                content.edit(*edit);
                 None
             }
             Some(ContentOp::Picture(picture)) => state

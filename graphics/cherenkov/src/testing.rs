@@ -464,7 +464,7 @@ impl Renderer for NullRenderer {
                 self.pictures
                     .get_mut(&(surface, layer))
                     .expect("a structural edit targets a layer without content")
-                    .edit(edit);
+                    .edit(*edit);
                 None
             }
             None => self.pictures.remove(&(surface, layer)),
