@@ -132,9 +132,15 @@ private struct HostEnvironment: Equatable {
       if let value = (CTFontCopyVariation(font) as NSDictionary?)?[weightAxis] as? NSNumber {
         return value.doubleValue
       }
-      let axes = CTFontCopyVariationAxes(font) as! [NSDictionary]
-      let axis = axes.first { $0[kCTFontVariationAxisIdentifierKey] as? NSNumber == weightAxis }!
-      return (axis[kCTFontVariationAxisDefaultValueKey] as! NSNumber).doubleValue
+      guard let axes = CTFontCopyVariationAxes(font) as? [NSDictionary],
+        let axis = axes.first(where: {
+          $0[kCTFontVariationAxisIdentifierKey] as? NSNumber == weightAxis
+        }),
+        let value = axis[kCTFontVariationAxisDefaultValueKey] as? NSNumber
+      else {
+        fatalError("the system bold face has no wght variation axis")
+      }
+      return value.doubleValue
     }
     fonts = [Font.body, .title, .headline, .subheadline, .caption, .footnote]
       .flatMap { style -> [Double] in
