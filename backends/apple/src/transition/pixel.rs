@@ -268,6 +268,10 @@ pub struct PixelRemoval {
     env: Environment,
     /// A frozen capture is in flight — the next tick waits for it.
     pending: Cell<bool>,
+    /// Armed by the effect's first presentation — the run must not end
+    /// before it or the root's un-hide lands before it was ever hidden
+    /// (§2.7's hide-on-first-present contract).
+    first_presented: Cell<bool>,
     /// The in-flight capture — kept alive until it settles.
     input: RefCell<Option<Rc<FrozenInput>>>,
     /// The landed effect — `None` until the capture delivers.
@@ -300,9 +304,20 @@ impl PixelRemoval {
             body: RefCell::new(Some(body)),
             env: env.clone(),
             pending: Cell::new(false),
+            first_presented: Cell::new(false),
             input: RefCell::new(None),
             effect: RefCell::new(None),
         })
+    }
+
+    /// Whether the run must stay alive for this removal: a capture is in
+    /// flight, an effect is armed but has not presented its first frame,
+    /// or a `Deferred` retry is still worth issuing while the retired
+    /// root has pixels to capture (#3798's terminal/retryable split).
+    pub fn in_flight(&self, retired_has_pixels: bool) -> bool {
+        self.pending.get()
+            || (self.effect.borrow().is_none() && retired_has_pixels)
+            || (self.effect.borrow().is_some() && !self.first_presented.get())
     }
 
     /// The tick's frame republish plus the `Deferred` capture retry —
@@ -349,8 +364,12 @@ impl PixelRemoval {
                             // The root hides only once the effect's first
                             // frame is on screen — never before (§2.7).
                             let root = run.visual.root.clone();
+                            let weak_this = Rc::downgrade(&this);
                             effect.on_first_present(move || {
                                 view::set_hidden(&root, true);
+                                if let Some(this) = weak_this.upgrade() {
+                                    this.first_presented.set(true);
+                                }
                             });
                             effect.request_render();
                             *this.effect.borrow_mut() = Some(effect);
