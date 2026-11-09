@@ -593,8 +593,10 @@ impl Text {
 
     /// Asks for the platform's bold face of the font, which each backend
     /// resolves from its platform's definition; [`Self::weight`] with
-    /// [`FontWeight::Bold`] is an exact weight of 700 instead. See
-    /// [`Font::bold`](crate::font::Font::bold).
+    /// [`FontWeight::Bold`] is an exact weight of 700 instead. Text with no
+    /// font or text style takes the platform's plain bold (Bold on macOS),
+    /// while a text style takes its own bold (`.body()` is Semibold on
+    /// macOS). See [`Font::bold`](crate::font::Font::bold).
     pub fn bold(self) -> Self {
         self.map_config(|mut config| {
             config.content = config.content.map(StyledStr::bold).computed();
