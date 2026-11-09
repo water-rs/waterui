@@ -519,6 +519,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           cache: "false"
+      # cherenkov-gpu's build script compiles its Metal shaders with
+      # `xcrun metal`; the runner image ships Xcode without that toolchain.
+      - name: Install the Metal toolchain
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/metal-toolchain
       # Reads the shared `cargo-sources` archive — the `lint` job
       # writes it on Linux, apple.yml's rust job on macOS; read-only
       # lanes never save.
@@ -733,6 +738,10 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           cache: "false"
+      # cherenkov-gpu's build script compiles its Metal shaders with
+      # `xcrun metal`; the runner image ships Xcode without that toolchain.
+      - name: Install the Metal toolchain
+        uses: ./.github/actions/metal-toolchain
       # Reads the shared `cargo-sources` archive written by the Apple
       # gate's rust job (apple.yml); read-only lanes never save.
       - name: Restore Cargo sources
@@ -816,6 +825,10 @@ jobs:
         with:
           components: clippy
           cache: "false"
+      # cherenkov-gpu's build script compiles its Metal shaders with
+      # `xcrun metal`; the runner image ships Xcode without that toolchain.
+      - name: Install the Metal toolchain
+        uses: ./.github/actions/metal-toolchain
       # Reads the shared `cargo-sources` archive written by the Apple
       # gate's rust job (apple.yml); read-only lanes never save.
       - name: Restore Cargo sources
@@ -863,6 +876,11 @@ jobs:
         with:
           components: clippy
           cache: "false"
+      # cherenkov-gpu's build script compiles its Metal shaders with
+      # `xcrun metal`; the runner image ships Xcode without that toolchain.
+      - name: Install the Metal toolchain
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/metal-toolchain
       # Reads the shared `cargo-sources` archive — the `lint` job
       # writes it on Linux, apple.yml's rust job on macOS; read-only
       # lanes never save.
@@ -1161,6 +1179,10 @@ jobs:
           components: clippy
           targets: ${{ matrix.target }}
           cache: "false"
+      # cherenkov-gpu's build script compiles its Metal shaders with
+      # `xcrun metal`; the runner image ships Xcode without that toolchain.
+      - name: Install the Metal toolchain
+        uses: ./.github/actions/metal-toolchain
       # Reads the shared `cargo-sources` archive written by the Apple
       # gate's rust job (apple.yml); read-only lanes never save.
       - name: Restore Cargo sources
@@ -1283,6 +1305,10 @@ jobs:
         with:
           components: clippy
           cache: "false"
+      # cherenkov-gpu's build script compiles its Metal shaders with
+      # `xcrun metal`; the runner image ships Xcode without that toolchain.
+      - name: Install the Metal toolchain
+        uses: ./.github/actions/metal-toolchain
       # Restore-only reader of the shared macOS cargo-sources archive
       # (apple.yml's rust job writes it); nightly lanes save nothing.
       - name: Restore Cargo sources
