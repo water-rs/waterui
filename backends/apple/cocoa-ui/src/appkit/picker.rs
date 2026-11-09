@@ -68,8 +68,10 @@ impl fmt::Debug for Control {
 }
 
 /// The space between a label and its sibling rows is the container's
-/// business; this is the gap between stacked radio buttons.
-const RADIO_SPACING: f64 = 6.0;
+/// business; this is the gap between stacked radio buttons — measured
+/// off SwiftUI's `.radioGroup` row pitch (nightly run 42559205399:
+/// 6.0 drifted −1 px every second row).
+const RADIO_SPACING: f64 = 6.5;
 
 impl Control {
     fn view(&self) -> &NSView {
