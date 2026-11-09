@@ -17,7 +17,7 @@ use waterui_core::transition::{
 };
 
 use crate::transition::TransitionClaim;
-use crate::transition::clock::TransitionDriver;
+use crate::transition::clock::{Timeline, TransitionDriver};
 use crate::transition::host::TransitionHost;
 
 #[cfg(target_os = "macos")]
@@ -169,6 +169,9 @@ pub struct InsertionRun {
     host: Rc<TransitionHost>,
     /// The display driver — `None` until the host is in a window.
     driver: Option<TransitionDriver>,
+    /// The timeline the driver measures frames on, resolved from the
+    /// site's environment.
+    timeline: Timeline,
     /// The site's environment — the lazy blur effect reads its GPU
     /// services from it.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
@@ -226,8 +229,6 @@ impl InsertionRun {
         claim: &TransitionClaim,
         env: &waterui_backend_core::Environment,
     ) -> Rc<RefCell<Option<Self>>> {
-        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
-        let _ = env; // GPU services land with the pixel insertion (stage 9)
         let state = claim
             .spec
             .start(TransitionPhase::Insertion, claim.reduce_motion);
@@ -256,6 +257,7 @@ impl InsertionRun {
             geometry,
             host: Rc::clone(host),
             driver: None,
+            timeline: Timeline::of(env),
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
             env: env.clone(),
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
@@ -304,7 +306,7 @@ impl InsertionRun {
         run.update_blur(&sample);
         let mtm =
             cocoa_ui::MainThreadMarker::new().expect("a transition starts on the main thread");
-        let driver = TransitionDriver::start(mtm, &run.host.host, {
+        let driver = TransitionDriver::start(mtm, &run.host.host, run.timeline.clone(), {
             let slot = Rc::downgrade(slot);
             move |delta| {
                 let Some(slot) = slot.upgrade() else {

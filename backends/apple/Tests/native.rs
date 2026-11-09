@@ -12880,6 +12880,8 @@ mod transition {
     use waterui::views::ForEach;
     use waterui_apple::contract::Mounted;
     use waterui_apple::native_test_support::pump_main_until;
+    #[cfg(feature = "gpu_surface")]
+    use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_backend_core::AnyView;
     use waterui_core::Metadata;
     use waterui_core::metadata::Retain;
@@ -15224,6 +15226,27 @@ mod transition {
     /// `gpu_runtime::prepare` production path installs.
     #[cfg(feature = "gpu_surface")]
     pub fn gpu_leaf(view: impl waterui_backend_core::View) -> waterui_apple::contract::NativeLeaf {
+        gpu_leaf_with(view, |_| {})
+    }
+
+    /// [`gpu_leaf`] under a [`ManualTransitionClock`]: every transition
+    /// the leaf runs holds still until the trial advances the returned
+    /// clock, so it observes a run in flight for as long as it needs.
+    #[cfg(feature = "gpu_surface")]
+    fn gpu_leaf_on_manual_clock(
+        view: impl waterui_backend_core::View,
+    ) -> (waterui_apple::contract::NativeLeaf, ManualTransitionClock) {
+        let clock = ManualTransitionClock::default();
+        let leaf = gpu_leaf_with(view, |env| env.insert(clock.clone()));
+        (leaf, clock)
+    }
+
+    /// [`gpu_leaf`] with `configure` applied to the leaf's environment.
+    #[cfg(feature = "gpu_surface")]
+    fn gpu_leaf_with(
+        view: impl waterui_backend_core::View,
+        configure: impl FnOnce(&mut waterui_backend_core::Environment),
+    ) -> waterui_apple::contract::NativeLeaf {
         // The filtered leaf's `AnyEffect::build` binds through the local
         // executor — `initialize_process` only runs on macOS, so install
         // the plain main-queue answer here the way the webview trials do.
@@ -15238,6 +15261,7 @@ mod transition {
         )
         .expect("the harness provides a GPU runtime");
         waterui_apple::native_test_support::install_gpu(&mut env, runtime);
+        configure(&mut env);
         waterui_apple::dispatch::render(waterui_backend_core::AnyView::new(view), &env)
     }
 
@@ -15563,8 +15587,6 @@ mod transition {
         });
     }
 
-    /// A blur spec — long enough to watch the effect live mid-flight.
-    #[cfg(feature = "gpu_surface")]
     /// Sharp edges over the GPU gradient: a review PNG shows whether
     /// the frame is blurred, which a smooth gradient alone cannot.
     #[cfg(feature = "gpu_surface")]
@@ -15573,9 +15595,16 @@ mod transition {
         vstack((text("BLUR").size(96.0), gpu_picture()))
     }
 
+    /// The blur transition's animation length — on a
+    /// [`ManualTransitionClock`], the advance that ends a run.
+    #[cfg(feature = "gpu_surface")]
+    const BLUR_DURATION: Duration = Duration::from_millis(400);
+
+    /// A blur spec over [`BLUR_DURATION`].
+    #[cfg(feature = "gpu_surface")]
     fn blur_spec() -> TransitionSpec {
         TransitionSpec::new(PropertyTransition::blur(8.0))
-            .with_animation(Animation::linear(Duration::from_millis(400)))
+            .with_animation(Animation::linear(BLUR_DURATION))
     }
 
     /// `blur_insertion_renders_through_the_live_effect` — a
@@ -15588,7 +15617,7 @@ mod transition {
     pub fn blur_insertion_renders_through_the_live_effect() {
         let _mtm = mtm();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = gpu_leaf(dynamic);
+        let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| handler.set(label("before")));
         assert!(
@@ -15627,6 +15656,7 @@ mod transition {
         );
         // Completion: the output leaves and the content view is the same
         // pointer — it was never reparented.
+        clock.advance(BLUR_DURATION);
         assert!(
             pump_main_until(5.0, || {
                 autoreleasepool(|_| {
@@ -15650,7 +15680,7 @@ mod transition {
     pub fn blur_removal_renders_from_the_frozen_capture() {
         let _mtm = mtm();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = gpu_leaf(dynamic);
+        let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
             handler.set(Metadata::new(blur_picture(), blur_spec()));
@@ -15662,6 +15692,19 @@ mod transition {
                     .any(|(_, surface)| surface.has_presented_frame())
             })),
             "the GPU surface presents before removal"
+        );
+        // The child's own blur insertion ends first, so the removal
+        // starts from the settled child: its live effect's output leaves
+        // the host.
+        clock.advance(BLUR_DURATION);
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                view::subviews(leaf.view())
+                    .into_iter()
+                    .next()
+                    .is_some_and(|host| view::subviews(&host).len() == 1)
+            })),
+            "the blur insertion completes once its clock passes the animation's end"
         );
         let host_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
         let root_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
@@ -15697,6 +15740,9 @@ mod transition {
             );
             root
         });
+        // Mid-ramp: the removal blur grows from 0, and the first nonzero
+        // sample starts the frozen capture the effect blurs.
+        clock.advance(BLUR_DURATION / 2);
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| view::is_hidden(&root_view))),
             "the first blurred frame hides the retired root"
@@ -15709,14 +15755,12 @@ mod transition {
                 "the frozen effect's output joined the ghost host"
             );
         });
-        // Mid-ramp: the removal blur grows from 0, so the frame the
-        // effect first presents is barely blurred.
-        pump_main_until(0.2, || false);
         export_window_png(
             leaf.view(),
             "/tmp/1472-stage8",
             "blur_removal_renders_from_the_frozen_capture",
         );
+        clock.advance(BLUR_DURATION / 2);
         assert!(
             pump_main_until(5.0, || {
                 autoreleasepool(|_| view::subviews(leaf.view()).len() == 1)
@@ -15846,8 +15890,13 @@ mod transition {
         }
     }
 
-    /// A pixel probe's frame cell plus its spec — a 400 ms linear ramp
-    /// keeps the transition observable across several pumps.
+    /// The pixel probe's animation length — on a
+    /// [`ManualTransitionClock`], the advance that ends a run.
+    #[cfg(feature = "gpu_surface")]
+    const PIXEL_PROBE_DURATION: Duration = Duration::from_millis(400);
+
+    /// A pixel probe's frame cell plus its spec — a linear ramp over
+    /// [`PIXEL_PROBE_DURATION`].
     #[cfg(feature = "gpu_surface")]
     fn pixel_probe() -> (
         Rc<RefCell<Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>>>,
@@ -15857,8 +15906,23 @@ mod transition {
         let spec = TransitionSpec::new(PixelProbe {
             frame: Rc::clone(&frame),
         })
-        .with_animation(Animation::linear(Duration::from_millis(400)));
+        .with_animation(Animation::linear(PIXEL_PROBE_DURATION));
         (frame, spec)
+    }
+
+    /// Ends the pixel run in flight on `clock` — the probe child's own
+    /// insertion — and waits for its overlay to leave, so the removal
+    /// that follows starts from a settled child rather than retiring a
+    /// run mid-flight.
+    #[cfg(feature = "gpu_surface")]
+    fn finish_pixel_run(window: &super::AttachedWindow, clock: &ManualTransitionClock) {
+        clock.advance(PIXEL_PROBE_DURATION);
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(
+                |_| retired_overlay(window).is_none()
+            )),
+            "the pixel run completes once its clock passes the animation's end"
+        );
     }
 
     /// The retired overlay host the pixel transition added directly to
@@ -15977,12 +16041,13 @@ mod transition {
         let _mtm = mtm();
         let (probe_frame, spec) = pixel_probe();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = gpu_leaf(dynamic);
+        let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
             handler.set(Metadata::new(blur_picture(), spec));
         });
         await_gpu_presented(leaf.view());
+        finish_pixel_run(&window, &clock);
         autoreleasepool(|_| handler.set(label("gone")));
         // The frozen capture lands and the effect mounts in the window
         // overlay — the ghost stays beneath the live child.
@@ -16041,6 +16106,7 @@ mod transition {
             "a_pixel_removal_freezes_into_the_window_overlay",
         );
         // Completion releases the overlay and the ghost host.
+        clock.advance(PIXEL_PROBE_DURATION);
         assert!(
             pump_main_until(5.0, || {
                 autoreleasepool(|_| {
@@ -16060,7 +16126,7 @@ mod transition {
         let _mtm = mtm();
         let (_frame, spec) = pixel_probe();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = gpu_leaf(dynamic);
+        let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| handler.set(label("before")));
         assert!(
@@ -16120,6 +16186,7 @@ mod transition {
         );
         // Completion: the overlay leaves and the content shows again —
         // its `Retain` never died, since semantics stayed live.
+        clock.advance(PIXEL_PROBE_DURATION);
         assert!(
             pump_main_until(5.0, || {
                 autoreleasepool(|_| {
@@ -16155,7 +16222,7 @@ mod transition {
         let _mtm = mtm();
         let (probe_frame, spec) = pixel_probe();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = gpu_leaf(dynamic);
+        let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         // The site lives inside a scroll view sized beyond the window:
         // the claimed child gets a nonzero slot at once and the ghost's
         // window rect moves with the content offset.
@@ -16193,6 +16260,7 @@ mod transition {
             handler.set(Metadata::new(blur_picture(), spec));
         });
         await_gpu_presented(leaf.view());
+        finish_pixel_run(&window, &clock);
         autoreleasepool(|_| handler.set(label("gone")));
         assert!(
             pump_main_until(5.0, || autoreleasepool(
@@ -16240,6 +16308,7 @@ mod transition {
             "/tmp/1472-stage9",
             "pixel_frame_follows_the_slot_while_scrolling",
         );
+        finish_pixel_run(&window, &clock);
     }
 }
 
