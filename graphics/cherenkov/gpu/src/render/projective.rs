@@ -22,11 +22,45 @@ pub struct LocalKey {
     /// The projective layer.
     pub layer: LayerId,
     /// Retained picture allocation, or the entire projective layer.
-    pub picture: Option<usize>,
+    pub picture: Option<PictureId>,
     /// `2 * log2(density)`.
     pub bucket: i32,
     /// Storage representation of these pixels.
-    pub format: wgpu::TextureFormat,
+    pub format: LocalFormat,
+}
+
+/// A nested picture's identity: the address of its immutable display list,
+/// which the retained snapshot keeps alive for as long as its pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PictureId(std::num::NonZeroUsize);
+
+impl PictureId {
+    /// The identity of `picture`'s display list.
+    #[must_use]
+    pub fn of(picture: &cherenkov::Picture) -> Self {
+        Self(std::ptr::NonNull::from(picture.display_list()).addr())
+    }
+}
+
+/// The texture format a local image stores its pixels in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LocalFormat {
+    /// The working format: every projective layer, and pictures with
+    /// high-dynamic-range content.
+    Working,
+    /// Encoded 8-bit sRGB, for standard-range pictures.
+    Srgb8,
+}
+
+impl LocalFormat {
+    /// The texture format of this storage.
+    #[must_use]
+    pub const fn texture(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Working => super::WORKING_FORMAT,
+            Self::Srgb8 => wgpu::TextureFormat::Rgba8UnormSrgb,
+        }
+    }
 }
 
 /// The signed half-octave exponent of the raster density.
@@ -212,7 +246,7 @@ pub fn mip_bytes(format: wgpu::TextureFormat, levels: &[(u32, u32)]) -> u64 {
 
 impl Realize {
     pub fn bytes(&self) -> u64 {
-        mip_bytes(self.key.format, &self.levels)
+        mip_bytes(self.key.format.texture(), &self.levels)
     }
 }
 
@@ -239,8 +273,8 @@ pub struct PictureImage {
 }
 
 impl PictureImage {
-    pub fn identity(&self) -> usize {
-        std::ptr::from_ref(self.source.display_list()) as usize
+    pub fn identity(&self) -> PictureId {
+        PictureId::of(&self.source)
     }
 }
 
@@ -250,6 +284,8 @@ pub struct Entry {
     pub picture: Option<PictureImage>,
     /// Its density bucket.
     pub bucket: i32,
+    /// The storage its texture was created in.
+    pub format: LocalFormat,
     /// What the texture holds; `None` until a realization completed.
     pub key: Option<Key>,
     /// The inputs its realization read.
@@ -276,7 +312,7 @@ pub struct Entry {
 impl Entry {
     pub fn matches(&self, key: LocalKey) -> bool {
         self.bucket == key.bucket
-            && self.texture.format() == key.format
+            && self.format == key.format
             && self.picture.as_ref().map(PictureImage::identity) == key.picture
     }
 
@@ -285,7 +321,7 @@ impl Entry {
             layer,
             picture: self.picture.as_ref().map(PictureImage::identity),
             bucket: self.bucket,
-            format: self.texture.format(),
+            format: self.format,
         }
     }
 
@@ -334,7 +370,7 @@ impl Entry {
         pipelines: &Pipelines,
         bucket: i32,
         levels: &[(u32, u32)],
-        format: wgpu::TextureFormat,
+        format: LocalFormat,
     ) -> Self {
         let (w, h) = levels[0];
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -347,7 +383,7 @@ impl Entry {
             mip_level_count: levels.len() as u32,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format,
+            format: format.texture(),
             // A capture inside the local image copies out of it; a
             // blended composite inside it copies it aside.
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -381,6 +417,7 @@ impl Entry {
             .collect();
         Self {
             bucket,
+            format,
             picture: None,
             key: None,
             deps: Deps::default(),
@@ -396,9 +433,9 @@ impl Entry {
 
     /// Whether the texture's base level is `size`.
     #[must_use]
-    pub fn fits(&self, size: (u32, u32), format: wgpu::TextureFormat) -> bool {
+    pub fn fits(&self, size: (u32, u32), format: LocalFormat) -> bool {
         let s = self.texture.size();
-        (s.width, s.height) == size && self.texture.format() == format
+        (s.width, s.height) == size && self.format == format
     }
 
     /// Release obsolete texture views even while this cached image is undrawn.
@@ -671,7 +708,7 @@ mod tests {
             key: LocalKey {
                 layer: LayerId::new(1),
                 picture: None,
-                format: super::super::WORKING_FORMAT,
+                format: LocalFormat::Working,
                 bucket: 0,
             },
             inverse,

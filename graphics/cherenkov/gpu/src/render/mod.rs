@@ -6396,7 +6396,7 @@ impl GpuRenderer {
             self.ensure_projective(&[surface, self.scratch_format, WORKING_FORMAT])?;
         }
         for r in &realize {
-            self.ensure_projective(&[r.key.format])?;
+            self.ensure_projective(&[r.key.format.texture()])?;
         }
         let available = self.projective_available();
         let Some(surf) = self.surfaces.get_mut(&id) else {
@@ -7492,24 +7492,15 @@ impl GpuRenderer {
                     lowered,
                 )?;
                 if pictures {
-                    let projective_bytes: u64 = lowered
-                        .composed
-                        .iter()
-                        .map(|key| {
-                            lowered.realize.iter().find(|r| r.key == *key).map_or_else(
-                                || projective_entry(&surf.projective, *key).bytes(),
-                                projective::Realize::bytes,
-                            )
-                        })
-                        .sum();
-                    lowering.pictures = Some(lower::PictureInputs::new(
-                        &surf.projective,
-                        inputs,
-                        inputs
-                            .picture_bytes
-                            .min(inputs.limits.max_bytes.saturating_sub(projective_bytes)),
-                        &layers,
-                    ));
+                    return Self::run_pictures(
+                        &mut lowering,
+                        frame,
+                        &mut layers,
+                        (&glyphs, groups),
+                        (&surf.projective, inputs, &surf.plan),
+                        placed,
+                        lowered,
+                    );
                 }
                 lowering.run(
                     frame.tree,
@@ -7521,10 +7512,6 @@ impl GpuRenderer {
                     &surf.plan,
                 )
             });
-            if let Some(mut pictures) = lowering.pictures.take() {
-                lowered.realize.append(&mut pictures.realize);
-                lowered.composed.append(&mut pictures.composed);
-            }
             lowered.commands += lowering.commands_lowered;
             lowered.layers = lowering.layers_composed;
             lowered.glyphs = lowering.glyphs_rasterized();
@@ -7543,6 +7530,59 @@ impl GpuRenderer {
         surf.frame.content.sort_unstable_by_key(|(id, _)| id.raw());
         surf.frame.external.sort_unstable_by_key(|id| id.raw());
         surf.frame.external.dedup();
+        result
+    }
+
+    /// Runs the surface walk of content holding a retained picture: admits
+    /// picture images into the local-image budget the projective layers left,
+    /// and records the picture images the walk realizes and composes.
+    #[inline(never)]
+    fn run_pictures<'a>(
+        lowering: &mut Lowering<'a>,
+        frame: &SurfaceFrame<'_>,
+        layers: &mut FxHashMap<LayerId, ContentData>,
+        (glyphs, groups): (&GlyphContext<'_>, &FxHashMap<u64, BackdropGroupInfo>),
+        (retained, inputs, plan): (
+            &'a FxHashMap<LayerId, Vec<projective::Entry>>,
+            &'a projective::Inputs,
+            &planes::Plan,
+        ),
+        placed: FxHashMap<LayerId, projective::Placement>,
+        lowered: &mut Lowered,
+    ) -> Result<(), RenderError> {
+        let projective_bytes: u64 = lowered
+            .composed
+            .iter()
+            .map(|key| {
+                lowered.realize.iter().find(|r| r.key == *key).map_or_else(
+                    || projective_entry(retained, *key).bytes(),
+                    projective::Realize::bytes,
+                )
+            })
+            .sum();
+        lowering.pictures = Some(lower::PictureInputs::new(
+            retained,
+            inputs,
+            inputs
+                .picture_bytes
+                .min(inputs.limits.max_bytes.saturating_sub(projective_bytes)),
+            layers,
+        ));
+        let result = lowering.run(
+            frame.tree,
+            layers,
+            frame.clear,
+            glyphs,
+            groups,
+            placed,
+            plan,
+        );
+        let mut pictures = lowering
+            .pictures
+            .take()
+            .expect("the surface walk restores its picture inputs");
+        lowered.realize.append(&mut pictures.realize);
+        lowered.composed.append(&mut pictures.composed);
         result
     }
 
@@ -7572,7 +7612,7 @@ impl GpuRenderer {
             let key = projective::LocalKey {
                 layer: plan.layer,
                 picture: None,
-                format: WORKING_FORMAT,
+                format: projective::LocalFormat::Working,
                 bucket: projective::bucket(image.density),
             };
             let cache =

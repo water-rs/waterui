@@ -3,7 +3,7 @@ use super::{
     Affine, Emission, EmissionStorage, GlyphContext, LayerId, LocalKey, Lowering, Op, Placement,
     Range, Realization, Rect, RenderError, Target,
 };
-use crate::render::projective::{Key, PictureImage, Realize};
+use crate::render::projective::{Key, LocalFormat, PictureId, PictureImage, Realize};
 use cherenkov::lowering::projective::{Homography, LocalImage, mip_levels};
 
 /// Picture bounds survive texture eviction and admission retries. Keeping the
@@ -11,7 +11,7 @@ use cherenkov::lowering::projective::{Homography, LocalImage, mip_levels};
 pub(super) struct PreparedDomain {
     source: cherenkov::Picture,
     bucket: i32,
-    format: wgpu::TextureFormat,
+    format: LocalFormat,
     replacements: u64,
     source_bytes: u64,
     visible: bool,
@@ -53,14 +53,14 @@ impl<'a> super::PictureInputs<'a> {
                 };
                 let key = LocalKey {
                     layer,
-                    picture: Some(std::ptr::from_ref(prepared.source.display_list()) as usize),
+                    picture: Some(PictureId::of(&prepared.source)),
                     bucket: prepared.bucket,
                     format: prepared.format,
                 };
                 let mut size = domain.size;
                 let mut bytes = 0;
                 loop {
-                    bytes += crate::render::texel_bytes(key.format)
+                    bytes += crate::render::texel_bytes(key.format.texture())
                         * u64::from(size.0)
                         * u64::from(size.1);
                     if size == (1, 1) {
@@ -170,16 +170,16 @@ impl Lowering<'_> {
                     if crate::render::content_range::of_ops(ops, glyphs.images)
                         == crate::render::present::ColorRange::HighDynamicRange
                     {
-                        wgpu::TextureFormat::Rgba16Float
+                        LocalFormat::Working
                     } else {
-                        wgpu::TextureFormat::Rgba8UnormSrgb
+                        LocalFormat::Srgb8
                     }
                 },
                 |prepared| prepared.format,
             );
         let key = LocalKey {
             layer,
-            picture: Some(std::ptr::from_ref(picture.display_list()) as usize),
+            picture: Some(PictureId::of(picture)),
             bucket: crate::render::projective::bucket(density),
             format,
         };
@@ -313,7 +313,7 @@ impl Lowering<'_> {
             )
         } else {
             image.levels = mip_levels(image.size);
-            crate::render::projective::mip_bytes(format, &image.levels)
+            crate::render::projective::mip_bytes(format.texture(), &image.levels)
         };
         if !already_composed && bytes > context.available {
             return Ok(None);
