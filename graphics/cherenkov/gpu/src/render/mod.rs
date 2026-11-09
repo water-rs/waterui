@@ -4115,6 +4115,14 @@ impl Renderer for GpuRenderer {
                     .update(updates);
                 None
             }
+            Some(ContentOp::Edit(edit)) => {
+                state
+                    .layers
+                    .get_mut(&layer)
+                    .expect("a structural edit targets a layer without content")
+                    .edit(edit);
+                None
+            }
             Some(ContentOp::Picture(picture)) => state
                 .layers
                 .insert(layer, ContentData::picture(picture))

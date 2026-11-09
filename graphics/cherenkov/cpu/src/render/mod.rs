@@ -581,6 +581,17 @@ impl Renderer for RasterRenderer {
                     .update(updates);
                 None
             }
+            Some(ContentOp::Edit(edit)) => {
+                let content = state
+                    .layers
+                    .get_mut(&layer)
+                    .expect("a structural edit targets a layer without content");
+                // The edit lowers the content again: its geometry is
+                // offered for reuse first, as a replacement's is.
+                lower::harvest(&mut self.geometry, content);
+                content.edit(edit);
+                None
+            }
             Some(ContentOp::Picture(picture)) => state
                 .layers
                 .insert(layer, ContentData::picture(picture))

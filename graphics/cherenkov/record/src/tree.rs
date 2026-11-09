@@ -24,6 +24,21 @@ use crate::shape::ShapeData;
 use crate::style::{BlendMode, FilterId};
 use crate::target::Target;
 
+/// Folds slot updates into a layer's content flags: an update can only
+/// add a non-`Normal` group or a translucent operand.
+fn note_updates(node: &mut LayerNode, updates: &[SlotUpdate]) {
+    node.content_blends |= updates.iter().any(|SlotUpdate { value, .. }| {
+        matches!(value, Operand::Group(group) if group.blend != BlendMode::Normal)
+    });
+    node.content_translucent |= updates.iter().any(|SlotUpdate { value, .. }| match value {
+        Operand::Paint(_) | Operand::Shadow(_) | Operand::Run(_) => true,
+        Operand::Group(group) => {
+            group.opacity < 1.0 || group.blend != BlendMode::Normal || group.filter.is_some()
+        }
+        Operand::Shape(_) | Operand::Stroke(_) | Operand::Transform(_) | Operand::Rect(_) => false,
+    });
+}
+
 /// The fast rate class: springs, curves and fast decays run here.
 pub const RATE_FAST: RefreshRange = 60..=120;
 /// The slow rate class: only decays slower than one device pixel per frame
@@ -716,23 +731,16 @@ impl SurfaceTree {
                 node.content_blends = blends_within(list, 0..list.len());
                 node.content_translucent = translucent_within(list, 0..list.len());
             }
-            Some(ContentOp::Update(updates)) => {
-                node.content_blends |= updates.iter().any(|SlotUpdate { value, .. }| {
-                    matches!(value, Operand::Group(group) if group.blend != BlendMode::Normal)
-                });
-                node.content_translucent |=
-                    updates.iter().any(|SlotUpdate { value, .. }| match value {
-                        Operand::Paint(_) | Operand::Shadow(_) | Operand::Run(_) => true,
-                        Operand::Group(group) => {
-                            group.opacity < 1.0
-                                || group.blend != BlendMode::Normal
-                                || group.filter.is_some()
-                        }
-                        Operand::Shape(_)
-                        | Operand::Stroke(_)
-                        | Operand::Transform(_)
-                        | Operand::Rect(_) => false,
-                    });
+            Some(ContentOp::Update(updates)) => note_updates(node, updates),
+            Some(ContentOp::Edit(edit)) => {
+                // Conservative, like an update: a removed blend or
+                // translucent command leaves the flags set.
+                for splice in &edit.splices {
+                    let list = &splice.insert;
+                    node.content_blends |= blends_within(list, 0..list.len());
+                    node.content_translucent |= translucent_within(list, 0..list.len());
+                }
+                note_updates(node, &edit.updates);
             }
             None => {
                 node.content_blends = false;

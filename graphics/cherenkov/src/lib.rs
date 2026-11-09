@@ -73,8 +73,8 @@ pub use crate::color::{
 };
 pub use crate::config::{Budget, Bytes, MemoryUsage, Pressure};
 pub use crate::display_list::{
-    Command, Dirty, DisplayList, DisplayListView, Operand, OperandKind, OperandRef, Operands,
-    Picture, ScopeError, Slot, SlotUpdate,
+    Command, Dirty, DisplayList, DisplayListView, Edit, Operand, OperandKind, OperandRef, Operands,
+    Picture, ScopeError, Slot, SlotUpdate, Splice,
 };
 pub use crate::engine::Engine;
 pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
@@ -109,6 +109,7 @@ pub use crate::size::LayoutSize;
 pub use crate::style::{BlendMode, BlendSpace, FilterId, Group, Shadow};
 pub use crate::surface::{EngineQueue, Surface};
 pub use crate::text::{TextLayout, draw_text};
+pub use cherenkov_record::Region;
 // The moved layer-tree types: re-exported at the root exactly like the
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
