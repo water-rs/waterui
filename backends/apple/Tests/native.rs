@@ -3566,7 +3566,68 @@ mod gpu_surface {
                 "gpu_surface::view_render_succeeds_over_a_healthy_gpu_child",
                 view_render_succeeds_over_a_healthy_gpu_child,
             ),
+            Trial::test(
+                "gpu_surface::an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change",
+                an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change,
+            ),
         ]
+    }
+
+    /// A surface whose content takes input hears `Resize` once the surface
+    /// learns its bounds and scale — before any frame renders — and then
+    /// once per change of logical size, never again for a repeated layout.
+    pub fn an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change()
+    -> Result<(), libtest_mimic::Failed> {
+        use waterui_graphics::input::SurfaceInputEvent;
+
+        let mtm = mtm();
+        let (mounted, events) = pollster::block_on(MountedSceneSurface::mount_recording_input(mtm))
+            .map_err(|error| format!("a mounted input surface: {error}"))?;
+        mounted.ensure_fixture_window();
+        let scale = mounted
+            .backing_scale()
+            .expect("a windowed surface has a backing scale");
+
+        // The window placed the surface and the surface learned its scale:
+        // the content has been told, and nothing but a resize happened.
+        {
+            let events = events.borrow();
+            let Some(SurfaceInputEvent::Resize { scale: told, .. }) = events.first() else {
+                panic!("the content was not told its size before its first frame: {events:?}");
+            };
+            assert!((f64::from(*told) - scale).abs() < f64::EPSILON);
+            assert!(
+                events
+                    .iter()
+                    .all(|event| matches!(event, SurfaceInputEvent::Resize { .. })),
+                "only resizes are delivered without input: {events:?}"
+            );
+        }
+
+        let resizes = || {
+            events
+                .borrow()
+                .iter()
+                .filter_map(|event| match event {
+                    SurfaceInputEvent::Resize { size, .. } => Some((size.width, size.height)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = resizes().len();
+        mounted.set_view_frame(200.0, 100.0);
+        mounted.initialize_gpu();
+        mounted.initialize_gpu();
+        assert_eq!(
+            resizes()[before..],
+            [(200.0, 100.0)],
+            "a new size is told once, however often the surface is laid out"
+        );
+
+        mounted.set_view_frame(300.0, 100.0);
+        mounted.initialize_gpu();
+        assert_eq!(resizes()[before..], [(200.0, 100.0), (300.0, 100.0)]);
+        Ok(())
     }
 
     /// A typed frame-path failure settling on the owner resolves its

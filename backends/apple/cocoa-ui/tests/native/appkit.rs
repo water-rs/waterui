@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use cocoa_ui::appkit::input_view::InputView;
 use cocoa_ui::appkit::{HostView, Label, TextField, Window, WindowLevel, WindowStyle};
+use cocoa_ui::input::{PointerButton, SurfaceEvent};
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::Bool;
 use cocoa_ui::objc2::{msg_send, sel};
@@ -16,8 +17,27 @@ use libtest_mimic::Trial;
 
 use crate::harness::marker;
 
+// `CGScrollPhase` and `CGMomentumScrollPhase` values; `NSEvent` turns them
+// into its own `NSEventPhase` bits.
+const BEGAN: i64 = 1;
+const CHANGED: i64 = 2;
+const ENDED: i64 = 4;
+const CANCELLED: i64 = 8;
+const MAY_BEGIN: i64 = 128;
+const MOMENTUM_BEGIN: i64 = 1;
+const MOMENTUM_CONTINUE: i64 = 2;
+const MOMENTUM_END: i64 = 3;
+
+/// The virtual key codes of `V` and `C`.
+const V: u16 = 9;
+const C: u16 = 8;
+
 /// The suite's `AppKit` cases, named after the module and test they moved
-/// from.
+/// from — one per line, so the list is long.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a flat list of one `case!` per native case"
+)]
 pub fn trials() -> Vec<Trial> {
     macro_rules! case {
         ($module:literal, $test:ident) => {
@@ -48,6 +68,19 @@ pub fn trials() -> Vec<Trial> {
             "appkit::input_view",
             valid_attributes_for_marked_text_returns_attribute_names
         ),
+        case!(
+            "appkit::input_view",
+            a_mouse_press_and_release_carry_the_platform_click_count
+        ),
+        case!(
+            "appkit::input_view",
+            a_wheel_event_reports_its_gesture_and_momentum_phase
+        ),
+        case!(
+            "appkit::input_view",
+            the_paste_action_delivers_the_pasteboard_text_and_validates_against_it
+        ),
+        case!("appkit::input_view", command_v_is_a_paste_and_never_a_key),
         case!(
             "appkit::metal_presenter",
             an_armed_presenter_constructs_pauses_and_invalidates_cleanly
@@ -201,6 +234,10 @@ fn the_text_input_client_selectors_register_under_appkits_names() {
         sel!(firstRectForCharacterRange:actualRange:),
         sel!(characterIndexForPoint:),
         sel!(isFlipped),
+        sel!(paste:),
+        sel!(performKeyEquivalent:),
+        sel!(validateMenuItem:),
+        sel!(validateUserInterfaceItem:),
     ] {
         // SAFETY: `respondsToSelector:` is a plain `NSObject` query on the
         // live view.
@@ -236,6 +273,328 @@ fn valid_attributes_for_marked_text_returns_attribute_names() {
         // SAFETY: `validAttributesForMarkedText` is the view's own getter.
         unsafe { msg_send![&*view, validAttributesForMarkedText] };
     assert!(attributes.count() >= 3);
+}
+
+/// Records every event an input view hands its handler.
+fn recording(view: &InputView) -> Rc<RefCell<Vec<SurfaceEvent>>> {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    view.set_event_handler({
+        let events = Rc::clone(&events);
+        move |event| events.borrow_mut().push(event)
+    });
+    events
+}
+
+/// The events of `events` that satisfy `pick`, drained.
+fn take<T>(
+    events: &RefCell<Vec<SurfaceEvent>>,
+    pick: impl Fn(SurfaceEvent) -> Option<T>,
+) -> Vec<T> {
+    events.take().into_iter().filter_map(pick).collect()
+}
+
+/// A mouse press or release is a pointer button with the click count
+/// `NSEvent.clickCount` reports — on the release, the count of the press
+/// it ends — for the primary and the secondary button alike.
+fn a_mouse_press_and_release_carry_the_platform_click_count() {
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let events = recording(&view);
+    let mouse = |kind, count| {
+        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            NSPoint::new(5.0, 5.0),
+            NSEventModifierFlags::empty(),
+            0.0,
+            0,
+            None,
+            1,
+            count,
+            1.0,
+        )
+        .expect("a mouse event constructs")
+    };
+    let buttons = || {
+        take(&events, |event| match event {
+            SurfaceEvent::PointerButton {
+                pressed,
+                button,
+                click_count,
+                ..
+            } => Some((pressed, button, click_count.get())),
+            _ => None,
+        })
+    };
+    for count in [1, 2, 3, 7] {
+        view.mouseDown(&mouse(NSEventType::LeftMouseDown, count));
+        view.mouseUp(&mouse(NSEventType::LeftMouseUp, count));
+        let count = u32::try_from(count).expect("a small count");
+        assert_eq!(
+            buttons(),
+            [
+                (true, PointerButton::Primary, count),
+                (false, PointerButton::Primary, count)
+            ]
+        );
+    }
+    view.rightMouseDown(&mouse(NSEventType::RightMouseDown, 2));
+    view.rightMouseUp(&mouse(NSEventType::RightMouseUp, 2));
+    assert_eq!(
+        buttons(),
+        [
+            (true, PointerButton::Secondary, 2),
+            (false, PointerButton::Secondary, 2)
+        ]
+    );
+}
+
+/// A wheel event's scroll phase follows `AppKit`'s gesture and momentum
+/// phases: fingers on the trackpad are `Contact`, the inertia after lift-off
+/// is `Momentum`, a wheel notch or a precise device with no gesture is
+/// `Discrete`, and fingers resting before any scroll (`MayBegin`) deliver
+/// nothing.
+fn a_wheel_event_reports_its_gesture_and_momentum_phase() {
+    use cocoa_ui::input::{GesturePhase, ScrollPhase, ScrollUnit};
+    use objc2_core_graphics::{CGEvent, CGEventField, CGScrollEventUnit};
+
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let events = recording(&view);
+    let wheel = |unit, continuous: bool, phase: i64, momentum: i64| {
+        let cg = CGEvent::new_scroll_wheel_event2(None, unit, 1, 10, 0, 0)
+            .expect("CoreGraphics builds a scroll-wheel event");
+        CGEvent::set_integer_value_field(
+            Some(&cg),
+            CGEventField::ScrollWheelEventIsContinuous,
+            i64::from(continuous),
+        );
+        CGEvent::set_integer_value_field(
+            Some(&cg),
+            CGEventField::ScrollWheelEventScrollPhase,
+            phase,
+        );
+        CGEvent::set_integer_value_field(
+            Some(&cg),
+            CGEventField::ScrollWheelEventMomentumPhase,
+            momentum,
+        );
+        NSEvent::eventWithCGEvent(&cg).expect("AppKit wraps the wheel event")
+    };
+    let scrolls = || {
+        take(&events, |event| match event {
+            SurfaceEvent::Scroll { unit, phase, .. } => Some((unit, phase)),
+            _ => None,
+        })
+    };
+
+    for (phase, momentum, expected) in [
+        (BEGAN, 0, ScrollPhase::Contact(GesturePhase::Began)),
+        (CHANGED, 0, ScrollPhase::Contact(GesturePhase::Changed)),
+        (ENDED, 0, ScrollPhase::Contact(GesturePhase::Ended)),
+        (CANCELLED, 0, ScrollPhase::Contact(GesturePhase::Cancelled)),
+        (
+            0,
+            MOMENTUM_BEGIN,
+            ScrollPhase::Momentum(GesturePhase::Began),
+        ),
+        (
+            0,
+            MOMENTUM_CONTINUE,
+            ScrollPhase::Momentum(GesturePhase::Changed),
+        ),
+        (0, MOMENTUM_END, ScrollPhase::Momentum(GesturePhase::Ended)),
+        // A precise device that reports no gesture is complete per event.
+        (0, 0, ScrollPhase::Discrete),
+    ] {
+        view.scrollWheel(&wheel(CGScrollEventUnit::Pixel, true, phase, momentum));
+        assert_eq!(scrolls(), [(ScrollUnit::Pixel, expected)]);
+    }
+
+    // A wheel notch counts lines and is complete on its own.
+    view.scrollWheel(&wheel(CGScrollEventUnit::Line, false, 0, 0));
+    assert_eq!(scrolls(), [(ScrollUnit::Line, ScrollPhase::Discrete)]);
+
+    // Resting fingers have scrolled nothing yet.
+    view.scrollWheel(&wheel(CGScrollEventUnit::Pixel, true, MAY_BEGIN, 0));
+    assert_eq!(scrolls(), []);
+}
+
+/// Runs `body` with the general pasteboard holding `text` (or nothing),
+/// putting the user's text back afterwards.
+fn with_pasteboard(text: Option<&str>, body: impl FnOnce()) {
+    use cocoa_ui::objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    // SAFETY: `NSPasteboardTypeString` is a system constant.
+    let kind = unsafe { NSPasteboardTypeString };
+    let before = pasteboard.stringForType(kind);
+    pasteboard.clearContents();
+    if let Some(text) = text {
+        pasteboard.setString_forType(&NSString::from_str(text), kind);
+    }
+    body();
+    pasteboard.clearContents();
+    if let Some(before) = before {
+        pasteboard.setString_forType(&before, kind);
+    }
+}
+
+/// The Edit menu's Paste sends `paste:` down the responder chain: the view
+/// delivers the pasteboard's text as a paste, and validates the menu item
+/// enabled only while the pasteboard has text.
+fn the_paste_action_delivers_the_pasteboard_text_and_validates_against_it() {
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let events = recording(&view);
+    let item = NSMenuItem::new(mtm);
+    // SAFETY: `paste:` is a valid action selector; the item has no target.
+    unsafe { item.setAction(Some(sel!(paste:))) };
+    let pastes = || {
+        take(&events, |event| match event {
+            SurfaceEvent::Paste(text) => Some(text),
+            _ => None,
+        })
+    };
+    let validates = |item: &NSMenuItem| {
+        // SAFETY: `validateMenuItem:` takes the menu item and answers a BOOL.
+        let enabled: Bool = unsafe { msg_send![&*view, validateMenuItem: item] };
+        enabled.as_bool()
+    };
+    let paste = || {
+        // SAFETY: `paste:` takes the sender, which the view ignores.
+        let _: () = unsafe { msg_send![&*view, paste: None::<&NSView>] };
+    };
+
+    with_pasteboard(Some("line one\nline two — 日本語 한국어"), || {
+        assert!(
+            validates(&item),
+            "Paste is disabled with text on the pasteboard"
+        );
+        paste();
+        assert_eq!(pastes(), ["line one\nline two — 日本語 한국어"]);
+    });
+    with_pasteboard(None, || {
+        assert!(
+            !validates(&item),
+            "Paste is enabled with an empty pasteboard"
+        );
+        paste();
+        assert_eq!(pastes(), Vec::<String>::new());
+    });
+    // Any other action the view implements stays enabled.
+    let flipped = NSMenuItem::new(mtm);
+    // SAFETY: `isFlipped` is a valid action selector; the item has no target.
+    unsafe { flipped.setAction(Some(sel!(isFlipped))) };
+    assert!(validates(&flipped));
+}
+
+/// Command-V on the focused surface is the paste command and nothing else:
+/// one paste, and neither its press nor its release is also a key event —
+/// whether or not the application has a Paste menu item.
+fn command_v_is_a_paste_and_never_a_key() {
+    use cocoa_ui::objc2_app_kit::NSResponder;
+
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let window = Window::new(mtm, Rect::new(0.0, 0.0, 200.0, 200.0), WindowStyle::empty());
+    let content: &NSView = &view;
+    window.native().setContentView(Some(content));
+    let responder: &NSResponder = &view;
+    assert!(window.native().makeFirstResponder(Some(responder)));
+    let events = recording(&view);
+    let key = |kind, flags, characters: &str, code| {
+        NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            kind,
+            NSPoint::ZERO,
+            flags,
+            0.0,
+            window.native().windowNumber(),
+            None,
+            &NSString::from_str(characters),
+            &NSString::from_str(characters),
+            false,
+            code,
+        )
+        .expect("a key event constructs")
+    };
+    let summary = || {
+        take(&events, |event| match event {
+            SurfaceEvent::Paste(text) => Some(format!("paste {text}")),
+            SurfaceEvent::Key { pressed, .. } => Some(format!("key {pressed}")),
+            _ => None,
+        })
+    };
+
+    with_pasteboard(Some("pasted"), || {
+        assert!(view.performKeyEquivalent(&key(
+            NSEventType::KeyDown,
+            NSEventModifierFlags::Command,
+            "v",
+            V
+        )));
+        view.keyUp(&key(
+            NSEventType::KeyUp,
+            NSEventModifierFlags::Command,
+            "v",
+            V,
+        ));
+        assert_eq!(summary(), ["paste pasted"]);
+
+        // Lock state does not change the chord; any other modifier does.
+        assert!(view.performKeyEquivalent(&key(
+            NSEventType::KeyDown,
+            NSEventModifierFlags::Command | NSEventModifierFlags::CapsLock,
+            "v",
+            V
+        )));
+        view.keyUp(&key(
+            NSEventType::KeyUp,
+            NSEventModifierFlags::Command,
+            "v",
+            V,
+        ));
+        assert_eq!(summary(), ["paste pasted"]);
+        assert!(!view.performKeyEquivalent(&key(
+            NSEventType::KeyDown,
+            NSEventModifierFlags::Command | NSEventModifierFlags::Shift,
+            "v",
+            V
+        )));
+        assert!(!view.performKeyEquivalent(&key(
+            NSEventType::KeyDown,
+            NSEventModifierFlags::empty(),
+            "v",
+            V
+        )));
+        assert_eq!(summary(), Vec::<String>::new());
+
+        // A release that is not the shortcut's is still a key.
+        view.keyUp(&key(
+            NSEventType::KeyUp,
+            NSEventModifierFlags::Command,
+            "c",
+            C,
+        ));
+        assert_eq!(summary(), ["key false"]);
+    });
+
+    // With nothing to paste the shortcut is still the command: no key.
+    with_pasteboard(None, || {
+        assert!(view.performKeyEquivalent(&key(
+            NSEventType::KeyDown,
+            NSEventModifierFlags::Command,
+            "v",
+            V
+        )));
+        view.keyUp(&key(
+            NSEventType::KeyUp,
+            NSEventModifierFlags::Command,
+            "v",
+            V,
+        ));
+        assert_eq!(summary(), Vec::<String>::new());
+    });
+    window.close();
 }
 
 /// Checks the presenter's arm lifecycle on an on-screen host: it

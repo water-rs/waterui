@@ -26,9 +26,9 @@ use objc2::{
     AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
 };
 use objc2_app_kit::{
-    NSEvent, NSEventPhase, NSMarkedClauseSegmentAttributeName, NSResponder, NSTextInputClient,
-    NSTextInputContext, NSTrackingArea, NSTrackingAreaOptions, NSUnderlineColorAttributeName,
-    NSUnderlineStyleAttributeName, NSView,
+    NSEvent, NSEventPhase, NSEventType, NSMarkedClauseSegmentAttributeName, NSPasteboard,
+    NSPasteboardTypeString, NSResponder, NSTextInputClient, NSTextInputContext, NSTrackingArea,
+    NSTrackingAreaOptions, NSUnderlineColorAttributeName, NSUnderlineStyleAttributeName, NSView,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSPoint, NSRange,
@@ -37,7 +37,10 @@ use objc2_foundation::{
 
 use crate::callback::guarded;
 use crate::geometry::Rect;
-use crate::input::{PointerButton, ScrollUnit, SurfaceEvent};
+use crate::input::{
+    GesturePhase, PointerButton, ScrollPhase, ScrollUnit, SurfaceEvent, click_count,
+    is_paste_shortcut,
+};
 use crate::keys;
 
 /// Delivers one surface event to the content.
@@ -62,6 +65,14 @@ pub struct InputViewIvars {
     /// input method did not consume it.
     handling_key_down: std::cell::Cell<bool>,
     key_down_was_consumed: std::cell::Cell<bool>,
+    /// The physical key whose Command-V press `performKeyEquivalent:` turned
+    /// into a paste, until its release goes by: the shortcut is the command,
+    /// so neither half of it is also a key event.
+    paste_shortcut_key: std::cell::Cell<Option<u16>>,
+    /// The last wheel event was `MayBegin`: fingers rest on the trackpad
+    /// and no gesture has begun, so a `Cancelled` that follows ends nothing
+    /// the content was told of.
+    scroll_may_begin: std::cell::Cell<bool>,
 }
 
 impl fmt::Debug for InputViewIvars {
@@ -409,18 +420,26 @@ define_class!(
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
             guarded("InputView scrollWheel:", || {
+                let contact = event.phase();
+                let resting = self
+                    .ivars()
+                    .scroll_may_begin
+                    .replace(contact == NSEventPhase::MayBegin);
+                if resting && contact == NSEventPhase::Cancelled {
+                    // Fingers rested and lifted without scrolling: the
+                    // gesture never began, so it has nothing to cancel.
+                    return;
+                }
+                let Some(phase) = scroll_phase(contact, event.momentumPhase()) else {
+                    // `MayBegin`: fingers rest on the trackpad and nothing
+                    // has scrolled; the gesture starts with its `Began`.
+                    return;
+                };
                 let position = self.local_point(event);
                 self.send_modifiers(event);
                 // A trackpad glide reports precise deltas already in points;
-                // a wheel notch reports lines, and each notch is complete on
-                // its own.
+                // a wheel notch reports lines.
                 let precise = event.hasPreciseScrollingDeltas();
-                let finished = if precise {
-                    event.phase() == NSEventPhase::Ended
-                        || event.momentumPhase() == NSEventPhase::Ended
-                } else {
-                    true
-                };
                 self.emit(SurfaceEvent::Scroll {
                     position,
                     // NSEvent deltas are positive for content moving right/down;
@@ -428,7 +447,7 @@ define_class!(
                     delta_x: -event.scrollingDeltaX(),
                     delta_y: -event.scrollingDeltaY(),
                     unit: if precise { ScrollUnit::Pixel } else { ScrollUnit::Line },
-                    finished,
+                    phase,
                 });
             });
         }
@@ -456,6 +475,10 @@ define_class!(
                 // The input method sees the key first: a composing keystroke
                 // belongs to the composition session, not to the view as a
                 // key event.
+                // A release that never arrived for the last paste shortcut
+                // (AppKit withholds a key's release while Command is down
+                // in some flows) must not swallow a later, unrelated one.
+                self.ivars().paste_shortcut_key.set(None);
                 self.ivars().handling_key_down.set(true);
                 self.ivars().key_down_was_consumed.set(false);
                 let had_marked_text = self.has_marked_text();
@@ -475,7 +498,56 @@ define_class!(
         // SAFETY: see the module safety note.
         #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
+            if self.ivars().paste_shortcut_key.get() == Some(event.keyCode()) {
+                self.ivars().paste_shortcut_key.set(None);
+                return;
+            }
             self.send_key(event, false, keys::surface_code(event));
+        }
+
+        // SAFETY: `performKeyEquivalent:` is an `NSView` method `AppKit`
+        // sends down the key window's view hierarchy before the main menu
+        // sees the event; the unhandled case forwards to `NSView`.
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
+            guarded("InputView performKeyEquivalent:", || {
+                if self.is_paste_shortcut(event) {
+                    // The shortcut is the paste command whether or not the
+                    // application has a Paste menu item to receive it, and
+                    // whether or not the pasteboard has text to hand over.
+                    self.ivars().paste_shortcut_key.set(Some(event.keyCode()));
+                    self.send_paste();
+                    return true;
+                }
+                // SAFETY: forwards the unhandled event to `NSView`.
+                unsafe { msg_send![super(self), performKeyEquivalent: event] }
+            })
+        }
+
+        // SAFETY: `paste:` is the `NSResponder` action the Edit menu's Paste
+        // sends down the responder chain; `sender` is unused.
+        #[unsafe(method(paste:))]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            let _ = sender;
+            guarded("InputView paste:", || self.send_paste());
+        }
+
+        // SAFETY: `validateMenuItem:` is the `NSMenuItemValidation` hook the
+        // menu asks the action's target; `item` is the menu item.
+        #[unsafe(method(validateMenuItem:))]
+        fn validate_menu_item(&self, item: &objc2_app_kit::NSMenuItem) -> bool {
+            self.validates(item.action())
+        }
+
+        // SAFETY: `validateUserInterfaceItem:` is the generic validation hook
+        // toolbar items and other validated controls ask; `item` adopts
+        // `NSValidatedUserInterfaceItem`, whose `action` it reads.
+        #[unsafe(method(validateUserInterfaceItem:))]
+        fn validate_user_interface_item(&self, item: &AnyObject) -> bool {
+            // SAFETY: `action` is `NSValidatedUserInterfaceItem`'s required
+            // getter.
+            let action: Option<objc2::runtime::Sel> = unsafe { msg_send![item, action] };
+            self.validates(action)
         }
 
         // SAFETY: `doCommandBySelector:` is an `NSResponder` method the
@@ -524,6 +596,46 @@ fn composition_caret(text: &str, selected_range: NSRange) -> Option<usize> {
         byte += ch.len_utf8();
     }
     (utf16 >= selected_range.location).then_some(byte)
+}
+
+/// The text on the general pasteboard, if it holds any.
+fn pasteboard_text() -> Option<String> {
+    // SAFETY: `NSPasteboardTypeString` is a system constant.
+    let kind = unsafe { NSPasteboardTypeString };
+    NSPasteboard::generalPasteboard()
+        .stringForType(kind)
+        .map(|text| text.to_string())
+}
+
+/// The scroll phase a wheel event reports, or `None` for the event that
+/// carries no scroll.
+///
+/// `AppKit` reports the fingers' part of a gesture in `phase` and the
+/// inertia after lift-off in `momentumPhase`; an event with neither — a
+/// wheel notch, or a precise device with no gesture — is complete on its own.
+/// `Stationary` is a gesture continuing with no movement, so it is `Moved`
+/// with a zero delta. `MayBegin` is the fingers touching down before any
+/// scroll: the gesture has not begun, so it is no event.
+///
+/// # Panics
+///
+/// When `AppKit` reports a phase value that is none of its documented ones.
+fn scroll_phase(phase: NSEventPhase, momentum: NSEventPhase) -> Option<ScrollPhase> {
+    let gesture = |phase: NSEventPhase| match phase {
+        NSEventPhase::Began => Some(GesturePhase::Began),
+        NSEventPhase::Changed | NSEventPhase::Stationary => Some(GesturePhase::Changed),
+        NSEventPhase::Ended => Some(GesturePhase::Ended),
+        NSEventPhase::Cancelled => Some(GesturePhase::Cancelled),
+        NSEventPhase::MayBegin => None,
+        other => panic!("AppKit reported an unknown scroll event phase {other:?}"),
+    };
+    if momentum != NSEventPhase::None {
+        gesture(momentum).map(ScrollPhase::Momentum)
+    } else if phase != NSEventPhase::None {
+        gesture(phase).map(ScrollPhase::Contact)
+    } else {
+        Some(ScrollPhase::Discrete)
+    }
 }
 
 /// `AppKit`'s button numbers past the primary/secondary pair.
@@ -609,6 +721,8 @@ impl InputView {
         self.emit(SurfaceEvent::PointerMove { position });
     }
 
+    /// `NSEvent.clickCount` is the press's count on a mouse-down and the
+    /// count of the press it ends on a mouse-up.
     fn send_pointer_button(&self, event: &NSEvent, pressed: bool, button: PointerButton) {
         let position = self.local_point(event);
         self.send_modifiers(event);
@@ -616,7 +730,43 @@ impl InputView {
             pressed,
             button,
             position,
+            click_count: click_count(event.clickCount().max(0).unsigned_abs()),
         });
+    }
+
+    /// Whether `event` is the platform paste shortcut aimed at this focused
+    /// view: Command-V with no other chord modifier.
+    fn is_paste_shortcut(&self, event: &NSEvent) -> bool {
+        let focused = self
+            .window()
+            .and_then(|window| window.firstResponder())
+            .is_some_and(|responder| std::ptr::addr_eq(&raw const *responder, &raw const *self));
+        focused
+            && event.r#type() == NSEventType::KeyDown
+            && is_paste_shortcut(
+                keys::surface_modifiers(event.modifierFlags()),
+                &keys::surface_key(event, keys::surface_code(event)),
+            )
+    }
+
+    /// Delivers the pasteboard's text as a paste, when it has any.
+    fn send_paste(&self) {
+        if let Some(text) = pasteboard_text() {
+            self.emit(SurfaceEvent::Paste(text));
+        }
+    }
+
+    /// Whether the menu or toolbar item bound to `action` is enabled for
+    /// this view: Paste only while the pasteboard has text, any other
+    /// action the view responds to as `AppKit`'s default does.
+    fn validates(&self, action: Option<objc2::runtime::Sel>) -> bool {
+        action.is_some_and(|action| {
+            if action == sel!(paste:) {
+                pasteboard_text().is_some()
+            } else {
+                self.respondsToSelector(action)
+            }
+        })
     }
 
     /// Publishes the chord an event carries before the event itself.
@@ -645,5 +795,71 @@ impl InputView {
             let this: &NSResponder = self;
             window.makeFirstResponder(Some(this));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use objc2_app_kit::NSEventPhase;
+
+    use super::scroll_phase;
+    use crate::input::{GesturePhase, ScrollPhase};
+
+    #[test]
+    fn a_wheel_notch_is_discrete() {
+        assert_eq!(
+            scroll_phase(NSEventPhase::None, NSEventPhase::None),
+            Some(ScrollPhase::Discrete)
+        );
+    }
+
+    #[test]
+    fn fingers_on_the_trackpad_are_contact() {
+        let contact = |phase| scroll_phase(phase, NSEventPhase::None);
+        assert_eq!(
+            contact(NSEventPhase::Began),
+            Some(ScrollPhase::Contact(GesturePhase::Began))
+        );
+        assert_eq!(
+            contact(NSEventPhase::Changed),
+            Some(ScrollPhase::Contact(GesturePhase::Changed))
+        );
+        assert_eq!(
+            contact(NSEventPhase::Stationary),
+            Some(ScrollPhase::Contact(GesturePhase::Changed))
+        );
+        assert_eq!(
+            contact(NSEventPhase::Ended),
+            Some(ScrollPhase::Contact(GesturePhase::Ended))
+        );
+        assert_eq!(
+            contact(NSEventPhase::Cancelled),
+            Some(ScrollPhase::Contact(GesturePhase::Cancelled))
+        );
+    }
+
+    #[test]
+    fn inertia_after_lift_off_is_momentum() {
+        let momentum = |phase| scroll_phase(NSEventPhase::None, phase);
+        assert_eq!(
+            momentum(NSEventPhase::Began),
+            Some(ScrollPhase::Momentum(GesturePhase::Began))
+        );
+        assert_eq!(
+            momentum(NSEventPhase::Changed),
+            Some(ScrollPhase::Momentum(GesturePhase::Changed))
+        );
+        assert_eq!(
+            momentum(NSEventPhase::Ended),
+            Some(ScrollPhase::Momentum(GesturePhase::Ended))
+        );
+    }
+
+    #[test]
+    fn resting_fingers_have_not_begun_a_scroll() {
+        assert_eq!(
+            scroll_phase(NSEventPhase::MayBegin, NSEventPhase::None),
+            None
+        );
     }
 }
