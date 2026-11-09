@@ -13,6 +13,7 @@
 //! both ways, and the label's text names the control to assistive
 //! technology.
 
+#[cfg(target_os = "ios")]
 use alloc::collections::BTreeSet;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -22,19 +23,18 @@ use core::ops::RangeInclusive;
 
 use cocoa_ui::date::{CalendarSelectionMode, DateParts, YearMonth};
 use cocoa_ui::{PlatformView, Rect, Retained};
-use waterui::component::form::calendar::{Calendar, CalendarConfig};
 use waterui::component::form::picker::date::Date;
 use waterui::component::label::Label;
-use waterui::reactive::{Binding, Computed, Signal, SignalExt};
+#[cfg(target_os = "macos")]
+use waterui::reactive::SignalExt;
+use waterui::reactive::{Binding, Computed, Signal};
 use waterui::resolve::Resolvable;
-use waterui::view::{ConfigurableView, Hook};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -133,6 +133,7 @@ pub(super) trait CalendarSelection: Clone + 'static {
     fn watch(&self, leaf: &mut NativeLeaf, on_change: impl Fn() + 'static);
 }
 
+#[cfg(feature = "calendar")]
 impl CalendarSelection for Binding<Date> {
     const MODE: CalendarSelectionMode = CalendarSelectionMode::Single;
 
@@ -598,41 +599,60 @@ fn bind_appearance(
     }
 }
 
-/// Renders `Calendar`'s config.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "the dispatcher hands the config by value"
-)]
-fn render(config: CalendarConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
-    let decorated = config
-        .decorated()
-        .map(|days: BTreeSet<Date>| days.into_iter().collect::<Vec<_>>())
-        .computed();
-    render_calendar(
-        CalendarSpec {
-            label: config.label().clone(),
-            selection: config.value().clone(),
-            range: config.range().clone(),
-            decorated,
-            visible_month: config.visible_month().clone(),
-        },
-        ctx,
-    )
-}
+#[cfg(feature = "calendar")]
+pub use component::install;
 
-/// Installs the `calendar` handler: the composer claim plus the
-/// `Native<CalendarConfig>` claim for hook-produced payloads.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<CalendarConfig>(render);
-    dispatcher.register_view::<Calendar>(|calendar, ctx| {
-        let mut config = calendar.config();
-        // `body()`: an environment hook wins; otherwise the label resolves.
-        if let Some(hook) = ctx.env().get::<Hook<CalendarConfig>>() {
-            return ctx.render(hook.apply(ctx.env(), config));
-        }
-        config.label_mut().resolve_in_place(ctx.env());
-        render(config, ctx)
-    });
+/// The `Calendar` component's handler.
+#[cfg(feature = "calendar")]
+mod component {
+    use alloc::collections::BTreeSet;
+    use alloc::vec::Vec;
+
+    use waterui::component::form::calendar::{Calendar, CalendarConfig};
+    use waterui::component::form::picker::date::Date;
+    use waterui::reactive::SignalExt;
+    use waterui::view::{ConfigurableView, Hook};
+
+    use super::{CalendarSpec, render_calendar};
+    use crate::contract::{NativeLeaf, RenderContext};
+    use crate::dispatch::Dispatcher;
+
+    /// Renders `Calendar`'s config.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the dispatcher hands the config by value"
+    )]
+    fn render(config: CalendarConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+        let decorated = config
+            .decorated()
+            .map(|days: BTreeSet<Date>| days.into_iter().collect::<Vec<_>>())
+            .computed();
+        render_calendar(
+            CalendarSpec {
+                label: config.label().clone(),
+                selection: config.value().clone(),
+                range: config.range().clone(),
+                decorated,
+                visible_month: config.visible_month().clone(),
+            },
+            ctx,
+        )
+    }
+
+    /// Installs the `calendar` handler: the composer claim plus the
+    /// `Native<CalendarConfig>` claim for hook-produced payloads.
+    pub fn install(dispatcher: &mut Dispatcher) {
+        dispatcher.register_native::<CalendarConfig>(render);
+        dispatcher.register_view::<Calendar>(|calendar, ctx| {
+            let mut config = calendar.config();
+            // `body()`: an environment hook wins; otherwise the label resolves.
+            if let Some(hook) = ctx.env().get::<Hook<CalendarConfig>>() {
+                return ctx.render(hook.apply(ctx.env(), config));
+            }
+            config.label_mut().resolve_in_place(ctx.env());
+            render(config, ctx)
+        });
+    }
 }
 
 #[cfg(test)]

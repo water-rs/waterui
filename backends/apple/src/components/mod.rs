@@ -17,7 +17,7 @@ pub mod badge;
 pub mod border;
 #[cfg(feature = "button")]
 pub mod button;
-#[cfg(feature = "calendar")]
+#[cfg(any(feature = "calendar", feature = "multi_date_picker"))]
 pub mod calendar;
 #[cfg(feature = "clip_shape")]
 pub mod clip_shape;
@@ -54,7 +54,6 @@ pub mod focused;
     feature = "date_picker",
     feature = "image",
     feature = "list",
-    feature = "multi_date_picker",
     feature = "picker",
     feature = "plain",
     feature = "secure_field",

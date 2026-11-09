@@ -28,7 +28,8 @@ pub struct MultiDatePickerConfig {
     range: RangeInclusive<Date>,
     /// Passively decorated dates.
     decorated: Computed<Vec<Date>>,
-    visible_month: Binding<VisibleMonth>,
+    /// The month the picker shows.
+    visible_month: Binding<Date>,
 }
 
 impl MultiDatePickerConfig {
@@ -64,6 +65,13 @@ impl MultiDatePickerConfig {
     #[must_use]
     pub const fn decorated(&self) -> &Computed<Vec<Date>> {
         &self.decorated
+    }
+
+    /// The month the picker shows: any day of it reads as that month, and
+    /// the picker writes the month's first day when the user navigates.
+    #[must_use]
+    pub const fn visible_month(&self) -> &Binding<Date> {
+        &self.visible_month
     }
 }
 
@@ -126,18 +134,19 @@ impl MultiDatePicker {
             value: map_multi_date_binding(date),
             range,
             decorated: Computed::constant(Vec::new()),
-            visible_month: map_visible_month_binding(visible_month),
+            visible_month: visible_month.clone(),
         })
     }
 
     /// Sets the valid date range for the picker.
     #[must_use]
     pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
-        if !visible_month_in_range(self.0.visible_month.snapshot(), &range) {
-            self.0.visible_month.set(initial_visible_month(
-                self.0.value.snapshot().into_iter().next(),
-                &range,
-            ));
+        let visible = VisibleMonth::from_date(self.0.visible_month.snapshot());
+        if !visible_month_in_range(visible, &range) {
+            self.0.visible_month.set(
+                initial_visible_month(self.0.value.snapshot().into_iter().next(), &range)
+                    .first_day(),
+            );
         }
         self.0.range = range;
         self
@@ -197,7 +206,7 @@ impl MultiDatePickerFallback {
                 .decorated
                 .map(|dates: Vec<Date>| dates.into_iter().collect::<BTreeSet<_>>())
                 .computed(),
-            visible_month: config.visible_month,
+            visible_month: map_visible_month_binding(&config.visible_month),
         }
     }
 }
