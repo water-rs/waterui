@@ -445,7 +445,6 @@ impl InsertionRun {
             true
         }
     }
-
 }
 
 impl Drop for InsertionRun {
