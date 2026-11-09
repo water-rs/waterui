@@ -164,6 +164,7 @@ jobs:
       # nextest's fixture setup scripts produce their fonts and media
       # through `uv run` (`.config/nextest.toml`).
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # The instrumented nextest run executes the Cherenkov tests that
       # read the generated fonts and scenes/corpus. Neither is committed.
       - name: Generate Cherenkov scene assets
@@ -274,8 +275,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The nextest run's `cli-roboto` setup script invokes `uv run`.
+      # The nextest runs' `cli-roboto` and `test-fonts` setup scripts invoke
+      # `uv run`; the hydrolysis step's fonts come from the shared cache.
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # The `create --template web` tests scaffold and build a Vite frontend.
       - uses: oven-sh/setup-bun@v2
       - run: cargo nextest run --timings --locked --profile ci -p waterui-cli --run-ignored ignored-only
