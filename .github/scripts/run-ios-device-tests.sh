@@ -54,6 +54,14 @@ if [[ -z "${simulator_udid}" ]]; then
   exit 1
 fi
 
+# Evidence for a simulator that goes missing mid-run: its state and the
+# machine's memory pressure, on stderr with a stable prefix.
+sim_diag() {
+  echo "sim-diag[$1]: $(date -u +%H:%M:%S) memory_pressure_level=$(sysctl -n kern.memorystatus_vm_pressure_level)" >&2
+  xcrun simctl list devices | grep -F "${simulator_udid}" | sed "s/^/sim-diag[$1]: /" >&2 || \
+    echo "sim-diag[$1]: ${simulator_udid} is not listed" >&2
+}
+
 # Boot if needed and wait for it to be ready; a no-op when already booted.
 xcrun simctl bootstatus "${simulator_udid}" -b
 
@@ -94,8 +102,10 @@ if [[ "${example}" != "none" ]]; then
   # side-effect check can or needs to prove that.
 
   package_log="$(mktemp)"
+  sim_diag before-package
   "${water_bin}" package --platform ios-simulator --backend apple --debug --path "${example_path}" \
     2>&1 | tee "${package_log}"
+  sim_diag after-package
   app_path="$(sed -n 's/.*Packaged at //p' "${package_log}" | tail -n 1 \
     | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')"
   rm -f "${package_log}"
@@ -132,6 +142,7 @@ if [[ "${example}" != "none" ]]; then
   # `waterui_first_paint_ms` marker only from this launch's pid, fails on a
   # stream loss or a 30 s marker deadline, and terminates the app on every
   # path. A returned pid alone never counts as having rendered.
+  sim_diag before-install
   xcrun simctl install "${simulator_udid}" "${app_path}"
   bundle_id="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "${app_path}/Info.plist")"
   "${repo_root}/.github/scripts/measure-native-launch.py" ios-simulator \
