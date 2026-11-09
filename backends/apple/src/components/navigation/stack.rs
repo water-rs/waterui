@@ -234,7 +234,7 @@ mod platform {
     use waterui::resolve::Resolvable;
     use waterui::theme::color::Foreground;
 
-    use crate::components::text::platform_color;
+    use crate::theme::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
     use crate::transition::live::LiveChild;
 
