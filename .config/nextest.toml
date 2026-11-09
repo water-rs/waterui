@@ -69,9 +69,15 @@ slow-timeout = { period = "300s", terminate-after = 8 }
 # The ceiling is raised rather than the tests changed: they are legitimately
 # slow the first time and fast afterwards, which is exactly what a raised
 # ceiling is for and exactly what a watchdog should not kill.
+#
+# The dependency graph keeps growing past each ceiling (15×120s was enough
+# at 39610385085 and not at 42492949228), so the suite also gets one retry:
+# the attempt that times out is what warms `target/tests/trybuild`, and the
+# retry then completes in minutes instead of failing the leg outright.
 [[profile.ci.overrides]]
 filter = 'package(waterui-macros)'
-slow-timeout = { period = "120s", terminate-after = 15 }
+slow-timeout = { period = "120s", terminate-after = 20 }
+retries = { backoff = "fixed", count = 1, delay = "1s" }
 
 # GPU- and process-backed tests are occasionally flaky on shared runners — a
 # WARP device losing the memory race on Windows, Metal's shader cache racing
