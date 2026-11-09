@@ -345,7 +345,6 @@ fn trials() -> Vec<Trial> {
         {
             tests.extend(gpu_surface::trials());
             tests.extend(filtered::trials());
-            tests.extend(capture_colour::trials());
             tests.extend(capture_order::trials());
         }
     }
@@ -375,6 +374,8 @@ fn trials() -> Vec<Trial> {
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
+    #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
+    tests.extend(capture_colour::trials());
     #[cfg(feature = "webview")]
     tests.extend(webview::trials());
     tests
@@ -4754,7 +4755,7 @@ mod filtered {
 /// linear-P3 output read back darker and hue-shifted. The trial captures
 /// the same column rendered plain and under the identity chain and
 /// measures the difference with the oracle's LDR-FLIP.
-#[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+#[cfg(all(feature = "native-test", feature = "gpu_surface"))]
 mod capture_colour {
     use std::rc::Rc;
 
@@ -4837,19 +4838,19 @@ mod capture_colour {
         entries
     }
 
-    /// The outermost `200×200` views of `root`'s subtree ordered by their
-    /// leading edge in `root`'s coordinates: `index` 0 is the uncaptured
-    /// column, 1 the filtered one. Only size and order identify the
-    /// columns — their absolute origin is the window's — and `f64` frame
-    /// values compare inside a half-point band.
+    /// The outermost `200`-point-wide views of `root`'s subtree ordered by
+    /// their leading edge in `root`'s coordinates: `index` 0 is the
+    /// uncaptured column, 1 the filtered one. Only width and order
+    /// identify the columns — their absolute origin is the window's, and
+    /// on `UIKit` their height also spans the harness window's top
+    /// safe-area inset, the same for both — and `f64` frame values compare
+    /// inside a half-point band.
     pub fn column(root: &PlatformView, index: usize) -> Retained<PlatformView> {
         let mut columns = Vec::new();
         let mut queue = std::collections::VecDeque::from([view::retain_base(root)]);
         while let Some(candidate) = queue.pop_front() {
             let frame = view::convert_rect(&candidate, view::bounds(&candidate), Some(root));
-            if (frame.size.width - COLUMN_EDGE).abs() < 0.5
-                && (frame.size.height - COLUMN_EDGE).abs() < 0.5
-            {
+            if (frame.size.width - COLUMN_EDGE).abs() < 0.5 {
                 columns.push((frame.origin.x, candidate));
             } else {
                 queue.extend(view::subviews(&candidate));
@@ -4941,10 +4942,11 @@ mod capture_colour {
         );
 
         // Realization check: the capture realization hides its unfiltered
-        // content view and never arms `layerUsesCoreImageFilters` — a
-        // `CIFilter` realization keeps the content visible on a Core
-        // Image-filtered layer, so these assertions pin the case to the
-        // path under test.
+        // content view and, on `AppKit`, never arms
+        // `layerUsesCoreImageFilters` — a `CIFilter` realization keeps the
+        // content visible on a Core Image-filtered layer, so these
+        // assertions pin the case to the path under test. `UIKit` has no
+        // Core Image layer filters.
         let filtered_host = capturables(root)
             .into_iter()
             .find_map(|(host, _)| host.downcast_ref::<HostView>().is_some().then_some(host))
@@ -4955,6 +4957,7 @@ mod capture_colour {
                 .any(|child| view::is_hidden(child)),
             "the capture realization hides its unfiltered content"
         );
+        #[cfg(target_os = "macos")]
         assert!(
             !filtered_host.layerUsesCoreImageFilters(),
             "the identity chain took the capture realization, not the CIFilter one"
