@@ -302,7 +302,6 @@ jobs:
         with:
           name: packaged-ios-${{ matrix.group.i }}
           path: packaged-ios-${{ matrix.group.i }}.tar
-          retention-days: 14
           if-no-files-found: error
 
       # Separate from the bundle tar so startup-report can merge the numbers
@@ -403,7 +402,6 @@ jobs:
         with:
           name: packaged-macos-${{ matrix.group.i }}
           path: packaged-macos-${{ matrix.group.i }}.tar
-          retention-days: 14
           if-no-files-found: error
 
       # Separate from the bundle tar so startup-report can merge the numbers
@@ -1039,7 +1037,6 @@ jobs:
         with:
           name: release-packages-${{ matrix.platform }}
           path: release-packages-${{ matrix.platform }}.tar
-          retention-days: 14
           if-no-files-found: ignore
 
       - name: Summarize release metrics

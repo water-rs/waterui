@@ -1333,7 +1333,6 @@ jobs:
         with:
           name: cherenkov-bench-aarch64-apple-darwin-cherenkov
           path: target/release/cherenkov-bench
-          retention-days: 14
           if-no-files-found: ignore
       # Many timed frames of the map scene on a Metal device: the workload
       # that used to hang the render thread on Apple GPUs.
@@ -1438,7 +1437,6 @@ jobs:
         with:
           name: cherenkov-bench-aarch64-linux-android
           path: target/aarch64-linux-android/release/cherenkov-bench
-          retention-days: 14
           if-no-files-found: ignore
       # The Vulkan external-frame device test (#166) runs on a Pixel 9
       # Pro over adb; CI builds and archives the prebuilt binary.
