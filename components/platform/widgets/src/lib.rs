@@ -93,11 +93,10 @@ meta::dir_static! {
 macro_rules! __export_widget {
     ($fn_name:expr, $payload:expr, [$ctx_ptr:ident, $ctx_len:ident, $out:ident] => $body:block) => {
         $crate::pastey::paste! {
-            // A `pub` item-level static is reachable from the crate root, so
-            // the record lands in the object on ELF and COFF too — `#[used]`
-            // would be wrong there because it would retain the record in a
-            // shipped image; the linker's dead strip removes it instead
-            // (water-rs/waterui#3905).
+            // `dir_static!` marks the record `#[used]` on every target: in a
+            // staticlib a `pub` static has internal linkage, and without the
+            // attribute an unreferenced record is dropped from the ELF or
+            // COFF object (water-rs/waterui#3905).
             #[doc(hidden)]
             const [<__WUI_WIDGET_META_LEN_ $fn_name>]: usize = concat!(
                 "waterui_meta_widget_",
