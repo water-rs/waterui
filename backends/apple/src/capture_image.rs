@@ -241,19 +241,6 @@ impl WindowHost {
             let window = cocoa_ui::bitmap::capture_window(mtm, size);
             let content = window.contentView().expect("offscreen window content");
             cocoa_ui::view::add_subview(&content, view);
-            // A real window selects its initial first responder on becoming
-            // key; the capture host never orders in, so it must be seeded —
-            // SwiftUI parity shots show the first field's focus ring.
-            // SAFETY: `nextValidKeyView` is a main-thread AppKit query; the
-            // capture path runs on the main thread.
-            unsafe {
-                use cocoa_ui::objc2::msg_send;
-                use cocoa_ui::objc2_app_kit::NSResponder;
-                let first: Option<Retained<NSResponder>> = msg_send![&content, nextValidKeyView];
-                if let Some(responder) = first {
-                    window.makeFirstResponder(Some(&responder));
-                }
-            }
             // Text fields stay out of a capture unless marked dirty — the
             // existing bitmap path's preparation.
             cocoa_ui::bitmap::force_text_fields_display(view);
