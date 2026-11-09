@@ -10,7 +10,7 @@
 //! a nullable pointer the contract says is never null. All calls run on the
 //! main thread through the caller's [`MainThreadMarker`].
 
-use objc2::{MainThreadMarker, rc::Retained};
+use objc2::{MainThreadMarker, rc::Retained, runtime::AnyObject};
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSControlSize, NSFont};
 use objc2_foundation::NSString;
@@ -174,6 +174,130 @@ fn trait_variant(font: &Font, symbolic: SymbolicTrait) -> Option<Retained<Font>>
 #[must_use]
 pub fn weight_of(font: &Font) -> f64 {
     crate::system_font::font_weight(font)
+}
+
+/// The weight the system face `font` draws at, on the platform's own scale.
+///
+/// Unlike [`weight_of`], this reads the face rather than its descriptor: a
+/// variant built by adding the bold symbolic trait keeps the weight trait of
+/// the descriptor it came from, so the bold of the macOS headline style
+/// declares Bold while drawing the Heavy face.
+///
+/// # Panics
+///
+/// Panics as [`weight_coordinate`] does.
+#[must_use]
+pub fn drawn_weight(font: &Font) -> f64 {
+    // SAFETY: see the module safety note.
+    let size = unsafe { point_size(font) };
+    weight_at_coordinate(size, weight_coordinate(font))
+}
+
+/// The platform weight whose system face at `size` draws at the `wght`
+/// design coordinate nearest `coordinate`.
+///
+/// # Panics
+///
+/// Panics as [`weight_coordinate`] does.
+#[must_use]
+pub fn weight_at_coordinate(size: f64, coordinate: f64) -> f64 {
+    const NAMED: [f64; 9] = [
+        weight::ULTRA_LIGHT,
+        weight::THIN,
+        weight::LIGHT,
+        weight::REGULAR,
+        weight::MEDIUM,
+        weight::SEMI_BOLD,
+        weight::BOLD,
+        weight::HEAVY,
+        weight::BLACK,
+    ];
+    NAMED
+        .map(|named| {
+            let face = Font::systemFontOfSize_weight(size, named);
+            (named, (weight_coordinate(&face) - coordinate).abs())
+        })
+        .into_iter()
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(named, _)| named)
+        .expect("the named weights are not empty")
+}
+
+/// The coordinate `font` takes on the `OpenType` `wght` axis: its configured
+/// variation, or the axis default when it leaves the axis there — `CoreText`
+/// reports only non-default variation values.
+///
+/// # Panics
+///
+/// Panics when the face has no `wght` axis; the system face is variable.
+#[must_use]
+pub fn weight_coordinate(font: &Font) -> f64 {
+    use objc2_core_text::{
+        CTFont, kCTFontVariationAxisDefaultValueKey, kCTFontVariationAxisIdentifierKey,
+    };
+    use objc2_foundation::{NSArray, NSDictionary, NSNumber};
+
+    // CoreText identifies an axis by its four-byte tag read as an integer.
+    let wght = NSNumber::new_u32(u32::from_be_bytes(*b"wght"));
+    // SAFETY: `NSFont` and `UIFont` are toll-free bridged with `CTFont`.
+    let font = unsafe { &*core::ptr::from_ref(font).cast::<CTFont>() };
+    // SAFETY: `CTFontCopyVariation` reads a live font.
+    if let Some(variation) = unsafe { font.variation() } {
+        // SAFETY: `CFDictionary` is toll-free bridged with `NSDictionary`;
+        // the variation maps axis-identifier numbers to number values.
+        let variation = unsafe {
+            &*core::ptr::from_ref(&*variation).cast::<NSDictionary<NSNumber, NSNumber>>()
+        };
+        if let Some(value) = variation.objectForKey(&wght) {
+            return value.doubleValue();
+        }
+    }
+    // SAFETY: `CTFontCopyVariationAxes` reads a live font.
+    let axes = unsafe { font.variation_axes() }.expect("the system face has variation axes");
+    // SAFETY: `CFArray` and `CFDictionary` are toll-free bridged with their
+    // Foundation counterparts; each axis is a dictionary keyed by strings.
+    let axes = unsafe {
+        &*core::ptr::from_ref(&*axes).cast::<NSArray<NSDictionary<NSString, AnyObject>>>()
+    };
+    // SAFETY: the axis keys are `CFString` constants, toll-free bridged with
+    // `NSString`.
+    let (identifier_key, default_key) = unsafe {
+        (
+            &*core::ptr::from_ref(kCTFontVariationAxisIdentifierKey).cast::<NSString>(),
+            &*core::ptr::from_ref(kCTFontVariationAxisDefaultValueKey).cast::<NSString>(),
+        )
+    };
+    let number = |value: Retained<AnyObject>| {
+        value
+            .downcast::<NSNumber>()
+            .expect("variation axis values are numbers")
+    };
+    axes.iter()
+        .find(|entry| {
+            entry
+                .objectForKey(identifier_key)
+                .is_some_and(|identifier| *number(identifier) == *wght)
+        })
+        .and_then(|entry| entry.objectForKey(default_key))
+        .map(|default| number(default).doubleValue())
+        .expect("the system face varies along the wght axis")
+}
+
+/// The point size of `font`.
+///
+/// # Safety
+///
+/// See the module safety note.
+unsafe fn point_size(font: &Font) -> f64 {
+    #[cfg(target_os = "ios")]
+    {
+        // SAFETY: see the module safety note.
+        unsafe { font.pointSize() }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        font.pointSize()
+    }
 }
 
 /// The distance from baseline to baseline the platform typesetter uses for
