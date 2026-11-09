@@ -6,7 +6,7 @@ that runs one fragment pass per composed piece.
 
 ## Commands
 
-- `cargo test --workspace` — unit + GPU integration tests (needs a GPU
+- `cargo nextest run --workspace` — unit + GPU integration tests (needs a GPU
   adapter; CI runners and dev machines have one).
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo fmt --all` (rustfmt via the workspace toolchain)

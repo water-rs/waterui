@@ -201,7 +201,7 @@ Rust view tree → backend contracts (waterui-backend-core)
   → experimental backends (GTK, WinUI, TUI) in their own repositories
 ```
 
-- `src/` — the `waterui` facade crate and its `prelude`
+- `facade.rs` + `src/` — the `waterui` facade (the root `[lib]` at `facade.rs`) re-exporting `waterui-internal` (`src/`), which holds the `prelude`
 - `core/` — `waterui-core`: `View`, `Environment`, `AnyView`, reactive primitives
 - `components/` — component crates by domain (`foundation/`, `visual/`, `multimedia/`, `platform/`, `devtools/`, `icon/`, …)
 - `backends/core` — shared backend contracts
@@ -211,6 +211,7 @@ Rust view tree → backend contracts (waterui-backend-core)
 - `graphics/filtrate/` — the filter library · [`AGENTS.md`](graphics/filtrate/AGENTS.md)
 - `cli/` — the `water` CLI (`waterui-cli`) · [`AGENTS.md`](cli/AGENTS.md)
 - `utils/`, `macros/`, `testing/` — supporting crates, the proc macros, `waterui-testing`
+- `tests/` — root-package integration suites and the `layout-twins` comparison harness
 
 The workspace members in the root `Cargo.toml` are the authoritative crate list. Every WaterUI project is entry-owning: WaterUI owns the program entry and the CLI generates and manages every backend project, so a project directory holds no Xcode or Gradle project to edit; `water create` produces exactly this shape, with no package types or modes to choose.
 
