@@ -377,10 +377,8 @@ impl CalendarView {
     /// decoration of every day that gained or lost one.
     pub fn set_decorations(&self, decorated: impl IntoIterator<Item = DateParts>) {
         let decorated: BTreeSet<DateParts> = decorated.into_iter().collect();
-        let previous = std::mem::replace(
-            &mut self.shared.borrow_mut().decorated,
-            decorated.clone(),
-        );
+        let previous =
+            std::mem::replace(&mut self.shared.borrow_mut().decorated, decorated.clone());
         let changed = previous.symmetric_difference(&decorated).copied();
         self.view
             .reloadDecorationsForDateComponents_animated(&components_array(changed), false);
