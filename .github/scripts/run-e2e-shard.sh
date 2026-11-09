@@ -183,6 +183,9 @@ if [[ "${platform}" == "ios" ]]; then
   # bound, so the wedge's stacks land in the log while the guilty process is
   # still alive (#1539). A 30 s scoped capture leaves ~15 s of collection
   # headroom after the sample fires; the 120 s warmup leaves far more.
+  # Diagnostic collectors share one bounded budget — defined before the
+  # sampler because the warmup's subshell inherits it at launch time.
+  DIAG_DEADLINE_S=30
   stall_sampler_start() {
     local diag="$1"
     local after="${2:-15}"
@@ -233,8 +236,10 @@ if [[ "${platform}" == "ios" ]]; then
           sleep 0.5
         done
       fi
-      kill "${pid}" 2>/dev/null || true
+      # Children first, while they still answer to the worker: after `kill`
+      # they would reparent to launchd before `pkill -P` could find them.
       pkill -P "${pid}" 2>/dev/null || true
+      kill "${pid}" 2>/dev/null || true
     fi
     rm -f "${diag}.fired.${pid}"
   }
@@ -577,7 +582,6 @@ simctl_cleanup() {
 # under DIAG_DEADLINE_S — a wedged channel must not stall the collection —
 # and the output lands in logs_dir, which the e2e-logs artifact bundle
 # already ships.
-DIAG_DEADLINE_S=30
 collect_simulator_stall_diagnostics() {
   local reason="$1"
   local diag="${logs_dir}/${platform}-${example}-stall-diagnostics.log"
