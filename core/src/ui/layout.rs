@@ -1514,9 +1514,11 @@ impl Rect {
         )
     }
 
-    /// Inset the rectangle by the given amounts on each edge.
+    /// Inset the rectangle by the given amounts on each edge, in
+    /// `top, leading, bottom, trailing` order — the same order as
+    /// `EdgeInsets::new`.
     #[must_use]
-    pub fn inset(&self, top: f32, bottom: f32, leading: f32, trailing: f32) -> Self {
+    pub fn inset(&self, top: f32, leading: f32, bottom: f32, trailing: f32) -> Self {
         Self::new(
             Point::new(self.origin.x + leading, self.origin.y + top),
             Size::new(
@@ -2003,7 +2005,7 @@ mod tests {
     #[test]
     fn test_rect_inset() {
         let rect = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let inset = rect.inset(10.0, 10.0, 20.0, 20.0);
+        let inset = rect.inset(10.0, 20.0, 10.0, 20.0);
 
         assert_eq!(inset.x(), 20.0);
         assert_eq!(inset.y(), 10.0);
