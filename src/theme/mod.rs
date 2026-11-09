@@ -70,14 +70,17 @@
 //! - `Border` - Borders and dividers
 //! - `Foreground` - Primary text and icons
 //! - `MutedForeground` - Secondary/dimmed text
-//! - `Accent` - Interactive elements, links
+//! - `TertiaryForeground` - Tertiary text, fainter than `MutedForeground`
+//! - `DisabledForeground` - Text and glyphs of a control or item that cannot be used
+//! - `Accent`- Interactive elements, links
 //! - `AccentContainer` - Container backgrounds associated with the accent color
 //! - `AccentForeground` - Text on accent backgrounds
 //! - `Tertiary` - Contrasting accent for complementary emphasis
 //! - `TertiaryContainer` - Container backgrounds associated with the tertiary color
 //! - `SelectionContainer` - Fill painted behind a selected item
 //! - `SelectionForeground` - Content drawn on the selection container
-//! - `Error` - Destructive / error emphasis (badges, destructive buttons, validation)
+//! - `UnemphasizedSelection` - Fill painted behind a selected item while its control is not focused
+//! - `Error`- Destructive / error emphasis (badges, destructive buttons, validation)
 //! - `ErrorForeground` - Content drawn on the error color
 //!
 //! **Fonts**: Use standard font tokens from `waterui::text::font`:
@@ -163,6 +166,8 @@ pub struct ColorSettings {
     border: Option<Computed<WorkingColor>>,
     foreground: Option<Computed<WorkingColor>>,
     muted_foreground: Option<Computed<WorkingColor>>,
+    tertiary_foreground: Option<Computed<WorkingColor>>,
+    disabled_foreground: Option<Computed<WorkingColor>>,
     accent: Option<Computed<WorkingColor>>,
     accent_container: Option<Computed<WorkingColor>>,
     accent_foreground: Option<Computed<WorkingColor>>,
@@ -170,6 +175,7 @@ pub struct ColorSettings {
     tertiary_container: Option<Computed<WorkingColor>>,
     selection_container: Option<Computed<WorkingColor>>,
     selection_foreground: Option<Computed<WorkingColor>>,
+    unemphasized_selection: Option<Computed<WorkingColor>>,
     error: Option<Computed<WorkingColor>>,
     error_foreground: Option<Computed<WorkingColor>>,
     scrim: Option<Computed<WorkingColor>>,
@@ -224,6 +230,20 @@ impl ColorSettings {
         self
     }
 
+    /// Sets the tertiary foreground color (text fainter than the muted tier).
+    #[must_use]
+    pub fn tertiary_foreground(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
+        self.tertiary_foreground = Some(color.into_signal().computed());
+        self
+    }
+
+    /// Sets the disabled foreground color (text of an unusable control or item).
+    #[must_use]
+    pub fn disabled_foreground(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
+        self.disabled_foreground = Some(color.into_signal().computed());
+        self
+    }
+
     /// Sets the accent color (interactive elements).
     #[must_use]
     pub fn accent(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
@@ -273,6 +293,13 @@ impl ColorSettings {
         self
     }
 
+    /// Sets the fill painted behind a selected item while its control is not focused.
+    #[must_use]
+    pub fn unemphasized_selection(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
+        self.unemphasized_selection = Some(color.into_signal().computed());
+        self
+    }
+
     /// Sets the error color (destructive / error emphasis).
     #[must_use]
     pub fn error(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
@@ -315,6 +342,12 @@ impl ColorSettings {
         if let Some(signal) = self.muted_foreground {
             install_color_signal::<color::MutedForeground>(env, signal);
         }
+        if let Some(signal) = self.tertiary_foreground {
+            install_color_signal::<color::TertiaryForeground>(env, signal);
+        }
+        if let Some(signal) = self.disabled_foreground {
+            install_color_signal::<color::DisabledForeground>(env, signal);
+        }
         if let Some(signal) = self.accent {
             install_color_signal::<color::Accent>(env, signal);
         }
@@ -335,6 +368,9 @@ impl ColorSettings {
         }
         if let Some(signal) = self.selection_foreground {
             install_color_signal::<color::SelectionForeground>(env, signal);
+        }
+        if let Some(signal) = self.unemphasized_selection {
+            install_color_signal::<color::UnemphasizedSelection>(env, signal);
         }
         if let Some(signal) = self.error {
             install_color_signal::<color::Error>(env, signal);
@@ -602,6 +638,14 @@ pub mod color {
     define_color_token!(Border, "Border and divider color.");
     define_color_token!(Foreground, "Primary text and icon color.");
     define_color_token!(MutedForeground, "Secondary/dimmed text color.");
+    define_color_token!(
+        TertiaryForeground,
+        "Tertiary text color, fainter than the muted tier: a month grid's days outside the shown month."
+    );
+    define_color_token!(
+        DisabledForeground,
+        "Text and glyph color of a control or item that cannot be used."
+    );
     define_color_token!(Accent, "Accent color for interactive elements.");
     define_color_token!(
         AccentContainer,
@@ -623,6 +667,10 @@ pub mod color {
     define_color_token!(
         SelectionForeground,
         "Foreground drawn on the selection container."
+    );
+    define_color_token!(
+        UnemphasizedSelection,
+        "The fill painted behind a selected item while its control is not focused."
     );
     define_color_token!(
         Error,
@@ -734,6 +782,14 @@ pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<
         color::MutedForeground,
         waterui_graphics::color::MutedForegroundColor
     );
+    mirror_graphics_color!(
+        color::TertiaryForeground,
+        waterui_graphics::color::TertiaryForegroundColor
+    );
+    mirror_graphics_color!(
+        color::DisabledForeground,
+        waterui_graphics::color::DisabledForegroundColor
+    );
     mirror_graphics_color!(color::Accent, waterui_graphics::color::AccentColor);
     mirror_graphics_color!(
         color::AccentContainer,
@@ -755,6 +811,10 @@ pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<
     mirror_graphics_color!(
         color::SelectionForeground,
         waterui_graphics::color::SelectionForegroundColor
+    );
+    mirror_graphics_color!(
+        color::UnemphasizedSelection,
+        waterui_graphics::color::UnemphasizedSelectionColor
     );
     mirror_graphics_color!(color::Error, waterui_graphics::color::ErrorColor);
     mirror_graphics_color!(
@@ -824,9 +884,60 @@ mod tests {
     use alloc::rc::Rc;
     use core::cell::Cell;
     use nami::{Binding, Signal, SignalExt};
+    use waterui_core::resolve::Resolvable;
     use waterui_graphics::color::{AccentColor, Color};
 
     use super::*;
+
+    #[test]
+    fn tier_tokens_install_and_mirror_into_graphics_keys() {
+        use waterui_graphics::color::{
+            DisabledForegroundColor, TertiaryForegroundColor, UnemphasizedSelectionColor,
+        };
+
+        let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+        let green = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
+        let blue = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+        let mut env = Environment::new();
+        Theme::new()
+            .colors(
+                ColorSettings::new()
+                    .tertiary_foreground(red)
+                    .disabled_foreground(green)
+                    .unemphasized_selection(blue),
+            )
+            .install(&mut env);
+
+        let channel = |color: WorkingColor| color.components;
+        assert_eq!(
+            channel(color::TertiaryForeground.resolve(&env).snapshot()),
+            channel(red)
+        );
+        assert_eq!(
+            channel(color::DisabledForeground.resolve(&env).snapshot()),
+            channel(green)
+        );
+        assert_eq!(
+            channel(color::UnemphasizedSelection.resolve(&env).snapshot()),
+            channel(blue)
+        );
+        assert_eq!(
+            channel(Color::new(TertiaryForegroundColor).resolve(&env).snapshot()),
+            channel(red)
+        );
+        assert_eq!(
+            channel(Color::new(DisabledForegroundColor).resolve(&env).snapshot()),
+            channel(green)
+        );
+        assert_eq!(
+            channel(
+                Color::new(UnemphasizedSelectionColor)
+                    .resolve(&env)
+                    .snapshot()
+            ),
+            channel(blue)
+        );
+    }
 
     #[test]
     fn graphics_accent_color_tracks_installed_theme_signal() {

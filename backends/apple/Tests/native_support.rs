@@ -1229,6 +1229,18 @@ pub fn render_environment() -> Environment {
         &mut env,
         black(),
     );
+    waterui::theme::install_color_signal::<waterui::theme::color::TertiaryForeground>(
+        &mut env,
+        black(),
+    );
+    waterui::theme::install_color_signal::<waterui::theme::color::DisabledForeground>(
+        &mut env,
+        black(),
+    );
+    waterui::theme::install_color_signal::<waterui::theme::color::UnemphasizedSelection>(
+        &mut env,
+        black(),
+    );
     waterui::theme::install_color_signal::<waterui::theme::color::Accent>(&mut env, black());
     // A selectable list's rows re-theme onto the selection role.
     waterui::theme::install_color_signal::<waterui::theme::color::SelectionForeground>(

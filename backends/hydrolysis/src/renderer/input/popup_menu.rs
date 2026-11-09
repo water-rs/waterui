@@ -319,10 +319,9 @@ pub fn popup_menu_size(
 }
 
 /// A menu command row: a borderless `Button` that closes the menu group and
-/// runs the command on press. A `disabled` row draws its label at Material's
-/// disabled contrast — on-surface at 38% opacity, which here is the menu's
-/// `Foreground` token at 0.38 — while its press stays inert (the action's
-/// early return also gates it).
+/// runs the command on press. A `disabled` row draws its label in the
+/// `DisabledForeground` token while its press stays inert (the action's early
+/// return also gates it).
 fn popup_menu_command_row(
     label: SemanticLabel,
     action: SharedAction<()>,
@@ -338,9 +337,7 @@ fn popup_menu_command_row(
         },
     );
     if disabled {
-        AnyView::new(
-            button.foreground(Color::new(waterui::theme::color::Foreground).with_opacity(0.38)),
-        )
+        AnyView::new(button.foreground(Color::new(waterui::theme::color::DisabledForeground)))
     } else {
         AnyView::new(button)
     }
@@ -349,8 +346,8 @@ fn popup_menu_command_row(
 /// A row's trailing shortcut hint in the theme's menu-label treatment: the
 /// borderless-button label font the row's own label resolves through
 /// [`crate::theme::WidgetTheme::button_label_font`] — label-large in the
-/// Material mapping — over the muted (on-surface-variant) colour, dimmed
-/// with the row's label when the command is disabled. The drawn row and
+/// Material mapping — over the muted (on-surface-variant) colour, in the
+/// disabled colour with the row's label when the command is disabled. The drawn row and
 /// [`SemanticCore::popup_menu_text_metrics`] share it so the two cannot
 /// drift (water-rs/hydrolysis#247).
 fn shortcut_hint_styled(
@@ -359,11 +356,10 @@ fn shortcut_hint_styled(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> StyledStr {
     let mut styled = StyledStr::plain(shortcut.to_string()).foreground({
-        let color = Color::new(waterui::theme::color::MutedForeground);
         if disabled {
-            color.with_opacity(0.38)
+            Color::new(waterui::theme::color::DisabledForeground)
         } else {
-            color
+            Color::new(waterui::theme::color::MutedForeground)
         }
     });
     if let Some(font) = theme.button_label_font(ButtonStyle::Borderless) {
