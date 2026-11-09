@@ -190,11 +190,13 @@ pub(crate) fn font_weight(font: &crate::font::Font) -> f64 {
 }
 
 /// The weight of `font` under the bold symbolic trait: the platform's own
-/// resolution, which depends on the face — Semibold for a body text style.
+/// resolution, which depends on the face — Semibold for a body text style,
+/// Heavy for the macOS headline style. Read from the face drawn, because
+/// the variant keeps the weight trait of the descriptor it came from.
 fn bold_weight(font: &crate::font::Font) -> f64 {
     let bold =
         crate::font::bold_variant(font).expect("the system text-style face has a bold variant");
-    imp::font_weight(&bold)
+    crate::font::drawn_weight(&bold)
 }
 
 /// The weight a preferred font's descriptor resolves to: the declared weight
@@ -225,6 +227,22 @@ mod tests {
         let fixed = NSFont::systemFontOfSize_weight(17.0, weight::REGULAR);
         let bold = bold_variant(&fixed).expect("the system font has a bold variant");
         assert!((weight_of(&bold) - weight::BOLD).abs() < 1e-6);
+    }
+
+    /// The bold of a style is the face drawn, not the weight trait its
+    /// descriptor keeps: `AppKit`'s headline is Bold and its bold is Heavy,
+    /// the caption's bold is Medium — the weights `SwiftUI`'s `.bold()`
+    /// renders those styles at.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bold_weight_is_the_weight_of_the_face_drawn() {
+        use crate::font::weight;
+
+        let headline = super::preferred_font(super::TextStyle::Headline);
+        assert!((headline.weight - weight::BOLD).abs() < 1e-6);
+        assert!((headline.bold_weight - weight::HEAVY).abs() < 1e-6);
+        let caption = super::preferred_font(super::TextStyle::Caption1);
+        assert!((caption.bold_weight - weight::MEDIUM).abs() < 1e-6);
     }
 
     /// A descriptor without a weight trait — or without a traits dictionary

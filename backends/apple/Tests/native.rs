@@ -11815,10 +11815,22 @@ mod embedding {
             }
         })
     }
+    /// The ABI groups for `metrics`: the bold weight travels as the `wght`
+    /// coordinate of the system face at that weight, as a host reads it off
+    /// `SwiftUI`'s bold face.
     fn flat_metrics(metrics: &[cocoa_ui::system_font::FontMetrics; 6]) -> Vec<f64> {
         metrics
             .iter()
-            .flat_map(|font| [font.size, font.weight, font.bold_weight, font.line_height])
+            .flat_map(|font| {
+                let bold =
+                    cocoa_ui::font::Font::systemFontOfSize_weight(font.size, font.bold_weight);
+                [
+                    font.size,
+                    font.weight,
+                    cocoa_ui::font::weight_coordinate(&bold),
+                    font.line_height,
+                ]
+            })
             .collect()
     }
     fn test_locale(tag: &str) -> waterui::locale::Locale {

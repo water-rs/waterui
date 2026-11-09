@@ -301,6 +301,19 @@ if [[ "${platform}" == "macos" ]]; then
   fi
 fi
 
+# Every macOS app the shard captures, example and SwiftUI twin alike, starts
+# with these argument-domain defaults. AppKit blinks the insertion point of a
+# focused text field, and a window focuses its first key view as it orders
+# in, so any first screen with a text field alternates between two frames
+# forever: typography-rtl never settled, on either side, and each side was
+# photographed in whichever phase the deadline hit. Holding the insertion
+# point on (the on period is in milliseconds; ~28 h outlasts any capture)
+# keeps the caret in the frame, where the comparison sees it.
+macos_capture_args=(
+  -NSTextInsertionPointBlinkPeriodOn 100000000
+  -NSTextInsertionPointBlinkPeriodOff 0
+)
+
 # One frame from the current platform target. macOS captures need the pid that
 # owns the window; the running example is the default, the SwiftUI reference
 # host passes its own. Every native command runs supervised under the caller's
@@ -786,7 +799,7 @@ capture_reference() {
     if ! ref_pid="$("${command_deadline}" run --label "launch:reference" \
         --deadline-at "${launch_deadline_at}" --receipt "${receipts_file}" \
         -- "${swift_tools_dir}/launch-app" "${reference_app}" \
-        -E2EExample "${example}" -E2ETitle "${title}")"; then
+        -E2EExample "${example}" -E2ETitle "${title}" "${macos_capture_args[@]}")"; then
       kill "${ref_stream_pid}" 2>/dev/null || true
       return 1
     fi
@@ -1032,7 +1045,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     launch_deadline_at="$("${command_deadline}" deadline --seconds "${LAUNCH_DEADLINE_S}")"
     if ! app_pid="$("${command_deadline}" run --label "launch:app" \
         --deadline-at "${launch_deadline_at}" --receipt "${receipts_file}" \
-        -- "${swift_tools_dir}/launch-app" "${app_path}")"; then
+        -- "${swift_tools_dir}/launch-app" "${app_path}" "${macos_capture_args[@]}")"; then
       kill "${stream_pid}" 2>/dev/null || true
       echo "::error::${example} packaged app failed to launch (${platform})."
       failures+=("${example}: launch")
