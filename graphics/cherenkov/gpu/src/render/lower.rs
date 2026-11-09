@@ -684,7 +684,6 @@ pub struct ContentData {
     pub(crate) retained: cherenkov::lowering::Content<Op, Emission>,
     pub(crate) storage: EmissionStorage,
     pub(crate) range: Option<super::present::ColorRange>,
-    pictures: Option<bool>,
 }
 
 impl ContentData {
@@ -693,7 +692,6 @@ impl ContentData {
             retained: cherenkov::lowering::Content::new(list),
             storage: EmissionStorage::default(),
             range: None,
-            pictures: None,
         }
     }
 
@@ -703,7 +701,6 @@ impl ContentData {
             return previous;
         }
         self.range = None;
-        self.pictures = None;
         self.storage.instances.clear();
         self.storage.stops.clear();
         self.storage.templates.clear();
@@ -749,7 +746,6 @@ impl ContentData {
             retained: cherenkov::lowering::Content::picture(list),
             storage: EmissionStorage::default(),
             range: None,
-            pictures: None,
         }
     }
 
@@ -761,30 +757,12 @@ impl ContentData {
         }
         self.retained.update(updates);
         self.range = None;
-        self.pictures = None;
     }
 
     pub fn invalidate(&mut self) {
         self.retained.invalidate();
         self.range = None;
-        self.pictures = None;
         self.storage = EmissionStorage::default();
-    }
-
-    pub(super) fn prepare(
-        &mut self,
-        compiler: &mut super::prepared::Lowerer<'_>,
-    ) -> Result<u32, RenderError> {
-        let changed = self.retained.prepare(compiler)?;
-        self.pictures.get_or_insert_with(|| {
-            self.retained
-                .current()
-                .expect("content was prepared")
-                .0
-                .iter()
-                .any(|op| matches!(op, Op::BeginPicture { .. }))
-        });
-        Ok(changed)
     }
 
     /// Rebuild emissions after picture admission changes their raster target.
@@ -809,7 +787,6 @@ impl ContentData {
     pub fn invalidate_image(&mut self, id: cherenkov::ImageId) {
         if self.retained.invalidate_image(id) {
             self.range = None;
-            self.pictures = None;
             self.storage = EmissionStorage::default();
         }
     }
@@ -817,7 +794,6 @@ impl ContentData {
     pub fn trim(&mut self) {
         self.retained.trim();
         self.range = None;
-        self.pictures = None;
         self.storage = EmissionStorage::default();
     }
 }
@@ -1806,13 +1782,17 @@ pub struct PictureInputs<'a> {
     pub inputs: &'a super::projective::Inputs,
     pub available: u64,
     selected: Option<FxHashSet<LocalKey>>,
+    /// Picture images this walk realizes, in realization order.
+    pub realize: Vec<super::projective::Realize>,
+    /// Picture images this walk composes.
+    pub composed: Vec<LocalKey>,
 }
 
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a> {
+    /// Present only when the surface's content holds a picture, so
+    /// picture-free walks carry no picture state.
     pub pictures: Option<PictureInputs<'a>>,
-    pub picture_realize: Vec<super::projective::Realize>,
-    pub picture_composed: Vec<LocalKey>,
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
     pub(super) preparation: Option<&'a rayon::ThreadPool>,
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -1957,8 +1937,6 @@ impl<'a> Lowering<'a> {
         anchor_scratch.clear();
         Self {
             pictures: None,
-            picture_realize: Vec::new(),
-            picture_composed: Vec::new(),
             frame,
             anchor_scratch,
             raster_scratch,
@@ -2372,13 +2350,13 @@ impl<'a> Lowering<'a> {
     ) -> Result<bool, RenderError> {
         let mut pictures = false;
         for content in caches.values_mut() {
-            let changed = content.prepare(&mut super::prepared::Lowerer {
+            let changed = content.retained.prepare(&mut super::prepared::Lowerer {
                 fonts: glyphs.fonts,
                 images: glyphs.images,
                 pending: &mut self.pending,
             })?;
             self.commands_lowered += changed;
-            pictures |= content.pictures.expect("content was prepared");
+            pictures |= content.retained.has_pictures();
         }
         Ok(pictures)
     }
@@ -4491,10 +4469,6 @@ impl<'a> Lowering<'a> {
 
     /// Compose retained ops under the sampled layer state. Only invalid leaf
     /// realizations produce new instances or coverage; scopes assemble passes.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "paired scope dispatch keeps traversal and restoration together"
-    )]
     fn ops(
         &mut self,
         source: &cherenkov::DisplayList,
@@ -4507,34 +4481,12 @@ impl<'a> Lowering<'a> {
         let (mut changed, mut i) = (false, range.start);
         while i < range.end {
             match &ops[i] {
-                Op::BeginPicture {
-                    picture,
-                    local,
-                    end,
-                } => {
-                    if let Some(realized) = self.cached_picture(
-                        picture,
-                        *local,
-                        source,
-                        ops,
-                        emissions,
-                        storage,
-                        (layer, i + 1..*end as usize),
-                        glyphs,
-                    )? {
-                        changed |= realized;
-                        i = *end as usize + 1;
-                        continue;
-                    }
-                    changed |= self.ops(
-                        source,
-                        ops,
-                        emissions,
-                        storage,
-                        (layer, i + 1..*end as usize),
-                        glyphs,
-                    )?;
-                    i = *end as usize;
+                Op::BeginPicture { .. } => {
+                    let (next, realized) =
+                        self.picture_ops(source, ops, emissions, storage, (layer, i), glyphs)?;
+                    changed |= realized;
+                    i = next;
+                    continue;
                 }
                 Op::BeginClip { local, shape, end } => {
                     let saved = self.transform;

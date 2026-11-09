@@ -93,6 +93,8 @@ impl<'a> super::PictureInputs<'a> {
             inputs,
             available,
             selected,
+            realize: Vec::new(),
+            composed: Vec::new(),
         }
     }
 }
@@ -185,7 +187,7 @@ impl Lowering<'_> {
             .retained
             .get(&layer)
             .and_then(|entries| entries.iter().find(|entry| entry.matches(key)));
-        let pending = self.picture_realize.iter().find(|image| image.key == key);
+        let pending = context.realize.iter().find(|image| image.key == key);
         let snapshot = entry
             .and_then(|entry| entry.picture.as_ref())
             .or_else(|| pending.and_then(|image| image.picture.as_ref()));
@@ -299,7 +301,7 @@ impl Lowering<'_> {
         {
             return Ok(None);
         }
-        let already_composed = self.picture_composed.contains(&key);
+        let already_composed = context.composed.contains(&key);
         let bytes = if current {
             entry.map_or_else(
                 || {
@@ -318,8 +320,9 @@ impl Lowering<'_> {
         }
         let interop = context.inputs.interop;
         if !already_composed {
-            self.pictures.as_mut().expect("picture inputs").available -= bytes;
-            self.picture_composed.push(key);
+            let context = self.pictures.as_mut().expect("picture inputs");
+            context.available -= bytes;
+            context.composed.push(key);
         }
         Ok(Some(PicturePlan {
             image,
@@ -329,6 +332,48 @@ impl Lowering<'_> {
             interop,
             domain,
         }))
+    }
+
+    /// Lowers the picture scope opened at `ops[open]`: its retained image
+    /// when admission accepts one, its commands inline otherwise. Returns the
+    /// index after the scope's end and whether anything was realized.
+    ///
+    /// Kept out of line so the per-op dispatch loop keeps the code shape it
+    /// has without pictures: picture-free content pays nothing for the arm
+    /// (`bench/scripts/ir_gate.py`).
+    #[inline(never)]
+    pub(super) fn picture_ops(
+        &mut self,
+        source: &cherenkov::DisplayList,
+        ops: &[Op],
+        emissions: &mut [Realization<Emission>],
+        storage: &mut EmissionStorage,
+        (layer, open): (LayerId, usize),
+        glyphs: &GlyphContext<'_>,
+    ) -> Result<(usize, bool), RenderError> {
+        let Op::BeginPicture {
+            picture,
+            local,
+            end,
+        } = &ops[open]
+        else {
+            unreachable!("picture_ops opens at a picture scope")
+        };
+        let (body, next) = (open + 1..*end as usize, *end as usize + 1);
+        if let Some(realized) = self.cached_picture(
+            picture,
+            *local,
+            source,
+            ops,
+            emissions,
+            storage,
+            (layer, body.clone()),
+            glyphs,
+        )? {
+            return Ok((next, realized));
+        }
+        let changed = self.ops(source, ops, emissions, storage, (layer, body), glyphs)?;
+        Ok((next, changed))
     }
 
     #[expect(
@@ -406,16 +451,20 @@ impl Lowering<'_> {
             self.set_clip(saved.3);
             self.begin_pass(target, None);
             result?;
-            self.picture_realize.push(Realize {
-                key,
-                cache,
-                levels: image.levels,
-                picture: Some(PictureImage {
-                    source: picture.clone(),
-                    domain,
-                }),
-                deps,
-            });
+            self.pictures
+                .as_mut()
+                .expect("a planned picture has inputs")
+                .realize
+                .push(Realize {
+                    key,
+                    cache,
+                    levels: image.levels,
+                    picture: Some(PictureImage {
+                        source: picture.clone(),
+                        domain,
+                    }),
+                    deps,
+                });
         }
         self.projective_draws += 1;
         self.emit_projected(

@@ -144,6 +144,9 @@ pub struct Lowered<T> {
     /// Draws and paired scopes in painter order.
     pub ops: Vec<T>,
     spans: Vec<Span>,
+    /// Whether the operations open a picture scope. Only a full walk can add
+    /// or remove one: a patch preserves every operation's kind.
+    pictures: bool,
 }
 
 impl<T: Operation> Lowered<T> {
@@ -158,6 +161,7 @@ impl<T: Operation> Lowered<T> {
         let mut lowered = Self {
             ops: Vec::with_capacity(list.len()),
             spans: Vec::with_capacity(list.len()),
+            pictures: false,
         };
         lowered.refill(list, compiler)?;
         Ok(lowered)
@@ -170,7 +174,7 @@ impl<T: Operation> Lowered<T> {
     ) -> Result<(), C::Error> {
         self.ops.clear();
         self.spans.clear();
-        walk(
+        self.pictures = walk(
             list,
             0..list.len(),
             Affine::IDENTITY,
@@ -178,7 +182,8 @@ impl<T: Operation> Lowered<T> {
             &mut self.ops,
             &mut self.spans,
             true,
-        )
+        )?;
+        Ok(())
     }
 
     /// Patch dirty command spans in place. `None` means the operation count or
@@ -278,9 +283,11 @@ pub fn append<C: Compiler>(
         ops,
         &mut spans,
         false,
-    )
+    )?;
+    Ok(())
 }
 
+/// Lowers `range` of `list`, returning whether it opened a picture scope.
 fn walk<C: Compiler>(
     list: &DisplayList,
     range: Range<usize>,
@@ -289,7 +296,8 @@ fn walk<C: Compiler>(
     ops: &mut Vec<C::Op>,
     spans: &mut Vec<Span>,
     root: bool,
-) -> Result<(), C::Error> {
+) -> Result<bool, C::Error> {
+    let mut pictures = false;
     let mut i = range.start;
     while i < range.end {
         let start = u32::try_from(ops.len()).expect("op index fits u32");
@@ -314,6 +322,7 @@ fn walk<C: Compiler>(
                 let inner = ambient * *transform;
                 let opener = compiler.picture(picture, inner)?;
                 let emitted = opener.is_some();
+                pictures |= emitted;
                 ops.extend(opener);
                 append(picture.display_list(), inner, compiler, ops)?;
                 if emitted {
@@ -342,7 +351,7 @@ fn walk<C: Compiler>(
                 ops: start..u32::try_from(ops.len()).expect("op index fits u32"),
                 ambient,
             });
-            walk(list, i + 1..end, inner, compiler, ops, spans, root)?;
+            pictures |= walk(list, i + 1..end, inner, compiler, ops, spans, root)?;
             let close = u32::try_from(ops.len()).expect("op index fits u32");
             if emitted {
                 *ops[start as usize]
@@ -363,7 +372,7 @@ fn walk<C: Compiler>(
             i += 1;
         }
     }
-    Ok(())
+    Ok(pictures)
 }
 
 /// A retained device realization. Invalidation keeps the storage available for
@@ -468,6 +477,19 @@ impl<O: Operation, E> Content<O, E> {
         self.lowered
             .as_ref()
             .map(|lowered| (lowered.ops.as_slice(), self.list.display_list()))
+    }
+
+    /// Whether the prepared operations open a picture scope, which happens
+    /// only where the compiler preserved a picture boundary.
+    ///
+    /// # Panics
+    /// When the content has not been prepared.
+    #[must_use]
+    pub const fn has_pictures(&self) -> bool {
+        self.lowered
+            .as_ref()
+            .expect("content was prepared")
+            .pictures
     }
 
     /// Discard compiled resource references after image `id`'s pixels were

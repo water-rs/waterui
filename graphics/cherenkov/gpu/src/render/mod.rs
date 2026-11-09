@@ -7102,7 +7102,7 @@ impl GpuRenderer {
             }
             let mut lowered = Lowered::default();
             for content in surf.layers.values_mut() {
-                lowered.commands += content.prepare(&mut prepared::Lowerer {
+                lowered.commands += content.retained.prepare(&mut prepared::Lowerer {
                     fonts: &self.fonts,
                     images: &self.images,
                     pending: &mut lowered.pending,
@@ -7516,8 +7516,10 @@ impl GpuRenderer {
                     &surf.plan,
                 )
             });
-            lowered.realize.append(&mut lowering.picture_realize);
-            lowered.composed.append(&mut lowering.picture_composed);
+            if let Some(mut pictures) = lowering.pictures.take() {
+                lowered.realize.append(&mut pictures.realize);
+                lowered.composed.append(&mut pictures.composed);
+            }
             lowered.commands += lowering.commands_lowered;
             lowered.layers = lowering.layers_composed;
             lowered.glyphs = lowering.glyphs_rasterized();
