@@ -42,16 +42,6 @@ pub(super) struct HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HeadlessPlatformWindow {
-    #[cfg(test)]
-    pub(super) fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
-        Self::on_context(
-            OffscreenGpuContext::new_for_tests_blocking(),
-            width,
-            height,
-            format,
-        )
-    }
-
     pub(super) fn on_context(
         gpu: OffscreenGpuContext,
         width: u32,
@@ -482,9 +472,8 @@ impl HeadlessRuntime {
 
     /// Creates a headless runtime for `WaterUI` test hosts.
     ///
-    /// This constructor allows software adapters for CI-only
-    /// semantic testing while keeping [`Self::new`] on production adapter
-    /// selection, and resolves font families strictly
+    /// It selects its adapter exactly as [`Self::new`] does; what differs is
+    /// that it resolves font families strictly
     /// ([`FontFamilyResolution::Strict`]): a named family the collection
     /// cannot resolve fails the shape naming it, so a style package's missing
     /// fonts fail the test instead of silently substituting a face.
@@ -498,7 +487,7 @@ impl HeadlessRuntime {
         style: impl crate::Style,
     ) -> Self {
         Self::on_gpu_context(
-            OffscreenGpuContext::new_for_tests_blocking(),
+            OffscreenGpuContext::new_blocking(),
             env,
             default_window(content),
             width,
@@ -521,7 +510,7 @@ impl HeadlessRuntime {
         style: impl crate::Style,
     ) -> Self {
         Self::on_gpu_context(
-            OffscreenGpuContext::new_for_tests_blocking(),
+            OffscreenGpuContext::new_blocking(),
             env,
             window,
             width,
@@ -1629,7 +1618,7 @@ mod generation_tests {
         let rebuilds = Rc::new(Cell::new(0_u32));
         let installs = Rc::new(Cell::new(0_u32));
         let latest = Rc::new(RefCell::new(None));
-        let gpu_a = OffscreenGpuContext::new_for_tests_blocking();
+        let gpu_a = OffscreenGpuContext::new_blocking();
         let mut runtime = HeadlessRuntime::new_for_tests_on_context(
             gpu_a,
             test_environment(),
@@ -1678,7 +1667,7 @@ mod generation_tests {
             "device.destroy() delivered no device-lost callback within 10s of device polls"
         );
 
-        let gpu_b = OffscreenGpuContext::new_for_tests_blocking();
+        let gpu_b = OffscreenGpuContext::new_blocking();
         let _replaced = replace_gpu_context(&mut runtime, gpu_b);
 
         let mut second = runtime.pump_at(true, t0 + Duration::from_millis(16));

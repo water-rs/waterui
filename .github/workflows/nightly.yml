@@ -949,12 +949,6 @@ jobs:
           Collect-Timings package
 
           Phase "water run e2eapp"
-          # windows-latest has no GPU: the only surface-compatible adapter is
-          # the D3D12 WARP software device, which Hydrolysis refuses in
-          # production selection unless the diagnostic switch is set. WARP
-          # still runs the full compute pipeline, so the launch is the real
-          # one; the switch only widens adapter selection.
-          $env:WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER = "1"
           $p = Start-Process -FilePath water -ArgumentList "run --platform $env:E2E_PLATFORM --backend $env:E2E_BACKEND" -PassThru `
             -WorkingDirectory "$env:USERPROFILE\e2eapp" `
             -RedirectStandardOutput "$logs\run-play.out" -RedirectStandardError "$logs\run-play.err"
