@@ -616,7 +616,7 @@ pub trait ViewExt: View + Sized {
     /// Adds padding to this view with custom edge insets.
     ///
     /// `EdgeInsets` converts from a single `f32` (every edge), a
-    /// `(vertical, horizontal)` pair and a `[top, bottom, leading, trailing]`
+    /// `(vertical, horizontal)` pair and a `[top, leading, bottom, trailing]`
     /// array, so the common shapes need no constructor:
     ///
     /// ```rust
@@ -624,7 +624,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("a").padding_with(16.0);
     /// text!("b").padding_with((8.0, 16.0));
-    /// text!("c").padding_with([4.0, 12.0, 16.0, 16.0]);
+    /// text!("c").padding_with([4.0, 16.0, 12.0, 16.0]);
     /// ```
     ///
     /// # Arguments

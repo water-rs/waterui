@@ -10892,7 +10892,7 @@ mod a11y_frame {
         let text_size = answer(&resolve::render(text("Hello")));
         let (leaf, _window) = attached(
             text("Hello")
-                .padding_with(EdgeInsets::new(0.0, 0.0, 20.0, 0.0))
+                .padding_with(EdgeInsets::new(0.0, 20.0, 0.0, 0.0))
                 .a11y_label("Padded"),
         );
         let view = leaf.view();
@@ -11295,7 +11295,7 @@ mod a11y_frame {
         let (leaf, _window) = mounted_list(
             AnyView::new(List::content((move || {
                 let padded = |label: &'static str| {
-                    text(label).padding_with(EdgeInsets::new(4.0, 4.0, INSET, INSET))
+                    text(label).padding_with(EdgeInsets::new(4.0, INSET, 4.0, INSET))
                 };
                 if lazy {
                     ListItem::new(AnyView::new(LazyContainer::new(

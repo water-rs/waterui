@@ -4309,7 +4309,7 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
     let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let measured = measure_view_dimensions_with_proposal(
         &normalize_layout_view(
-            AnyView::new(button("OK").padding_with([0.0, 0.0, 20.0, 0.0])),
+            AnyView::new(button("OK").padding_with([0.0, 20.0, 0.0, 0.0])),
             &env,
         ),
         ProposalSize::new(Some(160.0), Some(160.0)),
@@ -4320,7 +4320,7 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
     .size;
     let mut renderer = test_renderer();
     let view = button("OK")
-        .padding_with([0.0, 0.0, 20.0, 0.0])
+        .padding_with([0.0, 20.0, 0.0, 0.0])
         .a11y_label("Named");
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
 

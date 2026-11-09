@@ -217,7 +217,7 @@ pub fn constrained_content() -> impl View {
 - **`Padding`** - Insets child with edge spacing
   - `EdgeInsets::all(f32)` - Equal padding on all edges
   - `EdgeInsets::symmetric(vertical, horizontal)` - Symmetric padding
-  - `EdgeInsets::new(top, bottom, leading, trailing)` - Custom edges
+  - `EdgeInsets::new(top, leading, bottom, trailing)` - Custom edges
 
 ### Advanced Layouts
 

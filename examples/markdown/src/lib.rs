@@ -113,7 +113,7 @@ pub fn demo() -> impl View {
             ),
             spacer(),
         ))
-        .padding_with([14.0, 0.0, 14.0, 14.0]),
+        .padding_with([14.0, 14.0, 0.0, 14.0]),
         zstack((
             scroll(include_markdown!("example.md").padding()),
             vstack((when(open.clone(), search_bar), spacer())).padding(),

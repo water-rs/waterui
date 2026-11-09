@@ -113,7 +113,7 @@ fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem {
         .alignment(HorizontalAlignment::Leading)
         .spacing(2.0),
     ))
-    .padding_with(EdgeInsets::new(6.0, 6.0, 12.0, 12.0))
+    .padding_with(EdgeInsets::new(6.0, 12.0, 6.0, 12.0))
     .opacity(if enabled { 1.0 } else { 0.55 });
 
     ListItem::new(content)
