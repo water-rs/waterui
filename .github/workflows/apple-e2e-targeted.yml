@@ -117,7 +117,7 @@ jobs:
           # job-owned temp area, outside the framework workspace; it shares
           # nothing with the framework builds the shards perform.
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
-        run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
+        run: cargo install --timings --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
 
       - name: Build the screenshot comparer
         timeout-minutes: 10
@@ -125,7 +125,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
         run: |
           export PATH="${{ github.workspace }}/cli-bin/bin:${PATH}"
-          cargo install --path "${WATERUI_DIR}/graphics/cherenkov/oracle" --locked \
+          cargo install --timings --path "${WATERUI_DIR}/graphics/cherenkov/oracle" --locked \
             --features apple-screenshots --bin compare-screenshots --debug \
             --root "${{ github.workspace }}/cli-bin"
 
@@ -222,6 +222,7 @@ jobs:
           PLATFORM: ios
           SHARD_INDEX: 0
           SHARD_TOTAL: 1
+          WATER_CARGO_TIMINGS: "1"
           EXAMPLES: ${{ matrix.example }}
           WATERUI_DIR: ${{ github.workspace }}
           EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
@@ -327,6 +328,7 @@ jobs:
           PLATFORM: macos
           SHARD_INDEX: 0
           SHARD_TOTAL: 1
+          WATER_CARGO_TIMINGS: "1"
           EXAMPLES: ${{ matrix.example }}
           WATERUI_DIR: ${{ github.workspace }}
           EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs

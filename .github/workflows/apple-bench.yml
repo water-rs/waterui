@@ -44,7 +44,7 @@ jobs:
       # seam, header or harness archive exists to link.
       - name: Benchmark (informational)
         shell: bash
-        run: cargo bench -p waterui-apple --locked 2>&1 | tee divan-output.txt
+        run: cargo bench --timings -p waterui-apple --locked 2>&1 | tee divan-output.txt
       # divan prints its report to stdout; teeing it into a file keeps the
       # trend series as an artifact under a stable, branch-scoped name so runs
       # diff against earlier ones.

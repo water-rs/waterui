@@ -67,6 +67,8 @@ runs:
         cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
         save-if: ${{ inputs.save-if }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
-    # Every job that installs a toolchain compiles Rust with it; pair this
-    # with `upload-cargo-timings` as the job's last step.
-    - uses: ./.github/actions/cargo-timings
+    # Start marker for `upload-cargo-timings`: reports older than it came
+    # from a restored cache, not from this job. Written once per job, after
+    # the cache restore.
+    - shell: bash
+      run: '[[ -e "${RUNNER_TEMP}/cargo-timings-start" ]] || touch "${RUNNER_TEMP}/cargo-timings-start"'

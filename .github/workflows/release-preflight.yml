@@ -95,7 +95,7 @@ jobs:
           key: install-tool-v1-${{ runner.os }}-${{ runner.arch }}-margo@0.1.7
       - name: Install margo
         if: steps.margo.outputs.cache-hit != 'true'
-        run: cargo install margo --version 0.1.7 --index sparse+https://integer32llc.github.io/margo/
+        run: cargo install --timings margo --version 0.1.7 --index sparse+https://integer32llc.github.io/margo/
       - name: Package the publishable set
         run: |
           set -euo pipefail
@@ -211,7 +211,7 @@ jobs:
             echo "::error file=Cargo.toml::package.metadata.waterui.minimum-cli-version is missing"
             exit 1
           fi
-          if ! cargo install waterui-cli --version ">=$floor"; then
+          if ! cargo install --timings waterui-cli --version ">=$floor"; then
             echo "::error::no published waterui-cli satisfies the framework's minimum-cli-version (>=$floor)"
             exit 1
           fi
@@ -237,7 +237,7 @@ jobs:
             echo "Scaffold pins a local waterui checkout; the registry was not exercised."
             exit 1
           fi
-          cargo build
+          cargo build --timings
           # --duplicates prints each repeated package flush-left with its
           # dependents indented beneath; anchoring on the first column keeps
           # a third-party duplicate that merely has a framework dependent
@@ -246,3 +246,7 @@ jobs:
             echo "The consumer graph carries two versions of a framework crate."
             exit 1
           fi
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: release-preflight-resolve-gate

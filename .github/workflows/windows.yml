@@ -135,12 +135,12 @@ jobs:
       # `graphics/cherenkov`, so the leg is expected to run green.
       #
       # One full-workspace pass under default features.
-      - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example' --profile ci
+      - run: cargo nextest run --timings --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example' --profile ci
       - name: Test (examples that carry tests)
-        run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
+        run: cargo nextest run --timings --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
       # nextest cannot run doctests, and this workspace has plenty of them.
       # No example carries a doc comment, so the glob loses no doctest.
-      - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example'
+      - run: cargo test --timings --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example'
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -254,13 +254,13 @@ jobs:
         with:
           mode: full
       - name: Test (root crate, every feature but dynamic_linking)
-        run: cargo nextest run --locked --features all --profile ci
+        run: cargo nextest run --timings --locked --features all --profile ci
       # The `trybuild_*` binaries each drive a cold fixture build that is
       # independent of the outer feature set; they already ran once in the
       # `test` job on this OS, so this pass skips them (see test.yml).
       - name: Test (all features, workspace)
         run: |
-          cargo nextest run --locked --workspace --all-features --profile ci `
+          cargo nextest run --timings --locked --workspace --all-features --profile ci `
             --exclude waterui `
             --exclude waterui-apple `
             --exclude cocoa-ui `
@@ -273,7 +273,7 @@ jobs:
             --exclude filtrate `
             -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)
-        run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
+        run: cargo nextest run --timings --locked -p waterui-core --features std,serde --profile ci
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -331,7 +331,7 @@ jobs:
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
       - name: Clippy
-        run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --all-targets -- -D warnings
+        run: cargo clippy --timings --locked --profile ci-check --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --all-targets -- -D warnings
       - name: Report failure
         if: failure() && github.ref == 'refs/heads/dev'
         uses: ./.github/actions/nightly-failure-issue

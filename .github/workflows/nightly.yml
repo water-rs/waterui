@@ -182,7 +182,7 @@ jobs:
       # depend on the feature set and already ran in `test`; an instrumented
       # rebuild of the same fixtures would measure nothing extra (trybuild's
       # own target dir is not instrumented) and cost a cold framework compile.
-      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
+      - run: cargo llvm-cov nextest --timings --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
         env:
           NEXTEST_PROFILE: ci
       - uses: codecov/codecov-action@v4
@@ -227,7 +227,7 @@ jobs:
       # own leg in `cherenkov-corpus` lints it on macOS), and filtrate's `webgl`
       # is an intentional `compile_error!` off wasm32 — the wasm32 job lints it
       # where it is legal.
-      - run: cargo hack check --locked --each-feature --exclude-features "skia-metal webgl" --profile=ci-check
+      - run: cargo hack check --timings --locked --each-feature --exclude-features "skia-metal webgl" --profile=ci-check
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
         with:
@@ -278,11 +278,11 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       # The `create --template web` tests scaffold and build a Vite frontend.
       - uses: oven-sh/setup-bun@v2
-      - run: cargo nextest run --locked --profile ci -p waterui-cli --run-ignored ignored-only
+      - run: cargo nextest run --timings --locked --profile ci -p waterui-cli --run-ignored ignored-only
       # The hydrolysis ignored suite — the Android WebView bridge's
       # composed-script round trip through a real JS engine. `bun` is on
       # PATH from the step above.
-      - run: cargo nextest run --locked --profile ci -p hydrolysis --run-ignored ignored-only
+      - run: cargo nextest run --timings --locked --profile ci -p hydrolysis --run-ignored ignored-only
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
         with:
@@ -1309,7 +1309,7 @@ jobs:
         uses: ./.github/actions/generate-scene-assets
         with:
           mode: full
-      - run: cargo build --locked --release -p cherenkov-bench --features vello-cpu,skia
+      - run: cargo build --timings --locked --release -p cherenkov-bench --features vello-cpu,skia
       # The oracle reference depends only on the scene; build it once for
       # both passes below (#218).
       - name: Render the corpus reference
@@ -1367,7 +1367,7 @@ jobs:
         uses: ./.github/actions/generate-scene-assets
         with:
           mode: full
-      - run: cargo build --locked --release -p cherenkov-bench --features skia-metal,vello-classic,vello-hybrid
+      - run: cargo build --timings --locked --release -p cherenkov-bench --features skia-metal,vello-classic,vello-hybrid
       # The oracle reference depends only on the scene; build it once for
       # the three passes below (#218).
       - name: Render the corpus reference

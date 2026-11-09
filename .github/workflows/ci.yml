@@ -217,7 +217,7 @@ jobs:
       - name: Install the shared affected-crates tool
         if: needs.changes.outputs.scripts == 'true'
         run: |
-          cargo install --locked --git https://github.com/lexoliu/affected-crates --tag v0.0.1 --root "$RUNNER_TEMP/affected-crates" affected-crates
+          cargo install --timings --locked --git https://github.com/lexoliu/affected-crates --tag v0.0.1 --root "$RUNNER_TEMP/affected-crates" affected-crates
           echo "AFFECTED_CRATES=$RUNNER_TEMP/affected-crates/bin/affected-crates" >> "$GITHUB_ENV"
       - uses: actions/cache@v4
         id: nextest-fixtures-tool
@@ -227,7 +227,7 @@ jobs:
           key: nextest-fixtures-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/nextest-fixtures/Cargo.lock', '.github/tools/nextest-fixtures/Cargo.toml', '.github/tools/nextest-fixtures/src/**') }}
       - name: Build the nextest fixtures checker
         if: needs.changes.outputs.scripts == 'true' && steps.nextest-fixtures-tool.outputs.cache-hit != 'true'
-        run: cargo build --locked --release --manifest-path .github/tools/nextest-fixtures/Cargo.toml
+        run: cargo build --timings --locked --release --manifest-path .github/tools/nextest-fixtures/Cargo.toml
       - name: Manifest derivation tests
         if: needs.changes.outputs.scripts == 'true'
         run: >
@@ -341,7 +341,7 @@ jobs:
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
       - name: Compile the DX12 backend against the committed lockfile
-        run: cargo check --locked --profile ci-check -p waterui-graphics --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
+        run: cargo check --timings --locked --profile ci-check -p waterui-graphics --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
         with:
@@ -418,8 +418,10 @@ jobs:
       # The binary under test needs no release optimisation: the ci-check
       # profile skips the release profile's fat LTO and single codegen unit.
       - name: Install the CLI under test
-        run: cargo install --locked --profile ci-check --path cli --root /tmp/water-cli
+        run: cargo install --timings --locked --profile ci-check --path cli --root /tmp/water-cli
       - name: Create, build and package a Hydrolysis Android app
+        env:
+          WATER_CARGO_TIMINGS: "1"
         run: |
           set -euo pipefail
           export PATH="/tmp/water-cli/bin:$PATH"
