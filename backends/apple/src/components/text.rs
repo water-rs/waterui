@@ -15,7 +15,7 @@ use core::ops::Range;
 
 use cocoa_ui::Retained;
 use waterui::Str;
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
@@ -247,11 +247,11 @@ fn sync_tap(state: &Rc<RefCell<TextState>>) {
     }
 }
 
-/// The cross-dissolve duration the metadata calls for, in seconds: `None`
-/// applies the change directly — the same table `withCrossDissolveAnimation`
-/// uses.
+/// The cross-dissolve duration the metadata calls for, in seconds: `None`,
+/// for a change that names no animation or disables it, applies the change
+/// directly — the same table `withCrossDissolveAnimation` uses.
 fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata).animation() {
         None => None,
         Some(Animation::Default) => Some(0.25),
         Some(Animation::Bezier { duration, .. }) => Some(duration.as_secs_f64()),
