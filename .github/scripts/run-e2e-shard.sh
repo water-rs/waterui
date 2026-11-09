@@ -731,10 +731,22 @@ build_reference_host() {
 # the launch-failure bug #147 fixed above, one step later in the sequence.
 # Waiting on the host's own signal removes the race rather than widening the
 # constant.
+#
+# A marker counts only from the process this launch started. The stream and
+# the replay below read the whole `dev.waterui` subsystem, and the replay's
+# window holds the previous example's and twin's markers too: an app that
+# never painted used to inherit the previous app's marker and be captured as
+# if it had (stress reported reminders' 8554 ms in nightly 42694488366, then
+# captured a black screen). Compact style tags each line `Process[PID:TID]`.
+marker_value() {
+  local log="$1" key="$2" pid="$3"
+  sed -n "s/.*\[${pid}:[0-9a-f]*\] .*${key}=\([0-9][0-9]*\).*/\1/p" "${log}" 2>/dev/null | head -1
+}
+
 wait_for_reference_first_paint() {
-  local marker_log="$1"
+  local marker_log="$1" pid="$2"
   for _ in $(seq 1 60); do
-    if grep -q "waterui_reference_first_paint_ms=" "${marker_log}" 2>/dev/null; then
+    if [[ -n "$(marker_value "${marker_log}" waterui_reference_first_paint_ms "${pid}")" ]]; then
       return 0
     fi
     sleep 1
@@ -749,7 +761,7 @@ wait_for_reference_first_paint() {
     log show --last 2m --predicate 'subsystem == "dev.waterui"' \
       --style compact >> "${marker_log}" 2>/dev/null || true
   fi
-  grep -q "waterui_reference_first_paint_ms=" "${marker_log}" 2>/dev/null
+  [[ -n "$(marker_value "${marker_log}" waterui_reference_first_paint_ms "${pid}")" ]]
 }
 
 # Launches the reference host for `example`, waits for its first paint,
@@ -770,13 +782,15 @@ capture_reference() {
       > "${ref_marker_log}" 2>/dev/null &
     local ref_stream_pid=$!
     sleep 1
-    xcrun simctl launch "${SIMULATOR_UDID}" dev.waterui.E2EReference \
-      -E2EExample "${example}" -E2ETitle "${title}" >/dev/null || {
+    local ref_pid
+    ref_pid="$(xcrun simctl launch "${SIMULATOR_UDID}" dev.waterui.E2EReference \
+      -E2EExample "${example}" -E2ETitle "${title}" | awk -F': ' '{print $2}')"
+    if [[ -z "${ref_pid}" ]]; then
       kill "${ref_stream_pid}" 2>/dev/null || true
       return 1
-    }
+    fi
     local rc=0
-    if wait_for_reference_first_paint "${ref_marker_log}"; then
+    if wait_for_reference_first_paint "${ref_marker_log}" "${ref_pid}"; then
       capture_settled "${target}"
       rc=$?
     else
@@ -804,7 +818,7 @@ capture_reference() {
       return 1
     fi
     local rc=0
-    if wait_for_reference_first_paint "${ref_marker_log}"; then
+    if wait_for_reference_first_paint "${ref_marker_log}" "${ref_pid}"; then
       capture_settled "${target}" "${ref_pid}"
       rc=$?
     else
@@ -1097,7 +1111,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   startup_ms=""
   no_first_paint=0
   for _ in $(seq 1 30); do
-    startup_ms="$(sed -n 's/.*waterui_first_paint_ms=\([0-9][0-9]*\).*/\1/p' "${marker_log}" | head -1)"
+    startup_ms="$(marker_value "${marker_log}" waterui_first_paint_ms "${app_pid}")"
     [[ -n "${startup_ms}" ]] && break
     sleep 1
   done
@@ -1113,7 +1127,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       log show --last 2m --predicate 'subsystem == "dev.waterui"' \
         --style compact >> "${marker_log}" 2>/dev/null || true
     fi
-    startup_ms="$(sed -n 's/.*waterui_first_paint_ms=\([0-9][0-9]*\).*/\1/p' "${marker_log}" | head -1)"
+    startup_ms="$(marker_value "${marker_log}" waterui_first_paint_ms "${app_pid}")"
   fi
   if [[ -n "${startup_ms}" ]]; then
     echo "::notice::${example} first paint in ${startup_ms} ms (${platform}, release)"
