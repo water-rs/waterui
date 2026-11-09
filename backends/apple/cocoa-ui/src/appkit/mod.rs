@@ -79,7 +79,9 @@ pub use application::{
 };
 pub use badge::BadgeView;
 pub use button::Button;
-pub use calendar::{CalendarColors, CalendarNavigationLabels, CalendarView};
+pub use calendar::{
+    CalendarColorRole, CalendarColors, CalendarNavigation, CalendarNavigationLabels, CalendarView,
+};
 pub use color_view::ColorView;
 pub use color_well::ColorWell;
 pub use colors::AppColor;

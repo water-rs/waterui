@@ -8,12 +8,14 @@
 //! joins it in date order. `Native<MultiDatePickerConfig>` is claimed too,
 //! for the payload a hook emits.
 
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
+#[cfg(target_os = "ios")]
 use cocoa_ui::date::CalendarSelectionMode;
 use waterui::component::form::picker::date::Date;
 use waterui::component::form::picker::multi_date::{MultiDatePicker, MultiDatePickerConfig};
-use waterui::reactive::{Binding, Signal};
+use waterui::reactive::{Binding, Signal, SignalExt};
 use waterui::view::{ConfigurableView, Hook};
 
 use super::calendar::{CalendarSelection, CalendarSpec, render_calendar};
@@ -32,20 +34,17 @@ fn toggle_selection(selected: &mut Vec<Date>, day: Date) {
 }
 
 impl CalendarSelection for Binding<Vec<Date>> {
+    #[cfg(target_os = "ios")]
     const MODE: CalendarSelectionMode = CalendarSelectionMode::Multiple;
 
-    fn selected(&self) -> Vec<Date> {
-        self.snapshot()
+    fn selected(value: &Vec<Date>) -> Vec<Date> {
+        value.clone()
     }
 
     fn pick(&self, day: Date) {
         let mut selected = self.snapshot();
         toggle_selection(&mut selected, day);
         self.set(selected);
-    }
-
-    fn watch(&self, leaf: &mut NativeLeaf, on_change: impl Fn() + 'static) {
-        leaf.watch(self, move |_| on_change());
     }
 }
 
@@ -60,7 +59,11 @@ fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf 
             label: config.label().clone(),
             selection: config.value().clone(),
             range: config.range().clone(),
-            decorated: config.decorated().clone(),
+            decorated: config
+                .decorated()
+                .clone()
+                .map(|days: Vec<Date>| days.into_iter().collect::<BTreeSet<_>>())
+                .computed(),
             visible_month: config.visible_month().clone(),
         },
         ctx,

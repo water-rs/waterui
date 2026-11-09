@@ -230,42 +230,62 @@ impl YearMonth {
         }
     }
 
-    /// The number of days in the month under the Gregorian calendar.
+    /// The number of days in the month under the proleptic Gregorian
+    /// calendar.
     ///
     /// # Panics
     ///
-    /// When the month does not name a real Gregorian month.
+    /// When the month is not `1..=12`.
     #[must_use]
-    pub fn day_count(self) -> i32 {
-        let calendar = gregorian();
-        let first = calendar
-            .dateFromComponents(&components(self.first_day()))
-            .expect("a calendar month resolves to a date");
-        let range =
-            calendar.rangeOfUnit_inUnit_forDate(NSCalendarUnit::Day, NSCalendarUnit::Month, &first);
-        i32::try_from(range.length).expect("a month has fewer than 2^31 days")
+    pub const fn day_count(self) -> i32 {
+        match self.month {
+            2 if is_leap_year(self.year) => 29,
+            2 => 28,
+            4 | 6 | 9 | 11 => 30,
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            _ => panic!("a month is 1 through 12"),
+        }
     }
 
     /// The weekday the month's first day falls on, `1` (Sunday) through `7`
-    /// (Saturday) — `NSCalendar`'s numbering.
+    /// (Saturday) — `NSCalendar`'s numbering — under the proleptic
+    /// Gregorian calendar (Sakamoto's method).
     ///
     /// # Panics
     ///
-    /// When the month does not name a real Gregorian month.
+    /// When the month is not `1..=12`.
     #[must_use]
-    pub fn first_weekday(self) -> i32 {
-        let calendar = gregorian();
-        let first = calendar
-            .dateFromComponents(&components(self.first_day()))
-            .expect("a calendar month resolves to a date");
-        i32::try_from(calendar.component_fromDate(NSCalendarUnit::Weekday, &first))
-            .expect("weekday is 1 through 7")
+    pub const fn first_weekday(self) -> i32 {
+        const MONTH_OFFSETS: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+        assert!(1 <= self.month && self.month <= 12, "a month is 1 through 12");
+        let year = if self.month < 3 {
+            self.year - 1
+        } else {
+            self.year
+        };
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "the assertion above keeps the month in 1..=12"
+        )]
+        let offset = MONTH_OFFSETS[(self.month - 1) as usize];
+        // The day of the month is 1; Sunday is 0.
+        let weekday = (year + year.div_euclid(4) - year.div_euclid(100)
+            + year.div_euclid(400)
+            + offset
+            + 1)
+            .rem_euclid(7);
+        weekday + 1
     }
+}
+
+/// Whether `year` is a leap year under the proleptic Gregorian calendar.
+const fn is_leap_year(year: i32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 /// `day` moved by `days` calendar days, crossing month and year boundaries.
 #[must_use]
-pub fn add_days(day: DateParts, days: i32) -> DateParts {
+pub const fn add_days(day: DateParts, days: i32) -> DateParts {
     let mut month = YearMonth::of(day);
     let mut value = day.day + days;
     while value < 1 {
@@ -351,15 +371,20 @@ mod tests {
             .day_count(),
             30
         );
-        // 1 November 2026 is a Sunday.
         assert_eq!(
             YearMonth {
-                year: 2026,
-                month: 11
+                year: 2000,
+                month: 2
             }
-            .first_weekday(),
-            1
+            .day_count(),
+            29
         );
+        // 1 November 2026 is a Sunday, 1 January 2000 a Saturday, 1 March
+        // 1900 a Thursday, and 1 January of year 0 — 1 BCE, a leap year
+        // before the Monday 1 January 1 — a Saturday.
+        for (year, month, weekday) in [(2026, 11, 1), (2000, 1, 7), (1900, 3, 5), (0, 1, 7)] {
+            assert_eq!(YearMonth { year, month }.first_weekday(), weekday);
+        }
         assert_eq!(
             february_leap.previous().previous().next(),
             YearMonth {

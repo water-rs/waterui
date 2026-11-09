@@ -11,7 +11,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use cocoa_ui::ColorScheme;
+use cocoa_ui::{ColorScheme, Retained};
 use waterui::graphics::color::{
     WorkingColor, srgb_to_linear,
     working::{self},
@@ -119,6 +119,58 @@ impl SystemLabelSlots {
             .iter()
             .find_map(|&(slot, color)| (slot == identity).then_some(color))
     }
+}
+
+/// A `WorkingColor` as the platform's extended linear Display-P3 color
+/// object.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_ui_kit::UIColor> {
+    let [red, green, blue, alpha] = color.components;
+    cocoa_ui::uikit::colors::extended_linear_display_p3(
+        f64::from(red),
+        f64::from(green),
+        f64::from(blue),
+        f64::from(alpha),
+    )
+}
+
+/// A `WorkingColor` as the platform's extended linear Display-P3 color
+/// object, with HDR headroom applied as a content-headroom multiplier — the
+/// `AppKit` variant.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
+    let [red, green, blue, alpha] = color.components;
+    cocoa_ui::appkit::colors::extended_linear_display_p3(
+        f64::from(red),
+        f64::from(green),
+        f64::from(blue),
+        f64::from(alpha),
+    )
+}
+
+/// The `NSColor` a theme color signal draws as: the dynamic system label
+/// color it stands for when it is one of the backend's label slots — which
+/// resolves against the drawing view's own appearance — and its current
+/// value otherwise.
+///
+/// # Panics
+///
+/// When `env` has no Apple theme installed.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn token_color(
+    env: &Environment,
+    signal: &impl Signal<Output = WorkingColor>,
+) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
+    let slots = env
+        .get::<SystemLabelSlots>()
+        .expect("the Apple theme installs its label slots with the color slots");
+    slots.system_color(signal).map_or_else(
+        || platform_color(&signal.snapshot()),
+        cocoa_ui::appkit::colors::dynamic,
+    )
 }
 
 /// Installs and observes the theme owned by a mounted `UIKit` controller.

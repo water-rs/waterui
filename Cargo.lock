@@ -12634,6 +12634,7 @@ dependencies = [
  "divan",
  "executor-core",
  "futures",
+ "icu_locale",
  "kurbo",
  "libc",
  "libtest-mimic",
