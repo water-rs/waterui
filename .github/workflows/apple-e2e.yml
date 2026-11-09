@@ -112,6 +112,9 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   SHARD_TOTAL: 8
   PACKAGE_GROUP_TOTAL: 5
+  # The nextest `test-fonts` setup script fetches its pinned GitHub-hosted
+  # sources as authenticated traffic with the job token (#3942).
+  GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   prepare:
