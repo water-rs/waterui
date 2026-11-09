@@ -213,20 +213,24 @@ mod tests {
 
     /// The bold symbolic trait resolves per face, as `SwiftUI`'s bold does:
     /// the body text style's bold is Semibold, while a regular fixed-size
-    /// system font's bold is Bold.
+    /// system font's bold is Bold — also at the body style's own size, the
+    /// face unstyled text bolds to.
     #[cfg(target_os = "macos")]
     #[test]
     fn bold_trait_is_semibold_on_body_and_bold_on_a_fixed_system_font() {
-        use crate::font::{bold_variant, weight, weight_of};
+        use crate::font::{bold_variant, drawn_weight, weight, weight_of};
         use objc2_app_kit::NSFont;
 
         let body = super::preferred_font(super::TextStyle::Body);
         assert_eq!(body.weight, weight::REGULAR);
         assert!((body.bold_weight - weight::SEMI_BOLD).abs() < 1e-6);
 
-        let fixed = NSFont::systemFontOfSize_weight(17.0, weight::REGULAR);
-        let bold = bold_variant(&fixed).expect("the system font has a bold variant");
-        assert!((weight_of(&bold) - weight::BOLD).abs() < 1e-6);
+        for size in [17.0, body.size] {
+            let fixed = NSFont::systemFontOfSize_weight(size, weight::REGULAR);
+            let bold = bold_variant(&fixed).expect("the system font has a bold variant");
+            assert!((weight_of(&bold) - weight::BOLD).abs() < 1e-6);
+            assert!((drawn_weight(&bold) - weight::BOLD).abs() < 1e-6);
+        }
     }
 
     /// The bold of a style is the face drawn, not the weight trait its

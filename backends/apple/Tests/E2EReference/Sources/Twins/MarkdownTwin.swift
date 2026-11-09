@@ -8,9 +8,10 @@
 // framework's semantic font slots, resolved to platform text styles):
 //   # -> .title bold, ## -> .headline bold, ### -> .body bold
 //   Every bold here — headings, table header cells, the code block's
-//   language name — is WaterUI's `.bold()`, the platform bold of the text
-//   style, which is SwiftUI's `.bold()`, not `.fontWeight(.bold)`: iOS
-//   headline bold is Semibold, macOS headline bold is Heavy.
+//   language name — is WaterUI's `.bold()`, the platform bold, which is
+//   SwiftUI's `.bold()`, not `.fontWeight(.bold)`: a text style takes its
+//   own bold (iOS headline bold is Semibold, macOS headline bold is Heavy),
+//   and unstyled text the plain bold (Bold on macOS).
 //   fenced blocks get a header row (language name + Copy) over the
 //   SurfaceVariant fill, and the code text is the syntect base16-ocean.light
 //   palette at Body.size(14).monospaced() (components/foundation/text/src/

@@ -36,6 +36,11 @@
 //! Bold is orthogonal in the same way: `.bold()` asks for the platform's bold
 //! face of the font and each backend resolves it, while `.weight(..)` is an
 //! exact weight. See [`Font::bold`].
+//!
+//! Text nobody styled is its own state, not the body slot: [`Font::default`]
+//! sizes and spaces it as body text, but a backend sees
+//! [`ResolvedFont::unstyled`] and gives it the platform's plain bold where
+//! that differs from the body style's bold.
 
 use core::fmt::Debug;
 
@@ -55,9 +60,29 @@ use waterui_core::{
 #[non_exhaustive]
 pub struct Font(AnyResolvable<ResolvedFont>);
 
+/// The font of text nobody styled.
+///
+/// It resolves to the [`Body`] slot's face, size and metrics, marked
+/// [`ResolvedFont::unstyled`] so a backend can tell it from text set in the
+/// body style.
 impl Default for Font {
     fn default() -> Self {
-        Self::new(Body)
+        Self::new(Unstyled)
+    }
+}
+
+/// The resolvable behind [`Font::default`]: the body slot, marked unstyled.
+#[derive(Debug, Clone, Copy)]
+struct Unstyled;
+
+impl Resolvable for Unstyled {
+    type Resolved = ResolvedFont;
+
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        Body.resolve(env).map(|mut font| {
+            font.unstyled = true;
+            font
+        })
     }
 }
 
@@ -88,6 +113,8 @@ pub struct ResolvedFont {
     /// The weight the platform's bold trait gives this face, when the
     /// theme that published the face declares it.
     bold_weight: Option<FontWeight>,
+    /// Whether this is the face of text nobody styled ([`Font::default`]).
+    unstyled: bool,
 }
 
 impl ResolvedFont {
@@ -162,6 +189,28 @@ impl ResolvedFont {
     pub const fn bold_weight(&self) -> Option<FontWeight> {
         self.bold_weight
     }
+
+    /// Whether this is the face of text nobody styled ([`Font::default`]).
+    ///
+    /// An unstyled font resolves to the [`Body`] slot's face, size, metrics
+    /// and declared [`Self::bold_weight`], so it lays out as body text. The
+    /// mark lets a backend whose platform bolds unstyled text differently
+    /// from its body text style apply its plain bold under the
+    /// [`Self::bold`] trait; a backend without that distinction treats it as
+    /// body. Choosing a slot with [`Font::new`], or another face with
+    /// [`Font::size`], [`Font::weight`] or a named [`Font::family`], styles
+    /// the text and clears the mark.
+    #[must_use]
+    pub const fn unstyled(&self) -> bool {
+        self.unstyled
+    }
+
+    /// Drops what the previous face declared about its bold counterpart, for
+    /// a modifier that selects another face.
+    const fn select_face(&mut self) {
+        self.bold_weight = None;
+        self.unstyled = false;
+    }
 }
 
 /// A semantic choice of typeface, resolved by each backend to a platform face.
@@ -202,6 +251,7 @@ impl ResolvedFont {
             design: FontDesign::Default,
             bold: false,
             bold_weight: None,
+            unstyled: false,
         }
     }
 
@@ -217,6 +267,7 @@ impl ResolvedFont {
             design: FontDesign::Default,
             bold: false,
             bold_weight: None,
+            unstyled: false,
         }
     }
 
@@ -232,6 +283,7 @@ impl ResolvedFont {
             design: FontDesign::Default,
             bold: false,
             bold_weight: None,
+            unstyled: false,
         }
     }
 
@@ -396,13 +448,14 @@ impl Font {
     ///
     /// The weight is exact: `weight(FontWeight::Bold)` is weight 700 on
     /// every backend, unlike [`Self::bold`]. A weight selects another face,
-    /// so the slot's declared [`ResolvedFont::bold_weight`] is dropped; a
-    /// [`Self::bold`] trait stays and applies to the new weight.
+    /// so the slot's declared [`ResolvedFont::bold_weight`] is dropped and
+    /// the font is no longer [`ResolvedFont::unstyled`]; a [`Self::bold`]
+    /// trait stays and applies to the new weight.
     #[must_use]
     pub fn weight(self, weight: impl IntoSignal<FontWeight> + 'static) -> Self {
         self.modified(weight.into_signal().computed(), |font, weight| {
             font.weight = weight;
-            font.bold_weight = None;
+            font.select_face();
         })
     }
 
@@ -417,16 +470,17 @@ impl Font {
     /// pitch as an absolute line height; carrying that pitch onto a smaller
     /// face would space its lines as the larger one. Call [`Self::line_height`]
     /// or [`Self::letter_spacing`] after `size` to declare metrics for the
-    /// new face. The slot's declared [`ResolvedFont::bold_weight`] is
-    /// dropped for the same reason: a [`Self::bold`] trait on the resized
-    /// font resolves as the platform bolds a fixed-size face.
+    /// new face. The slot's declared [`ResolvedFont::bold_weight`] and the
+    /// [`ResolvedFont::unstyled`] mark are dropped for the same reason: a
+    /// [`Self::bold`] trait on the resized font resolves as the platform
+    /// bolds a fixed-size face.
     #[must_use]
     pub fn size(self, size: impl IntoSignalF32) -> Self {
         self.modified(size.into_signal_f32().computed(), |font, size| {
             font.size = size;
             font.line_height = None;
             font.letter_spacing = 0.0;
-            font.bold_weight = None;
+            font.select_face();
         })
     }
 
@@ -437,13 +491,14 @@ impl Font {
     /// [`FontFamily::Inherited`] (`None`), the font keeps the family its slot
     /// resolves to. A change of the signal re-resolves the font in place.
     /// A named family replaces the slot's face, so it drops the slot's
-    /// declared [`ResolvedFont::bold_weight`].
+    /// declared [`ResolvedFont::bold_weight`] and the
+    /// [`ResolvedFont::unstyled`] mark.
     #[must_use]
     pub fn family(self, family: impl IntoSignal<FontFamily> + 'static) -> Self {
         self.modified(family.into_signal().computed(), |font, family| {
             if let FontFamily::Named(family) = family {
                 font.family = Some(family);
-                font.bold_weight = None;
+                font.select_face();
             }
         })
     }
@@ -494,9 +549,12 @@ impl Font {
     /// definition, not a weight: on Apple a text-style font gets its style's
     /// bold counterpart (Semibold for body text) and a fixed-size font the
     /// bold symbolic trait; on Android the bold typeface style adds 300 to
-    /// the font's weight. Use [`Self::weight`] with [`FontWeight::Bold`] for
-    /// an exact weight of 700. The trait is independent of the weight, so it
-    /// applies to whatever weight the font has, in either order.
+    /// the font's weight. Unstyled text ([`Font::default`]) takes the
+    /// platform's plain bold, which is not necessarily its body style's: on
+    /// macOS it is Bold, while `.body()` text bolds to Semibold. Use
+    /// [`Self::weight`] with [`FontWeight::Bold`] for an exact weight of 700.
+    /// The trait is independent of the weight, so it applies to whatever
+    /// weight the font has, in either order.
     #[must_use]
     pub fn bold(self) -> Self {
         self.modified(Computed::constant(()), |font, ()| font.bold = true)
@@ -615,6 +673,49 @@ mod tests {
             .snapshot();
         assert!(!weighted.bold());
         assert_eq!(weighted.weight(), FontWeight::Bold);
+    }
+
+    /// Unstyled text lays out exactly as the body slot but stays
+    /// distinguishable from text set in the body style, until a modifier
+    /// picks another face.
+    #[test]
+    fn unstyled_resolves_as_body_and_is_distinguishable_from_it() {
+        let slot = ResolvedFont::new(17.0, FontWeight::Normal)
+            .with_typography_metrics(22.0, 0.4)
+            .with_bold_weight(FontWeight::SemiBold);
+        let env = env_with_body(slot);
+
+        let unstyled = Font::default().bold().resolve(&env).snapshot();
+        let body = Font::new(Body).bold().resolve(&env).snapshot();
+        assert!(unstyled.unstyled());
+        assert!(!body.unstyled());
+        for font in [&unstyled, &body] {
+            assert!((font.size() - 17.0).abs() < f32::EPSILON);
+            assert_eq!(font.weight(), FontWeight::Normal);
+            assert_eq!(font.line_height(), Some(22.0));
+            assert!((font.letter_spacing() - 0.4).abs() < f32::EPSILON);
+            assert_eq!(font.family(), None);
+            assert_eq!(font.design(), FontDesign::Default);
+            assert!(font.bold());
+            assert_eq!(font.bold_weight(), Some(FontWeight::SemiBold));
+        }
+
+        let kept = Font::default()
+            .monospaced()
+            .line_height(20.0)
+            .letter_spacing(0.0)
+            .family(FontFamily::Inherited)
+            .resolve(&env)
+            .snapshot();
+        assert!(kept.unstyled());
+
+        for font in [
+            Font::default().size(20.0),
+            Font::default().weight(FontWeight::Light),
+            Font::default().family("Menlo"),
+        ] {
+            assert!(!font.resolve(&env).snapshot().unstyled());
+        }
     }
 
     #[test]

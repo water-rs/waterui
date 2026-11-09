@@ -5,6 +5,11 @@
 //! the bold trait (Semibold for body text), and any other face gets the bold
 //! symbolic trait added to its realized descriptor, which turns a regular
 //! fixed-size system font Bold.
+//!
+//! Unstyled text resolves through the body slot but is not the body text
+//! style under the trait on macOS: `AppKit` text with no text style bolds to
+//! Bold, the body style to Semibold, so there unstyled text takes the
+//! symbolic trait. On iOS it bolds as the body style.
 
 use cocoa_ui::Retained;
 use waterui::text::font::{FontDesign, FontWeight, ResolvedFont};
@@ -34,10 +39,23 @@ struct FaceWeight {
     bold_trait: bool,
 }
 
+/// The weight the platform's bold trait gives the text style `resolved`
+/// realizes, or `None` when it realizes no text style.
+///
+/// Unstyled text on macOS realizes none: it bolds as the regular system
+/// face does, to Bold, not as the body style it is sized by.
+const fn style_bold_weight(resolved: &ResolvedFont) -> Option<FontWeight> {
+    if cfg!(target_os = "macos") && resolved.unstyled() {
+        None
+    } else {
+        resolved.bold_weight()
+    }
+}
+
 /// A bold font with a declared bold weight is built at that weight; a bold
 /// font without one is built at its own weight and takes the trait.
 const fn face_weight(resolved: &ResolvedFont) -> FaceWeight {
-    match (resolved.bold(), resolved.bold_weight()) {
+    match (resolved.bold(), style_bold_weight(resolved)) {
         (true, Some(declared)) => FaceWeight {
             weight: declared,
             bold_trait: false,
@@ -128,8 +146,8 @@ pub(super) fn resolved_weight(mtm: cocoa_ui::MainThreadMarker, resolved: &Resolv
 mod tests {
     use alloc::vec::Vec;
 
-    use waterui::reactive::Signal;
-    use waterui::text::font::{Body, Font};
+    use waterui::reactive::{Computed, Signal};
+    use waterui::text::font::{Body, Font, Headline};
     use waterui::text::font::{FontWeight, ResolvedFont};
     use waterui_backend_core::Environment;
 
@@ -163,13 +181,65 @@ mod tests {
         }
     }
 
+    /// Resolves `font` against the body and headline slots as the macOS
+    /// theme publishes them: body Regular bolding to Semibold, headline Bold
+    /// bolding to Heavy.
     fn resolve(font: &Font) -> ResolvedFont {
-        let slot =
-            ResolvedFont::new(17.0, FontWeight::Normal).with_bold_weight(FontWeight::SemiBold);
-        let env = Environment::new().store::<Body, waterui::reactive::Computed<ResolvedFont>>(
-            waterui::reactive::Computed::constant(slot),
-        );
+        let body =
+            ResolvedFont::new(13.0, FontWeight::Normal).with_bold_weight(FontWeight::SemiBold);
+        let headline =
+            ResolvedFont::new(13.0, FontWeight::Bold).with_bold_weight(FontWeight::UltraBold);
+        let env = Environment::new()
+            .store::<Body, Computed<ResolvedFont>>(Computed::constant(body))
+            .store::<Headline, Computed<ResolvedFont>>(Computed::constant(headline));
         font.resolve(&env).snapshot()
+    }
+
+    /// Bold on unstyled text is the plain bold on macOS — the regular system
+    /// face with the bold symbolic trait, which is Bold — while a text style
+    /// keeps its declared bold: body Semibold, headline Heavy. iOS bolds
+    /// unstyled text as the body style.
+    #[test]
+    fn unstyled_bold_is_the_plain_bold_on_macos_and_styles_keep_theirs() {
+        let unstyled = face_weight(&resolve(&Font::default().bold()));
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                unstyled,
+                FaceWeight {
+                    weight: FontWeight::Normal,
+                    bold_trait: true
+                }
+            );
+        } else {
+            assert_eq!(
+                unstyled,
+                FaceWeight {
+                    weight: FontWeight::SemiBold,
+                    bold_trait: false
+                }
+            );
+        }
+        assert_eq!(
+            face_weight(&resolve(&Font::new(Body).bold())),
+            FaceWeight {
+                weight: FontWeight::SemiBold,
+                bold_trait: false
+            }
+        );
+        assert_eq!(
+            face_weight(&resolve(&Font::new(Headline).bold())),
+            FaceWeight {
+                weight: FontWeight::UltraBold,
+                bold_trait: false
+            }
+        );
+        assert_eq!(
+            face_weight(&resolve(&Font::default())),
+            FaceWeight {
+                weight: FontWeight::Normal,
+                bold_trait: false
+            }
+        );
     }
 
     /// Bold on a theme slot is the weight the slot declares, the platform's
