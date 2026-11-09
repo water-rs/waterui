@@ -69,6 +69,9 @@ env:
   # layers (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
+  # The nextest `test-fonts` setup script fetches its pinned GitHub-hosted
+  # sources as authenticated traffic with the job token (#3942).
+  GITHUB_TOKEN: ${{ github.token }}
 
 # Parallel jobs instead of one serial leg per platform (#329), with the
 # examples compiled once in their own job (#330). The cargo passes

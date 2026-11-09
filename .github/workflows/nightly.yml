@@ -52,6 +52,9 @@ env:
   # rust-cache and the install-tool binary caches are the only cache
   # layers (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
+  # The nextest `test-fonts` setup script fetches its pinned GitHub-hosted
+  # sources as authenticated traffic with the job token (#3942).
+  GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   test:
