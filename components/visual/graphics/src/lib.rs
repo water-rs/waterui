@@ -65,7 +65,8 @@ pub use gradient::{Gradient, GradientType, MeshGradient};
 #[cfg(feature = "gpu")]
 pub use image::image_decode;
 pub use input::{
-    Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
+    Code, GesturePhase, Key, Modifiers, NamedKey, ScrollPhase, ScrollUnit, SurfaceInputEvent,
+    SurfacePointerButton,
 };
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use offscreen::{OffscreenError, OffscreenImage, OffscreenRenderer, OffscreenSize};
