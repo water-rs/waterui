@@ -356,7 +356,7 @@ impl AndroidCherenkovSurface {
 
     /// Renders the committed change set at the presented frame's `time`.
     pub(crate) fn render(
-        &mut self,
+        &self,
         time: cherenkov::FrameTime,
     ) -> Result<cherenkov::Next, cherenkov::RenderError> {
         self.core.own(self.core.engine.render(time))
