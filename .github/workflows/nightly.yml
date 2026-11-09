@@ -347,7 +347,6 @@ jobs:
         with:
           name: water-cli-${{ runner.os }}-${{ runner.arch }}
           path: ${{ runner.temp }}/water-cli/bin
-          retention-days: 14
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
@@ -1284,16 +1283,14 @@ jobs:
             --out "$logs/timings.json"
           cp "$logs/timings.json" "$RUNNER_TEMP/e2e-record/$E2E_PLATFORM.json"
 
-      # The packages `water package` produced, kept for 14 days. Gated on the
-      # collect steps seeing them, so a failed packaging step adds no second
-      # failure here.
+      # The packages `water package` produced. Gated on the collect steps
+      # seeing them, so a failed packaging step adds no second failure here.
       - name: Upload the package
         if: ${{ !cancelled() && matrix.platform != 'android' && (steps.collect_unix.outputs.packaged == 'true' || steps.collect_windows.outputs.packaged == 'true') }}
         uses: actions/upload-artifact@v4
         with:
           name: cli-e2e-${{ matrix.platform }}-package
           path: ${{ runner.temp }}/e2e-packages/package
-          retention-days: 14
           if-no-files-found: error
 
       - name: Upload the debug APK
@@ -1302,7 +1299,6 @@ jobs:
         with:
           name: cli-e2e-android-apk-debug
           path: ${{ runner.temp }}/e2e-packages/apk-debug
-          retention-days: 14
           if-no-files-found: error
 
       - name: Upload the unsigned release APK
@@ -1311,7 +1307,6 @@ jobs:
         with:
           name: cli-e2e-android-apk-release
           path: ${{ runner.temp }}/e2e-packages/apk-release
-          retention-days: 14
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
@@ -1462,7 +1457,6 @@ jobs:
         with:
           name: cherenkov-bench-linux-vello-cpu-skia
           path: target/release/cherenkov-bench
-          retention-days: 14
           if-no-files-found: ignore
       # The oracle reference depends only on the scene; build it once for
       # both passes below (#218).
@@ -1528,7 +1522,6 @@ jobs:
         with:
           name: cherenkov-bench-macos-skia-metal-vello-classic-vello-hybrid
           path: target/release/cherenkov-bench
-          retention-days: 14
           if-no-files-found: ignore
       # The oracle reference depends only on the scene; build it once for
       # the three passes below (#218).
