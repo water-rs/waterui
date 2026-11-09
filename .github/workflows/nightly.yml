@@ -563,6 +563,21 @@ jobs:
           cd "$HOME"
           fail() { echo "::error::$*"; exit 1; }
           phase() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"; }
+          # Keep what `water package` reported, for the package artifacts:
+          # the path comes from its `Packaged at <path>` line (anstream strips
+          # the colour codes off a piped stderr, leaving `✓ Packaged at ...`).
+          # An APK is kept as is; a bundle or binary goes in a tar so the
+          # artifact zip does not lose its symlinks and permissions.
+          stash() {
+            local pkg dest="$HOME/e2e-packages/$1"
+            pkg=$(sed -n 's/.*Packaged at //p' "$HOME/e2e-logs/$2" | tail -n 1)
+            [ -e "$pkg" ] || fail "water package reported '$pkg', which does not exist"
+            mkdir -p "$dest"
+            case "$pkg" in
+              *.apk) cp "$pkg" "$dest/" ;;
+              *) tar -C "$(dirname "$pkg")" -cf "$dest/$(basename "$pkg").tar" "$(basename "$pkg")" ;;
+            esac
+          }
           # Cold-compile record (see `cli-e2e-metrics`): each phase that
           # succeeds appends `<metric>\t<seconds>` to timings.tsv. The
           # numbers must stay cold, so no compiler wrapper reaches a build:
@@ -672,6 +687,7 @@ jobs:
               2>&1 | tee ../e2e-logs/package-debug.log) || fail "water package (debug) failed"
             grep -q 'Packaged at' e2e-logs/package-debug.log \
               || fail "water package produced no artifact line"
+            stash apk-debug package-debug.log
             record package_debug "$((SECONDS - start))"
             collect_timings package-debug
             phase "water package e2eapp (release, unsigned)"
@@ -680,6 +696,7 @@ jobs:
               2>&1 | tee ../e2e-logs/package-release.log) || fail "water package (release) failed"
             grep -q 'Packaged at' e2e-logs/package-release.log \
               || fail "water package produced no artifact line"
+            stash apk-release package-release.log
             record package_release "$((SECONDS - start))"
             collect_timings package-release
           else
@@ -689,6 +706,7 @@ jobs:
               2>&1 | tee ../e2e-logs/package-app.log) || fail "water package failed"
             grep -q 'Packaged at' e2e-logs/package-app.log \
               || fail "water package produced no artifact line"
+            stash package package-app.log
             record package "$((SECONDS - start))"
             collect_timings package
           fi
@@ -847,6 +865,15 @@ jobs:
           if (-not (Select-String "$logs\package-app.log" -Pattern 'Packaged at' -Quiet)) {
             Fail "water package produced no artifact line"
           }
+          # The package lands in <project>\target\package with the DXC runtime
+          # pair staged beside it, which the app needs at run time: keep the
+          # whole directory the reported path sits in.
+          $reported = (Select-String "$logs\package-app.log" -Pattern 'Packaged at (.+)$' |
+            Select-Object -Last 1).Matches[0].Groups[1].Value.Trim()
+          if (-not (Test-Path $reported)) { Fail "water package reported '$reported', which does not exist" }
+          $keep = "$env:USERPROFILE\e2e-packages\package"
+          New-Item -ItemType Directory -Force $keep | Out-Null
+          Copy-Item "$(Split-Path $reported -Parent)\*" $keep -Recurse -Force
           Record package $t0
           Collect-Timings package
 
@@ -1122,6 +1149,7 @@ jobs:
           SCRIPT
 
       - name: Collect e2e logs (Unix)
+        id: collect_unix
         if: always() && runner.os != 'Windows'
         shell: bash
         run: |
@@ -1129,13 +1157,26 @@ jobs:
           sudo cp -R "$E2E_HOME/e2e-logs" "$RUNNER_TEMP/e2e-logs" 2>/dev/null || true
           sudo chown -R "$USER" "$RUNNER_TEMP/e2e-logs" 2>/dev/null || true
           ls -la "$RUNNER_TEMP/e2e-logs" || true
+          # The packages the fresh user kept (see `stash`), made readable for
+          # the upload. Present only when packaging succeeded.
+          if sudo test -d "$E2E_HOME/e2e-packages"; then
+            sudo cp -R "$E2E_HOME/e2e-packages" "$RUNNER_TEMP/e2e-packages"
+            sudo chown -R "$USER" "$RUNNER_TEMP/e2e-packages"
+            echo "packaged=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Collect e2e logs (Windows)
+        id: collect_windows
         if: always() && runner.os == 'Windows'
         shell: pwsh
         run: |
           Copy-Item "C:\Users\$env:E2E_USER\e2e-logs" "$env:RUNNER_TEMP\e2e-logs" `
             -Recurse -Force -ErrorAction SilentlyContinue
+          # The package the fresh user kept, DXC runtime pair included.
+          if (Test-Path "C:\Users\$env:E2E_USER\e2e-packages") {
+            Copy-Item "C:\Users\$env:E2E_USER\e2e-packages" "$env:RUNNER_TEMP\e2e-packages" -Recurse -Force
+            "packaged=true" >> $env:GITHUB_OUTPUT
+          }
           # winget's own diagnostic logs of the fresh user: what it was doing
           # when a doctor fix stalled.
           $diag = "C:\Users\$env:E2E_USER\AppData\Local\Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir"
@@ -1171,6 +1212,36 @@ jobs:
             --timings "$logs/timings.tsv" --rustc "$logs/rustc-vV.log" --flags "$logs/flags.txt" \
             --out "$logs/timings.json"
           cp "$logs/timings.json" "$RUNNER_TEMP/e2e-record/$E2E_PLATFORM.json"
+
+      # The packages `water package` produced, kept for 14 days. Gated on the
+      # collect steps seeing them, so a failed packaging step adds no second
+      # failure here.
+      - name: Upload the package
+        if: ${{ !cancelled() && matrix.platform != 'android' && (steps.collect_unix.outputs.packaged == 'true' || steps.collect_windows.outputs.packaged == 'true') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-e2e-${{ matrix.platform }}-package
+          path: ${{ runner.temp }}/e2e-packages/package
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload the debug APK
+        if: ${{ !cancelled() && matrix.platform == 'android' && steps.collect_unix.outputs.packaged == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-e2e-android-apk-debug
+          path: ${{ runner.temp }}/e2e-packages/apk-debug
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload the unsigned release APK
+        if: ${{ !cancelled() && matrix.platform == 'android' && steps.collect_unix.outputs.packaged == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-e2e-android-apk-release
+          path: ${{ runner.temp }}/e2e-packages/apk-release
+          retention-days: 14
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -1314,6 +1385,14 @@ jobs:
         with:
           mode: full
       - run: cargo build --timings --locked --release -p cherenkov-bench --features vello-cpu,skia
+      - name: Upload cherenkov-bench (linux, vello-cpu + skia)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-bench-linux-vello-cpu-skia
+          path: target/release/cherenkov-bench
+          retention-days: 14
+          if-no-files-found: ignore
       # The oracle reference depends only on the scene; build it once for
       # both passes below (#218).
       - name: Render the corpus reference
@@ -1372,6 +1451,14 @@ jobs:
         with:
           mode: full
       - run: cargo build --timings --locked --release -p cherenkov-bench --features skia-metal,vello-classic,vello-hybrid
+      - name: Upload cherenkov-bench (macos, skia-metal + vello-classic + vello-hybrid)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-bench-macos-skia-metal-vello-classic-vello-hybrid
+          path: target/release/cherenkov-bench
+          retention-days: 14
+          if-no-files-found: ignore
       # The oracle reference depends only on the scene; build it once for
       # the three passes below (#218).
       - name: Render the corpus reference

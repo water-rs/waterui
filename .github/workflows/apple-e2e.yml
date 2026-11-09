@@ -291,7 +291,7 @@ jobs:
         with:
           name: packaged-ios-${{ matrix.group.i }}
           path: packaged-ios-${{ matrix.group.i }}.tar
-          retention-days: 1
+          retention-days: 14
           if-no-files-found: error
 
       # Separate from the bundle tar so startup-report can merge the numbers
@@ -392,7 +392,7 @@ jobs:
         with:
           name: packaged-macos-${{ matrix.group.i }}
           path: packaged-macos-${{ matrix.group.i }}.tar
-          retention-days: 1
+          retention-days: 14
           if-no-files-found: error
 
       # Separate from the bundle tar so startup-report can merge the numbers
@@ -1009,8 +1009,27 @@ jobs:
           METRICS_DIR: ${{ github.workspace }}/release-metrics-${{ matrix.platform }}
           RECORD: ${{ inputs.record_baselines == true && '1' || '0' }}
           PLATFORMS: ${{ matrix.platform }}
+          PACKAGES_DIR: ${{ github.workspace }}/release-packages
           WATER_CARGO_TIMINGS: "1"
         run: ./.github/scripts/check-package-size.sh
+
+      # As a tar, like the packaged examples: symlinks, permissions and the
+      # code signature must survive the artifact round trip.
+      - name: Archive release packages
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d release-packages ]; then
+            COPYFILE_DISABLE=1 tar -C release-packages -cf "release-packages-${{ matrix.platform }}.tar" .
+          fi
+
+      - name: Upload release packages
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-packages-${{ matrix.platform }}
+          path: release-packages-${{ matrix.platform }}.tar
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Summarize release metrics
         if: always()
