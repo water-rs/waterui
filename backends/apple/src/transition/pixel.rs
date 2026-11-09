@@ -441,6 +441,16 @@ impl PixelInsertion {
         self.effect.presented()
     }
 
+    /// The effect's first-present readiness — see
+    /// [`LiveEffect::first_present`].
+    #[expect(
+        clippy::future_not_send,
+        reason = "the wait runs on the main thread; the Rc surface it holds is not Send"
+    )]
+    pub fn first_present(&self) -> impl Future<Output = ()> + 'static {
+        self.effect.first_present()
+    }
+
     /// The tick's frame republish — called on every advancing frame
     /// after the site placed the host.
     pub fn update(&self, host: &Rc<TransitionHost>, direction: LayoutDirection) {

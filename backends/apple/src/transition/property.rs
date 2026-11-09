@@ -17,7 +17,7 @@ use waterui_core::transition::{
 };
 
 use crate::transition::TransitionClaim;
-use crate::transition::clock::TransitionDriver;
+use crate::transition::clock::{Timeline, TransitionDriver};
 use crate::transition::host::TransitionHost;
 
 #[cfg(target_os = "macos")]
@@ -169,6 +169,9 @@ pub struct InsertionRun {
     host: Rc<TransitionHost>,
     /// The display driver — `None` until the host is in a window.
     driver: Option<TransitionDriver>,
+    /// The timeline the driver measures frames on, resolved from the
+    /// site's environment.
+    timeline: Timeline,
     /// The site's environment — the lazy blur effect reads its GPU
     /// services from it.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
@@ -186,10 +189,12 @@ pub struct InsertionRun {
     /// tears it down.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     pixel: Option<crate::transition::pixel::PixelInsertion>,
-    /// Ticks spent waiting on the pixel effect's first presentation —
-    /// bounded so a wedged GPU cannot hold the run open forever.
+    /// The wait on the pixel effect's first-present readiness, started
+    /// at the animation's end when the effect has not presented yet; it
+    /// drops the run once the effect owes no frame. Dropping the run
+    /// cancels it.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-    present_waits: core::cell::Cell<u32>,
+    first_present_wait: Option<executor_core::AnyLocalExecutorTask<()>>,
     /// Set once a nonzero radius could not be realized — one violation
     /// report per run.
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
@@ -226,8 +231,6 @@ impl InsertionRun {
         claim: &TransitionClaim,
         env: &waterui_backend_core::Environment,
     ) -> Rc<RefCell<Option<Self>>> {
-        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
-        let _ = env; // GPU services land with the pixel insertion (stage 9)
         let state = claim
             .spec
             .start(TransitionPhase::Insertion, claim.reduce_motion);
@@ -256,6 +259,7 @@ impl InsertionRun {
             geometry,
             host: Rc::clone(host),
             driver: None,
+            timeline: Timeline::of(env),
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
             env: env.clone(),
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
@@ -263,7 +267,7 @@ impl InsertionRun {
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
             pixel: None,
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-            present_waits: core::cell::Cell::new(0),
+            first_present_wait: None,
             #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
             blur_warned: core::cell::Cell::new(false),
         });
@@ -304,7 +308,7 @@ impl InsertionRun {
         run.update_blur(&sample);
         let mtm =
             cocoa_ui::MainThreadMarker::new().expect("a transition starts on the main thread");
-        let driver = TransitionDriver::start(mtm, &run.host.host, {
+        let driver = TransitionDriver::start(mtm, &run.host.host, run.timeline.clone(), {
             let slot = Rc::downgrade(slot);
             move |delta| {
                 let Some(slot) = slot.upgrade() else {
@@ -337,13 +341,13 @@ impl InsertionRun {
                         // Completion: restore the identity sample, then the
                         // run drops itself — never inside its own tick.
                         // A pixel insertion whose effect has not presented
-                        // yet keeps the run alive: dropping it un-hides
-                        // content the effect never hid (§2.7). The wait is
-                        // bounded — a wedged GPU must not hold it forever.
+                        // yet keeps the run alive until the effect's own
+                        // readiness settles: dropping it earlier un-hides
+                        // content the effect never hid (§2.7).
                         run.host.apply_sample(&TransitionProperties::IDENTITY);
                         #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
                         {
-                            run.may_complete()
+                            run.may_complete(mtm, Rc::downgrade(&slot))
                         }
                         #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
                         {
@@ -433,17 +437,36 @@ impl InsertionRun {
         true
     }
 
-    /// Whether the run may drop at animation end: a pixel effect that has
-    /// not presented holds it open, bounded at ~90 ticks (~1.5 s at 60 Hz)
-    /// so a wedged GPU cannot hold it forever.
+    /// Whether the run may drop at animation end. A pixel effect that has
+    /// not presented holds it open on its first-present readiness — a
+    /// frame, a settled terminal failure, or no frame owed — rather than
+    /// the clock: the driver stops, and the wait drops the run from the
+    /// main queue once it settles. A later window re-entry re-arms the
+    /// clock and lands here again; the wait already in flight stands.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-    fn may_complete(&self) -> bool {
-        if self.pixel.as_ref().is_some_and(|p| !p.presented()) {
-            self.present_waits.set(self.present_waits.get() + 1);
-            self.present_waits.get() > 90
-        } else {
-            true
+    fn may_complete(
+        &mut self,
+        mtm: cocoa_ui::MainThreadMarker,
+        slot: alloc::rc::Weak<RefCell<Option<Self>>>,
+    ) -> bool {
+        let Some(pixel) = self.pixel.as_ref().filter(|pixel| !pixel.presented()) else {
+            return true;
+        };
+        if let Some(driver) = &self.driver {
+            driver.stop();
         }
+        if self.first_present_wait.is_none() {
+            let first_present = pixel.first_present();
+            self.first_present_wait = Some(executor_core::spawn_local(async move {
+                first_present.await;
+                cocoa_ui::main_queue::enqueue_local(mtm, move |_mtm| {
+                    if let Some(slot) = slot.upgrade() {
+                        slot.borrow_mut().take();
+                    }
+                });
+            }));
+        }
+        false
     }
 }
 
