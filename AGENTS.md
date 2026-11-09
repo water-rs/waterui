@@ -178,6 +178,7 @@ Four layers, each measuring what the others cannot:
 | App end-to-end | the same app built on WaterUI's backends (Hydrolysis, Apple) against Flutter, SwiftUI, Compose and the other contestants water-rs/waterui#1262 defines, on devices | the Android leg is `backends/hydrolysis/bench/android` |
 | `water bench` | a WaterUI view's per-frame cost, driven offscreen through Hydrolysis by `waterui-testing`, against frame-time and counter budgets (rebuild ratio, layer counts) | `#[waterui::bench]` functions, run by `water bench` |
 
+- Engine-layer device results and their history are recorded in [water-rs/cherenkov-benchmarks](https://github.com/water-rs/cherenkov-benchmarks); a claim about an engine's performance is read from it.
 - Wall-clock time and energy come only from quiet real devices; the device practice is in [`backends/hydrolysis/AGENTS.md`](backends/hydrolysis/AGENTS.md) and [`graphics/cherenkov/AGENTS.md`](graphics/cherenkov/AGENTS.md). Timing on shared CI runners never gates a merge: runner noise exceeds the effects measured. Only deterministic counts may gate — Callgrind instruction counts (`cherenkov-ir.yml`) and `water bench` counter budgets.
 - Build-time measurements cover only what users pay for: the cold build time, and the incremental compile and `water preview` time of a real app that depends on WaterUI — never the incremental build of WaterUI's own crates.
 
