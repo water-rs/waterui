@@ -33,6 +33,7 @@ use objc2_quartz_core::{CALayer, CAMetalLayer};
 use crate::PlatformView;
 use crate::callback::{emit, forward, guarded};
 use crate::input::{EventPhase, GesturePhase, PointerInteraction};
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::visibility::VisibilityEmitter;
 
 /// Receives lifecycle events of the view — layout, attachment, visibility.
@@ -59,6 +60,8 @@ pub struct SurfaceViewIvars {
     emitter: VisibilityEmitter,
     /// The capturable surface the mounted leaf stored on this view.
     capturable: crate::capture::CapturableSlot,
+    /// How the view was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl fmt::Debug for SurfaceViewIvars {
@@ -177,9 +180,22 @@ define_class!(
                     // SAFETY: `super(layout)` forwards to `NSView`.
                     // SAFETY: see the module safety note.
                     let _: () = unsafe { msg_send![super(self), layout] };
+                    self.ivars().geometry.commit(self);
                 },
                 &self.ivars().on_layout,
             );
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("SurfaceView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         // SAFETY: see the module safety note.
@@ -451,6 +467,12 @@ define_class!(
     }
 );
 
+impl ReportsResponse for SurfaceView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
+
 impl SurfaceView {
     /// A layer-hosted surface host.
     ///
@@ -511,10 +533,20 @@ impl SurfaceView {
             .expect("presentation layer is created in `new`")
     }
 
-    /// The view's bounds size in logical units.
+    /// Where the surface draws, in logical units of its own coordinates:
+    /// its committed response rectangle (`docs/layout-spec.md` §6), or its
+    /// bounds while no leaf commits one.
     #[must_use]
-    pub fn bounds_size(&self) -> crate::geometry::Size {
-        crate::view::bounds(self).size
+    pub fn content_rect(&self) -> crate::geometry::Rect {
+        self.ivars().geometry.content_rect(self)
+    }
+
+    /// The presentation layer's frame: the [`content_rect`](Self::content_rect)
+    /// in the host layer's coordinates, whose y axis the view's flip does
+    /// not govern.
+    #[must_use]
+    pub fn presentation_frame(&self) -> crate::geometry::Rect {
+        self.convertRectToLayer(self.content_rect().into()).into()
     }
 
     /// The window's backing scale — physical pixels per logical unit —

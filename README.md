@@ -10,7 +10,7 @@
   </p>
 </div>
 
-`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, GTK4 on Linux. Where no native toolkit fits, Hydrolysis is the self-drawn renderer: it draws through Android's hardware-accelerated renderer (HWUI) on Android and on the GPU through Cherenkov elsewhere.
+`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, GTK4 on Linux. Where no native toolkit fits, Hydrolysis is the self-drawn renderer: it draws through Android's hardware-accelerated renderer (HWUI) or on the GPU through Cherenkov.
 
 State is plain values. Put mutable state in a `Binding`, derive from it with `Computed`, and hand those to views. When a value changes, the views that read it update. There is no virtual tree to diff, and changing one string never rebuilds the subtree around it.
 
@@ -150,7 +150,7 @@ One thing to know early: `watch` replaces the subtree it wraps, losing any state
 | Target | Backend | Renders through |
 | --- | --- | --- |
 | iOS and macOS | Apple | `UIKit` / `AppKit` |
-| Android | Hydrolysis | Self-drawn, HWUI `RenderNode` display lists |
+| Android | Hydrolysis | Self-drawn |
 | Linux | GTK4 | GTK4 widgets |
 | macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Cherenkov) |
 

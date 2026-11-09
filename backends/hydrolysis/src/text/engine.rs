@@ -76,7 +76,8 @@ pub trait TextEngine: Send + Sync + 'static {
     ) -> Self::Layout;
 
     /// Horizontal ink extent of the measured-frame contract
-    /// (water-rs/hydrolysis#237).
+    /// (water-rs/hydrolysis#237), measured from each line's aligned start:
+    /// `0` is where the line's pen begins, so alignment never widens it.
     fn ink_extent(&self, layout: &Self::Layout, max_lines: Option<usize>) -> Option<(f32, f32)>;
 
     /// Records `layout` at the local origin, shifted right by `x_shift`, into

@@ -14,14 +14,17 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSColor, NSImage, NSImageScaling, NSImageSymbolConfiguration, NSImageView,
+    NSAccessibility, NSColor, NSImage, NSImageAlignment, NSImageScaling,
+    NSImageSymbolConfiguration, NSImageView,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSObjectProtocol, NSString};
 
 use crate::callback::guarded;
 use crate::geometry::Size;
-use crate::image::ScaleMode;
+use crate::image::{Gravity, ScaleMode, gravities};
+use crate::response::{ReportsResponse, ResponseGeometry};
+use crate::view;
 
 /// Receives a lifecycle event of the view — layout, a window move, a
 /// backing-property change.
@@ -37,12 +40,15 @@ pub struct ImageViewIvars {
     on_layout: RefCell<Option<LifecycleHandler>>,
     on_window_changed: RefCell<Option<LifecycleHandler>>,
     on_backing_changed: RefCell<Option<LifecycleHandler>>,
+    /// How the view was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl fmt::Debug for ImageViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImageViewIvars")
             .field("symbol_name", &self.symbol_name.borrow())
+            .field("geometry", &self.geometry)
             .field("on_layout", &self.on_layout.borrow().is_some())
             .field(
                 "on_window_changed",
@@ -91,11 +97,25 @@ define_class!(
             guarded("ImageView layout", || {
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), layout] };
+                self.ivars().geometry.commit(self);
+                self.place_in_response();
                 let handler = self.ivars().on_layout.borrow().clone();
                 if let Some(handler) = handler {
                     handler(self);
                 }
             });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("ImageView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         // SAFETY: see the module safety note.
@@ -127,6 +147,12 @@ define_class!(
     }
 );
 
+impl ReportsResponse for ImageView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
+
 impl ImageView {
     /// An empty image view scaled proportionally.
     #[must_use]
@@ -136,11 +162,38 @@ impl ImageView {
             on_layout: RefCell::new(None),
             on_window_changed: RefCell::new(None),
             on_backing_changed: RefCell::new(None),
+            geometry: ResponseGeometry::default(),
         });
         // SAFETY: `initWithFrame:` is the inherited designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
         this.set_scale_mode(ScaleMode::Fit);
         this
+    }
+
+    /// A leaf image view draws its image in its response rectangle, at the
+    /// image's own size — its owner answers that size — with the view's
+    /// frame left the allocation its parent assigned.
+    fn place_in_response(&self) {
+        let Some(response) = self.ivars().geometry.response_rect(self) else {
+            return;
+        };
+        let alignment = match gravities(view::bounds(self), view::to_layout_space(self, response)) {
+            (Gravity::Start, Gravity::Start) => NSImageAlignment::AlignTopLeft,
+            (Gravity::Centre, Gravity::Start) => NSImageAlignment::AlignTop,
+            (Gravity::End, Gravity::Start) => NSImageAlignment::AlignTopRight,
+            (Gravity::Start, Gravity::Centre) => NSImageAlignment::AlignLeft,
+            (Gravity::Centre, Gravity::Centre) => NSImageAlignment::AlignCenter,
+            (Gravity::End, Gravity::Centre) => NSImageAlignment::AlignRight,
+            (Gravity::Start, Gravity::End) => NSImageAlignment::AlignBottomLeft,
+            (Gravity::Centre, Gravity::End) => NSImageAlignment::AlignBottom,
+            (Gravity::End, Gravity::End) => NSImageAlignment::AlignBottomRight,
+        };
+        if self.imageScaling() != NSImageScaling::ScaleNone {
+            self.setImageScaling(NSImageScaling::ScaleNone);
+        }
+        if self.imageAlignment() != alignment {
+            self.setImageAlignment(alignment);
+        }
     }
 
     /// How the image scales inside the view's bounds.

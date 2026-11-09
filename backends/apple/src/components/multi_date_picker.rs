@@ -26,7 +26,7 @@ use core::cell::RefCell;
 use core::ops::RangeInclusive;
 
 use cocoa_ui::date::DateParts;
-use cocoa_ui::{PlatformView, Rect, Retained};
+use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::component::form::picker::date::Date;
 use waterui::component::form::picker::multi_date::{MultiDatePicker, MultiDatePickerConfig};
 use waterui::reactive::{Binding, Computed, Signal};
@@ -43,6 +43,7 @@ use waterui_core::layout::{
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -266,24 +267,23 @@ fn current_date(state: &MultiState) -> Date {
     to_jiff(parts)
 }
 
-/// Lays out the stack inside `view`'s bounds, top to bottom.
-fn layout_children(view: &PlatformView, state: &MultiState) {
-    let bounds = cocoa_ui::view::bounds(view);
-    let width = bounds.size.width;
+/// Lays out the stack inside the `response` rectangle, top to bottom.
+fn layout_children(response: Rect, state: &MultiState) {
+    let width = response.size.width;
 
     let label_size = measure_label(state);
-    cocoa_ui::view::set_frame(
+    view::set_frame(
         state.label.view(),
-        Rect::new(0.0, 0.0, width, f64::from(label_size.height)),
+        Rect::new(0.0, 0.0, width, f64::from(label_size.height)).translated(response.origin),
     );
 
     #[cfg(target_os = "ios")]
     {
-        let height = bounds.size.height;
+        let height = response.size.height;
         let y = f64::from(label_size.height) + SPACING;
-        cocoa_ui::view::set_frame(
+        view::set_frame(
             state.calendar.view(),
-            Rect::new(0.0, y, width, (height - y).max(0.0)),
+            Rect::new(0.0, y, width, (height - y).max(0.0)).translated(response.origin),
         );
     }
 
@@ -291,15 +291,17 @@ fn layout_children(view: &PlatformView, state: &MultiState) {
     {
         let mut y = f64::from(label_size.height) + SPACING;
         let picker_size = state.picker.intrinsic_size();
-        cocoa_ui::view::set_frame(
+        view::set_frame(
             &state.picker,
-            Rect::new(0.0, y, width.max(picker_size.width), picker_size.height),
+            Rect::new(0.0, y, width.max(picker_size.width), picker_size.height)
+                .translated(response.origin),
         );
         y += picker_size.height + SPACING;
         let toggle_size = state.toggle.intrinsic_size();
-        cocoa_ui::view::set_frame(
+        view::set_frame(
             &state.toggle,
-            Rect::new(0.0, y, width.max(toggle_size.width), toggle_size.height),
+            Rect::new(0.0, y, width.max(toggle_size.width), toggle_size.height)
+                .translated(response.origin),
         );
         y += toggle_size.height + SPACING;
         for (index, row) in state.rows.borrow().iter().enumerate() {
@@ -307,7 +309,10 @@ fn layout_children(view: &PlatformView, state: &MultiState) {
                 y += ROW_SPACING;
             }
             let row_size = row.measure(cocoa_ui::text::WrapWidth::Free).size;
-            cocoa_ui::view::set_frame(row, Rect::new(0.0, y, width, row_size.height));
+            view::set_frame(
+                row,
+                Rect::new(0.0, y, width, row_size.height).translated(response.origin),
+            );
             y += row_size.height;
         }
     }
@@ -574,7 +579,7 @@ fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf 
     host.set_layout_handler({
         let state = Rc::clone(&state);
         move |view| {
-            layout_children(view, &state.borrow());
+            layout_children(proposal::response(view), &state.borrow());
         }
     });
 

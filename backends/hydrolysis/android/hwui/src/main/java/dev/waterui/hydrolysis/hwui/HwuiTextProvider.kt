@@ -373,11 +373,14 @@ class HwuiTextProvider : TextLayouts {
     /**
      * The horizontal glyph bounds of `line` into `out[at]`, `out[at + 1]`,
      * widening the layout's vertical ink in `out[2]`, `out[3]`; measured per
-     * segment of one style and one direction with that segment's paint.
+     * segment of one style and one direction with that segment's paint. The
+     * bounds are measured from the line's own start, [Layout.getLineLeft], so
+     * alignment inside a wider layout never counts as ink.
      */
     private fun lineInk(layout: Layout, styled: Spanned, line: Int, out: FloatArray, at: Int) {
         var left = Float.POSITIVE_INFINITY
         var right = Float.NEGATIVE_INFINITY
+        val lineStart = layout.getLineLeft(line)
         val end = layout.getLineVisibleEnd(line)
         var from = layout.getLineStart(line)
         while (from < end) {
@@ -391,8 +394,8 @@ class HwuiTextProvider : TextLayouts {
             if (!bounds.isEmpty) {
                 val pen = layout.getPrimaryHorizontal(from)
                 val origin = if (rtl) pen - inkPaint.measureText(styled, from, to) else pen
-                left = minOf(left, origin + bounds.left)
-                right = maxOf(right, origin + bounds.right)
+                left = minOf(left, origin + bounds.left - lineStart)
+                right = maxOf(right, origin + bounds.right - lineStart)
                 val baseline = layout.getLineBaseline(line)
                 out[2] = minOf(out[2], (baseline + bounds.top).toFloat())
                 out[3] = maxOf(out[3], (baseline + bounds.bottom).toFloat())
