@@ -2248,11 +2248,18 @@ mod tests {
             encoder.copy_buffer_to_buffer(source, offset, target, 0, size);
         }
         queue.submit([encoder.finish()]);
+        // The callback runs on wgpu's thread: panicking there aborts the
+        // whole test process (the Windows nightly died as 0xc0000409 on a
+        // timed-out map). Channel each result back so the test thread owns
+        // every failure (#3909).
+        let (tx, rx) = std::sync::mpsc::channel();
         for target in &targets {
-            target.map_async(wgpu::MapMode::Read, .., |result| {
-                result.expect("map readback");
+            let tx = tx.clone();
+            target.map_async(wgpu::MapMode::Read, .., move |result| {
+                let _ = tx.send(result);
             });
         }
+        drop(tx);
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
@@ -2264,6 +2271,11 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(300)),
             })
             .expect("the stroke kernels finish");
+        for _ in &targets {
+            rx.recv()
+                .expect("every map_async callback reports")
+                .expect("map readback");
+        }
         targets
             .iter()
             .map(|target| {
