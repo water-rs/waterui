@@ -38,9 +38,6 @@ use super::protocol::{
 use super::resources::{Kind, Registry, SharedRegistry};
 use super::text::TextLayoutIds;
 
-/// `drawMesh`.
-pub const MESH_API: u32 = 34;
-
 /// The id pools of what recordings define.
 #[derive(Debug)]
 pub struct Pools {
@@ -300,7 +297,6 @@ pub struct Lower<'a> {
     pub registry: &'a SharedRegistry,
     pub text_layouts: &'a TextLayoutIds,
     pub scratch: &'a mut Scratch,
-    pub api_level: u32,
     /// The layer being lowered, for errors.
     pub layer: u64,
 }
@@ -310,19 +306,6 @@ impl Lower<'_> {
         HwuiError::Unsupported {
             layer: self.layer,
             what: what.into(),
-        }
-    }
-
-    const fn require(&self, what: &'static str, needs: u32) -> Result<(), HwuiError> {
-        if self.api_level >= needs {
-            Ok(())
-        } else {
-            Err(HwuiError::RequiresApi {
-                layer: self.layer,
-                what,
-                needs,
-                device: self.api_level,
-            })
         }
     }
 
@@ -554,7 +537,6 @@ impl Lower<'_> {
         owned: &mut Owned,
         groups: &mut GroupNodes,
     ) -> Result<(), HwuiError> {
-        self.require("a mesh gradient", MESH_API)?;
         let command = &list.commands()[index];
         let ink = content_ink(
             list,

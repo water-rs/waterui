@@ -318,7 +318,7 @@ fn plain_picture() -> Picture {
     reason = "a scene fixture reads as one staged sequence; splitting it would scatter the script it exists to spell out"
 )]
 fn tree_scene() -> Result<Scene, HwuiError> {
-    let mut encoder = Encoder::new(34)?;
+    let mut encoder = Encoder::new()?;
     let mut registry = encoder.registry().lock();
     let font = registry.acquire(Kind::Font)?;
     registry.set_font_info(
@@ -486,7 +486,6 @@ fn direct_scene() -> Result<Scene, HwuiError> {
         registry: &registry,
         text_layouts: &text_layouts,
         scratch: &mut scratch,
-        api_level: 34,
         layer: 0,
     };
     let mut define = vec![Field::U("effect", 0), Field::U("stages", 2)];
@@ -529,8 +528,7 @@ fn a_filtered_layer_defines_binds_and_updates_without_remount() {
     use waterui_graphics::filter_view::AnyEffect;
     use waterui_graphics::filtrate::filters;
 
-    let mut surface =
-        HwuiSurface::new(SurfaceId::new(9), 34, || {}).expect("an empty root encodes");
+    let mut surface = HwuiSurface::new(SurfaceId::new(9), || {}).expect("an empty root encodes");
     let shared = surface.shared().clone();
     let root = Shared::root(&shared);
     let child = Shared::layer(&shared);
@@ -641,8 +639,7 @@ fn a_stretched_layer_defines_its_frame_in_the_nodes_space() {
     use waterui_graphics::filter_view::AnyEffect;
     use waterui_graphics::filtrate::filters::OverscrollStretch;
 
-    let mut surface =
-        HwuiSurface::new(SurfaceId::new(11), 34, || {}).expect("an empty root encodes");
+    let mut surface = HwuiSurface::new(SurfaceId::new(11), || {}).expect("an empty root encodes");
     let shared = surface.shared().clone();
     let root = Shared::root(&shared);
     let parent = Shared::layer(&shared);
@@ -696,7 +693,7 @@ fn a_filtered_recording_group_keeps_its_effect_node() {
     use waterui_graphics::filter_view::AnyEffect;
     use waterui_graphics::filtrate::filters;
 
-    let mut surface = HwuiSurface::new(SurfaceId::new(10), 34, || {}).unwrap();
+    let mut surface = HwuiSurface::new(SurfaceId::new(10), || {}).unwrap();
     let shared = surface.shared().clone();
     let root = Shared::root(&shared);
     let child = Shared::layer(&shared);
@@ -879,7 +876,7 @@ fn text_runs_decode_to_the_runs_the_engine_packed() {
 
 #[test]
 fn a_text_layout_is_released_once_no_content_draws_it() {
-    let mut encoder = Encoder::new(34).expect("API 34 is supported");
+    let mut encoder = Encoder::new().expect("API 34 is supported");
     let layout = encoder.text_layouts().acquire().expect("an id is free");
     encoder
         .text_layouts()
@@ -928,7 +925,7 @@ fn a_text_layout_is_released_once_no_content_draws_it() {
 
 /// The event log of one layer whose content is `picture`.
 fn single_layer_log(picture: Picture) -> Result<Vec<String>, HwuiError> {
-    let mut encoder = Encoder::new(34)?;
+    let mut encoder = Encoder::new()?;
     let root = encoder.tree().root();
     let layer_id = LayerId::new(201);
     encoder.commit(changes(vec![
@@ -1033,7 +1030,7 @@ fn a_mesh_painted_stroke_masks_the_mesh_into_its_coverage() {
 
 #[test]
 fn a_tilt_animation_updates_node_camera_properties_without_re_recording() {
-    let mut encoder = Encoder::new(34).expect("API 34 is supported");
+    let mut encoder = Encoder::new().expect("API 34 is supported");
     let root = encoder.tree().root();
     let card = LayerId::new(201);
     let perspective =
@@ -1091,7 +1088,7 @@ fn a_tilt_animation_updates_node_camera_properties_without_re_recording() {
 
 #[test]
 fn a_frame_writes_only_the_layers_an_op_or_a_running_animation_moved() {
-    let mut encoder = Encoder::new(34).expect("API 34 is supported");
+    let mut encoder = Encoder::new().expect("API 34 is supported");
     let root = encoder.tree().root();
     let moving = LayerId::new(301);
     let still = LayerId::new(302);
@@ -1160,7 +1157,7 @@ fn a_frame_writes_only_the_layers_an_op_or_a_running_animation_moved() {
 
 #[test]
 fn a_child_blend_change_isolates_its_parent() {
-    let mut encoder = Encoder::new(34).expect("API 34 is supported");
+    let mut encoder = Encoder::new().expect("API 34 is supported");
     let root = encoder.tree().root();
     let group = LayerId::new(311);
     let child = LayerId::new(312);
@@ -1217,7 +1214,7 @@ fn a_child_blend_change_isolates_its_parent() {
 fn surface_preserves_hidden_transaction_order_and_reuses_nodes() {
     let wakes = std::rc::Rc::new(Cell::new(0usize));
     let counter = std::rc::Rc::clone(&wakes);
-    let mut surface = HwuiSurface::new(SurfaceId::new(7), 34, move || {
+    let mut surface = HwuiSurface::new(SurfaceId::new(7), move || {
         counter.set(counter.get() + 1);
     })
     .expect("api 34 encodes");
@@ -1328,7 +1325,7 @@ fn surface_preserves_hidden_transaction_order_and_reuses_nodes() {
 /// a quiet follow-up frame reports none.
 #[test]
 fn content_animation_demand_belongs_to_the_submitted_frame() {
-    let mut encoder = Encoder::new(34).expect("api 34 encodes");
+    let mut encoder = Encoder::new().expect("api 34 encodes");
     let mut animated = changes(Vec::new());
     animated.animating = true;
     let _ = encoder
@@ -1350,7 +1347,7 @@ fn content_animation_demand_belongs_to_the_submitted_frame() {
 /// an invisible-opacity layer is not hit at all.
 #[test]
 fn tree_native_hit_follows_order_clip_scroll_and_transform() {
-    let mut encoder = Encoder::new(34).unwrap();
+    let mut encoder = Encoder::new().unwrap();
     let root = encoder.tree().root();
     let native = LayerId::new(201);
     let decoration = LayerId::new(202);
@@ -1448,8 +1445,7 @@ fn tree_native_hit_follows_order_clip_scroll_and_transform() {
 fn the_hwui_mount_commits_and_reuses_its_nodes() {
     use crate::renderer::mount::{Mount, hwui::HwuiHost};
 
-    let mut surface =
-        HwuiSurface::new(SurfaceId::new(8), 34, || {}).expect("an empty root encodes");
+    let mut surface = HwuiSurface::new(SurfaceId::new(8), || {}).expect("an empty root encodes");
     let registry = std::rc::Rc::new(cherenkov_record::MaterialRegistry::default());
     let backend = std::rc::Rc::new(crate::hwui::HwuiResources::new(
         Box::new(crate::hwui::platform::tests::Fake::default()),
@@ -1551,7 +1547,7 @@ fn platform_view_node_keeps_parent_composition() {
             .expect("a dense node id")
     }
 
-    let mut encoder = Encoder::new(34).unwrap();
+    let mut encoder = Encoder::new().unwrap();
     let root = encoder.tree().root();
     let parent = LayerId::new(201);
     let leaf = LayerId::new(202);

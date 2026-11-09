@@ -139,7 +139,7 @@ impl HwuiResources {
     ///
     /// # Errors
     ///
-    /// [`HwuiError::Unsupported`] or [`HwuiError::RequiresApi`] when the
+    /// [`HwuiError::Unsupported`] when the
     /// chain has a link the native stages cannot realize.
     pub(crate) fn register_filter(
         &self,
@@ -516,7 +516,7 @@ pub(in crate::hwui) mod tests {
     }
 
     fn setup(fake: &Fake) -> (Encoder, HwuiResources) {
-        let encoder = Encoder::new(34).unwrap();
+        let encoder = Encoder::new().unwrap();
         let resources = HwuiResources::new(
             Box::new(fake.clone()),
             encoder.registry().clone(),
