@@ -33,6 +33,7 @@ use objc2_ui_kit::{
 
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Point, Size};
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
 use crate::uikit::keyboard::KeyboardTracking;
 use crate::visibility::VisibilityEmitter;
@@ -58,6 +59,9 @@ pub struct ScrollViewIvars {
     /// changes so subscribed descendants re-check presentation
     /// visibility.
     emitter: VisibilityEmitter,
+    /// How the surface was placed as a leaf, and its response rectangle;
+    /// its viewport stays the frame its parent assigned.
+    geometry: ResponseGeometry,
 }
 
 impl ScrollViewIvars {
@@ -70,6 +74,7 @@ impl ScrollViewIvars {
             flight: ScrollFlight::new(mtm),
             keyboard: Rc::new(KeyboardTracking::new()),
             emitter: VisibilityEmitter::new(),
+            geometry: ResponseGeometry::default(),
         }
     }
 }
@@ -143,10 +148,14 @@ define_class!(
             });
         }
 
-        /// Keeps `UIKit`'s layout, then hands layout to the consumer.
+        /// Commits the surface's response geometry, keeps `UIKit`'s
+        /// layout, then hands layout to the consumer. The commit opens the
+        /// pass: resolving the response measures the scroll view's own
+        /// content, which must not re-enter `UIKit` from inside its layout.
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
             guarded("ScrollView layoutSubviews", || {
+                self.ivars().geometry.commit(self);
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), layoutSubviews] };
                 // The borrow ends with this statement, so a handler that
@@ -162,6 +171,19 @@ define_class!(
                 // surface's size changed (§7.1).
                 self.ivars().keyboard.apply_layout(self);
             });
+        }
+
+        /// The response rectangle, or what `.a11y_geometry` names, once
+        /// the surface's placement committed one.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("ScrollView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         /// Any frame change — a parent's layout pass translating or
@@ -243,6 +265,12 @@ define_class!(
         }
     }
 );
+
+impl ReportsResponse for ScrollView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
 
 impl ScrollView {
     /// The window's keyboard region marked this surface for a region

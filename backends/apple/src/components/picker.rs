@@ -18,7 +18,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use cocoa_ui::{PlatformView, Rect};
+use cocoa_ui::{PlatformView, Rect, view};
 #[cfg(target_os = "macos")]
 use waterui::component::LabelDisplayMode;
 use waterui::component::form::picker::{PickerConfig, PickerItem, PickerStyle as WuiPickerStyle};
@@ -36,6 +36,7 @@ use waterui_core::layout::{
 use super::font::platform_font;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -149,19 +150,18 @@ fn rebuild_items(state: &Rc<RefCell<PickerState>>, items: &[PickerItem<Id>]) {
         .collect();
 }
 
-/// Lays out the children inside `view`'s bounds: the label leading, then
-/// the control filling the rest of the row. For the radio style the label
-/// centers on the first row, not the whole stack — `WuiPicker`'s
-/// `radioLabelAlignment` constraint. RTL mirrors the row.
-fn layout_children(view: &PlatformView, state: &PickerState) {
-    let bounds = cocoa_ui::view::bounds(view);
-    let width = bounds.size.width;
-    let height = bounds.size.height;
+/// Lays out the children inside the `response` rectangle: the label
+/// leading, then the control filling the rest of the row. For the radio
+/// style the label centers on the first row, not the whole stack —
+/// `WuiPicker`'s `radioLabelAlignment` constraint. RTL mirrors the row.
+fn layout_children(view: &PlatformView, response: Rect, state: &PickerState) {
+    let width = response.size.width;
+    let height = response.size.height;
     let rtl = cocoa_ui::view::is_right_to_left(view);
 
     let place = |child: &PlatformView, x: f64, y: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, y, w, h));
+        view::set_frame(child, Rect::new(x, y, w, h).translated(response.origin));
     };
 
     let label_size = state.label.as_ref().map_or_else(Size::default, |label| {
@@ -336,7 +336,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         host.set_layout_handler({
             let state = Rc::clone(&state);
-            move |view| layout_children(view, &state.borrow())
+            move |view| layout_children(view, proposal::response(view), &state.borrow())
         });
 
         let mut leaf = NativeLeaf::new(

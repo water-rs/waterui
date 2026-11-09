@@ -60,7 +60,7 @@ main() {
   # dependencies compile once per VM however many checkouts build them.
   export RUSTC_WRAPPER="${RUSTC_WRAPPER:-sccache}"
   export PATH="${HOME}/.cargo/bin:${PATH}"
-  cargo install --path "${waterui_dir}/cli" --locked --force
+  cargo install --timings --path "${waterui_dir}/cli" --locked --force
 
   local -a examples=("$@")
   if (( ${#examples[@]} == 0 )); then

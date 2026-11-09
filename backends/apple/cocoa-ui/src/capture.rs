@@ -459,22 +459,17 @@ pub fn surface_spec(
 /// probe standing in for the surface — and then through
 /// [`CaptureGeometry::texel`]. Which of the presentation layer's edges
 /// carries the texture's first row is Core Animation's contents
-/// orientation: the layer's minimum-y edge where its y axis points down
-/// the screen — `UIKit`'s convention, and `AppKit`'s wherever
-/// `contentsAreFlipped` — its maximum-y edge otherwise.
+/// orientation, which `contentsAreFlipped` reports on both kits: the
+/// layer's minimum-y edge where it answers `YES` — every layer `UIKit`
+/// hosts, and `AppKit`'s inside flipped views — its maximum-y edge
+/// otherwise.
 fn surface_quad(
     presentation: &CALayer,
     root: &CALayer,
     geometry: CaptureGeometry,
 ) -> [[f64; 2]; 3] {
     let bounds: Rect = presentation.bounds().into();
-    let flipped = presentation.contentsAreFlipped();
-    let first_row_at_min_y = if cfg!(target_os = "macos") {
-        flipped
-    } else {
-        !flipped
-    };
-    let (top, bottom) = if first_row_at_min_y {
+    let (top, bottom) = if presentation.contentsAreFlipped() {
         (bounds.origin.y, bounds.origin.y + bounds.size.height)
     } else {
         (bounds.origin.y + bounds.size.height, bounds.origin.y)
@@ -584,7 +579,11 @@ pub trait CapturableSurface {
     /// presentation path that can never run.
     fn can_present(&self) -> bool;
     /// Redirects the surface's redraw requests to `on_redraw`; while
-    /// external, the surface presents nowhere itself.
+    /// external, the surface presents nowhere itself. A surface whose
+    /// owner tears down while a scope is still open calls `on_redraw`
+    /// once more: a [`Deferred`](CaptureError::Deferred) it answered
+    /// can never be replayed by a later redraw of its own, and its
+    /// departure is itself the content change the capture retries on.
     fn begin_external_rendering(&self, on_redraw: Rc<dyn Fn()>);
     /// Ends external rendering; `resume` restarts normal presentation.
     fn end_external_rendering(&self, resume: bool);

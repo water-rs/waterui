@@ -2227,6 +2227,16 @@ impl Drop for FilteredGuard {
         }
         self.state.park.clear();
         detach_if_needed(&self.state);
+        // An enclosing capture still holding this output in an open
+        // external-render scope has lost content it may have deferred
+        // on: nothing of this leaf can redraw again, so its departure is
+        // the wake the capture's retry waits for.
+        if self.state.external_count.get() > 0 {
+            let redraw = self.state.external_redraw.borrow().clone();
+            if let Some(redraw) = redraw {
+                redraw();
+            }
+        }
     }
 }
 
@@ -2800,6 +2810,15 @@ impl FrozenEffect {
     }
 }
 
+impl Drop for FrozenEffect {
+    /// The output leaves its host before the teardown clears its
+    /// capturable slot: a detached presentation layer left in the tree
+    /// is a Metal layer no capture can resolve.
+    fn drop(&mut self) {
+        cocoa_ui::view::remove_from_superview(&self.view);
+    }
+}
+
 /// A transition's blur effect over live content (§2.5): the content
 /// view stays in place — `ViewCapture` captures it where it is — while
 /// the effect output presents in a sibling host added to
@@ -2851,6 +2870,30 @@ impl LiveEffect {
     /// content is hidden beneath it only from then on.
     pub fn presented(&self) -> bool {
         self.capturable.has_presented_frame()
+    }
+
+    /// Resolves once the effect owes no first frame any more: it
+    /// presented, its presentation settled as a terminal failure, or it
+    /// stopped participating in first paint — windowless, hidden or
+    /// collapsed, so no frame can come. Every deferral a participant
+    /// answers ends in one of these, so the wait always has an end.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the wait runs on the main thread; the Rc surface it holds is not Send"
+    )]
+    pub fn first_present(&self) -> impl Future<Output = ()> + 'static {
+        let surface = Rc::clone(&self.capturable);
+        core::future::poll_fn(move |cx| {
+            if surface.has_presented_frame()
+                || surface.presentation_failed()
+                || !surface.participates_in_first_paint()
+            {
+                core::task::Poll::Ready(())
+            } else {
+                surface.register_ready_waiter(cx.waker().clone());
+                core::task::Poll::Pending
+            }
+        })
     }
 
     /// A `captures_content` transition's live-capture effect (§2.7):
@@ -3542,18 +3585,19 @@ pub mod native_test {
         }
 
         /// A parent capture over the fixture container: the filtered leaf
-        /// joins it as an external surface.
+        /// joins it as an external surface and routes its redraw requests
+        /// to `on_redraw`.
         ///
         /// # Panics
         ///
         /// Off the main thread, or when the device refuses the target.
-        pub fn parent_capture(&self) -> ParentCapture {
+        pub fn parent_capture(&self, on_redraw: impl Fn() + 'static) -> ParentCapture {
             let mtm = MainThreadMarker::new().expect("the fixture runs on the main thread");
             let capture = Rc::new(cocoa_ui::capture::ViewCapture::new(
                 mtm,
                 self.container.clone(),
             ));
-            capture.set_on_redraw(|| {});
+            capture.set_on_redraw(on_redraw);
             let context = self.runtime.context();
             let device = crate::gpu_runtime::raw_metal_device(&context);
             let bounds = cocoa_ui::view::bounds(&self.container);

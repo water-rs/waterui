@@ -27,6 +27,7 @@ use objc2_ui_kit::{
 
 use crate::callback::guarded;
 use crate::geometry::{Point, Rect};
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::text::{Layout, SpanLink, TextMetrics, WrapWidth};
 
 /// Runs after each text replacement, with the new plain string.
@@ -50,6 +51,8 @@ pub struct LabelIvars {
     /// tap spans — the full-text element, then one `Link` per span — or
     /// `None`, when the label is an ordinary accessibility element.
     link_elements: RefCell<Option<Retained<NSArray<AnyObject>>>>,
+    /// How the label was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl fmt::Debug for LabelIvars {
@@ -61,6 +64,7 @@ impl fmt::Debug for LabelIvars {
             .field("reported_width", &self.reported_width.get())
             .field("text_handler", &self.text_handler.borrow().is_some())
             .field("link_elements", &self.link_elements.borrow().is_some())
+            .field("geometry", &self.geometry)
             .finish()
     }
 }
@@ -135,7 +139,25 @@ define_class!(
                     self.setPreferredMaxLayoutWidth(width);
                     self.invalidate_layout();
                 }
+                let geometry = &self.ivars().geometry;
+                let drawn = geometry.response_rect(self);
+                geometry.commit(self);
+                if geometry.response_rect(self) != drawn {
+                    self.setNeedsDisplay();
+                }
             });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("Label accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         // `UILabel` vertically centers the text inside the rect it is
@@ -163,11 +185,17 @@ define_class!(
         // `drawTextInRect:` receives the bounds; hand `super` the rect the
         // text actually occupies, anchored at its top — a natural-height
         // rect leaves no slack for `UILabel`'s vertical centering to show
-        // up in.
+        // up in. A leaf label draws in its response rectangle instead of
+        // its bounds, its frame the allocation its parent assigned.
         // SAFETY: see the module safety note.
         #[unsafe(method(drawTextInRect:))]
         fn draw_text_in_rect(&self, rect: CGRect) {
             guarded("Label drawTextInRect:", || {
+                let rect = self
+                    .ivars()
+                    .geometry
+                    .response_rect(self)
+                    .map_or(rect, CGRect::from);
                 let text_rect =
                     self.textRectForBounds_limitedToNumberOfLines(rect, self.numberOfLines());
                 // SAFETY: see the module safety note.
@@ -176,6 +204,12 @@ define_class!(
         }
     }
 );
+
+impl ReportsResponse for Label {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
 
 impl Label {
     /// A wrapped text label, measuring and drawing `attributed` text.
@@ -188,6 +222,7 @@ impl Label {
             reported_width: Cell::new(0.0),
             text_handler: RefCell::new(None),
             link_elements: RefCell::new(None),
+            geometry: ResponseGeometry::default(),
         });
         // SAFETY: `initWithFrame:` is `UILabel`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };

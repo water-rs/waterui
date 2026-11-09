@@ -307,6 +307,10 @@ executor-core = { workspace = true, features = ["async-task"] }
 # The webview trials drive the shared conformance cases; the crate's own
 # edge is optional behind the `webview` feature, so this carries it too.
 waterui-webview = { workspace = true, features = ["conformance"] }
+# The capture-colour and capture-order trials measure the composited
+# columns with the oracle's LDR-FLIP — the metric the engine tests judge
+# renders by.
+cherenkov-oracle = { path = "../../graphics/cherenkov/oracle" }
 
 # `preview`'s protocol types arrive only where the preview entry exists —
 # macOS for the AppKit realization, Mac Catalyst for the UIKit one — and an
@@ -331,10 +335,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSRunningApplication",
     "NSWorkspace",
 ] }
-# The capture-colour trial measures the composited columns with the
-# oracle's LDR-FLIP — the metric the engine tests judge renders by. The
-# case mounts only on macOS, so the edge lives under this target.
-cherenkov-oracle = { path = "../../graphics/cherenkov/oracle" }
 
 # The native tests create real `AppKit`/`UIKit` objects, which are only
 # legal on the process's actual main thread — libtest's worker threads can
