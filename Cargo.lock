@@ -13067,6 +13067,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "pastey 0.2.3",
  "pollster 1.0.1",
+ "send_wrapper",
  "shaderloom",
  "thiserror 2.0.21",
  "tracing",
