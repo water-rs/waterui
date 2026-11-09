@@ -190,11 +190,13 @@ impl Ghost {
                     run.update_pixel();
                 } else {
                     run.animation_finished.set(true);
-                    if run.blur_in_flight() {
+                    if run.work_in_flight() {
                         // Keep issuing captures: a `Deferred` retry only
-                        // runs inside `update_blur` (#3798).
+                        // runs inside `update_blur`/`update_pixel` (#3798).
                         let sample = run.state.borrow().properties(run.visual.geometry);
                         run.update_blur(sample.blur());
+                        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+                        run.update_pixel();
                     } else {
                         run.complete();
                     }
@@ -329,7 +331,7 @@ impl GhostRun {
                     }
                     // Not presented yet — a retry is owed; the next
                     // `update_blur` re-issues the capture (§2.3). The
-                    // deferred state keeps `blur_in_flight` true so the
+                    // deferred state keeps `work_in_flight` true so the
                     // animation end cannot retire the run first (#3798).
                     Err(cocoa_ui::capture::CaptureError::Deferred) => {
                         blur.deferred.set(true);
@@ -375,15 +377,15 @@ impl GhostRun {
         crate::transition::pixel::PixelRemoval::update(&pixel, self);
     }
 
-    /// The blur path still needs the run: a capture is in flight, or an
-    /// effect is armed but has not presented its first frame — the
-    /// animation-end completion waits on it since only that present
-    /// hides the retired root (#3798). A failed capture completes
-    /// through its own explicit path.
+    /// The blur and pixel paths still need the run: a capture is in
+    /// flight, or an effect is armed but has not presented its first
+    /// frame — the animation-end completion waits on it since only that
+    /// present hides the retired root (#3798, #3901). A failed capture
+    /// completes through its own explicit path.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-    fn blur_in_flight(&self) -> bool {
+    fn work_in_flight(&self) -> bool {
         self.realization.borrow().as_ref().is_some_and(|r| {
-            r.blur.as_ref().is_some_and(|blur| {
+            let blur = r.blur.as_ref().is_some_and(|blur| {
                 blur.pending.get()
                     // A deferral is worth retrying only while the retired
                     // root still has pixels to capture — a zero-size slot
@@ -392,7 +394,12 @@ impl GhostRun {
                     // past the clock's end (#3798).
                     || (blur.deferred.get() && self.retired_has_pixels())
                     || (blur.effect.borrow().is_some() && !blur.first_presented.get())
-            })
+            });
+            let pixel = r
+                .pixel
+                .as_ref()
+                .is_some_and(|pixel| pixel.in_flight(self.retired_has_pixels()));
+            blur || pixel
         })
     }
 
@@ -417,7 +424,7 @@ impl GhostRun {
         clippy::unused_self,
         reason = "the filtered sibling reads the realization; both cfgs keep the same signature"
     )]
-    const fn blur_in_flight(&self) -> bool {
+    const fn work_in_flight(&self) -> bool {
         false
     }
 
