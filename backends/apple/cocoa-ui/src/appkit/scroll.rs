@@ -30,6 +30,7 @@ use objc2_foundation::{NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize};
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Point, Size};
 use crate::notification::NotificationObserver;
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
 use crate::visibility::VisibilityEmitter;
 
@@ -51,6 +52,9 @@ pub struct ScrollViewIvars {
     /// subscribed descendants re-check presentation visibility. Clip-view
     /// bounds moves ride [`crate::scroll::observe_scroll_viewport`].
     emitter: VisibilityEmitter,
+    /// How the surface was placed as a leaf, and its response rectangle;
+    /// its viewport stays the frame its parent assigned.
+    geometry: ResponseGeometry,
 }
 
 impl ScrollViewIvars {
@@ -63,6 +67,7 @@ impl ScrollViewIvars {
             flight: ScrollFlight::new(mtm),
             live_scroll: RefCell::new(Vec::new()),
             emitter: VisibilityEmitter::new(),
+            geometry: ResponseGeometry::default(),
         }
     }
 }
@@ -102,12 +107,16 @@ define_class!(
             });
         }
 
-        /// Insets the content by the safe area, keeps `AppKit`'s layout —
-        /// its clip corrections counted as the flight's own writes — then
-        /// hands layout to the consumer.
+        /// Commits the surface's response geometry, insets the content by
+        /// the safe area, keeps `AppKit`'s layout — its clip corrections
+        /// counted as the flight's own writes — then hands layout to the
+        /// consumer. The commit opens the pass: resolving the response
+        /// measures the scroll view's own content, which must not re-enter
+        /// `AppKit` from inside its layout.
         #[unsafe(method(layout))]
         fn layout_override(&self) {
             guarded("ScrollView layout", || {
+                self.ivars().geometry.commit(self);
                 self.ivars().flight.own_writes(|| {
                     layout_with_safe_area_insets(self, 0.0, || {
                         // SAFETY: see the module safety note.
@@ -122,6 +131,19 @@ define_class!(
                     handler(self);
                 }
             });
+        }
+
+        /// The response rectangle, or what `.a11y_geometry` names, once
+        /// the surface's placement committed one.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("ScrollView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         /// The scroll view offers no intrinsic size: it fills the space its
@@ -355,6 +377,12 @@ impl FlippedView {
         let this = Self::alloc(mtm).set_ivars(FlippedViewIvars);
         // SAFETY: standard `NSView` init on a main-thread class.
         unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
+impl ReportsResponse for ScrollView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
     }
 }
 

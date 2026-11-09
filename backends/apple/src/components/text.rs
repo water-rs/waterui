@@ -34,6 +34,7 @@ use waterui_core::layout::{
 use super::font::platform_font;
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -628,12 +629,14 @@ fn label_leaf(
     host.set_layout_handler({
         let label = label.clone();
         move |view| {
-            let bounds = cocoa_ui::view::bounds(view);
+            // The text draws in its response rectangle, centred in the
+            // frame it was assigned (docs/layout-spec.md §2.4).
+            let bounds = proposal::response(view);
             // A `labelWithString:` field keeps its text's alignment rect
             // inside the frame (`-[NSView alignmentRectInsets]`); expand
             // the frame by those insets so the ink lands exactly on the
-            // leaf's bounds. `UILabel` draws at the frame's origin and
-            // wraps at `preferredMaxLayoutWidth`, so it takes the bounds
+            // response. `UILabel` draws at the frame's origin and wraps
+            // at `preferredMaxLayoutWidth`, so it takes the response
             // unchanged.
             #[cfg(target_os = "macos")]
             let frame = {
