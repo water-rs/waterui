@@ -49,7 +49,10 @@ impl Toolchain for MetalToolchain {
         &self,
         host: &Host,
     ) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
-        if host.run("xcrun", ["--find", "metal"]).await.is_ok() {
+        // `xcrun --find metal` can resolve Xcode's bundled launcher even when
+        // the downloadable component is absent — only executing the compiler
+        // proves the toolchain is there (water-rs/waterui#3903).
+        if host.run("xcrun", ["metal", "--version"]).await.is_ok() {
             Ok(())
         } else {
             Err(ToolchainError::fixable(MetalToolchainInstall))
@@ -405,16 +408,13 @@ mod tests {
     }
 
     #[test]
-    fn metal_toolchain_ok_when_xcrun_finds_metal() {
+    fn metal_toolchain_ok_when_metal_runs() {
         let machine = TestMachine::new();
         machine.install("xcrun");
-        machine.respond(
-            "XCRUN_FIND_METAL",
-            "/fake/Xcode/Contents/Developer/Toolchains/metal\n",
-        );
+        machine.respond("XCRUN_METAL_VERSION", "metal 1.0\n");
         let host = machine.host(Vec::<(String, String)>::new());
         smol::block_on(MetalToolchain.check(&host))
-            .expect("an xcrun --find metal path must satisfy the check");
+            .expect("a running `xcrun metal` must satisfy the check");
     }
 
     #[test]
@@ -426,6 +426,22 @@ mod tests {
         assert!(
             matches!(result, Err(ToolchainError::Fixable(_))),
             "a missing Metal Toolchain downloads through xcodebuild: {result:?}"
+        );
+    }
+
+    #[test]
+    fn metal_toolchain_findable_but_unrunnable_is_fixable() {
+        // The launcher resolves under `--find` while the downloadable
+        // component is absent — the check must not take the finder's word
+        // for the compiler's presence (water-rs/waterui#3903).
+        let machine = TestMachine::new();
+        machine.install("xcrun");
+        machine.respond("XCRUN_FIND_METAL", "/fake/Xcode/usr/bin/metal\n");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(MetalToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "`--find` succeeding while `metal --version` fails must stay fixable: {result:?}"
         );
     }
 
