@@ -2847,6 +2847,12 @@ impl LiveEffect {
         Self::build(effects, content_view, output_parent, output_parent, env)
     }
 
+    /// Whether the effect's first frame has presented — the captured
+    /// content is hidden beneath it only from then on.
+    pub fn presented(&self) -> bool {
+        self.capturable.has_presented_frame()
+    }
+
     /// A `captures_content` transition's live-capture effect (§2.7):
     /// `body` is the `TransitionState::body(AnyView::new(()), frame)`
     /// product — a `FilteredView` chain over empty content — realized

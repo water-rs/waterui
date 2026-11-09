@@ -111,6 +111,7 @@ fn doctor_json_emits_typed_item_records_for_every_check() -> std::io::Result<()>
                     | ids::IOS_SIMULATORS
                     | ids::MACOS_SDK
                     | ids::APPLE_RUST_TARGETS
+                    | ids::APPLE_METAL_TOOLCHAIN
             );
             let linux_item = matches!(
                 *id,

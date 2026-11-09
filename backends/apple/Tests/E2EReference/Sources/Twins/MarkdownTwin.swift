@@ -88,7 +88,9 @@ struct MarkdownTwin: View {
                 heading("Blockquotes")
                 HStack(spacing: 0) {
                     Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 3)
-                    Text("WaterUI brings the power of native UI to Rust developers.\nBuild once, run everywhere.")
+                    // The example's two quote lines are a CommonMark soft
+                    // break, which renders as a space.
+                    Text("WaterUI brings the power of native UI to Rust developers. Build once, run everywhere.")
                         .foregroundStyle(.secondary)
                         .padding(.leading, 10)
                 }

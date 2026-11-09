@@ -27,7 +27,7 @@ use crate::{
     },
     apple::{
         device::AppleSimulator,
-        toolchain::{AppleSdk, Xcode},
+        toolchain::{AppleSdk, MetalToolchain, Xcode},
     },
     device::Device,
     framework::manifest_rust_version,
@@ -191,7 +191,8 @@ impl DoctorGroup {
             | ids::IOS_SIMULATOR_SDK
             | ids::IOS_SIMULATORS
             | ids::MACOS_SDK
-            | ids::APPLE_RUST_TARGETS => Self::Apple,
+            | ids::APPLE_RUST_TARGETS
+            | ids::APPLE_METAL_TOOLCHAIN => Self::Apple,
             ids::LINUX_SYSTEM_PACKAGES
             | ids::MSVC_BUILD_TOOLS
             | ids::DXC
@@ -620,6 +621,9 @@ pub mod ids {
     pub const WINDOWS_LONG_PATHS: &str = "windows-long-paths";
     /// iOS device and simulator rustup targets on the selected toolchain.
     pub const APPLE_RUST_TARGETS: &str = "apple-rust-targets";
+    /// The Metal Toolchain Xcode component `xcrun metal` needs —
+    /// `cherenkov-gpu` precompiles engine shaders through it.
+    pub const APPLE_METAL_TOOLCHAIN: &str = "apple-metal-toolchain";
     /// Android SDK root + `sdkmanager`.
     pub const ANDROID_SDK: &str = "android-sdk";
     /// `platform-tools` (`adb`).
@@ -684,6 +688,7 @@ pub mod ids {
         IOS_SIMULATORS,
         MACOS_SDK,
         APPLE_RUST_TARGETS,
+        APPLE_METAL_TOOLCHAIN,
         LINUX_SYSTEM_PACKAGES,
         MSVC_BUILD_TOOLS,
         DXC,
@@ -947,15 +952,32 @@ async fn apple_checks(host: &Host, project: &ProjectContext) -> Vec<DoctorItem> 
                 "Apple Rust targets",
                 "Apple platforms can only be built on macOS.",
             ),
+            DoctorItem::skipped(ids::APPLE_METAL_TOOLCHAIN, "Metal Toolchain"),
         ];
     }
 
-    let (xcode, ios_sdk, ios_simulator_sdk, ios_simulators, macos_sdk, rust_targets) = join!(
+    let (
+        xcode,
+        ios_sdk,
+        ios_simulator_sdk,
+        ios_simulators,
+        macos_sdk,
+        metal_toolchain,
+        rust_targets,
+    ) = join!(
         Xcode.check(host),
         AppleSdk::Ios.check(host),
         AppleSdk::IosSimulator.check(host),
         ios_simulator_check(host),
         AppleSdk::Macos.check(host),
+        toolchain_check(
+            host,
+            ids::APPLE_METAL_TOOLCHAIN,
+            "Metal Toolchain",
+            "The Metal Toolchain Xcode component is missing — cherenkov-gpu's \
+             build script compiles engine shaders through `xcrun metal`",
+            MetalToolchain,
+        ),
         apple_rust_targets_check(host, project),
     );
     vec![
@@ -969,6 +991,7 @@ async fn apple_checks(host: &Host, project: &ProjectContext) -> Vec<DoctorItem> 
         ios_simulators,
         simple_check(ids::MACOS_SDK, "macOS SDK", macos_sdk),
         rust_targets,
+        metal_toolchain,
     ]
 }
 

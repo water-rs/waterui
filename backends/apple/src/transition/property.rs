@@ -186,6 +186,10 @@ pub struct InsertionRun {
     /// tears it down.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     pixel: Option<crate::transition::pixel::PixelInsertion>,
+    /// Ticks spent waiting on the pixel effect's first presentation —
+    /// bounded so a wedged GPU cannot hold the run open forever.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    present_waits: core::cell::Cell<u32>,
     /// Set once a nonzero radius could not be realized — one violation
     /// report per run.
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
@@ -258,6 +262,8 @@ impl InsertionRun {
             blur: None,
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
             pixel: None,
+            #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+            present_waits: core::cell::Cell::new(0),
             #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
             blur_warned: core::cell::Cell::new(false),
         });
@@ -330,8 +336,19 @@ impl InsertionRun {
                     } else {
                         // Completion: restore the identity sample, then the
                         // run drops itself — never inside its own tick.
+                        // A pixel insertion whose effect has not presented
+                        // yet keeps the run alive: dropping it un-hides
+                        // content the effect never hid (§2.7). The wait is
+                        // bounded — a wedged GPU must not hold it forever.
                         run.host.apply_sample(&TransitionProperties::IDENTITY);
-                        true
+                        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+                        {
+                            run.may_complete()
+                        }
+                        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+                        {
+                            true
+                        }
                     }
                 };
                 if done {
@@ -414,6 +431,19 @@ impl InsertionRun {
             pixel.update(&self.host, self.direction);
         }
         true
+    }
+
+    /// Whether the run may drop at animation end: a pixel effect that has
+    /// not presented holds it open, bounded at ~90 ticks (~1.5 s at 60 Hz)
+    /// so a wedged GPU cannot hold it forever.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    fn may_complete(&self) -> bool {
+        if self.pixel.as_ref().is_some_and(|p| !p.presented()) {
+            self.present_waits.set(self.present_waits.get() + 1);
+            self.present_waits.get() > 90
+        } else {
+            true
+        }
     }
 }
 

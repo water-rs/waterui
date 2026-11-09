@@ -4,7 +4,7 @@ use eyre::Context as _;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 
-use crate::toolchain::{Host, Toolchain, ToolchainError};
+use crate::toolchain::{Host, Installation, Toolchain, ToolchainError};
 
 /// Represents the complete Apple toolchain consisting of Xcode and an Apple SDK
 pub type AppleToolchain = (Xcode, AppleSdk);
@@ -28,6 +28,52 @@ impl Toolchain for Xcode {
                 "Please install Xcode from the App Store or the Apple Developer website and ensure it's available in your PATH.",
             ))
         }
+    }
+}
+
+/// The Metal toolchain Xcode ships as a separately downloaded component.
+///
+/// `cherenkov-gpu`'s build script compiles engine shaders through
+/// `xcrun metal`, so the component is required even when the SDK is
+/// present (water-rs/waterui#3903).
+#[derive(Debug, Clone, Default)]
+pub struct MetalToolchain;
+
+/// Downloads the Metal Toolchain component into Xcode.
+#[derive(Debug, Clone)]
+pub struct MetalToolchainInstall;
+
+impl Toolchain for MetalToolchain {
+    type Installation = MetalToolchainInstall;
+    async fn check(
+        &self,
+        host: &Host,
+    ) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
+        // `xcrun --find metal` can resolve Xcode's bundled launcher even when
+        // the downloadable component is absent — only executing the compiler
+        // proves the toolchain is there (water-rs/waterui#3903).
+        if host.run("xcrun", ["metal", "--version"]).await.is_ok() {
+            Ok(())
+        } else {
+            Err(ToolchainError::fixable(MetalToolchainInstall))
+        }
+    }
+}
+
+impl Installation for MetalToolchainInstall {
+    type Error = eyre::Report;
+    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
+        host.run("xcodebuild", ["-downloadComponent", "MetalToolchain"])
+            .await
+            .map_err(|error| {
+                eyre::eyre!("failed to download the Metal Toolchain component: {error}")
+            })?;
+        Ok(())
+    }
+
+    fn modifies_system(&self) -> bool {
+        // The component lands inside the Xcode application bundle.
+        true
     }
 }
 
@@ -335,8 +381,8 @@ impl Toolchain for AppleSdk {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppleSdk, Xcode, XcodePreferences, XcodeTeamRecord, select_xcode_account_team,
-        xcode_account_team,
+        AppleSdk, MetalToolchain, Xcode, XcodePreferences, XcodeTeamRecord,
+        select_xcode_account_team, xcode_account_team,
     };
     use crate::toolchain::testing::TestMachine;
     use crate::toolchain::{Toolchain, ToolchainError};
@@ -358,6 +404,44 @@ mod tests {
         assert!(
             matches!(result, Err(ToolchainError::Unfixable(_))),
             "Xcode requires a manual App Store install: {result:?}"
+        );
+    }
+
+    #[test]
+    fn metal_toolchain_ok_when_metal_runs() {
+        let machine = TestMachine::new();
+        machine.install("xcrun");
+        machine.respond("XCRUN_METAL_VERSION", "metal 1.0\n");
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(MetalToolchain.check(&host))
+            .expect("a running `xcrun metal` must satisfy the check");
+    }
+
+    #[test]
+    fn metal_toolchain_missing_is_fixable() {
+        let machine = TestMachine::new();
+        machine.install("xcrun");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(MetalToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "a missing Metal Toolchain downloads through xcodebuild: {result:?}"
+        );
+    }
+
+    #[test]
+    fn metal_toolchain_findable_but_unrunnable_is_fixable() {
+        // The launcher resolves under `--find` while the downloadable
+        // component is absent — the check must not take the finder's word
+        // for the compiler's presence (water-rs/waterui#3903).
+        let machine = TestMachine::new();
+        machine.install("xcrun");
+        machine.respond("XCRUN_FIND_METAL", "/fake/Xcode/usr/bin/metal\n");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(MetalToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "`--find` succeeding while `metal --version` fails must stay fixable: {result:?}"
         );
     }
 

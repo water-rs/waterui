@@ -92,21 +92,41 @@ meta::dir_static! {
 #[macro_export]
 macro_rules! __export_widget {
     ($fn_name:expr, $payload:expr, [$ctx_ptr:ident, $ctx_len:ident, $out:ident] => $body:block) => {
-        const _: () = {
-            const NAME: &[u8] = concat!(
+        $crate::pastey::paste! {
+            // A `pub` item-level static is reachable from the crate root, so
+            // the record lands in the object on ELF and COFF too — `#[used]`
+            // would be wrong there because it would retain the record in a
+            // shipped image; the linker's dead strip removes it instead
+            // (water-rs/waterui#3905).
+            #[doc(hidden)]
+            const [<__WUI_WIDGET_META_LEN_ $fn_name>]: usize = concat!(
                 "waterui_meta_widget_",
                 env!("CARGO_CRATE_NAME"),
                 "_",
                 $fn_name
             )
-            .as_bytes();
-            const PAYLOAD: &[u8] = $payload.as_bytes();
-            const LEN: usize = NAME.len() + PAYLOAD.len() + 2;
+            .as_bytes()
+            .len() + $payload.as_bytes().len() + 2;
             $crate::meta::dir_static! {
-                static META: [u8; LEN] = $crate::meta::dir_entry::<LEN>(NAME, PAYLOAD);
+                /// The widget declaration record `water` reads out of the rlib.
+                #[doc(hidden)]
+                #[expect(
+                    non_upper_case_globals,
+                    reason = "tooling names the record by its `waterui_meta_` item name"
+                )]
+                pub static [<waterui_meta_widget_ env!("CARGO_CRATE_NAME") _ $fn_name>]:
+                    [u8; [<__WUI_WIDGET_META_LEN_ $fn_name>]] =
+                    $crate::meta::dir_entry::<{ [<__WUI_WIDGET_META_LEN_ $fn_name>] }>(
+                        concat!(
+                            "waterui_meta_widget_",
+                            env!("CARGO_CRATE_NAME"),
+                            "_",
+                            $fn_name
+                        )
+                        .as_bytes(),
+                        $payload.as_bytes(),
+                    );
             }
-        };
-        $crate::pastey::paste! {
             #[doc(hidden)]
             #[allow(unsafe_code)]
             #[unsafe(no_mangle)]
@@ -138,16 +158,27 @@ macro_rules! __export_widget {
 #[macro_export]
 macro_rules! __export_intent {
     ($hash:expr, $payload:expr, [$ptr:ident, $len:ident] => $body:block) => {
-        const _: () = {
-            const NAME: &[u8] =
-                concat!("waterui_meta_intent_", env!("CARGO_CRATE_NAME"), "_", $hash).as_bytes();
-            const PAYLOAD: &[u8] = $payload.as_bytes();
-            const LEN: usize = NAME.len() + PAYLOAD.len() + 2;
-            $crate::meta::dir_static! {
-                static META: [u8; LEN] = $crate::meta::dir_entry::<LEN>(NAME, PAYLOAD);
-            }
-        };
         $crate::pastey::paste! {
+            #[doc(hidden)]
+            const [<__WUI_INTENT_META_LEN_ $hash>]: usize =
+                concat!("waterui_meta_intent_", env!("CARGO_CRATE_NAME"), "_", $hash)
+                    .as_bytes()
+                    .len() + $payload.as_bytes().len() + 2;
+            $crate::meta::dir_static! {
+                /// The intent declaration record `water` reads out of the rlib.
+                #[doc(hidden)]
+                #[expect(
+                    non_upper_case_globals,
+                    reason = "tooling names the record by its `waterui_meta_` item name"
+                )]
+                pub static [<waterui_meta_intent_ env!("CARGO_CRATE_NAME") _ $hash>]:
+                    [u8; [<__WUI_INTENT_META_LEN_ $hash>]] =
+                    $crate::meta::dir_entry::<{ [<__WUI_INTENT_META_LEN_ $hash>] }>(
+                        concat!("waterui_meta_intent_", env!("CARGO_CRATE_NAME"), "_", $hash)
+                            .as_bytes(),
+                        $payload.as_bytes(),
+                    );
+            }
             #[doc(hidden)]
             #[allow(unsafe_code)]
             #[unsafe(no_mangle)]
