@@ -1,0 +1,40 @@
+name: Upload cargo timings
+
+description: >-
+  Uploads the `cargo --timings` reports the job wrote after `setup-rust`
+  ran, wherever the job's target directories are. Every compiling cargo
+  command of the job names `--timings` itself. Reports are moved out of the
+  target directory so a Cargo cache saved at the end of the job does not
+  carry them forward. Run it last with `if: always()`.
+
+inputs:
+  name:
+    description: Artifact name; unique per job and matrix leg.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Collect cargo timings
+      id: collect
+      shell: bash
+      run: |
+        set -euo pipefail
+        stage="${RUNNER_TEMP}/cargo-timings-upload"
+        rm -rf "${stage}"
+        mkdir -p "${stage}"
+        roots=("${GITHUB_WORKSPACE}" "${RUNNER_TEMP}")
+        [[ -n "${CARGO_TARGET_DIR:-}" ]] && roots+=("${CARGO_TARGET_DIR}")
+        while IFS= read -r -d '' report; do
+          mv "${report}" "${stage}/"
+        done < <(find "${roots[@]}" -path '*/cargo-timings/cargo-timing-*.html' \
+          -newer "${RUNNER_TEMP}/cargo-timings-start" -print0 2>/dev/null)
+        echo "stage=$(find "${stage}" -type f | wc -l | tr -d ' ')" >> "${GITHUB_OUTPUT}"
+    - uses: actions/upload-artifact@v4
+      if: steps.collect.outputs.stage != '0'
+      with:
+        name: cargo-timings-${{ inputs.name }}
+        path: ${{ runner.temp }}/cargo-timings-upload
+        retention-days: 7
+        overwrite: true
+        if-no-files-found: ignore

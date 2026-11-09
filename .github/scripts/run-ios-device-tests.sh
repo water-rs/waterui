@@ -168,7 +168,7 @@ export WATERUI_REFERENCE_METRICS="${reference_metrics}"
 # joins the same invocation: its standalone iOS-sim nextest coverage
 # transfers 1:1 onto the backend's graph, and waterui-apple's
 # `native-test` forwards to cocoa-ui's so one flag selects both suites.
-cargo nextest run -p waterui-apple -p cocoa-ui --locked --features waterui-apple/native-test \
+cargo nextest run --timings -p waterui-apple -p cocoa-ui --locked --features waterui-apple/native-test \
   --manifest-path "${repo_root}/Cargo.toml" \
   --target aarch64-apple-ios-sim \
   -E 'not test(/^device_only::/)'

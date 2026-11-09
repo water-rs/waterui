@@ -938,8 +938,17 @@ impl Drop for NativeFilterOwner {
     /// layer's filters are not cleared: the layer dies with its view on
     /// an ordinary removal, and a ghost keeps them until the retired
     /// tree detaches.
+    ///
+    /// An enclosing capture still holding this output in an open
+    /// external-render scope has lost content it may have deferred on:
+    /// the owner's departure is the wake the capture's retry waits for.
     fn drop(&mut self) {
         self.capture.shutdown();
+        if self.external_count.get() > 0
+            && let Some(redraw) = self.external_redraw.get_mut().take()
+        {
+            redraw();
+        }
     }
 }
 
