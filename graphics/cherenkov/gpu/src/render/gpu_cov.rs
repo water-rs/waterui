@@ -2256,7 +2256,12 @@ mod tests {
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
-                timeout: Some(std::time::Duration::from_secs(120)),
+                // WARP rasterizes the 17k-dash coverage frame on the CPU;
+                // the observed ~170 s on the Windows runner exceeded the
+                // 120 s budget and aborted the map (water-rs/waterui#3909).
+                // 300 s covers the software path while a genuinely hung
+                // kernel still dies under nextest's watchdog.
+                timeout: Some(std::time::Duration::from_secs(300)),
             })
             .expect("the stroke kernels finish");
         targets
