@@ -187,7 +187,10 @@ if [[ "${platform}" == "ios" ]]; then
     local diag="$1"
     local after="${2:-15}"
     (
+      # Each sampler marks itself with a per-invocation file, so a later
+      # capture's sleep cannot be mistaken for an earlier one's collection.
       sleep "${after}"
+      touch "${diag}.fired.${BASHPID}"
       {
         echo "=== screenshot stall sample $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
         echo "--- simctl / CoreSimulator processes ---"
@@ -207,27 +210,33 @@ if [[ "${platform}" == "ios" ]]; then
         echo "--- host memory pressure ---"
         memory_pressure 2>/dev/null | tail -8 || true
         echo "--- CoreSimulator log, last 2m ---"
-        log show --last 2m --style compact \
+        "${command_deadline}" run --label "diag:stall-log-show" \
+          --deadline-at "$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")" \
+          --receipt "${receipts_file}" \
+          -- log show --last 2m --style compact \
           --predicate 'subsystem CONTAINS[c] "CoreSimulator"' \
           2>/dev/null | tail -40 || true
       } >> "${diag}" 2>&1
     ) </dev/null >/dev/null 2>&1 &
     echo $!
   }
-  # A sampler that already fired is mid-collection — let it finish writing
-  # rather than truncating its log; a still-sleeping one is cancelled.
+  # A sampler that already fired is mid-collection — give it a bounded grace
+  # to finish writing; a still-sleeping one is cancelled. `pkill -P` covers
+  # the diagnostic children (the caller's `wait` cannot reap a worker
+  # launched through command substitution, so they could outlive a kill).
   stall_sampler_stop() {
     local pid="$1" diag="${2:-}"
     if kill -0 "${pid}" 2>/dev/null; then
-      if [[ -s "${diag}" ]]; then
+      if [[ -e "${diag}.fired.${pid}" ]]; then
         local deadline=$(( SECONDS + 20 ))
         while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do
           sleep 0.5
         done
       fi
       kill "${pid}" 2>/dev/null || true
+      pkill -P "${pid}" 2>/dev/null || true
     fi
-    wait "${pid}" 2>/dev/null || true
+    rm -f "${diag}.fired.${pid}"
   }
 
   # The first `simctl io screenshot` each boot pays a one-time cost while the
