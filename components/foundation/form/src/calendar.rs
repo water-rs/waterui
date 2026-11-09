@@ -1,4 +1,5 @@
-//! A WaterUI-composed month-grid calendar view.
+//! The single-date `Calendar` control and the month grid WaterUI composes
+//! for backends that do not realize it natively.
 
 use alloc::{
     collections::BTreeSet,
@@ -17,11 +18,14 @@ use jiff::{
 use nami::{
     Binding, Computed, Signal, SignalExt, collection::SignalCollection, signal::IntoComputed,
 };
-use waterui_controls::label::{Label, LabelDisplayMode};
-use waterui_controls::{IntoLabel, button};
+use waterui_controls::label::Label;
+use waterui_controls::{IntoLabel, button, impl_label_style_methods};
 use waterui_core::interaction::Disabled;
+use waterui_core::layout::StretchAxis;
+use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
-    AnyView, Environment, Metadata, View, env::use_env, id::Identifiable, views::ForEach,
+    AnyView, Environment, Metadata, NativeView, View, env::use_env, id::Identifiable,
+    views::ForEach,
 };
 use waterui_graphics::color::{AccentColor, AccentForegroundColor, Color, ForegroundColor};
 use waterui_layout::frame::Frame;
@@ -41,14 +45,85 @@ const CALENDAR_SELECTED_DAY_SIZE: f32 = 36.0;
 const CALENDAR_CELL_SPACING: f32 = 8.0;
 const CALENDAR_WEEKDAY_HEIGHT: f32 = 24.0;
 
+/// Configuration for the [`Calendar`] component — what a backend realizes
+/// natively through `Hook<CalendarConfig>` or its own `Calendar` handler.
 #[derive(Debug)]
-/// A calendar-style control for selecting a single date.
-pub struct Calendar {
+pub struct CalendarConfig {
     label: Label,
     value: Binding<Date>,
     range: RangeInclusive<Date>,
     decorated: Computed<BTreeSet<Date>>,
-    visible_month: Binding<VisibleMonth>,
+    visible_month: Binding<Date>,
+}
+
+impl CalendarConfig {
+    /// The label announced for the calendar and displayed above it.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The label, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
+    /// The selected date.
+    #[must_use]
+    pub const fn value(&self) -> &Binding<Date> {
+        &self.value
+    }
+
+    /// The inclusive range of selectable dates.
+    #[must_use]
+    pub const fn range(&self) -> &RangeInclusive<Date> {
+        &self.range
+    }
+
+    /// The days marked with a passive decoration dot.
+    #[must_use]
+    pub const fn decorated(&self) -> &Computed<BTreeSet<Date>> {
+        &self.decorated
+    }
+
+    /// The month the calendar shows: any day of it reads as that month, and
+    /// the calendar writes the month's first day when the user navigates.
+    #[must_use]
+    pub const fn visible_month(&self) -> &Binding<Date> {
+        &self.visible_month
+    }
+}
+
+/// A calendar-style control for selecting a single date.
+#[derive(Debug)]
+pub struct Calendar(CalendarConfig);
+
+impl ConfigurableView for Calendar {
+    type Config = CalendarConfig;
+
+    fn config(self) -> Self::Config {
+        self.0
+    }
+}
+
+impl ViewConfiguration for CalendarConfig {
+    type View = Calendar;
+
+    fn render(self) -> Self::View {
+        Calendar(self)
+    }
+}
+
+impl From<CalendarConfig> for Calendar {
+    fn from(value: CalendarConfig) -> Self {
+        Self(value)
+    }
+}
+
+impl NativeView for CalendarConfig {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
 }
 
 impl Calendar {
@@ -61,57 +136,68 @@ impl Calendar {
     #[must_use]
     pub fn new(label: impl IntoLabel, date: &Binding<Date>, visible_month: &Binding<Date>) -> Self {
         let range = Date::MIN..=Date::MAX;
-        Self {
+        Self(CalendarConfig {
             label: label.into_label(),
             value: date.clone(),
             range,
             decorated: Computed::constant(BTreeSet::new()),
-            visible_month: map_visible_month_binding(visible_month),
-        }
+            visible_month: visible_month.clone(),
+        })
     }
 
     /// Sets the valid date range.
     #[must_use]
     pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
-        if !visible_month_in_range(self.visible_month.snapshot(), &range) {
-            self.visible_month
-                .set(initial_visible_month(Some(self.value.snapshot()), &range));
+        let visible = VisibleMonth::from_date(self.0.visible_month.snapshot());
+        if !visible_month_in_range(visible, &range) {
+            self.0.visible_month.set(
+                initial_visible_month(Some(self.0.value.snapshot()), &range).first_day(),
+            );
         }
-        self.range = range;
+        self.0.range = range;
         self
     }
 
     /// Marks calendar days with a passive decoration dot.
     #[must_use]
     pub fn decorated(mut self, decorated: impl IntoComputed<BTreeSet<Date>>) -> Self {
-        self.decorated = decorated.into_computed();
+        self.0.decorated = decorated.into_computed();
         self
-    }
-
-    /// Sets the visual presentation mode of the label displayed above the
-    /// calendar grid. The semantic identity is always retained for assistive
-    /// technology.
-    #[must_use]
-    pub const fn label_style(mut self, mode: LabelDisplayMode) -> Self {
-        self.label.set_display_mode(mode);
-        self
-    }
-
-    /// Visually hides the label above the calendar grid while preserving its
-    /// semantic text for assistive technology.
-    #[must_use]
-    pub const fn hide_label(self) -> Self {
-        self.label_style(LabelDisplayMode::Hidden)
     }
 }
 
+impl_label_style_methods!(Calendar);
+
 impl View for Calendar {
     fn body(self, env: &Environment) -> impl View {
-        let label = self.label;
-        let selection = self.value;
-        let range = self.range;
-        let decorated = self.decorated;
-        let visible_month = self.visible_month;
+        let config = self.0;
+        if let Some(hook) = env.get::<Hook<CalendarConfig>>() {
+            AnyView::new(hook.apply(env, config))
+        } else {
+            AnyView::new(CalendarGrid(config))
+        }
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+}
+
+/// The calendar composed from WaterUI views — the realization every backend
+/// without its own `Calendar` handler renders.
+#[derive(Debug)]
+struct CalendarGrid(CalendarConfig);
+
+impl View for CalendarGrid {
+    fn body(self, env: &Environment) -> impl View {
+        let CalendarConfig {
+            label,
+            value: selection,
+            range,
+            decorated,
+            visible_month,
+        } = self.0;
+        let visible_month = map_visible_month_binding(&visible_month);
         let locale = locale_binding(env).computed();
 
         let cell_range = range.clone();

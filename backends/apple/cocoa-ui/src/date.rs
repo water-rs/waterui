@@ -160,6 +160,134 @@ pub fn interval(start: &NSDate, end: &NSDate) -> Retained<NSDateInterval> {
     // so no main-thread proof is needed.
 }
 
+/// A calendar month: the year and the month, `1..=12`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct YearMonth {
+    /// The calendar year.
+    pub year: i32,
+    /// The month, `1..=12`.
+    pub month: i32,
+}
+
+impl YearMonth {
+    /// The month `day` falls in.
+    #[must_use]
+    pub const fn of(day: DateParts) -> Self {
+        Self {
+            year: day.year,
+            month: day.month,
+        }
+    }
+
+    /// The month's first day.
+    #[must_use]
+    pub const fn first_day(self) -> DateParts {
+        DateParts {
+            year: self.year,
+            month: self.month,
+            day: 1,
+        }
+    }
+
+    /// The month before this one.
+    #[must_use]
+    pub const fn previous(self) -> Self {
+        if self.month == 1 {
+            Self {
+                year: self.year - 1,
+                month: 12,
+            }
+        } else {
+            Self {
+                year: self.year,
+                month: self.month - 1,
+            }
+        }
+    }
+
+    /// The month after this one.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        if self.month == 12 {
+            Self {
+                year: self.year + 1,
+                month: 1,
+            }
+        } else {
+            Self {
+                year: self.year,
+                month: self.month + 1,
+            }
+        }
+    }
+
+    /// The number of days in the month under the Gregorian calendar.
+    ///
+    /// # Panics
+    ///
+    /// When the month does not name a real Gregorian month.
+    #[must_use]
+    pub fn day_count(self) -> i32 {
+        let calendar = gregorian();
+        let first = calendar
+            .dateFromComponents(&components(self.first_day()))
+            .expect("a calendar month resolves to a date");
+        let range =
+            calendar.rangeOfUnit_inUnit_forDate(NSCalendarUnit::Day, NSCalendarUnit::Month, &first);
+        i32::try_from(range.length).expect("a month has fewer than 2^31 days")
+    }
+
+    /// The weekday the month's first day falls on, `1` (Sunday) through `7`
+    /// (Saturday) — `NSCalendar`'s numbering.
+    ///
+    /// # Panics
+    ///
+    /// When the month does not name a real Gregorian month.
+    #[must_use]
+    pub fn first_weekday(self) -> i32 {
+        let calendar = gregorian();
+        let first = calendar
+            .dateFromComponents(&components(self.first_day()))
+            .expect("a calendar month resolves to a date");
+        i32::try_from(calendar.component_fromDate(NSCalendarUnit::Weekday, &first))
+            .expect("weekday is 1 through 7")
+    }
+}
+
+/// `day` moved by `days` calendar days, crossing month and year boundaries.
+#[must_use]
+pub fn add_days(day: DateParts, days: i32) -> DateParts {
+    let mut month = YearMonth::of(day);
+    let mut value = day.day + days;
+    while value < 1 {
+        month = month.previous();
+        value += month.day_count();
+    }
+    loop {
+        let count = month.day_count();
+        if value <= count {
+            break;
+        }
+        value -= count;
+        month = month.next();
+    }
+    DateParts {
+        year: month.year,
+        month: month.month,
+        day: value,
+    }
+}
+
+/// The current calendar day in the user's time zone.
+///
+/// # Panics
+///
+/// Never in practice: the current instant always resolves to a date.
+#[must_use]
+pub fn today() -> DateParts {
+    date_parts(&NSDate::now()).expect("the current instant resolves to a calendar date")
+}
+
 /// `date` formatted in the user's locale at medium date style with no time —
 /// the format a selection list row shows.
 #[must_use]
@@ -189,6 +317,68 @@ mod tests {
     #[test]
     fn parts_rejects_unset_components() {
         assert_eq!(super::parts(&NSDateComponents::new()), None);
+    }
+
+    #[test]
+    fn month_lengths_and_weekdays_follow_the_gregorian_calendar() {
+        let february_leap = YearMonth {
+            year: 2024,
+            month: 2,
+        };
+        assert_eq!(february_leap.day_count(), 29);
+        assert_eq!(
+            YearMonth {
+                year: 2100,
+                month: 2
+            }
+            .day_count(),
+            28
+        );
+        assert_eq!(
+            YearMonth {
+                year: 2026,
+                month: 11
+            }
+            .day_count(),
+            30
+        );
+        // 1 November 2026 is a Sunday.
+        assert_eq!(
+            YearMonth {
+                year: 2026,
+                month: 11
+            }
+            .first_weekday(),
+            1
+        );
+        assert_eq!(
+            february_leap.previous().previous().next(),
+            YearMonth {
+                year: 2024,
+                month: 1,
+            }
+        );
+        assert_eq!(
+            YearMonth {
+                year: 2026,
+                month: 12
+            }
+            .next(),
+            YearMonth {
+                year: 2027,
+                month: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn add_days_crosses_month_and_year_boundaries() {
+        let day = |year, month, day| DateParts { year, month, day };
+        assert_eq!(add_days(day(2026, 12, 30), 7), day(2027, 1, 6));
+        assert_eq!(add_days(day(2027, 1, 3), -7), day(2026, 12, 27));
+        assert_eq!(add_days(day(2024, 2, 28), 1), day(2024, 2, 29));
+        assert_eq!(add_days(day(2024, 3, 1), -1), day(2024, 2, 29));
+        assert_eq!(add_days(day(2026, 11, 18), 0), day(2026, 11, 18));
     }
 
     #[test]

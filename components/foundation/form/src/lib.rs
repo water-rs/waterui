@@ -14,7 +14,7 @@ use waterui_graphics::color::Color;
 
 /// Picker form component module.
 pub mod calendar;
-pub use calendar::Calendar;
+pub use calendar::{Calendar, CalendarConfig};
 /// Native picker controls for colors, dates, files, and multiple dates.
 pub mod picker;
 pub use picker::{Picker, PickerItem, PickerStyle};
