@@ -587,6 +587,10 @@ struct Shared {
     theme_insets: KitInsets,
     /// The resolved minimum row height.
     resolved_min_height: f64,
+    /// Whether the navigation scroll surface's near-zero `tableHeaderView`
+    /// has already been installed — the reserve is reclaimed once.
+    #[cfg(target_os = "ios")]
+    nav_header_applied: Cell<bool>,
     /// `measuredRowHeights`: the row contract the height delegate reports,
     /// refreshed from both `viewFor`/`cellForRow` layout passes.
     measured_heights: HashMap<ItemId, f64>,
@@ -1815,6 +1819,28 @@ mod platform_impl {
             // Navigation owns the first scroll surface's top spacing. Later
             // independent lists keep the inset-grouped anonymous-section reserve.
             if is_navigation_scroll_surface(table) {
+                // A nil `tableHeaderView` leaves ~1 pt above the first card
+                // that the suppressed section header cannot reclaim —
+                // install a near-zero-height one, once, on the next
+                // main-queue turn so this callback stays read-only (#3913).
+                if !self.state.borrow().nav_header_applied.replace(true) {
+                    let weak = cocoa_ui::objc2::rc::Weak::new(table);
+                    cocoa_ui::main_queue::enqueue_local(
+                        cocoa_ui::MainThreadMarker::new()
+                            .expect("header reserve reclaim runs on the main thread"),
+                        move |mtm| {
+                            let Some(table) = weak.load() else {
+                                return;
+                            };
+                            let header = cocoa_ui::objc2_ui_kit::UIView::new(mtm);
+                            cocoa_ui::view::set_frame(
+                                &header,
+                                cocoa_ui::Rect::new(0.0, 0.0, 0.0, f64::MIN_POSITIVE),
+                            );
+                            table.set_table_header_view(&header);
+                        },
+                    );
+                }
                 // Grouped tables interpret zero as their default header height.
                 // The least positive native height suppresses the header instead.
                 // (`sectionHeaderTopPadding` only applies to `.plain` tables —
@@ -2549,6 +2575,8 @@ fn render(mut config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         #[cfg(target_os = "macos")]
         theme_insets,
         resolved_min_height: min_row_height(config.min_row_height(), stock_height),
+        #[cfg(target_os = "ios")]
+        nav_header_applied: Cell::new(false),
         measured_heights: HashMap::new(),
         disabled_rows: RefCell::new(HashMap::new()),
     }));

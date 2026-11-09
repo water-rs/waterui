@@ -606,10 +606,6 @@ impl TableView {
         margins.trailing = 16.0;
         this.setDirectionalLayoutMargins(margins);
         this.setSeparatorInsetReference(UITableViewSeparatorInsetReference::FromCellEdges);
-        // A nil `tableHeaderView` leaves a ~1 pt top reserve on grouped
-        // tables that the anonymous-section suppression cannot reclaim —
-        // an explicit zero-height header removes it (#3913).
-        this.setTableHeaderView(Some(&UIView::new(mtm)));
         // SAFETY: `TableCell` and `TableHeaderFooterView` are the classes the
         // identifiers dequeue.
         unsafe {
@@ -680,10 +676,18 @@ impl TableView {
     }
 
     /// `sectionHeaderTopPadding` (iOS 15+): the padding between the
-    /// adjusted top inset and the first section's header. `0` removes the
-    /// `.insetGrouped` stock reserve above the first card.
+    /// adjusted top inset and the first section's header. Only applies to
+    /// `.plain` tables — a no-op on `.insetGrouped`.
     pub fn set_section_header_top_padding(&self, padding: f64) {
         self.setSectionHeaderTopPadding(padding);
+    }
+
+    /// `tableHeaderView`: a real view laid out before the first section.
+    /// A nil header leaves a ~1 pt top reserve on grouped tables that the
+    /// anonymous-section suppression cannot reclaim — an explicit
+    /// near-zero-height header removes it (#3913).
+    pub fn set_table_header_view(&self, header: &UIView) {
+        self.setTableHeaderView(Some(header));
     }
 
     /// Enters or leaves editing mode.
