@@ -125,6 +125,7 @@ pub fn restore_a11y_naming_scope<E: crate::text::TextEngine>(
         AccessibilityValue,
         AccessibilityRole,
         AccessibilityChildren,
+        AccessibilityGeometry,
         ScopedAccessibilityIdentifier,
         // The claim identity travels with the name: carrying the label without
         // it would let the leaf render the name that a container above still
@@ -214,6 +215,9 @@ pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
         AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole, E>,
         AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>,
         AccessibilityChildren => a11y_scoped_env::<AccessibilityChildren>,
+        // The geometry source names the element the way a label does: the
+        // node that represents the wrapped view reads it from the scope.
+        AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>,
         AccessibilityState => a11y_scoped_env_for_state,
         AccessibilityStateSignal => a11y_scoped_env::<AccessibilityStateSignal>,
     )
@@ -361,6 +365,7 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         AccessibilityRole,
         AccessibilityHidden,
         AccessibilityChildren,
+        AccessibilityGeometry,
         AccessibilityState,
         AccessibilityStateSignal
     );
@@ -536,7 +541,8 @@ fn normalize_layout_view_with_budget(
         AccessibilityLabel,
         AccessibilityValue,
         AccessibilityRole,
-        AccessibilityChildren
+        AccessibilityChildren,
+        AccessibilityGeometry
     );
 
     // Hidden and (reactive) state have *subtree* semantics: every emission

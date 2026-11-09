@@ -2,6 +2,7 @@
 //! into the nodes' programs using the cached placements.
 
 #[cfg(feature = "accessibility")]
+use super::layout::accessibility_rect;
 use super::layout::kurbo_rect;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
@@ -164,6 +165,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
             }
             Self::Text(text) => {
+                // The glyphs draw in the response rectangle, centred in an
+                // allocation larger than the text's answer.
+                let geometry = text
+                    .geometry
+                    .expect("hydrolysis text flushed before its layout");
+                let ctx = RenderContext::new(ctx.local(), kurbo_rect(geometry.response_rect));
                 renderer.state.counters.recorded_view_contents += 1;
                 renderer.push_render_owner(&text.accessibility_identity);
                 // Read the content/alignment signals through `read_signal` so a change
@@ -173,7 +180,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let styled = renderer.read_signal(&text.content);
                 let alignment = renderer.read_signal(&text.alignment);
                 #[cfg(feature = "accessibility")]
-                let text_node_id = TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
+                let text_node_id = TextNode::emit_accessibility(
+                    renderer,
+                    Some(RenderContext::new(
+                        ctx.local(),
+                        accessibility_rect(env, &geometry),
+                    )),
+                    &styled,
+                    env,
+                );
                 #[cfg(not(feature = "accessibility"))]
                 TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
@@ -209,11 +224,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // container no longer carries semantics to claim.
                 #[cfg(feature = "accessibility")]
                 let container_scope = accessibility_container_child_environment(env).map(|_| {
-                    let (bounds, extent) = (
-                        ctx.bounds(),
-                        renderer.resolve_window_rect(kurbo_rect(container.resolved)),
-                    );
-                    renderer.begin_accessibility_container(bounds, Some(extent), env)
+                    let geometry = container
+                        .geometry
+                        .expect("hydrolysis container flushed before its layout");
+                    renderer.begin_accessibility_container(accessibility_rect(env, &geometry), env)
                 });
                 #[cfg(feature = "accessibility")]
                 let child_env = container.accessibility_child_env.as_ref().unwrap_or(env);

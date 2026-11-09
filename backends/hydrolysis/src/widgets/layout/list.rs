@@ -28,7 +28,9 @@ use waterui_core::animation::Animation;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::Id as RawId;
 use waterui_core::interaction::Selected;
-use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::layout::{
+    ProposalSize, Size as LayoutSize, UnitPoint, ViewDimensions, layout_direction,
+};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -2425,6 +2427,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                         stretch: subview.stretch_axis(),
                     },
                 );
+                subview.set_content_anchor(row_content_anchor(&row_env));
                 let row = state_ref.transitions.row(row_id);
                 match &row.insertion {
                     Some(insertion) => {
@@ -3014,10 +3017,7 @@ fn list_content_rect(
     });
     // `EdgeInsets` is logical: leading opens the content on the side the
     // layout direction starts from.
-    let (left_inset, right_inset) = if waterui_core::layout::layout_direction(env)
-        .snapshot()
-        .is_right_to_left()
-    {
+    let (left_inset, right_inset) = if layout_direction(env).snapshot().is_right_to_left() {
         (trailing_inset, leading_inset)
     } else {
         (leading_inset, trailing_inset)
@@ -3028,6 +3028,18 @@ fn list_content_rect(
     let height = f64::from(content_size.height).min(available_height);
     let y0 = (row_rect.height() - height).mul_add(0.5, row_rect.y0);
     kurbo::Rect::new(x0, y0, x1, y0 + height)
+}
+
+/// Where a row positions its content's response (water-rs/waterui#3888): at
+/// the leading edge of the row's content rect — trailing in right-to-left —
+/// centred vertically. The content keeps the whole content rect as its
+/// allocation, so the row's hit target spans it.
+fn row_content_anchor(env: &Environment) -> UnitPoint {
+    if layout_direction(env).snapshot().is_right_to_left() {
+        UnitPoint::TRAILING
+    } else {
+        UnitPoint::LEADING
+    }
 }
 
 /// Emits a retained list's accessibility tree for the semantic walk — the same
