@@ -392,6 +392,7 @@ exit /b 0
 :xcodebuild
 set "args=!args_dequoted!"
 call :contains args version && (echo Xcode %WATERUI_FAKE_XCODE_VERSION% & echo Build version 16F6 & exit /b 0)
+if "!args_dequoted!"=="-showComponent MetalToolchain -json" (call :respond XCODEBUILD_SHOW_METAL_TOOLCHAIN & exit /b !errorlevel!)
 exit /b 0
 
 :xcode_select
