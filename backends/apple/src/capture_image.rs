@@ -244,6 +244,8 @@ impl WindowHost {
             // A real window selects its initial first responder on becoming
             // key; the capture host never orders in, so it must be seeded —
             // SwiftUI parity shots show the first field's focus ring.
+            // SAFETY: `nextValidKeyView` is a main-thread AppKit query; the
+            // capture path runs on the main thread.
             unsafe {
                 use cocoa_ui::objc2::msg_send;
                 use cocoa_ui::objc2_app_kit::NSResponder;
