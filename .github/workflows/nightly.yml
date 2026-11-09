@@ -279,10 +279,11 @@ jobs:
       # The `create --template web` tests scaffold and build a Vite frontend.
       - uses: oven-sh/setup-bun@v2
       - run: cargo nextest run --timings --locked --profile ci -p waterui-cli --run-ignored ignored-only
-      # The hydrolysis ignored suite — the Android WebView bridge's
-      # composed-script round trip through a real JS engine. `bun` is on
-      # PATH from the step above.
-      - run: cargo nextest run --timings --locked --profile ci -p hydrolysis --run-ignored ignored-only
+      # The Android WebView bridge's composed-script round trip through a
+      # real JS engine. `bun` is on PATH from the step above. Named, not
+      # `ignored-only`: hydrolysis's other ignored test is a report-only
+      # perf probe that stays out of CI (#4012).
+      - run: cargo nextest run --timings --locked --profile ci -p hydrolysis --run-ignored ignored-only -E 'test(=widgets::platform::webview::android_protocol::tests::the_composed_async_call_survives_a_real_js_round_trip)'
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
         with:
