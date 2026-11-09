@@ -572,11 +572,18 @@ jobs:
             || fail "doctor found nothing fixable — the environment did not exercise the repair path"
 
           # The auto-repair loop (three passes, non-interactive auto-install).
+          # --yes consents to system-wide installs (Metal Toolchain); without
+          # it a non-interactive run skips them and the build later fails on
+          # `xcrun metal` (#3903).
           phase "water doctor --fix"
           start=$SECONDS
-          water doctor --fix 2>&1 | tee e2e-logs/doctor-fix.log
+          water doctor --fix --yes 2>&1 | tee e2e-logs/doctor-fix.log
           if grep -q 'Failed to install' e2e-logs/doctor-fix.log; then
             fail "doctor --fix reported failed installs"
+          fi
+          if [ "$E2E_PLATFORM" = "macos" ]; then
+            xcrun metal --version >/dev/null \
+              || fail "Metal Toolchain still missing after doctor --fix --yes"
           fi
           record doctor_fix "$((SECONDS - start))"
 
