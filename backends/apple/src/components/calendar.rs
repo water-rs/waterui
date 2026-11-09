@@ -20,9 +20,7 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::ops::RangeInclusive;
 
-#[cfg(target_os = "ios")]
-use cocoa_ui::date::CalendarSelectionMode;
-use cocoa_ui::date::{DateParts, YearMonth};
+use cocoa_ui::date::{CalendarSelectionMode, DateParts, YearMonth};
 use cocoa_ui::{PlatformView, Rect};
 use waterui::component::form::picker::date::Date;
 use waterui::component::label::Label;
@@ -89,7 +87,6 @@ fn ns_date(value: Date) -> cocoa_ui::Retained<objc2_foundation::NSDate> {
 /// to it. The leaf watches the selection as the signal it is.
 pub(super) trait CalendarSelection: Signal + Clone + 'static {
     /// How the platform control selects.
-    #[cfg(target_os = "ios")]
     const MODE: CalendarSelectionMode;
 
     /// The selected days in `value`, the selection's current value.
@@ -101,7 +98,6 @@ pub(super) trait CalendarSelection: Signal + Clone + 'static {
 
 #[cfg(feature = "calendar")]
 impl CalendarSelection for Binding<Date> {
-    #[cfg(target_os = "ios")]
     const MODE: CalendarSelectionMode = CalendarSelectionMode::Single;
 
     fn selected(value: &Date) -> Vec<Date> {
@@ -407,12 +403,14 @@ mod appearance {
 #[cfg(target_os = "macos")]
 fn platform_calendar(
     ctx: &RenderContext<'_>,
+    mode: CalendarSelectionMode,
     range: &RangeInclusive<Date>,
     month: YearMonth,
     locale: &str,
 ) -> platform::CalendarView {
     platform::CalendarView::new(
         ctx.mtm(),
+        mode,
         parts_of(*range.start())..=parts_of(*range.end()),
         month,
         locale,
@@ -469,9 +467,6 @@ pub(super) fn render_calendar<S: CalendarSelection>(
     let locale = waterui_locale::locale_binding(env);
     let month = YearMonth::of(parts_of(visible_month.snapshot()));
     let tag = locale.snapshot().canonical_tag();
-    #[cfg(target_os = "macos")]
-    let platform = platform_calendar(ctx, &range, month, &tag);
-    #[cfg(target_os = "ios")]
     let platform = platform_calendar(ctx, S::MODE, &range, month, &tag);
     let calendar = Rc::new(CalendarLeaf {
         label: mounted_label,

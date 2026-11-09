@@ -21,9 +21,12 @@
 //! otherwise. Navigation stays inside the range: ◀ and ▶ disable at its
 //! first and last month, and ● brings back the month of the selection.
 //!
-//! Selection is owned by the caller: a click, Space on the focused day or
-//! an arrow key reports the day through [`CalendarView::on_pick`], and the
-//! caller pushes the resulting selection back through
+//! The calendar selects one day or many ([`CalendarSelectionMode`]).
+//! Selection is owned by the caller: a click or Space on the focused day
+//! reports the day through [`CalendarView::on_pick`] — and so does an
+//! arrow key with one day selected, or Return with many, where the arrows
+//! only move focus — and the caller pushes the resulting selection back
+//! through
 //! [`CalendarView::set_selection`]. Month navigation is local and reported
 //! through [`CalendarView::on_visible_month_change`].
 //!
@@ -62,7 +65,7 @@ use objc2_foundation::{
 
 use crate::action::ActionTarget;
 use crate::callback::guarded;
-use crate::date::{self, DateParts, YearMonth};
+use crate::date::{self, CalendarSelectionMode, DateParts, YearMonth};
 use crate::font;
 use crate::geometry::Size;
 use crate::notification::{self, NotificationName, NotificationObserver};
@@ -379,6 +382,9 @@ type MonthHandler = Rc<dyn Fn(YearMonth)>;
 
 /// The views and state every control of one calendar shares.
 struct Shared {
+    /// Whether a pick replaces the selection or toggles a day, and so
+    /// whether an arrow key picks or only moves focus.
+    mode: CalendarSelectionMode,
     root: Retained<CalendarRoot>,
     title: Retained<NSTextField>,
     navigation: [Retained<NSButton>; 3],
@@ -533,6 +539,15 @@ impl Shared {
 
     /// Picks `day`: shows its month, focuses its button and reports it.
     fn pick(&self, day: DateParts) {
+        self.move_to(day);
+        let handler = self.on_pick.borrow().clone();
+        if let Some(handler) = handler {
+            handler(day);
+        }
+    }
+
+    /// Moves keyboard focus to `day`, showing its month.
+    fn move_to(&self, day: DateParts) {
         self.navigate(YearMonth::of(day));
         let index = self
             .model
@@ -540,10 +555,6 @@ impl Shared {
             .index_of(day)
             .expect("the shown month's grid holds the day");
         self.focus(index);
-        let handler = self.on_pick.borrow().clone();
-        if let Some(handler) = handler {
-            handler(day);
-        }
     }
 
     fn focus(&self, index: usize) {
@@ -572,11 +583,21 @@ impl Shared {
                 model.in_range(day).then_some(day)
             };
             if let Some(day) = target {
-                self.pick(day);
+                match self.mode {
+                    CalendarSelectionMode::Single => self.pick(day),
+                    CalendarSelectionMode::Multiple => self.move_to(day),
+                }
             }
             return true;
         }
         match key {
+            // Space presses the focused day button; Return toggles it too,
+            // as the multi-date calendars of the other platforms do.
+            Key::Named(NamedKey::Enter) if self.mode == CalendarSelectionMode::Multiple => {
+                let day = self.model.borrow().grid[index].parts;
+                self.pick(day);
+                true
+            }
             Key::Named(NamedKey::PageUp) => {
                 self.activate(CalendarNavigation::Previous);
                 true
@@ -1055,12 +1076,14 @@ impl fmt::Debug for CalendarView {
 }
 
 impl CalendarView {
-    /// A calendar over `range` showing `month`, formatted for the locale
+    /// A calendar selecting in `mode` over `range` showing `month`,
+    /// formatted for the locale
     /// `locale` names, drawn in `colors`, with `labels` naming the
     /// navigation buttons.
     #[must_use]
     pub fn new(
         mtm: MainThreadMarker,
+        mode: CalendarSelectionMode,
         range: RangeInclusive<DateParts>,
         month: YearMonth,
         locale: &str,
@@ -1130,6 +1153,7 @@ impl CalendarView {
             numbers: Vec::new(),
         };
         let shared = Rc::new(Shared {
+            mode,
             root,
             title,
             navigation,
