@@ -196,6 +196,10 @@ pub struct Shared<T: Target> {
     removed_layers: FxHashSet<LayerId>,
     /// Content and reusable storage per layer.
     contents: FxHashMap<LayerId, ContentSlot>,
+    /// The layer hierarchy as the consumer's tree holds it, mirrored from
+    /// the drained ops: only the content of a layer that reaches the root
+    /// is sampled.
+    hierarchy: Hierarchy,
     /// Each layer's layout size, created when first set or recorded for.
     sizes: FxHashMap<LayerId, LayoutSize>,
     /// Pending clear colour.
@@ -249,6 +253,52 @@ struct ContentSlot {
     spare: ContentSpare,
 }
 
+/// Each layer's parent, mirrored from drained ops in the order
+/// the consumer's tree applies them, so the queue side knows which
+/// layers the tree draws.
+#[derive(Default)]
+struct Hierarchy {
+    parents: FxHashMap<LayerId, LayerId>,
+}
+
+impl Hierarchy {
+    /// Applies the attachment ops among `ops`. Returns whether one
+    /// attached a layer, whose content may need sampling again.
+    fn apply<T: Target>(&mut self, ops: &[Op<T>]) -> bool {
+        let mut attached = false;
+        for op in ops {
+            match op {
+                Op::Layer(
+                    LayerOp::Push { parent, child } | LayerOp::Insert { parent, child, .. },
+                ) => {
+                    self.parents.insert(*child, *parent);
+                    attached = true;
+                }
+                // A removed layer's children keep their entry, naming a
+                // parent that is gone: ids are never reused, so their
+                // chain stops short of the root until they are attached
+                // again or removed in turn.
+                Op::Layer(LayerOp::Detach { child, .. } | LayerOp::Remove(child)) => {
+                    self.parents.remove(child);
+                }
+                _ => {}
+            }
+        }
+        attached
+    }
+
+    /// Whether `layer`'s parent chain reaches the root.
+    fn reaches_root(&self, mut layer: LayerId) -> bool {
+        while layer.raw() != 0 {
+            match self.parents.get(&layer) {
+                Some(&parent) => layer = parent,
+                None => return false,
+            }
+        }
+        true
+    }
+}
+
 impl<T: Target> std::fmt::Debug for Shared<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Shared")
@@ -275,6 +325,7 @@ impl<T: Target> Shared<T> {
             next_edit_seq: 0,
             removed_layers: FxHashSet::default(),
             contents: FxHashMap::default(),
+            hierarchy: Hierarchy::default(),
             sizes: FxHashMap::default(),
             clear: None,
             spare_replaced: Vec::new(),
@@ -397,6 +448,11 @@ impl<T: Target> Shared<T> {
         let mut ops = std::mem::take(&mut self.spare_ops);
         let recycled = std::mem::take(&mut self.spare_recycled);
         ops.append(&mut self.pending);
+        // A layer attached again may hold content whose tracks were not
+        // sampled while it was detached: raise the flag for one probe.
+        if self.hierarchy.apply(&ops) {
+            self.animated.set(true);
+        }
         let mut animating = false;
         // `animated` is poked by a content's `LiveState` the moment an
         // animated operand arrives, so a surface that never saw one
@@ -409,9 +465,11 @@ impl<T: Target> Shared<T> {
             };
             // The sample queues the operands' per-frame values, so
             // `take_change` emits them like signal updates. The flag read
-            // keeps a static content at a probe, not a call.
+            // keeps a static content at a probe, not a call. A layer the
+            // tree does not draw is not sampled (see `Layer`).
             if let Some(time) = sampling
                 && content.needs_sample()
+                && self.hierarchy.reaches_root(*id)
                 && content.sample(time).is_animating()
             {
                 animating = true;
@@ -1100,6 +1158,17 @@ impl<T: Target> LayerOwner for RefCell<Shared<T>> {
 /// from its surface at the next commit. Its children stay in the tree,
 /// detached and undrawn, until their own handles drop or they are
 /// re-attached.
+///
+/// A layer is drawn only while its parent chain reaches the surface's
+/// root. A detached one — removed from its parent, or under a detached
+/// or dropped ancestor — has neither its content's animated operands nor
+/// its property tracks sampled, and keeps no frame loop awake, whether
+/// or not its handle lives. Its animations stay on the host's clock:
+/// re-attached, each shows the value its clock gives at that frame — the
+/// final one, when it ended meanwhile — as though it had run out of
+/// view. A track that never drew a frame starts at the first frame that
+/// draws it, and a retarget made while detached continues from the value
+/// the layer last drew.
 pub struct Layer {
     id: LayerId,
     owner: Rc<dyn LayerOwner>,
