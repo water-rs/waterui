@@ -466,7 +466,7 @@ pub mod anchored_overlay {
     ///     .gap(4.0)
     ///     .flip(true)
     ///     .clamp(Clamp::Window { margin: 2.0 });
-    /// assert_eq!(placement.edge, AnchorEdge::Top);
+    /// assert_eq!(placement.get_edge(), AnchorEdge::Top);
     /// ```
     ///
     /// The defaults describe a dropdown: below the anchor, centered, no gap,
@@ -476,11 +476,11 @@ pub mod anchored_overlay {
     /// use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, EdgeAlignment};
     ///
     /// let default = AnchorPlacement::default();
-    /// assert_eq!(default.edge, AnchorEdge::Bottom);
-    /// assert_eq!(default.alignment, EdgeAlignment::Center);
-    /// assert_eq!(default.gap, 0.0);
-    /// assert!(default.flip);
-    /// assert_eq!(default.clamp, Clamp::Window { margin: 0.0 });
+    /// assert_eq!(default.get_edge(), AnchorEdge::Bottom);
+    /// assert_eq!(default.get_alignment(), EdgeAlignment::Center);
+    /// assert_eq!(default.get_gap(), 0.0);
+    /// assert!(default.get_flip());
+    /// assert_eq!(default.get_clamp(), Clamp::Window { margin: 0.0 });
     /// ```
     #[derive(Debug, Clone, Copy, PartialEq)]
     #[non_exhaustive]
