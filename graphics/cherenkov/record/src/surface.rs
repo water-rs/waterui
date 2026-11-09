@@ -21,7 +21,7 @@ use nami_core::watcher::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::Instant;
-use crate::animation::Animation;
+use crate::animation::{Animation, KeyframeAnimation};
 use crate::ops::{
     AnimationStart, BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop,
     SurfaceId,
@@ -795,6 +795,11 @@ impl<T: Target> Shared<T> {
     {
         let weak = Rc::downgrade(shared);
         move |context: Context<V>| {
+            assert!(
+                context.metadata().try_get::<KeyframeAnimation>().is_none(),
+                "a layer property takes an `Animation`, not a keyframe track: keyframes run on \
+                 recorded operands"
+            );
             let animation = context.metadata().try_get::<Animation>();
             let start = context.metadata().try_get::<AnimationStart>();
             let target = context.into_value();

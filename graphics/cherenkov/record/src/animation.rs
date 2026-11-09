@@ -5,6 +5,9 @@
 //! offset — and recorded operands. Each animatable property decomposes
 //! into lanes: an [`Affine`] has six, a [`Vec2`] two and an `f32` one.
 
+use std::any::Any;
+use std::num::NonZeroU32;
+use std::rc::Rc;
 use std::time::Duration;
 
 use kurbo::{Affine, Point, Rect, Stroke, Vec2};
@@ -655,6 +658,294 @@ pub const fn rubber_band_spring() -> Spring {
     }
 }
 
+/// A keyframe track over one cycle: values at normalized times in `[0, 1]`,
+/// each reached from the one before along its own easing [`Curve`].
+///
+/// The first value sits at `0`; [`then`](Self::then) appends the rest in
+/// time order. Two values at the same time make a jump, and after the last
+/// value the track holds it until the cycle ends. Values interpolate
+/// lane-wise ([`AnimLanes`]), so every value must share the first one's
+/// lane layout. A recorded operand runs it as a [`KeyframeAnimation`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Keyframes<T> {
+    duration: Duration,
+    first: T,
+    segments: Vec<Segment<T>>,
+}
+
+/// One segment of a [`Keyframes`] track: the value it reaches, when, and
+/// the easing it takes from the previous value.
+#[derive(Clone, Debug, PartialEq)]
+struct Segment<T> {
+    at: f64,
+    easing: Curve,
+    value: T,
+}
+
+impl<T> Keyframes<T> {
+    /// A track whose cycle lasts `duration`, starting at `first`.
+    ///
+    /// # Panics
+    /// Panics on a zero `duration`.
+    #[must_use]
+    pub fn new(duration: Duration, first: T) -> Self {
+        assert!(
+            !duration.is_zero(),
+            "a keyframe cycle needs a non-zero duration"
+        );
+        Self {
+            duration,
+            first,
+            segments: Vec::new(),
+        }
+    }
+
+    /// Appends `value` at normalized time `at`, reached from the previous
+    /// value along `easing`'s control points. The segment's share of the
+    /// cycle sets its time, so `easing.duration` is not read.
+    ///
+    /// # Panics
+    /// Panics when `at` is outside `[0, 1]` or before the previous value's
+    /// time.
+    #[must_use]
+    pub fn then(mut self, at: f64, easing: Curve, value: T) -> Self {
+        let previous = self.segments.last().map_or(0.0, |segment| segment.at);
+        assert!(
+            (previous..=1.0).contains(&at),
+            "keyframe time {at} must lie in [{previous}, 1]: keyframes are appended in time order \
+             within one cycle"
+        );
+        self.segments.push(Segment { at, easing, value });
+        self
+    }
+
+    /// How long one cycle lasts.
+    #[must_use]
+    pub const fn duration(&self) -> Duration {
+        self.duration
+    }
+}
+
+impl<T: AnimLanes + Clone> Keyframes<T> {
+    /// The value `elapsed` after the track started repeating under
+    /// `repeat`: the evaluation the engine runs for a keyframed operand, so a
+    /// host can place the track's values on its own clock. `None` once a
+    /// finite repeat has run all its cycles.
+    ///
+    /// # Panics
+    /// Panics when a value does not share the first value's lane layout.
+    #[must_use]
+    pub fn sample(&self, elapsed: Duration, repeat: Repeat) -> Option<T> {
+        let lanes = KeyframeLanes::new(
+            self.first.clone(),
+            self.segments
+                .iter()
+                .map(|segment| (segment.at, segment.easing, segment.value.clone())),
+            self.duration,
+            repeat,
+        );
+        let mut pos = vec![0.0; lanes.width].into_boxed_slice();
+        let mut vel = vec![0.0; lanes.width].into_boxed_slice();
+        lanes
+            .eval(elapsed.as_secs_f64(), &mut pos, &mut vel)
+            .then(|| lanes.layout.with_lanes(&pos))
+    }
+}
+
+/// How many cycles a keyframe track runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repeat {
+    /// This many cycles, after which the operand holds the value its change
+    /// set.
+    Count(NonZeroU32),
+    /// Every cycle until the operand changes again or its content retires;
+    /// the frame loop stays awake while it runs.
+    Forever,
+}
+
+impl Repeat {
+    /// Runs the track exactly once.
+    pub const ONCE: Self = Self::Count(NonZeroU32::MIN);
+}
+
+/// A keyframe track a signal change runs its recorded operand along: the
+/// value nami `Context` metadata may carry in place of an [`Animation`].
+///
+/// [`Animation`] is a `Copy` description of how a value moves to the
+/// change's value; a keyframe track carries values of its own, so it is a
+/// separate metadata kind. The change's value is what the operand holds
+/// once a finite [`Repeat`] ends; while the track runs, the keyframes
+/// alone decide what is drawn. A later change replaces the track: a
+/// keyframed change starts a fresh one, an animated change moves from the
+/// track's sampled value and velocity, and a plain change snaps.
+///
+/// The track is typed by the value the operand's signal carries and reaches
+/// only an operand recorded from that signal: a change passed through
+/// [`Live::map`](crate::Live::map) carries the source type's track, which
+/// the mapped operand rejects with a panic. A layer property does not take
+/// a keyframe track either.
+#[derive(Clone)]
+pub struct KeyframeAnimation {
+    /// The `Typed<T>` the slot downcasts.
+    track: Rc<dyn Any>,
+    /// `T`'s name, for the mismatch panic.
+    value_type: &'static str,
+}
+
+impl std::fmt::Debug for KeyframeAnimation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyframeAnimation")
+            .field("value_type", &self.value_type)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A [`KeyframeAnimation`]'s typed payload. `clone` hands the slot owned
+/// values without bounding every recorded operand type by `Clone`.
+struct Typed<T> {
+    keyframes: Keyframes<T>,
+    repeat: Repeat,
+    clone: fn(&T) -> T,
+}
+
+impl KeyframeAnimation {
+    /// `keyframes` repeating under `repeat`.
+    #[must_use]
+    pub fn new<T: Clone + 'static>(keyframes: Keyframes<T>, repeat: Repeat) -> Self {
+        Self {
+            track: Rc::new(Typed {
+                keyframes,
+                repeat,
+                clone: T::clone,
+            }),
+            value_type: std::any::type_name::<T>(),
+        }
+    }
+
+    /// The track in operand lanes, each value converted the way the slot
+    /// converts its signal's values.
+    ///
+    /// # Panics
+    /// Panics when the track's values are not the slot's `T`, or when a
+    /// value does not share the first value's lane layout.
+    pub(crate) fn operands<T: 'static>(&self, convert: fn(T) -> Operand) -> KeyframeLanes<Operand> {
+        let Some(typed) = self.track.downcast_ref::<Typed<T>>() else {
+            panic!(
+                "a keyframe track of `{}` reached an operand recorded from `{}`: attach the \
+                 track to the operand's own signal",
+                self.value_type,
+                std::any::type_name::<T>()
+            );
+        };
+        let keyframes = &typed.keyframes;
+        KeyframeLanes::new(
+            convert((typed.clone)(&keyframes.first)),
+            keyframes.segments.iter().map(|segment| {
+                (
+                    segment.at,
+                    segment.easing,
+                    convert((typed.clone)(&segment.value)),
+                )
+            }),
+            keyframes.duration,
+            typed.repeat,
+        )
+    }
+}
+
+/// A keyframe track in lane space: what a keyframed operand track and
+/// [`Keyframes::sample`] both evaluate.
+#[derive(Debug)]
+pub(crate) struct KeyframeLanes<V> {
+    /// The first value: the layout sampled lanes rebuild into.
+    layout: V,
+    /// Each segment's end time and easing.
+    segments: Box<[(f64, Curve)]>,
+    /// Every value's lanes, the first value's first, `width` apiece.
+    lanes: Box<[f64]>,
+    width: usize,
+    /// One cycle, in seconds.
+    duration: f64,
+    repeat: Repeat,
+}
+
+impl<V: AnimLanes> KeyframeLanes<V> {
+    /// # Panics
+    /// Panics when a value does not share `first`'s lane layout.
+    fn new(
+        first: V,
+        segments: impl ExactSizeIterator<Item = (f64, Curve, V)>,
+        duration: Duration,
+        repeat: Repeat,
+    ) -> Self {
+        let mut lanes = first
+            .anim_lanes(&first)
+            .expect("a keyframe value needs a lane decomposition to interpolate")
+            .into_vec();
+        let width = lanes.len();
+        lanes.reserve(width * segments.len());
+        let segments = segments
+            .map(|(at, easing, value)| {
+                let value_lanes = value
+                    .anim_lanes(&first)
+                    .filter(|value_lanes| value_lanes.len() == width)
+                    .expect("every keyframe value must share the first value's lane layout");
+                lanes.extend_from_slice(&value_lanes);
+                (at, easing)
+            })
+            .collect();
+        Self {
+            layout: first,
+            segments,
+            lanes: lanes.into_boxed_slice(),
+            width,
+            duration: duration.as_secs_f64(),
+            repeat,
+        }
+    }
+
+    /// The lanes of value `index`.
+    fn value(&self, index: usize) -> &[f64] {
+        &self.lanes[index * self.width..(index + 1) * self.width]
+    }
+
+    /// Writes the position and velocity `dt` seconds into the track into
+    /// `pos` and `vel`. `false`, writing nothing, once a finite repeat has
+    /// run all its cycles.
+    fn eval(&self, dt: f64, pos: &mut [f64], vel: &mut [f64]) -> bool {
+        let cycles = dt.max(0.0) / self.duration;
+        if let Repeat::Count(count) = self.repeat
+            && cycles >= f64::from(count.get())
+        {
+            return false;
+        }
+        let phase = cycles.fract();
+        let mut previous = 0.0;
+        for (index, &(at, easing)) in self.segments.iter().enumerate() {
+            // A zero-length segment is never entered: its value replaces
+            // the previous one at once.
+            if phase < at {
+                let span = at - previous;
+                let local = (phase - previous) / span;
+                let eased = curve_value(&easing, local);
+                let slope = curve_slope(&easing, local) / (span * self.duration);
+                let (start, end) = (self.value(index), self.value(index + 1));
+                for lane in 0..self.width {
+                    let delta = end[lane] - start[lane];
+                    pos[lane] = delta.mul_add(eased, start[lane]);
+                    vel[lane] = delta * slope;
+                }
+                return true;
+            }
+            previous = at;
+        }
+        // Past the last keyframe the track holds its value.
+        pos.copy_from_slice(self.value(self.segments.len()));
+        vel.fill(0.0);
+        true
+    }
+}
+
 /// Lane decomposition for an [`Operand`] recorded into content.
 ///
 /// An animated operand interpolates lane-wise, like a layer property:
@@ -735,10 +1026,11 @@ pub struct OperandTrack {
     velocity: Box<[f64]>,
     /// `target`'s lanes.
     target_lanes: Box<[f64]>,
-    /// The operand the track moves toward; its layout rebuilds each sample.
+    /// The operand the track moves toward; its layout rebuilds each sample
+    /// of an animation. A keyframe track holds it once it ends.
     target: Operand,
-    /// The animation driving the track.
-    animation: Animation,
+    /// What drives the track.
+    motion: Motion,
     /// The time the track started; `None` until the first sample, so a
     /// track committed between frames starts at its presentation time.
     start: Option<Instant>,
@@ -746,11 +1038,21 @@ pub struct OperandTrack {
     last: Option<Sampled>,
 }
 
+/// What a signal change asks a recorded operand to run: an animation
+/// toward the change's value, or a keyframe track.
+#[derive(Debug)]
+pub(crate) enum Motion {
+    /// A spring or a curve toward the change's value.
+    Animation(Animation),
+    /// A keyframe track in the operand's lanes.
+    Keyframes(Box<KeyframeLanes<Operand>>),
+}
+
 impl std::fmt::Debug for OperandTrack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OperandTrack")
             .field("target", &self.target)
-            .field("animation", &self.animation)
+            .field("motion", &self.motion)
             .field("start", &self.start)
             .finish_non_exhaustive()
     }
@@ -780,15 +1082,38 @@ impl OperandTrack {
             from,
             target_lanes,
             target,
-            animation,
+            motion: Motion::Animation(animation),
+            start: None,
+            last: None,
+        }
+    }
+
+    /// A track running `keyframes`, holding `target` once they end.
+    ///
+    /// # Panics
+    /// Panics when `target` has no lane decomposition: a glyph run never
+    /// animates.
+    pub(crate) fn keyframes(target: Operand, keyframes: Box<KeyframeLanes<Operand>>) -> Self {
+        let target_lanes = target
+            .anim_lanes(&target)
+            .expect("a keyframed operand has lanes, like its keyframes");
+        let from: Box<[f64]> = keyframes.value(0).into();
+        Self {
+            velocity: vec![0.0; from.len()].into_boxed_slice(),
+            from,
+            target_lanes,
+            target,
+            motion: Motion::Keyframes(keyframes),
             start: None,
             last: None,
         }
     }
 
     /// Retargets the track to `target` under `animation`, keeping the last
-    /// sampled position and velocity like a layer track does. `false` when
-    /// the new target's lane layout differs from the running track's.
+    /// sampled position and velocity like a layer track does; a keyframe
+    /// track hands over its sampled value and velocity the same way.
+    /// `false` when the new target's lane layout differs from the running
+    /// track's.
     ///
     /// # Panics
     /// Panics on a `Decay` animation, like [`OperandTrack::new`].
@@ -811,7 +1136,7 @@ impl OperandTrack {
         self.velocity = velocity;
         self.target_lanes = target_lanes;
         self.target = target;
-        self.animation = animation;
+        self.motion = Motion::Animation(animation);
         self.start = None;
         self.last = None;
         true
@@ -826,7 +1151,20 @@ impl OperandTrack {
         let mut pos = vec![0.0; n].into_boxed_slice();
         let mut vel = vec![0.0; n].into_boxed_slice();
         let mut running = true;
-        match &self.animation {
+        let animation = match &self.motion {
+            Motion::Animation(animation) => animation,
+            Motion::Keyframes(keyframes) => {
+                if keyframes.eval(dt, &mut pos, &mut vel) {
+                    let operand = keyframes.layout.with_lanes(&pos);
+                    self.last = Some((time, pos, vel));
+                    return (operand, true);
+                }
+                // The last cycle ended: the operand holds its change's value.
+                self.last = Some((time, self.target_lanes.clone(), vel));
+                return (self.target.clone(), false);
+            }
+        };
+        match animation {
             Animation::Spring(spring) => {
                 let w0 = 2.0 * std::f64::consts::PI / spring.response;
                 let mut settled = true;
@@ -979,6 +1317,93 @@ mod tests {
             "position {} vs expected {expected}",
             pos_next[0]
         );
+    }
+
+    /// A rect whose first lane is `x`: one keyframe value.
+    fn at_x(x: f64) -> Rect {
+        Rect::new(x, 0.0, x + 1.0, 1.0)
+    }
+
+    /// One second per cycle: a linear rise to 10 by 0.25, an eased fall
+    /// to 4 by 0.5, a jump to 20 at 0.5, then a hold.
+    fn cycle() -> Keyframes<Rect> {
+        let unit = Duration::from_secs(1);
+        Keyframes::new(unit, at_x(0.0))
+            .then(0.25, Curve::linear(unit), at_x(10.0))
+            .then(0.5, Curve::ease_in(unit), at_x(4.0))
+            .then(0.5, Curve::linear(unit), at_x(20.0))
+    }
+
+    fn x_at(keyframes: &Keyframes<Rect>, seconds: f64, repeat: Repeat) -> Option<f64> {
+        keyframes
+            .sample(Duration::from_secs_f64(seconds), repeat)
+            .map(|rect| rect.x0)
+    }
+
+    #[test]
+    fn keyframes_sample_each_segment_with_its_easing() {
+        let keyframes = cycle();
+        let x = |seconds| x_at(&keyframes, seconds, Repeat::Forever).expect("forever runs");
+        assert!(x(0.0).abs() < 1e-9);
+        assert!(
+            (x(0.125) - 5.0).abs() < 1e-6,
+            "linear midpoint {}",
+            x(0.125)
+        );
+        assert!((x(0.25) - 10.0).abs() < 1e-9, "the first segment's end");
+        let eased = curve_value(&Curve::ease_in(Duration::from_secs(1)), 0.5);
+        let expected = (4.0 - 10.0f64).mul_add(eased, 10.0);
+        assert!(
+            (x(0.375) - expected).abs() < 1e-9,
+            "the second segment eases: {} vs {expected}",
+            x(0.375)
+        );
+        // The zero-length segment jumps, and the last value holds.
+        assert!((x(0.5) - 20.0).abs() < 1e-9, "jump {}", x(0.5));
+        assert!((x(0.99) - 20.0).abs() < 1e-9, "hold {}", x(0.99));
+        // The track's lanes rebuild the whole value.
+        let rect = keyframes
+            .sample(Duration::from_millis(125), Repeat::Forever)
+            .expect("forever runs");
+        assert!((rect.x1 - 6.0).abs() < 1e-6 && (rect.y1 - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn keyframes_repeat_their_cycle_and_end_after_a_count() {
+        let keyframes = cycle();
+        let twice = Repeat::Count(NonZeroU32::new(2).expect("two"));
+        for phase in [0.0, 0.125, 0.375, 0.75] {
+            let first = x_at(&keyframes, phase, twice).expect("the first cycle runs");
+            let second = x_at(&keyframes, 1.0 + phase, twice).expect("the second cycle runs");
+            assert!(
+                (first - second).abs() < 1e-6,
+                "{phase}: {first} vs {second}"
+            );
+            let late = x_at(&keyframes, 1000.0 + phase, Repeat::Forever).expect("forever runs");
+            assert!((first - late).abs() < 1e-6, "{phase}: {first} vs {late}");
+        }
+        assert_eq!(x_at(&keyframes, 2.0, twice), None, "two cycles end at 2 s");
+        assert_eq!(x_at(&keyframes, 1.0, Repeat::ONCE), None);
+        assert!(x_at(&keyframes, 0.999, Repeat::ONCE).is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "keyframes are appended in time order")]
+    fn keyframes_out_of_order_panic() {
+        let unit = Duration::from_secs(1);
+        let _ = Keyframes::new(unit, at_x(0.0))
+            .then(0.5, Curve::linear(unit), at_x(1.0))
+            .then(0.25, Curve::linear(unit), at_x(2.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "share the first value's lane layout")]
+    fn keyframes_without_shared_lanes_panic() {
+        let unit = Duration::from_secs(1);
+        let dashed = Stroke::new(1.0).with_dashes(0.0, [2.0, 2.0]);
+        let keyframes =
+            Keyframes::new(unit, Stroke::new(1.0)).then(1.0, Curve::linear(unit), dashed);
+        let _ = keyframes.sample(Duration::ZERO, Repeat::ONCE);
     }
 
     #[test]

@@ -31,7 +31,7 @@ use super::protocol::{MESH_BAND_PATCHES, NONE, Op, effect_kind};
 
 use super::resources::{Kind, SharedRegistry};
 use super::{HwuiError, HwuiSurface, HwuiTarget};
-use cherenkov_record::{Shared, SurfaceId};
+use cherenkov_record::{Fixed, Live, Shared, SurfaceId};
 use std::cell::Cell;
 use waterui_graphics::draw::TextLayoutId;
 
@@ -1338,6 +1338,86 @@ fn content_animation_demand_belongs_to_the_submitted_frame() {
         !second.content_animating(),
         "an empty drain reports no animation"
     );
+}
+
+/// The `Fill` lines of a frame's event log: what a layer's list painted.
+fn fills(log: &[String]) -> Vec<&String> {
+    log.iter()
+        .filter(|line| line.starts_with("Fill "))
+        .collect()
+}
+
+/// A keyframed operand runs on HWUI as on Cherenkov: each frame re-records
+/// the layer's list with the record-side sample, the commit reports content
+/// animation, and the source records once.
+#[test]
+fn a_keyframed_operand_records_the_sampled_frames() {
+    use nami::SignalExt as _;
+    use waterui_graphics::draw::{KeyframeAnimation, Keyframes, Repeat};
+
+    let solid = |r, g, b| Paint::Solid(color(r, g, b, 1.0));
+    let cycle = Duration::from_millis(400);
+    let keyframes = Keyframes::new(cycle, solid(1.0, 0.0, 0.0))
+        .then(0.5, Curve::linear(cycle), solid(0.0, 1.0, 0.0))
+        .then(1.0, Curve::ease_in_out(cycle), solid(0.0, 0.0, 1.0));
+    // A fresh surface holding one 20×20 fill of `paint`.
+    let surface_with = |id: u64, paint: Live<Paint>, recordings: &Cell<u32>| {
+        let surface = HwuiSurface::new(SurfaceId::new(id), || {}).expect("api 34 encodes");
+        let shared = surface.shared().clone();
+        let root = Shared::root(&shared);
+        let layer = Shared::layer(&shared);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&root].push(&layer);
+            tx[&layer]
+                .layout_size(kurbo::Size::new(20.0, 20.0))
+                .record(|c| {
+                    recordings.set(recordings.get() + 1);
+                    c.fill(Rect::new(0.0, 0.0, 20.0, 20.0), paint);
+                });
+        });
+        (surface, layer)
+    };
+
+    let paint = nami::binding(solid(0.0, 0.0, 0.0));
+    let recordings = Cell::new(0);
+    let (mut animated, _layer) = surface_with(
+        12,
+        paint
+            .with(KeyframeAnimation::new(keyframes.clone(), Repeat::Forever))
+            .into(),
+        &recordings,
+    );
+    let t0 = Instant::now();
+    let _ = animated.frame(t0, 1.0).expect("the first frame encodes");
+    paint.set(solid(1.0, 1.0, 1.0));
+    let start = t0 + Duration::from_millis(8);
+    let _ = animated
+        .frame(start, 1.0)
+        .expect("the track's first frame encodes");
+    let _ = animated.take_log();
+    for frame in [7u32, 20, 31, 55, 101] {
+        let t = start + Duration::from_secs(frame.into()) / 120;
+        let encoded = animated.frame(t, 1.0).expect("a keyframe frame encodes");
+        assert!(
+            encoded.content_animating(),
+            "frame {frame}: a forever track keeps the frame loop awake"
+        );
+        let log = animated.take_log();
+        let expected = keyframes
+            .sample(t - start, Repeat::Forever)
+            .expect("a forever track runs");
+        let (mut reference, _reference_layer) =
+            surface_with(13, Fixed(expected).into(), &Cell::new(0));
+        let _ = reference.frame(t, 1.0).expect("the reference encodes");
+        let reference_log = reference.take_log();
+        assert!(!fills(&log).is_empty(), "frame {frame}: {log:?}");
+        assert_eq!(
+            fills(&log),
+            fills(&reference_log),
+            "frame {frame}: HWUI drew the record-side sample"
+        );
+    }
+    assert_eq!(recordings.get(), 1, "running keyframes record nothing");
 }
 
 /// The native-view hit query answers the topmost platform view drawn at the

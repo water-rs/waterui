@@ -55,8 +55,8 @@ pub use parley;
 pub use web_time::Instant;
 
 pub use crate::animation::{
-    Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
-    settled, spring_step,
+    Animatable, Animation, AnimationTrack, Curve, Decay, KeyframeAnimation, Keyframes, Lanes,
+    Repeat, Spring, curve_value, decay_step, settled, spring_step,
 };
 
 pub use crate::backend::{
