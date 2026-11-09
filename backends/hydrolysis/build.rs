@@ -18,6 +18,11 @@ fn main() {
         );
     }
 
+    // `trybuild` builds every crate of its scratch project with
+    // `--cfg trybuild -A dead_code`, so a `dead_code` expectation cannot be
+    // fulfilled there.
+    println!("cargo:rustc-check-cfg=cfg(trybuild)");
+
     cfg_aliases! {
         // Where hosted content exists: the targets on which `cherenkov-gpu`
         // implements `HostedLayers`, whose plane shows a platform object.
