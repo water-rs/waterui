@@ -989,8 +989,9 @@ use $crate::Instant;
             use ::nami::SignalExt as _;
             use $crate::kurbo::{Affine, Rect, Vec2};
             use $crate::{
-                Animation, Curve, Decay, Draw as _, Engine, FrameTime, ImageData, Layer, Next,
-                Offscreen, OffscreenFormat, Readback, Rgba8, Spring, Surface, WorkingColor,
+                Animation, Curve, Decay, Draw as _, Engine, FrameTime, ImageData, KeyframeAnimation,
+                Keyframes, Layer, Next, Offscreen, OffscreenFormat, Paint, Readback, Repeat, Rgba8,
+                Spring, Surface, WorkingColor,
             };
 
             /// The backend under test.
@@ -1428,6 +1429,180 @@ fn a_recorded_operand_animates_between_paints() {
                 let rb = $crate::__engine_wait!(surface.readback()).expect("readback");
                 let end = rb.pixels[(16 * rb.width + 16) as usize];
                 assert!(end[2] > 0.95 && end[0] < 0.05, "settled at {end:?}");
+            }
+            }
+
+            $crate::__engine_test! {
+fn a_keyframed_operand_renders_the_sampled_frames() {
+                let Some(engine) = $crate::__engine_wait!(engine()) else { return };
+                let surface = $crate::__engine_wait!(surface(&engine));
+                let solid = |r, g, b| Paint::Solid(WorkingColor::new([r, g, b, 1.0]));
+                let cycle = Duration::from_millis(400);
+                let keyframes = Keyframes::new(cycle, solid(1.0, 0.0, 0.0))
+                    .then(0.5, Curve::linear(cycle), solid(0.0, 1.0, 0.0))
+                    .then(1.0, Curve::ease_in_out(cycle), solid(0.0, 0.0, 1.0));
+                let paint = ::nami::binding(solid(0.0, 0.0, 0.0));
+                let animated = surface.layer();
+                let content = surface.record(|c| {
+                    c.fill(
+                        Rect::new(8.0, 8.0, 24.0, 56.0),
+                        paint.clone().with(KeyframeAnimation::new(
+                            keyframes.clone(),
+                            Repeat::Forever,
+                        )),
+                    );
+                });
+                let reference = surface.layer();
+                surface.update(|tx| {
+                    tx[surface.root()].push(&animated).push(&reference);
+                    tx[&animated].content(content);
+                });
+                let t0 = Instant::now();
+                $crate::__engine_wait!(render_at(&engine, t0));
+
+                // The track starts at the frame that first samples it.
+                paint.set(solid(1.0, 1.0, 1.0));
+                let start = t0 + TICK;
+                $crate::__engine_wait!(render_at(&engine, start));
+                // Frames across both segments of three cycles, each compared
+                // against a fixed recording of the record-side sample.
+                for frame in [7u32, 20, 31, 55, 101, 140] {
+                    let t = start + TICK * frame;
+                    let expected = keyframes
+                        .sample(t - start, Repeat::Forever)
+                        .expect("a forever track runs");
+                    let fixed = surface.record(|c| {
+                        c.fill(Rect::new(64.0, 8.0, 80.0, 56.0), expected.clone());
+                    });
+                    surface.update(|tx| {
+                        tx[&reference].content(fixed);
+                    });
+                    let next = $crate::__engine_wait!(render_at(&engine, t));
+                    assert!(
+                        matches!(next, Next::At { .. }),
+                        "a forever track keeps the frame loop awake: {next:?}"
+                    );
+                    let rb = $crate::__engine_wait!(surface.readback()).expect("readback");
+                    let got = rb.pixels[(16 * rb.width + 16) as usize];
+                    let want = rb.pixels[(16 * rb.width + 72) as usize];
+                    assert!(
+                        got.iter().zip(want).all(|(got, want)| (got - want).abs() < 0.01),
+                        "frame {frame}: the engine drew {got:?}, the sampler {want:?}"
+                    );
+                }
+
+                // Removing the keyframed layer retires its content: the
+                // window idles.
+                surface.update(|tx| {
+                    tx[surface.root()].remove(&animated);
+                });
+                drop(animated);
+                let mut t = start + TICK * 141;
+                let mut idle = false;
+                for _ in 0..4 {
+                    if $crate::__engine_wait!(render_at(&engine, t)) == Next::Idle {
+                        idle = true;
+                        break;
+                    }
+                    t += TICK;
+                }
+                assert!(idle, "a removed track leaves nothing to sample");
+            }
+            }
+
+            $crate::__engine_test! {
+fn keyframed_layer_properties_render_the_sampled_frames() {
+                let Some(engine) = $crate::__engine_wait!(engine()) else { return };
+                let surface = $crate::__engine_wait!(surface(&engine));
+                let cycle = Duration::from_millis(600);
+                let spin = Keyframes::new(cycle, 0.0_f64)
+                    .then(0.5, Curve::ease_in(cycle), std::f64::consts::PI)
+                    .then(1.0, Spring::bouncy(), std::f64::consts::TAU);
+                let fade = Keyframes::new(cycle, 1.0_f32)
+                    .then(0.5, Curve::linear(cycle), 0.25)
+                    .then(1.0, Curve::ease_out(cycle), 1.0);
+                let rotation = ::nami::binding(0.0_f64);
+                let opacity = ::nami::binding(1.0_f32);
+                // A square centred on the layer origin, so the rotation turns
+                // it about its centre.
+                let square = |surface: &Surface<B>| {
+                    surface.record(|c| c.fill(Rect::new(-12.0, -12.0, 12.0, 12.0), WHITE))
+                };
+                let animated = surface.layer();
+                let reference = surface.layer();
+                surface.update(|tx| {
+                    tx[surface.root()].push(&animated).push(&reference);
+                    tx[&animated]
+                        .content(square(&surface))
+                        .transform(Affine::translate((32.0, 32.0)))
+                        .rotation(rotation.clone().with(KeyframeAnimation::new(
+                            spin.clone(),
+                            Repeat::Forever,
+                        )))
+                        .opacity(opacity.clone().with(KeyframeAnimation::new(
+                            fade.clone(),
+                            Repeat::Forever,
+                        )));
+                    tx[&reference]
+                        .content(square(&surface))
+                        .transform(Affine::translate((160.0, 32.0)));
+                });
+                let t0 = Instant::now();
+                $crate::__engine_wait!(render_at(&engine, t0));
+
+                // The tracks start at the frame that first samples them.
+                rotation.set(0.0);
+                opacity.set(1.0);
+                let start = t0 + TICK;
+                $crate::__engine_wait!(render_at(&engine, start));
+                for frame in [9u32, 30, 47, 66, 101, 150] {
+                    let t = start + TICK * frame;
+                    let angle = spin.sample(t - start, Repeat::Forever).expect("forever");
+                    let alpha = fade.sample(t - start, Repeat::Forever).expect("forever");
+                    surface.update(|tx| {
+                        tx[&reference].rotation(angle).opacity(alpha);
+                    });
+                    let next = $crate::__engine_wait!(render_at(&engine, t));
+                    assert!(
+                        matches!(next, Next::At { .. }),
+                        "forever tracks keep the frame loop awake: {next:?}"
+                    );
+                    let rb = $crate::__engine_wait!(surface.readback()).expect("readback");
+                    let mut worst = 0.0_f32;
+                    for y in 0..64 {
+                        for x in 0..64 {
+                            let got = rb.pixels[(y * rb.width + x) as usize];
+                            let want = rb.pixels[(y * rb.width + x + 128) as usize];
+                            for (got, want) in got.iter().zip(want) {
+                                worst = worst.max((got - want).abs());
+                            }
+                        }
+                    }
+                    assert!(
+                        worst < 0.02,
+                        "frame {frame}: the keyframed layer differs from the sampled one by {worst}"
+                    );
+                    assert!(
+                        (alpha_at(&rb, 32, 32) - f64::from(alpha)).abs() < 0.02,
+                        "frame {frame}: opacity {alpha}"
+                    );
+                }
+
+                // Retiring the keyframed layer lets the window idle.
+                surface.update(|tx| {
+                    tx[surface.root()].remove(&animated);
+                });
+                drop(animated);
+                let mut t = start + TICK * 151;
+                let mut idle = false;
+                for _ in 0..4 {
+                    if $crate::__engine_wait!(render_at(&engine, t)) == Next::Idle {
+                        idle = true;
+                        break;
+                    }
+                    t += TICK;
+                }
+                assert!(idle, "a removed track leaves nothing to sample");
             }
             }
 

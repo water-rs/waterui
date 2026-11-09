@@ -15,6 +15,7 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
 mod animation_slots;
+mod change_animation;
 mod chrome_primitives;
 mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -4399,7 +4400,7 @@ fn diagnostic_gpu() -> (
     cherenkov_gpu::composition::Sink,
     Rc<crate::engine::SharedEngineState>,
 ) {
-    let gpu = crate::platform::OffscreenGpuContext::new_for_tests_blocking();
+    let gpu = crate::platform::OffscreenGpuContext::new_blocking();
     let probe = crate::platform::OffscreenSurface::on_context(
         gpu.clone(),
         1,

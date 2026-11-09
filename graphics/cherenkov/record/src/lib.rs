@@ -58,8 +58,8 @@ pub use kurbo;
 pub use web_time::Instant;
 
 pub use crate::animation::{
-    Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
-    settled, spring_step,
+    Animatable, Animation, AnimationTrack, Curve, Decay, Easing, KeyframeAnimation, Keyframes,
+    Lanes, Repeat, Spring, curve_value, decay_step, settled, spring_step,
 };
 pub use crate::backdrop::{
     BackdropEffect, BackdropOuter, BackdropOuterError, BackdropSample, BackdropShaderEffect,
@@ -88,8 +88,8 @@ pub use crate::material::{
     OuterExtentError, UnionSmoothing, UnionSmoothingError,
 };
 pub use crate::ops::{
-    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop,
-    SurfaceId,
+    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId,
+    LayerKeyframes, LayerOp, Op, Prop, SurfaceId,
 };
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,

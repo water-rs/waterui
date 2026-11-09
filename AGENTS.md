@@ -12,7 +12,7 @@ Guidance for coding agents (Claude Code, Codex, and friends) working in this rep
 2. Land the fix on a topic branch, published with `git push -u origin <branch>`.
 3. Open the pull request with `gh pr create --base dev`, linked with `Fixes #N`. One PR solves one issue.
 
-A `dev` → `main` merge publishes everything `dev` has accumulated, breaking changes included, and each merge to `main` triggers a crates.io release. It happens only at a deliberate version boundary and only on explicit user instruction — until 1.0 that boundary is the product's major-release step: a new `0.x` minor every three months, patch releases unbounded. Never use it to transport a fix for the current release line (release plumbing, backend pins, scaffold versions): branch that fix off `main`, open the pull request to `main`, then back-merge `main` into `dev`. `.github/workflows/version-boundary.yml` blocks a pull request to `main` that contains breaking changes (conventional-commit `!` markers or `BREAKING CHANGE` footers) unless it carries the `release` label, which records that a human intended the merge as the version boundary.
+A `dev` → `main` merge publishes everything `dev` has accumulated, breaking changes included, and each merge to `main` triggers a crates.io release. It happens only at a deliberate version boundary and only on explicit user instruction — until 1.0 that boundary is the product's major-release step: a new `0.x` minor every three months, patch releases unbounded. `.github/workflows/version-boundary.yml` blocks a pull request to `main` that contains breaking changes (conventional-commit `!` markers or `BREAKING CHANGE` footers) unless it carries the `release` label, which records that a human intended the merge as the version boundary.
 
 Introduce no warnings or errors, clippy warnings included; fix any you encounter before committing.
 </important>
@@ -178,6 +178,7 @@ Four layers, each measuring what the others cannot:
 | App end-to-end | the same app built on WaterUI's backends (Hydrolysis, Apple) against Flutter, SwiftUI, Compose and the other contestants water-rs/waterui#1262 defines, on devices | the Android leg is `backends/hydrolysis/bench/android` |
 | `water bench` | a WaterUI view's per-frame cost, driven offscreen through Hydrolysis by `waterui-testing`, against frame-time and counter budgets (rebuild ratio, layer counts) | `#[waterui::bench]` functions, run by `water bench` |
 
+- Engine-layer device results and their history are recorded in [water-rs/cherenkov-benchmarks](https://github.com/water-rs/cherenkov-benchmarks); a claim about an engine's performance is read from it.
 - Wall-clock time and energy come only from quiet real devices; the device practice is in [`backends/hydrolysis/AGENTS.md`](backends/hydrolysis/AGENTS.md) and [`graphics/cherenkov/AGENTS.md`](graphics/cherenkov/AGENTS.md). Timing on shared CI runners never gates a merge: runner noise exceeds the effects measured. Only deterministic counts may gate — Callgrind instruction counts (`cherenkov-ir.yml`) and `water bench` counter budgets.
 - Build-time measurements cover only what users pay for: the cold build time, and the incremental compile and `water preview` time of a real app that depends on WaterUI — never the incremental build of WaterUI's own crates.
 
@@ -216,7 +217,7 @@ The workspace members in the root `Cargo.toml` are the authoritative crate list.
 
 ## Commands
 
-Never clone or build source to obtain a binary the CI already produces: download the CI's debug artifact for that revision (the nightly uploads the `water` CLI as `water-cli-debug-<os>-<arch>`). Build it locally only when the revision has no artifact or the change under test is to that binary's own source.
+Never clone or build source to obtain a binary the CI already produces: download the CI's artifact for that revision (the nightly uploads the release `water` CLI as `water-cli-<os>-<arch>`). Build it locally only when the revision has no artifact or the change under test is to that binary's own source.
 
 ```bash
 cargo install --path cli --locked        # this checkout's `water` CLI

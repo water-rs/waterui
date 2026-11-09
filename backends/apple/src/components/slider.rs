@@ -17,7 +17,7 @@ use core::cell::RefCell;
 
 use cocoa_ui::slider::ValueAnimation;
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
 use waterui::component::slider::SliderConfig;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
@@ -264,12 +264,13 @@ impl SubView for SliderSubView {
     }
 }
 
-/// The `ValueAnimation` the watcher's metadata calls for: `None` applies the
-/// change directly. `Spring` has no `AppKit` equivalent — `WuiSlider` runs it
-/// as a timed animation of an estimated duration, matching
+/// The `ValueAnimation` the watcher's metadata calls for: `None`, for a
+/// change that names no animation or disables it, applies the change
+/// directly. `Spring` has no `AppKit` equivalent — `WuiSlider` runs it as a
+/// timed animation of an estimated duration, matching
 /// `withPlatformAnimation`.
 fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata).animation() {
         None => None,
         Some(Animation::Default) => Some(ValueAnimation::Duration(0.25)),
         Some(Animation::Bezier {
@@ -426,6 +427,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 mod tests {
     use core::time::Duration;
 
+    use waterui::animation::NoAnimation;
+
     use super::*;
 
     #[test]
@@ -475,6 +478,10 @@ mod tests {
         assert_eq!(
             value_animation(&Metadata::new().with(Animation::Default)),
             Some(ValueAnimation::Duration(0.25))
+        );
+        assert_eq!(
+            value_animation(&Metadata::new().with(Animation::Default).with(NoAnimation)),
+            None
         );
         assert_eq!(
             value_animation(&Metadata::new().with(Animation::Bezier {

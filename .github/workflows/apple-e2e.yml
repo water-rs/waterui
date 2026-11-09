@@ -12,9 +12,11 @@ name: Apple E2E Suite
 # Dispatching with `record_baselines` captures fresh baselines and parity
 # budgets and opens a PR containing them.
 #
-# Shape (#156, #218): `prepare` builds the water CLI once and hands it to
-# every job as an artifact — seventeen macOS jobs each running
-# `cargo install` cost ~110 macOS-minutes a night for one binary.
+# Shape (#156, #218): the water CLI is built once and handed to every job
+# as an artifact — seventeen macOS jobs each running `cargo install` cost
+# ~110 macOS-minutes a night for one binary. The Nightly builds it in its
+# own `cli-build` job and passes the artifact name as `cli_artifact`;
+# without one (the Sunday schedule, a dispatch) `prepare` builds it.
 # `build-ios`/`build-macos` then package the examples, fanned out over
 # PACKAGE_GROUP_TOTAL weight-balanced matrix legs per platform (#252 — the
 # serial packaging leg was ~90 of the run's ~102 minutes); each leg
@@ -47,6 +49,13 @@ on:
     - cron: "23 5 * * 0"
   workflow_call:
     inputs:
+      # The release CLI the caller already built; empty makes `prepare`
+      # build and upload its own `water-cli`.
+      cli_artifact:
+        description: Artifact holding the built water CLI
+        required: false
+        type: string
+        default: ""
       # A called run inherits its caller's event name, so the Nightly's
       # scheduled call reports `schedule` like this workflow's own Sunday
       # trigger. This input tells them apart: a call runs the full suite,
@@ -161,6 +170,7 @@ jobs:
           cache: "false"
 
       - name: Build the water CLI
+        if: inputs.cli_artifact == ''
         env:
           # The CLI's own target directory lives with its checkout in the
           # job-owned temp area, outside the framework workspace; it shares
@@ -180,6 +190,7 @@ jobs:
             --root "${{ github.workspace }}/cli-bin"
 
       - name: Upload the water CLI
+        if: inputs.cli_artifact == ''
         uses: actions/upload-artifact@v4
         with:
           name: water-cli
@@ -251,7 +262,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -291,7 +302,6 @@ jobs:
         with:
           name: packaged-ios-${{ matrix.group.i }}
           path: packaged-ios-${{ matrix.group.i }}.tar
-          retention-days: 1
           if-no-files-found: error
 
       # Separate from the bundle tar so startup-report can merge the numbers
@@ -352,7 +362,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -392,7 +402,6 @@ jobs:
         with:
           name: packaged-macos-${{ matrix.group.i }}
           path: packaged-macos-${{ matrix.group.i }}.tar
-          retention-days: 1
           if-no-files-found: error
 
       # Separate from the bundle tar so startup-report can merge the numbers
@@ -436,7 +445,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -551,7 +560,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -725,7 +734,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -974,7 +983,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -1009,8 +1018,26 @@ jobs:
           METRICS_DIR: ${{ github.workspace }}/release-metrics-${{ matrix.platform }}
           RECORD: ${{ inputs.record_baselines == true && '1' || '0' }}
           PLATFORMS: ${{ matrix.platform }}
+          PACKAGES_DIR: ${{ github.workspace }}/release-packages
           WATER_CARGO_TIMINGS: "1"
         run: ./.github/scripts/check-package-size.sh
+
+      # As a tar, like the packaged examples: symlinks, permissions and the
+      # code signature must survive the artifact round trip.
+      - name: Archive release packages
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d release-packages ]; then
+            COPYFILE_DISABLE=1 tar -C release-packages -cf "release-packages-${{ matrix.platform }}.tar" .
+          fi
+
+      - name: Upload release packages
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-packages-${{ matrix.platform }}
+          path: release-packages-${{ matrix.platform }}.tar
+          if-no-files-found: ignore
 
       - name: Summarize release metrics
         if: always()

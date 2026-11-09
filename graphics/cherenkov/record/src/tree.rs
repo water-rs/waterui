@@ -13,12 +13,13 @@ use rustc_hash::FxHashMap;
 use kurbo::{Affine, Vec2};
 
 use crate::animation::{
-    Animatable, Animation, AnimationTrack, Lanes, clamp_to_rect, eval_lanes, rubber_band_spring,
+    AnimLanes, Animatable, Animation, AnimationTrack, Lanes, Motion, clamp_to_rect, eval_lanes,
+    rubber_band_spring,
 };
 use crate::backdrop::BackdropSample;
 use crate::display_list::{Operand, SlotUpdate, blends_within, translucent_within};
 use crate::frame::RefreshRange;
-use crate::ops::{ContentOp, Install, LayerId, LayerOp, Op, Prop};
+use crate::ops::{ContentOp, Install, KeyframeProp, LayerId, LayerKeyframes, LayerOp, Op, Prop};
 use crate::projective::{Projective, ProjectiveError};
 use crate::shape::ShapeData;
 use crate::style::{BlendMode, FilterId};
@@ -374,10 +375,11 @@ struct Track<T: Animatable> {
     from: T::Lanes,
     /// The velocity the track started with.
     velocity: T::Lanes,
-    /// The value the track moves toward.
+    /// The value the track moves toward; a keyframe track holds it once it
+    /// ends.
     target: T,
-    /// The animation driving the track.
-    animation: Animation,
+    /// The animation or keyframe track driving the track.
+    motion: Motion<T>,
     /// The time the track started. `Some` when the prop gave a start on
     /// the host's clock; `None` until first sampled, so a track committed
     /// between frames starts at the next presentation time.
@@ -390,21 +392,68 @@ struct Track<T: Animatable> {
 impl<T: Animatable> std::fmt::Debug for Track<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Track")
-            .field("animation", &self.animation)
+            .field("animation", &self.motion.animation())
             .field("start", &self.start)
             .finish_non_exhaustive()
     }
 }
 
 impl<T: Animatable> Track<T> {
+    /// The track as a compositor can take it over; `None` for a keyframe
+    /// track, which only the engine samples.
     fn description(&self) -> Option<AnimationTrack<T>> {
         Some(AnimationTrack {
             from: T::from_lanes(self.from),
             velocity: self.velocity,
             target: self.target,
-            animation: self.animation,
+            animation: *self.motion.animation()?,
             start: self.start?,
         })
+    }
+
+    /// A track running `prop`'s keyframes, holding its target once a
+    /// finite repeat ends. It replaces whatever ran on the property and
+    /// starts at the first frame that samples it.
+    ///
+    /// # Panics
+    /// Panics when the keyframes' lanes are not `T`'s.
+    fn from_prop(prop: &KeyframeProp<T>) -> Self
+    where
+        T: AnimLanes,
+    {
+        let lanes = prop.keyframes.lanes(prop.repeat);
+        assert_eq!(
+            lanes.width(),
+            T::Lanes::N,
+            "a layer property's keyframes interpolate in its own lanes"
+        );
+        let mut from = T::Lanes::zero();
+        for (lane, &value) in lanes.value(0).iter().enumerate() {
+            from.set(lane, value);
+        }
+        Self {
+            from,
+            velocity: T::Lanes::zero(),
+            target: prop.target,
+            motion: Motion::Keyframes(Box::new(lanes)),
+            start: None,
+            last: None,
+        }
+    }
+
+    /// The evaluation `dt` seconds into the track:
+    /// `(position, velocity, done)`.
+    fn eval(&self, dt: f64) -> (T::Lanes, T::Lanes, bool) {
+        match &self.motion {
+            Motion::Animation(animation) => eval_lanes(
+                self.from,
+                self.velocity,
+                self.target.into_lanes(),
+                animation,
+                dt,
+            ),
+            Motion::Keyframes(keyframes) => keyframes.eval_lanes(dt, self.target.into_lanes()),
+        }
     }
 
     fn new(
@@ -422,7 +471,7 @@ impl<T: Animatable> Track<T> {
             from,
             velocity,
             target,
-            animation,
+            motion: Motion::Animation(animation),
             start,
             last: None,
         }
@@ -432,14 +481,7 @@ impl<T: Animatable> Track<T> {
     /// in lane space. A settled spring reports its target exactly.
     fn sample(&mut self, t: Instant) -> (T::Lanes, T::Lanes, bool) {
         let start = *self.start.get_or_insert(t);
-        let dt = t.duration_since(start).as_secs_f64();
-        let (pos, vel, done) = eval_lanes(
-            self.from,
-            self.velocity,
-            self.target.into_lanes(),
-            &self.animation,
-            dt,
-        );
+        let (pos, vel, done) = self.eval(t.duration_since(start).as_secs_f64());
         self.last = Some((t, pos, vel));
         (pos, vel, done)
     }
@@ -452,13 +494,7 @@ impl<T: Animatable> Track<T> {
         let dt = self
             .start
             .map_or(0.0, |start| t.duration_since(start).as_secs_f64());
-        let (pos, vel, _) = eval_lanes(
-            self.from,
-            self.velocity,
-            self.target.into_lanes(),
-            &self.animation,
-            dt,
-        );
+        let (pos, vel, _) = self.eval(dt);
         (pos, vel)
     }
 
@@ -466,11 +502,12 @@ impl<T: Animatable> Track<T> {
     /// needs only the slow class once it runs slower than one device pixel
     /// per frame at 60 Hz (`scale * 60` logical pixels per second).
     fn is_fast(&self, scale: f64) -> bool {
-        match self.animation {
-            Animation::Decay(_) => {
+        match self.motion {
+            Motion::Animation(Animation::Decay(_)) => {
                 self.last.map_or(self.velocity, |(_, _, vel)| vel).max_abs() >= scale * 60.0
             }
-            Animation::Spring(_) | Animation::Curve(_) => true,
+            Motion::Animation(Animation::Spring(_) | Animation::Curve(_))
+            | Motion::Keyframes(_) => true,
         }
     }
 }
@@ -812,6 +849,7 @@ impl SurfaceTree {
             | LayerOp::Depth(id, _)
             | LayerOp::ClearProjection(id)
             | LayerOp::Opacity(id, _)
+            | LayerOp::Keyframes(id, _)
             | LayerOp::Blend(id, _) => Some((*id, false)),
             LayerOp::ScrollOffset(id, _)
             | LayerOp::Clip(id, _)
@@ -897,6 +935,7 @@ impl SurfaceTree {
                 let node = self.node_mut(id);
                 set_prop(&mut node.scroll_track, &mut node.scroll_offset, &prop);
             }
+            LayerOp::Keyframes(id, keyframes) => self.node_mut(id).set_keyframes(&keyframes),
             LayerOp::Clip(id, clip) => self.node_mut(id).clip = clip,
             LayerOp::Blend(id, blend) => self.set_blend(id, blend),
             LayerOp::Filter(id, filter) => self.node_mut(id).filter = filter,
@@ -1040,7 +1079,7 @@ impl SurfaceTree {
                 // bounds, the remaining motion becomes a critically damped
                 // spring back to the nearest point of the bounds, so the
                 // overshoot and the return are one continuous motion.
-                if let Animation::Decay(decay) = track.animation
+                if let Motion::Animation(Animation::Decay(decay)) = track.motion
                     && let Some(bounds) = decay.rubber_band
                 {
                     let offset = Vec2::from_lanes(pos);
@@ -1054,7 +1093,7 @@ impl SurfaceTree {
                             from: pos,
                             velocity: vel,
                             target: clamped,
-                            animation: Animation::Spring(rubber_band_spring()),
+                            motion: Motion::Animation(Animation::Spring(rubber_band_spring())),
                             start: Some(time),
                             last: track.last,
                         };

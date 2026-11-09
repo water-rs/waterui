@@ -22,7 +22,7 @@ mod imp {
     use super::{into_kit_rect, into_kit_size, into_layout_rect};
     use cocoa_ui::appkit::{AttentionRequest, HostView, WindowLevel as KitLevel, WindowStyle};
     use cocoa_ui::{MainThreadMarker, Retained};
-    use waterui::animation::Animation;
+    use waterui::animation::ChangeAnimation;
     use waterui::reactive::{Binding, Computed, Signal};
     use waterui::window::{
         ResolvedWindowBackground, UserAttention, Window, WindowHandle, WindowLevel, WindowState,
@@ -171,7 +171,9 @@ mod imp {
                 applying.set(true);
                 window.set_content_rect(
                     into_kit_rect(*context.value()),
-                    context.metadata().try_get::<Animation>().is_some(),
+                    ChangeAnimation::of(context.metadata())
+                        .animation()
+                        .is_some(),
                 );
                 applying.set(false);
             }

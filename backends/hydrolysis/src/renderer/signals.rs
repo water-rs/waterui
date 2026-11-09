@@ -524,11 +524,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let armed_for_watch = Rc::clone(&armed);
         let guard = subscription.activate(move |update| {
             let target = if *update.value() { 1.0 } else { 0.0 };
-            let animation = update
-                .metadata()
-                .try_get::<Animation>()
-                .unwrap_or_else(|| default_animation.clone());
-            watcher_handle.apply_target(target, Some(animation), clock.frame_clock());
+            let animation = ChangeAnimation::of(update.metadata()).or(default_animation.clone());
+            watcher_handle.apply_target(target, animation, clock.frame_clock());
             if armed_for_watch.get()
                 && let Some(cell) = owner.upgrade()
             {

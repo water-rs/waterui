@@ -95,6 +95,11 @@ jobs:
   apple-e2e:
     name: Apple e2e
     uses: ./.github/workflows/apple-e2e.yml
+    needs: cli-build
+    with:
+      # `cli-build`'s macOS artifact (`water-cli-<runner.os>-<runner.arch>`
+      # of an `xcode-27` runner); `with` has no runner context.
+      cli_artifact: water-cli-macOS-ARM64
     permissions:
       # The suite's publish-baselines job pushes a branch and opens a PR on
       # record dispatches; its report job files the failure issue.
@@ -234,63 +239,64 @@ jobs:
         with:
           name: nightly-feature-checks
 
-  # The cli's `#[ignore]`d suite (water-rs/cli's nightly `ignored` job,
-  # #1446): the tests that build real framework source or hit the network —
-  # the workspace-resolved example graphs,
-  # the inspector app layout, the Xcode drives on macOS. The checkout the
-  # tests resolve is this tree itself, so the signal is "the cli matches the
-  # framework it ships with".
-  cli-ignored:
-    name: CLI ignored / ${{ matrix.os }}
+  # The release `water` CLI of this revision, built once per platform: the
+  # `cli-e2e` legs and `apple-e2e` install it instead of compiling their own
+  # (#4048), and it is the one downloadable CLI of a nightly. The build stays
+  # cold (no Actions cache, no compiler wrapper) because its duration is the
+  # `cli_install` entry of the cold-compile record; the timing files travel
+  # in `cli-install-<os>` for the `cli-e2e` legs to pick up.
+  cli-build:
+    name: CLI build / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, xcode-27, windows-latest]
+        include:
+          - name: macOS
+            os: xcode-27
+          - name: Linux
+            os: ubuntu-latest
+          - name: Windows
+            os: windows-latest
+    env:
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
+
       - uses: ./.github/actions/setup-rust
         with:
-          # The cli's `artifact_symbols` suite builds a wasm rlib fixture.
-          targets: wasm32-unknown-unknown
           cache: "false"
-      # The ignored tests compile workspace crates — the scaffolded web app
-      # links the GTK/VA-API/PipeWire stack — so they need the framework's
-      # own native dependency set.
-      - uses: ./.github/actions/setup-linux-deps
-        if: runner.os == 'Linux'
-      # `filtrate`'s `shaderloom` build script needs `dxc` to compile WGSL to
-      # DXIL; the Windows image does not ship it.
-      - uses: ./.github/actions/install-dxc
-        if: runner.os == 'Windows'
-      # #3093: the ignored hydrolysis suite's test binaries create wgpu
-      # devices; stage the pinned WARP before nextest builds them.
-      - uses: ./.github/actions/install-warp
-        if: runner.os == 'Windows'
+
+      # A `--path` install builds in the workspace's `target/`, so the
+      # `--timings` report lands in `target/cargo-timings/`; a `target/`
+      # that already exists before the install means a restored cache made
+      # the number warm, and the record says so.
+      - name: Build the CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          metrics="$RUNNER_TEMP/e2e-metrics"
+          mkdir -p "$metrics/cargo-timings/cli-install"
+          if [ -d target ]; then cold=false; else cold=true; fi
+          echo "cli_install_cold=$cold" >> "$metrics/flags.txt"
+          start=$SECONDS
+          cargo install --locked --path cli --timings --root "$RUNNER_TEMP/water-cli"
+          printf 'cli_install\t%s\n' "$((SECONDS - start))" >> "$metrics/timings.tsv"
+          cp target/cargo-timings/cargo-timing-*.html "$metrics/cargo-timings/cli-install/" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
         with:
-          into: |
-            target/debug/deps
-            target/debug
-      - uses: ./.github/actions/install-tool
+          name: water-cli-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/water-cli/bin
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
         with:
-          tool: cargo-nextest@0.9.145
-          path: ~/.cargo/bin/cargo-nextest*
-      # The nextest runs' `cli-roboto` and `test-fonts` setup scripts invoke
-      # `uv run`; the hydrolysis step's fonts come from the shared cache.
-      - uses: astral-sh/setup-uv@v6
-      - uses: ./.github/actions/test-fonts-cache
-      # The `create --template web` tests scaffold and build a Vite frontend.
-      - uses: oven-sh/setup-bun@v2
-      - run: cargo nextest run --timings --locked --profile ci -p waterui-cli --run-ignored ignored-only
-      # The Android WebView bridge's composed-script round trip through a
-      # real JS engine. `bun` is on PATH from the step above. Named, not
-      # `ignored-only`: hydrolysis's other ignored test is a report-only
-      # perf probe that stays out of CI (#4012).
-      - run: cargo nextest run --timings --locked --profile ci -p hydrolysis --run-ignored ignored-only -E 'test(=widgets::platform::webview::android_protocol::tests::the_composed_async_call_survives_a_real_js_round_trip)'
-      - uses: ./.github/actions/upload-cargo-timings
-        if: always()
-        with:
-          name: nightly-cli-ignored-${{ strategy.job-index }}
+          name: cli-install-${{ runner.os }}
+          path: ${{ runner.temp }}/e2e-metrics
+          retention-days: 1
+          if-no-files-found: error
 
   # The cli's fresh-user end-to-end suite (water-rs/cli's nightly `e2e` job,
   # #1446): the installed CLI as a brand-new OS user. `water doctor --fix`
@@ -340,6 +346,7 @@ jobs:
   # step summary and the `ci-metrics` history.
   cli-e2e:
     name: CLI fresh user / ${{ matrix.name }}
+    needs: cli-build
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
     strategy:
@@ -373,9 +380,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The runner account keeps the hosted image's Rust toolchain; it exists
-      # only to build the binary the fresh user then owns.
-      - name: Setup Rust (CLI build host)
+      # The runner account keeps the hosted image's Rust toolchain for the
+      # steps that build as the runner (the macOS console-user build).
+      - name: Setup Rust (runner toolchain)
         uses: ./.github/actions/setup-rust
         with:
           # e2e lanes build fully cold — part of what they measure is cold
@@ -384,23 +391,28 @@ jobs:
           # across the three OS keys for one build a day.
           cache: "false"
 
-      # Timed for the cold-compile record (see `cli-e2e-metrics`). A
-      # `--path` install builds in the workspace's `target/`, so the
-      # `--timings` report lands in `target/cargo-timings/`; a `target/`
-      # that already exists before the install means a restored cache made
-      # the number warm, and the record says so.
+      # The CLI under test is `cli-build`'s release binary; its cold-install
+      # timings land where the legs' own records are collected from.
       - name: Install the CLI under test
+        uses: actions/download-artifact@v4
+        with:
+          name: water-cli-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/water-cli
+
+      - name: Take over the CLI install timings
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-install-${{ runner.os }}
+          path: ${{ runner.temp }}/e2e-metrics
+
+      # upload-artifact drops the executable bit. The runner account's own
+      # `water` steps (macOS console user, Android) find the binary on PATH.
+      - name: Put the CLI on PATH
         shell: bash
         run: |
           set -euo pipefail
-          metrics="$RUNNER_TEMP/e2e-metrics"
-          mkdir -p "$metrics/cargo-timings/cli-install"
-          if [ -d target ]; then cold=false; else cold=true; fi
-          echo "cli_install_cold=$cold" >> "$metrics/flags.txt"
-          start=$SECONDS
-          cargo install --locked --path cli --timings
-          printf 'cli_install\t%s\n' "$((SECONDS - start))" >> "$metrics/timings.tsv"
-          cp target/cargo-timings/cargo-timing-*.html "$metrics/cargo-timings/cli-install/" 2>/dev/null || true
+          if [ "$RUNNER_OS" != "Windows" ]; then chmod +x "$RUNNER_TEMP/water-cli/water"; fi
+          echo "$RUNNER_TEMP/water-cli" >> "$GITHUB_PATH"
 
       # `shaderloom` — reached through the scaffolded hydrolysis app's normal
       # dependency graph — compiles WGSL to DXIL through `dxc`, which the
@@ -453,7 +465,7 @@ jobs:
           sudo chown -R "$E2E_USER":admin "$(brew --prefix)" "$(brew --repository)"
           # rustup shim only, no toolchain — doctor repairs the toolchain.
           sudo -u "$E2E_USER" -H bash -lc 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --no-modify-path'
-          sudo install -o "$E2E_USER" -g admin -m 0755 "$CARGO_HOME/bin/water" "/Users/$E2E_USER/.cargo/bin/water"
+          sudo install -o "$E2E_USER" -g admin -m 0755 "$RUNNER_TEMP/water-cli/water" "/Users/$E2E_USER/.cargo/bin/water"
 
       - name: Provision fresh user + rustup bootstrap (Ubuntu)
         if: runner.os == 'Linux'
@@ -469,7 +481,7 @@ jobs:
           sudo chmod -R a+rX "$GITHUB_WORKSPACE"
           p="$GITHUB_WORKSPACE"; while [ "$p" != "/" ]; do sudo chmod o+x "$p"; p="$(dirname "$p")"; done
           sudo -u "$E2E_USER" -H bash -lc 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --no-modify-path'
-          sudo install -o "$E2E_USER" -m 0755 "$CARGO_HOME/bin/water" "/home/$E2E_USER/.cargo/bin/water"
+          sudo install -o "$E2E_USER" -m 0755 "$RUNNER_TEMP/water-cli/water" "/home/$E2E_USER/.cargo/bin/water"
           # xvfb is the run harness only — not a doctor-managed dependency.
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb
@@ -506,7 +518,7 @@ jobs:
           & "$share\rustup-init.exe" -y --default-toolchain none --no-modify-path
           "@
           Set-Content -Path "$share\rustup-bootstrap.ps1" -Value $bootstrap -Encoding UTF8
-          $cliBin = "$env:CARGO_HOME\bin\water.exe"
+          $cliBin = "$env:RUNNER_TEMP\water-cli\water.exe"
           $p = Start-Process -FilePath pwsh `
             -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$share\rustup-bootstrap.ps1" `
             -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") `
@@ -563,6 +575,21 @@ jobs:
           cd "$HOME"
           fail() { echo "::error::$*"; exit 1; }
           phase() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"; }
+          # Keep what `water package` reported, for the package artifacts:
+          # the path comes from its `Packaged at <path>` line (anstream strips
+          # the colour codes off a piped stderr, leaving `✓ Packaged at ...`).
+          # An APK is kept as is; a bundle or binary goes in a tar so the
+          # artifact zip does not lose its symlinks and permissions.
+          stash() {
+            local pkg dest="$HOME/e2e-packages/$1"
+            pkg=$(sed -n 's/.*Packaged at //p' "$HOME/e2e-logs/$2" | tail -n 1)
+            [ -e "$pkg" ] || fail "water package reported '$pkg', which does not exist"
+            mkdir -p "$dest"
+            case "$pkg" in
+              *.apk) cp "$pkg" "$dest/" ;;
+              *) tar -C "$(dirname "$pkg")" -cf "$dest/$(basename "$pkg").tar" "$(basename "$pkg")" ;;
+            esac
+          }
           # Cold-compile record (see `cli-e2e-metrics`): each phase that
           # succeeds appends `<metric>\t<seconds>` to timings.tsv. The
           # numbers must stay cold, so no compiler wrapper reaches a build:
@@ -672,6 +699,7 @@ jobs:
               2>&1 | tee ../e2e-logs/package-debug.log) || fail "water package (debug) failed"
             grep -q 'Packaged at' e2e-logs/package-debug.log \
               || fail "water package produced no artifact line"
+            stash apk-debug package-debug.log
             record package_debug "$((SECONDS - start))"
             collect_timings package-debug
             phase "water package e2eapp (release, unsigned)"
@@ -680,6 +708,7 @@ jobs:
               2>&1 | tee ../e2e-logs/package-release.log) || fail "water package (release) failed"
             grep -q 'Packaged at' e2e-logs/package-release.log \
               || fail "water package produced no artifact line"
+            stash apk-release package-release.log
             record package_release "$((SECONDS - start))"
             collect_timings package-release
           else
@@ -689,6 +718,7 @@ jobs:
               2>&1 | tee ../e2e-logs/package-app.log) || fail "water package failed"
             grep -q 'Packaged at' e2e-logs/package-app.log \
               || fail "water package produced no artifact line"
+            stash package package-app.log
             record package "$((SECONDS - start))"
             collect_timings package
           fi
@@ -847,16 +877,19 @@ jobs:
           if (-not (Select-String "$logs\package-app.log" -Pattern 'Packaged at' -Quiet)) {
             Fail "water package produced no artifact line"
           }
+          # The package lands in <project>\target\package with the DXC runtime
+          # pair staged beside it, which the app needs at run time: keep the
+          # whole directory the reported path sits in.
+          $reported = (Select-String "$logs\package-app.log" -Pattern 'Packaged at (.+)$' |
+            Select-Object -Last 1).Matches[0].Groups[1].Value.Trim()
+          if (-not (Test-Path $reported)) { Fail "water package reported '$reported', which does not exist" }
+          $keep = "$env:USERPROFILE\e2e-packages\package"
+          New-Item -ItemType Directory -Force $keep | Out-Null
+          Copy-Item "$(Split-Path $reported -Parent)\*" $keep -Recurse -Force
           Record package $t0
           Collect-Timings package
 
           Phase "water run e2eapp"
-          # windows-latest has no GPU: the only surface-compatible adapter is
-          # the D3D12 WARP software device, which Hydrolysis refuses in
-          # production selection unless the diagnostic switch is set. WARP
-          # still runs the full compute pipeline, so the launch is the real
-          # one; the switch only widens adapter selection.
-          $env:WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER = "1"
           $p = Start-Process -FilePath water -ArgumentList "run --platform $env:E2E_PLATFORM --backend $env:E2E_BACKEND" -PassThru `
             -WorkingDirectory "$env:USERPROFILE\e2eapp" `
             -RedirectStandardOutput "$logs\run-play.out" -RedirectStandardError "$logs\run-play.err"
@@ -1122,6 +1155,7 @@ jobs:
           SCRIPT
 
       - name: Collect e2e logs (Unix)
+        id: collect_unix
         if: always() && runner.os != 'Windows'
         shell: bash
         run: |
@@ -1129,13 +1163,26 @@ jobs:
           sudo cp -R "$E2E_HOME/e2e-logs" "$RUNNER_TEMP/e2e-logs" 2>/dev/null || true
           sudo chown -R "$USER" "$RUNNER_TEMP/e2e-logs" 2>/dev/null || true
           ls -la "$RUNNER_TEMP/e2e-logs" || true
+          # The packages the fresh user kept (see `stash`), made readable for
+          # the upload. Present only when packaging succeeded.
+          if sudo test -d "$E2E_HOME/e2e-packages"; then
+            sudo cp -R "$E2E_HOME/e2e-packages" "$RUNNER_TEMP/e2e-packages"
+            sudo chown -R "$USER" "$RUNNER_TEMP/e2e-packages"
+            echo "packaged=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Collect e2e logs (Windows)
+        id: collect_windows
         if: always() && runner.os == 'Windows'
         shell: pwsh
         run: |
           Copy-Item "C:\Users\$env:E2E_USER\e2e-logs" "$env:RUNNER_TEMP\e2e-logs" `
             -Recurse -Force -ErrorAction SilentlyContinue
+          # The package the fresh user kept, DXC runtime pair included.
+          if (Test-Path "C:\Users\$env:E2E_USER\e2e-packages") {
+            Copy-Item "C:\Users\$env:E2E_USER\e2e-packages" "$env:RUNNER_TEMP\e2e-packages" -Recurse -Force
+            "packaged=true" >> $env:GITHUB_OUTPUT
+          }
           # winget's own diagnostic logs of the fresh user: what it was doing
           # when a doctor fix stalled.
           $diag = "C:\Users\$env:E2E_USER\AppData\Local\Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir"
@@ -1171,6 +1218,32 @@ jobs:
             --timings "$logs/timings.tsv" --rustc "$logs/rustc-vV.log" --flags "$logs/flags.txt" \
             --out "$logs/timings.json"
           cp "$logs/timings.json" "$RUNNER_TEMP/e2e-record/$E2E_PLATFORM.json"
+
+      # The packages `water package` produced. Gated on the collect steps
+      # seeing them, so a failed packaging step adds no second failure here.
+      - name: Upload the package
+        if: ${{ !cancelled() && matrix.platform != 'android' && (steps.collect_unix.outputs.packaged == 'true' || steps.collect_windows.outputs.packaged == 'true') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-e2e-${{ matrix.platform }}-package
+          path: ${{ runner.temp }}/e2e-packages/package
+          if-no-files-found: error
+
+      - name: Upload the debug APK
+        if: ${{ !cancelled() && matrix.platform == 'android' && steps.collect_unix.outputs.packaged == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-e2e-android-apk-debug
+          path: ${{ runner.temp }}/e2e-packages/apk-debug
+          if-no-files-found: error
+
+      - name: Upload the unsigned release APK
+        if: ${{ !cancelled() && matrix.platform == 'android' && steps.collect_unix.outputs.packaged == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-e2e-android-apk-release
+          path: ${{ runner.temp }}/e2e-packages/apk-release
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -1314,6 +1387,13 @@ jobs:
         with:
           mode: full
       - run: cargo build --timings --locked --release -p cherenkov-bench --features vello-cpu,skia
+      - name: Upload cherenkov-bench (linux, vello-cpu + skia)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-bench-linux-vello-cpu-skia
+          path: target/release/cherenkov-bench
+          if-no-files-found: ignore
       # The oracle reference depends only on the scene; build it once for
       # both passes below (#218).
       - name: Render the corpus reference
@@ -1372,6 +1452,13 @@ jobs:
         with:
           mode: full
       - run: cargo build --timings --locked --release -p cherenkov-bench --features skia-metal,vello-classic,vello-hybrid
+      - name: Upload cherenkov-bench (macos, skia-metal + vello-classic + vello-hybrid)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-bench-macos-skia-metal-vello-classic-vello-hybrid
+          path: target/release/cherenkov-bench
+          if-no-files-found: ignore
       # The oracle reference depends only on the scene; build it once for
       # the three passes below (#218).
       - name: Render the corpus reference
@@ -1430,7 +1517,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1474,7 +1561,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-e2e]
     if: failure() && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 5

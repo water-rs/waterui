@@ -614,6 +614,100 @@ impl Animation {
 }
 
 use nami::signal::WithMetadata;
+use nami::watcher::Metadata;
+
+/// Change metadata stating that the change must not animate.
+///
+/// A change that names no animation leaves the receiver to choose: a control
+/// that owns its motion may still animate it with its own default. A change
+/// carrying `NoAnimation` applies in the next frame on every backend,
+/// whatever the receiver's default.
+///
+/// Attach it the way an animation is attached:
+///
+/// ```rust
+/// use waterui_core::animation::NoAnimation;
+/// use nami::{SignalExt, binding};
+///
+/// let is_on: nami::Binding<bool> = binding(false);
+/// let _snapping = is_on.with(NoAnimation);
+/// ```
+///
+/// Disabling wins over an animation attached anywhere else on the same
+/// change: `value.animated().with(NoAnimation)` and
+/// `value.with(NoAnimation).animated()` both snap. Read a change's metadata
+/// with [`ChangeAnimation::of`], never by probing for this type directly.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NoAnimation;
+
+/// How a change asks to be animated: the three cases its metadata can state.
+///
+/// Every backend reads a change's animation through [`ChangeAnimation::of`],
+/// so the rules — an attached [`NoAnimation`] wins over an attached
+/// [`Animation`] — live in one place.
+#[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "a change either names an animation, names none, or disables animation; receivers must handle exactly these three"
+)]
+pub enum ChangeAnimation {
+    /// The change animates with this animation.
+    Animated(Animation),
+    /// The change names no animation; the receiver decides.
+    Unspecified,
+    /// The change must not animate: it applies in the next frame.
+    Disabled,
+}
+
+impl ChangeAnimation {
+    /// Reads the animation case a change's `metadata` states.
+    ///
+    /// ```rust
+    /// use waterui_core::animation::{Animation, ChangeAnimation, NoAnimation};
+    /// use nami::watcher::Metadata;
+    ///
+    /// assert_eq!(ChangeAnimation::of(&Metadata::new()), ChangeAnimation::Unspecified);
+    /// assert_eq!(
+    ///     ChangeAnimation::of(&Metadata::new().with(Animation::Default)),
+    ///     ChangeAnimation::Animated(Animation::Default),
+    /// );
+    /// assert_eq!(
+    ///     ChangeAnimation::of(&Metadata::new().with(Animation::Default).with(NoAnimation)),
+    ///     ChangeAnimation::Disabled,
+    /// );
+    /// ```
+    #[must_use]
+    pub fn of(metadata: &Metadata) -> Self {
+        if metadata.try_get::<NoAnimation>().is_some() {
+            return Self::Disabled;
+        }
+        metadata
+            .try_get::<Animation>()
+            .map_or(Self::Unspecified, Self::Animated)
+    }
+
+    /// The animation the change names, or `None` when it names none or
+    /// disables animation — for a receiver whose own default is to snap.
+    #[must_use]
+    pub const fn animation(self) -> Option<Animation> {
+        match self {
+            Self::Animated(animation) => Some(animation),
+            Self::Unspecified | Self::Disabled => None,
+        }
+    }
+
+    /// The animation the change runs with on a receiver whose default is
+    /// `default`: the named animation, `default` when the change names none,
+    /// and `None` when it disables animation.
+    #[must_use]
+    pub const fn or(self, default: Animation) -> Option<Animation> {
+        match self {
+            Self::Animated(animation) => Some(animation),
+            Self::Unspecified => Some(default),
+            Self::Disabled => None,
+        }
+    }
+}
 
 /// Extension trait providing animation methods for reactive values.
 ///
@@ -714,6 +808,69 @@ mod tests {
         assert!(mid > 0.0 && mid < 1.0);
         assert!(!track.advance(Duration::from_millis(120)));
         assert!((track.value() - 1.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn change_animation_reads_the_three_cases() {
+        let spring = Animation::spring(100.0, 10.0);
+        assert_eq!(
+            ChangeAnimation::of(&Metadata::new()),
+            ChangeAnimation::Unspecified
+        );
+        assert_eq!(
+            ChangeAnimation::of(&Metadata::new().with(spring.clone())),
+            ChangeAnimation::Animated(spring)
+        );
+        assert_eq!(
+            ChangeAnimation::of(&Metadata::new().with(NoAnimation)),
+            ChangeAnimation::Disabled
+        );
+    }
+
+    #[test]
+    fn no_animation_wins_over_an_attached_animation() {
+        let inner = Metadata::new().with(NoAnimation).with(Animation::Default);
+        let outer = Metadata::new().with(Animation::Default).with(NoAnimation);
+        assert_eq!(ChangeAnimation::of(&inner), ChangeAnimation::Disabled);
+        assert_eq!(ChangeAnimation::of(&outer), ChangeAnimation::Disabled);
+    }
+
+    #[test]
+    fn change_animation_resolves_against_a_receiver_default() {
+        let default = Animation::linear(Duration::from_millis(80));
+        let named = Animation::ease_in(Duration::from_millis(40));
+        assert_eq!(
+            ChangeAnimation::Animated(named.clone()).or(default.clone()),
+            Some(named.clone())
+        );
+        assert_eq!(
+            ChangeAnimation::Unspecified.or(default.clone()),
+            Some(default)
+        );
+        assert_eq!(ChangeAnimation::Disabled.or(named.clone()), None);
+        assert_eq!(
+            ChangeAnimation::Animated(named.clone()).animation(),
+            Some(named)
+        );
+        assert_eq!(ChangeAnimation::Unspecified.animation(), None);
+        assert_eq!(ChangeAnimation::Disabled.animation(), None);
+    }
+
+    #[test]
+    fn signal_with_no_animation_reaches_watchers_as_disabled() {
+        use alloc::rc::Rc;
+        use core::cell::RefCell;
+        use nami::{Signal, SignalExt, binding};
+
+        let value: nami::Binding<f32> = binding(0.0_f32);
+        let seen = Rc::new(RefCell::new(None));
+        let sink = Rc::clone(&seen);
+        let snapping = value.animated().with(NoAnimation);
+        let _guard = snapping.watch(move |context| {
+            *sink.borrow_mut() = Some(ChangeAnimation::of(context.metadata()));
+        });
+        value.set(1.0);
+        assert_eq!(seen.borrow().clone(), Some(ChangeAnimation::Disabled));
     }
 
     #[derive(Clone)]
