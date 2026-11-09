@@ -193,10 +193,6 @@ impl CalendarLeaf {
         self.calendar.view()
     }
 
-    fn calendar_size(&self) -> cocoa_ui::Size {
-        self.calendar.intrinsic_size()
-    }
-
     fn label_size(&self) -> Size {
         self.label.layout().measure(ProposalSize::UNSPECIFIED).size
     }
@@ -228,7 +224,7 @@ impl CalendarLeaf {
         let top = label_height + SPACING;
         #[cfg(target_os = "macos")]
         let frame = {
-            let size = self.calendar_size();
+            let size = self.calendar.intrinsic_size();
             Rect::new(0.0, top, size.width, size.height)
         };
         #[cfg(target_os = "ios")]
@@ -269,19 +265,27 @@ impl SubView for CalendarSubView {
     )]
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let label = self.leaf.label_size();
-        let calendar = self.leaf.calendar_size();
-        let mut width = f64::from(label.width).max(calendar.width);
+        // The `AppKit` calendar is fixed-size, as the graphical picker is.
+        #[cfg(target_os = "macos")]
+        let (width, calendar_height) = {
+            let _ = proposal;
+            let calendar = self.leaf.calendar.intrinsic_size();
+            (f64::from(label.width).max(calendar.width), calendar.height)
+        };
         // `UICalendarView` compresses to the offered width, so the leaf
         // never answers wider — otherwise the scroll chain re-measures at
-        // the overflow and widens the whole column. The `AppKit` calendar
-        // is fixed-size, as the graphical picker is.
+        // the overflow and widens the whole column — and its height is
+        // what it needs at that width.
         #[cfg(target_os = "ios")]
-        if let Some(bound) = proposal.width.filter(|w| w.is_finite() && *w > 0.0) {
-            width = width.min(f64::from(bound));
-        }
-        #[cfg(target_os = "macos")]
-        let _ = (proposal, &mut width);
-        let height = f64::from(label.height) + SPACING + calendar.height;
+        let (width, calendar_height) = {
+            let natural = self.leaf.calendar.intrinsic_size().width;
+            let mut width = f64::from(label.width).max(natural);
+            if let Some(bound) = proposal.width.filter(|w| w.is_finite() && *w > 0.0) {
+                width = width.min(f64::from(bound));
+            }
+            (width, self.leaf.calendar.fitting_size(width).height)
+        };
+        let height = f64::from(label.height) + SPACING + calendar_height;
         ViewDimensions::new(Size::new(width as f32, height as f32))
     }
 
@@ -565,6 +569,17 @@ fn bind_appearance(
     }
     #[cfg(target_os = "ios")]
     {
+        // `Accent` tints the selection and the navigation.
+        let accent = waterui::theme::color::Accent.resolve(env);
+        leaf.bind(&accent, {
+            let calendar = Rc::clone(calendar);
+            move |color: waterui::graphics::color::WorkingColor| {
+                cocoa_ui::view::set_tint_color(
+                    calendar.calendar_view(),
+                    Some(&platform_color(&color)),
+                );
+            }
+        });
         // `MutedForeground` recolors the decoration dots.
         let muted = waterui::theme::color::MutedForeground.resolve(env);
         leaf.bind(&muted, {

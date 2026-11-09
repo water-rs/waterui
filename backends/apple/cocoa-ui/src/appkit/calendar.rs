@@ -46,9 +46,9 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityElement, NSAccessibilityFrameInView,
     NSAccessibilityGroupRole, NSAccessibilityStaticTextRole, NSColor, NSEvent, NSFont,
-    NSFontAttributeName, NSForegroundColorAttributeName, NSGraphicsContext, NSResponder,
-    NSStringDrawing, NSUserInterfaceLayoutDirection, NSView, NSWindowDidBecomeKeyNotification,
-    NSWindowDidResignKeyNotification,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSGraphicsContext, NSLayoutManager,
+    NSResponder, NSStringDrawing, NSUserInterfaceLayoutDirection, NSView,
+    NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGContext, CGPath};
@@ -83,7 +83,7 @@ const HIGHLIGHT_HEIGHT: f64 = 16.0;
 /// The selection highlight's corner radius.
 const HIGHLIGHT_RADIUS: f64 = 3.0;
 /// The gap between a day number's trailing edge and its column's.
-const TEXT_TRAILING_INSET: f64 = 2.5;
+const TEXT_TRAILING_INSET: f64 = 2.0;
 /// A day number's baseline below its row's top.
 const DAY_BASELINE: f64 = 12.25;
 /// The month title's leading inset.
@@ -104,15 +104,15 @@ const NAV_HEIGHT: f64 = 7.0;
 /// How far a navigation glyph's click target extends past its ink.
 const NAV_HIT_OUTSET: f64 = 4.0;
 /// The decoration dot's diameter.
-const DOT_DIAMETER: f64 = 3.0;
+const DOT_DIAMETER: f64 = 2.5;
 /// The decoration dot's centre below its row's top.
-const DOT_CENTER: f64 = 14.5;
+const DOT_CENTER: f64 = 15.0;
 /// The keyboard cursor ring's stroke width.
 const CURSOR_RING_WIDTH: f64 = 1.5;
 /// The title's point size and weight.
 const TITLE_FONT: (f64, f64) = (13.0, font::weight::BOLD);
 /// The weekday symbols' point size and weight.
-const WEEKDAY_FONT: (f64, f64) = (11.0, font::weight::MEDIUM);
+const WEEKDAY_FONT: (f64, f64) = (10.5, font::weight::SEMI_BOLD);
 /// The day numbers' point size and weight.
 const DAY_FONT: (f64, f64) = (11.0, font::weight::REGULAR);
 /// Opacity of `muted` for text outside the visible month or the range —
@@ -691,7 +691,7 @@ impl CalendarView {
                 // documented measure.
                 let size = unsafe { title.sizeWithAttributes(Some(&attributes)) };
                 let font = title_font(self.mtm());
-                let top = TITLE_BASELINE - font.ascender();
+                let top = TITLE_BASELINE - baseline_offset(&font);
                 CGRect::new(CGPoint::new(self.mirrored(TITLE_X, size.width), top), size)
             }
             Target::Previous => outset(self.nav_rect(0)),
@@ -1112,10 +1112,16 @@ fn attributes(color: &NSColor, font: &NSFont) -> Retained<TextAttributes> {
     }
 }
 
+/// How far below the top of its line the typesetter places `font`'s
+/// baseline — the offset string drawing lays a line out with.
+fn baseline_offset(font: &NSFont) -> f64 {
+    NSLayoutManager::new().defaultBaselineOffsetForFont(font)
+}
+
 /// Draws `text` with its baseline at `baseline` and its leading edge at
 /// `x` in the flipped view.
 fn draw_text(text: &NSString, attributes: &TextAttributes, font: &NSFont, x: f64, baseline: f64) {
-    let point = NSPoint::new(x, baseline - font.ascender());
+    let point = NSPoint::new(x, baseline - baseline_offset(font));
     // SAFETY: `drawAtPoint:withAttributes:` renders the string in the
     // current context; the dictionary carries the documented value types.
     unsafe { text.drawAtPoint_withAttributes(point, Some(attributes)) };
@@ -1140,7 +1146,7 @@ fn draw_trailing(
         column_x + HIGHLIGHT_WIDTH - TEXT_TRAILING_INSET - size.width
     };
     draw_text(text, attributes, font, x, baseline);
-    CGRect::new(CGPoint::new(x, baseline - font.ascender()), size)
+    CGRect::new(CGPoint::new(x, baseline - baseline_offset(font)), size)
 }
 
 /// Fills a triangle inscribed in `rect`, pointing to the left edge when

@@ -30,6 +30,7 @@ use objc2_ui_kit::{
     UICalendarSelectionMultiDate, UICalendarSelectionMultiDateDelegate,
     UICalendarSelectionSingleDate, UICalendarSelectionSingleDateDelegate, UICalendarView,
     UICalendarViewDecoration, UICalendarViewDecorationSize, UICalendarViewDelegate, UIColor,
+    UILayoutPriorityFittingSizeLevel, UILayoutPriorityRequired,
 };
 
 use crate::callback::guarded;
@@ -418,10 +419,25 @@ impl CalendarView {
         self.shared.borrow_mut().decoration = Some(Box::new(handler));
     }
 
-    /// The view's intrinsic size — what a measure pass reports.
+    /// The view's intrinsic size — its natural width.
     #[must_use]
     pub fn intrinsic_size(&self) -> Size {
         let size = self.view.intrinsicContentSize();
+        Size::new(size.width, size.height)
+    }
+
+    /// The size the calendar lays out at `width`: its own fitting measure,
+    /// required horizontally and free vertically, so every week row of the
+    /// shown month fits.
+    #[must_use]
+    pub fn fitting_size(&self, width: f64) -> Size {
+        let size = self
+            .view
+            .systemLayoutSizeFittingSize_withHorizontalFittingPriority_verticalFittingPriority(
+                objc2_core_foundation::CGSize::new(width, 0.0),
+                UILayoutPriorityRequired,
+                UILayoutPriorityFittingSizeLevel,
+            );
         Size::new(size.width, size.height)
     }
 
