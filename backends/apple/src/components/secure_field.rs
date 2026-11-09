@@ -24,13 +24,14 @@ use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
 use waterui::component::form::secure::{Secure, SecureFieldConfig};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
-use waterui::text::font::{Body, FontDesign, FontWeight, ResolvedFont};
+use waterui::text::font::Body;
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
 
+use super::font::platform_font;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 
@@ -50,71 +51,6 @@ use platform::{HostView, SecureField};
 const VERTICAL_SPACING: f64 = 4.0;
 /// The narrowest width the leaf reports — `WuiSecureField`'s 100pt floor.
 const MIN_WIDTH: f64 = 100.0;
-
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale —
-/// the same table `text_field` uses.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
-/// The comma-separated candidates of a CSS-style family list — as in
-/// `text_field`.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names — the same rule as
-/// `text_field`'s `platform_font` with no italic pass: a masked field
-/// draws plain text.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size());
-    let weight = platform_weight(resolved.weight());
-    match resolved.family() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
-        }
-        _ => match resolved.design() {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
-    }
-}
 
 /// The field's share of a measure — the text height `WuiSecureField`
 /// reports. `AppKit` reads `intrinsicContentSize`; `UIKit` floors
@@ -318,7 +254,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let body = Body.resolve(ctx.env());
         leaf.bind(&body, {
             let field = field.clone();
-            move |font| field.set_font(&platform_font(mtm, &font))
+            move |font| field.set_font(&platform_font(mtm, &font, false))
         });
 
         // Announce the label's semantic text on the field.

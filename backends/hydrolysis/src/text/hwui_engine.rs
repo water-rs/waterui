@@ -21,7 +21,7 @@ use crate::hwui::text::{
 use crate::renderer::{FrameWorkCounters, Recording};
 
 use super::engine::{FontFamilyResolution, TextEngine};
-use super::input::{ResolvedFontSpec, ResolvedTextLayoutInput, font_weight};
+use super::input::{ResolvedFontSpec, ResolvedTextLayoutInput};
 
 /// The HWUI-backed text engine. Shaping runs on the platform behind
 /// `provider`; layout ids come from `ids`, the table the encoder writes
@@ -117,7 +117,7 @@ fn color_long([r, g, b, a]: [u8; 4]) -> u64 {
 /// A style run on the text wire from a resolved font.
 fn font_run(font: &ResolvedFontSpec, range: Range<usize>, foreground: Option<[u8; 4]>) -> TextRun {
     {
-        let mut literal = TextRun::new(range, font.size, font_weight(font.weight));
+        let mut literal = TextRun::new(range, font.size, font.weight);
         literal.set_family(font.family.clone());
         literal.set_italic(false);
         literal.set_underline(false);
