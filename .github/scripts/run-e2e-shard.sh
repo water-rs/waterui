@@ -178,6 +178,104 @@ if [[ "${platform}" == "ios" ]]; then
   fi
   xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
 
+  # A screenshot command still running this long is mid-stall, not slow —
+  # a healthy answer lands in ~0.5 s. The sampler fires inside the command
+  # bound, so the wedge's stacks land in the log while the guilty process is
+  # still alive (#1539). A 30 s scoped capture leaves ~15 s of collection
+  # headroom after the sample fires; the 120 s warmup leaves far more.
+  # Diagnostic collectors share one bounded budget — defined before the
+  # sampler because the warmup's subshell inherits it at launch time.
+  DIAG_DEADLINE_S=30
+  stall_sampler_start() {
+    local diag="$1"
+    local after="${2:-15}"
+    (
+      # Each sampler marks itself with a per-invocation file, so a later
+      # capture's sleep cannot be mistaken for an earlier one's collection.
+      sleep "${after}"
+      touch "${diag}.fired.${BASHPID}"
+      {
+        echo "=== screenshot stall sample $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
+        echo "--- simctl / CoreSimulator processes ---"
+        pgrep -fl "simctl|CoreSimulatorService|SimulatorTrampoline" || true
+        # The wedged `simctl` itself goes first: on a 30 s scoped capture the
+        # bound may kill it while service stacks are still being collected.
+        for p in $(pgrep -f "simctl io .* screenshot"); do
+          echo "--- sample ${p} ---"
+          sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
+        done
+        for p in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline"); do
+          echo "--- sample ${p} ---"
+          sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
+        done
+        echo "--- host load ---"
+        ps -Axo pid,pcpu,stat,etime,command | sort -k2 -rn | sed -n '1,12p' || true
+        echo "--- host memory pressure ---"
+        memory_pressure 2>/dev/null | tail -8 || true
+        echo "--- CoreSimulator log, last 2m ---"
+        "${command_deadline}" run --label "diag:stall-log-show" \
+          --deadline-at "$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")" \
+          --receipt "${receipts_file}" \
+          -- log show --last 2m --style compact \
+          --predicate 'subsystem CONTAINS[c] "CoreSimulator"' \
+          2>/dev/null | tail -40 || true
+      } >> "${diag}" 2>&1
+    ) </dev/null >/dev/null 2>&1 &
+    echo $!
+  }
+  # Every pid under a root, leaves first — enumerated while the tree's
+  # parentage is still intact.
+  subtree_pids() {
+    local p
+    for p in $(pgrep -P "$1" 2>/dev/null); do
+      subtree_pids "$p"
+      echo "$p"
+    done
+  }
+  # A sampler that already fired is mid-collection — give it a bounded grace
+  # to finish writing; a still-sleeping one is cancelled. The stop signals
+  # the whole tree at once: a grandchild the deadline supervisor spawned
+  # (`log show`) is enumerated before it could reparent, and a `pkill -P`
+  # sweep alone would never reach it.
+  stall_sampler_stop() {
+    local pid="$1" diag="${2:-}"
+    if kill -0 "${pid}" 2>/dev/null; then
+      if [[ -e "${diag}.fired.${pid}" ]]; then
+        local deadline=$(( SECONDS + 20 ))
+        while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do
+          sleep 0.5
+        done
+      fi
+      local tree
+      tree="$(subtree_pids "${pid}")"
+      kill ${tree} "${pid}" 2>/dev/null || true
+    fi
+    rm -f "${diag}.fired.${pid}"
+  }
+
+  # The first `simctl io screenshot` each boot pays a one-time cost while the
+  # io channel's render pipeline initializes — 20-30 s in nightly receipts,
+  # 451 s in the run behind #1539. Inside the settle loop that stall consumed
+  # the shared capture budget before the next deadline check. One warmup here
+  # moves the stall out of the budget; it is bounded on its own so a genuinely
+  # hung channel still shows up in the command receipts instead of blocking
+  # the shard.
+  warmup_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-warmup.XXXXXX")"
+  warmup_frame="${warmup_dir}/frame.png"
+  warmup_deadline_at="$("${command_deadline}" deadline --seconds 120)"
+  warmup_sampler="$(stall_sampler_start "${logs_dir}/${platform}-warmup-stall-sample.log" 25)"
+  warmup_rc=0
+  "${command_deadline}" run --label "capture:simctl-io-screenshot-warmup" \
+    --deadline-at "${warmup_deadline_at}" --receipt "${receipts_file}" \
+    -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${warmup_frame}" >/dev/null || warmup_rc=$?
+  stall_sampler_stop "${warmup_sampler}" "${logs_dir}/${platform}-warmup-stall-sample.log"
+  if (( warmup_rc != 0 )) || [[ ! -s "${warmup_frame}" ]]; then
+    rm -rf "${warmup_dir}"
+    echo "e2e: the screenshot-pipeline warmup produced no frame — the capture channel is unusable" >&2
+    exit 1
+  fi
+  rm -rf "${warmup_dir}"
+
   # An iOS capture is the whole display (macOS captures the app's own window),
   # so a SpringBoard notification banner lands in the frame and reads as a
   # divergence from the app's own baseline and from the SwiftUI twin. Booting
@@ -247,10 +345,15 @@ capture_frame() {
     # Removing the prior file first means a command that exits 0 without
     # writing cannot let a stale frame pass as this capture.
     rm -f "${target}"
+    local sampler_pid capture_rc
+    sampler_pid="$(stall_sampler_start "${logs_dir}/${platform}-${example}-stall-sample.log")"
     "${command_deadline}" run --label "capture:simctl-io-screenshot" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
       --max-seconds "${COMMAND_BOUND_S}" \
-      -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null || return
+      -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null
+    capture_rc=$?
+    stall_sampler_stop "${sampler_pid}" "${logs_dir}/${platform}-${example}-stall-sample.log"
+    (( capture_rc == 0 )) || return
   else
     local window_id
     window_id="$("${command_deadline}" run --label "capture:window-id" \
@@ -488,7 +591,6 @@ simctl_cleanup() {
 # under DIAG_DEADLINE_S — a wedged channel must not stall the collection —
 # and the output lands in logs_dir, which the e2e-logs artifact bundle
 # already ships.
-DIAG_DEADLINE_S=30
 collect_simulator_stall_diagnostics() {
   local reason="$1"
   local diag="${logs_dir}/${platform}-${example}-stall-diagnostics.log"
