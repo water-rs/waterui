@@ -13,7 +13,7 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::{Cell, RefCell};
 
-use cocoa_ui::{PlatformView, Rect, Retained};
+use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::component::form::picker::color::ColorPickerConfig;
 use waterui::graphics::color::{Color, Working, WorkingColor, srgb_to_linear, working};
 use waterui::reactive::{Computed, Signal};
@@ -26,6 +26,7 @@ use waterui_core::layout::{
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -172,19 +173,18 @@ struct ColorPickerState {
     _action: cocoa_ui::ActionTarget,
 }
 
-/// Lays out the children inside `view`'s bounds: the label leading and
-/// vertically centered, then the well spanning the rest of the row,
-/// centered on its intrinsic height — `configureSubviews`' constraints.
-/// RTL mirrors the row.
-fn layout_children(view: &PlatformView, state: &ColorPickerState) {
-    let bounds = cocoa_ui::view::bounds(view);
-    let width = bounds.size.width;
-    let height = bounds.size.height;
+/// Lays out the children inside the `response` rectangle: the label
+/// leading and vertically centered, then the well spanning the rest of the
+/// row, centered on its intrinsic height — `configureSubviews`'
+/// constraints. RTL mirrors the row.
+fn layout_children(view: &PlatformView, response: Rect, state: &ColorPickerState) {
+    let width = response.size.width;
+    let height = response.size.height;
     let rtl = cocoa_ui::view::is_right_to_left(view);
 
     let place = |child: &PlatformView, x: f64, y: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, y, w, h));
+        view::set_frame(child, Rect::new(x, y, w, h).translated(response.origin));
     };
 
     let label_size = state.label.as_ref().map_or_else(Size::default, |label| {
@@ -371,7 +371,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         host.set_layout_handler({
             let state = Rc::clone(&state);
             move |view| {
-                layout_children(view, &state.borrow());
+                layout_children(view, proposal::response(view), &state.borrow());
             }
         });
 

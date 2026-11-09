@@ -153,6 +153,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
             "Unknown SF Symbol name: {name}"
         );
 
+        // The image view draws the symbol in the leaf's response rectangle
+        // at the symbol's own size, which the leaf answers
+        // (docs/layout-spec.md §6).
         let mut leaf = NativeLeaf::new(as_view(&view), ImageSubView { view: view.clone() });
 
         // The theme foreground tints the symbol; the theme body font
