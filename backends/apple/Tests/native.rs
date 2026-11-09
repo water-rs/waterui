@@ -13754,20 +13754,32 @@ mod transition {
             nav.transitionCoordinator().is_none(),
             "a claimed push is not the stack's animated transition"
         );
+        // The pushed page's transition host. Call inside a pool: the kit
+        // getters autorelease.
+        let page_host = || {
+            let top = nav.topViewController().expect("the pushed page is top");
+            view::subviews(&top.view().expect("view"))
+                .into_iter()
+                .next()
+                .expect("a claimed page mounts inside a transition host")
+        };
         let sample = || {
             autoreleasepool(|_| {
-                let top = nav.topViewController().expect("the pushed page is top");
-                let host = view::subviews(&top.view().expect("view"))
-                    .into_iter()
-                    .next()
-                    .expect("a claimed page mounts inside a transition host");
-                let alpha = view::alpha(&host);
+                let alpha = view::alpha(&page_host());
                 if alpha > 0.0 && alpha < 1.0 {
                     mid_ramp.set(true);
                 }
                 alpha
             })
         };
+        // The insertion's clock starts when its host enters a window, and
+        // `UIKit` installs the pushed page's view in a later layout pass
+        // than the one that grew `viewControllers`; an advance before then
+        // becomes the run's origin instead of elapsed time.
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| view::has_window(&page_host()))),
+            "the claimed page's transition host enters the window"
+        );
         clock.advance(Duration::from_millis(75));
         assert!(
             pump_main_until(5.0, || {
