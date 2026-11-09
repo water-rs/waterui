@@ -402,6 +402,12 @@ jobs:
       # `cfg(target_vendor = "apple")` and no other leg compiles it for iOS.
       - name: Clippy (apple-planes, iOS)
         run: cargo clippy -p apple-planes --all-targets --locked --target aarch64-apple-ios --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # Published before the target archive is saved, so the reports stay
+      # out of it.
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-rust
       # The `apple-target` cache holds this directory for the next run; the
       # number is evidence for the repository's 10 GB budget review, not a
       # gate.

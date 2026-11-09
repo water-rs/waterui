@@ -67,3 +67,6 @@ runs:
         cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
         save-if: ${{ inputs.save-if }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
+    # Every job that installs a toolchain compiles Rust with it; pair this
+    # with `upload-cargo-timings` as the job's last step.
+    - uses: ./.github/actions/cargo-timings

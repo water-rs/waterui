@@ -196,6 +196,11 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-prepare
+
   # One build matrix per platform packages every example once and hands the
   # capture shards the bundles as one tarball per group — the shards used to
   # each pay the same ~32-minute cold release build, sixteen times a night
@@ -300,6 +305,11 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-build-ios-${{ matrix.group.i }}
+
   build-macos:
     name: build-macos-${{ matrix.group.i }}
     needs: prepare
@@ -394,6 +404,11 @@ jobs:
           path: packaged-macos/package-sizes-macos.json
           retention-days: 90
           if-no-files-found: error
+
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-build-macos-${{ matrix.group.i }}
 
   e2e-ios:
     name: e2e-ios-${{ matrix.shard }}
@@ -649,6 +664,10 @@ jobs:
       # lane and the Mac mini, never a shared macOS runner.
       - name: Benchmarks (compile)
         run: cargo bench -p waterui-apple --locked --no-run
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-host-native
 
   # The embedding contract is verified end to end: this job stages the same
   # waterui checkout the shards build, packages the repository's own
@@ -758,6 +777,10 @@ jobs:
             xcrun simctl shutdown "${SIMULATOR_UDID}"
             xcrun simctl delete "${SIMULATOR_UDID}"
           fi
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-ios-device-tests
 
   # Every shard uploads one startup-times JSON and one memory JSON; the build
   # jobs upload one package-size JSON per platform. This job merges them into
@@ -980,6 +1003,10 @@ jobs:
           name: e2e-baselines-package-size-${{ matrix.platform }}
           path: e2e-baselines/
           retention-days: 7
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-release-metrics-${{ matrix.platform }}
 
   # The two platform legs produce one platform slice each; this job merges
   # them into the single release-metrics report the suite reports on.

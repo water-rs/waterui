@@ -130,6 +130,10 @@ jobs:
           if-no-files-found: error
           compression-level: 9
           retention-days: 30
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: cherenkov-ir-instructions-${{ matrix.leg }}
 
   # The span kernels' Callgrind gate: each case's instruction count on
   # the merge commit against the dev commit it merges into (the merge
@@ -224,3 +228,7 @@ jobs:
           if-no-files-found: error
           compression-level: 9
           retention-days: 30
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: cherenkov-ir-kernels

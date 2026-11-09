@@ -153,3 +153,7 @@ jobs:
           else
             uv run .github/scripts/affected.py --base "${{ inputs.base }}"
           fi
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: affected-scope

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Stands in for `cargo` on PATH and adds `--timings` to every subcommand that
+# compiles Rust. Cargo has no config key or environment variable for the
+# flag, so this is the only way to reach every build a job drives. The real
+# cargo is WATERUI_CARGO_REAL; a command that already names `--timings`, and
+# every subcommand that compiles nothing, passes through untouched.
+set -euo pipefail
+
+compiles() {
+  case "$1" in
+    build | b | check | c | clippy | test | t | bench | doc | d | install | run | r | rustc) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+args=("$@")
+sub=0
+[[ "${args[0]:-}" == +* ]] && sub=1
+
+at=0
+case "${args[$sub]:-}" in
+  nextest) [[ "${args[$((sub + 1))]:-}" == run ]] && at=$((sub + 2)) ;;
+  # Wrappers that forward to a cargo subcommand named further along.
+  hack | ndk | llvm-cov)
+    for ((i = sub + 1; i < ${#args[@]}; i++)); do
+      if compiles "${args[$i]}" || [[ "${args[$i]}" == nextest ]]; then
+        at=$((i + 1))
+        break
+      fi
+    done
+    ;;
+  *) compiles "${args[$sub]:-}" && at=$((sub + 1)) ;;
+esac
+
+for arg in "${args[@]}"; do
+  [[ "${arg}" == "--" ]] && break
+  [[ "${arg}" == --timings* ]] && at=0
+done
+
+if ((at > 0)); then
+  exec "${WATERUI_CARGO_REAL}" "${args[@]:0:at}" --timings "${args[@]:at}"
+fi
+exec "${WATERUI_CARGO_REAL}" "${args[@]}"

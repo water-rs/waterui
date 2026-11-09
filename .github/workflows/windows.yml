@@ -183,6 +183,10 @@ jobs:
         uses: ./.github/actions/nightly-failure-issue
         with:
           template: .github/WINDOWS_FAILURE.md
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: windows-test
 
   # Every crate's own optional features, in its own job so the test tarball
   # above holds one feature variant of the dependency graph instead of two
@@ -283,6 +287,10 @@ jobs:
         uses: ./.github/actions/nightly-failure-issue
         with:
           template: .github/WINDOWS_FAILURE.md
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: windows-all-features
 
   lint:
     name: windows-latest (lint)
@@ -329,3 +337,7 @@ jobs:
         uses: ./.github/actions/nightly-failure-issue
         with:
           template: .github/WINDOWS_FAILURE.md
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: windows-lint

@@ -365,6 +365,12 @@ jobs:
       # covers families no single job owns (install-tool pins, apt
       # packages, in-tree tool builds) (#1441). This job's own superseded
       # generation is still the newest of its purpose here, so it stays.
+      # Published before the target archive is saved, so the reports stay
+      # out of it.
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-lint
       - name: Sweep superseded cache generations
         if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
         uses: ./.github/actions/retire-cargo-caches
@@ -476,6 +482,10 @@ jobs:
         env:
           SCOPE: ${{ inputs.full && 'workspace' || inputs.affected }}
         run: python3 .github/scripts/wasm_gated.py "$SCOPE"
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-wasm
 
   # The workspace test run, per platform, also carrying the doctests that
   # share its build. It is the single longest leg in CI and everything else
@@ -592,6 +602,10 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-${{ matrix.os }}
 
   # Every crate's own optional features, run. This pass used to be
   # `cargo nextest run --locked --all-features` inside the `test` job, with neither
@@ -681,6 +695,10 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-all-features
 
   # The macOS all-features pass: every crate's own optional features, with the
   # same exclusions as the Linux `all-features` job (see there). It used to
@@ -753,6 +771,10 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-macos-all-features
 
   # The nightly's macOS host lint leg: hydrolysis's `cfg(target_os =
   # "macos")` code, waterui-cli's Apple-side plumbing and every other crate
@@ -800,6 +822,10 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-macos-lint
 
   # The 36 example crates, once per platform (#330). They used to be workspace
   # members in every pass above, so each example was compiled under every
@@ -856,6 +882,10 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-examples-${{ matrix.os }}
 
   # Hydrolysis's Android leg (#1428). `runner::android` is
   # `cfg(target_os = "android")`-gated, so no host leg ever compiles it;
@@ -911,6 +941,10 @@ jobs:
       # The android_planes harness is `cfg(target_os = "android")` past its
       # pattern code, so only this target compiles it.
       - run: cargo clippy --locked --profile ci-check -p android-planes --target aarch64-linux-android --all-targets -- -D warnings
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-hydrolysis-android
 
   # The Android host library's own lint (`warningsAsErrors`): the Kotlin
   # half of the Android runner, which no cargo pass reaches (#2047), plus
@@ -1033,6 +1067,10 @@ jobs:
           -PwateruiPackage=${{ steps.embedded-library.outputs.package }}
           -PwateruiCompileSdk=${{ steps.embedded-library.outputs.compile-sdk }}
           -PwateruiMinSdk=${{ steps.embedded-library.outputs.min-sdk }}
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-hydrolysis-android-host
 
   # Hydrolysis's Windows leg, beside the Android one for the same reason:
   # `cfg(target_os = "windows")` code — the winit platform's cursor,
@@ -1073,6 +1111,10 @@ jobs:
       # through `dxc` for Windows targets (#2726).
       - uses: ./.github/actions/install-dxc
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --features winit --target x86_64-pc-windows-msvc -- -D warnings
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-hydrolysis-windows
 
   # The Apple-target legs beside the cross-target ones above (#2143,
   # #2476): the Linux lint compiles `cfg(target_os = "macos")` and
@@ -1124,6 +1166,10 @@ jobs:
           affected: ${{ inputs.affected }}
           target: ${{ matrix.target }}
           group: ${{ matrix.group }}
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-macos-${{ strategy.job-index }}
 
   # ── Cherenkov engine legs (#1449) ──────────────────────────────────────
   # The checks water-rs/cherenkov's `ci.yml` ran on every pull request,
@@ -1200,6 +1246,10 @@ jobs:
           path: /tmp/cherenkov-bench-*/out/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-cherenkov-corpus
 
   # The Metal side: the lint of every Metal adapter feature, the map-scene
   # frame measure that hangs on no Linux adapter, and the presentation
@@ -1273,6 +1323,10 @@ jobs:
               assert d.get('present') or d.get('unsupported'), f'{f} lacks the presentation record'
           print(f'{len(files)} presentation reports ({len(measured)} measured)')
           PY
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-cherenkov-metal
 
   # The Android build: the whole bench binary and the Vulkan
   # external-frame device test cross-compiled for aarch64. The cherenkov
@@ -1335,3 +1389,7 @@ jobs:
           name: vulkan-external-android-tests
           path: target/aarch64-linux-android/release/deps/vulkan_external_android-*
           if-no-files-found: error
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-cherenkov-android

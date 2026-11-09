@@ -145,6 +145,11 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-targeted-prepare
+
   e2e-ios:
     name: e2e-ios-${{ matrix.example }}
     if: inputs.platforms == 'ios' || inputs.platforms == 'both'
@@ -259,6 +264,10 @@ jobs:
           name: e2e-baselines-ios-${{ matrix.example }}
           path: e2e-baselines/
           retention-days: 7
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-targeted-ios-${{ matrix.example }}
 
   e2e-macos:
     name: e2e-macos-${{ matrix.example }}
@@ -360,3 +369,7 @@ jobs:
           name: e2e-baselines-macos-${{ matrix.example }}
           path: e2e-baselines/
           retention-days: 7
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-targeted-macos-${{ matrix.example }}

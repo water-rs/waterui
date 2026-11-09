@@ -55,3 +55,7 @@ jobs:
           name: divan-${{ github.sha }}-${{ github.run_id }}
           path: divan-output.txt
           if-no-files-found: error
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-bench
