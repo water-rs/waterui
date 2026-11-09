@@ -25,10 +25,17 @@ runs:
         mkdir -p "${stage}"
         roots=("${GITHUB_WORKSPACE}" "${RUNNER_TEMP}")
         [[ -n "${CARGO_TARGET_DIR:-}" ]] && roots+=("${CARGO_TARGET_DIR}")
+        # The roots can nest (a CARGO_TARGET_DIR inside the workspace), so
+        # one report can be listed under several roots: list every root
+        # first, then move each report that is still in place, once.
+        reports=()
         while IFS= read -r -d '' report; do
-          mv "${report}" "${stage}/"
+          reports+=("${report}")
         done < <(find "${roots[@]}" -path '*/cargo-timings/cargo-timing-*.html' \
           -newer "${RUNNER_TEMP}/cargo-timings-start" -print0 2>/dev/null)
+        for report in ${reports[@]+"${reports[@]}"}; do
+          [[ -e "${report}" ]] && mv "${report}" "${stage}/"
+        done
         echo "stage=$(find "${stage}" -type f | wc -l | tr -d ' ')" >> "${GITHUB_OUTPUT}"
     - uses: actions/upload-artifact@v4
       if: steps.collect.outputs.stage != '0'
