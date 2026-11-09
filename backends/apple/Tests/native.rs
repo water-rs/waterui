@@ -3414,6 +3414,7 @@ mod material_reduce_transparency {
 /// real link deliveries.
 #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
 mod gpu_surface {
+    use std::cell::Cell;
     use std::rc::Rc;
 
     use libtest_mimic::Trial;
@@ -3476,6 +3477,10 @@ mod gpu_surface {
             Trial::test(
                 "gpu_surface::a_scope_end_after_teardown_settles_quietly",
                 a_scope_end_after_teardown_settles_quietly,
+            ),
+            Trial::test(
+                "gpu_surface::a_teardown_inside_a_capture_scope_wakes_the_capture",
+                a_teardown_inside_a_capture_scope_wakes_the_capture,
             ),
             Trial::test(
                 "gpu_surface::a_scope_end_beyond_the_orphaned_count_still_panics",
@@ -3804,6 +3809,31 @@ mod gpu_surface {
         // Unmounts mid-scope and delivers both owed ends — a panic here
         // is the pre-fix crash a late-settling registration produced.
         mounted.unmount_then_end_captures(2);
+        Ok(())
+    }
+
+    /// A surface torn down inside an open capture scope calls the
+    /// capture's redraw hook once: it can never redraw again to replay a
+    /// deferral it answered, so its departure is the capture's retry
+    /// signal.
+    pub fn a_teardown_inside_a_capture_scope_wakes_the_capture() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        let wakes = Rc::new(Cell::new(0_u32));
+        mounted.begin_capture(Rc::new({
+            let wakes = Rc::clone(&wakes);
+            move || wakes.set(wakes.get() + 1)
+        }));
+        let before = wakes.get();
+        mounted.unmount_then_end_captures(1);
+        assert_eq!(
+            wakes.get(),
+            before + 1,
+            "the teardown wakes the capture holding the scope exactly once"
+        );
         Ok(())
     }
 
@@ -4239,6 +4269,7 @@ mod gpu_surface {
 /// generation publishes instead of retrying the failed one forever.
 #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
 mod filtered {
+    use std::cell::Cell;
     use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
@@ -4313,6 +4344,10 @@ mod filtered {
                 a_view_collapsed_mid_capture_renders_transparent,
             ),
             Trial::test(
+                "filtered::a_teardown_mid_capture_wakes_the_parent",
+                a_teardown_mid_capture_wakes_the_parent,
+            ),
+            Trial::test(
                 "filtered::unmount_releases_the_state_and_view",
                 unmount_releases_the_state_and_view,
             ),
@@ -4383,7 +4418,7 @@ mod filtered {
             pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
             "the filtered view presents its first frame"
         );
-        let parent = filtered.parent_capture();
+        let parent = filtered.parent_capture(|| {});
 
         let control = parent.start();
         assert!(
@@ -4414,6 +4449,54 @@ mod filtered {
         assert!(
             parent.pixels().iter().all(|pixel| *pixel == [0; 4]),
             "the collapsed view's region of the parent's target is transparent"
+        );
+        Ok(())
+    }
+
+    /// A filtered output torn down while a parent capture holds it in an
+    /// open external-render scope wakes that capture: the leaf can never
+    /// redraw again to replay a deferral it answered, so its departure
+    /// is the parent's retry signal, and the retry over the subtree it
+    /// left lands.
+    pub fn a_teardown_mid_capture_wakes_the_parent() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let filtered = pollster::block_on(MountedFilteredSurface::mount_filling(mtm))
+            .map_err(|error| format!("a mounted filling filtered surface: {error}"))?;
+        filtered.ensure_attached();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
+            "the filtered view presents its first frame"
+        );
+        let woken = Rc::new(Cell::new(false));
+        let parent = filtered.parent_capture({
+            let woken = Rc::clone(&woken);
+            move || woken.set(true)
+        });
+
+        // The prepare joins the leaf; the teardown lands before the
+        // submit, exactly where a transition run ending mid-capture
+        // drops its effect.
+        let in_flight = parent.start();
+        woken.set(false);
+        let _runtime = filtered.unmount();
+        assert!(
+            woken.get(),
+            "the torn-down output wakes the capture holding its scope"
+        );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || in_flight.landed()),
+            "the capture in flight over the torn-down output settles"
+        );
+
+        let retry = parent.start();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || retry.landed()),
+            "the woken retry completes"
+        );
+        let outcome = retry.take();
+        assert!(
+            matches!(outcome, Some(Ok(()))),
+            "the retry over the subtree the output left lands, got {outcome:?}"
         );
         Ok(())
     }

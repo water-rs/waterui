@@ -2227,6 +2227,16 @@ impl Drop for FilteredGuard {
         }
         self.state.park.clear();
         detach_if_needed(&self.state);
+        // An enclosing capture still holding this output in an open
+        // external-render scope has lost content it may have deferred
+        // on: nothing of this leaf can redraw again, so its departure is
+        // the wake the capture's retry waits for.
+        if self.state.external_count.get() > 0 {
+            let redraw = self.state.external_redraw.borrow().clone();
+            if let Some(redraw) = redraw {
+                redraw();
+            }
+        }
     }
 }
 
@@ -2797,6 +2807,15 @@ impl FrozenEffect {
     pub fn request_render(&self) {
         initialize_gpu(&self.state);
         request_render(&self.state);
+    }
+}
+
+impl Drop for FrozenEffect {
+    /// The output leaves its host before the teardown clears its
+    /// capturable slot: a detached presentation layer left in the tree
+    /// is a Metal layer no capture can resolve.
+    fn drop(&mut self) {
+        cocoa_ui::view::remove_from_superview(&self.view);
     }
 }
 
@@ -3542,18 +3561,19 @@ pub mod native_test {
         }
 
         /// A parent capture over the fixture container: the filtered leaf
-        /// joins it as an external surface.
+        /// joins it as an external surface and routes its redraw requests
+        /// to `on_redraw`.
         ///
         /// # Panics
         ///
         /// Off the main thread, or when the device refuses the target.
-        pub fn parent_capture(&self) -> ParentCapture {
+        pub fn parent_capture(&self, on_redraw: impl Fn() + 'static) -> ParentCapture {
             let mtm = MainThreadMarker::new().expect("the fixture runs on the main thread");
             let capture = Rc::new(cocoa_ui::capture::ViewCapture::new(
                 mtm,
                 self.container.clone(),
             ));
-            capture.set_on_redraw(|| {});
+            capture.set_on_redraw(on_redraw);
             let context = self.runtime.context();
             let device = crate::gpu_runtime::raw_metal_device(&context);
             let bounds = cocoa_ui::view::bounds(&self.container);
