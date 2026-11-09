@@ -10,7 +10,7 @@ use cocoa_ui::{MainThreadMarker, PlatformView, view};
 use waterui_backend_core::Environment;
 use waterui_core::transition::{GhostSlot, TransitionState};
 
-use crate::transition::clock::TransitionDriver;
+use crate::transition::clock::{Timeline, TransitionDriver};
 use crate::transition::property::PropertyTarget;
 use crate::transition::retire::RetiredVisual;
 
@@ -118,8 +118,6 @@ impl Ghost {
         slot: Option<GhostSlot>,
         on_complete: Box<dyn FnOnce()>,
     ) -> Self {
-        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
-        let _ = env; // no filtered pipeline, no GPU services to keep
         let target = PropertyTarget::new(visual.host.clone(), visual.root.clone());
         let run = Rc::new_cyclic(|_weak: &Weak<GhostRun>| {
             // The `captures_content` realization (§2.7): the retired
@@ -171,7 +169,7 @@ impl Ghost {
                 }
             }
         });
-        let driver = TransitionDriver::start(mtm, &run.visual.host, {
+        let driver = TransitionDriver::start(mtm, &run.visual.host, Timeline::of(env), {
             let weak = Rc::downgrade(&run);
             move |delta| {
                 let Some(run) = weak.upgrade() else {

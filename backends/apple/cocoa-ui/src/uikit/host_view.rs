@@ -20,8 +20,7 @@ use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_cl
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    NSObjectUIAccessibility, NSObjectUIAccessibilityAction,
-    UIAccessibilityConvertFrameToScreenCoordinates, UIAccessibilityCustomAction,
+    NSObjectUIAccessibility, NSObjectUIAccessibilityAction, UIAccessibilityCustomAction,
     UIAccessibilityTraitButton, UIAccessibilityTraitLink, UICommand, UIEdgeInsets, UIEvent,
     UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyCommand, UIMenu, UIPress,
     UIPressesEvent, UITraitDisplayScale, UITraitEnvironment, UIView,
@@ -33,6 +32,7 @@ use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Edges, MeasureProposal, Point, Rect, Size};
 use crate::keys::{self, KeyEvent};
 use crate::pointer::{PointerEvent, PointerEvents};
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::visibility::VisibilityEmitter;
 
 /// What a [`HostView`]'s hit-test handler decides for a point.
@@ -123,10 +123,9 @@ pub struct HostViewIvars {
     capturable: crate::capture::CapturableSlot,
     /// The display-scale registration serving backing-scale subscribers.
     backing_changed: RefCell<Option<TraitChangeObservation>>,
-    /// Whether `accessibilityFrame` reports the union of the direct
-    /// children's frames — the extent a labelled layout container resolves
-    /// to — instead of the view's own frame (water-rs/waterui#1482).
-    reports_content_extent: Cell<bool>,
+    /// How the parent layout placed this view, and the response
+    /// rectangle `accessibilityFrame` reports.
+    geometry: ResponseGeometry,
     /// Whether the host merges its descendants' accessibility into itself —
     /// `SwiftUI` `.accessibilityElement(children: .combine)` semantics for the
     /// `Button` element a tappable host becomes (water-rs/waterui#2975).
@@ -173,7 +172,7 @@ impl fmt::Debug for HostViewIvars {
                 &self.accessibility_activate.borrow().is_some(),
             )
             .field("backing_changed", &self.backing_changed.borrow().is_some())
-            .field("reports_content_extent", &self.reports_content_extent.get())
+            .field("geometry", &self.geometry)
             .field(
                 "combines_accessibility_children",
                 &self.combines_accessibility_children.get(),
@@ -313,6 +312,7 @@ define_class!(
                 {
                     self.setFrame(window.bounds());
                 }
+                self.ivars().geometry.commit(self);
                 let handler = self.ivars().layout.borrow().clone();
                 if let Some(handler) = handler {
                     handler(self);
@@ -500,14 +500,11 @@ define_class!(
         #[unsafe(method(accessibilityFrame))]
         fn accessibility_frame_override(&self) -> CGRect {
             guarded("HostView accessibilityFrame", || {
-                if !self.ivars().reports_content_extent.get() {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
                     // SAFETY: see the module safety note.
-                    return unsafe { msg_send![super(self), accessibilityFrame] };
-                }
-                UIAccessibilityConvertFrameToScreenCoordinates(
-                    self.content_extent(),
-                    self,
-                )
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
             })
         }
 
@@ -627,6 +624,12 @@ define_class!(
         }
     }
 );
+
+impl ReportsResponse for HostView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
 
 impl HostView {
     /// A scope routing context-menu commands through this host's own registry.
@@ -856,7 +859,8 @@ impl HostView {
     /// than reaching state the owner released, and the handlers no longer
     /// keep that state alive: layout, resize, hit-test, backing-changed,
     /// window, superview, measure, primary content, scroll surface, pointer,
-    /// key and accessibility-activate. The hover recognizer is removed as
+    /// key, accessibility-activate and the response geometry's. The hover
+    /// recognizer is removed as
     /// well, since it exists only to serve the pointer handler.
     pub fn clear_handlers(&self) {
         let ivars = self.ivars();
@@ -878,6 +882,7 @@ impl HostView {
         ivars.accessibility_activate.replace(None);
         ivars.menu_commands.borrow_mut().clear();
         ivars.backing_changed.replace(None);
+        ivars.geometry.clear();
     }
 
     /// One-way: from now on this view and its subtree are a ghost —
@@ -998,18 +1003,6 @@ impl HostView {
         view.removeFromSuperview();
     }
 
-    /// Moves and resizes the view to `frame`, in its superview's coordinates.
-    /// Whether `accessibilityFrame` reports the union of the direct
-    /// children's frames — the extent this container resolved its content
-    /// to — instead of the view's own frame. A labelled layout container
-    /// (`Frame`, `vstack`, …) is assigned the whole region but places its
-    /// content in the resolved box, so a label on it announces the
-    /// children's extent, not the assignment (water-rs/waterui#1482).
-    /// Computed live on every read; nothing is stored.
-    pub fn set_reports_content_extent(&self, reports: bool) {
-        self.ivars().reports_content_extent.set(reports);
-    }
-
     /// Whether the host merges its descendants' accessibility into itself —
     /// `SwiftUI` `.accessibilityElement(children: .combine)` semantics for
     /// the `Button`-trait element a tappable host becomes
@@ -1026,21 +1019,6 @@ impl HostView {
     /// keep needing elements of their own.
     pub fn set_combines_accessibility_children(&self, combines: bool) {
         self.ivars().combines_accessibility_children.set(combines);
-    }
-
-    /// The union of the direct, non-hidden subviews' frames — in this
-    /// view's coordinate space — or the view's own bounds when it has
-    /// none.
-    fn content_extent(&self) -> CGRect {
-        let mut extent: Option<CGRect> = None;
-        for subview in &self.subviews() {
-            if subview.isHidden() {
-                continue;
-            }
-            let frame = subview.frame();
-            extent = Some(extent.map_or(frame, |u| union(u, frame)));
-        }
-        extent.unwrap_or_else(|| self.bounds())
     }
 
     /// The accessibility elements `view` flattens to for a combining
@@ -1244,11 +1222,4 @@ pub fn window_root(mtm: MainThreadMarker) -> Retained<HostView> {
             ..HostViewIvars::default()
         },
     )
-}
-
-/// The smallest rect containing `a` and `b`.
-fn union(a: CGRect, b: CGRect) -> CGRect {
-    let min = CGPoint::new(a.min().x.min(b.min().x), a.min().y.min(b.min().y));
-    let max = CGPoint::new(a.max().x.max(b.max().x), a.max().y.max(b.max().y));
-    CGRect::new(min, CGSize::new(max.x - min.x, max.y - min.y))
 }

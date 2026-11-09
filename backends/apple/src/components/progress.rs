@@ -38,6 +38,7 @@ use waterui_core::layout::{
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -200,18 +201,18 @@ fn measure_height(sizes: ChildSizes, control: Size) -> f64 {
     height
 }
 
-/// Lays out the children inside `view`'s bounds: label at the top,
-/// indicator centered when round or full-width when linear, value label at
-/// the bottom — `WuiProgress.performLayout` as manual frames.
+/// Lays out the children inside the `response` rectangle: label at the
+/// top, indicator centered when round or full-width when linear, value
+/// label at the bottom — `WuiProgress.performLayout` as manual frames.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the layout contract is f32; measured points always fit"
 )]
-fn layout_children(view: &PlatformView, state: &ProgressState) {
+fn layout_children(response: Rect, state: &ProgressState) {
     let Some(children) = &state.children else {
         return;
     };
-    let width = cocoa_ui::view::bounds(view).size.width;
+    let width = response.size.width;
     let sizes = child_sizes(children, Some(width as f32), state.value);
     let control = control_size(&state.progress, state.variant);
 
@@ -219,7 +220,7 @@ fn layout_children(view: &PlatformView, state: &ProgressState) {
     let label_width = f64::from(sizes.label.width).min(width);
     cocoa_ui::view::set_frame(
         children.label.view(),
-        Rect::new(0.0, y, label_width, f64::from(sizes.label.height)),
+        Rect::new(0.0, y, label_width, f64::from(sizes.label.height)).translated(response.origin),
     );
     y += f64::from(sizes.label.height);
     if sizes.label.height > 0.0 {
@@ -235,7 +236,8 @@ fn layout_children(view: &PlatformView, state: &ProgressState) {
     };
     cocoa_ui::view::set_frame(
         as_view(&state.progress),
-        Rect::new(control_x, y, control_width, f64::from(control.height)),
+        Rect::new(control_x, y, control_width, f64::from(control.height))
+            .translated(response.origin),
     );
     y += f64::from(control.height);
 
@@ -244,7 +246,8 @@ fn layout_children(view: &PlatformView, state: &ProgressState) {
         let value_width = f64::from(sizes.value_label.width).min(width);
         cocoa_ui::view::set_frame(
             children.value_label.view(),
-            Rect::new(0.0, y, value_width, f64::from(sizes.value_label.height)),
+            Rect::new(0.0, y, value_width, f64::from(sizes.value_label.height))
+                .translated(response.origin),
         );
     } else {
         cocoa_ui::view::set_frame(children.value_label.view(), Rect::ZERO);
@@ -544,7 +547,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         host.set_layout_handler({
             let state = Rc::clone(&state);
-            move |view| layout_children(view, &state.borrow())
+            move |view| layout_children(proposal::response(view), &state.borrow())
         });
 
         let mut leaf = NativeLeaf::new(

@@ -16,7 +16,7 @@ use alloc::string::String;
 use core::cell::RefCell;
 
 use cocoa_ui::slider::ValueAnimation;
-use cocoa_ui::{PlatformView, Rect, Retained};
+use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::animation::Animation;
 use waterui::component::slider::SliderConfig;
 use waterui::reactive::Signal;
@@ -30,6 +30,7 @@ use waterui_core::layout::{
 use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -152,17 +153,16 @@ fn child_sizes(children: &Children) -> ChildSizes {
     }
 }
 
-/// Lays out the children inside `view`'s bounds: the label at top-leading,
-/// then the slider row — min label, track, max label — below it. Manual
-/// frames replicate `WuiSlider`'s `AutoLayout` constraints, with the whole
-/// arrangement mirrored when the view is right-to-left (leading and
-/// trailing swap edges).
-fn layout_children(view: &PlatformView, state: &SliderState) {
+/// Lays out the children inside the `response` rectangle: the label at
+/// top-leading, then the slider row — min label, track, max label — below
+/// it. Manual frames replicate `WuiSlider`'s `AutoLayout` constraints, with
+/// the whole arrangement mirrored when the view is right-to-left (leading
+/// and trailing swap edges).
+fn layout_children(view: &PlatformView, response: Rect, state: &SliderState) {
     let Some(children) = &state.children else {
         return;
     };
-    let bounds = cocoa_ui::view::bounds(view);
-    let width = bounds.size.width;
+    let width = response.size.width;
     let sizes = child_sizes(children);
     let slider_height = track_height(&state.slider);
     let rtl = cocoa_ui::view::is_right_to_left(view);
@@ -171,7 +171,7 @@ fn layout_children(view: &PlatformView, state: &SliderState) {
     // right-to-left `NSLayoutConstraint` pass would give.
     let place = |child: &PlatformView, x: f64, y: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, y, w, h));
+        view::set_frame(child, Rect::new(x, y, w, h).translated(response.origin));
     };
 
     place(
@@ -373,7 +373,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         host.set_layout_handler({
             let state = Rc::clone(&state);
             move |view| {
-                layout_children(view, &state.borrow());
+                layout_children(view, proposal::response(view), &state.borrow());
             }
         });
 

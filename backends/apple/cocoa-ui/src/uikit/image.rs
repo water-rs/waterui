@@ -23,7 +23,9 @@ use objc2_ui_kit::{
 use super::trait_change::{TraitChangeObservation, register_trait_change};
 use crate::callback::guarded;
 use crate::geometry::Size;
-use crate::image::ScaleMode;
+use crate::image::{Gravity, ScaleMode, gravities};
+use crate::response::{ReportsResponse, ResponseGeometry};
+use crate::view;
 
 /// Receives a lifecycle event of the view — layout, a window move, a
 /// display-scale change.
@@ -40,12 +42,15 @@ pub struct ImageViewIvars {
     on_window_changed: RefCell<Option<LifecycleHandler>>,
     /// The display-scale registration serving backing-scale subscribers.
     backing_changed: RefCell<Option<TraitChangeObservation>>,
+    /// How the view was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl fmt::Debug for ImageViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImageViewIvars")
             .field("symbol_name", &self.symbol_name.borrow())
+            .field("geometry", &self.geometry)
             .field("on_layout", &self.on_layout.borrow().is_some())
             .field(
                 "on_window_changed",
@@ -87,11 +92,25 @@ define_class!(
             guarded("ImageView layoutSubviews", || {
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+                self.ivars().geometry.commit(self);
+                self.place_in_response();
                 let handler = self.ivars().on_layout.borrow().clone();
                 if let Some(handler) = handler {
                     handler(self);
                 }
             });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("ImageView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         // SAFETY: see the module safety note.
@@ -109,6 +128,12 @@ define_class!(
     }
 );
 
+impl ReportsResponse for ImageView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
+
 impl ImageView {
     /// An empty image view scaled proportionally.
     #[must_use]
@@ -118,11 +143,35 @@ impl ImageView {
             on_layout: RefCell::new(None),
             on_window_changed: RefCell::new(None),
             backing_changed: RefCell::new(None),
+            geometry: ResponseGeometry::default(),
         });
         // SAFETY: `initWithFrame:` is the inherited designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
         this.set_scale_mode(ScaleMode::Fit);
         this
+    }
+
+    /// A leaf image view draws its image in its response rectangle, at the
+    /// image's own size — its owner answers that size — with the view's
+    /// frame left the allocation its parent assigned.
+    fn place_in_response(&self) {
+        let Some(response) = self.ivars().geometry.response_rect(self) else {
+            return;
+        };
+        let mode = match gravities(view::bounds(self), view::to_layout_space(self, response)) {
+            (Gravity::Start, Gravity::Start) => UIViewContentMode::TopLeft,
+            (Gravity::Centre, Gravity::Start) => UIViewContentMode::Top,
+            (Gravity::End, Gravity::Start) => UIViewContentMode::TopRight,
+            (Gravity::Start, Gravity::Centre) => UIViewContentMode::Left,
+            (Gravity::Centre, Gravity::Centre) => UIViewContentMode::Center,
+            (Gravity::End, Gravity::Centre) => UIViewContentMode::Right,
+            (Gravity::Start, Gravity::End) => UIViewContentMode::BottomLeft,
+            (Gravity::Centre, Gravity::End) => UIViewContentMode::Bottom,
+            (Gravity::End, Gravity::End) => UIViewContentMode::BottomRight,
+        };
+        if self.contentMode() != mode {
+            self.setContentMode(mode);
+        }
     }
 
     /// How the image scales inside the view's bounds.
