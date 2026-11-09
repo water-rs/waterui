@@ -33,6 +33,7 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -144,38 +145,37 @@ impl CalendarLeaf {
             .size
     }
 
-    /// Frames the label across the top and the calendar under it, at the
-    /// leading edge.
-    fn layout(&self, view: &PlatformView) {
-        let bounds = cocoa_ui::view::bounds(view);
+    /// Frames the label across the top of `view`'s `response` rectangle
+    /// and the calendar under it, at the leading edge.
+    fn layout(&self, view: &PlatformView, response: Rect) {
+        let width = response.size.width;
         #[expect(
             clippy::cast_possible_truncation,
             reason = "the layout contract is f32; view widths always fit"
         )]
-        let label_height = f64::from(self.label_size(Some(bounds.size.width as f32)).height);
+        let label_height = f64::from(self.label_size(Some(width as f32)).height);
         cocoa_ui::view::set_frame(
             self.label.view(),
-            Rect::new(0.0, 0.0, bounds.size.width, label_height),
+            Rect::new(0.0, 0.0, width, label_height).translated(response.origin),
         );
         let top = label_height + LABEL_SPACING;
+        // AppKit's calendar has a fixed size; UIKit's fills the rest.
         #[cfg(target_os = "macos")]
-        let frame = {
+        let (calendar_width, calendar_height) = {
             let size = self.calendar.intrinsic_size();
-            let x = if cocoa_ui::view::is_right_to_left(view) {
-                bounds.size.width - size.width
-            } else {
-                0.0
-            };
-            Rect::new(x, top, size.width, size.height)
+            (size.width, size.height)
         };
         #[cfg(target_os = "ios")]
-        let frame = Rect::new(
-            0.0,
-            top,
-            bounds.size.width,
-            (bounds.size.height - top).max(0.0),
+        let (calendar_width, calendar_height) = (width, (response.size.height - top).max(0.0));
+        let x = if cocoa_ui::view::is_right_to_left(view) {
+            width - calendar_width
+        } else {
+            0.0
+        };
+        cocoa_ui::view::set_frame(
+            self.calendar_view(),
+            Rect::new(x, top, calendar_width, calendar_height).translated(response.origin),
         );
-        cocoa_ui::view::set_frame(self.calendar_view(), frame);
     }
 }
 
@@ -277,8 +277,14 @@ mod appearance {
     /// Every theme token the calendar draws with, by role.
     fn tokens(env: &waterui::Environment) -> [(CalendarColorRole, Computed<WorkingColor>); 6] {
         [
-            (CalendarColorRole::Foreground, Foreground.resolve(env).computed()),
-            (CalendarColorRole::Muted, MutedForeground.resolve(env).computed()),
+            (
+                CalendarColorRole::Foreground,
+                Foreground.resolve(env).computed(),
+            ),
+            (
+                CalendarColorRole::Muted,
+                MutedForeground.resolve(env).computed(),
+            ),
             (CalendarColorRole::Separator, Border.resolve(env).computed()),
             (CalendarColorRole::Accent, Accent.resolve(env).computed()),
             (
@@ -307,8 +313,14 @@ mod appearance {
 
     /// The colours the calendar starts with.
     pub(super) fn colors(env: &waterui::Environment) -> CalendarColors {
-        let [foreground, muted, separator, accent, selection, selection_foreground] =
-            tokens(env).map(|(role, token)| color_of(env, role, &token));
+        let [
+            foreground,
+            muted,
+            separator,
+            accent,
+            selection,
+            selection_foreground,
+        ] = tokens(env).map(|(role, token)| color_of(env, role, &token));
         CalendarColors {
             foreground,
             muted,
@@ -353,7 +365,10 @@ mod appearance {
                 CalendarNavigation::Selection,
                 spoken(calendar_selected_month_label()),
             ),
-            (CalendarNavigation::Next, spoken(calendar_next_month_label())),
+            (
+                CalendarNavigation::Next,
+                spoken(calendar_next_month_label()),
+            ),
         ]
     }
 
@@ -461,7 +476,7 @@ pub(super) fn render_calendar<S: CalendarSelection>(
 
     host.set_layout_handler({
         let calendar = Rc::clone(&calendar);
-        move |view| calendar.layout(view)
+        move |view| calendar.layout(view, proposal::response(view))
     });
 
     let mut leaf = NativeLeaf::new(
@@ -502,7 +517,11 @@ pub(super) fn render_calendar<S: CalendarSelection>(
     });
     leaf.watch(&locale, {
         let calendar = Rc::clone(&calendar);
-        move |change| calendar.calendar.set_locale(&change.value().canonical_tag())
+        move |change| {
+            calendar
+                .calendar
+                .set_locale(&change.value().canonical_tag());
+        }
     });
 
     #[cfg(target_os = "macos")]

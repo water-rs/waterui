@@ -32,10 +32,50 @@ use cocoa_ui::{PlatformView, Rect, view};
 use alloc::vec::Vec;
 #[cfg(target_os = "ios")]
 use cocoa_ui::Retained;
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", feature = "fixed_container"))]
 use cocoa_ui::geometry::EdgeInsets;
 #[cfg(target_os = "ios")]
 use objc2_core_foundation::CGRect;
+
+/// The frame a host writes for one child, and how far it paints the child
+/// past the allocation its layout assigned (§7.1: a fill and a scroll
+/// surface extend into the bands they touch without moving their
+/// content).
+#[cfg(feature = "fixed_container")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChildFrame {
+    /// The frame the host writes.
+    pub frame: Rect,
+    /// How far `frame` reaches past the allocation on each edge.
+    pub painted_past: EdgeInsets,
+}
+
+#[cfg(feature = "fixed_container")]
+impl ChildFrame {
+    /// A frame that is the child's allocation.
+    #[must_use]
+    pub const fn laid_out(frame: Rect) -> Self {
+        Self {
+            frame,
+            painted_past: EdgeInsets::ZERO,
+        }
+    }
+
+    /// The allocation `laid_out`, painted out to `frame`.
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub fn painted(laid_out: Rect, frame: Rect) -> Self {
+        Self {
+            frame,
+            painted_past: EdgeInsets::new(
+                laid_out.origin.y - frame.origin.y,
+                laid_out.origin.x - frame.origin.x,
+                frame.origin.y + frame.size.height - (laid_out.origin.y + laid_out.size.height),
+                frame.origin.x + frame.size.width - (laid_out.origin.x + laid_out.size.width),
+            ),
+        }
+    }
+}
 
 /// The mask bit `cocoaUiIgnoredSafeAreaEdges` sets on an ignorer; the
 /// remaining bits are the container `Edges` mask in bits 0–3 and the
@@ -640,13 +680,19 @@ impl<'a> LayoutContext<'a> {
     /// the host's bounds. On an edge no region releases, the target is
     /// the boundary itself, so an edge with no extension stays where it
     /// was laid out.
+    ///
+    /// A scroll surface's and a fill's extension is paint only (§7.1): the
+    /// answer carries how far the frame reaches past the laid-out `frame`,
+    /// which stays the child's allocation. An ignorer and a safe-area
+    /// manager lay their content out into the extension, so it is their
+    /// allocation.
     #[cfg(feature = "fixed_container")]
     #[must_use]
-    pub fn extend_child(&self, child: &PlatformView, frame: Rect, fill_slot: bool) -> Rect {
+    pub fn extend_child(&self, child: &PlatformView, frame: Rect, fill_slot: bool) -> ChildFrame {
         // Inside a scroll surface nothing touches an edge — the surface
         // owns its subtree's safe-area contract.
         if self.inside_scroll {
-            return frame;
+            return ChildFrame::laid_out(frame);
         }
         let covered = self.child_covered(child);
         let released = fold_released(&self.chain, &self.window, &covered, self.tolerance);
@@ -657,13 +703,20 @@ impl<'a> LayoutContext<'a> {
                 Self::accumulated(child, &covered, released),
                 &covered,
             );
-            frame.extended_through(within, target, self.tolerance)
+            ChildFrame::laid_out(frame.extended_through(within, target, self.tolerance))
         } else if view::is_scroll_surface(child) || (fill_slot && is_fill(child)) {
-            frame.extended_through(within, self.window.window_rect(self.host), self.tolerance)
+            ChildFrame::painted(
+                frame,
+                frame.extended_through(within, self.window.window_rect(self.host), self.tolerance),
+            )
         } else if manages_safe_area(child) {
-            frame.extended_through(within, view::bounds(self.host), self.tolerance)
+            ChildFrame::laid_out(frame.extended_through(
+                within,
+                view::bounds(self.host),
+                self.tolerance,
+            ))
         } else {
-            frame
+            ChildFrame::laid_out(frame)
         }
     }
 
@@ -723,15 +776,15 @@ impl<'a> LayoutContext<'a> {
     /// extends to the host's bounds on the edges it touches.
     #[cfg(feature = "fixed_container")]
     #[must_use]
-    pub fn extend_child(&self, child: &PlatformView, frame: Rect, _fill_slot: bool) -> Rect {
+    pub fn extend_child(&self, child: &PlatformView, frame: Rect, _fill_slot: bool) -> ChildFrame {
         if manages_safe_area(child) {
-            frame.extended_through(
+            ChildFrame::laid_out(frame.extended_through(
                 self.safe_rect(),
                 view::bounds(self.host),
                 touch_tolerance(self.host),
-            )
+            ))
         } else {
-            frame
+            ChildFrame::laid_out(frame)
         }
     }
 

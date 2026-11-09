@@ -48,13 +48,16 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import lzma
 import os
+import re
 import subprocess
 import sys
 import tarfile
 import tempfile
 import tomllib
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -69,13 +72,57 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+RELEASE_DOWNLOAD = re.compile(
+    r"https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)"
+)
+
+
+def github_request(url: str, token: str, accept: str) -> urllib.request.Request:
+    """A request to `url` carrying `token`. The token is unredirected, so the
+    signed storage URL an asset download redirects to never receives it."""
+    request = urllib.request.Request(
+        url, headers={"Accept": accept, "X-GitHub-Api-Version": "2022-11-28"}
+    )
+    request.add_unredirected_header("Authorization", f"Bearer {token}")
+    return request
+
+
+def download_request(url: str) -> str | urllib.request.Request:
+    """What downloads `url`. With `GITHUB_TOKEN` set — every CI job exports
+    its job token — GitHub-hosted files are fetched as authenticated traffic:
+    a release download through the REST asset endpoint, a raw file with the
+    token. Without it the URL is fetched anonymously, as on a developer
+    machine."""
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        return url
+    if release := RELEASE_DOWNLOAD.fullmatch(url):
+        owner, repo, tag, name = (urllib.parse.unquote(part) for part in release.groups())
+        api = f"https://api.github.com/repos/{owner}/{repo}"
+        lookup = github_request(
+            f"{api}/releases/tags/{urllib.parse.quote(tag, safe='')}",
+            token,
+            "application/vnd.github+json",
+        )
+        assets = json.load(urllib.request.urlopen(lookup, timeout=120))["assets"]
+        matching = [asset for asset in assets if asset["name"] == name]
+        if len(matching) != 1:
+            raise SystemExit(f"release {owner}/{repo}@{tag} has no single asset named {name}")
+        return github_request(
+            f"{api}/releases/assets/{matching[0]['id']}", token, "application/octet-stream"
+        )
+    if url.startswith("https://raw.githubusercontent.com/"):
+        return github_request(url, token, "*/*")
+    return url
+
+
 def fetch(url: str, expected_sha256: str) -> bytes:
     """Download `url` and verify its SHA-256."""
     print(f"fetch {url}")
     data = None
     for attempt in range(4):
         try:
-            data = urllib.request.urlopen(url, timeout=120).read()
+            data = urllib.request.urlopen(download_request(url), timeout=120).read()
             break
         except Exception as error:  # noqa: BLE001 — report and retry, pin wins
             if attempt == 3:

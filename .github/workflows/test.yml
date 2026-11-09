@@ -69,6 +69,9 @@ env:
   # layers (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
+  # The nextest `test-fonts` setup script fetches its pinned GitHub-hosted
+  # sources as authenticated traffic with the job token (#3942).
+  GITHUB_TOKEN: ${{ github.token }}
 
 # Parallel jobs instead of one serial leg per platform (#329), with the
 # examples compiled once in their own job (#330). The cargo passes
@@ -206,22 +209,22 @@ jobs:
       - name: Clippy (workspace)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true'
         # waterui-apple / cocoa-ui compile only on Apple hosts; the macOS legs carry them.
-        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy --timings --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy (affected packages)
         if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && steps.writer.outputs.sweep != 'true' && steps.linux-scope.outputs.args != ''
         env:
           LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
           read -ra args <<< "${LINUX_ARGS}"
-          cargo clippy --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+          cargo clippy --timings --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy and rustdoc (comment-only owners)
         if: inputs.full == false && inputs['comment-only'] == true && steps.linux-scope.outputs.args != ''
         env:
           LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
           read -ra args <<< "${LINUX_ARGS}"
-          cargo clippy --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
-          RUSTDOCFLAGS="-D warnings" cargo doc --locked --profile ci-check --no-deps "${args[@]}" --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
+          cargo clippy --timings --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+          RUSTDOCFLAGS="-D warnings" cargo doc --timings --locked --profile ci-check --no-deps "${args[@]}" --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       # Filters and their portable description without the GPU stack: no other
       # pass builds `effects` with `gpu` off, so a GPU item leaking into the
       # description would otherwise go unnoticed until a non-GPU target built it.
@@ -229,7 +232,7 @@ jobs:
       # `waterui` turns `gpu` back on through feature unification.
       - name: Clippy (graphics effects without gpu)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'waterui-graphics')
-        run: cargo clippy --locked --profile ci-check -p waterui-graphics --no-default-features --features effects --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy --timings --locked --profile ci-check -p waterui-graphics --no-default-features --features effects --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # filtrate with the wgpu stack off: its `webgl` feature (a deliberate
       # compile_error off wasm32) is the only GPU runtime the crate has, so
       # this is the shared filter core in the shape non-GPU embedders
@@ -239,12 +242,12 @@ jobs:
       # package is in scope.
       - name: Clippy (filtrate without wgpu)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'filtrate')
-        run: cargo clippy --locked --profile ci-check -p filtrate --no-default-features --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy --timings --locked --profile ci-check -p filtrate --no-default-features --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # filtrate-core's `no_std` build: `filtrate` keeps the core's default
       # `std`, so no other leg compiles the crate without it (#3537).
       - name: Clippy (filtrate-core without std)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'filtrate')
-        run: cargo clippy --locked --profile ci-check -p filtrate-core --no-default-features --lib --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy --timings --locked --profile ci-check -p filtrate-core --no-default-features --lib --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The scene crate's `generator` feature compiles the corpus-writing
       # binaries (`generate-corpus`, `prepare-fonts`) that every scene
       # consumer's assets come from; the cherenkov repository kept a
@@ -252,7 +255,7 @@ jobs:
       # behind the default-feature pass.
       - name: Clippy (cherenkov-scene generator)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'cherenkov-scene')
-        run: cargo clippy --locked --profile ci-check -p cherenkov-scene --all-targets --features generator --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy --timings --locked --profile ci-check -p cherenkov-scene --all-targets --features generator --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # cherenkov-bench's test targets sit behind the adapter features:
       # the default-feature workspace pass never enables them, and the
       # `--all-features` sweep excludes the bench crate (`skia-metal` is
@@ -262,7 +265,7 @@ jobs:
       # already-built graph.
       - name: Check (cherenkov-bench test targets)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'cherenkov-bench')
-        run: cargo check --locked --profile ci-check -p cherenkov-bench --tests --features cherenkov,cherenkov-cpu --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
+        run: cargo check --timings --locked --profile ci-check -p cherenkov-bench --tests --features cherenkov,cherenkov-cpu --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
       # `--workspace`: the root manifest carries both `[workspace]` and
@@ -290,7 +293,7 @@ jobs:
       - name: Clippy (all features, workspace)
         if: inputs.full
         run: |
-          cargo clippy --locked --profile ci-check --workspace --all-targets --all-features --message-format=json-render-diagnostics \
+          cargo clippy --timings --locked --profile ci-check --workspace --all-targets --all-features --message-format=json-render-diagnostics \
             --exclude '*-example' \
             --exclude waterui-apple \
             --exclude cocoa-ui \
@@ -303,7 +306,7 @@ jobs:
       # crate has, it gets here.
       - name: Clippy (waterui-core, every stable feature)
         if: inputs.full
-        run: cargo clippy --locked --profile ci-check -p waterui-core --all-targets --features std,serde --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy --timings --locked --profile ci-check -p waterui-core --all-targets --features std,serde --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The browser engine crates live in water-rs/browsers; their own CI
       # owns every engine test and lint, including the compile-only, chromium
       # and real-engine lanes these steps used to run (#868).
@@ -321,22 +324,22 @@ jobs:
       # (#2047). Measured at 27 s on top of the default-feature graph.
       - name: Clippy (hydrolysis, checked feature set)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
-        run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy --timings --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # Rustdoc under the same set: the comment-only owners pass documents
       # hydrolysis with `default = []`, so intra-doc links inside the runner
       # modules these features gate in are never resolved there (#2013).
       - name: Rustdoc (hydrolysis, checked feature set)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --profile ci-check -p hydrolysis --no-deps --features accessibility,inspector-signals,testing,web,winit --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --timings --locked --profile ci-check -p hydrolysis --no-deps --features accessibility,inspector-signals,testing,web,winit --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       - name: Check (hydrolysis, no features)
         if: inputs.full
-        run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
+        run: cargo check --timings --locked --profile ci-check -p hydrolysis --no-default-features --lib --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       # The cli's own CI ran a no-default-features check on every change
       # (water-rs/cli ci.yml): `default` bundles svg-icons+preview,
       # and nothing else in this workspace compiles the bare shape.
       - name: Check (waterui-cli, no default features)
         if: inputs.full || contains(inputs.affected, 'waterui-cli')
-        run: cargo check --locked --profile ci-check -p waterui-cli --no-default-features --all-targets --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
+        run: cargo check --timings --locked --profile ci-check -p waterui-cli --no-default-features --all-targets --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       # The waterui skill's snippet compile gate: every rust fence in
       # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
       # and must keep compiling. The non-default feature exposes the test/bench
@@ -344,7 +347,7 @@ jobs:
       # they address elements that do not exist by design and must never run.
       - name: Skill snippet compile gate
         if: inputs.full
-        run: cargo check --locked --profile ci-check -p skill_snippets --all-targets --features compile-gate-tests --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
+        run: cargo check --timings --locked --profile ci-check -p skill_snippets --all-targets --features compile-gate-tests --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       # Every cargo step above writes `target`, so it exists exactly when
       # one of them ran; a run that compiled and left none fails here.
       - name: Target size
@@ -362,6 +365,12 @@ jobs:
       # covers families no single job owns (install-tool pins, apt
       # packages, in-tree tool builds) (#1441). This job's own superseded
       # generation is still the newest of its purpose here, so it stays.
+      # Published before the target archive is saved, so the reports stay
+      # out of it.
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-lint
       - name: Sweep superseded cache generations
         if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
         uses: ./.github/actions/retire-cargo-caches
@@ -473,6 +482,10 @@ jobs:
         env:
           SCOPE: ${{ inputs.full && 'workspace' || inputs.affected }}
         run: python3 .github/scripts/wasm_gated.py "$SCOPE"
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-wasm
 
   # The workspace test run, per platform, also carrying the doctests that
   # share its build. It is the single longest leg in CI and everything else
@@ -556,11 +569,11 @@ jobs:
       # at OS 27 or newer (`WebViewOpen::navigation_policy`). The macOS runner
       # is OS 27, so these two steps build at that deployment target; apple.yml
       # keeps building the Apple backends at the framework's 26 floor.
-      - run: cargo nextest run --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --profile ci
+      - run: cargo nextest run --timings --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --profile ci
         env:
           MACOSX_DEPLOYMENT_TARGET: "27.0"
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --locked --doc --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui
+      - run: cargo test --timings --locked --doc --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui
         env:
           MACOSX_DEPLOYMENT_TARGET: "27.0"
       # Hydrolysis's macOS WKWebView bridge (#1428). `webview-system` is the
@@ -570,7 +583,7 @@ jobs:
       # `cargo test` drives the binary on the real process main thread.
       - name: Test (hydrolysis WKWebView real engine)
         if: runner.os == 'macOS'
-        run: cargo test --locked -p hydrolysis --features webview-system,winit --test real_engine_macos
+        run: cargo test --timings --locked -p hydrolysis --features webview-system,winit --test real_engine_macos
       # The pilot's hit/miss evidence (#1145): the shim accumulates per-crate
       # counters in its stats db during the builds above, and `stow status`
       # prints them — it only shows them when the project config exists, so
@@ -589,9 +602,13 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-${{ matrix.os }}
 
   # Every crate's own optional features, run. This pass used to be
-  # `cargo nextest run --locked --all-features` inside the `test` job, with neither
+  # `cargo nextest run --timings --locked --all-features` inside the `test` job, with neither
   # `-p` nor `--workspace`: the root manifest carries both `[workspace]` and
   # `[package]`, so cargo narrowed it to the root `waterui` crate, and a
   # backend crate's tests behind its own optional features — the
@@ -654,7 +671,7 @@ jobs:
       # skips them while keeping the rest of the two crates' tests.
       - name: Test (all features, workspace)
         run: |
-          cargo nextest run --locked --workspace --all-features --profile ci \
+          cargo nextest run --timings --locked --workspace --all-features --profile ci \
             --exclude '*-example' \
             --exclude waterui-apple \
             --exclude cocoa-ui \
@@ -665,11 +682,11 @@ jobs:
             -E 'not binary(/^trybuild_/)'
       # `nightly` is `feature(never_type)`, a hard E0554 on stable.
       - name: Test (waterui-core, every stable feature)
-        run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
+        run: cargo nextest run --timings --locked -p waterui-core --features std,serde --profile ci
       # Hydrolysis's doctests under the feature set its own CI ran (#1428);
       # nextest cannot enumerate doc tests, so this is a `cargo test` pass.
       - name: Test (hydrolysis doc tests)
-        run: cargo test --locked --doc -p hydrolysis --features accessibility,inspector-signals,testing,web,winit
+        run: cargo test --timings --locked --doc -p hydrolysis --features accessibility,inspector-signals,testing,web,winit
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -678,6 +695,10 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-all-features
 
   # The macOS all-features pass: every crate's own optional features, with the
   # same exclusions as the Linux `all-features` job (see there). It used to
@@ -732,7 +753,7 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: "27.0"
         run: |
-          cargo nextest run --locked --workspace --all-features --profile ci \
+          cargo nextest run --timings --locked --workspace --all-features --profile ci \
             --exclude '*-example' \
             --exclude waterui-apple \
             --exclude cocoa-ui \
@@ -741,7 +762,7 @@ jobs:
             --exclude filtrate \
             -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)
-        run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
+        run: cargo nextest run --timings --locked -p waterui-core --features std,serde --profile ci
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -750,6 +771,10 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-macos-all-features
 
   # The nightly's macOS host lint leg: hydrolysis's `cfg(target_os =
   # "macos")` code, waterui-cli's Apple-side plumbing and every other crate
@@ -797,6 +822,10 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-macos-lint
 
   # The 36 example crates, once per platform (#330). They used to be workspace
   # members in every pass above, so each example was compiled under every
@@ -842,9 +871,9 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Clippy (examples)
         if: runner.os == 'Linux'
-        run: cargo clippy --locked --profile ci-check -p '*-example' --all-targets -- -D warnings
-      - run: cargo nextest run --locked -p '*-example' --profile ci
-      - run: cargo test --locked --doc -p '*-example'
+        run: cargo clippy --timings --locked --profile ci-check -p '*-example' --all-targets -- -D warnings
+      - run: cargo nextest run --timings --locked -p '*-example' --profile ci
+      - run: cargo test --timings --locked --doc -p '*-example'
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -853,6 +882,10 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-examples-${{ matrix.os }}
 
   # Hydrolysis's Android leg (#1428). `runner::android` is
   # `cfg(target_os = "android")`-gated, so no host leg ever compiles it;
@@ -892,9 +925,9 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           runtime-fonts: "false"
-      - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
-      - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,webview-system -- -D warnings
-      - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
+      - run: cargo clippy --timings --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      - run: cargo clippy --timings --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,webview-system -- -D warnings
+      - run: cargo clippy --timings --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
       - name: Pure HWUI dependency boundary
         shell: bash
         run: |
@@ -904,10 +937,14 @@ jobs:
             exit 1
           fi
       - name: Clippy (pure HWUI test app)
-        run: cargo clippy --locked --profile ci-check -p hydrolysis-android-test-app --target aarch64-linux-android --no-default-features --features hwui -- -D warnings
+        run: cargo clippy --timings --locked --profile ci-check -p hydrolysis-android-test-app --target aarch64-linux-android --no-default-features --features hwui -- -D warnings
       # The android_planes harness is `cfg(target_os = "android")` past its
       # pattern code, so only this target compiles it.
-      - run: cargo clippy --locked --profile ci-check -p android-planes --target aarch64-linux-android --all-targets -- -D warnings
+      - run: cargo clippy --timings --locked --profile ci-check -p android-planes --target aarch64-linux-android --all-targets -- -D warnings
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-hydrolysis-android
 
   # The Android host library's own lint (`warningsAsErrors`): the Kotlin
   # half of the Android runner, which no cargo pass reaches (#2047), plus
@@ -980,7 +1017,7 @@ jobs:
       # the defaults.
       - name: Render the generated preview-host app
         working-directory: ${{ github.workspace }}
-        run: cargo run --locked --profile ci-check -p waterui-cli --no-default-features --example render_preview_host -- examples/form backends/hydrolysis/android-preview-host
+        run: cargo run --timings --locked --profile ci-check -p waterui-cli --no-default-features --example render_preview_host -- examples/form backends/hydrolysis/android-preview-host
       - name: Gradle version pinned by the rendered wrapper
         id: app-gradle-version
         working-directory: backends/hydrolysis/android-preview-host
@@ -1008,7 +1045,7 @@ jobs:
         id: embedded-library
         working-directory: ${{ github.workspace }}
         run: |
-          library="$(cargo run --locked --profile ci-check -p waterui-cli --no-default-features --example render_embedded_library -- examples/form backends/hydrolysis/android-embedded-library)"
+          library="$(cargo run --timings --locked --profile ci-check -p waterui-cli --no-default-features --example render_embedded_library -- examples/form backends/hydrolysis/android-embedded-library)"
           {
             echo "host-version=$(jq -r .host_version <<<"$library")"
             echo "tasks=$(jq -r '.gradle_tasks | join(" ")' <<<"$library")"
@@ -1030,6 +1067,10 @@ jobs:
           -PwateruiPackage=${{ steps.embedded-library.outputs.package }}
           -PwateruiCompileSdk=${{ steps.embedded-library.outputs.compile-sdk }}
           -PwateruiMinSdk=${{ steps.embedded-library.outputs.min-sdk }}
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-hydrolysis-android-host
 
   # Hydrolysis's Windows leg, beside the Android one for the same reason:
   # `cfg(target_os = "windows")` code — the winit platform's cursor,
@@ -1069,7 +1110,11 @@ jobs:
       # `cherenkov-gpu`'s build script compiles its fixed shaders to DXIL
       # through `dxc` for Windows targets (#2726).
       - uses: ./.github/actions/install-dxc
-      - run: cargo clippy --locked --profile ci-check -p hydrolysis --features winit --target x86_64-pc-windows-msvc -- -D warnings
+      - run: cargo clippy --timings --locked --profile ci-check -p hydrolysis --features winit --target x86_64-pc-windows-msvc -- -D warnings
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-hydrolysis-windows
 
   # The Apple-target legs beside the cross-target ones above (#2143,
   # #2476): the Linux lint compiles `cfg(target_os = "macos")` and
@@ -1121,6 +1166,10 @@ jobs:
           affected: ${{ inputs.affected }}
           target: ${{ matrix.target }}
           group: ${{ matrix.group }}
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-macos-${{ strategy.job-index }}
 
   # ── Cherenkov engine legs (#1449) ──────────────────────────────────────
   # The checks water-rs/cherenkov's `ci.yml` ran on every pull request,
@@ -1178,15 +1227,15 @@ jobs:
       # dependency graph this job already warms.
       - name: Clippy / all adapter features together
         run: |
-          cargo clippy --locked --profile ci-check -p cherenkov-bench --all-targets \
+          cargo clippy --timings --locked --profile ci-check -p cherenkov-bench --all-targets \
             --features vello-classic,vello-hybrid,vello-cpu,skia,cherenkov,cherenkov-cpu -- -D warnings
       # `skia-metal` is Apple-only; every other adapter must lint alone.
       - name: Clippy / each adapter feature alone
         run: |
-          cargo hack clippy --locked -p cherenkov-bench --each-feature \
+          cargo hack clippy --timings --locked -p cherenkov-bench --each-feature \
             --exclude-features skia-metal --all-targets -- -D warnings
       - name: Bench adapter tests (cherenkov, cherenkov-cpu)
-        run: cargo nextest run --locked -p cherenkov-bench --features cherenkov,cherenkov-cpu --no-tests=pass
+        run: cargo nextest run --timings --locked -p cherenkov-bench --features cherenkov,cherenkov-cpu --no-tests=pass
       # A failing oracle test leaves its scratch run in the temp dir: the
       # engine image, heatmap and metrics of every scene it rendered.
       - name: Upload failing oracle renders
@@ -1197,6 +1246,10 @@ jobs:
           path: /tmp/cherenkov-bench-*/out/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-cherenkov-corpus
 
   # The Metal side: the lint of every Metal adapter feature, the map-scene
   # frame measure that hangs on no Linux adapter, and the presentation
@@ -1225,9 +1278,9 @@ jobs:
           mode: full
       - name: Clippy / Metal adapter features
         run: |
-          cargo clippy --locked --profile ci-check -p cherenkov-bench --all-targets \
+          cargo clippy --timings --locked --profile ci-check -p cherenkov-bench --all-targets \
             --features skia-metal,vello-classic,vello-hybrid,cherenkov,cherenkov-cpu -- -D warnings
-      - run: cargo build --locked --release -p cherenkov-bench --features cherenkov
+      - run: cargo build --timings --locked --release -p cherenkov-bench --features cherenkov
       # Many timed frames of the map scene on a Metal device: the workload
       # that used to hang the render thread on Apple GPUs.
       - name: Measure the map scene on Metal
@@ -1270,6 +1323,10 @@ jobs:
               assert d.get('present') or d.get('unsupported'), f'{f} lacks the presentation record'
           print(f'{len(files)} presentation reports ({len(measured)} measured)')
           PY
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-cherenkov-metal
 
   # The Android build: the whole bench binary and the Vulkan
   # external-frame device test cross-compiled for aarch64. The cherenkov
@@ -1317,7 +1374,7 @@ jobs:
       - name: Build cherenkov-bench for aarch64-linux-android
         run: |
           cargo ndk --target aarch64-linux-android --platform "$WATERUI_ANDROID_MIN_API_LEVEL" \
-            build --release -p cherenkov-bench \
+            build --timings --release -p cherenkov-bench \
             --features vello-classic,vello-hybrid,skia,cherenkov,cherenkov-cpu
           ls -l target/aarch64-linux-android/release/cherenkov-bench
       # The Vulkan external-frame device test (#166) runs on a Pixel 9
@@ -1325,10 +1382,14 @@ jobs:
       - name: Build the Vulkan external-frame test for aarch64-linux-android
         run: |
           cargo ndk --target aarch64-linux-android --platform "$WATERUI_ANDROID_MIN_API_LEVEL" \
-            build --release -p cherenkov-gpu --test vulkan_external_android
+            build --timings --release -p cherenkov-gpu --test vulkan_external_android
           ls target/aarch64-linux-android/release/deps/vulkan_external_android-*
       - uses: actions/upload-artifact@v4
         with:
           name: vulkan-external-android-tests
           path: target/aarch64-linux-android/release/deps/vulkan_external_android-*
           if-no-files-found: error
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: test-cherenkov-android
