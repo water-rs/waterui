@@ -623,6 +623,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         invalidator: Rc::clone(&node.invalidator),
                         association: Rc::clone(&node.association),
                         bounds: ctx.bounds(),
+                        time: renderer.frame_instant(),
                     }));
                 // Content that handles its own input receives the pointer,
                 // keyboard, IME and scroll events landing on its bounds, through

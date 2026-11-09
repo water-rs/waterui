@@ -21,6 +21,7 @@ use waterui_graphics::scene_view::{
     SceneInvalidator, SceneView, resolve_scene_proposal, scene_stretch_axis,
 };
 use waterui_graphics::wgpu;
+use waterui_graphics::{SceneFrame, SceneUpdate};
 
 use super::{HostedError, HostedRenderer, HostedView};
 use crate::gpu_runtime::{EngineGeneration, SceneEngine, SceneParticipant};
@@ -309,7 +310,7 @@ impl ScenePart {
     /// Applies the staged contract and any pending content onto this
     /// scene's own surface — `SceneParticipant::prepare`'s body — inside
     /// the frame scope it returns for the batch to hold across its render.
-    fn apply_staged(&self) -> Result<FrameScope, HostedLayerError> {
+    fn apply_staged(&self, time: FrameTime) -> Result<FrameScope, HostedLayerError> {
         let frame = self.surface.begin_frame();
         let (width, height, display) = self.staged.get();
         let pixels = (width, height);
@@ -328,14 +329,38 @@ impl ScenePart {
         let size = (size.0 as f32, size.1 as f32);
         let dirty = self.dirty.replace(false);
         let geometry = (size.0, size.1, display.scale);
-        if dirty || self.recorded_geometry.get() != Some(geometry) {
-            let (recording, held, again) = self.record_content(size.0, size.1, display.scale);
-            self.surface.update(|tx| {
-                tx[self.surface.root()].content(recording);
-            });
-            // Replacing the installed layer precedes releasing the old
-            // registrations.
-            *self.installed.borrow_mut() = held;
+        let recorded = self.recorded_geometry.get();
+        if dirty || recorded != Some(geometry) {
+            // The content follows the presented frame first; a recording
+            // kept in place stays installed unless the display scale its
+            // root transform carries changed.
+            let update = self.view.borrow_mut().content_mut().update_scene(
+                &self.resources,
+                SceneFrame {
+                    width: size.0,
+                    height: size.1,
+                    time: time.0,
+                },
+            );
+            let again = match update {
+                SceneUpdate::Retained { again }
+                    if recorded
+                        .is_some_and(|recorded| recorded.2.total_cmp(&display.scale).is_eq()) =>
+                {
+                    again
+                }
+                SceneUpdate::Retained { .. } | SceneUpdate::Record => {
+                    let (recording, held, again) =
+                        self.record_content(size.0, size.1, display.scale);
+                    self.surface.update(|tx| {
+                        tx[self.surface.root()].content(recording);
+                    });
+                    // Replacing the installed layer precedes releasing the
+                    // old registrations.
+                    *self.installed.borrow_mut() = held;
+                    again
+                }
+            };
             self.recorded_geometry.set(Some(geometry));
             if again {
                 self.dirty.set(true);
@@ -382,7 +407,7 @@ impl ScenePart {
 
 impl SceneParticipant for ScenePart {
     fn prepare(&self, time: FrameTime) -> Result<FrameScope, Arc<HostedLayerError>> {
-        match self.apply_staged() {
+        match self.apply_staged(time) {
             Ok(frame) => {
                 self.produced_for.set(Some(time));
                 Ok(frame)

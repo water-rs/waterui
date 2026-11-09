@@ -78,8 +78,8 @@ pub use scene::resources::{
     SceneResources, ShaderBackend,
 };
 pub use scene::scene_view::{
-    SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
-    resolve_scene_proposal, scene_stretch_axis,
+    SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, SceneView, SceneViewMergeToParent,
+    invalidate_on_change, resolve_scene_proposal, scene_stretch_axis,
 };
 pub use scene::source::{
     FontSource, Format, ImageColorSpace, ImageData, ImageFormat, ResourceError, Rgba8, Rgba16F,

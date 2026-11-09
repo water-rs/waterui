@@ -180,6 +180,8 @@ pub struct SceneContentSource {
     pub invalidator: waterui_graphics::SceneInvalidator,
     pub association: Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
     pub bounds: kurbo::Rect,
+    /// The instant of the frame the commit presents.
+    pub time: crate::time::Instant,
 }
 
 /// A material wrapper's backdrop request: the member's backdrop-group
