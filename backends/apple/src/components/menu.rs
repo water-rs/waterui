@@ -299,14 +299,16 @@ pub fn install(dispatcher: &mut Dispatcher) {
             mtm,
         }));
 
-        // `layoutSubviews` / `layout`: the trigger fills the host, the
-        // label sits inside it under the platform's padding, and the
-        // selected proposal — or the bounds — reaches the label as its
-        // offer.
+        // `layoutSubviews` / `layout`: the trigger fills the host's
+        // response, the label sits inside it under the platform's padding,
+        // and the selected proposal — or the bounds — reaches the label as
+        // its offer.
         host.set_layout_handler({
             let state = Rc::clone(&state);
             move |host| {
-                let bounds = view::bounds(host);
+                // The trigger draws in its response rectangle, centred in
+                // the frame it was assigned (docs/layout-spec.md §2.4).
+                let bounds = proposal::response(host);
                 let state = state.borrow();
                 view::set_frame(state.button.view(), bounds);
                 let width = bounds.size.width;
@@ -351,6 +353,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     Placement {
                         proposal: Some(label_offer(base)),
                         offset: placement.offset,
+                        ..Placement::UNPLACED
                     },
                 );
             }

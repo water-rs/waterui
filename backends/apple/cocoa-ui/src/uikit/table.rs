@@ -54,6 +54,7 @@ use objc2_ui_kit::{
 use crate::EdgeInsets;
 use crate::callback::guarded;
 use crate::geometry::{IndexPath, Point};
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
 use crate::uikit::keyboard::KeyboardTracking;
 
@@ -173,6 +174,8 @@ pub struct TableViewIvars {
     /// The hook `layoutSubviews` fires after the system layout: bounds,
     /// content-size and inset changes all land here.
     layout: TableHandler,
+    /// How the list was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl TableViewIvars {
@@ -185,6 +188,7 @@ impl TableViewIvars {
             keyboard: Rc::new(KeyboardTracking::new()),
             scroll: RefCell::new(None),
             layout: RefCell::new(None),
+            geometry: ResponseGeometry::default(),
         }
     }
 
@@ -516,12 +520,16 @@ define_class!(
             });
         }
 
-        /// Keeps `UIKit`'s layout — cells and separators — then
-        /// recomputes the keyboard inset and the focused-field clearance
-        /// from the window's keyboard region (§7.1).
+        /// Commits the list's response geometry, keeps `UIKit`'s layout —
+        /// cells and separators — then recomputes the keyboard inset and
+        /// the focused-field clearance from the window's keyboard region
+        /// (§7.1). The commit opens the pass: resolving the response
+        /// measures the table's own content, which must not re-enter
+        /// `UIKit` from inside its layout.
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
             guarded("TableView layoutSubviews", || {
+                self.ivars().geometry.commit(self);
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), layoutSubviews] };
                 self.ivars().keyboard.apply_layout(self);
@@ -532,6 +540,19 @@ define_class!(
                     handler(self);
                 }
             });
+        }
+
+        /// The response rectangle, or what `.a11y_geometry` names, once
+        /// the list's placement committed one.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("TableView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         /// Any frame change — a parent's layout pass translating or
@@ -578,6 +599,12 @@ fn stock_cell(mtm: MainThreadMarker) -> Retained<TableCell> {
         cell.setContentConfiguration(Some(ProtocolObject::from_ref(&*configuration)));
     }
     cell
+}
+
+impl ReportsResponse for TableView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
 }
 
 impl TableView {

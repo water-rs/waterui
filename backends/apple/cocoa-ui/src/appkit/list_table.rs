@@ -58,6 +58,7 @@ use objc2_foundation::{
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Point};
 use crate::notification::NotificationObserver;
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
 
 /// The table's content-bearing column identifier.
@@ -153,6 +154,8 @@ pub struct TableViewIvars {
     flight: Rc<ScrollFlight>,
     /// Ends a flight when the user's live scroll reports a bounds change.
     live_scroll: RefCell<Vec<NotificationObserver>>,
+    /// How the list was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl TableViewIvars {
@@ -168,6 +171,7 @@ impl TableViewIvars {
             sidebar: Cell::new(false),
             flight: ScrollFlight::new(mtm),
             live_scroll: RefCell::new(Vec::new()),
+            geometry: ResponseGeometry::default(),
         }
     }
 }
@@ -487,13 +491,17 @@ define_class!(
             });
         }
 
-        /// Insets the rows by the safe area and the list's top gap, keeps
-        /// `AppKit`'s layout — its clip corrections counted as the
-        /// flight's own writes — then reports it so the consumer can
-        /// track the content width onto the column.
+        /// Commits the list's response geometry, insets the rows by the
+        /// safe area and the list's top gap, keeps `AppKit`'s layout — its
+        /// clip corrections counted as the flight's own writes — then
+        /// reports it so the consumer can track the content width onto the
+        /// column. The commit opens the pass: resolving the response
+        /// measures the table's own content, which must not re-enter
+        /// `AppKit` from inside its layout.
         #[unsafe(method(layout))]
         fn layout_override(&self) {
             guarded("TableView layout", || {
+                self.ivars().geometry.commit(self);
                 self.ivars().flight.own_writes(|| {
                     super::scroll::layout_with_safe_area_insets(self, TOP_GAP, || {
                         // SAFETY: see the module safety note.
@@ -504,6 +512,19 @@ define_class!(
                     handler(self);
                 }
             });
+        }
+
+        /// The response rectangle, or what `.a11y_geometry` names, once
+        /// the list's placement committed one.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("TableView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         /// Window changes swap the consumer's key-state observation and
@@ -535,6 +556,12 @@ define_class!(
         }
     }
 );
+
+impl ReportsResponse for TableView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
 
 impl TableView {
     /// A list-shaped table: one `content` column, no header, `fullWidth`

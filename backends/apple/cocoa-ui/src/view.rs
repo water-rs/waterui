@@ -159,6 +159,42 @@ pub const fn is_flipped(_view: &PlatformView) -> bool {
     true
 }
 
+/// `rect`, given in layout space — origin at the top-left corner of
+/// `view`'s bounds, y running down — in `view`'s own coordinate space.
+#[must_use]
+pub fn from_layout_space(view: &PlatformView, rect: Rect) -> Rect {
+    let bounds = bounds(view);
+    let y = if is_flipped(view) {
+        bounds.origin.y + rect.origin.y
+    } else {
+        bounds.origin.y + bounds.size.height - rect.origin.y - rect.size.height
+    };
+    Rect::new(
+        bounds.origin.x + rect.origin.x,
+        y,
+        rect.size.width,
+        rect.size.height,
+    )
+}
+
+/// `rect`, given in `view`'s own coordinate space, in layout space — the
+/// inverse of [`from_layout_space`].
+#[must_use]
+pub fn to_layout_space(view: &PlatformView, rect: Rect) -> Rect {
+    let bounds = bounds(view);
+    let y = if is_flipped(view) {
+        rect.origin.y - bounds.origin.y
+    } else {
+        bounds.origin.y + bounds.size.height - rect.origin.y - rect.size.height
+    };
+    Rect::new(
+        rect.origin.x - bounds.origin.x,
+        y,
+        rect.size.width,
+        rect.size.height,
+    )
+}
+
 /// Moves and resizes `view` in its superview's coordinate space.
 pub fn set_frame(view: &PlatformView, frame: Rect) {
     view.setFrame(frame.into());
@@ -315,13 +351,15 @@ pub fn invalidate_layout(view: &PlatformView) {
     }
 }
 
+/// Marks `view` alone as needing a layout pass.
 #[cfg(target_os = "macos")]
-fn set_needs_layout(view: &PlatformView) {
+pub(crate) fn set_needs_layout(view: &PlatformView) {
     view.setNeedsLayout(true);
 }
 
+/// Marks `view` alone as needing a layout pass.
 #[cfg(target_os = "ios")]
-fn set_needs_layout(view: &PlatformView) {
+pub(crate) fn set_needs_layout(view: &PlatformView) {
     view.setNeedsLayout();
 }
 

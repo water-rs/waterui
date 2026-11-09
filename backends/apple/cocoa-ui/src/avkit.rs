@@ -1277,7 +1277,9 @@ mod platform {
     use objc2_av_kit::{
         AVPlayerView, AVPlayerViewControlsStyle, AVPlayerViewPictureInPictureDelegate,
     };
-    use objc2_foundation::NSObject;
+    use objc2_foundation::{NSObject, NSRect};
+
+    use crate::response::{ReportsResponse, ResponseGeometry};
 
     type PipHandler = Rc<dyn Fn(PipEvent)>;
 
@@ -1343,10 +1345,75 @@ mod platform {
         }
     );
 
+    /// The state a [`PlayerContentView`] carries.
+    #[derive(Default)]
+    pub struct PlayerContentViewIvars {
+        /// How the view was placed as a leaf, and its response rectangle.
+        geometry: ResponseGeometry,
+    }
+
+    impl fmt::Debug for PlayerContentViewIvars {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("PlayerContentViewIvars")
+                .field("geometry", &self.geometry)
+                .finish()
+        }
+    }
+
+    define_class!(
+        // SAFETY: `AVPlayerView`'s designated initializer is
+        // `initWithFrame:`, which `PlayerView::new` calls, and the class
+        // does not implement `Drop`.
+        #[unsafe(super(AVPlayerView))]
+        #[name = "CocoaUiPlayerContentView"]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = PlayerContentViewIvars]
+        #[derive(Debug)]
+        /// The `AVPlayerView` a [`PlayerView`] mounts. Its frame is the
+        /// allocation its parent assigned; its accessibility frame is its
+        /// response rectangle. An aspect-fit video already draws there: the
+        /// response is the source's aspect at the offered width, centred.
+        pub struct PlayerContentView;
+
+        // SAFETY: `NSObjectProtocol` asks nothing of an `AVPlayerView`
+        // subclass.
+        unsafe impl NSObjectProtocol for PlayerContentView {}
+
+        impl PlayerContentView {
+            // SAFETY: see the module safety note.
+            #[unsafe(method(layout))]
+            fn layout_override(&self) {
+                guarded("PlayerContentView layout", || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), layout] };
+                    self.ivars().geometry.commit(self);
+                });
+            }
+
+            // SAFETY: see the module safety note.
+            #[unsafe(method(accessibilityFrame))]
+            fn accessibility_frame_override(&self) -> NSRect {
+                guarded("PlayerContentView accessibilityFrame", || {
+                    self.ivars()
+                        .geometry
+                        .accessibility_frame(self)
+                        // SAFETY: see the module safety note.
+                        .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+                })
+            }
+        }
+    );
+
+    impl ReportsResponse for PlayerContentView {
+        fn response_geometry(&self) -> &ResponseGeometry {
+            &self.ivars().geometry
+        }
+    }
+
     /// `AVPlayerView`-backed controls surface.
     #[derive(Debug)]
     pub struct PlayerView {
-        view: Retained<AVPlayerView>,
+        view: Retained<PlayerContentView>,
         delegate: RefCell<Option<Retained<PipDelegate>>>,
         mtm: MainThreadMarker,
     }
@@ -1355,10 +1422,11 @@ mod platform {
         /// A controls surface with `gravity` and no player yet.
         #[must_use]
         pub fn new(mtm: MainThreadMarker, gravity: VideoGravity) -> Self {
-            // SAFETY: `initWithFrame:` on a live AVPlayerView class.
-            let view: Retained<AVPlayerView> = unsafe {
-                msg_send![AVPlayerView::alloc(mtm), initWithFrame: objc2_foundation::NSRect::ZERO]
-            };
+            let view = PlayerContentView::alloc(mtm).set_ivars(PlayerContentViewIvars::default());
+            // SAFETY: `initWithFrame:` is `AVPlayerView`'s designated
+            // initializer.
+            let view: Retained<PlayerContentView> =
+                unsafe { msg_send![super(view), initWithFrame: NSRect::ZERO] };
             // SAFETY: property writes on the live view built above.
             unsafe {
                 view.setVideoGravity(video_gravity(gravity));
@@ -1673,5 +1741,7 @@ mod platform {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub use platform::PlayerContentView;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use platform::PlayerView;
