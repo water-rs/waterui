@@ -4,9 +4,14 @@
 //!
 //! The calendar's delegate protocols land on one `NSObject` the view owns
 //! through this wrapper: the selection policy (`can_select`), the pick
-//! callback (`on_pick`), the decoration lookup (`decoration`) and the
-//! visible-month callback (`on_visible_month_change`) are ordinary Rust
-//! closures reading shared state.
+//! callback (`on_pick`) and the visible-month callback
+//! (`on_visible_month_change`) are ordinary Rust closures, and the
+//! decorated days are a set the decoration lookup reads. A decorated day
+//! carries the platform's default decoration.
+//!
+//! The view computes in the Gregorian calendar of the locale it is given,
+//! whatever calendar the device uses, so the date components it receives
+//! and reports are always Gregorian.
 //!
 //! # Safety
 //!
@@ -17,6 +22,7 @@
 //! inside the panic guard.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::rc::Rc;
 
@@ -27,27 +33,24 @@ use objc2_foundation::{
     NSArray, NSDateComponents, NSDateInterval, NSLocale, NSObject, NSObjectProtocol, NSString,
 };
 use objc2_ui_kit::{
-    UICalendarSelectionMultiDate, UICalendarSelectionMultiDateDelegate,
-    UICalendarSelectionSingleDate, UICalendarSelectionSingleDateDelegate, UICalendarView,
-    UICalendarViewDecoration, UICalendarViewDecorationSize, UICalendarViewDelegate, UIColor,
-    UILayoutPriorityFittingSizeLevel, UILayoutPriorityRequired,
+    UIAccessibilityContainerType, UICalendarSelectionMultiDate,
+    UICalendarSelectionMultiDateDelegate, UICalendarSelectionSingleDate,
+    UICalendarSelectionSingleDateDelegate, UICalendarView, UICalendarViewDecoration,
+    UICalendarViewDecorationSize, UICalendarViewDelegate, UILayoutPriorityFittingSizeLevel,
+    UILayoutPriorityRequired,
 };
 
 use crate::callback::guarded;
 use crate::date::{self, CalendarSelectionMode, DateParts, YearMonth};
 use crate::geometry::Size;
 
-/// A closure answering the decoration a date draws with; `None` means
-/// no decoration for the date.
-type DecorationFn = Box<dyn Fn(DateParts) -> Option<Retained<UIColor>>>;
-
-/// The closures the delegate consults; `None` answers the permissive
-/// defaults (`true` for selection, no decoration).
+/// The closures the delegate consults — `None` answers the permissive
+/// default (`true` for selection) — and the decorated days.
 struct Shared {
     can_select: Option<Box<dyn Fn(DateParts) -> bool>>,
     on_pick: Option<Box<dyn Fn(DateParts)>>,
     on_visible_month_change: Option<Box<dyn Fn(YearMonth)>>,
-    decoration: Option<DecorationFn>,
+    decorated: BTreeSet<DateParts>,
     /// `true` while the wrapper pushes a model-driven selection onto the
     /// control — delegate callbacks then ignore the echo.
     syncing: Cell<bool>,
@@ -84,7 +87,7 @@ define_class!(
                     can_select: None,
                     on_pick: None,
                     on_visible_month_change: None,
-                    decoration: None,
+                    decorated: BTreeSet::new(),
                     syncing: Cell::new(false),
                 })),
             });
@@ -184,18 +187,19 @@ define_class!(
         ) -> Option<Retained<UICalendarViewDecoration>> {
             guarded("CalendarDelegate decorationForDateComponents:", || {
                 let parts = date::parts(date_components)?;
-                let color = self
-                    .ivars()
+                self.ivars()
                     .shared
                     .borrow()
-                    .decoration
-                    .as_ref()
-                    .and_then(|decoration| decoration(parts))?;
-                Some(UICalendarViewDecoration::decorationWithColor_size(
-                    Some(&color),
-                    UICalendarViewDecorationSize::Small,
-                    self.mtm(),
-                ))
+                    .decorated
+                    .contains(&parts)
+                    .then(|| {
+                        // No color: the platform's default decoration.
+                        UICalendarViewDecoration::decorationWithColor_size(
+                            None,
+                            UICalendarViewDecorationSize::Small,
+                            self.mtm(),
+                        )
+                    })
             })
         }
 
@@ -207,14 +211,16 @@ define_class!(
         ) {
             guarded("CalendarDelegate didChangeVisibleDateComponentsFrom:", || {
                 let visible = calendar_view.visibleDateComponents();
-                let (Ok(year), Ok(month)) = (
-                    i32::try_from(visible.year()),
-                    i32::try_from(visible.month()),
-                ) else {
-                    return;
+                // The view only shows months inside its available range,
+                // which comes from `DateParts`, so both fit `i32`.
+                let month = YearMonth {
+                    year: i32::try_from(visible.year())
+                        .expect("UICalendarView reported a year outside its available range"),
+                    month: i32::try_from(visible.month())
+                        .expect("UICalendarView reported a month outside 1 through 12"),
                 };
                 if let Some(handler) = &self.ivars().shared.borrow().on_visible_month_change {
-                    handler(YearMonth { year, month });
+                    handler(month);
                 }
             });
         }
@@ -276,9 +282,10 @@ impl fmt::Debug for CalendarView {
 }
 
 impl CalendarView {
-    /// A calendar selecting in `mode`, with no closures installed yet.
+    /// A calendar selecting in `mode`, formatted for the locale `locale`
+    /// names, with no closures installed yet.
     #[must_use]
-    pub fn new(mtm: MainThreadMarker, mode: CalendarSelectionMode) -> Self {
+    pub fn new(mtm: MainThreadMarker, mode: CalendarSelectionMode, locale: &str) -> Self {
         let view = UICalendarView::new(mtm);
         // SAFETY: `init` is `NSObject`'s designated initializer, which the
         // delegate forwards to its superclass.
@@ -304,12 +311,14 @@ impl CalendarView {
         };
         view.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         let shared = Rc::clone(&delegate.ivars().shared);
-        Self {
+        let this = Self {
             view,
             selection,
             _delegate: delegate,
             shared,
-        }
+        };
+        this.set_locale(locale);
+        this
     }
 
     /// The view the calendar renders; add it to a container and frame it
@@ -324,12 +333,14 @@ impl CalendarView {
         self.view.setAvailableDateRange(range);
     }
 
-    /// Formats the calendar for the locale `identifier` names.
+    /// Formats the calendar for the locale `identifier` names, in that
+    /// locale's Gregorian calendar — its first weekday included.
     pub fn set_locale(&self, identifier: &str) {
-        self.view
-            .setLocale(&NSLocale::localeWithLocaleIdentifier(&NSString::from_str(
-                identifier,
-            )));
+        let locale = NSLocale::localeWithLocaleIdentifier(&NSString::from_str(identifier));
+        let calendar = date::gregorian();
+        calendar.setLocale(Some(&locale));
+        self.view.setCalendar(&calendar);
+        self.view.setLocale(&locale);
     }
 
     /// Shows `month` without animation; reports nothing back.
@@ -344,22 +355,9 @@ impl CalendarView {
             .setVisibleDateComponents_animated(&date::components(month.first_day()), false);
     }
 
-    /// Pushes `selected` and `decorated` onto the control: the selection is
-    /// replaced wholesale — a single-date calendar takes the first day —
-    /// then both day sets get their decorations re-asked of the delegate.
-    pub fn sync(&self, selected: &[DateParts], decorated: &[DateParts]) {
-        let selected_components = NSArray::from_retained_slice(
-            &selected
-                .iter()
-                .map(|d| date::components(*d))
-                .collect::<Vec<_>>(),
-        );
-        let decorated_components = NSArray::from_retained_slice(
-            &decorated
-                .iter()
-                .map(|d| date::components(*d))
-                .collect::<Vec<_>>(),
-        );
+    /// Replaces the selection with `selected` — a single-date calendar
+    /// takes the first day — without reporting it back as a pick.
+    pub fn set_selection(&self, selected: &[DateParts]) {
         self.shared.borrow().syncing.set(true);
         match &self.selection {
             Selection::Single(selection) => {
@@ -368,26 +366,24 @@ impl CalendarView {
                     false,
                 );
             }
-            Selection::Multiple(selection) => selection.setSelectedDates(&selected_components),
+            Selection::Multiple(selection) => {
+                selection.setSelectedDates(&components_array(selected.iter().copied()));
+            }
         }
-        self.view
-            .reloadDecorationsForDateComponents_animated(&selected_components, false);
-        self.view
-            .reloadDecorationsForDateComponents_animated(&decorated_components, false);
         self.shared.borrow().syncing.set(false);
     }
 
-    /// Re-asks decorations for `dates` only — the decoration-color update
-    /// path.
-    pub fn reload_decorations(&self, dates: &[DateParts]) {
-        let components = NSArray::from_retained_slice(
-            &dates
-                .iter()
-                .map(|d| date::components(*d))
-                .collect::<Vec<_>>(),
+    /// Replaces the decorated days with `decorated` and re-asks the
+    /// decoration of every day that gained or lost one.
+    pub fn set_decorations(&self, decorated: impl IntoIterator<Item = DateParts>) {
+        let decorated: BTreeSet<DateParts> = decorated.into_iter().collect();
+        let previous = std::mem::replace(
+            &mut self.shared.borrow_mut().decorated,
+            decorated.clone(),
         );
+        let changed = previous.symmetric_difference(&decorated).copied();
         self.view
-            .reloadDecorationsForDateComponents_animated(&components, false);
+            .reloadDecorationsForDateComponents_animated(&components_array(changed), false);
     }
 
     /// `handler` answers whether the user may pick `day` — the range check
@@ -408,15 +404,6 @@ impl CalendarView {
     /// to.
     pub fn on_visible_month_change(&self, handler: impl Fn(YearMonth) + 'static) {
         self.shared.borrow_mut().on_visible_month_change = Some(Box::new(handler));
-    }
-
-    /// `handler` answers the color a decorated day draws its dot in;
-    /// `None` means no decoration.
-    pub fn set_decoration(
-        &self,
-        handler: impl Fn(DateParts) -> Option<Retained<UIColor>> + 'static,
-    ) {
-        self.shared.borrow_mut().decoration = Some(Box::new(handler));
     }
 
     /// The view's intrinsic size — its natural width.
@@ -441,13 +428,24 @@ impl CalendarView {
         Size::new(size.width, size.height)
     }
 
-    /// Names the view to a screen reader; `None` leaves it unnamed.
-    /// Setting a label marks the view an accessibility element.
+    /// Names the calendar to a screen reader; `None` leaves it unnamed.
+    ///
+    /// The calendar stays a container: `VoiceOver` announces the name as it
+    /// enters the calendar's semantic group and still reaches every day and
+    /// month control inside.
     pub fn set_accessibility_label(&self, label: Option<&str>) {
-        use objc2_ui_kit::NSObjectUIAccessibility;
+        use objc2_ui_kit::{NSObjectUIAccessibility, NSObjectUIAccessibilityContainer};
         let mtm = MainThreadMarker::from(&*self.view);
-        self.view.setIsAccessibilityElement(label.is_some(), mtm);
+        self.view
+            .setAccessibilityContainerType(UIAccessibilityContainerType::SemanticGroup, mtm);
         self.view
             .setAccessibilityLabel(label.map(NSString::from_str).as_deref(), mtm);
     }
+}
+
+/// `days` as the `NSDateComponents` array the calendar's batch APIs take.
+fn components_array(
+    days: impl IntoIterator<Item = DateParts>,
+) -> Retained<NSArray<NSDateComponents>> {
+    NSArray::from_retained_slice(&days.into_iter().map(date::components).collect::<Vec<_>>())
 }

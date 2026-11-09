@@ -1,129 +1,123 @@
-//! The `AppKit` month calendar: an `NSView` that draws and behaves like the
-//! graphical `NSDatePicker` (`NSDatePickerStyleClockAndCalendar` with only
-//! the date elements) and adds what that control cannot carry — decoration
-//! dots under days and multi-day selection.
+//! The `AppKit` month calendar: a composition of `AppKit` controls laid out
+//! like the graphical `NSDatePicker` (`NSDatePickerStyleClockAndCalendar`
+//! with only the date elements), carrying what that control cannot — a
+//! decoration dot under a day.
 //!
-//! The view reproduces the graphical picker's layout: the abbreviated month
-//! and year in bold, the ◀ ● ▶ month navigation, the locale's two-letter
-//! weekday symbols over a separator, and a six-week grid of trailing-aligned
-//! day numbers. Days outside the visible month or the selectable range draw
-//! faint, today draws in the accent colour, and a selected day sits in a
-//! rounded highlight — the accent while the calendar is the first responder
-//! of the key window, unemphasized otherwise. Every metric is the graphical
-//! picker's, measured from `NSDatePicker` renders on macOS 27, and so is the
-//! navigation: ◀ and ▶ move freely, past the selectable range, without
-//! dimming, and ● brings back the month of the selection.
+//! The month title is an `NSTextField`; ◀ ● ▶ are borderless symbol
+//! `NSButton`s in an `NSStackView`; the weekday symbols and the six weeks
+//! of days share one `NSGridView`, whose cells are borderless `NSButton`s
+//! with a layer-backed dot view. `AppKit` therefore draws the text in the
+//! locale's digits, hit-tests, moves keyboard focus and draws its ring,
+//! mirrors the layout right to left, and exposes each control to
+//! assistive technology. Only the placement inside the control is ours: the
+//! graphical picker's metrics, measured from `NSDatePicker` renders on
+//! macOS 27.
 //!
-//! Selection is owned by the caller: a click, an arrow key (single
-//! selection) or Space and Return (multiple selection) report the day
-//! through [`CalendarView::on_pick`], and the caller pushes the resulting
-//! selection back through [`CalendarView::set_selection`]. Month navigation
-//! is local and reported through [`CalendarView::on_visible_month_change`].
+//! Days outside the visible month draw in the tertiary label color, days
+//! outside the range are disabled buttons and draw as `AppKit` draws
+//! disabled control text, and today's number draws in the accent color. A selected day sits in a
+//! rounded highlight: the selection color while a day of the calendar has
+//! keyboard focus in the key window, the unemphasized selection color
+//! otherwise. Navigation stays inside the range: ◀ and ▶ disable at its
+//! first and last month, and ● brings back the month of the selection.
 //!
-//! Assistive technology sees a group with the title, the three navigation
-//! buttons and one button per day, each labelled with the full date and
-//! carrying its selected and enabled state.
+//! Selection is owned by the caller: a click, Space on the focused day or
+//! an arrow key reports the day through [`CalendarView::on_pick`], and the
+//! caller pushes the resulting selection back through
+//! [`CalendarView::set_selection`]. Month navigation is local and reported
+//! through [`CalendarView::on_visible_month_change`].
 //!
 //! # Safety
 //!
-//! The `unsafe` here defines `NSView` and `NSAccessibilityElement`
-//! subclasses, reads framework-exported constants, and calls `objc2`
-//! bindings marked unsafe because `AppKit` view and drawing APIs are
-//! main-thread only — which the `MainThreadOnly` thread kind and
-//! [`MainThreadMarker`] constructor guarantee. Every override `AppKit`
-//! calls runs inside the panic guard.
+//! The `unsafe` here defines `NSView` and `NSButton` subclasses, reads
+//! framework-exported constants, and calls `objc2` bindings marked unsafe
+//! because `AppKit` view APIs are main-thread only — which the
+//! `MainThreadOnly` thread kind and [`MainThreadMarker`] constructor
+//! guarantee. Every override `AppKit` calls runs inside the panic guard.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::RangeInclusive;
-use std::rc::Rc;
+use std::rc::{Rc, Weak as RcWeak};
 
 use keyboard_types::{Key, NamedKey};
-use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityElement, NSAccessibilityFrameInView,
-    NSAccessibilityGroupRole, NSAccessibilityStaticTextRole, NSColor, NSEvent, NSFont,
-    NSFontAttributeName, NSForegroundColorAttributeName, NSGraphicsContext, NSLayoutManager,
-    NSResponder, NSStringDrawing, NSUserInterfaceLayoutDirection, NSView,
+    NSAccessibility, NSAccessibilityGroupRole, NSAccessibilityPostNotification,
+    NSAttributedStringNSStringDrawing,
+    NSAccessibilitySelectedChildrenChangedNotification, NSAccessibilityValueChangedNotification,
+    NSBezierPath, NSBox, NSBoxType, NSButton, NSCellImagePosition, NSColor, NSEvent, NSFont,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSGridCellPlacement, NSGridView,
+    NSImage, NSImageSymbolConfiguration, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+    NSResponder, NSStackView, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
     NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification,
 };
-use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_core_graphics::{CGContext, CGPath};
 use objc2_foundation::{
-    NSArray, NSAttributedStringKey, NSDateFormatter, NSDateFormatterStyle, NSDictionary, NSLocale,
-    NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+    NSArray, NSAttributedString, NSAttributedStringKey, NSCalendar, NSDate, NSDateFormatter,
+    NSDateFormatterStyle, NSDictionary, NSLocale, NSObjectProtocol, NSRect, NSString,
 };
 
+use crate::action::ActionTarget;
 use crate::callback::guarded;
-use crate::date::{self, CalendarSelectionMode, DateParts, YearMonth};
+use crate::date::{self, DateParts, YearMonth};
 use crate::font;
 use crate::geometry::Size;
 use crate::notification::{self, NotificationName, NotificationObserver};
+use crate::view::is_right_to_left;
 
-/// The control's fixed size — the graphical `NSDatePicker`'s
+/// The control's size — the graphical `NSDatePicker`'s
 /// `intrinsicContentSize` with only the date elements.
 const WIDTH: f64 = 138.5;
 /// See [`WIDTH`].
 const HEIGHT: f64 = 148.0;
 /// The leading edge of the first grid column.
-const GRID_X: f64 = 4.5;
+const GRID_LEADING: f64 = 4.5;
+/// The top of the grid: the weekday row, whose symbols sit on
+/// [`WEEKDAY_BASELINE`], then the week rows from [`FIRST_WEEK_TOP`].
+const GRID_TOP: f64 = 21.0;
+/// The top of the first week row.
+const FIRST_WEEK_TOP: f64 = 39.0;
 /// The pitch between grid columns.
 const COLUMN_WIDTH: f64 = 18.5;
-/// The top of the first week row.
-const GRID_Y: f64 = 39.0;
 /// The pitch between week rows.
 const ROW_HEIGHT: f64 = 18.0;
-/// The selection highlight's width.
-const HIGHLIGHT_WIDTH: f64 = 18.0;
-/// The selection highlight's height.
-const HIGHLIGHT_HEIGHT: f64 = 16.0;
+/// A day button's width: its selection highlight's.
+const DAY_WIDTH: f64 = 18.0;
+/// A day button's height: its selection highlight's.
+const DAY_HEIGHT: f64 = 16.0;
 /// The selection highlight's corner radius.
 const HIGHLIGHT_RADIUS: f64 = 3.0;
-/// The gap between a day number's trailing edge and its column's.
-const TEXT_TRAILING_INSET: f64 = 2.0;
-/// A day number's baseline below its row's top.
-const DAY_BASELINE: f64 = 12.25;
 /// The month title's leading inset.
-const TITLE_X: f64 = 3.0;
-/// The month title's baseline.
-const TITLE_BASELINE: f64 = 15.25;
+const TITLE_LEADING: f64 = 3.0;
+/// The month title field's first-baseline anchor, which puts the drawn
+/// baseline where the graphical picker's is.
+const TITLE_BASELINE: f64 = 14.25;
 /// The weekday symbols' baseline.
 const WEEKDAY_BASELINE: f64 = 33.25;
-/// The separator under the weekday symbols: top, leading edge, width.
-const SEPARATOR: (f64, f64, f64) = (37.0, 3.0, 132.5);
-/// The navigation glyphs: leading edge and width of ◀, ●, ▶ in that order,
-/// all `NAV_TOP`-aligned and `NAV_HEIGHT` tall.
-const NAV_GLYPHS: [(f64, f64); 3] = [(97.5, 6.0), (111.5, 7.0), (126.5, 6.0)];
-/// See [`NAV_GLYPHS`].
-const NAV_TOP: f64 = 7.0;
-/// See [`NAV_GLYPHS`].
-const NAV_HEIGHT: f64 = 7.0;
-/// How far a navigation glyph's click target extends past its ink.
-const NAV_HIT_OUTSET: f64 = 4.0;
+/// The separator under the weekday symbols: top, leading edge, width and
+/// thickness.
+const SEPARATOR: (f64, f64, f64, f64) = (37.0, 3.0, 132.5, 1.0);
+/// A navigation button's width — the pitch of ◀ ● ▶ — and height.
+const NAV_SIZE: (f64, f64) = (14.5, 14.0);
+/// The navigation buttons' vertical centre and trailing inset.
+const NAV_CENTER_Y: f64 = 10.5;
+/// See [`NAV_CENTER_Y`].
+const NAV_TRAILING: f64 = 1.75;
+/// The navigation glyphs' symbol point size.
+const NAV_SYMBOL_SIZE: f64 = 7.0;
 /// The decoration dot's diameter.
 const DOT_DIAMETER: f64 = 2.5;
-/// The decoration dot's centre below its row's top.
+/// The decoration dot's centre below its day button's top.
 const DOT_CENTER: f64 = 15.0;
-/// The keyboard cursor ring's stroke width.
-const CURSOR_RING_WIDTH: f64 = 1.5;
 /// The title's point size and weight.
 const TITLE_FONT: (f64, f64) = (13.0, font::weight::BOLD);
 /// The weekday symbols' point size and weight.
 const WEEKDAY_FONT: (f64, f64) = (10.5, font::weight::SEMI_BOLD);
 /// The day numbers' point size and weight.
 const DAY_FONT: (f64, f64) = (11.0, font::weight::REGULAR);
-/// Opacity of `muted` for text outside the visible month or the range —
-/// the platform's tertiary label against its secondary one.
-const FAINT_OPACITY: f64 = 0.5;
-/// Opacity of `muted` for text both outside the visible month and the
-/// range — the platform's quaternary label against its secondary one.
-const FAINTER_OPACITY: f64 = 0.2;
-/// Opacity of `muted` for the selection highlight while the calendar is
-/// not focused — the unemphasized selected-content background.
-const UNEMPHASIZED_OPACITY: f64 = 0.3;
 /// The days the grid shows: six weeks.
 const GRID_DAYS: usize = 42;
 /// A Sunday — the reference day the weekday symbols are formatted from.
@@ -135,8 +129,9 @@ const REFERENCE_SUNDAY: DateParts = DateParts {
 
 type TextAttributes = NSDictionary<NSAttributedStringKey, AnyObject>;
 
-/// The colours the calendar draws with. The faint text tiers and the
-/// unemphasized highlight derive from `muted`.
+/// The theme colours the calendar draws with. The faint text tiers and the
+/// unemphasized highlight are `AppKit`'s own system colours, which follow
+/// the view's appearance.
 #[derive(Debug, Clone)]
 pub struct CalendarColors {
     /// Day numbers and the month title.
@@ -145,7 +140,7 @@ pub struct CalendarColors {
     pub muted: Retained<NSColor>,
     /// The line under the weekday symbols.
     pub separator: Retained<NSColor>,
-    /// Today's number and the keyboard cursor ring.
+    /// Today's number.
     pub accent: Retained<NSColor>,
     /// The focused selection highlight.
     pub selection: Retained<NSColor>,
@@ -153,175 +148,32 @@ pub struct CalendarColors {
     pub selection_foreground: Retained<NSColor>,
 }
 
-impl CalendarColors {
-    /// The platform's own colours — the values a caller without a theme
-    /// passes.
-    #[must_use]
-    pub fn system() -> Self {
-        Self {
-            foreground: NSColor::labelColor(),
-            muted: NSColor::secondaryLabelColor(),
-            separator: NSColor::separatorColor(),
-            accent: NSColor::controlAccentColor(),
-            selection: NSColor::selectedContentBackgroundColor(),
-            selection_foreground: NSColor::alternateSelectedControlTextColor(),
-        }
-    }
-}
-
-/// What a click, a key or an assistive press acts on.
+/// One of the colours in [`CalendarColors`], for [`CalendarView::set_color`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Target {
-    /// The month title — static text.
-    Title,
-    /// ◀: the month before.
-    Previous,
-    /// ●: the month of the selection.
+pub enum CalendarColorRole {
+    /// [`CalendarColors::foreground`].
+    Foreground,
+    /// [`CalendarColors::muted`].
+    Muted,
+    /// [`CalendarColors::separator`].
+    Separator,
+    /// [`CalendarColors::accent`].
+    Accent,
+    /// [`CalendarColors::selection`].
     Selection,
-    /// ▶: the month after.
+    /// [`CalendarColors::selection_foreground`].
+    SelectionForeground,
+}
+
+/// One of the navigation buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalendarNavigation {
+    /// ◀: shows the month before.
+    Previous,
+    /// ●: shows the month of the selection.
+    Selection,
+    /// ▶: shows the month after.
     Next,
-    /// A grid cell, `0..GRID_DAYS`.
-    Day(usize),
-}
-
-impl Target {
-    /// Every target in accessibility order.
-    fn all() -> impl Iterator<Item = Self> {
-        [Self::Title, Self::Previous, Self::Selection, Self::Next]
-            .into_iter()
-            .chain((0..GRID_DAYS).map(Self::Day))
-    }
-}
-
-/// One grid cell.
-#[derive(Debug, Clone, Copy)]
-struct GridDay {
-    parts: DateParts,
-    in_month: bool,
-}
-
-/// The locale-derived text the calendar draws and speaks.
-struct LocaleText {
-    /// The abbreviated month and year, e.g. "Nov 2026".
-    title: Retained<NSDateFormatter>,
-    /// The full date a day button speaks.
-    spoken: Retained<NSDateFormatter>,
-    /// The two-letter weekday symbols, Sunday first.
-    weekdays: [String; 7],
-    /// The locale's first weekday, `1` (Sunday) through `7`.
-    first_weekday: i32,
-}
-
-impl LocaleText {
-    fn new(locale: &NSLocale) -> Self {
-        let calendar = date::gregorian();
-        calendar.setLocale(Some(locale));
-        let formatter = |configure: &dyn Fn(&NSDateFormatter)| {
-            let formatter = NSDateFormatter::new();
-            formatter.setLocale(Some(locale));
-            formatter.setCalendar(Some(&calendar));
-            configure(&formatter);
-            formatter
-        };
-        let title =
-            formatter(&|f| f.setLocalizedDateFormatFromTemplate(&NSString::from_str("MMMyyyy")));
-        let spoken = formatter(&|f| {
-            f.setDateStyle(NSDateFormatterStyle::FullStyle);
-            f.setTimeStyle(NSDateFormatterStyle::NoStyle);
-        });
-        let symbol = formatter(&|f| f.setDateFormat(Some(&NSString::from_str("cccccc"))));
-        let weekdays = std::array::from_fn(|offset| {
-            let day = date::add_days(
-                REFERENCE_SUNDAY,
-                i32::try_from(offset).expect("seven weekdays"),
-            );
-            symbol.stringFromDate(&ns_date(day)).to_string()
-        });
-        let first_weekday =
-            i32::try_from(calendar.firstWeekday()).expect("firstWeekday is 1 through 7");
-        Self {
-            title,
-            spoken,
-            weekdays,
-            first_weekday,
-        }
-    }
-}
-
-/// The `NSDate` at midnight of `day`.
-///
-/// # Panics
-///
-/// When `day` is not a real Gregorian date.
-fn ns_date(day: DateParts) -> Retained<objc2_foundation::NSDate> {
-    date::ns_date_from_date_parts(day).expect("calendar days are valid Gregorian dates")
-}
-
-/// The calendar's model and appearance.
-struct State {
-    mode: CalendarSelectionMode,
-    visible: YearMonth,
-    grid: [GridDay; GRID_DAYS],
-    selected: BTreeSet<DateParts>,
-    decorated: BTreeSet<DateParts>,
-    range: RangeInclusive<DateParts>,
-    /// The keyboard cursor: the day arrow keys move from.
-    cursor: DateParts,
-    colors: CalendarColors,
-    text: LocaleText,
-    navigation_labels: CalendarNavigationLabels,
-}
-
-impl State {
-    /// Lays out `visible` as six weeks starting on the locale's first
-    /// weekday.
-    fn rebuild_grid(&mut self) {
-        let month = self.visible;
-        let lead = (month.first_weekday() - self.text.first_weekday).rem_euclid(7);
-        let previous = month.previous();
-        let previous_count = previous.day_count();
-        let count = month.day_count();
-        let next = month.next();
-        self.grid = std::array::from_fn(|index| {
-            let offset = i32::try_from(index).expect("42 grid days") - lead;
-            if offset < 0 {
-                GridDay {
-                    parts: DateParts {
-                        year: previous.year,
-                        month: previous.month,
-                        day: previous_count + offset + 1,
-                    },
-                    in_month: false,
-                }
-            } else if offset < count {
-                GridDay {
-                    parts: DateParts {
-                        day: offset + 1,
-                        ..month.first_day()
-                    },
-                    in_month: true,
-                }
-            } else {
-                GridDay {
-                    parts: DateParts {
-                        day: offset - count + 1,
-                        ..next.first_day()
-                    },
-                    in_month: false,
-                }
-            }
-        });
-    }
-
-    fn in_range(&self, day: DateParts) -> bool {
-        self.range.contains(&day)
-    }
-
-    /// The month ● brings back: the earliest selected day's, or today's
-    /// when nothing is selected.
-    fn selection_month(&self) -> YearMonth {
-        YearMonth::of(self.selected.first().copied().unwrap_or_else(date::today))
-    }
 }
 
 /// The spoken names of the three navigation buttons.
@@ -335,513 +187,388 @@ pub struct CalendarNavigationLabels {
     pub next: String,
 }
 
-/// The user's callbacks. Cloned out before a call so a callback that
-/// pushes state back into the calendar finds nothing borrowed.
-#[derive(Default)]
-struct Handlers {
-    pick: Option<Rc<dyn Fn(DateParts)>>,
-    visible_month: Option<Rc<dyn Fn(YearMonth)>>,
+/// One grid cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GridDay {
+    parts: DateParts,
+    in_month: bool,
 }
 
-/// The calendar's instance state.
-pub struct CalendarViewIvars {
-    state: RefCell<State>,
-    handlers: RefCell<Handlers>,
-    /// One element per [`Target`], in [`Target::all`] order.
-    elements: RefCell<Vec<Retained<CalendarElement>>>,
-    /// The key-window observers of the window the view is in.
+/// The six weeks showing `month`, starting on `first_weekday` (`1` is
+/// Sunday).
+fn month_grid(month: YearMonth, first_weekday: i32) -> [GridDay; GRID_DAYS] {
+    let lead = (month.first_weekday() - first_weekday).rem_euclid(7);
+    let previous = month.previous();
+    let previous_count = previous.day_count();
+    let count = month.day_count();
+    let next = month.next();
+    std::array::from_fn(|index| {
+        let offset = i32::try_from(index).expect("42 grid days") - lead;
+        if offset < 0 {
+            GridDay {
+                parts: DateParts {
+                    day: previous_count + offset + 1,
+                    ..previous.first_day()
+                },
+                in_month: false,
+            }
+        } else if offset < count {
+            GridDay {
+                parts: DateParts {
+                    day: offset + 1,
+                    ..month.first_day()
+                },
+                in_month: true,
+            }
+        } else {
+            GridDay {
+                parts: DateParts {
+                    day: offset - count + 1,
+                    ..next.first_day()
+                },
+                in_month: false,
+            }
+        }
+    })
+}
+
+/// The locale-derived text the calendar shows and speaks.
+struct LocaleText {
+    /// The locale's Gregorian calendar, which also turns days into dates.
+    calendar: Retained<NSCalendar>,
+    /// The abbreviated month and year, e.g. "Nov 2026".
+    title: Retained<NSDateFormatter>,
+    /// The day of the month in the locale's digits.
+    day: Retained<NSDateFormatter>,
+    /// The full date a day button speaks.
+    spoken: Retained<NSDateFormatter>,
+    /// The two-letter weekday symbols, Sunday first.
+    weekdays: [String; 7],
+    /// The locale's first weekday, `1` (Sunday) through `7`.
+    first_weekday: i32,
+}
+
+impl LocaleText {
+    fn new(identifier: &str) -> Self {
+        let locale = NSLocale::localeWithLocaleIdentifier(&NSString::from_str(identifier));
+        let calendar = date::gregorian();
+        calendar.setLocale(Some(&locale));
+        let formatter = |configure: &dyn Fn(&NSDateFormatter)| {
+            let formatter = NSDateFormatter::new();
+            formatter.setLocale(Some(&locale));
+            formatter.setCalendar(Some(&calendar));
+            configure(&formatter);
+            formatter
+        };
+        let title =
+            formatter(&|f| f.setLocalizedDateFormatFromTemplate(&NSString::from_str("MMMyyyy")));
+        let day = formatter(&|f| f.setDateFormat(Some(&NSString::from_str("d"))));
+        let spoken = formatter(&|f| {
+            f.setDateStyle(NSDateFormatterStyle::FullStyle);
+            f.setTimeStyle(NSDateFormatterStyle::NoStyle);
+        });
+        let symbol = formatter(&|f| f.setDateFormat(Some(&NSString::from_str("cccccc"))));
+        let first_weekday =
+            i32::try_from(calendar.firstWeekday()).expect("firstWeekday is 1 through 7");
+        let mut text = Self {
+            calendar,
+            title,
+            day,
+            spoken,
+            weekdays: Default::default(),
+            first_weekday,
+        };
+        text.weekdays = std::array::from_fn(|offset| {
+            let sunday_offset = i32::try_from(offset).expect("seven weekdays");
+            symbol
+                .stringFromDate(&text.date(date::add_days(REFERENCE_SUNDAY, sunday_offset)))
+                .to_string()
+        });
+        text
+    }
+
+    /// The `NSDate` at midnight of `day` in the locale's calendar.
+    ///
+    /// # Panics
+    ///
+    /// When `day` is not a real Gregorian date.
+    fn date(&self, day: DateParts) -> Retained<NSDate> {
+        self.calendar
+            .dateFromComponents(&date::components(day))
+            .expect("calendar days are valid Gregorian dates")
+    }
+}
+
+/// The calendar's model.
+struct Model {
+    month: YearMonth,
+    range: RangeInclusive<DateParts>,
+    grid: [GridDay; GRID_DAYS],
+    selected: BTreeSet<DateParts>,
+    decorated: BTreeSet<DateParts>,
+    text: LocaleText,
+    colors: CalendarColors,
+    /// Each grid day's number in the locale's digits.
+    numbers: Vec<Retained<NSString>>,
+}
+
+impl Model {
+    fn in_range(&self, day: DateParts) -> bool {
+        self.range.contains(&day)
+    }
+
+    /// The first and last month the range touches.
+    const fn month_bounds(&self) -> (YearMonth, YearMonth) {
+        (
+            YearMonth::of(*self.range.start()),
+            YearMonth::of(*self.range.end()),
+        )
+    }
+
+    /// `month` moved into the range's months.
+    fn clamp(&self, month: YearMonth) -> YearMonth {
+        let (first, last) = self.month_bounds();
+        month.clamp(first, last)
+    }
+
+    /// The month ● brings back: the earliest selected day's, or today's
+    /// when nothing is selected, inside the range.
+    fn selection_month(&self) -> YearMonth {
+        self.clamp(YearMonth::of(
+            self.selected.first().copied().unwrap_or_else(date::today),
+        ))
+    }
+
+    fn index_of(&self, day: DateParts) -> Option<usize> {
+        self.grid.iter().position(|cell| cell.parts == day)
+    }
+}
+
+/// What a day button shows.
+struct DayLook {
+    title: Retained<NSAttributedString>,
+    highlight: Option<Retained<NSColor>>,
+    dot: Option<Retained<NSColor>>,
+}
+
+/// Called with the day the user picks.
+type PickHandler = Rc<dyn Fn(DateParts)>;
+/// Called with the month the user navigates to.
+type MonthHandler = Rc<dyn Fn(YearMonth)>;
+
+/// The views and state every control of one calendar shares.
+struct Shared {
+    root: Retained<CalendarRoot>,
+    title: Retained<NSTextField>,
+    navigation: [Retained<NSButton>; 3],
+    weekdays: Vec<Retained<NSTextField>>,
+    separator: Retained<NSBox>,
+    days: Vec<Retained<DayButton>>,
+    model: RefCell<Model>,
+    /// Whether a day button is the first responder.
+    focused: Cell<bool>,
+    /// Whether the selection highlight currently draws emphasized.
+    emphasized: Cell<bool>,
+    on_pick: RefCell<Option<PickHandler>>,
+    on_visible_month_change: RefCell<Option<MonthHandler>>,
+    actions: RefCell<Vec<ActionTarget>>,
     window_observers: RefCell<Vec<NotificationObserver>>,
 }
 
-impl fmt::Debug for CalendarViewIvars {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let state = self.state.borrow();
-        f.debug_struct("CalendarViewIvars")
-            .field("mode", &state.mode)
-            .field("visible", &state.visible)
-            .field("selected", &state.selected)
-            .field("decorated", &state.decorated)
-            .field("range", &state.range)
-            .finish_non_exhaustive()
+impl Shared {
+    fn mtm(&self) -> MainThreadMarker {
+        self.root.mtm()
     }
-}
 
-define_class!(
-    // SAFETY: `NSView`'s designated initializer is `initWithFrame:`, which
-    // `CalendarView::new` calls, and the class does not implement `Drop`.
-    #[unsafe(super(NSView))]
-    #[name = "CocoaUiCalendarView"]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = CalendarViewIvars]
-    #[derive(Debug)]
-    /// A month calendar drawn and operated like the graphical
-    /// `NSDatePicker`, with decorations and multi-day selection.
-    ///
-    /// Its coordinates are flipped: the origin is the top-left corner and
-    /// `y` grows downward, matching the rest of the kit.
-    pub struct CalendarView;
-
-    // SAFETY: `NSObjectProtocol` asks nothing of an `NSView` subclass.
-    unsafe impl NSObjectProtocol for CalendarView {}
-
-    // SAFETY: the view answers its accessibility from state it owns.
-    unsafe impl NSAccessibility for CalendarView {}
-
-    impl CalendarView {
-        // SAFETY: see the module safety note.
-        #[unsafe(method(isFlipped))]
-        fn is_flipped_override(&self) -> bool {
-            true
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(intrinsicContentSize))]
-        fn intrinsic_content_size_override(&self) -> NSSize {
-            NSSize::new(WIDTH, HEIGHT)
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(acceptsFirstResponder))]
-        fn accepts_first_responder_override(&self) -> bool {
-            true
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(becomeFirstResponder))]
-        fn become_first_responder_override(&self) -> bool {
-            self.setNeedsDisplay(true);
-            true
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(resignFirstResponder))]
-        fn resign_first_responder_override(&self) -> bool {
-            self.setNeedsDisplay(true);
-            true
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(viewDidMoveToWindow))]
-        fn view_did_move_to_window_override(&self) {
-            guarded("CalendarView viewDidMoveToWindow", || self.observe_window());
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(viewDidChangeEffectiveAppearance))]
-        fn view_did_change_effective_appearance_override(&self) {
-            self.setNeedsDisplay(true);
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(mouseDown:))]
-        fn mouse_down_override(&self, event: &NSEvent) {
-            guarded("CalendarView mouseDown:", || {
-                if let Some(window) = self.window() {
-                    let responder: &NSResponder = self;
-                    window.makeFirstResponder(Some(responder));
-                }
-                let point = self.convertPoint_fromView(event.locationInWindow(), None);
-                if let Some(target) = self.target_at(point) {
-                    self.activate(target);
-                }
-            });
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(keyDown:))]
-        fn key_down_override(&self, event: &NSEvent) {
-            let handled = guarded("CalendarView keyDown:", || self.handle_key(event));
-            if !handled {
-                // SAFETY: forwarding an unhandled key to the superclass is
-                // the documented responder-chain contract.
-                unsafe { msg_send![super(self), keyDown: event] }
-            }
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(drawRect:))]
-        fn draw_rect_override(&self, _dirty_rect: NSRect) {
-            guarded("CalendarView drawRect:", || self.draw());
-        }
-    }
-);
-
-impl CalendarView {
-    /// A calendar in `mode` showing today's month in the user's locale,
-    /// drawn in the platform's colours, with nothing selected and its
-    /// navigation buttons named `navigation_labels`.
-    #[must_use]
-    pub fn new(
-        mtm: MainThreadMarker,
-        mode: CalendarSelectionMode,
-        navigation_labels: CalendarNavigationLabels,
-    ) -> Retained<Self> {
-        let today = date::today();
-        let text = LocaleText::new(&NSLocale::autoupdatingCurrentLocale());
-        let mut state = State {
-            mode,
-            visible: YearMonth::of(today),
-            grid: [GridDay {
-                parts: today,
-                in_month: true,
-            }; GRID_DAYS],
-            selected: BTreeSet::new(),
-            decorated: BTreeSet::new(),
-            range: DateParts {
-                year: i32::from(i16::MIN),
-                month: 1,
-                day: 1,
-            }..=DateParts {
-                year: i32::from(i16::MAX),
-                month: 12,
-                day: 31,
-            },
-            cursor: today,
-            colors: CalendarColors::system(),
-            text,
-            navigation_labels,
+    fn navigation_button(&self, button: CalendarNavigation) -> &NSButton {
+        let index = match button {
+            CalendarNavigation::Previous => 0,
+            CalendarNavigation::Selection => 1,
+            CalendarNavigation::Next => 2,
         };
-        state.rebuild_grid();
-        let this = Self::alloc(mtm).set_ivars(CalendarViewIvars {
-            state: RefCell::new(state),
-            handlers: RefCell::new(Handlers::default()),
-            elements: RefCell::new(Vec::new()),
-            window_observers: RefCell::new(Vec::new()),
-        });
-        // SAFETY: `initWithFrame:` is `NSView`'s designated initializer.
-        let view: Retained<Self> = unsafe {
-            msg_send![super(this), initWithFrame: CGRect::new(CGPoint::ZERO, CGSize::new(WIDTH, HEIGHT))]
-        };
-        view.install_accessibility();
-        view
+        &self.navigation[index]
     }
 
-    /// The control's size — fixed, as the graphical picker's.
-    #[must_use]
-    pub const fn intrinsic_size(&self) -> Size {
-        Size::new(WIDTH, HEIGHT)
-    }
-
-    /// Formats the title, weekday symbols, spoken dates and first weekday
-    /// for the locale `identifier` names.
-    pub fn set_locale(&self, identifier: &str) {
-        let locale = NSLocale::localeWithLocaleIdentifier(&NSString::from_str(identifier));
-        {
-            let mut state = self.ivars().state.borrow_mut();
-            state.text = LocaleText::new(&locale);
-            state.rebuild_grid();
-        }
-        self.refresh();
-    }
-
-    /// The colours the calendar draws with.
-    pub fn set_colors(&self, colors: CalendarColors) {
-        self.ivars().state.borrow_mut().colors = colors;
-        self.setNeedsDisplay(true);
-    }
-
-    /// The spoken names of ◀, ● and ▶.
-    pub fn set_navigation_labels(&self, labels: CalendarNavigationLabels) {
-        self.ivars().state.borrow_mut().navigation_labels = labels;
-        self.update_accessibility();
-    }
-
-    /// The inclusive range of selectable days. Days outside it draw faint
-    /// and ignore clicks and keys; navigation still shows any month, as the
-    /// graphical picker's does.
-    pub fn set_range(&self, range: RangeInclusive<DateParts>) {
-        self.ivars().state.borrow_mut().range = range;
-        self.refresh();
-    }
-
-    /// The selected days. In single mode the keyboard cursor follows the
-    /// first of them.
-    pub fn set_selection(&self, selected: impl IntoIterator<Item = DateParts>) {
-        {
-            let mut state = self.ivars().state.borrow_mut();
-            state.selected = selected.into_iter().collect();
-            if state.mode == CalendarSelectionMode::Single
-                && let Some(first) = state.selected.first().copied()
-            {
-                state.cursor = first;
-            }
-        }
-        self.refresh();
-    }
-
-    /// The days that carry a decoration dot.
-    pub fn set_decorations(&self, decorated: impl IntoIterator<Item = DateParts>) {
-        self.ivars().state.borrow_mut().decorated = decorated.into_iter().collect();
-        self.setNeedsDisplay(true);
-    }
-
-    /// The month the calendar shows.
-    #[must_use]
-    pub fn visible_month(&self) -> YearMonth {
-        self.ivars().state.borrow().visible
-    }
-
-    /// Shows `month`; reports nothing back.
-    pub fn set_visible_month(&self, month: YearMonth) {
-        {
-            let mut state = self.ivars().state.borrow_mut();
-            if state.visible == month {
-                return;
-            }
-            state.visible = month;
-            if YearMonth::of(state.cursor) != month {
-                state.cursor = month.first_day();
-            }
-            state.rebuild_grid();
-        }
-        self.refresh();
-    }
-
-    /// `handler` receives the day the user picked: in single mode the day
-    /// to select, in multiple mode the day to toggle. The calendar changes
-    /// nothing itself; the caller answers with
-    /// [`set_selection`](Self::set_selection).
-    pub fn on_pick(&self, handler: impl Fn(DateParts) + 'static) {
-        self.ivars().handlers.borrow_mut().pick = Some(Rc::new(handler));
-    }
-
-    /// `handler` receives the month the user navigated to.
-    pub fn on_visible_month_change(&self, handler: impl Fn(YearMonth) + 'static) {
-        self.ivars().handlers.borrow_mut().visible_month = Some(Rc::new(handler));
-    }
-
-    /// Names the calendar group to a screen reader.
-    pub fn set_accessibility_label(&self, label: Option<&str>) {
-        self.setAccessibilityLabel(label.map(NSString::from_str).as_deref());
-    }
-
-    /// Whether the selection highlight draws emphasized: the calendar is the
-    /// first responder of the key window.
+    /// Whether the selection highlight is the focused one: a day has
+    /// keyboard focus in the key window.
     fn is_emphasized(&self) -> bool {
-        self.window().is_some_and(|window| window.isKeyWindow()) && self.is_first_responder()
+        self.focused.get() && self.root.window().is_some_and(|window| window.isKeyWindow())
     }
 
-    /// Whether the calendar is its window's first responder.
-    fn is_first_responder(&self) -> bool {
-        self.window().is_some_and(|window| {
-            window.firstResponder().is_some_and(|responder| {
-                let own: &NSResponder = self;
-                std::ptr::eq(&raw const *responder, own)
-            })
-        })
-    }
-
-    fn is_rtl(&self) -> bool {
-        self.userInterfaceLayoutDirection() == NSUserInterfaceLayoutDirection::RightToLeft
-    }
-
-    /// Mirrors a rect drawn at `x` with `width` for right-to-left layout.
-    fn mirrored(&self, x: f64, width: f64) -> f64 {
-        if self.is_rtl() { WIDTH - x - width } else { x }
-    }
-
-    /// The column's leading edge, mirrored for right-to-left layout.
-    fn column_x(&self, column: usize) -> f64 {
-        let column = f64::from(u8::try_from(column).expect("seven columns"));
-        self.mirrored(column.mul_add(COLUMN_WIDTH, GRID_X), COLUMN_WIDTH)
-    }
-
-    /// The top of week row `row`.
-    fn row_y(row: usize) -> f64 {
-        f64::from(u8::try_from(row).expect("six rows")).mul_add(ROW_HEIGHT, GRID_Y)
-    }
-
-    /// The highlight rect of grid cell `index`.
-    fn cell_rect(&self, index: usize) -> CGRect {
-        CGRect::new(
-            CGPoint::new(self.column_x(index % 7), Self::row_y(index / 7)),
-            CGSize::new(HIGHLIGHT_WIDTH, HIGHLIGHT_HEIGHT),
-        )
-    }
-
-    /// The ink rect of navigation glyph `slot` (0 ◀, 1 ●, 2 ▶).
-    fn nav_rect(&self, slot: usize) -> CGRect {
-        let (x, width) = NAV_GLYPHS[slot];
-        CGRect::new(
-            CGPoint::new(self.mirrored(x, width), NAV_TOP),
-            CGSize::new(width, NAV_HEIGHT),
-        )
-    }
-
-    /// The rect `target` occupies, for hit testing and accessibility.
-    fn target_rect(&self, target: Target) -> CGRect {
-        let outset = |rect: CGRect| {
-            CGRect::new(
-                CGPoint::new(
-                    rect.origin.x - NAV_HIT_OUTSET,
-                    rect.origin.y - NAV_HIT_OUTSET,
-                ),
-                CGSize::new(
-                    2.0f64.mul_add(NAV_HIT_OUTSET, rect.size.width),
-                    2.0f64.mul_add(NAV_HIT_OUTSET, rect.size.height),
-                ),
-            )
+    /// Restyles the selected days when the emphasis changed.
+    fn refresh_emphasis(&self) {
+        let emphasized = self.is_emphasized();
+        if self.emphasized.replace(emphasized) == emphasized {
+            return;
+        }
+        let indices: Vec<usize> = {
+            let model = self.model.borrow();
+            model
+                .selected
+                .iter()
+                .filter_map(|day| model.index_of(*day))
+                .collect()
         };
-        match target {
-            Target::Title => {
-                let state = self.ivars().state.borrow();
-                let title = title_string(&state);
-                let attributes = attributes(&state.colors.foreground, &title_font(self.mtm()));
-                // SAFETY: `sizeWithAttributes:` is `NSStringDrawing`'s
-                // documented measure.
-                let size = unsafe { title.sizeWithAttributes(Some(&attributes)) };
-                let font = title_font(self.mtm());
-                let top = TITLE_BASELINE - baseline_offset(&font);
-                CGRect::new(CGPoint::new(self.mirrored(TITLE_X, size.width), top), size)
+        self.refresh_days(indices);
+    }
+
+    /// Lays out the model's month: the title, the navigation, and every
+    /// day's number, state and spoken name.
+    fn show_model_month(&self) {
+        {
+            let mut model = self.model.borrow_mut();
+            model.grid = month_grid(model.month, model.text.first_weekday);
+            let numbers = model
+                .grid
+                .iter()
+                .map(|cell| model.text.day.stringFromDate(&model.text.date(cell.parts)))
+                .collect();
+            model.numbers = numbers;
+            let title = model
+                .text
+                .title
+                .stringFromDate(&model.text.date(model.month.first_day()));
+            self.title.setStringValue(&title);
+            let (first, last) = model.month_bounds();
+            self.navigation_button(CalendarNavigation::Previous)
+                .setEnabled(model.month > first);
+            self.navigation_button(CalendarNavigation::Next)
+                .setEnabled(model.month < last);
+            for (button, cell) in self.days.iter().zip(&model.grid) {
+                button.setEnabled(model.in_range(cell.parts));
+                let spoken = model.text.spoken.stringFromDate(&model.text.date(cell.parts));
+                button.setAccessibilityLabel(Some(&spoken));
             }
-            Target::Previous => outset(self.nav_rect(0)),
-            Target::Selection => outset(self.nav_rect(1)),
-            Target::Next => outset(self.nav_rect(2)),
-            Target::Day(index) => self.cell_rect(index),
+        }
+        self.refresh_days(0..GRID_DAYS);
+        post_accessibility_notification(&self.title, AccessibilityNotification::ValueChanged);
+    }
+
+    /// Restyles the days at `indices`.
+    fn refresh_days(&self, indices: impl IntoIterator<Item = usize>) {
+        let emphasized = self.emphasized.get();
+        let rtl = is_right_to_left(&self.root);
+        let model = self.model.borrow();
+        let today = date::today();
+        let font = system_font(self.mtm(), DAY_FONT);
+        for index in indices {
+            let look = day_look(&model, index, emphasized, today, &font, rtl);
+            let button = &self.days[index];
+            button.show(&look, rtl);
+            button.setAccessibilitySelected(model.selected.contains(&model.grid[index].parts));
         }
     }
 
-    /// The interactive target under `point`.
-    fn target_at(&self, point: NSPoint) -> Option<Target> {
-        let contains = |rect: CGRect| {
-            point.x >= rect.origin.x
-                && point.x < rect.origin.x + rect.size.width
-                && point.y >= rect.origin.y
-                && point.y < rect.origin.y + rect.size.height
-        };
-        [Target::Previous, Target::Selection, Target::Next]
-            .into_iter()
-            .find(|target| contains(self.target_rect(*target)))
-            .or_else(|| {
-                // Grid cells tile their full pitch for hits, not just the
-                // highlight.
-                let column = (0..7).find(|column| {
-                    let x = self.column_x(*column);
-                    point.x >= x && point.x < x + COLUMN_WIDTH
-                })?;
-                let row = (0..6).find(|row| {
-                    let y = Self::row_y(*row);
-                    point.y >= y && point.y < y + ROW_HEIGHT
-                })?;
-                Some(Target::Day(row * 7 + column))
-            })
+    /// The weekday symbols in the locale's order and the muted colour.
+    fn refresh_weekdays(&self) {
+        let model = self.model.borrow();
+        let font = system_font(self.mtm(), WEEKDAY_FONT);
+        for (column, field) in self.weekdays.iter().enumerate() {
+            let weekday = (usize::try_from(model.text.first_weekday - 1)
+                .expect("firstWeekday is 1 through 7")
+                + column)
+                % 7;
+            field.setStringValue(&NSString::from_str(&model.text.weekdays[weekday]));
+            field.setFont(Some(&font));
+            field.setTextColor(Some(&model.colors.muted));
+        }
     }
 
-    /// Shows `month` and reports it.
+    /// Shows `month` and reports it, unless it is already shown.
     fn navigate(&self, month: YearMonth) {
         {
-            let mut state = self.ivars().state.borrow_mut();
-            if state.visible == month {
+            let mut model = self.model.borrow_mut();
+            if model.month == month {
                 return;
             }
-            state.visible = month;
-            state.rebuild_grid();
+            model.month = month;
         }
-        self.refresh();
-        let handler = self.ivars().handlers.borrow().visible_month.clone();
+        self.show_model_month();
+        let handler = self.on_visible_month_change.borrow().clone();
         if let Some(handler) = handler {
             handler(month);
         }
     }
 
-    /// Reports `day` as picked, showing its month first.
+    /// Activates a navigation button.
+    fn activate(&self, button: CalendarNavigation) {
+        let month = {
+            let model = self.model.borrow();
+            match button {
+                CalendarNavigation::Previous => model.clamp(model.month.previous()),
+                CalendarNavigation::Selection => model.selection_month(),
+                CalendarNavigation::Next => model.clamp(model.month.next()),
+            }
+        };
+        self.navigate(month);
+    }
+
+    /// Picks `day`: shows its month, focuses its button and reports it.
     fn pick(&self, day: DateParts) {
-        if !self.ivars().state.borrow().in_range(day) {
-            return;
-        }
         self.navigate(YearMonth::of(day));
-        self.ivars().state.borrow_mut().cursor = day;
-        self.setNeedsDisplay(true);
-        let handler = self.ivars().handlers.borrow().pick.clone();
+        let index = self
+            .model
+            .borrow()
+            .index_of(day)
+            .expect("the shown month's grid holds the day");
+        self.focus(index);
+        let handler = self.on_pick.borrow().clone();
         if let Some(handler) = handler {
             handler(day);
         }
     }
 
-    /// Runs what a click or an assistive press on `target` does.
-    fn activate(&self, target: Target) {
-        match target {
-            Target::Title => {}
-            Target::Previous => {
-                let month = self.ivars().state.borrow().visible.previous();
-                self.navigate(month);
-            }
-            Target::Next => {
-                let month = self.ivars().state.borrow().visible.next();
-                self.navigate(month);
-            }
-            Target::Selection => {
-                let month = self.ivars().state.borrow().selection_month();
-                self.navigate(month);
-            }
-            Target::Day(index) => {
-                let day = self.ivars().state.borrow().grid[index].parts;
-                self.pick(day);
-            }
+    fn focus(&self, index: usize) {
+        if let Some(window) = self.root.window() {
+            let responder: &NSResponder = &self.days[index];
+            window.makeFirstResponder(Some(responder));
         }
     }
 
-    /// Arrow keys move the cursor (and, in single mode, the selection);
-    /// Page Up and Page Down change month; Space and Return toggle the
-    /// cursor day in multiple mode.
-    fn handle_key(&self, event: &NSEvent) -> bool {
+    /// Arrow keys pick the neighbouring day; Page Up and Page Down change
+    /// month.
+    fn handle_key(&self, index: usize, event: &NSEvent) -> bool {
         let key = crate::keys::key_event(event).key;
-        let rtl = self.is_rtl();
-        let days = match key {
+        let rtl = is_right_to_left(&self.root);
+        let step = match key {
             Key::Named(NamedKey::ArrowLeft) => Some(if rtl { 1 } else { -1 }),
             Key::Named(NamedKey::ArrowRight) => Some(if rtl { -1 } else { 1 }),
             Key::Named(NamedKey::ArrowUp) => Some(-7),
             Key::Named(NamedKey::ArrowDown) => Some(7),
             _ => None,
         };
-        let (mode, cursor) = {
-            let state = self.ivars().state.borrow();
-            (state.mode, state.cursor)
-        };
-        if let Some(days) = days {
-            let day = date::add_days(cursor, days);
-            if !self.ivars().state.borrow().in_range(day) {
-                return true;
-            }
-            match mode {
-                CalendarSelectionMode::Single => self.pick(day),
-                CalendarSelectionMode::Multiple => {
-                    self.navigate(YearMonth::of(day));
-                    self.ivars().state.borrow_mut().cursor = day;
-                    self.setNeedsDisplay(true);
-                }
+        if let Some(step) = step {
+            let target = {
+                let model = self.model.borrow();
+                let day = date::add_days(model.grid[index].parts, step);
+                model.in_range(day).then_some(day)
+            };
+            if let Some(day) = target {
+                self.pick(day);
             }
             return true;
         }
         match key {
             Key::Named(NamedKey::PageUp) => {
-                self.activate(Target::Previous);
+                self.activate(CalendarNavigation::Previous);
                 true
             }
             Key::Named(NamedKey::PageDown) => {
-                self.activate(Target::Next);
-                true
-            }
-            Key::Named(NamedKey::Enter) if mode == CalendarSelectionMode::Multiple => {
-                self.pick(cursor);
-                true
-            }
-            Key::Character(ref text) if text == " " && mode == CalendarSelectionMode::Multiple => {
-                self.pick(cursor);
+                self.activate(CalendarNavigation::Next);
                 true
             }
             _ => false,
         }
     }
 
-    /// Redraws on key-window changes of the window the view is now in.
-    fn observe_window(&self) {
-        let mut observers = self.ivars().window_observers.borrow_mut();
+    /// Re-evaluates the emphasis whenever the window the calendar is now
+    /// in becomes or stops being key.
+    fn observe_window(self: &Rc<Self>) {
+        let mut observers = self.window_observers.borrow_mut();
         observers.clear();
-        let Some(window) = self.window() else {
+        let Some(window) = self.root.window() else {
             return;
         };
-        let mtm = self.mtm();
         // SAFETY: both names are immutable `NSString` statics `AppKit`
         // exports.
         let names = unsafe {
@@ -851,480 +578,819 @@ impl CalendarView {
             ]
         };
         for name in names {
-            let weak = Weak::new(self);
+            let weak = Rc::downgrade(self);
             observers.push(notification::observe_object(
-                mtm,
+                self.mtm(),
                 &NotificationName::framework(name),
                 AsRef::<AnyObject>::as_ref(&*window),
                 move || {
-                    if let Some(view) = weak.load() {
-                        view.setNeedsDisplay(true);
+                    if let Some(shared) = weak.upgrade() {
+                        shared.refresh_emphasis();
                     }
                 },
             ));
         }
     }
+}
 
-    /// Redraws and brings every accessibility element up to date.
-    fn refresh(&self) {
-        self.setNeedsDisplay(true);
-        self.update_accessibility();
-    }
-
-    /// Creates one element per target and hangs them under the view.
-    fn install_accessibility(&self) {
-        // SAFETY: the role constant is an immutable `NSString` `AppKit`
-        // exports.
-        self.setAccessibilityRole(Some(unsafe { NSAccessibilityGroupRole }));
-        self.setAccessibilityElement(true);
-        let elements: Vec<Retained<CalendarElement>> = Target::all()
-            .map(|target| CalendarElement::new(self, target))
-            .collect();
-        let children: Vec<Retained<AnyObject>> = elements
-            .iter()
-            .map(|element| Retained::into_super(Retained::into_super(element.clone())).into())
-            .collect();
-        // SAFETY: every entry is an `NSAccessibilityElement`.
-        unsafe { self.setAccessibilityChildren(Some(&NSArray::from_retained_slice(&children))) };
-        *self.ivars().elements.borrow_mut() = elements;
-        self.update_accessibility();
-    }
-
-    /// Re-labels every element from the current state.
-    fn update_accessibility(&self) {
-        let elements = self.ivars().elements.borrow();
-        for element in elements.iter() {
-            let target = element.ivars().target;
-            let base: &NSAccessibilityElement = element;
-            let accessibility: &ProtocolObject<dyn NSAccessibility> =
-                ProtocolObject::from_ref(base);
-            let state = self.ivars().state.borrow();
-            let (label, enabled, selected) = match target {
-                Target::Title => (title_string(&state).to_string(), true, false),
-                Target::Previous => (state.navigation_labels.previous.clone(), true, false),
-                Target::Selection => (state.navigation_labels.selection.clone(), true, false),
-                Target::Next => (state.navigation_labels.next.clone(), true, false),
-                Target::Day(index) => {
-                    let day = state.grid[index].parts;
-                    (
-                        state.text.spoken.stringFromDate(&ns_date(day)).to_string(),
-                        state.in_range(day),
-                        state.selected.contains(&day),
-                    )
-                }
-            };
-            accessibility.setAccessibilityLabel(Some(&NSString::from_str(&label)));
-            accessibility.setAccessibilityEnabled(enabled);
-            accessibility.setAccessibilitySelected(selected);
+/// What a day shows given the model and the emphasis.
+fn day_look(
+    model: &Model,
+    index: usize,
+    emphasized: bool,
+    today: DateParts,
+    font: &NSFont,
+    rtl: bool,
+) -> DayLook {
+    let cell = model.grid[index];
+    let colors = &model.colors;
+    let selected = model.selected.contains(&cell.parts);
+    let in_range = model.in_range(cell.parts);
+    let on_highlight = selected && emphasized;
+    let highlight = selected.then(|| {
+        if emphasized {
+            colors.selection.clone()
+        } else {
+            NSColor::unemphasizedSelectedContentBackgroundColor()
         }
-    }
-
-    /// Draws the whole calendar.
-    fn draw(&self) {
-        let Some(context) = NSGraphicsContext::currentContext() else {
-            return;
-        };
-        let context = context.CGContext();
-        let state = self.ivars().state.borrow();
-        let muted = &state.colors.muted;
-        let tiers = FaintTiers {
-            faint: muted.colorWithAlphaComponent(muted.alphaComponent() * FAINT_OPACITY),
-            fainter: muted.colorWithAlphaComponent(muted.alphaComponent() * FAINTER_OPACITY),
-            unemphasized: muted
-                .colorWithAlphaComponent(muted.alphaComponent() * UNEMPHASIZED_OPACITY),
-        };
-        self.draw_header(&context, &state);
-        self.draw_days(&context, &state, &tiers);
-    }
-
-    /// Draws the title, the navigation glyphs, the weekday symbols and the
-    /// separator.
-    fn draw_header(&self, context: &CGContext, state: &State) {
-        let mtm = self.mtm();
-        let rtl = self.is_rtl();
-        let colors = &state.colors;
-
-        // Title.
-        let title_font = title_font(mtm);
-        let title = title_string(state);
-        let title_attributes = attributes(&colors.foreground, &title_font);
-        // SAFETY: `sizeWithAttributes:` measures under the attributes the
-        // draw below uses.
-        let title_width = unsafe { title.sizeWithAttributes(Some(&title_attributes)) }.width;
-        draw_text(
-            &title,
-            &title_attributes,
-            &title_font,
-            self.mirrored(TITLE_X, title_width),
-            TITLE_BASELINE,
-        );
-
-        // Navigation: ◀ ● ▶, never dimmed — the graphical picker navigates
-        // past its range.
-        fill_triangle(context, self.nav_rect(0), true, &colors.muted);
-        CGContext::set_fill_color_with_color(Some(context), Some(&colors.muted.CGColor()));
-        CGContext::fill_ellipse_in_rect(Some(context), self.nav_rect(1));
-        fill_triangle(context, self.nav_rect(2), false, &colors.muted);
-
-        // Weekday symbols and the separator.
-        let weekday_font = system_font(mtm, WEEKDAY_FONT);
-        let weekday_attributes = attributes(&colors.muted, &weekday_font);
-        for column in 0..7 {
-            let weekday = usize::try_from(
-                (state.text.first_weekday - 1 + i32::try_from(column).expect("seven columns"))
-                    .rem_euclid(7),
-            )
-            .expect("weekday index is 0 through 6");
-            let symbol = NSString::from_str(&state.text.weekdays[weekday]);
-            draw_trailing(
-                &symbol,
-                &weekday_attributes,
-                &weekday_font,
-                self.column_x(column),
-                WEEKDAY_BASELINE,
-                rtl,
-            );
+    });
+    let text_color = if on_highlight {
+        colors.selection_foreground.clone()
+    } else if !in_range {
+        // What `AppKit` draws a disabled button's title in.
+        NSColor::disabledControlTextColor()
+    } else if !cell.in_month {
+        NSColor::tertiaryLabelColor()
+    } else if cell.parts == today {
+        colors.accent.clone()
+    } else {
+        colors.foreground.clone()
+    };
+    let dot = model.decorated.contains(&cell.parts).then(|| {
+        if on_highlight {
+            colors.selection_foreground.clone()
+        } else if cell.in_month && in_range {
+            colors.muted.clone()
+        } else {
+            NSColor::tertiaryLabelColor()
         }
-        let (separator_y, separator_x, separator_width) = SEPARATOR;
-        CGContext::set_fill_color_with_color(Some(context), Some(&colors.separator.CGColor()));
-        CGContext::fill_rect(
-            Some(context),
-            CGRect::new(
-                CGPoint::new(self.mirrored(separator_x, separator_width), separator_y),
-                CGSize::new(separator_width, 1.0),
-            ),
-        );
-    }
-
-    /// Draws the six weeks of days with their highlights and decorations.
-    fn draw_days(&self, context: &CGContext, state: &State, tiers: &FaintTiers) {
-        let mtm = self.mtm();
-        let emphasized = self.is_emphasized();
-        let rtl = self.is_rtl();
-        let colors = &state.colors;
-        let FaintTiers {
-            faint,
-            fainter,
-            unemphasized,
-        } = tiers;
-        let today = date::today();
-        let day_font = system_font(mtm, DAY_FONT);
-        let focused = self.is_first_responder();
-        for (index, cell) in state.grid.iter().enumerate() {
-            let rect = self.cell_rect(index);
-            let selected = state.selected.contains(&cell.parts);
-            let in_range = state.in_range(cell.parts);
-            if selected {
-                let fill = if emphasized {
-                    &colors.selection
-                } else {
-                    unemphasized
-                };
-                fill_rounded_rect(context, rect, fill);
-            }
-            if focused
-                && state.mode == CalendarSelectionMode::Multiple
-                && cell.parts == state.cursor
-            {
-                stroke_rounded_rect(context, rect, &colors.accent);
-            }
-            let on_highlight = selected && emphasized;
-            let color = if on_highlight {
-                &colors.selection_foreground
-            } else if !cell.in_month && !in_range {
-                fainter
-            } else if !cell.in_month || !in_range {
-                faint
-            } else if cell.parts == today {
-                &colors.accent
-            } else {
-                &colors.foreground
-            };
-            let number = NSString::from_str(&cell.parts.day.to_string());
-            let number_attributes = attributes(color, &day_font);
-            let text_rect = draw_trailing(
-                &number,
-                &number_attributes,
-                &day_font,
-                self.column_x(index % 7),
-                rect.origin.y + DAY_BASELINE,
-                rtl,
-            );
-            if state.decorated.contains(&cell.parts) {
-                let dot = if on_highlight {
-                    &colors.selection_foreground
-                } else if cell.in_month && in_range {
-                    &colors.muted
-                } else {
-                    faint
-                };
-                let center_x = text_rect.origin.x + text_rect.size.width / 2.0;
-                CGContext::set_fill_color_with_color(Some(context), Some(&dot.CGColor()));
-                CGContext::fill_ellipse_in_rect(
-                    Some(context),
-                    CGRect::new(
-                        CGPoint::new(
-                            center_x - DOT_DIAMETER / 2.0,
-                            rect.origin.y + DOT_CENTER - DOT_DIAMETER / 2.0,
-                        ),
-                        CGSize::new(DOT_DIAMETER, DOT_DIAMETER),
-                    ),
-                );
-            }
-        }
+    });
+    DayLook {
+        title: attributed(&model.numbers[index], &text_color, font, rtl),
+        highlight,
+        dot,
     }
 }
 
-/// The colours derived from `muted`, resolved once per draw.
-struct FaintTiers {
-    /// Text outside the visible month or the range.
-    faint: Retained<NSColor>,
-    /// Text outside both.
-    fainter: Retained<NSColor>,
-    /// The selection highlight while the calendar is not focused.
-    unemphasized: Retained<NSColor>,
-}
-
-/// The visible month's title in the locale's abbreviated format.
-fn title_string(state: &State) -> Retained<NSString> {
-    state
-        .text
-        .title
-        .stringFromDate(&ns_date(state.visible.first_day()))
+/// `text` in `font` and `color`, aligned to the trailing edge.
+fn attributed(
+    text: &NSString,
+    color: &NSColor,
+    font: &NSFont,
+    rtl: bool,
+) -> Retained<NSAttributedString> {
+    let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setAlignment(if rtl {
+        NSTextAlignment::Left
+    } else {
+        NSTextAlignment::Right
+    });
+    // SAFETY: the three attribute names are statics the platform exports,
+    // and each value is the type its attribute documents.
+    let attributes: Retained<TextAttributes> = unsafe {
+        NSDictionary::from_slices(
+            &[
+                NSFontAttributeName,
+                NSForegroundColorAttributeName,
+                NSParagraphStyleAttributeName,
+            ],
+            &[font.as_ref(), color.as_ref(), paragraph.as_ref()],
+        )
+    };
+    // SAFETY: the attributes carry the value types their names document.
+    unsafe { NSAttributedString::new_with_attributes(text, &attributes) }
 }
 
 fn system_font(mtm: MainThreadMarker, (size, weight): (f64, f64)) -> Retained<NSFont> {
     font::system(mtm, size, weight)
 }
 
-fn title_font(mtm: MainThreadMarker) -> Retained<NSFont> {
-    system_font(mtm, TITLE_FONT)
+/// The two notifications the calendar posts for assistive technology.
+#[derive(Clone, Copy)]
+enum AccessibilityNotification {
+    /// The month title changed.
+    ValueChanged,
+    /// The selected days changed.
+    SelectedChildrenChanged,
 }
 
-fn attributes(color: &NSColor, font: &NSFont) -> Retained<TextAttributes> {
-    // SAFETY: both attribute names are statics the platform exports; the
-    // values are the `NSFont`/`NSColor` each documents.
+fn post_accessibility_notification(element: &NSView, notification: AccessibilityNotification) {
+    // SAFETY: both names are immutable `NSString` statics `AppKit` exports,
+    // and the element is a live view on the main thread.
     unsafe {
-        NSDictionary::from_slices(
-            &[NSFontAttributeName, NSForegroundColorAttributeName],
-            &[font.as_ref(), color.as_ref()],
-        )
+        let name = match notification {
+            AccessibilityNotification::ValueChanged => NSAccessibilityValueChangedNotification,
+            AccessibilityNotification::SelectedChildrenChanged => {
+                NSAccessibilitySelectedChildrenChangedNotification
+            }
+        };
+        NSAccessibilityPostNotification(element, name);
     }
 }
 
-/// How far below the top of its line the typesetter places `font`'s
-/// baseline — the offset string drawing lays a line out with.
-fn baseline_offset(font: &NSFont) -> f64 {
-    NSLayoutManager::new().defaultBaselineOffsetForFont(font)
+/// A [`CalendarRoot`]'s link to its calendar.
+#[derive(Default)]
+struct RootIvars {
+    shared: RefCell<RcWeak<Shared>>,
 }
 
-/// Draws `text` with its baseline at `baseline` and its leading edge at
-/// `x` in the flipped view.
-fn draw_text(text: &NSString, attributes: &TextAttributes, font: &NSFont, x: f64, baseline: f64) {
-    let point = NSPoint::new(x, baseline - baseline_offset(font));
-    // SAFETY: `drawAtPoint:withAttributes:` renders the string in the
-    // current context; the dictionary carries the documented value types.
-    unsafe { text.drawAtPoint_withAttributes(point, Some(attributes)) };
-}
-
-/// Draws `text` aligned to the trailing edge of the column at `column_x`
-/// and returns the rect its advance occupies.
-fn draw_trailing(
-    text: &NSString,
-    attributes: &TextAttributes,
-    font: &NSFont,
-    column_x: f64,
-    baseline: f64,
-    rtl: bool,
-) -> CGRect {
-    // SAFETY: `sizeWithAttributes:` measures under the attributes the draw
-    // uses.
-    let size = unsafe { text.sizeWithAttributes(Some(attributes)) };
-    let x = if rtl {
-        column_x + COLUMN_WIDTH - HIGHLIGHT_WIDTH + TEXT_TRAILING_INSET
-    } else {
-        column_x + HIGHLIGHT_WIDTH - TEXT_TRAILING_INSET - size.width
-    };
-    draw_text(text, attributes, font, x, baseline);
-    CGRect::new(CGPoint::new(x, baseline - baseline_offset(font)), size)
-}
-
-/// Fills a triangle inscribed in `rect`, pointing to the left edge when
-/// `leftward`.
-fn fill_triangle(context: &CGContext, rect: CGRect, leftward: bool, color: &NSColor) {
-    let (left, right) = (rect.origin.x, rect.origin.x + rect.size.width);
-    let (top, bottom) = (rect.origin.y, rect.origin.y + rect.size.height);
-    let middle = f64::midpoint(top, bottom);
-    let (tip, base) = if leftward {
-        (left, right)
-    } else {
-        (right, left)
-    };
-    CGContext::set_fill_color_with_color(Some(context), Some(&color.CGColor()));
-    CGContext::begin_path(Some(context));
-    CGContext::move_to_point(Some(context), tip, middle);
-    CGContext::add_line_to_point(Some(context), base, top);
-    CGContext::add_line_to_point(Some(context), base, bottom);
-    CGContext::close_path(Some(context));
-    CGContext::fill_path(Some(context));
-}
-
-fn rounded_rect_path(rect: CGRect) -> objc2_core_foundation::CFRetained<CGPath> {
-    // SAFETY: `rect` is plain data and a null transform is valid.
-    unsafe { CGPath::with_rounded_rect(rect, HIGHLIGHT_RADIUS, HIGHLIGHT_RADIUS, std::ptr::null()) }
-}
-
-fn fill_rounded_rect(context: &CGContext, rect: CGRect, color: &NSColor) {
-    CGContext::set_fill_color_with_color(Some(context), Some(&color.CGColor()));
-    CGContext::add_path(Some(context), Some(&rounded_rect_path(rect)));
-    CGContext::fill_path(Some(context));
-}
-
-fn stroke_rounded_rect(context: &CGContext, rect: CGRect, color: &NSColor) {
-    let inset = CURSOR_RING_WIDTH / 2.0;
-    let rect = CGRect::new(
-        CGPoint::new(rect.origin.x + inset, rect.origin.y + inset),
-        CGSize::new(
-            2.0f64.mul_add(-inset, rect.size.width),
-            2.0f64.mul_add(-inset, rect.size.height),
-        ),
-    );
-    CGContext::set_stroke_color_with_color(Some(context), Some(&color.CGColor()));
-    CGContext::set_line_width(Some(context), CURSOR_RING_WIDTH);
-    CGContext::add_path(Some(context), Some(&rounded_rect_path(rect)));
-    CGContext::stroke_path(Some(context));
-}
-
-/// What a [`CalendarElement`] stands for and the view it reads from.
-struct CalendarElementIvars {
-    view: Weak<CalendarView>,
-    target: Target,
+impl fmt::Debug for RootIvars {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RootIvars").finish_non_exhaustive()
+    }
 }
 
 define_class!(
-    // SAFETY: `NSAccessibilityElement`'s designated initializer is `init`,
-    // which `CalendarElement::new` calls, and the class does not implement
-    // `Drop`.
-    #[unsafe(super(NSAccessibilityElement))]
-    #[name = "CocoaUiCalendarElement"]
-    #[ivars = CalendarElementIvars]
-    struct CalendarElement;
+    // SAFETY: `NSView`'s designated initializer is `initWithFrame:`, which
+    // `CalendarView::new` calls, and the class does not implement `Drop`.
+    #[unsafe(super(NSView))]
+    #[name = "CocoaUiCalendar"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = RootIvars]
+    #[derive(Debug)]
+    /// The view holding a calendar's controls.
+    struct CalendarRoot;
 
-    // SAFETY: `NSObjectProtocol` asks nothing of an `NSAccessibilityElement`
-    // subclass.
-    unsafe impl NSObjectProtocol for CalendarElement {}
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSView` subclass.
+    unsafe impl NSObjectProtocol for CalendarRoot {}
 
-    impl CalendarElement {
+    impl CalendarRoot {
         // SAFETY: see the module safety note.
-        #[unsafe(method(accessibilityFrame))]
-        fn accessibility_frame(&self) -> CGRect {
-            guarded("CalendarElement accessibilityFrame", || {
-                self.ivars().view.load().map_or(CGRect::ZERO, |view| {
-                    NSAccessibilityFrameInView(&view, view.target_rect(self.ivars().target))
-                })
-            })
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
         }
 
         // SAFETY: see the module safety note.
-        #[unsafe(method(accessibilityFrameInParentSpace))]
-        fn accessibility_frame_in_parent_space(&self) -> CGRect {
-            guarded("CalendarElement accessibilityFrameInParentSpace", || {
-                self.ivars()
-                    .view
-                    .load()
-                    .map_or(CGRect::ZERO, |view| view.target_rect(self.ivars().target))
-            })
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(accessibilityPerformPress))]
-        fn accessibility_perform_press(&self) -> bool {
-            guarded("CalendarElement accessibilityPerformPress", || {
-                let target = self.ivars().target;
-                if target == Target::Title {
-                    return false;
+        #[unsafe(method(viewDidMoveToWindow))]
+        fn view_did_move_to_window(&self) {
+            guarded("CalendarRoot viewDidMoveToWindow", || {
+                if let Some(shared) = self.ivars().shared.borrow().upgrade() {
+                    shared.observe_window();
+                    shared.refresh_emphasis();
                 }
-                self.ivars().view.load().is_some_and(|view| {
-                    view.activate(target);
-                    true
-                })
-            })
+            });
         }
     }
 );
 
-impl CalendarElement {
-    /// The element for `target`, parented to `view`.
-    fn new(view: &CalendarView, target: Target) -> Retained<Self> {
-        let mtm = view.mtm();
-        let this = mtm.alloc::<Self>().set_ivars(CalendarElementIvars {
-            view: Weak::new(view),
-            target,
-        });
-        // SAFETY: `init` is the class's designated initializer.
-        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
-        let element: &NSAccessibilityElement = &this;
-        let accessibility = ProtocolObject::<dyn NSAccessibility>::from_ref(element);
-        accessibility.setAccessibilityElement(true);
-        // SAFETY: the role constants are immutable `NSString`s `AppKit`
-        // exports.
-        let role = unsafe {
-            if target == Target::Title {
-                NSAccessibilityStaticTextRole
-            } else {
-                NSAccessibilityButtonRole
-            }
-        };
-        accessibility.setAccessibilityRole(Some(role));
-        // SAFETY: the view is the element's accessibility parent — an
-        // `NSView` is a valid parent object.
-        unsafe {
-            accessibility.setAccessibilityParent(Some(AsRef::<AnyObject>::as_ref(view)));
-        }
-        this
+/// A [`DayButton`]'s position, link to its calendar, highlight and dot.
+struct DayIvars {
+    index: usize,
+    shared: RefCell<RcWeak<Shared>>,
+    highlight: RefCell<Option<Retained<NSColor>>>,
+    dot: Retained<Dot>,
+}
+
+impl fmt::Debug for DayIvars {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DayIvars")
+            .field("index", &self.index)
+            .finish_non_exhaustive()
     }
 }
 
-impl fmt::Debug for CalendarElement {
+define_class!(
+    // SAFETY: `NSButton`'s designated initializer is `initWithFrame:`, which
+    // `DayButton::new` calls, and the class does not implement `Drop`.
+    #[unsafe(super(NSButton))]
+    #[name = "CocoaUiCalendarDay"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = DayIvars]
+    #[derive(Debug)]
+    /// A day of the grid: a borderless button drawing its selection
+    /// highlight behind its number, with a decoration dot under it.
+    struct DayButton;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSButton` subclass.
+    unsafe impl NSObjectProtocol for DayButton {}
+
+    impl DayButton {
+        // A day takes focus like the graphical date picker does, without
+        // full keyboard access.
+        // SAFETY: see the module safety note.
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        // The calendar is one stop in the key-view loop: its selected day,
+        // or its first selectable day of the month.
+        // SAFETY: see the module safety note.
+        #[unsafe(method(canBecomeKeyView))]
+        fn can_become_key_view(&self) -> bool {
+            guarded("DayButton canBecomeKeyView", || {
+                self.shared()
+                    .is_some_and(|shared| shared_anchor(&shared) == Some(self.ivars().index))
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(becomeFirstResponder))]
+        fn become_first_responder(&self) -> bool {
+            // SAFETY: forwarding to the superclass is the responder contract.
+            let accepted: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
+            if accepted {
+                guarded("DayButton becomeFirstResponder", || self.focus_changed(true));
+            }
+            accepted
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(resignFirstResponder))]
+        fn resign_first_responder(&self) -> bool {
+            // SAFETY: forwarding to the superclass is the responder contract.
+            let accepted: bool = unsafe { msg_send![super(self), resignFirstResponder] };
+            if accepted {
+                guarded("DayButton resignFirstResponder", || self.focus_changed(false));
+            }
+            accepted
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            let handled = guarded("DayButton keyDown:", || {
+                self.shared()
+                    .is_some_and(|shared| shared.handle_key(self.ivars().index, event))
+            });
+            if !handled {
+                // SAFETY: forwarding an unhandled key to the superclass is
+                // the responder-chain contract; Space presses the button.
+                unsafe { msg_send![super(self), keyDown: event] }
+            }
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, dirty_rect: NSRect) {
+            guarded("DayButton drawRect:", || {
+                if let Some(color) = self.ivars().highlight.borrow().as_ref() {
+                    color.setFill();
+                    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                        self.bounds(),
+                        HIGHLIGHT_RADIUS,
+                        HIGHLIGHT_RADIUS,
+                    )
+                    .fill();
+                }
+            });
+            // SAFETY: the superclass draws the number over the highlight.
+            unsafe { msg_send![super(self), drawRect: dirty_rect] }
+        }
+    }
+);
+
+/// The day the key-view loop stops at: the selected day shown, or the
+/// first selectable day of the month.
+fn shared_anchor(shared: &Shared) -> Option<usize> {
+    let model = shared.model.borrow();
+    model
+        .selected
+        .iter()
+        .find_map(|day| model.index_of(*day))
+        .or_else(|| {
+            model
+                .grid
+                .iter()
+                .position(|cell| cell.in_month && model.in_range(cell.parts))
+        })
+}
+
+impl DayButton {
+    fn new(mtm: MainThreadMarker, index: usize) -> Retained<Self> {
+        let dot = Dot::new(mtm);
+        let this = Self::alloc(mtm).set_ivars(DayIvars {
+            index,
+            shared: RefCell::new(RcWeak::new()),
+            highlight: RefCell::new(None),
+            dot,
+        });
+        // SAFETY: `initWithFrame:` is `NSButton`'s designated initializer.
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
+        this.setBordered(false);
+        this.setTitle(&NSString::new());
+        this.addSubview(&this.ivars().dot);
+        this.setTranslatesAutoresizingMaskIntoConstraints(false);
+        this.widthAnchor()
+            .constraintEqualToConstant(DAY_WIDTH)
+            .setActive(true);
+        this.heightAnchor()
+            .constraintEqualToConstant(DAY_HEIGHT)
+            .setActive(true);
+        this
+    }
+
+    fn shared(&self) -> Option<Rc<Shared>> {
+        self.ivars().shared.borrow().upgrade()
+    }
+
+    fn focus_changed(&self, focused: bool) {
+        if let Some(shared) = self.shared() {
+            shared.focused.set(focused);
+            shared.refresh_emphasis();
+        }
+    }
+
+    /// Shows `look`: the number, the highlight and the dot under the
+    /// number's centre.
+    fn show(&self, look: &DayLook, rtl: bool) {
+        self.setAttributedTitle(&look.title);
+        self.ivars().highlight.borrow_mut().clone_from(&look.highlight);
+        let view: &NSView = self;
+        view.setNeedsDisplay(true);
+        let dot = &self.ivars().dot;
+        let Some(color) = &look.dot else {
+            dot.setHidden(true);
+            return;
+        };
+        dot.set_color(color);
+        dot.setHidden(false);
+        let bounds = NSRect::new(
+            objc2_foundation::NSPoint::ZERO,
+            objc2_foundation::NSSize::new(DAY_WIDTH, DAY_HEIGHT),
+        );
+        let title_rect = self
+            .cell()
+            .expect("an NSButton always has a cell")
+            .titleRectForBounds(bounds);
+        let text_width = look.title.size().width;
+        let center_x = if rtl {
+            title_rect.origin.x + text_width / 2.0
+        } else {
+            title_rect.origin.x + title_rect.size.width - text_width / 2.0
+        };
+        let center_y = if self.isFlipped() {
+            DOT_CENTER
+        } else {
+            DAY_HEIGHT - DOT_CENTER
+        };
+        dot.setFrame(NSRect::new(
+            objc2_foundation::NSPoint::new(
+                center_x - DOT_DIAMETER / 2.0,
+                center_y - DOT_DIAMETER / 2.0,
+            ),
+            objc2_foundation::NSSize::new(DOT_DIAMETER, DOT_DIAMETER),
+        ));
+    }
+}
+
+/// A [`Dot`]'s fill.
+struct DotIvars {
+    color: RefCell<Retained<NSColor>>,
+}
+
+impl fmt::Debug for DotIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CalendarElement")
-            .field("target", &self.ivars().target)
-            .finish_non_exhaustive()
+        f.debug_struct("DotIvars").finish_non_exhaustive()
+    }
+}
+
+define_class!(
+    // SAFETY: `NSView`'s designated initializer is `initWithFrame:`, which
+    // `Dot::new` calls, and the class does not implement `Drop`.
+    #[unsafe(super(NSView))]
+    #[name = "CocoaUiCalendarDot"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = DotIvars]
+    #[derive(Debug)]
+    /// A decoration dot: a round layer filled with a colour resolved in
+    /// the view's appearance.
+    struct Dot;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSView` subclass.
+    unsafe impl NSObjectProtocol for Dot {}
+
+    impl Dot {
+        // SAFETY: see the module safety note.
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        // `AppKit` makes the view's appearance current around this call,
+        // so a dynamic colour resolves for it.
+        // SAFETY: see the module safety note.
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            guarded("Dot updateLayer", || {
+                if let Some(layer) = self.layer() {
+                    layer.setBackgroundColor(Some(&self.ivars().color.borrow().CGColor()));
+                    layer.setCornerRadius(DOT_DIAMETER / 2.0);
+                }
+            });
+        }
+    }
+);
+
+impl Dot {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(DotIvars {
+            color: RefCell::new(NSColor::clearColor()),
+        });
+        // SAFETY: `initWithFrame:` is `NSView`'s designated initializer.
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
+        this.setWantsLayer(true);
+        this.setHidden(true);
+        this
+    }
+
+    fn set_color(&self, color: &NSColor) {
+        *self.ivars().color.borrow_mut() = objc2::Message::retain(color);
+        self.setNeedsDisplay(true);
+    }
+}
+
+/// A month calendar composed of `AppKit` controls, laid out like the
+/// graphical `NSDatePicker`, with decoration dots.
+pub struct CalendarView {
+    shared: Rc<Shared>,
+}
+
+impl fmt::Debug for CalendarView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CalendarView").finish_non_exhaustive()
+    }
+}
+
+impl CalendarView {
+    /// A calendar over `range` showing `month`, formatted for the locale
+    /// `locale` names, drawn in `colors`, with `labels` naming the
+    /// navigation buttons.
+    #[must_use]
+    pub fn new(
+        mtm: MainThreadMarker,
+        range: RangeInclusive<DateParts>,
+        month: YearMonth,
+        locale: &str,
+        colors: CalendarColors,
+        labels: &CalendarNavigationLabels,
+    ) -> Self {
+        let root = CalendarRoot::alloc(mtm).set_ivars(RootIvars::default());
+        // SAFETY: `initWithFrame:` is `NSView`'s designated initializer.
+        let root: Retained<CalendarRoot> =
+            unsafe { msg_send![super(root), initWithFrame: NSRect::ZERO] };
+        root.setAccessibilityElement(true);
+        // SAFETY: the role is an immutable `NSString` static `AppKit` exports.
+        root.setAccessibilityRole(Some(unsafe { NSAccessibilityGroupRole }));
+
+        let rtl = is_right_to_left(&root);
+        let title = NSTextField::labelWithString(&NSString::new(), mtm);
+        title.setFont(Some(&system_font(mtm, TITLE_FONT)));
+        title.setTextColor(Some(&colors.foreground));
+        let navigation = [
+            navigation_button(mtm, if rtl { "arrowtriangle.right.fill" } else { "arrowtriangle.left.fill" }, &labels.previous, &colors.muted),
+            navigation_button(mtm, "circle.fill", &labels.selection, &colors.muted),
+            navigation_button(mtm, if rtl { "arrowtriangle.left.fill" } else { "arrowtriangle.right.fill" }, &labels.next, &colors.muted),
+        ];
+        let weekdays: Vec<_> = (0..7)
+            .map(|_| {
+                let field = NSTextField::labelWithString(&NSString::new(), mtm);
+                field.setAlignment(NSTextAlignment::Center);
+                field
+            })
+            .collect();
+        let days: Vec<_> = (0..GRID_DAYS).map(|index| DayButton::new(mtm, index)).collect();
+        let separator = NSBox::initWithFrame(NSBox::alloc(mtm), NSRect::ZERO);
+        separator.setBoxType(NSBoxType::Custom);
+        separator.setTitlePosition(NSTitlePosition::NoTitle);
+        separator.setBorderWidth(0.0);
+        separator.setFillColor(&colors.separator);
+
+        let text = LocaleText::new(locale);
+        let model = Model {
+            month,
+            range,
+            grid: month_grid(month, text.first_weekday),
+            selected: BTreeSet::new(),
+            decorated: BTreeSet::new(),
+            text,
+            colors,
+            numbers: Vec::new(),
+        };
+        let shared = Rc::new(Shared {
+            root,
+            title,
+            navigation,
+            weekdays,
+            separator,
+            days,
+            model: RefCell::new(model),
+            focused: Cell::new(false),
+            emphasized: Cell::new(false),
+            on_pick: RefCell::new(None),
+            on_visible_month_change: RefCell::new(None),
+            actions: RefCell::new(Vec::new()),
+            window_observers: RefCell::new(Vec::new()),
+        });
+        *shared.root.ivars().shared.borrow_mut() = Rc::downgrade(&shared);
+        for day in &shared.days {
+            *day.ivars().shared.borrow_mut() = Rc::downgrade(&shared);
+        }
+        install(&shared);
+        connect(&shared);
+        shared.refresh_weekdays();
+        shared.show_model_month();
+        Self { shared }
+    }
+
+    /// The view to add to a container and frame at
+    /// [`intrinsic_size`][Self::intrinsic_size].
+    #[must_use]
+    pub fn view(&self) -> &NSView {
+        &self.shared.root
+    }
+
+    /// The calendar's fixed size — the graphical date picker's.
+    #[must_use]
+    pub const fn intrinsic_size(&self) -> Size {
+        Size::new(WIDTH, HEIGHT)
+    }
+
+    /// Formats the calendar for the locale `identifier` names: its
+    /// month title, digits, weekday symbols, first weekday and spoken
+    /// dates.
+    pub fn set_locale(&self, identifier: &str) {
+        self.shared.model.borrow_mut().text = LocaleText::new(identifier);
+        self.shared.refresh_weekdays();
+        self.shared.show_model_month();
+    }
+
+    /// Replaces the selected days.
+    pub fn set_selection(&self, days: &[DateParts]) {
+        let selected: BTreeSet<DateParts> = days.iter().copied().collect();
+        let changed: Vec<usize> = {
+            let mut model = self.shared.model.borrow_mut();
+            let previous = std::mem::replace(&mut model.selected, selected);
+            previous
+                .symmetric_difference(&model.selected)
+                .filter_map(|day| model.index_of(*day))
+                .collect()
+        };
+        self.shared.refresh_days(changed);
+        post_accessibility_notification(
+            &self.shared.root,
+            AccessibilityNotification::SelectedChildrenChanged,
+        );
+    }
+
+    /// Replaces the days carrying a decoration dot.
+    pub fn set_decorations(&self, days: impl IntoIterator<Item = DateParts>) {
+        let decorated: BTreeSet<DateParts> = days.into_iter().collect();
+        let changed: Vec<usize> = {
+            let mut model = self.shared.model.borrow_mut();
+            let previous = std::mem::replace(&mut model.decorated, decorated);
+            previous
+                .symmetric_difference(&model.decorated)
+                .filter_map(|day| model.index_of(*day))
+                .collect()
+        };
+        self.shared.refresh_days(changed);
+    }
+
+    /// Shows `month` without reporting it back.
+    pub fn set_visible_month(&self, month: YearMonth) {
+        {
+            let mut model = self.shared.model.borrow_mut();
+            if model.month == month {
+                return;
+            }
+            model.month = month;
+        }
+        self.shared.show_model_month();
+    }
+
+    /// Replaces one of the theme colours.
+    pub fn set_color(&self, role: CalendarColorRole, color: &NSColor) {
+        let color = objc2::Message::retain(color);
+        {
+            let mut model = self.shared.model.borrow_mut();
+            let colors = &mut model.colors;
+            match role {
+                CalendarColorRole::Foreground => colors.foreground = color.clone(),
+                CalendarColorRole::Muted => colors.muted = color.clone(),
+                CalendarColorRole::Separator => colors.separator = color.clone(),
+                CalendarColorRole::Accent => colors.accent = color.clone(),
+                CalendarColorRole::Selection => colors.selection = color.clone(),
+                CalendarColorRole::SelectionForeground => {
+                    colors.selection_foreground = color.clone();
+                }
+            }
+        }
+        match role {
+            CalendarColorRole::Foreground => {
+                self.shared.title.setTextColor(Some(&color));
+                self.shared.refresh_days(0..GRID_DAYS);
+            }
+            CalendarColorRole::Muted => {
+                self.shared.refresh_weekdays();
+                for button in &self.shared.navigation {
+                    button.setContentTintColor(Some(&color));
+                }
+                self.shared.refresh_days(0..GRID_DAYS);
+            }
+            CalendarColorRole::Separator => self.shared.separator.setFillColor(&color),
+            CalendarColorRole::Accent
+            | CalendarColorRole::Selection
+            | CalendarColorRole::SelectionForeground => {
+                self.shared.refresh_days(0..GRID_DAYS);
+            }
+        }
+    }
+
+    /// Names one navigation button to assistive technology.
+    pub fn set_navigation_label(&self, button: CalendarNavigation, label: &str) {
+        self.shared
+            .navigation_button(button)
+            .setAccessibilityLabel(Some(&NSString::from_str(label)));
+    }
+
+    /// `handler` is called with the day the user picks.
+    pub fn on_pick(&self, handler: impl Fn(DateParts) + 'static) {
+        *self.shared.on_pick.borrow_mut() = Some(Rc::new(handler));
+    }
+
+    /// `handler` is called with the month the user navigates to.
+    pub fn on_visible_month_change(&self, handler: impl Fn(YearMonth) + 'static) {
+        *self.shared.on_visible_month_change.borrow_mut() = Some(Rc::new(handler));
+    }
+
+    /// Names the calendar to assistive technology; `None` leaves it
+    /// unnamed.
+    pub fn set_accessibility_label(&self, label: Option<&str>) {
+        self.shared
+            .root
+            .setAccessibilityLabel(label.map(NSString::from_str).as_deref());
+    }
+}
+
+/// A borderless button showing the named symbol, tinted `tint`, spoken as
+/// `label`.
+fn navigation_button(
+    mtm: MainThreadMarker,
+    symbol: &str,
+    label: &str,
+    tint: &NSColor,
+) -> Retained<NSButton> {
+    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(symbol),
+        None,
+    )
+    .and_then(|image| {
+        image.imageWithSymbolConfiguration(
+            &NSImageSymbolConfiguration::configurationWithPointSize_weight(
+                NAV_SYMBOL_SIZE,
+                font::weight::REGULAR,
+            ),
+        )
+    })
+    .unwrap_or_else(|| panic!("the SF Symbols catalog has {symbol}"));
+    let button = NSButton::initWithFrame(NSButton::alloc(mtm), NSRect::ZERO);
+    button.setBordered(false);
+    button.setTitle(&NSString::new());
+    button.setImage(Some(&image));
+    button.setImagePosition(NSCellImagePosition::ImageOnly);
+    button.setContentTintColor(Some(tint));
+    button.setAccessibilityLabel(Some(&NSString::from_str(label)));
+    let (width, height) = NAV_SIZE;
+    button.setTranslatesAutoresizingMaskIntoConstraints(false);
+    button.widthAnchor().constraintEqualToConstant(width).setActive(true);
+    button.heightAnchor().constraintEqualToConstant(height).setActive(true);
+    button
+}
+
+/// Adds the controls to the root and places them.
+fn install(shared: &Shared) {
+    let mtm = shared.mtm();
+    let root: &NSView = &shared.root;
+
+    let title = &shared.title;
+    title.setTranslatesAutoresizingMaskIntoConstraints(false);
+    root.addSubview(title);
+    title
+        .leadingAnchor()
+        .constraintEqualToAnchor_constant(&root.leadingAnchor(), TITLE_LEADING)
+        .setActive(true);
+    title
+        .firstBaselineAnchor()
+        .constraintEqualToAnchor_constant(&root.topAnchor(), TITLE_BASELINE)
+        .setActive(true);
+
+    let navigation_views: Vec<&NSView> =
+        shared.navigation.iter().map(|button| -> &NSView { button }).collect();
+    let navigation = NSStackView::stackViewWithViews(&NSArray::from_slice(&navigation_views), mtm);
+    navigation.setSpacing(0.0);
+    navigation.setTranslatesAutoresizingMaskIntoConstraints(false);
+    root.addSubview(&navigation);
+    navigation
+        .trailingAnchor()
+        .constraintEqualToAnchor_constant(&root.trailingAnchor(), -NAV_TRAILING)
+        .setActive(true);
+    navigation
+        .centerYAnchor()
+        .constraintEqualToAnchor_constant(&root.topAnchor(), NAV_CENTER_Y)
+        .setActive(true);
+
+    let (separator_top, separator_leading, separator_width, separator_height) = SEPARATOR;
+    let separator = &shared.separator;
+    separator.setTranslatesAutoresizingMaskIntoConstraints(false);
+    root.addSubview(separator);
+    separator
+        .leadingAnchor()
+        .constraintEqualToAnchor_constant(&root.leadingAnchor(), separator_leading)
+        .setActive(true);
+    separator
+        .topAnchor()
+        .constraintEqualToAnchor_constant(&root.topAnchor(), separator_top)
+        .setActive(true);
+    separator
+        .widthAnchor()
+        .constraintEqualToConstant(separator_width)
+        .setActive(true);
+    separator
+        .heightAnchor()
+        .constraintEqualToConstant(separator_height)
+        .setActive(true);
+
+    let weekday_row: Vec<&NSView> = shared.weekdays.iter().map(|field| -> &NSView { field }).collect();
+    let mut rows = vec![NSArray::from_slice(&weekday_row)];
+    for week in shared.days.chunks(7) {
+        let views: Vec<&NSView> = week.iter().map(|day| -> &NSView { day }).collect();
+        rows.push(NSArray::from_slice(&views));
+    }
+    let grid = NSGridView::gridViewWithViews(&NSArray::from_retained_slice(&rows), mtm);
+    grid.setRowSpacing(0.0);
+    grid.setColumnSpacing(0.0);
+    for column in 0..7 {
+        let column = grid.columnAtIndex(column);
+        column.setWidth(COLUMN_WIDTH);
+        column.setXPlacement(NSGridCellPlacement::Center);
+    }
+    // The weekday row is placed by its symbols' baseline, the week rows
+    // hold their day buttons at the top.
+    let weekday_row = grid.rowAtIndex(0);
+    weekday_row.setHeight(FIRST_WEEK_TOP - GRID_TOP);
+    weekday_row.setYPlacement(NSGridCellPlacement::None);
+    for row in 1..=GRID_DAYS / 7 {
+        let row = grid.rowAtIndex(isize::try_from(row).expect("seven grid rows"));
+        row.setHeight(ROW_HEIGHT);
+        row.setYPlacement(NSGridCellPlacement::Top);
+    }
+    grid.setTranslatesAutoresizingMaskIntoConstraints(false);
+    root.addSubview(&grid);
+    grid.leadingAnchor()
+        .constraintEqualToAnchor_constant(&root.leadingAnchor(), GRID_LEADING)
+        .setActive(true);
+    grid.topAnchor()
+        .constraintEqualToAnchor_constant(&root.topAnchor(), GRID_TOP)
+        .setActive(true);
+    for field in &shared.weekdays {
+        field
+            .firstBaselineAnchor()
+            .constraintEqualToAnchor_constant(&root.topAnchor(), WEEKDAY_BASELINE)
+            .setActive(true);
+    }
+}
+
+/// Wires the buttons' actions.
+fn connect(shared: &Rc<Shared>) {
+    let mut actions = shared.actions.borrow_mut();
+    for button in [
+        CalendarNavigation::Previous,
+        CalendarNavigation::Selection,
+        CalendarNavigation::Next,
+    ] {
+        let weak = Rc::downgrade(shared);
+        actions.push(ActionTarget::new(shared.navigation_button(button), move |_| {
+            if let Some(shared) = weak.upgrade() {
+                shared.activate(button);
+            }
+        }));
+    }
+    for (index, day) in shared.days.iter().enumerate() {
+        let weak = Rc::downgrade(shared);
+        actions.push(ActionTarget::new(day, move |_| {
+            if let Some(shared) = weak.upgrade() {
+                let day = shared.model.borrow().grid[index].parts;
+                shared.pick(day);
+            }
+        }));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn state(first_weekday: i32, visible: YearMonth) -> State {
-        let mut text = LocaleText::new(&NSLocale::localeWithLocaleIdentifier(&NSString::from_str(
-            "en_US",
-        )));
-        text.first_weekday = first_weekday;
-        let day = visible.first_day();
-        let mut state = State {
-            mode: CalendarSelectionMode::Single,
-            visible,
-            grid: [GridDay {
-                parts: day,
-                in_month: true,
-            }; GRID_DAYS],
-            selected: BTreeSet::new(),
-            decorated: BTreeSet::new(),
-            range: day..=day,
-            cursor: day,
-            colors: CalendarColors::system(),
-            text,
-            navigation_labels: CalendarNavigationLabels {
-                previous: "Previous Month".to_owned(),
-                selection: "Selected Month".to_owned(),
-                next: "Next Month".to_owned(),
-            },
-        };
-        state.rebuild_grid();
-        state
-    }
 
     #[test]
     fn grid_starts_on_the_locale_first_weekday() {
@@ -1333,11 +1399,11 @@ mod tests {
             month: 11,
         };
         // 1 November 2026 is a Sunday: a Sunday-first grid opens on it.
-        let sunday_first = state(1, november);
-        assert_eq!(sunday_first.grid[0].parts, november.first_day());
-        assert!(sunday_first.grid[0].in_month);
+        let sunday_first = month_grid(november, 1);
+        assert_eq!(sunday_first[0].parts, november.first_day());
+        assert!(sunday_first[0].in_month);
         assert_eq!(
-            sunday_first.grid[41].parts,
+            sunday_first[41].parts,
             DateParts {
                 year: 2026,
                 month: 12,
@@ -1345,34 +1411,40 @@ mod tests {
             }
         );
         // A Monday-first grid leads with six October days.
-        let monday_first = state(2, november);
+        let monday_first = month_grid(november, 2);
         assert_eq!(
-            monday_first.grid[0].parts,
+            monday_first[0].parts,
             DateParts {
                 year: 2026,
                 month: 10,
                 day: 26
             }
         );
-        assert!(!monday_first.grid[5].in_month);
-        assert_eq!(monday_first.grid[6].parts, november.first_day());
-        assert_eq!(
-            monday_first.grid.iter().filter(|day| day.in_month).count(),
-            30
-        );
+        assert!(!monday_first[5].in_month);
+        assert_eq!(monday_first[6].parts, november.first_day());
+        assert_eq!(monday_first.iter().filter(|day| day.in_month).count(), 30);
     }
 
     #[test]
-    fn locale_text_uses_the_two_letter_weekday_symbols() {
-        let text = LocaleText::new(&NSLocale::localeWithLocaleIdentifier(&NSString::from_str(
-            "en_US",
-        )));
+    fn locale_text_follows_the_locale() {
+        let text = LocaleText::new("en-US");
         assert_eq!(text.weekdays[0], "Su");
         assert_eq!(text.weekdays[6], "Sa");
         assert_eq!(text.first_weekday, 1);
-        let german = LocaleText::new(&NSLocale::localeWithLocaleIdentifier(&NSString::from_str(
-            "de_DE",
-        )));
-        assert_eq!(german.first_weekday, 2);
+        // German weeks start on Monday, and so does an English locale
+        // carrying a Monday first-weekday preference.
+        assert_eq!(LocaleText::new("de-DE").first_weekday, 2);
+        assert_eq!(LocaleText::new("en-US-u-fw-mon").first_weekday, 2);
+        // Egyptian Arabic writes day numbers in Arabic-Indic digits.
+        let arabic = LocaleText::new("ar-EG");
+        let twentieth = DateParts {
+            year: 2026,
+            month: 11,
+            day: 20,
+        };
+        assert_eq!(
+            arabic.day.stringFromDate(&arabic.date(twentieth)).to_string(),
+            "٢٠"
+        );
     }
 }
