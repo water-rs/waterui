@@ -541,6 +541,7 @@ jobs:
       # `uv run` (`.config/nextest.toml`); the styled and hydrolysis tests
       # they serve run on both OSes.
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # Cherenkov's test targets both embed (`include_bytes!`) and read
       # the generated scene fonts, and the corpus tests read scenes/corpus
       # at runtime; the tree is generated, not committed.
@@ -659,6 +660,7 @@ jobs:
       # nextest's fixture setup scripts run the pinned generators through
       # `uv run` (`.config/nextest.toml`).
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # nextest runs the Cherenkov CPU and GPU tests, which read
       # scenes/corpus. cherenkov-bench is excluded from this pass.
       - name: Generate Cherenkov scene assets
@@ -732,6 +734,7 @@ jobs:
       # `uv run` (`.config/nextest.toml`) — the all-features pass runs the
       # styled test targets too.
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       # `--all-features` runs the cherenkov-bench tests that read
       # scenes/corpus and scenes/perf, along with the CPU and GPU corpus tests.
       - name: Generate Cherenkov scene assets
@@ -869,6 +872,7 @@ jobs:
       # nextest's fixture setup scripts install their fonts through
       # `uv run` (`.config/nextest.toml`).
       - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/test-fonts-cache
       - name: Clippy (examples)
         if: runner.os == 'Linux'
         run: cargo clippy --timings --locked --profile ci-check -p '*-example' --all-targets -- -D warnings
