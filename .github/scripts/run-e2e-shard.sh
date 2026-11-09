@@ -223,10 +223,20 @@ if [[ "${platform}" == "ios" ]]; then
     ) </dev/null >/dev/null 2>&1 &
     echo $!
   }
+  # Every pid under a root, leaves first — enumerated while the tree's
+  # parentage is still intact.
+  subtree_pids() {
+    local p
+    for p in $(pgrep -P "$1" 2>/dev/null); do
+      subtree_pids "$p"
+      echo "$p"
+    done
+  }
   # A sampler that already fired is mid-collection — give it a bounded grace
-  # to finish writing; a still-sleeping one is cancelled. `pkill -P` covers
-  # the diagnostic children (the caller's `wait` cannot reap a worker
-  # launched through command substitution, so they could outlive a kill).
+  # to finish writing; a still-sleeping one is cancelled. The stop signals
+  # the whole tree at once: a grandchild the deadline supervisor spawned
+  # (`log show`) is enumerated before it could reparent, and a `pkill -P`
+  # sweep alone would never reach it.
   stall_sampler_stop() {
     local pid="$1" diag="${2:-}"
     if kill -0 "${pid}" 2>/dev/null; then
@@ -236,10 +246,9 @@ if [[ "${platform}" == "ios" ]]; then
           sleep 0.5
         done
       fi
-      # Children first, while they still answer to the worker: after `kill`
-      # they would reparent to launchd before `pkill -P` could find them.
-      pkill -P "${pid}" 2>/dev/null || true
-      kill "${pid}" 2>/dev/null || true
+      local tree
+      tree="$(subtree_pids "${pid}")"
+      kill ${tree} "${pid}" 2>/dev/null || true
     fi
     rm -f "${diag}.fired.${pid}"
   }
