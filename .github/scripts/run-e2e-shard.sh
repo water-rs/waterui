@@ -179,19 +179,26 @@ if [[ "${platform}" == "ios" ]]; then
   xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
 
   # A screenshot command still running this long is mid-stall, not slow —
-  # a healthy answer lands in ~0.5 s. The sampler fires before the command
-  # bound kills it, so the wedge's stacks land in the log while the guilty
-  # process is still alive (#1539).
-  STALL_SAMPLE_S=25
+  # a healthy answer lands in ~0.5 s. The sampler fires inside the command
+  # bound, so the wedge's stacks land in the log while the guilty process is
+  # still alive (#1539). A 30 s scoped capture leaves ~15 s of collection
+  # headroom after the sample fires; the 120 s warmup leaves far more.
   stall_sampler_start() {
     local diag="$1"
+    local after="${2:-15}"
     (
-      sleep "${STALL_SAMPLE_S}"
+      sleep "${after}"
       {
         echo "=== screenshot stall sample $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
         echo "--- simctl / CoreSimulator processes ---"
         pgrep -fl "simctl|CoreSimulatorService|SimulatorTrampoline" || true
-        for p in $(pgrep -f "simctl.*screenshot|CoreSimulatorService|SimulatorTrampoline"); do
+        # The wedged `simctl` itself goes first: on a 30 s scoped capture the
+        # bound may kill it while service stacks are still being collected.
+        for p in $(pgrep -f "simctl io .* screenshot"); do
+          echo "--- sample ${p} ---"
+          sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
+        done
+        for p in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline"); do
           echo "--- sample ${p} ---"
           sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
         done
@@ -207,9 +214,20 @@ if [[ "${platform}" == "ios" ]]; then
     ) </dev/null >/dev/null 2>&1 &
     echo $!
   }
+  # A sampler that already fired is mid-collection — let it finish writing
+  # rather than truncating its log; a still-sleeping one is cancelled.
   stall_sampler_stop() {
-    kill "${1}" 2>/dev/null || true
-    wait "${1}" 2>/dev/null || true
+    local pid="$1" diag="${2:-}"
+    if kill -0 "${pid}" 2>/dev/null; then
+      if [[ -s "${diag}" ]]; then
+        local deadline=$(( SECONDS + 20 ))
+        while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do
+          sleep 0.5
+        done
+      fi
+      kill "${pid}" 2>/dev/null || true
+    fi
+    wait "${pid}" 2>/dev/null || true
   }
 
   # The first `simctl io screenshot` each boot pays a one-time cost while the
@@ -222,12 +240,12 @@ if [[ "${platform}" == "ios" ]]; then
   warmup_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-warmup.XXXXXX")"
   warmup_frame="${warmup_dir}/frame.png"
   warmup_deadline_at="$("${command_deadline}" deadline --seconds 120)"
-  warmup_sampler="$(stall_sampler_start "${logs_dir}/${platform}-warmup-stall-sample.log")"
+  warmup_sampler="$(stall_sampler_start "${logs_dir}/${platform}-warmup-stall-sample.log" 25)"
   warmup_rc=0
   "${command_deadline}" run --label "capture:simctl-io-screenshot-warmup" \
     --deadline-at "${warmup_deadline_at}" --receipt "${receipts_file}" \
     -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${warmup_frame}" >/dev/null || warmup_rc=$?
-  stall_sampler_stop "${warmup_sampler}"
+  stall_sampler_stop "${warmup_sampler}" "${logs_dir}/${platform}-warmup-stall-sample.log"
   if (( warmup_rc != 0 )) || [[ ! -s "${warmup_frame}" ]]; then
     rm -rf "${warmup_dir}"
     echo "e2e: the screenshot-pipeline warmup produced no frame — the capture channel is unusable" >&2
@@ -311,7 +329,7 @@ capture_frame() {
       --max-seconds "${COMMAND_BOUND_S}" \
       -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null
     capture_rc=$?
-    stall_sampler_stop "${sampler_pid}"
+    stall_sampler_stop "${sampler_pid}" "${logs_dir}/${platform}-${example}-stall-sample.log"
     (( capture_rc == 0 )) || return
   else
     local window_id
