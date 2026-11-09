@@ -159,6 +159,41 @@ class HwuiTextProviderTest {
         provider.release(4)
         provider.release(5)
     }
+
+    private fun shapeAligned(
+        provider: HwuiTextProvider,
+        id: Int,
+        text: String,
+        paragraph: Int,
+    ): FloatArray =
+        provider.shape(
+            id,
+            text,
+            1,
+            run(0, 0, 20f, 400, null),
+            emptyArray(),
+            "",
+            300f,
+            TextWire.NO_LINE_LIMIT,
+            paragraph,
+        )
+
+    @Test
+    fun `ink is measured from the line start however the line is aligned`() {
+        val provider = provider()
+        val start = shapeAligned(provider, 8, "Row", TextWire.ALIGN_START)
+        val end = shapeAligned(provider, 9, "Row", TextWire.ALIGN_END)
+        val rtl = shapeAligned(provider, 10, "Row", TextWire.ALIGN_END or TextWire.RIGHT_TO_LEFT)
+        val ink = TextWire.REPLY_HEADER + 3
+        for (reply in listOf(end, rtl)) {
+            assertEquals("ink left", start[ink], reply[ink], 0.5f)
+            assertEquals("ink right", start[ink + 1], reply[ink + 1], 0.5f)
+        }
+        provider.release(8)
+        provider.release(9)
+        provider.release(10)
+    }
+
     @Test
     fun `a bidirectional selection returns one rectangle per disjoint run`() {
         val provider = provider()
