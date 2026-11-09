@@ -39,6 +39,7 @@ use crate::uikit::{
     surface_view::SurfaceView, toggle::ToggleRow,
 };
 use crate::view;
+#[cfg(feature = "webview")]
 use crate::web_kit::LeafWebView;
 
 /// A handler run against the view that carries the geometry.
@@ -228,8 +229,9 @@ pub fn of(view: &PlatformView) -> Option<&ResponseGeometry> {
         .or_else(|| class::<ColorView>(view))
         .or_else(|| class::<SurfaceView>(view))
         .or_else(|| class::<ScrollView>(view))
-        .or_else(|| class::<ListTableView>(view))
-        .or_else(|| class::<LeafWebView>(view));
+        .or_else(|| class::<ListTableView>(view));
+    #[cfg(feature = "webview")]
+    let found = found.or_else(|| class::<LeafWebView>(view));
     #[cfg(feature = "map")]
     let found = found.or_else(|| class::<MapView>(view));
     #[cfg(all(feature = "avkit", target_os = "macos"))]
