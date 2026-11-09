@@ -160,6 +160,15 @@ pub fn interval(start: &NSDate, end: &NSDate) -> Retained<NSDateInterval> {
     // so no main-thread proof is needed.
 }
 
+/// Whether a calendar control selects one day or toggles many.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalendarSelectionMode {
+    /// Picking a day makes it the one selected day.
+    Single,
+    /// Picking a day toggles it in or out of the selection.
+    Multiple,
+}
+
 /// A calendar month: the year and the month, `1..=12`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct YearMonth {

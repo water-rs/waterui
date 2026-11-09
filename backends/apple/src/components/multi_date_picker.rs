@@ -411,7 +411,7 @@ fn platform_controls(
             let range = borrowed.range.clone();
             move |parts| can_toggle(&range, parts)
         });
-        borrowed.calendar.on_toggle({
+        borrowed.calendar.on_pick({
             let value = borrowed.value.clone();
             move |parts| apply_selection_toggle(&value, to_jiff(parts))
         });
@@ -567,7 +567,7 @@ fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf 
         range: config.range().clone(),
         decorated_keys: Rc::clone(&decorated_keys),
         #[cfg(target_os = "ios")]
-        calendar: platform::CalendarView::new(mtm),
+        calendar: platform::CalendarView::new(mtm, cocoa_ui::date::CalendarSelectionMode::Multiple),
         #[cfg(target_os = "ios")]
         decoration_color: Rc::new(RefCell::new(platform::UIColor::secondaryLabelColor())),
         #[cfg(target_os = "macos")]

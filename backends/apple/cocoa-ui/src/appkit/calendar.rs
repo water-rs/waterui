@@ -10,7 +10,9 @@
 //! faint, today draws in the accent colour, and a selected day sits in a
 //! rounded highlight — the accent while the calendar is the first responder
 //! of the key window, unemphasized otherwise. Every metric is the graphical
-//! picker's, measured from `NSDatePicker` renders on macOS 27.
+//! picker's, measured from `NSDatePicker` renders on macOS 27, and so is the
+//! navigation: ◀ and ▶ move freely, past the selectable range, without
+//! dimming, and ● brings back the month of the selection.
 //!
 //! Selection is owned by the caller: a click, an arrow key (single
 //! selection) or Space and Return (multiple selection) report the day
@@ -56,7 +58,7 @@ use objc2_foundation::{
 };
 
 use crate::callback::guarded;
-use crate::date::{self, DateParts, YearMonth};
+use crate::date::{self, CalendarSelectionMode, DateParts, YearMonth};
 use crate::font;
 use crate::geometry::Size;
 use crate::notification::{self, NotificationName, NotificationObserver};
@@ -133,16 +135,6 @@ const REFERENCE_SUNDAY: DateParts = DateParts {
 
 type TextAttributes = NSDictionary<NSAttributedStringKey, AnyObject>;
 
-/// Whether the calendar selects one day or toggles many.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CalendarSelectionMode {
-    /// A click or an arrow key picks the one selected day.
-    Single,
-    /// A click, or Space and Return on the keyboard cursor, toggles a day;
-    /// arrow keys move the cursor.
-    Multiple,
-}
-
 /// The colours the calendar draws with. The faint text tiers and the
 /// unemphasized highlight derive from `muted`.
 #[derive(Debug, Clone)]
@@ -184,8 +176,8 @@ enum Target {
     Title,
     /// ◀: the month before.
     Previous,
-    /// ●: today's month.
-    Today,
+    /// ●: the month of the selection.
+    Selection,
     /// ▶: the month after.
     Next,
     /// A grid cell, `0..GRID_DAYS`.
@@ -195,7 +187,7 @@ enum Target {
 impl Target {
     /// Every target in accessibility order.
     fn all() -> impl Iterator<Item = Self> {
-        [Self::Title, Self::Previous, Self::Today, Self::Next]
+        [Self::Title, Self::Previous, Self::Selection, Self::Next]
             .into_iter()
             .chain((0..GRID_DAYS).map(Self::Day))
     }
@@ -277,6 +269,7 @@ struct State {
     cursor: DateParts,
     colors: CalendarColors,
     text: LocaleText,
+    navigation_labels: CalendarNavigationLabels,
 }
 
 impl State {
@@ -324,10 +317,22 @@ impl State {
         self.range.contains(&day)
     }
 
-    /// Whether any day of `month` is selectable.
-    fn month_in_range(&self, month: YearMonth) -> bool {
-        YearMonth::of(*self.range.start()) <= month && month <= YearMonth::of(*self.range.end())
+    /// The month ● brings back: the earliest selected day's, or today's
+    /// when nothing is selected.
+    fn selection_month(&self) -> YearMonth {
+        YearMonth::of(self.selected.first().copied().unwrap_or_else(date::today))
     }
+}
+
+/// The spoken names of the three navigation buttons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarNavigationLabels {
+    /// ◀: shows the month before.
+    pub previous: String,
+    /// ●: shows the month of the selection.
+    pub selection: String,
+    /// ▶: shows the month after.
+    pub next: String,
 }
 
 /// The user's callbacks. Cloned out before a call so a callback that
@@ -463,9 +468,14 @@ define_class!(
 
 impl CalendarView {
     /// A calendar in `mode` showing today's month in the user's locale,
-    /// drawn in the platform's colours, with nothing selected.
+    /// drawn in the platform's colours, with nothing selected and its
+    /// navigation buttons named `navigation_labels`.
     #[must_use]
-    pub fn new(mtm: MainThreadMarker, mode: CalendarSelectionMode) -> Retained<Self> {
+    pub fn new(
+        mtm: MainThreadMarker,
+        mode: CalendarSelectionMode,
+        navigation_labels: CalendarNavigationLabels,
+    ) -> Retained<Self> {
         let today = date::today();
         let text = LocaleText::new(&NSLocale::autoupdatingCurrentLocale());
         let mut state = State {
@@ -489,6 +499,7 @@ impl CalendarView {
             cursor: today,
             colors: CalendarColors::system(),
             text,
+            navigation_labels,
         };
         state.rebuild_grid();
         let this = Self::alloc(mtm).set_ivars(CalendarViewIvars {
@@ -529,8 +540,15 @@ impl CalendarView {
         self.setNeedsDisplay(true);
     }
 
+    /// The spoken names of ◀, ● and ▶.
+    pub fn set_navigation_labels(&self, labels: CalendarNavigationLabels) {
+        self.ivars().state.borrow_mut().navigation_labels = labels;
+        self.update_accessibility();
+    }
+
     /// The inclusive range of selectable days. Days outside it draw faint
-    /// and ignore clicks, and navigation stops at its months.
+    /// and ignore clicks and keys; navigation still shows any month, as the
+    /// graphical picker's does.
     pub fn set_range(&self, range: RangeInclusive<DateParts>) {
         self.ivars().state.borrow_mut().range = range;
         self.refresh();
@@ -677,7 +695,7 @@ impl CalendarView {
                 CGRect::new(CGPoint::new(self.mirrored(TITLE_X, size.width), top), size)
             }
             Target::Previous => outset(self.nav_rect(0)),
-            Target::Today => outset(self.nav_rect(1)),
+            Target::Selection => outset(self.nav_rect(1)),
             Target::Next => outset(self.nav_rect(2)),
             Target::Day(index) => self.cell_rect(index),
         }
@@ -691,7 +709,7 @@ impl CalendarView {
                 && point.y >= rect.origin.y
                 && point.y < rect.origin.y + rect.size.height
         };
-        [Target::Previous, Target::Today, Target::Next]
+        [Target::Previous, Target::Selection, Target::Next]
             .into_iter()
             .find(|target| contains(self.target_rect(*target)))
             .or_else(|| {
@@ -709,22 +727,11 @@ impl CalendarView {
             })
     }
 
-    /// Whether ◀ (`step` −1) or ▶ (`step` +1) can move.
-    fn can_step(&self, step: i32) -> bool {
-        let state = self.ivars().state.borrow();
-        let month = if step < 0 {
-            state.visible.previous()
-        } else {
-            state.visible.next()
-        };
-        state.month_in_range(month)
-    }
-
     /// Shows `month` and reports it.
     fn navigate(&self, month: YearMonth) {
         {
             let mut state = self.ivars().state.borrow_mut();
-            if state.visible == month || !state.month_in_range(month) {
+            if state.visible == month {
                 return;
             }
             state.visible = month;
@@ -763,7 +770,10 @@ impl CalendarView {
                 let month = self.ivars().state.borrow().visible.next();
                 self.navigate(month);
             }
-            Target::Today => self.navigate(YearMonth::of(date::today())),
+            Target::Selection => {
+                let month = self.ivars().state.borrow().selection_month();
+                self.navigate(month);
+            }
             Target::Day(index) => {
                 let day = self.ivars().state.borrow().grid[index].parts;
                 self.pick(day);
@@ -805,15 +815,11 @@ impl CalendarView {
         }
         match key {
             Key::Named(NamedKey::PageUp) => {
-                if self.can_step(-1) {
-                    self.activate(Target::Previous);
-                }
+                self.activate(Target::Previous);
                 true
             }
             Key::Named(NamedKey::PageDown) => {
-                if self.can_step(1) {
-                    self.activate(Target::Next);
-                }
+                self.activate(Target::Next);
                 true
             }
             Key::Named(NamedKey::Enter) if mode == CalendarSelectionMode::Multiple => {
@@ -895,13 +901,9 @@ impl CalendarView {
             let state = self.ivars().state.borrow();
             let (label, enabled, selected) = match target {
                 Target::Title => (title_string(&state).to_string(), true, false),
-                Target::Previous => (
-                    "Previous Month".to_owned(),
-                    self_can_step(&state, -1),
-                    false,
-                ),
-                Target::Today => ("Today".to_owned(), true, false),
-                Target::Next => ("Next Month".to_owned(), self_can_step(&state, 1), false),
+                Target::Previous => (state.navigation_labels.previous.clone(), true, false),
+                Target::Selection => (state.navigation_labels.selection.clone(), true, false),
+                Target::Next => (state.navigation_labels.next.clone(), true, false),
                 Target::Day(index) => {
                     let day = state.grid[index].parts;
                     (
@@ -931,17 +933,16 @@ impl CalendarView {
             unemphasized: muted
                 .colorWithAlphaComponent(muted.alphaComponent() * UNEMPHASIZED_OPACITY),
         };
-        self.draw_header(&context, &state, &tiers);
+        self.draw_header(&context, &state);
         self.draw_days(&context, &state, &tiers);
     }
 
     /// Draws the title, the navigation glyphs, the weekday symbols and the
     /// separator.
-    fn draw_header(&self, context: &CGContext, state: &State, tiers: &FaintTiers) {
+    fn draw_header(&self, context: &CGContext, state: &State) {
         let mtm = self.mtm();
         let rtl = self.is_rtl();
         let colors = &state.colors;
-        let faint = &tiers.faint;
 
         // Title.
         let title_font = title_font(mtm);
@@ -958,19 +959,12 @@ impl CalendarView {
             TITLE_BASELINE,
         );
 
-        // Navigation: ◀ ● ▶, the arrows faint where the range stops them.
-        let arrow_color = |step: i32| {
-            if self_can_step(state, step) {
-                &colors.muted
-            } else {
-                faint
-            }
-        };
-        let (leading_step, trailing_step) = if rtl { (1, -1) } else { (-1, 1) };
-        fill_triangle(context, self.nav_rect(0), true, arrow_color(leading_step));
+        // Navigation: ◀ ● ▶, never dimmed — the graphical picker navigates
+        // past its range.
+        fill_triangle(context, self.nav_rect(0), true, &colors.muted);
         CGContext::set_fill_color_with_color(Some(context), Some(&colors.muted.CGColor()));
         CGContext::fill_ellipse_in_rect(Some(context), self.nav_rect(1));
-        fill_triangle(context, self.nav_rect(2), false, arrow_color(trailing_step));
+        fill_triangle(context, self.nav_rect(2), false, &colors.muted);
 
         // Weekday symbols and the separator.
         let weekday_font = system_font(mtm, WEEKDAY_FONT);
@@ -1089,16 +1083,6 @@ struct FaintTiers {
     fainter: Retained<NSColor>,
     /// The selection highlight while the calendar is not focused.
     unemphasized: Retained<NSColor>,
-}
-
-/// [`CalendarView::can_step`] on already-borrowed state.
-fn self_can_step(state: &State, step: i32) -> bool {
-    let month = if step < 0 {
-        state.visible.previous()
-    } else {
-        state.visible.next()
-    };
-    state.month_in_range(month)
 }
 
 /// The visible month's title in the locale's abbreviated format.
@@ -1326,6 +1310,11 @@ mod tests {
             cursor: day,
             colors: CalendarColors::system(),
             text,
+            navigation_labels: CalendarNavigationLabels {
+                previous: "Previous Month".to_owned(),
+                selection: "Selected Month".to_owned(),
+                next: "Next Month".to_owned(),
+            },
         };
         state.rebuild_grid();
         state

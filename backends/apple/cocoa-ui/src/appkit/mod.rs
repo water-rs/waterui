@@ -79,10 +79,10 @@ pub use application::{
 };
 pub use badge::BadgeView;
 pub use button::Button;
+pub use calendar::{CalendarColors, CalendarNavigationLabels, CalendarView};
 pub use color_view::ColorView;
 pub use color_well::ColorWell;
 pub use colors::AppColor;
-pub use calendar::{CalendarColors, CalendarSelectionMode, CalendarView};
 pub use context_menu::ContextMenu;
 pub use control::{activate, first_button, first_control};
 pub use cursor::Cursor;

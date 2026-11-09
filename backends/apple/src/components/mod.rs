@@ -17,6 +17,8 @@ pub mod badge;
 pub mod border;
 #[cfg(feature = "button")]
 pub mod button;
+#[cfg(feature = "calendar")]
+pub mod calendar;
 #[cfg(feature = "clip_shape")]
 pub mod clip_shape;
 #[cfg(feature = "color_picker")]

@@ -489,6 +489,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "NSStringDrawing",
     "UICalendarSelection",
     "UICalendarSelectionMultiDate",
+    "UICalendarSelectionSingleDate",
     "UICalendarView",
     "UICalendarViewDecoration",
     "UIDatePicker",

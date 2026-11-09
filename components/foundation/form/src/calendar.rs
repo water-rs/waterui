@@ -150,9 +150,9 @@ impl Calendar {
     pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
         let visible = VisibleMonth::from_date(self.0.visible_month.snapshot());
         if !visible_month_in_range(visible, &range) {
-            self.0.visible_month.set(
-                initial_visible_month(Some(self.0.value.snapshot()), &range).first_day(),
-            );
+            self.0
+                .visible_month
+                .set(initial_visible_month(Some(self.0.value.snapshot()), &range).first_day());
         }
         self.0.range = range;
         self
@@ -167,6 +167,36 @@ impl Calendar {
 }
 
 impl_label_style_methods!(Calendar);
+
+/// Translation key for the control that shows the month before.
+pub const CALENDAR_PREVIOUS_MONTH_LABEL_KEY: &str = "waterui.calendar.previous_month";
+/// Translation key for the control that shows the month of the selection.
+pub const CALENDAR_SELECTED_MONTH_LABEL_KEY: &str = "waterui.calendar.selected_month";
+/// Translation key for the control that shows the month after.
+pub const CALENDAR_NEXT_MONTH_LABEL_KEY: &str = "waterui.calendar.next_month";
+
+/// Semantic label for a calendar's previous-month control.
+///
+/// Backends that draw month navigation speak these labels rather than
+/// strings of their own, so one catalog entry translates them everywhere.
+#[must_use]
+pub fn calendar_previous_month_label() -> Label {
+    Text::localized_or(CALENDAR_PREVIOUS_MONTH_LABEL_KEY, "Previous Month").into_label()
+}
+
+/// Semantic label for a calendar's control that returns to the month of the
+/// selection. See [`calendar_previous_month_label`].
+#[must_use]
+pub fn calendar_selected_month_label() -> Label {
+    Text::localized_or(CALENDAR_SELECTED_MONTH_LABEL_KEY, "Selected Month").into_label()
+}
+
+/// Semantic label for a calendar's next-month control. See
+/// [`calendar_previous_month_label`].
+#[must_use]
+pub fn calendar_next_month_label() -> Label {
+    Text::localized_or(CALENDAR_NEXT_MONTH_LABEL_KEY, "Next Month").into_label()
+}
 
 impl View for Calendar {
     fn body(self, env: &Environment) -> impl View {
@@ -183,7 +213,7 @@ impl View for Calendar {
     }
 }
 
-/// The calendar composed from WaterUI views — the realization every backend
+/// The calendar composed from `WaterUI` views — the realization every backend
 /// without its own `Calendar` handler renders.
 #[derive(Debug)]
 struct CalendarGrid(CalendarConfig);
