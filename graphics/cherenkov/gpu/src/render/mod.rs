@@ -5151,7 +5151,7 @@ impl GpuRenderer {
             if result.is_ok() {
                 self.finish_picture_coverage();
             }
-            self.evict_projective(0);
+            self.evict_projective(0, 0);
             // Set once the encode has consumed the filters' redraw
             // requests (`SurfaceWakes::set`).
             self.update_filter_activity();
@@ -5321,7 +5321,7 @@ impl GpuRenderer {
             if result.is_ok() {
                 self.finish_picture_coverage();
             }
-            self.evict_projective(0);
+            self.evict_projective(0, 0);
             // Set once the encode has consumed the filters' redraw
             // requests (`SurfaceWakes::set`).
             self.update_filter_activity();
@@ -6417,25 +6417,27 @@ impl GpuRenderer {
                 });
             }
         }
-        let incoming_bytes = realize
-            .iter()
-            .map(|r| {
-                let old = surf
-                    .projective
-                    .get(&r.key.layer)
-                    .and_then(|entries| entries.iter().find(|entry| entry.matches(r.key)));
-                if old.is_some_and(|entry| entry.fits(r.levels[0], r.key.format)) {
-                    0
-                } else {
-                    r.bytes()
-                        .saturating_sub(old.map_or(0, projective::Entry::bytes))
-                }
-            })
-            .sum();
+        let (mut incoming_bytes, mut incoming_pictures) = (0_u64, 0_u64);
+        for r in &realize {
+            let old = surf
+                .projective
+                .get(&r.key.layer)
+                .and_then(|entries| entries.iter().find(|entry| entry.matches(r.key)));
+            if old.is_some_and(|entry| entry.fits(r.levels[0], r.key.format)) {
+                continue;
+            }
+            let growth = r
+                .bytes()
+                .saturating_sub(old.map_or(0, projective::Entry::bytes));
+            incoming_bytes += growth;
+            if r.picture.is_some() {
+                incoming_pictures += growth;
+            }
+        }
         surf.composed = composed;
         // Release unused images before allocating their replacements, rather
         // than holding both sets until this frame has been encoded.
-        self.evict_projective(incoming_bytes);
+        self.evict_projective(incoming_bytes, incoming_pictures);
         let surf = self.surfaces.get_mut(&id).expect("registered surface");
         for r in &realize {
             let entries = surf.projective.entry(r.key.layer).or_default();
@@ -6502,10 +6504,12 @@ impl GpuRenderer {
         }
     }
 
-    /// Evicts least-recently-used local images until the retained set fits
-    /// the budget; the images each surface's latest frame composed are
-    /// required and never evicted.
-    fn evict_projective(&mut self, incoming_bytes: u64) {
+    /// Evicts least-recently-used local images until the retained set,
+    /// together with the `incoming_bytes` about to be allocated, fits the
+    /// budget, and retained picture images together with the
+    /// `incoming_pictures` among them fit the picture share; the images
+    /// each surface's latest frame composed are required and never evicted.
+    fn evict_projective(&mut self, incoming_bytes: u64, incoming_pictures: u64) {
         let available = self.projective_available().saturating_sub(incoming_bytes);
         let mut total = self.projective_bytes();
         let mut pictures: u64 = self
@@ -6515,7 +6519,8 @@ impl GpuRenderer {
             .filter(|entry| entry.picture.is_some())
             .map(projective::Entry::bytes)
             .sum();
-        let picture_limit = self.config.budget.gpu.0 / gpu_cov::BUDGET_SHARE;
+        let picture_limit =
+            (self.config.budget.gpu.0 / gpu_cov::BUDGET_SHARE).saturating_sub(incoming_pictures);
         if total <= available && pictures <= picture_limit {
             return;
         }
