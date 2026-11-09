@@ -2316,14 +2316,14 @@ impl Drop for MountGuard {
         // queue, after the presentation reset below has cleared the scope.
         // Recording the orphaned depth keeps that late end quiet — and
         // still counted, so an end nobody is owed stays a panic.
-        let orphaned = self
+        let open_scope = self
             .state
             .presentation
             .borrow()
             .capture
             .as_ref()
-            .map_or(0, |external| external.depth.get());
-        if orphaned > 0 {
+            .map(|external| (external.depth.get(), external.redraw.clone()));
+        if let Some((orphaned, _)) = &open_scope {
             self.state
                 .orphaned_external_scopes
                 .set(self.state.orphaned_external_scopes.get() + orphaned);
@@ -2342,6 +2342,12 @@ impl Drop for MountGuard {
         self.view.set_backing_changed_handler(|| {});
         self.view.set_visibility_changed_handler(|| {});
         self.view.capturable_slot().clear();
+        // The capture holding that scope has lost content it may have
+        // deferred on: this surface can never redraw again, so its
+        // departure is the wake the capture's retry waits for.
+        if let Some((_, redraw)) = open_scope {
+            redraw();
+        }
     }
 }
 
