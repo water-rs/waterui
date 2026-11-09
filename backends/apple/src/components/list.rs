@@ -1815,9 +1815,10 @@ mod platform_impl {
             // Navigation owns the first scroll surface's top spacing. Later
             // independent lists keep the inset-grouped anonymous-section reserve.
             if is_navigation_scroll_surface(table) {
-                table.set_section_header_top_padding(0.0);
                 // Grouped tables interpret zero as their default header height.
                 // The least positive native height suppresses the header instead.
+                // (`sectionHeaderTopPadding` only applies to `.plain` tables —
+                // it is a no-op here.)
                 f64::MIN_POSITIVE
             } else {
                 35.0

@@ -606,6 +606,10 @@ impl TableView {
         margins.trailing = 16.0;
         this.setDirectionalLayoutMargins(margins);
         this.setSeparatorInsetReference(UITableViewSeparatorInsetReference::FromCellEdges);
+        // A nil `tableHeaderView` leaves a ~1 pt top reserve on grouped
+        // tables that the anonymous-section suppression cannot reclaim —
+        // an explicit zero-height header removes it (#3913).
+        this.setTableHeaderView(Some(&UIView::new(mtm)));
         // SAFETY: `TableCell` and `TableHeaderFooterView` are the classes the
         // identifiers dequeue.
         unsafe {
