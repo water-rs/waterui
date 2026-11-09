@@ -2301,7 +2301,7 @@ mod tests {
     /// ships no GPU band view. Its own API 34 requirement sits above the
     /// framework floor, so the generated `minSdk` is the painter's.
     #[test]
-    fn the_hwui_painter_renders_at_the_framework_floor_and_mounts_no_band() -> std::io::Result<()> {
+    fn the_hwui_painter_renders_at_its_own_floor_and_mounts_no_band() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["hwui"]);
             let (_temporary, project) = fixture_project(&host, "").await?;
