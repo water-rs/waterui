@@ -18,7 +18,7 @@ use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2_foundation::{
     NSCalendar, NSCalendarIdentifierGregorian, NSCalendarUnit, NSDate, NSDateComponents,
-    NSDateFormatter, NSDateFormatterStyle, NSDateInterval,
+    NSDateInterval,
 };
 
 /// The year, month and day of a calendar date.
@@ -315,18 +315,6 @@ pub const fn add_days(day: DateParts, days: i32) -> DateParts {
 #[must_use]
 pub fn today() -> DateParts {
     date_parts(&NSDate::now()).expect("the current instant resolves to a calendar date")
-}
-
-/// `date` formatted in the user's locale at medium date style with no time —
-/// the format a selection list row shows.
-#[must_use]
-pub fn format_medium(date: &NSDate) -> String {
-    NSDateFormatter::localizedStringFromDate_dateStyle_timeStyle(
-        date,
-        NSDateFormatterStyle::MediumStyle,
-        NSDateFormatterStyle::NoStyle,
-    )
-    .to_string()
 }
 
 #[cfg(test)]
