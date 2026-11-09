@@ -43,19 +43,75 @@ pub struct MetalToolchain;
 #[derive(Debug, Clone)]
 pub struct MetalToolchainInstall;
 
+/// The part of `xcodebuild -showComponent MetalToolchain -json` the check
+/// reads.
+#[derive(Debug, Deserialize)]
+struct MetalToolchainComponent {
+    status: ComponentStatus,
+}
+
+/// Xcode's install state for a downloadable component.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ComponentStatus {
+    Installed,
+    InstalledUpdateAvailable,
+    /// Every other state Xcode reports leaves the component to download.
+    #[serde(other)]
+    NotInstalled,
+}
+
 impl Toolchain for MetalToolchain {
     type Installation = MetalToolchainInstall;
     async fn check(
         &self,
         host: &Host,
     ) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
-        // `xcrun --find metal` can resolve Xcode's bundled launcher even when
-        // the downloadable component is absent — only executing the compiler
-        // proves the toolchain is there (water-rs/waterui#3903).
-        if host.run("xcrun", ["metal", "--version"]).await.is_ok() {
-            Ok(())
-        } else {
-            Err(ToolchainError::fixable(MetalToolchainInstall))
+        // The install state comes from Xcode, not from running the compiler:
+        // a component another account installed sits on disk system-wide,
+        // yet `xcrun metal` resolves only Xcode's launcher stub for a user
+        // whose Xcode has never queried the component. This query is what
+        // resolves and mounts the installed toolchain for the current user,
+        // so it must run before the compiler is probed (water-rs/waterui#3954).
+        let report = host
+            .run("xcodebuild", ["-showComponent", "MetalToolchain", "-json"])
+            .await
+            .map_err(|error| {
+                ToolchainError::unfixable(
+                    format!("`xcodebuild -showComponent MetalToolchain` failed: {error}"),
+                    "Install Xcode 26 or newer and select it with `xcode-select`.",
+                )
+            })?;
+        let component: MetalToolchainComponent =
+            serde_json::from_str(&report).map_err(|error| {
+                ToolchainError::unfixable(
+                    format!(
+                        "`xcodebuild -showComponent MetalToolchain -json` printed an \
+                         unexpected report ({error}): {report}"
+                    ),
+                    "Report this Xcode version to water-rs/waterui.",
+                )
+            })?;
+        match component.status {
+            ComponentStatus::NotInstalled => Err(ToolchainError::fixable(MetalToolchainInstall)),
+            ComponentStatus::Installed | ComponentStatus::InstalledUpdateAvailable => {
+                // `xcrun --find metal` can resolve the launcher even when the
+                // component is unusable; only executing the compiler proves
+                // the build script can run it (water-rs/waterui#3903).
+                host.run("xcrun", ["metal", "--version"])
+                    .await
+                    .map(drop)
+                    .map_err(|error| {
+                        ToolchainError::unfixable(
+                            format!(
+                                "Xcode reports the Metal Toolchain installed, but \
+                                 `xcrun metal --version` fails: {error}"
+                            ),
+                            "Run `xcodebuild -showComponent MetalToolchain` and check \
+                             that its toolchainSearchPath exists.",
+                        )
+                    })
+            }
         }
     }
 }
@@ -407,20 +463,33 @@ mod tests {
         );
     }
 
-    #[test]
-    fn metal_toolchain_ok_when_metal_runs() {
+    /// A machine with `xcodebuild` and `xcrun`, whose
+    /// `-showComponent MetalToolchain -json` reports `status`.
+    fn metal_machine(status: &str) -> TestMachine {
         let machine = TestMachine::new();
+        machine.install("xcodebuild");
         machine.install("xcrun");
-        machine.respond("XCRUN_METAL_VERSION", "metal 1.0\n");
-        let host = machine.host(Vec::<(String, String)>::new());
-        smol::block_on(MetalToolchain.check(&host))
-            .expect("a running `xcrun metal` must satisfy the check");
+        machine.respond(
+            "XCODEBUILD_SHOW_METAL_TOOLCHAIN",
+            &format!(r#"{{ "buildVersion" : "27A266a", "status" : "{status}" }}"#),
+        );
+        machine
     }
 
     #[test]
-    fn metal_toolchain_missing_is_fixable() {
-        let machine = TestMachine::new();
-        machine.install("xcrun");
+    fn metal_toolchain_ok_when_installed_and_metal_runs() {
+        for status in ["installed", "installedUpdateAvailable"] {
+            let machine = metal_machine(status);
+            machine.respond("XCRUN_METAL_VERSION", "metal 1.0\n");
+            let host = machine.host(Vec::<(String, String)>::new());
+            smol::block_on(MetalToolchain.check(&host))
+                .unwrap_or_else(|error| panic!("`{status}` with a running compiler: {error:?}"));
+        }
+    }
+
+    #[test]
+    fn metal_toolchain_not_installed_is_fixable() {
+        let machine = metal_machine("notInstalled");
         let host = machine.host(Vec::<(String, String)>::new());
         let result = smol::block_on(MetalToolchain.check(&host));
         assert!(
@@ -430,18 +499,32 @@ mod tests {
     }
 
     #[test]
-    fn metal_toolchain_findable_but_unrunnable_is_fixable() {
-        // The launcher resolves under `--find` while the downloadable
-        // component is absent — the check must not take the finder's word
-        // for the compiler's presence (water-rs/waterui#3903).
-        let machine = TestMachine::new();
-        machine.install("xcrun");
+    fn metal_toolchain_installed_but_unrunnable_is_unfixable() {
+        // The launcher resolves under `--find` while the compiler cannot
+        // run — downloading again cannot repair what Xcode already reports
+        // installed (water-rs/waterui#3903, water-rs/waterui#3954).
+        let machine = metal_machine("installed");
         machine.respond("XCRUN_FIND_METAL", "/fake/Xcode/usr/bin/metal\n");
         let host = machine.host(Vec::<(String, String)>::new());
         let result = smol::block_on(MetalToolchain.check(&host));
         assert!(
-            matches!(result, Err(ToolchainError::Fixable(_))),
-            "`--find` succeeding while `metal --version` fails must stay fixable: {result:?}"
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "installed while `metal --version` fails must be unfixable: {result:?}"
+        );
+    }
+
+    #[test]
+    fn metal_toolchain_unreadable_report_is_unfixable() {
+        let machine = TestMachine::new();
+        machine.install("xcodebuild");
+        machine.install("xcrun");
+        machine.respond("XCODEBUILD_SHOW_METAL_TOOLCHAIN", "not json\n");
+        machine.respond("XCRUN_METAL_VERSION", "metal 1.0\n");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(MetalToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "an unparseable component report must not be mistaken for a state: {result:?}"
         );
     }
 
