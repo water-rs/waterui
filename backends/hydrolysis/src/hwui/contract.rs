@@ -31,7 +31,7 @@ use super::protocol::{MESH_BAND_PATCHES, NONE, Op, effect_kind};
 
 use super::resources::{Kind, SharedRegistry};
 use super::{HwuiError, HwuiSurface, HwuiTarget};
-use cherenkov_record::{Shared, SurfaceId};
+use cherenkov_record::{Fixed, Live, Shared, SurfaceId};
 use std::cell::Cell;
 use waterui_graphics::draw::TextLayoutId;
 
@@ -1338,6 +1338,190 @@ fn content_animation_demand_belongs_to_the_submitted_frame() {
         !second.content_animating(),
         "an empty drain reports no animation"
     );
+}
+
+/// The `Fill` lines of a frame's event log: what a layer's list painted.
+fn fills(log: &[String]) -> Vec<&String> {
+    log.iter()
+        .filter(|line| line.starts_with("Fill "))
+        .collect()
+}
+
+/// A keyframed operand runs on HWUI as on Cherenkov: each frame re-records
+/// the layer's list with the record-side sample, the commit reports content
+/// animation, and the source records once.
+#[test]
+fn a_keyframed_operand_records_the_sampled_frames() {
+    use nami::SignalExt as _;
+    use waterui_graphics::draw::{KeyframeAnimation, Keyframes, Repeat};
+
+    let solid = |r, g, b| Paint::Solid(color(r, g, b, 1.0));
+    let cycle = Duration::from_millis(400);
+    let keyframes = Keyframes::new(cycle, solid(1.0, 0.0, 0.0))
+        .then(0.5, Curve::linear(cycle), solid(0.0, 1.0, 0.0))
+        .then(1.0, Curve::ease_in_out(cycle), solid(0.0, 0.0, 1.0));
+    // A fresh surface holding one 20×20 fill of `paint`.
+    let surface_with = |id: u64, paint: Live<Paint>, recordings: &Cell<u32>| {
+        let surface = HwuiSurface::new(SurfaceId::new(id), || {}).expect("api 34 encodes");
+        let shared = surface.shared().clone();
+        let root = Shared::root(&shared);
+        let layer = Shared::layer(&shared);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&root].push(&layer);
+            tx[&layer]
+                .layout_size(kurbo::Size::new(20.0, 20.0))
+                .record(|c| {
+                    recordings.set(recordings.get() + 1);
+                    c.fill(Rect::new(0.0, 0.0, 20.0, 20.0), paint);
+                });
+        });
+        (surface, layer)
+    };
+
+    let paint = nami::binding(solid(0.0, 0.0, 0.0));
+    let recordings = Cell::new(0);
+    let (mut animated, _layer) = surface_with(
+        12,
+        paint
+            .with(KeyframeAnimation::new(keyframes.clone(), Repeat::Forever))
+            .into(),
+        &recordings,
+    );
+    let t0 = Instant::now();
+    let _ = animated.frame(t0, 1.0).expect("the first frame encodes");
+    paint.set(solid(1.0, 1.0, 1.0));
+    let start = t0 + Duration::from_millis(8);
+    let _ = animated
+        .frame(start, 1.0)
+        .expect("the track's first frame encodes");
+    let _ = animated.take_log();
+    for frame in [7u32, 20, 31, 55, 101] {
+        let t = start + Duration::from_secs(frame.into()) / 120;
+        let encoded = animated.frame(t, 1.0).expect("a keyframe frame encodes");
+        assert!(
+            encoded.content_animating(),
+            "frame {frame}: a forever track keeps the frame loop awake"
+        );
+        let log = animated.take_log();
+        let expected = keyframes
+            .sample(t - start, Repeat::Forever)
+            .expect("a forever track runs");
+        let (mut reference, _reference_layer) =
+            surface_with(13, Fixed(expected).into(), &Cell::new(0));
+        let _ = reference.frame(t, 1.0).expect("the reference encodes");
+        let reference_log = reference.take_log();
+        assert!(!fills(&log).is_empty(), "frame {frame}: {log:?}");
+        assert_eq!(
+            fills(&log),
+            fills(&reference_log),
+            "frame {frame}: HWUI drew the record-side sample"
+        );
+    }
+    assert_eq!(recordings.get(), 1, "running keyframes record nothing");
+}
+
+/// Keyframed layer properties run on HWUI as its other animated layer
+/// properties do: the tree samples them each frame and the encoder writes
+/// the sampled transform and alpha, matching a layer set to those values.
+#[test]
+fn keyframed_layer_properties_set_the_sampled_frames() {
+    use nami::SignalExt as _;
+    use waterui_graphics::draw::{KeyframeAnimation, Keyframes, Repeat, Spring};
+
+    let cycle = Duration::from_millis(600);
+    let spin = Keyframes::new(cycle, 0.0_f64)
+        .then(0.5, Curve::ease_in(cycle), std::f64::consts::PI)
+        .then(1.0, Spring::bouncy(), TAU);
+    let fade = Keyframes::new(cycle, 1.0_f32)
+        .then(0.5, Curve::linear(cycle), 0.25)
+        .then(1.0, Curve::ease_out(cycle), 1.0);
+    // A fresh surface holding one layer with `rotation` and `opacity`.
+    let surface_with = |id: u64, rotation: Live<f64>, opacity: Live<f32>| {
+        let surface = HwuiSurface::new(SurfaceId::new(id), || {}).expect("api 34 encodes");
+        let shared = surface.shared().clone();
+        let root = Shared::root(&shared);
+        let layer = Shared::layer(&shared);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&root].push(&layer);
+            tx[&layer]
+                .layout_size(kurbo::Size::new(20.0, 20.0))
+                .rotation(rotation)
+                .opacity(opacity)
+                .record(|c| {
+                    c.fill(Rect::new(0.0, 0.0, 20.0, 20.0), color(1.0, 1.0, 1.0, 1.0));
+                });
+        });
+        (surface, layer)
+    };
+    // The lines that place and fade `layer`'s node.
+    let properties = |surface: &HwuiSurface, layer: &cherenkov_record::Layer, log: &[String]| {
+        let node = surface
+            .encoder()
+            .node(layer.id())
+            .expect("the layer has a node");
+        let (transform, alpha) = (
+            format!("SetTransform node={node} "),
+            format!("SetAlpha node={node} "),
+        );
+        log.iter()
+            .filter(|line| line.starts_with(&transform) || line.starts_with(&alpha))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    let rotation = nami::binding(0.0_f64);
+    let opacity = nami::binding(1.0_f32);
+    let (mut animated, layer) = surface_with(
+        14,
+        rotation
+            .with(KeyframeAnimation::new(spin.clone(), Repeat::Forever))
+            .into(),
+        opacity
+            .with(KeyframeAnimation::new(fade.clone(), Repeat::Forever))
+            .into(),
+    );
+    let t0 = Instant::now();
+    let _ = animated.frame(t0, 1.0).expect("the first frame encodes");
+    rotation.set(0.0);
+    opacity.set(1.0);
+    let start = t0 + Duration::from_millis(8);
+    let _ = animated
+        .frame(start, 1.0)
+        .expect("the tracks' first frame encodes");
+    let _ = animated.take_log();
+    let node = animated
+        .encoder()
+        .node(layer.id())
+        .expect("the keyframed layer has a node");
+    let rerecorded = format!("Record node={node} ");
+    for frame in [9u32, 30, 47, 66, 101] {
+        let t = start + Duration::from_secs(frame.into()) / 120;
+        let encoded = animated.frame(t, 1.0).expect("a keyframe frame encodes");
+        assert!(
+            encoded.sampling().rate.is_some(),
+            "frame {frame}: forever tracks keep the frame loop awake"
+        );
+        let log = animated.take_log();
+        let angle = spin.sample(t - start, Repeat::Forever).expect("forever");
+        let alpha = fade.sample(t - start, Repeat::Forever).expect("forever");
+        let (mut reference, reference_layer) =
+            surface_with(15, Fixed(angle).into(), Fixed(alpha).into());
+        let _ = reference.frame(t, 1.0).expect("the reference encodes");
+        let reference_log = reference.take_log();
+        let placed = properties(&animated, &layer, &log);
+        assert_eq!(placed.len(), 2, "frame {frame}: {log:?}");
+        assert_eq!(
+            placed,
+            properties(&reference, &reference_layer, &reference_log),
+            "frame {frame}: HWUI placed the tree's sample"
+        );
+        // The parent re-records as its child's ink moves, as for any
+        // animated rotation; the keyframed layer's own list does not.
+        assert!(
+            !log.iter().any(|line| line.starts_with(&rerecorded)),
+            "frame {frame}: a property track re-records nothing: {log:?}"
+        );
+    }
 }
 
 /// The native-view hit query answers the topmost platform view drawn at the

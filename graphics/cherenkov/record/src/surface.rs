@@ -21,10 +21,10 @@ use nami_core::watcher::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::Instant;
-use crate::animation::Animation;
+use crate::animation::{Animation, KeyframeAnimation};
 use crate::ops::{
-    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop,
-    SurfaceId,
+    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId,
+    LayerKeyframes, LayerOp, Op, Prop, SurfaceId,
 };
 use crate::projective::Projective;
 use crate::record::{Binding, Content, ContentSpare, Live, LiveOwner, SampleFlag};
@@ -740,12 +740,31 @@ impl<T: Target> Shared<T> {
         V: 'static,
         F: Fn(LayerId, V, Option<Animation>, Option<Instant>) -> LayerOp + 'static,
     {
+        Self::bind_keyframed(shared, layer, kind, live, op, None)
+    }
+
+    /// [`bind`](Self::bind) for a property that also runs keyframe tracks:
+    /// a change carrying a [`KeyframeAnimation`] queues `track_op(layer,
+    /// track)` instead of `op`. Without `track_op`, such a change panics.
+    #[inline]
+    fn bind_keyframed<V, F>(
+        shared: &Rc<RefCell<Self>>,
+        layer: LayerId,
+        kind: PropKind,
+        live: Live<V>,
+        op: F,
+        track_op: Option<fn(LayerId, KeyframeProp<V>) -> LayerOp>,
+    ) -> V
+    where
+        V: 'static,
+        F: Fn(LayerId, V, Option<Animation>, Option<Instant>) -> LayerOp + 'static,
+    {
         // The watcher carries the generation the binding will be kept
         // under, taken before the watch starts: it fires only while the
         // property's current binding is still the one that registered it.
         let mark = shared.borrow_mut().draw_watcher();
         let generation = mark.generation();
-        let (target, guard) = live.watch(Self::watcher(shared, layer, kind, mark, op));
+        let (target, guard) = live.watch(Self::watcher(shared, layer, kind, mark, op, track_op));
         let watching = Self::kept_watcher(shared, generation);
         Self::keep(shared, layer, kind, generation, watching, guard);
         target
@@ -788,6 +807,7 @@ impl<T: Target> Shared<T> {
         kind: PropKind,
         mark: WatcherMark,
         op: F,
+        track_op: Option<fn(LayerId, KeyframeProp<V>) -> LayerOp>,
     ) -> impl Fn(Context<V>) + 'static
     where
         V: 'static,
@@ -795,13 +815,37 @@ impl<T: Target> Shared<T> {
     {
         let weak = Rc::downgrade(shared);
         move |context: Context<V>| {
+            let track = context.metadata().try_get::<KeyframeAnimation>();
             let animation = context.metadata().try_get::<Animation>();
             let start = context.metadata().try_get::<AnimationStart>();
             let target = context.into_value();
             if let Some(shared) = weak.upgrade() {
                 // `op` runs user code — a clip's `Shape::into_data` — so
                 // the op is built before the surface is borrowed.
-                let op = Op::Layer(op(layer, target, animation, start.map(|s| s.0)));
+                let op = Op::Layer(match track {
+                    Some(track) => {
+                        let Some(track_op) = track_op else {
+                            panic!(
+                                "the {kind:?} layer property does not take a keyframe track: \
+                                 transform, translation, rotation, scale and opacity do"
+                            )
+                        };
+                        assert!(
+                            animation.is_none(),
+                            "a change carries an `Animation` or a `KeyframeAnimation`, never both"
+                        );
+                        let (keyframes, repeat) = track.property::<V>();
+                        track_op(
+                            layer,
+                            KeyframeProp {
+                                target,
+                                keyframes,
+                                repeat,
+                            },
+                        )
+                    }
+                    None => op(layer, target, animation, start.map(|s| s.0)),
+                });
                 let mut shared = shared.borrow_mut();
                 // `mark.generation()` captures the whole mark: the watcher
                 // owns it, so it drops — and records the drop — with the
@@ -1364,7 +1408,7 @@ impl<T: BackdropSampling> LayerEdit<T> {
 impl<T: Target> LayerEdit<T> {
     /// Sets the local transform.
     pub fn transform(&mut self, transform: impl Into<Live<Affine>>) -> &mut Self {
-        let target = Shared::bind(
+        let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
             PropKind::Transform,
@@ -1379,6 +1423,7 @@ impl<T: Target> LayerEdit<T> {
                     },
                 )
             },
+            Some(|layer, prop| LayerOp::Keyframes(layer, LayerKeyframes::Transform(prop))),
         );
         self.queue(Op::Layer(LayerOp::Transform(
             self.layer,
@@ -1396,7 +1441,7 @@ impl<T: Target> LayerEdit<T> {
     /// its own live subscription and animation track; changing it never
     /// re-records content.
     pub fn translation(&mut self, value: impl Into<Live<Vec2>>) -> &mut Self {
-        let target = Shared::bind(
+        let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
             PropKind::Translation,
@@ -1411,6 +1456,7 @@ impl<T: Target> LayerEdit<T> {
                     },
                 )
             },
+            Some(|layer, prop| LayerOp::Keyframes(layer, LayerKeyframes::Translation(prop))),
         );
         self.queue(Op::Layer(LayerOp::Translation(
             self.layer,
@@ -1430,7 +1476,7 @@ impl<T: Target> LayerEdit<T> {
     /// its own live subscription and animation track; changing it never
     /// re-records content.
     pub fn rotation(&mut self, value: impl Into<Live<f64>>) -> &mut Self {
-        let target = Shared::bind(
+        let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
             PropKind::Rotation,
@@ -1445,6 +1491,7 @@ impl<T: Target> LayerEdit<T> {
                     },
                 )
             },
+            Some(|layer, prop| LayerOp::Keyframes(layer, LayerKeyframes::Rotation(prop))),
         );
         self.queue(Op::Layer(LayerOp::Rotation(
             self.layer,
@@ -1462,7 +1509,7 @@ impl<T: Target> LayerEdit<T> {
     /// its own live subscription and animation track; changing it never
     /// re-records content.
     pub fn scale(&mut self, value: impl Into<Live<Vec2>>) -> &mut Self {
-        let target = Shared::bind(
+        let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
             PropKind::Scale,
@@ -1477,6 +1524,7 @@ impl<T: Target> LayerEdit<T> {
                     },
                 )
             },
+            Some(|layer, prop| LayerOp::Keyframes(layer, LayerKeyframes::Scale(prop))),
         );
         self.queue(Op::Layer(LayerOp::Scale(
             self.layer,
@@ -1556,7 +1604,7 @@ impl<T: Target> LayerEdit<T> {
 
     /// Sets the opacity.
     pub fn opacity(&mut self, opacity: impl Into<Live<f32>>) -> &mut Self {
-        let target = Shared::bind(
+        let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
             PropKind::Opacity,
@@ -1571,6 +1619,7 @@ impl<T: Target> LayerEdit<T> {
                     },
                 )
             },
+            Some(|layer, prop| LayerOp::Keyframes(layer, LayerKeyframes::Opacity(prop))),
         );
         self.queue(Op::Layer(LayerOp::Opacity(
             self.layer,
@@ -3380,6 +3429,55 @@ mod tests {
 
     /// A bound change's `AnimationStart` metadata reaches the prop's
     /// `start` (dev's test — the merge dropped it).
+    #[test]
+    fn a_keyframed_rotation_change_queues_its_track() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let unit = Duration::from_millis(500);
+        let spin = crate::Keyframes::new(unit, 0.0_f64).then(
+            1.,
+            Curve::linear(unit),
+            std::f64::consts::TAU,
+        );
+        let rotation = binding(0.0_f64);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].rotation(
+                rotation
+                    .clone()
+                    .with(KeyframeAnimation::new(spin.clone(), crate::Repeat::Forever)),
+            );
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        rotation.set(1.0);
+        let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
+            panic!("the bound change queued an op");
+        };
+        let [Op::Layer(LayerOp::Keyframes(_, LayerKeyframes::Rotation(prop)))] =
+            changes.ops.as_slice()
+        else {
+            panic!("one rotation keyframe op: {:?}", changes.ops);
+        };
+        assert!((prop.target - 1.0).abs() < f64::EPSILON);
+        assert_eq!(prop.keyframes, spin);
+        assert_eq!(prop.repeat, crate::Repeat::Forever);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not take a keyframe track")]
+    fn a_keyframed_skew_change_panics() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let unit = Duration::from_millis(500);
+        let skew = binding(kurbo::Vec2::ZERO);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].skew(skew.clone().with(KeyframeAnimation::new(
+                crate::Keyframes::new(unit, kurbo::Vec2::ZERO),
+                crate::Repeat::Forever,
+            )));
+        });
+        skew.set(kurbo::Vec2::new(0.1, 0.0));
+    }
+
     #[test]
     fn a_bound_change_reads_its_animation_start_from_metadata() {
         let shared = shared();
