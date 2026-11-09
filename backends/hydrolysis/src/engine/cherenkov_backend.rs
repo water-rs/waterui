@@ -354,9 +354,12 @@ impl AndroidCherenkovSurface {
         self.core.engine.set_band(&self.core.surface, view, target)
     }
 
-    pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        self.core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()))
+    /// Renders the committed change set at the presented frame's `time`.
+    pub(crate) fn render(
+        &mut self,
+        time: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        self.core.own(self.core.engine.render(time))
     }
 }
 
@@ -463,8 +466,10 @@ impl TextureCherenkovSurface {
         }
     }
 
-    /// Renders the committed change set and drains texture notifications,
-    /// returning the engine's `Next` for the pump to schedule against.
+    /// Renders the committed change set at the presented frame's `time` —
+    /// the instant the engine samples its animations at — and drains
+    /// texture notifications, returning the engine's `Next` for the pump to
+    /// schedule against.
     ///
     /// The rendered texture stays held in [`Self::texture`]; the presenter
     /// samples it through [`Self::present_into`].
@@ -476,10 +481,11 @@ impl TextureCherenkovSurface {
     /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
     /// to render.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self
-            .core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()))?;
+    pub(crate) fn render(
+        &mut self,
+        time: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.core.own(self.core.engine.render(time))?;
         Ok(self.render_inner(next))
     }
 
@@ -490,10 +496,11 @@ impl TextureCherenkovSurface {
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
-    pub(crate) async fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self
-            .core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()).await)?;
+    pub(crate) async fn render(
+        &mut self,
+        time: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.core.own(self.core.engine.render(time).await)?;
         Ok(self.render_inner(next))
     }
 
@@ -671,10 +678,12 @@ impl WindowCherenkovSurface {
     ///
     /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
     /// to render.
-    pub fn render(&mut self, scale: f64) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self
-            .core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()))?;
+    pub fn render(
+        &mut self,
+        scale: f64,
+        time: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.core.own(self.core.engine.render(time))?;
         let (headroom, changed) = self.headroom();
         if changed {
             self.core.display(cherenkov::Display { scale, headroom });
@@ -768,9 +777,11 @@ impl DomCherenkovSurface {
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
-    pub(crate) async fn render(&self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        self.core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()).await)
+    pub(crate) async fn render(
+        &self,
+        time: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        self.core.own(self.core.engine.render(time).await)
     }
 }
 

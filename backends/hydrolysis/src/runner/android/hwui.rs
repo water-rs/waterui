@@ -146,9 +146,11 @@ impl HwuiWindow {
             .commit_mount(&mut self.mount, &self.host, scale);
         runtime.renderer.platform_view_bindings(&mut self.bindings);
         self.surface.set_platform_views(&self.bindings);
+        // The presented frame's instant, so operand animations the encoder
+        // samples advance with the frames the pump presents.
         let frame = self
             .surface
-            .frame(cherenkov_record::Instant::now(), scale)
+            .frame(runtime.renderer.frame_instant(), scale)
             .map_err(|e| JniError(e.to_string()))?;
         let animating = frame.content_animating() || frame.sampling().rate.is_some();
         self.painter
