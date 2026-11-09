@@ -241,6 +241,7 @@ pub fn response(view: &PlatformView) -> Rect {
 
 /// Where `view` draws its intrinsic content: its committed response
 /// rectangle, or its bounds before its first placement committed one.
+#[cfg(feature = "picture")]
 pub fn content_rect(view: &PlatformView) -> Rect {
     slot_of(view).content_rect(view)
 }
