@@ -1024,6 +1024,7 @@ mod resolve {
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
+    use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{ProposalSize, Size, StretchAxis};
     use waterui_core::metadata::MetadataKey;
@@ -1050,8 +1051,26 @@ mod resolve {
     /// fresh env. Panics when nothing claims the view — the typed
     /// contract's answer to a miss.
     pub fn render(view: impl View) -> NativeLeaf {
+        render_with(view, |_| {})
+    }
+
+    /// [`render`] with `configure` applied to the render environment.
+    pub fn render_with(
+        view: impl View,
+        configure: impl FnOnce(&mut waterui_backend_core::Environment),
+    ) -> NativeLeaf {
         let _mtm = mtm();
-        waterui_apple::dispatch::render(AnyView::new(view), &env())
+        let mut env = env();
+        configure(&mut env);
+        waterui_apple::dispatch::render(AnyView::new(view), &env)
+    }
+
+    /// [`render`] under a [`ManualTransitionClock`]: every transition the
+    /// leaf runs holds still until the trial advances the returned clock.
+    pub fn render_on_manual_clock(view: impl View) -> (NativeLeaf, ManualTransitionClock) {
+        let clock = ManualTransitionClock::default();
+        let leaf = render_with(view, |env| env.insert(clock.clone()));
+        (leaf, clock)
     }
 
     /// Renders `view`, reporting whether `render` panicked instead of
@@ -12950,7 +12969,6 @@ mod transition {
     use waterui::views::ForEach;
     use waterui_apple::contract::Mounted;
     use waterui_apple::native_test_support::pump_main_until;
-    #[cfg(feature = "gpu_surface")]
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_backend_core::AnyView;
     use waterui_core::Metadata;
@@ -13473,22 +13491,39 @@ mod transition {
         waterui::navigation::NavigationPath<i32>,
         waterui_apple::contract::NativeLeaf,
     ) {
-        use waterui::navigation::{NavigationPath, NavigationStack, NavigationView};
-        let path = NavigationPath::<i32>::new();
-        let leaf = super::resolve::render(
-            NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("root")))
-                .destination(|_route: i32| {
-                    NavigationView::new(
-                        "Detail",
-                        Metadata::new(
-                            text("detail"),
-                            TransitionSpec::new(PropertyTransition::opacity())
-                                .with_animation(Animation::linear(Duration::from_millis(150))),
-                        ),
-                    )
-                }),
-        );
+        let path = waterui::navigation::NavigationPath::<i32>::new();
+        let leaf = super::resolve::render(claimed_stack_view(&path));
         (path, leaf)
+    }
+
+    /// [`claimed_stack`] under a [`ManualTransitionClock`], so the
+    /// page's transition holds until the trial advances the clock.
+    fn claimed_stack_on_manual_clock() -> (
+        waterui::navigation::NavigationPath<i32>,
+        waterui_apple::contract::NativeLeaf,
+        ManualTransitionClock,
+    ) {
+        let path = waterui::navigation::NavigationPath::<i32>::new();
+        let (leaf, clock) = super::resolve::render_on_manual_clock(claimed_stack_view(&path));
+        (path, leaf, clock)
+    }
+
+    /// The stack both [`claimed_stack`] flavours render, driven by `path`.
+    fn claimed_stack_view(
+        path: &waterui::navigation::NavigationPath<i32>,
+    ) -> impl waterui_backend_core::View {
+        use waterui::navigation::{NavigationStack, NavigationView};
+        NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("root")))
+            .destination(|_route: i32| {
+                NavigationView::new(
+                    "Detail",
+                    Metadata::new(
+                        text("detail"),
+                        TransitionSpec::new(PropertyTransition::opacity())
+                            .with_animation(Animation::linear(Duration::from_millis(150))),
+                    ),
+                )
+            })
     }
 
     /// A claimed page pushed then popped through the model: the pop is
@@ -13687,13 +13722,13 @@ mod transition {
     /// ramps its own insertion instead (§5.5).
     pub fn navigation_claimed_push_replaces_the_stack_animation() {
         let _mtm = mtm();
-        let (path, leaf) = claimed_stack();
+        let (path, leaf, clock) = claimed_stack_on_manual_clock();
         let _window = super::mount_and_order_front(leaf.view());
         let mid_ramp = Cell::new(false);
         #[cfg(target_os = "ios")]
-        push_unanimated_ios(&path, &leaf, &mid_ramp);
+        push_unanimated_ios(&path, &leaf, &clock, &mid_ramp);
         #[cfg(target_os = "macos")]
-        push_unanimated_macos(&path, &leaf, &mid_ramp);
+        push_unanimated_macos(&path, &leaf, &clock, &mid_ramp);
         assert!(
             mid_ramp.get(),
             "the page host's alpha ramped through its own transition"
@@ -13706,6 +13741,7 @@ mod transition {
     fn push_unanimated_ios(
         path: &waterui::navigation::NavigationPath<i32>,
         leaf: &waterui_apple::contract::NativeLeaf,
+        clock: &ManualTransitionClock,
         mid_ramp: &Cell<bool>,
     ) {
         let nav = nav_controller_in(leaf.view()).expect("the stack mounts a navigation controller");
@@ -13718,7 +13754,7 @@ mod transition {
             nav.transitionCoordinator().is_none(),
             "a claimed push is not the stack's animated transition"
         );
-        let done = pump_main_until(5.0, || {
+        let sample = || {
             autoreleasepool(|_| {
                 let top = nav.topViewController().expect("the pushed page is top");
                 let host = view::subviews(&top.view().expect("view"))
@@ -13729,9 +13765,19 @@ mod transition {
                 if alpha > 0.0 && alpha < 1.0 {
                     mid_ramp.set(true);
                 }
-                alpha >= 1.0
+                alpha
             })
-        });
+        };
+        clock.advance(Duration::from_millis(75));
+        assert!(
+            pump_main_until(5.0, || {
+                sample();
+                mid_ramp.get()
+            }),
+            "the page host's alpha ramps mid-flight"
+        );
+        clock.advance(Duration::from_millis(150));
+        let done = pump_main_until(5.0, || sample() >= 1.0);
         assert!(done, "the insertion transition completes");
     }
 
@@ -13741,15 +13787,17 @@ mod transition {
     fn push_unanimated_macos(
         path: &waterui::navigation::NavigationPath<i32>,
         leaf: &waterui_apple::contract::NativeLeaf,
+        clock: &ManualTransitionClock,
         mid_ramp: &Cell<bool>,
     ) {
         let host = view::retain_base(leaf.view());
         autoreleasepool(|_| path.push(1));
-        let done = pump_main_until(5.0, || {
+        // The entry's page alpha, `None` until the entry is mounted.
+        let sample = || {
             autoreleasepool(|_| {
                 let subviews = view::subviews(&host);
                 if subviews.len() < 2 {
-                    return false;
+                    return None;
                 }
                 let alpha = subviews.last().map_or(1.0, |entry| {
                     view::subviews(entry)
@@ -13759,9 +13807,23 @@ mod transition {
                 if alpha > 0.0 && alpha < 1.0 {
                     mid_ramp.set(true);
                 }
-                alpha >= 1.0
+                Some(alpha)
             })
-        });
+        };
+        assert!(
+            pump_main_until(5.0, || sample().is_some()),
+            "the push mounts the claimed entry"
+        );
+        clock.advance(Duration::from_millis(75));
+        assert!(
+            pump_main_until(5.0, || {
+                sample();
+                mid_ramp.get()
+            }),
+            "the entry host's alpha ramps mid-flight"
+        );
+        clock.advance(Duration::from_millis(150));
+        let done = pump_main_until(5.0, || sample().is_some_and(|alpha| alpha >= 1.0));
         assert!(done, "the insertion transition completes");
     }
 
@@ -14142,7 +14204,7 @@ mod transition {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
         handler.set(label("before"));
-        let leaf = super::resolve::render(view);
+        let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(Metadata::new(
@@ -14150,6 +14212,7 @@ mod transition {
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         ));
+        clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
             let content = content_of(&host);
@@ -14162,6 +14225,7 @@ mod transition {
                 (view::alpha(&content) - 0.5).abs() < 1e-6,
                 "the content's own opacity is untouched"
             );
+            clock.advance(Duration::from_millis(60));
             let settled = pump_main_until(2.0, || (view::alpha(&host) - 1.0).abs() < 1e-6);
             assert!(settled, "the insertion completes to full alpha");
             assert!((view::alpha(&content) - 0.5).abs() < 1e-6);
@@ -14175,7 +14239,7 @@ mod transition {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
         handler.set(label("before"));
-        let leaf = super::resolve::render(view);
+        let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(Metadata::new(
@@ -14183,6 +14247,7 @@ mod transition {
             TransitionSpec::new(PropertyTransition::scale(0.5))
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         ));
+        clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
             let transition_child = content_of(&host);
@@ -14202,6 +14267,7 @@ mod transition {
                 (own - 0.5).abs() < 1e-6,
                 "the content's own scale is untouched mid-flight, read {own}"
             );
+            clock.advance(Duration::from_millis(60));
             let settled = pump_main_until(2.0, || {
                 (scale_through(&host, &transition_child) - 1.0).abs() < 1e-6
             });
@@ -14222,7 +14288,7 @@ mod transition {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
         handler.set(label("before"));
-        let leaf = super::resolve::render(view);
+        let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(Metadata::new(
@@ -14232,6 +14298,7 @@ mod transition {
             )
             .with_animation(Animation::linear(Duration::from_millis(120))),
         ));
+        clock.advance(Duration::from_millis(60));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
             let transition_child = content_of(&host);
@@ -14251,6 +14318,12 @@ mod transition {
                 shared.get()
             });
             assert!(mid, "a combined tick landed mid-flight");
+            clock.advance(Duration::from_millis(120));
+            let settled = pump_main_until(2.0, || {
+                (view::alpha(&host) - 1.0).abs() < 1e-6
+                    && (scale_through(&host, &transition_child) - 1.0).abs() < 1e-6
+            });
+            assert!(settled, "the combined insertion completes to the identity");
         });
         drop(window);
     }
@@ -14303,7 +14376,7 @@ mod transition {
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         );
-        let leaf = super::resolve::render(leaf_view);
+        let (leaf, clock) = super::resolve::render_on_manual_clock(leaf_view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(Metadata::new(
@@ -14312,6 +14385,7 @@ mod transition {
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         ));
         handler.set(label("b"));
+        clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
             let transition_child = content_of(&host);
@@ -14321,6 +14395,9 @@ mod transition {
                 (view::alpha(&host) - 1.0).abs() < 1e-6,
                 "the adopted opacity never applies to a claimed child"
             );
+            clock.advance(Duration::from_millis(60));
+            let completed = pump_main_until(2.0, || view::subviews(mounted.view()).len() == 1);
+            assert!(completed, "the claimed ghost completes");
         });
         drop(window);
     }
