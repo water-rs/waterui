@@ -127,6 +127,30 @@ fn oversized_text_draws_its_run_in_its_response_rectangle() {
     assert_runs_at(&runtime, &[response]);
 }
 
+/// A right-to-left text in a container wider than it aligns its line to the
+/// trailing edge of the box it was shaped in; the run must still land inside
+/// the response rectangle the text reports, not a box-width away from it.
+#[test]
+fn rtl_oversized_text_draws_its_run_inside_its_response_rectangle() {
+    let mut runtime = runtime(rtl_environment(), || AnyView::new(text("Row")));
+    let updates = settle(&mut runtime);
+    let response = bounds(&updates, Role::Label, "Row");
+    assert!(
+        response.width() < f64::from(WINDOW_WIDTH) / 2.0,
+        "the response is the text's own size, got {response:?}"
+    );
+    let origins = run_origins(&runtime);
+    assert_eq!(origins.len(), 1, "one run, got {origins:?}");
+    let origin = origins[0];
+    assert!(
+        origin.x >= response.x0 - TOLERANCE
+            && origin.x <= response.x1 + TOLERANCE
+            && origin.y >= response.y0 - TOLERANCE
+            && origin.y <= response.y1 + TOLERANCE,
+        "the run starts inside the response {response:?}, got {origin:?}"
+    );
+}
+
 fn one_row_list(content: impl Fn() -> AnyView + 'static) -> impl Fn() -> AnyView + 'static {
     let content = Rc::new(content);
     move || {
