@@ -180,9 +180,12 @@ typed CDP commands; `controller.headless(config).await` gives an off-screen page
 ## Graphics and codes
 
 ```rust
-use waterui_canvas::{Canvas, DrawingContext};   // its own crate — add waterui-canvas to Cargo.toml
+use waterui::canvas::{Canvas, Circle, StrokeStyle};   // facade feature `canvas`
 
-Canvas::new(|ctx: &mut DrawingContext| { /* immediate-mode drawing */ })
+Canvas::new(move |cx| {                  // runs once per mount; signals stay bound
+    cx.fill(cx.size().map(Rect::from_size), Color::srgb(240, 240, 240));
+    cx.stroke(radius.map(|r| Circle::new(Point::new(40.0, 40.0), r)), StrokeStyle::new(2.0), accent);
+})
 
 use waterui_barcode::Barcode;            // its own crate — add waterui-barcode to Cargo.toml
 Barcode::qr("https://waterui.dev").size(120.0, 120.0)
@@ -191,6 +194,19 @@ Barcode::code128("012345").size(160.0, 60.0)
 use waterui::svg::Svg;
 Svg::new(source)
 ```
+
+A `Canvas` closure records once; it never reruns. Every operand takes a value or a signal
+(`radius` above is a `Binding<f32>`, `accent` a `Color`), and a signal's change updates
+that one operand in place, animated when the change carries an animation — so there is no
+redraw call. Structure that depends on data re-records locally: `cx.each(items, key, body)`
+keeps one sub-recording per key and hands the body a `Computed<T>` of its item, and
+`cx.scope(signal, body)` re-records one region when the signal changes. `cx.size()` and
+`cx.time()` are signals. State is scoped by closures — `cx.clip(shape, ..)`,
+`cx.transform(affine, ..)`, `cx.layer(Layer::opacity(0.5), ..)` — never saved and restored.
+`Drawing::record(size, |cx| ..)` records constants, on any thread, for `cx.draw(&drawing,
+transform)` or `Canvas::from(drawing)`, a view of the drawing's size. Images are
+`ImageSource`s the target registers itself; `image.status()` reports a refusal. Give a
+canvas with a natural size `.intrinsic_size(..)`, and a name with `.offered_label(..)`.
 
 Custom GPU content, from cheapest to fullest control:
 
