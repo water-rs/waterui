@@ -216,6 +216,8 @@ The workspace members in the root `Cargo.toml` are the authoritative crate list.
 
 ## Commands
 
+Never clone or build source to obtain a binary the CI already produces: download the CI's debug artifact for that revision (the nightly uploads the `water` CLI as `water-cli-debug-<os>-<arch>`). Build it locally only when the revision has no artifact or the change under test is to that binary's own source.
+
 ```bash
 cargo install --path cli --locked        # this checkout's `water` CLI
 cargo build --workspace
