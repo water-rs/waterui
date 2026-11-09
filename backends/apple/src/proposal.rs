@@ -396,6 +396,21 @@ pub fn place_painted(
     aligned.frame
 }
 
+/// Places the leaf `view` in `frame` with its response at the leading edge
+/// of the frame, offered `proposal`: the trailing edge when `rtl`, the
+/// frame's top staying the response's top. The frame stays the allocation,
+/// so a leaf that draws in its response (a label) lands at the leading
+/// edge rather than centred in a frame wider than its content.
+pub fn place_leading(view: &PlatformView, frame: Rect, proposal: ProposalSize, rtl: bool) {
+    let anchor = if rtl {
+        UnitPoint::TOP_TRAILING
+    } else {
+        UnitPoint::TOP_LEADING
+    };
+    deliver(view, Placement::platform_hosted(proposal).anchored(anchor));
+    view::set_frame(view, frame);
+}
+
 /// Registers `sink` as the channel `view` answers placements through; the
 /// returned guard unregisters on drop.
 #[cfg(any(

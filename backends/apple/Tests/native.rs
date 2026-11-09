@@ -11032,6 +11032,45 @@ mod a11y_frame {
         }
     }
 
+    /// How far a label's reported rectangle may sit from the leading edge:
+    /// the bare text bounds a label measures are a point narrower than the
+    /// cell it draws in, which the reported frame includes.
+    #[cfg(feature = "text_field")]
+    const LEADING_SLOP: f64 = 2.0;
+
+    /// The first `Label` below `view`, depth first.
+    fn find_label(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        view::subviews(view).into_iter().find_map(|sub| {
+            if sub.downcast_ref::<Label>().is_some() {
+                Some(sub)
+            } else {
+                find_label(&sub)
+            }
+        })
+    }
+
+    /// A text field's label is anchored at the leading edge of the field's
+    /// width, announced at its own width rather than centred in the full
+    /// width frame its field assigned.
+    #[cfg(feature = "text_field")]
+    fn a_text_field_label_sits_at_the_leading_edge() {
+        let value = binding(waterui::Str::from("typed"));
+        let (leaf, _window) = attached(waterui::component::text_field::TextField::new(
+            "Name", &value,
+        ));
+        let field = own_frame(leaf.view());
+        let label = find_label(leaf.view()).expect("the field mounts its label");
+        let reported = ax_frame(&label);
+        assert!(
+            reported.size.width > 0.0 && reported.size.width < field.size.width - 1.0,
+            "the label announces its own width: {reported:?} in {field:?}"
+        );
+        assert!(
+            (reported.origin.x - field.origin.x).abs() < LEADING_SLOP,
+            "the label sits at the field's leading edge: {reported:?} in {field:?}"
+        );
+    }
+
     /// A fill paints its whole frame, and a region named on it is what its
     /// element reports.
     fn a_region_on_a_fill_reports_the_named_region() {
@@ -11473,6 +11512,8 @@ mod a11y_frame {
             case!(a_labelled_frame_reports_its_answer),
             case!(an_image_draws_and_reports_its_response),
             case!(a_labelled_toggle_reports_its_response),
+            #[cfg(feature = "text_field")]
+            case!(a_text_field_label_sits_at_the_leading_edge),
             case!(a_region_on_a_fill_reports_the_named_region),
             case!(a_region_on_a_scroll_surface_reports_the_named_region),
             case!(a_padded_list_row_draws_its_content_at_the_leading_edge),
