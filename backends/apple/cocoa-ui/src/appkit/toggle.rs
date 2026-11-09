@@ -1,7 +1,7 @@
 //! The `AppKit` toggle: an `NSSwitch` or an `NSButton` checkbox, together
 //! with the labelled row a toggle lays out.
 //!
-//! `Toggle` owns a plain `NSView` container holding the control and an
+//! `Toggle` owns a [`ToggleRow`] container holding the control and an
 //! optional label, arranged by kind — a checkbox reads box first, then its
 //! title; a switch puts its title at the leading edge and the switch at the
 //! trailing edge of the row — and carries the platform's animation and
@@ -9,27 +9,32 @@
 //!
 //! # Safety
 //!
-//! The `unsafe` here constructs framework controls through their designated
-//! initializers and convenience constructors, installs the container's
-//! Auto Layout constraints, and runs `NSAnimationContext` groups — all
-//! documented main-thread APIs, which the [`MainThreadMarker`] `new`
-//! requires guarantees.
+//! The `unsafe` here defines an `NSView` subclass and forwards to `NSView`'s
+//! own implementation of each method it overrides, constructs framework
+//! controls through their designated initializers and convenience
+//! constructors, installs the container's Auto Layout constraints, and runs
+//! `NSAnimationContext` groups — all documented main-thread APIs, which the
+//! [`MainThreadMarker`] `new` requires guarantees.
 
+use std::cell::OnceCell;
 use std::fmt;
 
 use block2::RcBlock;
-use objc2::MainThreadMarker;
 use objc2::rc::Retained;
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAnimationContext, NSButton, NSControl, NSControlStateValueOff, NSControlStateValueOn,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh,
+    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutGuide, NSLayoutPriorityDefaultHigh,
     NSLayoutPriorityRequired, NSSwitch, NSView,
 };
-use objc2_foundation::{NSArray, ns_string};
+use objc2_core_foundation::CGRect;
+use objc2_foundation::{NSArray, NSObjectProtocol, ns_string};
 use objc2_quartz_core::CAMediaTimingFunction;
 
 use crate::action::ActionTarget;
-use crate::geometry::Size;
+use crate::callback::guarded;
+use crate::geometry::{Rect, Size};
+use crate::response::{ReportsResponse, ResponseGeometry};
 
 /// The gap between the control and its label, in points.
 pub const LABEL_SPACING: f64 = 8.0;
@@ -75,13 +80,162 @@ impl fmt::Debug for Control {
     }
 }
 
-/// A labelled toggle row in an `NSView` container.
+/// The layout guide a [`ToggleRow`] arranges its control and label in, and
+/// the constraints that pin it to the row's content rectangle.
+struct ContentGuide {
+    guide: Retained<NSLayoutGuide>,
+    left: Retained<NSLayoutConstraint>,
+    top: Retained<NSLayoutConstraint>,
+    width: Retained<NSLayoutConstraint>,
+    height: Retained<NSLayoutConstraint>,
+}
+
+/// The state a [`ToggleRow`] carries.
+pub struct ToggleRowIvars {
+    /// How the row was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
+    /// Where the control and label are arranged.
+    content: OnceCell<ContentGuide>,
+}
+
+impl fmt::Debug for ToggleRowIvars {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToggleRowIvars")
+            .field("geometry", &self.geometry)
+            .finish_non_exhaustive()
+    }
+}
+
+define_class!(
+    // SAFETY: `NSView`'s designated initializer is `initWithFrame:`, which
+    // `ToggleRow::new` calls, and the class does not implement `Drop`.
+    #[unsafe(super(NSView))]
+    #[name = "CocoaUiToggleRow"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ToggleRowIvars]
+    #[derive(Debug)]
+    /// The row a toggle's control and label are arranged in. Its frame is
+    /// the allocation its parent assigned; the control and label are
+    /// arranged in its response rectangle, which it reports as its
+    /// accessibility frame.
+    pub struct ToggleRow;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSView` subclass.
+    unsafe impl NSObjectProtocol for ToggleRow {}
+
+    impl ToggleRow {
+        /// Top-down coordinates: the content rectangle is in layout space.
+        #[unsafe(method(isFlipped))]
+        fn is_flipped_override(&self) -> bool {
+            true
+        }
+
+        // The content guide follows the committed response before the
+        // constraints are solved.
+        // SAFETY: see the module safety note.
+        #[unsafe(method(layout))]
+        fn layout_override(&self) {
+            guarded("ToggleRow layout", || {
+                let geometry = &self.ivars().geometry;
+                geometry.commit(self);
+                self.arrange_in(geometry.content_rect(self));
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layout] };
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("ToggleRow accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
+        }
+    }
+);
+
+impl ReportsResponse for ToggleRow {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
+
+impl ToggleRow {
+    /// An empty row.
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ToggleRowIvars {
+            geometry: ResponseGeometry::default(),
+            content: OnceCell::new(),
+        });
+        // SAFETY: `initWithFrame:` is `NSView`'s designated initializer.
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
+        let guide = NSLayoutGuide::new();
+        this.addLayoutGuide(&guide);
+        let content = ContentGuide {
+            left: guide
+                .leftAnchor()
+                .constraintEqualToAnchor_constant(&this.leftAnchor(), 0.0),
+            top: guide
+                .topAnchor()
+                .constraintEqualToAnchor_constant(&this.topAnchor(), 0.0),
+            width: guide.widthAnchor().constraintEqualToConstant(0.0),
+            height: guide.heightAnchor().constraintEqualToConstant(0.0),
+            guide,
+        };
+        NSLayoutConstraint::activateConstraints(&NSArray::from_slice(&[
+            &*content.left,
+            &*content.top,
+            &*content.width,
+            &*content.height,
+        ]));
+        assert!(
+            this.ivars().content.set(content).is_ok(),
+            "a toggle row installs its content guide once"
+        );
+        this
+    }
+
+    /// The guide the control and label are arranged in.
+    fn guide(&self) -> &NSLayoutGuide {
+        &self
+            .ivars()
+            .content
+            .get()
+            .expect("a toggle row installs its content guide at creation")
+            .guide
+    }
+
+    /// Pins the content guide to `rect`, in the row's own coordinates.
+    fn arrange_in(&self, rect: Rect) {
+        let content = self
+            .ivars()
+            .content
+            .get()
+            .expect("a toggle row installs its content guide at creation");
+        for (constraint, value) in [
+            (&content.left, rect.origin.x),
+            (&content.top, rect.origin.y),
+            (&content.width, rect.size.width),
+            (&content.height, rect.size.height),
+        ] {
+            if constraint.constant().to_bits() != value.to_bits() {
+                constraint.setConstant(value);
+            }
+        }
+    }
+}
+
+/// A labelled toggle row in a [`ToggleRow`] container.
 ///
 /// The container is what the leaf mounts and lays out; the control is what
 /// user interaction and accessibility target.
 #[derive(Debug, Clone)]
 pub struct Toggle {
-    container: Retained<NSView>,
+    container: Retained<ToggleRow>,
     control: Control,
 }
 
@@ -117,7 +271,7 @@ impl Toggle {
             }
         };
         Self {
-            container: NSView::new(mtm),
+            container: ToggleRow::new(mtm),
             control,
         }
     }
@@ -162,7 +316,7 @@ impl Toggle {
             NSLayoutConstraintOrientation::Horizontal,
         );
 
-        let container = &self.container;
+        let container = self.container.guide();
         let centered = [
             control
                 .centerYAnchor()

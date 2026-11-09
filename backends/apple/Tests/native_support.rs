@@ -1084,6 +1084,12 @@ pub mod gpu_surface {
     }
 }
 
+/// Re-exports the transition clock a trial drives by hand.
+#[cfg(feature = "transition_sites")]
+pub mod transition {
+    pub use crate::transition::clock::ManualTransitionClock;
+}
+
 /// Re-exports the pieces a `ViewRenderer::render` trial needs.
 ///
 /// The service installer, the shared-runtime handles a sealed generation
