@@ -16,28 +16,36 @@ jobs:
       fail-fast: false
       matrix:
         leg:
-          - runner-xcrun-first
-          - runner-download
-          - sudo-showcomponent-first
-          - sudo-download
-          - asuser-download
+          # The fresh user alone: find, show, download, find again.
+          - fresh-full
+          # runner mounts the cryptex first; does the fresh user then see it?
+          - fresh-after-runner-mount
+          # Per-user Xcode first-launch state.
+          - fresh-first-launch
+          # The fresh user given runner's Xcode preference domains.
+          - fresh-runner-prefs
+          # root: no login session either.
+          - root
     env:
       E2E_USER: watere2e
       LEG: ${{ matrix.leg }}
+    defaults:
+      run:
+        shell: bash --noprofile --norc {0}
     steps:
-      - name: Boot state
-        shell: bash
+      - name: runner state
         run: |
-          set -uo pipefail
-          sw_vers; xcode-select -p; xcodebuild -version
-          echo "--- mounts"; mount | grep -i -E 'metal|cryptex' || echo "(no metal/cryptex mount)"
-          echo "--- assets"; ls -la /System/Library/AssetsV2/com_apple_MobileAsset_MetalToolchain/ || true
+          id -un; xcode-select -p; xcodebuild -version
+          echo "--- mounts"; mount | grep -i metal || echo "(no metal mount)"
+          echo "--- runner dt defaults domains"; defaults domains | tr ',' '\n' | grep -i -E 'dt|xcode|mobileasset|DVT' || true
+          echo "--- runner com.apple.dt.Xcode keys"; defaults read com.apple.dt.Xcode 2>/dev/null | grep -E '^    "?[A-Za-z]' | cut -c1-120 || true
+          echo "--- runner ~/Library/Developer"; ls -la ~/Library/Developer ~/Library/Developer/* 2>&1 | head -40
+          echo "--- runner first launch"; xcodebuild -checkFirstLaunchStatus; echo "exit=$?"
 
       - name: Provision fresh user
-        if: startsWith(matrix.leg, 'sudo') || startsWith(matrix.leg, 'asuser')
-        shell: bash
+        if: matrix.leg != 'root'
         run: |
-          set -euo pipefail
+          set -eu
           pass="$(openssl rand -base64 24)Zx9!"
           echo "::add-mask::$pass"
           sudo dscl . -create "/Users/$E2E_USER"
@@ -51,32 +59,45 @@ jobs:
           sudo createhomedir -c -u "$E2E_USER"
 
       - name: Probe
-        shell: bash
         run: |
-          set -uo pipefail
-          case "$LEG" in
-            runner-*) as() { bash -lc "$1"; } ;;
-            sudo-*) as() { sudo -u "$E2E_USER" -H bash -lc "$1"; } ;;
-            asuser-*) as() { sudo launchctl asuser 601 sudo -u "$E2E_USER" -H bash -lc "$1"; } ;;
-          esac
+          if [ "$LEG" = root ]; then
+            as() { sudo -H bash -lc "$1"; }
+          else
+            as() { sudo -u "$E2E_USER" -H bash -lc "$1"; }
+          fi
           step() { echo "=== $1"; as "$2"; echo "=== $1: exit=$?"; }
-          mounts() { echo "--- mounts after $1"; mount | grep -i -E 'metal' || echo "(no metal mount)"; }
-          step "identity" 'id; getconf DARWIN_USER_TEMP_DIR; launchctl print gui/$(id -u) >/dev/null 2>&1 && echo "gui domain: present" || echo "gui domain: absent"'
-          step "xcrun metal (before)" 'xcrun -v metal --version 2>&1 | tail -15; exit ${PIPESTATUS[0]}'
+          find_metal() {
+            step "xcodebuild -find metal ($1)" 'xcodebuild -find metal 2>&1'
+            step "xcrun metal ($1)" 'xcrun_nocache=1 xcrun metal --version 2>&1'
+            echo "--- mounts ($1)"; mount | grep -i metal || echo "(no metal mount)"
+          }
+          start=$(date +%s)
+          step "identity" 'id -un; getconf DARWIN_USER_TEMP_DIR; xcodebuild -checkFirstLaunchStatus; echo "first launch status=$?"'
           case "$LEG" in
-            *showcomponent-first|runner-xcrun-first)
-              step "showComponent" 'xcodebuild -showComponent MetalToolchain -json 2>&1'
+            fresh-after-runner-mount)
+              echo "=== runner: xcrun metal"; xcrun metal --version 2>&1; echo "exit=$?"
+              mount | grep -i metal
               ;;
-            *download)
-              start=$(date +%s)
-              step "downloadComponent" 'xcodebuild -downloadComponent MetalToolchain 2>&1'
-              echo "--- mobileasset log"
-              sudo log show --start "@$start" --style compact \
-                --predicate 'process == "mobileassetd" OR subsystem BEGINSWITH "com.apple.MobileAsset" OR subsystem BEGINSWITH "com.apple.mobileasset"' \
-                2>/dev/null | grep -i -E 'metal|catalog|error|fail|session|user' | tail -120
-              step "showComponent" 'xcodebuild -showComponent MetalToolchain -json 2>&1'
+            fresh-first-launch)
+              step "runFirstLaunch (user)" 'xcodebuild -runFirstLaunch 2>&1 | tail -20'
+              ;;
+            fresh-runner-prefs)
+              for domain in $(defaults domains | tr ',' '\n' | tr -d ' ' | grep -E '^com\.apple\.dt\.'); do
+                plist="$HOME/Library/Preferences/$domain.plist"
+                [ -f "$plist" ] || continue
+                echo "copying $domain"
+                sudo install -o "$E2E_USER" -g staff -m 0600 "$plist" "/Users/$E2E_USER/Library/Preferences/$domain.plist"
+              done
+              sudo killall -u "$E2E_USER" cfprefsd 2>/dev/null || true
               ;;
           esac
-          mounts "probe"
-          step "xcrun metal (after)" 'xcrun -v metal --version 2>&1 | tail -15; exit ${PIPESTATUS[0]}'
-          step "xcrun metal nocache (after)" 'xcrun_nocache=1 xcrun metal --version 2>&1 | tail -5; exit ${PIPESTATUS[0]}'
+          find_metal "before"
+          step "showComponent" 'xcodebuild -showComponent MetalToolchain -json 2>&1'
+          find_metal "after showComponent"
+          step "downloadComponent" 'xcodebuild -downloadComponent MetalToolchain 2>&1'
+          find_metal "after downloadComponent"
+          echo "=== unified log (xcodebuild, mobileassetd, cryptexd, DVT)"
+          sudo log show --start "@$start" --style compact --info --debug \
+            --predicate 'process == "xcodebuild" OR process == "mobileassetd" OR process == "cryptexd" OR process CONTAINS "MobileAsset" OR subsystem BEGINSWITH "com.apple.dt" OR subsystem BEGINSWITH "com.apple.MobileAsset" OR subsystem BEGINSWITH "com.apple.mobileasset"' \
+            2>/dev/null | grep -i -E 'metal|cryptex|graft|mount|catalog|error|fail|denied|entitle|user|session' | cut -c1-400 | tail -250
+          echo "--- fresh user's ~/Library/Developer"; sudo ls -laR "/Users/$E2E_USER/Library/Developer" 2>&1 | head -40
