@@ -57,7 +57,7 @@ fn env_with_insets(container: EdgeInsets, keyboard: EdgeInsets) -> Environment {
 /// The container insets every case here mounts under — a status-bar band on
 /// top, a navigation-bar band on the bottom.
 fn edge_insets() -> EdgeInsets {
-    EdgeInsets::new(TOP_INSET, BOTTOM_INSET, 0.0, 0.0)
+    EdgeInsets::new(TOP_INSET, 0.0, BOTTOM_INSET, 0.0)
 }
 
 /// Renders one frame of the window tree in `window`; the tree is built by
@@ -386,7 +386,7 @@ fn the_bottom_bar_extends_through_the_keyboard_region() {
         navigation_view(),
         &env_with_insets(
             edge_insets(),
-            EdgeInsets::new(0.0, KEYBOARD_INSET, 0.0, 0.0),
+            EdgeInsets::new(0.0, 0.0, KEYBOARD_INSET, 0.0),
         ),
         theme,
     );
@@ -426,7 +426,7 @@ fn the_docked_tab_bar_surface_reaches_the_window_edge_under_the_keyboard() {
         ),
         &env_with_insets(
             edge_insets(),
-            EdgeInsets::new(0.0, KEYBOARD_INSET, 0.0, 0.0),
+            EdgeInsets::new(0.0, 0.0, KEYBOARD_INSET, 0.0),
         ),
         theme,
     );
@@ -530,7 +530,7 @@ fn a_detail_columns_bar_does_not_extend_across_the_leading_edge() {
             |id| NavigationView::new(format!("Detail {id}"), text("detail")),
         ),
         &env_with_insets(
-            EdgeInsets::new(TOP_INSET, BOTTOM_INSET, LEADING_INSET, 0.0),
+            EdgeInsets::new(TOP_INSET, LEADING_INSET, BOTTOM_INSET, 0.0),
             EdgeInsets::default(),
         ),
         theme,

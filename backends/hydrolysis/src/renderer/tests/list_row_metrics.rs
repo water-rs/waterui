@@ -148,7 +148,7 @@ fn zero_min_row_height_sizes_row_to_content_plus_insets() {
 fn row_insets_position_the_content() {
     let mut runtime = runtime(metrics_list(
         1,
-        |_| Some(EdgeInsets::new(6.0, 6.0, 24.0, 4.0)),
+        |_| Some(EdgeInsets::new(6.0, 24.0, 6.0, 4.0)),
         None,
     ));
     let mut at = Instant::now();

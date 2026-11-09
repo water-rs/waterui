@@ -1068,8 +1068,8 @@ impl View for StackedSnackbarView {
         let content_padding = if item.snackbar.action.is_some() || item.snackbar.closeable {
             EdgeInsets::new(
                 theme.content_padding.top(),
-                theme.content_padding.bottom(),
                 theme.content_padding.leading(),
+                theme.content_padding.bottom(),
                 theme.action_trailing_padding,
             )
         } else {

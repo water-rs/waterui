@@ -462,7 +462,7 @@ mod tests {
 
         let padding = || {
             Box::new(crate::padding::PaddingLayout {
-                edges: Computed::constant(crate::padding::EdgeInsets::new(0.0, 0.0, 10.0, 6.0)),
+                edges: Computed::constant(crate::padding::EdgeInsets::new(0.0, 10.0, 0.0, 6.0)),
             }) as Box<dyn Layout>
         };
 

@@ -85,11 +85,11 @@ Common modifiers on stacks:
 ```
 
 `.padding_with` takes `impl IntoComputed<EdgeInsets>`: a bare number (every edge), a
-`(vertical, horizontal)` pair, a `[top, bottom, leading, trailing]` array, an `EdgeInsets`,
+`(vertical, horizontal)` pair, a `[top, leading, bottom, trailing]` array, an `EdgeInsets`,
 or a signal of one. `.padding_horizontal(x)` / `.padding_vertical(x)` pad one axis. Do not
 spell `EdgeInsets::all(x)` / `symmetric(v, h)` / `new(..)` at a padding call — the number,
 pair and array are those constructors. The orders are traps worth memorizing —
-`[top, bottom, leading, trailing]` (not CSS order) and `(vertical, horizontal)`.
+`[top, leading, bottom, trailing]` (SwiftUI's order, not CSS) and `(vertical, horizontal)`.
 
 Alignment is a token or a method, never the qualified constant: `vstack(..).leading()` or
 `.alignment(Leading)`, `hstack(..).top()`, `zstack(..).top_leading()`. The tokens

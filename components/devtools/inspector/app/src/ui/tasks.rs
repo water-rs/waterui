@@ -79,7 +79,7 @@ fn task_row(row: TaskRow) -> ListItem {
             })),
         ))
         .spacing(8.0)
-        .padding_with(EdgeInsets::new(6.0, 6.0, 0.0, 0.0)),
+        .padding_with(EdgeInsets::new(6.0, 0.0, 6.0, 0.0)),
     )
 }
 
@@ -107,7 +107,7 @@ fn stall_row(row: StallRow) -> ListItem {
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(4.0)
-        .padding_with(EdgeInsets::new(8.0, 8.0, 0.0, 0.0)),
+        .padding_with(EdgeInsets::new(8.0, 0.0, 8.0, 0.0)),
     )
 }
 

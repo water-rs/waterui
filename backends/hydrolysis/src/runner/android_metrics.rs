@@ -56,8 +56,8 @@ impl InsetsMetrics {
         };
         EdgeInsets::new(
             crate::num_cast::i32_as_f32(top) / density,
-            crate::num_cast::i32_as_f32(bottom) / density,
             crate::num_cast::i32_as_f32(leading) / density,
+            crate::num_cast::i32_as_f32(bottom) / density,
             crate::num_cast::i32_as_f32(trailing) / density,
         )
     }
@@ -96,11 +96,11 @@ mod tests {
         assert_ne!(keyboard_before, keyboard_after);
         assert_eq!(
             container_after.logical(),
-            EdgeInsets::new(32.0, 16.0, 0.0, 0.0)
+            EdgeInsets::new(32.0, 0.0, 16.0, 0.0)
         );
         assert_eq!(
             keyboard_after.logical(),
-            EdgeInsets::new(0.0, 640.0 / 3.0, 0.0, 0.0)
+            EdgeInsets::new(0.0, 0.0, 640.0 / 3.0, 0.0)
         );
     }
 
@@ -135,8 +135,8 @@ mod tests {
     fn right_to_left_resolves_leading_against_the_right_edge() {
         let ltr = InsetsMetrics::new([16, 0, 96, 0], 2.0, LayoutDirection::LeftToRight);
         let rtl = InsetsMetrics::new([16, 0, 96, 0], 2.0, LayoutDirection::RightToLeft);
-        assert_eq!(ltr.logical(), EdgeInsets::new(0.0, 0.0, 8.0, 48.0));
-        assert_eq!(rtl.logical(), EdgeInsets::new(0.0, 0.0, 48.0, 8.0));
+        assert_eq!(ltr.logical(), EdgeInsets::new(0.0, 8.0, 0.0, 48.0));
+        assert_eq!(rtl.logical(), EdgeInsets::new(0.0, 48.0, 0.0, 8.0));
         assert_ne!(ltr, rtl, "a direction-only move must flag the region");
     }
 }
