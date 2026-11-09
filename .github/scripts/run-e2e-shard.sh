@@ -185,12 +185,18 @@ if [[ "${platform}" == "ios" ]]; then
   # moves the stall out of the budget; it is bounded on its own so a genuinely
   # hung channel still shows up in the command receipts instead of blocking
   # the shard.
-  warmup_frame="$(mktemp "${TMPDIR:-/tmp}/e2e-warmup-shot.XXXXXX.png")"
+  warmup_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-warmup.XXXXXX")"
+  warmup_frame="${warmup_dir}/frame.png"
   warmup_deadline_at="$("${command_deadline}" deadline --seconds 120)"
-  "${command_deadline}" run --label "capture:simctl-io-screenshot-warmup" \
+  if ! "${command_deadline}" run --label "capture:simctl-io-screenshot-warmup" \
     --deadline-at "${warmup_deadline_at}" --receipt "${receipts_file}" \
-    -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${warmup_frame}" >/dev/null || true
-  rm -f "${warmup_frame}"
+    -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${warmup_frame}" >/dev/null \
+    || [[ ! -s "${warmup_frame}" ]]; then
+    rm -rf "${warmup_dir}"
+    echo "e2e: the screenshot-pipeline warmup produced no frame — the capture channel is unusable" >&2
+    exit 1
+  fi
+  rm -rf "${warmup_dir}"
 
   # An iOS capture is the whole display (macOS captures the app's own window),
   # so a SpringBoard notification banner lands in the frame and reads as a
