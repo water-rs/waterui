@@ -87,6 +87,46 @@ fn a_signal_operand_updates_in_place_without_recording_again() {
 }
 
 #[test]
+fn an_app_animation_animates_the_operand() {
+    let x = binding(0.0_f32);
+    let mut scene = mount(Canvas::new({
+        let x = x.clone();
+        move |cx| {
+            let animated = x.with(waterui_core::animation::Animation::linear(
+                core::time::Duration::from_millis(200),
+            ));
+            cx.transform(animated.map(|x| Affine2::translate(x, 0.0)), |cx| {
+                cx.fill(Rect::from_size(Size::new(1.0, 1.0)), red());
+            });
+        }
+    }));
+    let mut content = record(&mut scene);
+    let _ = content.take_change();
+    x.set(100.0);
+    assert_eq!(
+        content.take_change(),
+        None,
+        "an animated change waits for the frame that samples it"
+    );
+    let start = crate::draw::Instant::now();
+    assert!(content.sample(start).is_animating());
+    assert!(
+        content
+            .sample(start + core::time::Duration::from_millis(100))
+            .is_animating(),
+        "half-way through, the operand is still moving"
+    );
+    let Some(ContentChange::Update(updates)) = content.take_change() else {
+        panic!("a sampled frame sends the operand's interpolated value");
+    };
+    let Operand::Transform(mid) = updates[0].value else {
+        panic!("the transform scope's operand");
+    };
+    let x = mid.translation().x;
+    assert!(x > 10.0 && x < 90.0, "mid-flight translation {x}");
+}
+
+#[test]
 fn a_theme_independent_paint_signal_updates_its_slot() {
     let color = binding(red());
     let mut scene = mount(Canvas::new({

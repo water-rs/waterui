@@ -11,7 +11,7 @@
 //! use waterui_graphics::color::WorkingColor;
 //! use waterui_core::reactive::{SignalExt as _, binding};
 //!
-//! let progress = binding(0.25_f32);
+//! let progress = binding::<f32>(0.25);
 //! let canvas = Canvas::new(move |cx| {
 //!     let size = cx.size();
 //!     cx.fill(size.map(Rect::from_size), WorkingColor::BLACK);

@@ -10,24 +10,41 @@ use core::cell::RefCell;
 use core::time::Duration;
 use std::collections::HashMap;
 
-use nami::watcher::{BoxWatcherGuard, Context};
-use nami::{Computed, Signal, SignalExt as _};
-use waterui_core::layout::Size;
+use nami::watcher::{BoxWatcherGuard, Context, Metadata};
+use nami::{Computed, Signal};
+use waterui_core::animation::Animation;
+use waterui_core::layout::{Affine2, Size};
 use waterui_core::{Environment, Str};
 
+use crate::animation::engine_animation;
 use crate::canvas::Canvas;
 use crate::canvas::cx::{Cx, Node, Recording, Shared};
 use crate::canvas::drawing::Drawing;
 use crate::canvas::geometry::lower_rect;
 use crate::canvas::names::Names;
-use crate::canvas::paint::{Layer, Paint, affine};
+use crate::canvas::paint::{Paint, affine};
 use crate::canvas::resource::{Font, ImageSource, ImageStatus, Pixels};
-use crate::draw::{self, Draw as _, FontId, ImageId, Instant, Recorder, ResourceError};
+use crate::draw::{
+    self, Draw as _, FontId, ImageId, Instant, Recorder, ResourceError, ShapeData, kurbo,
+};
 use crate::scene::resources::{RecordingResources, Registered};
 use crate::scene_view::{SceneContent, SceneInvalidator};
 
-/// A value of a live operand lowered to its recorded form against the ids
-/// of the recording it is bound into.
+/// A change's metadata as the recorder reads it: an app animation the
+/// change was made under becomes the engine animation that animates the
+/// operand.
+fn engine_metadata(metadata: Metadata) -> Metadata {
+    match (
+        metadata.try_get::<draw::Animation>(),
+        metadata.try_get::<Animation>(),
+    ) {
+        (None, Some(animation)) => metadata.with(engine_animation(&animation)),
+        _ => metadata,
+    }
+}
+
+/// A live operand lowered to its recorded form against the ids of the
+/// recording it is bound into.
 ///
 /// A change whose value names a resource that recording has no id for
 /// cannot update in place: it asks the canvas to record again instead.
@@ -67,7 +84,7 @@ impl<T: 'static, U: 'static> Signal for Gate<T, U> {
             let (value, metadata) = change.into_parts();
             let lowered = lower(&value, &names.borrow());
             match lowered {
-                Some(lowered) => watcher(Context::new(lowered, metadata)),
+                Some(lowered) => watcher(Context::new(lowered, engine_metadata(metadata))),
                 None => {
                     if let Some(shared) = shared.upgrade() {
                         shared.invalidate();
@@ -119,6 +136,14 @@ impl Replay<'_, '_> {
             names: Rc::clone(&self.names),
             shared: Weak::clone(&self.shared),
         }
+    }
+
+    fn shape(&self, shape: &Computed<ShapeData>) -> Gate<ShapeData, ShapeData> {
+        self.gate(shape, |shape, _| Some(shape.clone()))
+    }
+
+    fn transform(&self, transform: &Computed<Affine2>) -> Gate<Affine2, kurbo::Affine> {
+        self.gate(transform, |transform, _| Some(affine(*transform)))
     }
 
     /// The id `image` draws by in this recording; `None` when the target
@@ -221,7 +246,7 @@ fn replay(recording: &Recording, recorder: &mut Recorder, cx: &mut Replay<'_, '_
         match node {
             Node::Fill { shape, paint } => {
                 if let Some(paint) = cx.paint(paint) {
-                    recorder.fill(shape.clone(), paint);
+                    recorder.fill(cx.shape(shape), paint);
                 }
             }
             Node::Stroke {
@@ -230,11 +255,13 @@ fn replay(recording: &Recording, recorder: &mut Recorder, cx: &mut Replay<'_, '_
                 paint,
             } => {
                 if let Some(paint) = cx.paint(paint) {
-                    recorder.stroke(shape.clone(), style.map(|style| style.lower()), paint);
+                    let style = cx.gate(style, |style, _| Some(style.lower()));
+                    recorder.stroke(cx.shape(shape), style, paint);
                 }
             }
             Node::Shadow { shape, shadow } => {
-                recorder.shadow(shape.clone(), shadow.map(|shadow| shadow.lower()));
+                let shadow = cx.gate(shadow, |shadow, _| Some(shadow.lower()));
+                recorder.shadow(cx.shape(shape), shadow);
             }
             Node::Image {
                 image,
@@ -254,7 +281,8 @@ fn replay(recording: &Recording, recorder: &mut Recorder, cx: &mut Replay<'_, '_
                     }
                 }));
                 if let Some(id) = cx.image(&current) {
-                    recorder.image(id, dst.map(lower_rect), sampling.lower());
+                    let dst = cx.gate(dst, |dst, _| Some(lower_rect(*dst)));
+                    recorder.image(id, dst, sampling.lower());
                 }
             }
             Node::Glyphs { run, paint } => {
@@ -271,21 +299,20 @@ fn replay(recording: &Recording, recorder: &mut Recorder, cx: &mut Replay<'_, '_
             }
             Node::Draw { drawing, transform } => {
                 if let Some(picture) = cx.drawing(drawing) {
-                    recorder.picture(&picture, transform.map(affine));
+                    recorder.picture(&picture, cx.transform(transform));
                 }
             }
             Node::Clip { shape, body } => {
-                recorder.clip(shape.clone(), |recorder| replay(body, recorder, cx));
+                let shape = cx.shape(shape);
+                recorder.clip(shape, |recorder| replay(body, recorder, cx));
             }
             Node::Transform { transform, body } => {
-                recorder.transform(transform.map(affine), |recorder| {
-                    replay(body, recorder, cx);
-                });
+                let transform = cx.transform(transform);
+                recorder.transform(transform, |recorder| replay(body, recorder, cx));
             }
             Node::Layer { layer, body } => {
-                recorder.group(layer.map(Layer::lower), |recorder| {
-                    replay(body, recorder, cx);
-                });
+                let group = cx.gate(layer, |layer, _| Some(layer.lower()));
+                recorder.group(group, |recorder| replay(body, recorder, cx));
             }
             Node::Scope(region) => replay(&region.borrow(), recorder, cx),
             Node::Each(list) => {
