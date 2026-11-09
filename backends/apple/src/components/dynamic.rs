@@ -23,7 +23,7 @@
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 
-use cocoa_ui::geometry::{MeasureProposal, Rect};
+use cocoa_ui::geometry::Rect;
 use cocoa_ui::{Retained, view};
 use waterui::component::Dynamic;
 use waterui_backend_core::AnyView;
@@ -36,7 +36,7 @@ use waterui_core::metadata::Retain;
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
 use crate::dispatch::Dispatcher;
-use crate::proposal::{self, Placement};
+use crate::proposal::{self, Placement, to_proposal};
 use crate::transition::TransitionClaim;
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
@@ -76,18 +76,6 @@ impl core::fmt::Debug for DynamicState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("DynamicState").finish_non_exhaustive()
     }
-}
-
-/// `MeasureProposal` (f64 axes) as a layout `ProposalSize` (f32 axes).
-fn to_proposal(proposal: MeasureProposal) -> ProposalSize {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the layout contract is f32; kit geometry is f64"
-    )]
-    ProposalSize::new(
-        proposal.width.map(|width| width as f32),
-        proposal.height.map(|height| height as f32),
-    )
 }
 
 /// The leaf's layout face: delegates every answer to the current child's
@@ -357,6 +345,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
 #[cfg(test)]
 mod tests {
+    use cocoa_ui::geometry::MeasureProposal;
+
     use super::*;
 
     #[test]

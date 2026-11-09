@@ -23,6 +23,7 @@ use waterui_core::layout::{
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -160,11 +161,12 @@ struct RasterState {
     pixels: Option<(u32, u32)>,
 }
 
-/// Re-rasterizes when the laid-out bounds change the pixel size the
-/// bitmap needs — the layout, window-move and backing-change hooks all
-/// land here.
+/// Re-rasterizes when the response rectangle the picture draws in changes
+/// the pixel size the bitmap needs — the layout, window-move and
+/// backing-change hooks all land here. The image view draws the bitmap
+/// unscaled in that rectangle (docs/layout-spec.md §6).
 fn repaint(picture: &Picture, view: &ImageView, state: &Rc<RefCell<RasterState>>) {
-    let bounds = cocoa_ui::view::bounds(view).size;
+    let bounds = proposal::content_rect(view).size;
     let scale = view
         .backing_scale()
         .unwrap_or_else(picture_display_scale)
