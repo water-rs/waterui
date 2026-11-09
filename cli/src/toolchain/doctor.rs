@@ -990,8 +990,8 @@ async fn apple_checks(host: &Host, project: &ProjectContext) -> Vec<DoctorItem> 
         ),
         ios_simulators,
         simple_check(ids::MACOS_SDK, "macOS SDK", macos_sdk),
-        metal_toolchain,
         rust_targets,
+        metal_toolchain,
     ]
 }
 
