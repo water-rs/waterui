@@ -2833,7 +2833,7 @@ pub mod native_test {
         ///
         /// When renderer creation or the frame's encode fails.
         pub fn install_scene_renderer(&self) -> Result<(), String> {
-            self.render_scene_frame_at(FrameTime(std::time::Instant::now()))
+            self.render_scene_frame_at(FrameTime::now())
         }
 
         /// Mounts two surfaces into one environment — the same

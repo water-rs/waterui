@@ -170,7 +170,7 @@ fn engine_executes_composed_filters_and_effects_after_resize()
     });
     let start = Instant::now();
     assert!(matches!(
-        wait!(engine.render(FrameTime::at(start)))?,
+        wait!(engine.render(FrameTime::unpresented_at(start)))?,
         Next::At { .. }
     ));
     assert_eq!(receive.try_recv()?.presentation_time(), Duration::ZERO);
@@ -185,7 +185,7 @@ fn engine_executes_composed_filters_and_effects_after_resize()
         );
     }
     surface.resize((8, 8))?;
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(250))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(250))))?;
     let timing = receive.try_recv()?;
     assert_eq!(timing.presentation_time(), Duration::from_millis(250));
     assert_eq!(timing.delta(), Duration::from_millis(250));
@@ -194,7 +194,7 @@ fn engine_executes_composed_filters_and_effects_after_resize()
         tx[surface.root()].clear_filter();
     });
     assert_eq!(
-        wait!(engine.render(FrameTime::at(start + Duration::from_millis(500))))?,
+        wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(500))))?,
         Next::Idle,
         "a registered effect detached from every layer cannot keep the host awake"
     );
@@ -393,9 +393,9 @@ fn shared_effect_consumes_one_delta_per_presentation() -> Result<(), Box<dyn std
         }
     });
     let start = Instant::now();
-    wait!(engine.render(FrameTime::at(start)))?;
+    wait!(engine.render(FrameTime::unpresented_at(start)))?;
     assert_eq!(frames.try_iter().count(), 2);
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(250))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(250))))?;
     let a = frames.try_recv()?;
     let b = frames.try_recv()?;
     assert_eq!(a.presentation_time(), b.presentation_time());

@@ -881,7 +881,7 @@ fn the_last_image_drop_frees_its_memory() {
                     .expect("surface");
                 // A first render settles one-off allocations so the
                 // baseline is stable.
-                $crate::__engine_wait!(engine.render(FrameTime::at(Instant::now()))).expect("render");
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(Instant::now()))).expect("render");
                 let before = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 let data = vec![255u8; 64 * 64 * 4];
                 let image = engine
@@ -889,14 +889,14 @@ fn the_last_image_drop_frees_its_memory() {
                     .expect("image");
                 let clone = image.clone();
                 $crate::__engine_wait!(engine
-                    .render(FrameTime::at(Instant::now() + TICK)))
+                    .render(FrameTime::unpresented_at(Instant::now() + TICK)))
                     .expect("render");
                 let with_image = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(with_image > before, "memory {with_image} <= {before}");
                 drop(image);
                 drop(clone);
                 $crate::__engine_wait!(engine
-                    .render(FrameTime::at(Instant::now() + TICK * 2)))
+                    .render(FrameTime::unpresented_at(Instant::now() + TICK * 2)))
                     .expect("render");
                 let after = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(after < with_image, "memory {after} >= {with_image}");
@@ -937,20 +937,20 @@ fn replace_redraws_the_recorded_image(width: u32, height: u32) {
                     tx[surface.root()].push(&layer);
                     tx[&layer].content(content);
                 });
-                $crate::__engine_wait!(engine.render(FrameTime::at(t0))).expect("render");
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(t0))).expect("render");
                 let a = centre(&$crate::__engine_wait!(surface.readback()).expect("readback"));
                 assert!(a[0] > 0.5 && a[2] < 0.1, "frame A {a:?} is not the red image");
 
                 image.replace(solid(width, height, BLUE)).expect("replace");
-                $crate::__engine_wait!(engine.render(FrameTime::at(t0 + TICK))).expect("render");
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(t0 + TICK))).expect("render");
                 let b = centre(&$crate::__engine_wait!(surface.readback()).expect("readback"));
                 assert!(b[2] > 0.5 && b[0] < 0.1, "frame B {b:?} is not the blue replacement");
 
                 drop(layer);
-                $crate::__engine_wait!(engine.render(FrameTime::at(t0 + TICK * 2))).expect("render");
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(t0 + TICK * 2))).expect("render");
                 let with_image = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 drop(image);
-                $crate::__engine_wait!(engine.render(FrameTime::at(t0 + TICK * 3))).expect("render");
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(t0 + TICK * 3))).expect("render");
                 let after = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(after < with_image, "memory {after} >= {with_image}");
             }
@@ -1058,7 +1058,7 @@ fn surface(engine: &Engine<B>) -> Surface<B> {
             /// Renders at `t` and returns the `Next`.
             $crate::__engine_fn! {
 fn render_at(engine: &Engine<B>, t: Instant) -> Next {
-                $crate::__engine_wait!(engine.render(FrameTime::at(t))).expect("render")
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(t))).expect("render")
             }
             }
 
@@ -1733,7 +1733,7 @@ mod tests {
         let mut t = t0;
         loop {
             t += Duration::from_millis(8);
-            let next = engine.render(FrameTime::at(t)).expect("render");
+            let next = engine.render(FrameTime::unpresented_at(t)).expect("render");
             if matches!(next, Next::Idle) {
                 break;
             }
@@ -1762,7 +1762,7 @@ mod tests {
         // Unbounded decay: position = v/k = 600/4 = 150, then Idle.
         loop {
             t += Duration::from_millis(8);
-            let next = engine.render(FrameTime::at(t)).expect("render");
+            let next = engine.render(FrameTime::unpresented_at(t)).expect("render");
             if matches!(next, Next::Idle) {
                 break;
             }
@@ -2128,7 +2128,9 @@ mod tests {
             tx[&drawing].opacity(opacity.clone()).content(content);
         });
         let t0 = Instant::now();
-        engine.render(FrameTime::at(t0)).expect("render");
+        engine
+            .render(FrameTime::unpresented_at(t0))
+            .expect("render");
         let target = Affine::translate((40.0, 0.0));
         surface.update(|tx| {
             tx[&moving]
@@ -2136,7 +2138,7 @@ mod tests {
                 .animation(Curve::linear(Duration::from_millis(400)));
         });
         let next = engine
-            .render(FrameTime::at(t0 + Duration::from_millis(8)))
+            .render(FrameTime::unpresented_at(t0 + Duration::from_millis(8)))
             .expect("render");
         assert!(
             matches!(next, Next::At { .. }),
@@ -2245,7 +2247,7 @@ mod tests {
         );
         assert!(
             matches!(
-                engine.render(FrameTime::at(t0 + Duration::from_millis(16))),
+                engine.render(FrameTime::unpresented_at(t0 + Duration::from_millis(16))),
                 Err(RenderError::Hidden)
             ),
             "rendering while every surface is hidden is an error"
@@ -2262,7 +2264,7 @@ mod tests {
             .expect("announcing the same visibility again");
         assert_eq!(wakes.load(Ordering::Relaxed), 1, "no second wake");
         let next = engine
-            .render(FrameTime::at(t0 + Duration::from_secs(10)))
+            .render(FrameTime::unpresented_at(t0 + Duration::from_secs(10)))
             .expect("render");
         assert_eq!(
             next,
@@ -2341,7 +2343,9 @@ mod tests {
             tx[&spinning].rotation(std::f64::consts::TAU);
         });
         let t0 = Instant::now();
-        let next = engine.render(FrameTime::at(t0)).expect("render");
+        let next = engine
+            .render(FrameTime::unpresented_at(t0))
+            .expect("render");
         assert!(matches!(next, Next::At { .. }), "the spring runs: {next:?}");
         hidden.visibility(Visibility::Hidden).expect("hide");
         let _ = frames(&rx);
@@ -2356,7 +2360,7 @@ mod tests {
             "the visible surface wakes"
         );
         let next = engine
-            .render(FrameTime::at(t0 + Duration::from_millis(8)))
+            .render(FrameTime::unpresented_at(t0 + Duration::from_millis(8)))
             .expect("render");
         assert_eq!(
             next,
@@ -2449,7 +2453,7 @@ mod tests {
         let shown = Instant::now() + Duration::from_secs(10);
         surface.visibility(Visibility::Visible).expect("show");
         let next = engine
-            .render(FrameTime::at(shown))
+            .render(FrameTime::unpresented_at(shown))
             .expect("the shown frame draws what was committed while hidden");
         assert!(
             matches!(next, Next::At { .. }),
@@ -2464,7 +2468,9 @@ mod tests {
             "an animation committed while hidden starts on the frame that shows the surface"
         );
         engine
-            .render(FrameTime::at(shown + Duration::from_millis(200)))
+            .render(FrameTime::unpresented_at(
+                shown + Duration::from_millis(200),
+            ))
             .expect("render");
         let records = frames(&rx);
         let [record] = records.as_slice() else {
