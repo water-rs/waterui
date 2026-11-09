@@ -6,7 +6,7 @@ Text and typography components for WaterUI with rich styling, fonts, markdown, a
 
 `waterui-text` provides comprehensive text rendering and formatting capabilities for the WaterUI framework. It handles everything from simple text display to complex styled text with multiple font properties, inline-focused markdown styling, and syntax highlighting for code snippets across 40+ programming languages.
 
-The crate is designed around reactive primitives, automatically updating text when underlying data changes. All text rendering delegates to native platform widgets (UIKit/AppKit on Apple, Android View on Android), ensuring platform-native appearance and accessibility.
+The crate is designed around reactive primitives, automatically updating text when underlying data changes.
 
 Core features include semantic font styles (body, title, headline), granular styling control (bold, italic, underline, colors), inline markdown parsing for styled text runs, and production-ready syntax highlighting via `syntect`.
 
