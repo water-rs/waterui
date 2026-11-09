@@ -194,6 +194,9 @@ waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",
 ] }
 waterui-locale = { workspace = true }
+# Sets the user's first-weekday preference as a Unicode locale keyword on
+# the system locale.
+icu_locale = { version = "2.4", default-features = false }
 waterui-map = { workspace = true, optional = true }
 waterui-meta = { workspace = true, optional = true }
 # The GPU components the backend owns (`gpu_surface`, `view_effect`,
