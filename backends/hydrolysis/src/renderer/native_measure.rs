@@ -149,7 +149,6 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<Color>);
         $macro!(Native<Gradient>);
         $macro!(Native<ResolvedShape>);
-        $macro!(Native<ResolvedMorphShape>);
         $macro!(Native<MapConfig>);
         $macro!(WebView);
     };

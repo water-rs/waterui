@@ -1,5 +1,6 @@
 mod canvas;
 mod harness;
+mod shape_morph;
 mod transitions;
 
 use super::*;
