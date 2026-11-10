@@ -48,6 +48,7 @@
 //! overwrites both.
 
 mod chrome;
+#[cfg(hydrolysis_runtime)]
 pub(crate) mod live;
 mod look;
 mod widget;
@@ -60,6 +61,7 @@ pub use look::{
     ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion,
     Transition, ValueMotion,
 };
+#[cfg(hydrolysis_runtime)]
 pub(crate) use look::{Change, LiveDriven, RealizedCustom, Retarget};
 pub use widget::{
     BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,

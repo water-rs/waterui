@@ -36,6 +36,7 @@ use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 
 use super::Chrome;
+#[cfg(hydrolysis_runtime)]
 use super::live::Operand;
 
 /// The animations a change runs with as a condition sets in and as it
@@ -314,23 +315,27 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     /// Calls `notify` with each change's animation whenever a signal this
     /// value follows changes; the returned guard keeps the subscription.
     /// `None` when the value follows no signal.
+    #[cfg(hydrolysis_runtime)]
     pub(crate) fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>> {
         self.follows.as_ref().map(|follows| follows(notify))
     }
 
     /// Whether this value follows a signal.
+    #[cfg(hydrolysis_runtime)]
     pub(crate) const fn follows_signal(&self) -> bool {
         self.follows.is_some()
     }
 
     /// Whether `other` is this value: the same derivation, not an equal
     /// one.
+    #[cfg(hydrolysis_runtime)]
     pub(crate) fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.target, &other.target)
     }
 
     /// This value passed through `f`, following the same signals with the
     /// same motion.
+    #[cfg(hydrolysis_runtime)]
     pub(crate) fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> Driven<U, V> {
         let target = Rc::clone(&self.target);
         Driven {
@@ -383,16 +388,21 @@ impl<V: 'static> From<StateValue<cherenkov_record::WorkingColor>> for Driven<Pai
     }
 }
 
-/// The realization terms of a [`DrivenSet`]; nameable by Hydrolysis only.
+/// Keeps [`DrivenSet`] implementable by this module only.
 mod sealed {
+    pub trait Sealed {}
+}
+
+/// The realization terms of a [`DrivenSet`]; nameable by Hydrolysis only, and
+/// compiled only where a renderer exists to realize a look.
+#[cfg(hydrolysis_runtime)]
+mod realized {
     use std::any::Any;
     use std::rc::Rc;
 
     use waterui_core::animation::Animation;
 
     use super::{Inputs, Motion};
-
-    pub trait Sealed {}
 
     /// What retargets one realized [`Driven`](super::Driven).
     #[derive(Clone, Copy)]
@@ -431,14 +441,17 @@ mod sealed {
     }
 }
 
-pub use sealed::{Change, Realized, Retarget};
+#[cfg(hydrolysis_runtime)]
+pub use realized::{Change, Realized, Retarget};
 
 /// One [`Driven`] realized as a live operand.
+#[cfg(hydrolysis_runtime)]
 pub struct LiveDriven<T: 'static, V> {
     driven: Driven<T, V>,
     operand: Operand<T>,
 }
 
+#[cfg(hydrolysis_runtime)]
 impl<T, V> core::fmt::Debug for LiveDriven<T, V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LiveDriven")
@@ -447,6 +460,7 @@ impl<T, V> core::fmt::Debug for LiveDriven<T, V> {
     }
 }
 
+#[cfg(hydrolysis_runtime)]
 impl<T: Clone + PartialEq + 'static, V: 'static> LiveDriven<T, V> {
     pub(crate) fn new(driven: Driven<T, V>, inputs: &Inputs<'_, V>) -> Self {
         let operand = Operand::new(driven.target(inputs));
@@ -463,6 +477,7 @@ impl<T: Clone + PartialEq + 'static, V: 'static> LiveDriven<T, V> {
     }
 }
 
+#[cfg(hydrolysis_runtime)]
 impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V> {
     fn retarget(&self, inputs: &Inputs<'_, V>, change: Change<'_>) {
         let animation = match change {
@@ -494,6 +509,7 @@ pub trait DrivenSet<V>: sealed::Sealed {
     type Live;
 
     /// Realizes every value as a live operand at `inputs`.
+    #[cfg(hydrolysis_runtime)]
     #[doc(hidden)]
     fn realize(&self, inputs: &Inputs<'_, V>) -> Realized<Self::Live, V>;
 }
@@ -510,6 +526,7 @@ macro_rules! driven_set {
         {
             type Live = ($(Live<$ty>,)+);
 
+            #[cfg(hydrolysis_runtime)]
             fn realize(&self, inputs: &Inputs<'_, V>) -> Realized<Self::Live, V> {
                 let operands = ($(Rc::new(LiveDriven::new(self.$index.clone(), inputs)),)+);
                 let drivens: Vec<Rc<dyn Retarget<V>>> =
@@ -529,6 +546,7 @@ impl sealed::Sealed for () {}
 impl<V: 'static> DrivenSet<V> for () {
     type Live = ();
 
+    #[cfg(hydrolysis_runtime)]
     fn realize(&self, _inputs: &Inputs<'_, V>) -> Realized<Self::Live, V> {
         Realized {
             live: Box::new(|| ()),
@@ -592,13 +610,16 @@ impl<V, D: DrivenSet<V>> Custom<V, D> {
 }
 
 /// A [`Custom`] part realized: its recording, and the operands it reads.
+#[cfg(hydrolysis_runtime)]
 pub struct RealizedCustom<V> {
     record: RecordRealized,
     pub(crate) drivens: Vec<Rc<dyn Retarget<V>>>,
 }
 
+#[cfg(hydrolysis_runtime)]
 type RecordRealized = Box<dyn Fn(&mut Recorder, Rect)>;
 
+#[cfg(hydrolysis_runtime)]
 impl<V> RealizedCustom<V> {
     /// Records the part on `frame`.
     pub(crate) fn record(&self, recorder: &mut Recorder, frame: Rect) {
@@ -609,6 +630,7 @@ impl<V> RealizedCustom<V> {
 /// The object-safe face of a [`Custom`] part, so a look stores parts of
 /// different [`DrivenSet`]s side by side.
 pub trait CustomPart<V> {
+    #[cfg(hydrolysis_runtime)]
     fn realize(&self, inputs: &Inputs<'_, V>) -> RealizedCustom<V>;
 }
 
@@ -616,6 +638,7 @@ impl<V: 'static, D: DrivenSet<V>> CustomPart<V> for Custom<V, D>
 where
     D::Live: 'static,
 {
+    #[cfg(hydrolysis_runtime)]
     fn realize(&self, inputs: &Inputs<'_, V>) -> RealizedCustom<V> {
         let Realized { live, drivens } = self.driven.realize(inputs);
         let record = Rc::clone(&self.record);

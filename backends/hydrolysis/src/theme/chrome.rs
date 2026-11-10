@@ -841,11 +841,13 @@ impl Chrome {
     }
 
     /// The custom parts.
+    #[cfg(hydrolysis_runtime)]
     pub(crate) fn customs(&self) -> &[Rc<dyn CustomPart<()>>] {
         &self.0.customs
     }
 
     /// Whether `other` is this chrome.
+    #[cfg(hydrolysis_runtime)]
     pub(crate) fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }

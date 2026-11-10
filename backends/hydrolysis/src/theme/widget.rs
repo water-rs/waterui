@@ -179,8 +179,9 @@ impl PressWaves {
 pub struct WidgetInteractionState {
     /// The widget's interaction flags for this frame — hovered, pressed,
     /// keyboard-focus-visible, dragged, selected, disabled — resolved by the
-    /// renderer's bookkeeping. Themes read it to resolve [`StateValue`]
-    /// fields directly. When [`InteractionState::DISABLED`] is set the widget
+    /// renderer's bookkeeping. Themes read it to resolve
+    /// [`StateValue`](waterui_core::interaction::StateValue) fields
+    /// directly. When [`InteractionState::DISABLED`] is set the widget
     /// renders its inactive appearance and the renderer suppresses hover,
     /// press, and focus, so the remaining flags stay at rest.
     pub state: InteractionState,
