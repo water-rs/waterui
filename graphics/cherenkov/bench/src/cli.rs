@@ -1615,7 +1615,10 @@ fn frame_input<'a>(
         };
         extent * (f64::from(index) / f64::from(count.saturating_sub(1).max(1)))
     });
-    let drift = (!(animating || crate::changes_every_frame(input.scene)))
+    // Frame 0 draws the scene as authored: no earlier frame exists for it
+    // to repeat, and a motion is committed with it, before the engine can
+    // report it animating.
+    let drift = (frame > 0 && !(animating || crate::changes_every_frame(input.scene)))
         .then(|| crate::content_drift(input.scene, frame));
     EncodeInput {
         scene: input.scene,
@@ -2715,11 +2718,15 @@ mod scroll_tests {
             scroll_offset: None,
             drift: None,
         };
-        let linear: Vec<_> = (0..4096)
+        assert!(
+            frame_input(&input, 0, 16, 4080, false).drift.is_none(),
+            "frame 0 draws the scene as authored"
+        );
+        let linear: Vec<_> = (1..4096)
             .map(|frame| {
                 let drift = frame_input(&input, frame, 16, 4080, false)
                     .drift
-                    .expect("a static scene drifts");
+                    .expect("a static scene drifts after frame 0");
                 let [a, b, c, d, ..] = drift.as_coeffs();
                 [a, b, c, d].map(|v| (v as f32).to_bits())
             })

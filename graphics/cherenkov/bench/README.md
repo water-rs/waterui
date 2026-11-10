@@ -52,9 +52,9 @@ the preparation of an equivalent recording and skips the frame, and its path
 and glyph atlases keep rasters under the same transform — and a static scene
 re-recorded unchanged would time an empty frame.
 
-The bench therefore draws frame `n` of such a scene under a uniform scale
-about the scene's centre of `1 + (n + 1) * 2^-20`, identically for every
-adapter (`content_drift`). The scale alters the linear part of every
+The bench therefore draws frame `n > 0` of such a scene under a uniform
+scale about the scene's centre of `1 + (n + 1) * 2^-20`, identically for
+every adapter (`content_drift`); frame 0 draws the scene as authored. The scale alters the linear part of every
 element's transform, which keys the retained picture, preparation and
 rasters, and moves no edge by a pixel in thousands of frames. A translation
 would not do: engines serve a moved picture from rasters kept across
