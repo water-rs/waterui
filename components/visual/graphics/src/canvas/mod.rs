@@ -68,6 +68,8 @@ use waterui_core::layout::{Affine2, Size};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, Str, View};
 
+use cell::SignalCell;
+
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub(crate) use scene::lower_drawing;
 
@@ -97,6 +99,8 @@ pub struct Canvas {
     intrinsic: Computed<Option<Size>>,
     label: Computed<Option<Str>>,
     value: Computed<Option<Str>>,
+    /// The box in points, set by the mounted canvas as layout moves it.
+    size: SignalCell<Size>,
 }
 
 impl fmt::Debug for Canvas {
@@ -113,7 +117,20 @@ impl Canvas {
             intrinsic: Computed::constant(None),
             label: Computed::constant(None),
             value: Computed::constant(None),
+            size: SignalCell::new(Size::zero()),
         }
+    }
+
+    /// The canvas's box, in points: a signal that follows layout.
+    ///
+    /// It is the signal [`Cx::size`] returns inside the drawing closure, and
+    /// it exists before the canvas is built and mounted, so surrounding views
+    /// can read it. Until the first layout pass gives the canvas a box it
+    /// reads [`Size::zero`]; the drawing closure runs at mount, before that
+    /// first pass, and sees the same zero size until the signal updates.
+    #[must_use]
+    pub fn size(&self) -> Computed<Size> {
+        Computed::new(self.size.clone())
     }
 
     /// The size the drawing naturally is, in points: an image's pixel size,
