@@ -432,6 +432,9 @@ pub fn skill_block_15() {
     let color = Color::srgb_hex("#3B82F6");
     let view = Divider;
     let _ = { view.foreground(color) };
+    let color = Color::srgb_hex("#3B82F6");
+    let view = Divider;
+    let _ = { view.tint(color) };
     let overlaid = text("overlay");
     let view = Divider;
     let _ = { view.overlay(overlaid) };

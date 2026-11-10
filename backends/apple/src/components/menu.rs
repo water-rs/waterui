@@ -449,12 +449,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
             view::set_accessibility_label(&trigger, &item_title(&styled));
         });
 
-        // The accent tints the trigger as it tints a `Button` of its style.
+        // The tint colours the trigger as it colours a `Button` of its style.
         #[cfg(target_os = "macos")]
         let styled = state.borrow().button.button();
         #[cfg(target_os = "ios")]
         let styled = state.borrow().button.button().clone();
-        button_chrome::bind_accent(&mut leaf, styled, style, ctx.env(), mtm);
+        button_chrome::bind_tint(&mut leaf, styled, style, ctx.env(), mtm);
 
         leaf.keep(state);
         // Kept after the state, so it drops first (reverse order).

@@ -245,7 +245,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         bind_accessibility(&mut leaf, &button, &label_container, &accessibility_label);
         bind_disabled(&mut leaf, &button, &label_container, ctx.env());
-        button_chrome::bind_accent(&mut leaf, styled(&button), style, ctx.env(), mtm);
+        button_chrome::bind_tint(&mut leaf, styled(&button), style, ctx.env(), mtm);
         #[cfg(target_os = "macos")]
         if style == ButtonStyle::Link {
             enable_link_chrome(&button, &link_child);
