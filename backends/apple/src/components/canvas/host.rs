@@ -32,7 +32,7 @@ use super::layers::{Ctx, Wake};
 use super::resources::{Backend, Registry};
 use super::tree::Tree;
 use crate::contract::NativeLeaf;
-use crate::main_queue_owned::MainQueueOwned;
+use crate::main_queue_owned::shared;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
@@ -323,7 +323,7 @@ pub fn mount(view: CanvasView, ctx: &crate::contract::RenderContext<'_>) -> Nati
             queued: Cell::new(false),
             mesh: OnceCell::new(),
             wake: {
-                let owned = Arc::new(MainQueueOwned::new(weak.clone(), mtm));
+                let owned = shared(weak.clone(), mtm);
                 Arc::new(move || {
                     let owned = Arc::clone(&owned);
                     enqueue(move |mtm| {
