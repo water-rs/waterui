@@ -10,12 +10,12 @@ use hydrolysis_m3::Material3;
 use waterui::SignalExt as _;
 use waterui::ViewExt as _;
 use waterui::animation::Animation;
+use waterui::graphics::canvas::TextPlacement;
 use waterui::graphics::canvas::{
     BlendMode, Canvas, Cap, Circle, ConicGradient, Cx, Ellipse, ImagePattern, ImageSource, Join,
     Layer, LinearGradient, MeshGradient, Path, PixelBuffer, PixelFormat, RadialGradient,
     RoundedRect, Sampling, Shadow, StrokeStyle,
 };
-use waterui::graphics::canvas::TextPlacement;
 use waterui::graphics::color::{Srgb, WorkingColor};
 use waterui::graphics::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
 use waterui::reactive::Signal as _;

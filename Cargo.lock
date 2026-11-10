@@ -13089,6 +13089,7 @@ dependencies = [
  "waterui-color",
  "waterui-core",
  "waterui-testing",
+ "waterui-text",
  "wgpu",
  "wgpu-external-frame",
 ]
@@ -13285,8 +13286,8 @@ dependencies = [
  "num-traits",
  "smallvec",
  "waterui",
+ "waterui-color",
  "waterui-core",
- "waterui-graphics",
  "waterui-testing",
 ]
 

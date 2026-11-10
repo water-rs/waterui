@@ -91,7 +91,7 @@ pub use resource::{
     PixelFormat,
 };
 
-pub use text::{CanvasText, TextPlacement};
+pub use text::TextPlacement;
 pub use view::CanvasView;
 
 /// A view drawn by vector commands.

@@ -254,10 +254,7 @@ impl TextBackend for CoreText {
         &self,
         request: TextRequest,
     ) -> Result<Option<TextRegistration>, ResourceError> {
-        let styled = request
-            .text()
-            .get::<StyledStr>()
-            .expect("canvas text is the styled text `waterui-text` converts into");
+        let styled = request.text();
         if styled.to_plain().is_empty() {
             return Ok(None);
         }

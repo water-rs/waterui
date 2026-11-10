@@ -1837,11 +1837,7 @@ mod render {
         let resources = SceneResources::new(Rc::new(Backend::new(Rc::clone(&registry), u64::MAX)));
         resources.set_text(Rc::new(CoreText::new(mtm, Rc::clone(&registry))));
         let registered = resources
-            .text(
-                text,
-                TextPlacement::at(P::new(0.0, 0.0)),
-                env,
-            )
+            .text(text, TextPlacement::at(P::new(0.0, 0.0)), env)
             .expect("Core Text lays the text out")
             .expect("a text with lines draws");
         let mut names = resources.recording();

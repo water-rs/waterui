@@ -485,7 +485,7 @@ mod text {
     use waterui_core::layout::{HorizontalAlignment, Point, Size};
 
     use super::{Canvas, ContentChange, Operand, counting_invalidator, mount};
-    use crate::canvas::{CanvasText, TextPlacement};
+    use crate::canvas::TextPlacement;
     use crate::draw::{Content, LayoutSize, ResourceError, TextLayoutId};
     use crate::resources::{Handle, ResourceHandle, TextBackend, TextRegistration, TextRequest};
     use crate::scene::resources::tests::null_resources;
@@ -515,11 +515,7 @@ mod text {
             &self,
             request: TextRequest,
         ) -> Result<Option<TextRegistration>, ResourceError> {
-            let text = request
-                .text()
-                .get::<String>()
-                .expect("the test makes its text from a string")
-                .clone();
+            let text = request.text().to_plain();
             let placement = request.placement();
             self.asked
                 .borrow_mut()
@@ -532,8 +528,8 @@ mod text {
         }
     }
 
-    fn text(string: &str) -> CanvasText {
-        CanvasText::new(String::from(string))
+    fn text(string: &str) -> StyledStr {
+        StyledStr::plain(String::from(string))
     }
 
     #[test]

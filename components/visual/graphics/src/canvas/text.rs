@@ -5,49 +5,8 @@
 //! `Text` on the screen. The canvas never measures: text whose box must be
 //! known before layout stays a `Text` view placed over the canvas.
 
-use alloc::rc::Rc;
-use core::any::Any;
-use core::fmt;
-
 use nami::impl_constant;
 use waterui_core::layout::{HorizontalAlignment, Point};
-
-/// Styled text a canvas draws, in the form the crate that owns styled text
-/// describes it.
-///
-/// `waterui-graphics` sits below the text crate, so it carries the text
-/// without naming its type: the text crate builds one from its styled
-/// string, and the render target that lays it out reads that string back
-/// with [`get`](Self::get).
-#[derive(Clone)]
-pub struct CanvasText(Rc<dyn Any>);
-
-impl fmt::Debug for CanvasText {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("CanvasText(..)")
-    }
-}
-
-impl PartialEq for CanvasText {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl CanvasText {
-    /// Text described by `text`, the owning crate's styled string.
-    #[must_use]
-    pub fn new<T: 'static>(text: T) -> Self {
-        Self(Rc::new(text))
-    }
-
-    /// The text as the owning crate's `T`, or `None` when it was made from
-    /// another type.
-    #[must_use]
-    pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.0.downcast_ref()
-    }
-}
 
 /// Where a canvas anchors its text, and how it breaks and aligns it.
 ///
@@ -127,4 +86,4 @@ impl TextPlacement {
     }
 }
 
-impl_constant!(CanvasText, TextPlacement);
+impl_constant!(TextPlacement);

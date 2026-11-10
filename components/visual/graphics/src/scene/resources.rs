@@ -62,8 +62,9 @@ use std::collections::hash_map::DefaultHasher;
 
 use waterui_core::Environment;
 use waterui_core::layout::Size;
+use waterui_text::styled::StyledStr;
 
-use crate::canvas::{CanvasText, TextPlacement};
+use crate::canvas::TextPlacement;
 use crate::draw::{FontId, ImageId, ResourceId, ShaderId, TextLayoutId};
 use crate::scene::source::{
     FontSource, Format, ImageColorSpace, ImageData, ResourceError, Rgba8, Rgba16F, ShaderLanguage,
@@ -319,13 +320,13 @@ pub trait TextBackend: 'static {
 /// text under it.
 #[derive(Debug)]
 pub struct TextRequest {
-    text: CanvasText,
+    text: StyledStr,
     placement: TextPlacement,
     env: Environment,
 }
 
 impl TextRequest {
-    pub(crate) const fn new(text: CanvasText, placement: TextPlacement, env: Environment) -> Self {
+    pub(crate) const fn new(text: StyledStr, placement: TextPlacement, env: Environment) -> Self {
         Self {
             text,
             placement,
@@ -333,9 +334,10 @@ impl TextRequest {
         }
     }
 
-    /// The text, in the form its owning crate described it.
+    /// The text: its runs carry the font, size, weight, colour and
+    /// decorations.
     #[must_use]
-    pub const fn text(&self) -> &CanvasText {
+    pub const fn text(&self) -> &StyledStr {
         &self.text
     }
 
@@ -899,7 +901,7 @@ impl RecordingResources<'_> {
     /// As [`SceneResources::text`].
     pub fn text(
         &self,
-        text: CanvasText,
+        text: StyledStr,
         placement: TextPlacement,
         env: Environment,
     ) -> Result<Option<RegisteredText>, ResourceError> {
@@ -1312,7 +1314,7 @@ impl SceneResources {
     /// otherwise as [`TextBackend::register_text`].
     pub fn text(
         &self,
-        text: CanvasText,
+        text: StyledStr,
         placement: TextPlacement,
         env: Environment,
     ) -> Result<Option<RegisteredText>, ResourceError> {

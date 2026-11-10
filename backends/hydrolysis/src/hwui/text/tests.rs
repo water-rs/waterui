@@ -773,7 +773,7 @@ fn canvas_text_registers_the_platform_layout_it_leases() {
     use std::rc::Rc;
 
     use waterui_core::layout::Point;
-    use waterui_graphics::canvas::{CanvasText, TextPlacement};
+    use waterui_graphics::canvas::TextPlacement;
     use waterui_text::styled::StyledStr;
 
     use cherenkov_record::SurfaceId;
@@ -810,7 +810,7 @@ fn canvas_text_registers_the_platform_layout_it_leases() {
     .waterui();
     let env = crate::renderer::tests::test_environment();
 
-    let text = |text: &str| CanvasText::from(StyledStr::plain(text.to_owned()));
+    let text = |text: &str| StyledStr::plain(text.to_owned());
     let registered = resources
         .text(
             text("hello 你好"),

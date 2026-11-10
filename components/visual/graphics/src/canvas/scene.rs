@@ -16,6 +16,7 @@ use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::animation::Animation;
 use waterui_core::layout::{Affine2, Size};
 use waterui_core::{Environment, Str};
+use waterui_text::styled::StyledStr;
 
 use crate::animation::engine_animation;
 use crate::canvas::Canvas;
@@ -25,7 +26,7 @@ use crate::canvas::geometry::lower_rect;
 use crate::canvas::names::Names;
 use crate::canvas::paint::{Paint, affine};
 use crate::canvas::resource::{Font, ImageSource, ImageStatus, Pixels};
-use crate::canvas::text::{CanvasText, TextPlacement};
+use crate::canvas::text::TextPlacement;
 use crate::draw::{
     self, Draw as _, FontId, ImageId, Instant, Recorder, ResourceError, ShapeData, kurbo,
 };
@@ -333,7 +334,7 @@ impl Replay<'_, '_> {
     ///
     /// When the target cannot lay the text out: it has no text stack, or a
     /// font of the text is refused.
-    fn text(&self, text: CanvasText, placement: TextPlacement) -> Option<RegisteredText> {
+    fn text(&self, text: StyledStr, placement: TextPlacement) -> Option<RegisteredText> {
         let env = self.session.shared.upgrade()?.env.clone();
         match self.resources.text(text, placement, env) {
             Ok(registered) => registered,
@@ -352,13 +353,13 @@ impl Replay<'_, '_> {
     fn record_text(
         &mut self,
         recorder: &mut Recorder,
-        text: &Computed<CanvasText>,
+        text: &Computed<StyledStr>,
         placement: &Computed<TextPlacement>,
     ) {
         let current = text.snapshot();
         let laid_out = placement.snapshot();
-        let swapped = current.clone();
-        let text_guard: BoxWatcherGuard = text.watch(self.restale_if(move |text| *text != swapped));
+        // Every new text is a new layout.
+        let text_guard: BoxWatcherGuard = text.watch(self.restale_if(|_: &StyledStr| true));
         let placement_guard: BoxWatcherGuard = placement.watch(
             self.restale_if(move |placement: &TextPlacement| !placement.same_layout(&laid_out)),
         );

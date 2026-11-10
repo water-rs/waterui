@@ -3,7 +3,6 @@
 
 use waterui_core::layout::Size;
 use waterui_graphics::TextRequest;
-use waterui_text::styled::StyledStr;
 
 use super::engine::{TextEngine, TextLayout};
 use super::input::resolve_text_layout_input;
@@ -20,19 +19,11 @@ pub struct CanvasLayout<L> {
 ///
 /// The box is as wide as the requested width, or as the longest line when
 /// there is none.
-///
-/// # Panics
-///
-/// When the canvas text was not made from `waterui-text`'s styled string:
-/// that crate is the only one that builds it.
 pub fn shape<E: TextEngine>(
     service: &TextService<E>,
     request: &TextRequest,
 ) -> Option<CanvasLayout<E::Layout>> {
-    let styled = request
-        .text()
-        .get::<StyledStr>()
-        .expect("canvas text is the styled text `waterui-text` converts into");
+    let styled = request.text();
     let placement = request.placement();
     let input = resolve_text_layout_input(styled, placement.alignment(), request.environment());
     let layout = service.shape(&input, placement.get_width());

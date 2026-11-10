@@ -15,6 +15,7 @@ use nami::watcher::{BoxWatcherGuard, Context};
 use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::Environment;
 use waterui_core::layout::{Affine2, Rect, Size};
+use waterui_text::styled::StyledStr;
 
 use crate::canvas::cell::SignalCell;
 use crate::canvas::drawing::Drawing;
@@ -22,7 +23,7 @@ use crate::canvas::geometry::Shape;
 use crate::canvas::operand::Operand;
 use crate::canvas::paint::{IntoPaint, Layer, Paint, Sampling, Shadow, StrokeStyle};
 use crate::canvas::resource::{GlyphRun, ImageSource};
-use crate::canvas::text::{CanvasText, TextPlacement};
+use crate::canvas::text::TextPlacement;
 use crate::color::{Color, WorkingColor};
 use crate::draw::{Recorder, Region, ShapeData};
 use crate::scene_view::SceneInvalidator;
@@ -152,7 +153,7 @@ pub enum Node {
         paint: Computed<Paint>,
     },
     Text {
-        text: Computed<CanvasText>,
+        text: Computed<StyledStr>,
         placement: Computed<TextPlacement>,
     },
     Draw {
@@ -386,7 +387,7 @@ impl Cx {
     /// change carries an animation.
     pub fn text(
         &mut self,
-        text: impl Into<Operand<CanvasText>>,
+        text: impl Into<Operand<StyledStr>>,
         placement: impl Into<Operand<TextPlacement>>,
     ) {
         // Its own part: a new text is a new layout, which records this one
