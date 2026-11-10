@@ -58,6 +58,7 @@ mod operand;
 mod paint;
 mod resource;
 mod scene;
+mod view;
 
 use alloc::boxed::Box;
 use core::fmt;
@@ -81,7 +82,7 @@ pub use resource::{
     PixelFormat,
 };
 
-use crate::scene_view::SceneView;
+pub use view::CanvasView;
 
 /// A view drawn by vector commands.
 ///
@@ -161,7 +162,7 @@ impl From<Drawing> for Canvas {
 
 impl View for Canvas {
     fn body(self, env: &Environment) -> impl View {
-        SceneView::new(scene::CanvasScene::mount(self, env))
+        CanvasView::mount(self, env)
     }
 }
 

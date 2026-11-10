@@ -180,6 +180,7 @@ use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
+use waterui_graphics::canvas::CanvasView;
 use waterui_graphics::color::Color;
 use waterui_graphics::draw::{Paint, WorkingColor};
 #[cfg(hydrolysis_gpu)]

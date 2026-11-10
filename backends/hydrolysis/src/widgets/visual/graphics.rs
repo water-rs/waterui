@@ -3,6 +3,7 @@ use std::rc::Rc;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{Environment, Native};
+use waterui_graphics::canvas::CanvasView;
 use waterui_graphics::color::Color;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuContentView};
@@ -80,6 +81,32 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SceneView> {
     ) -> ViewDimensions {
         // Scene content that is naturally a size answers with it wherever the
         // container left an axis open; content that is not fills the proposal.
+        graphics_dimensions_from_proposal(resolve_scene_proposal(
+            view.as_inner().intrinsic_size(),
+            proposal,
+        ))
+    }
+}
+
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<CanvasView> {
+    fn intrinsic(
+        _state: &mut HydroState<E>,
+        view: &Self,
+        _env: &Environment,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
+    ) -> LayoutSize {
+        view.as_inner()
+            .intrinsic_size()
+            .unwrap_or_else(LayoutSize::zero)
+    }
+
+    fn dimensions(
+        _state: &mut HydroState<E>,
+        view: &Self,
+        _env: &Environment,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
         graphics_dimensions_from_proposal(resolve_scene_proposal(
             view.as_inner().intrinsic_size(),
             proposal,
