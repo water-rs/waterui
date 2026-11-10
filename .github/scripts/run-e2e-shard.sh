@@ -216,47 +216,10 @@ collect_simulator_stall_diagnostics() {
     else
       echo "app pid ${app_pid:-unset} is not running"
     fi
-    echo "--- simulator render processes (sample 3s each) ---"
-    # What a slow screenshot waits on lives in the simulator's render path.
-    # backboardd runs inside the simulator as a child of this device's
-    # launchd_sim (whose command line names the UDID); SimRenderServer and
-    # SimMetalHost are host processes (parent launchd) that name no device,
-    # so they are matched by name — this shard boots the only simulator on
-    # the runner. Each sample is supervised under its own diagnostics deadline
-    # so it neither outlives the collection nor starves the log reads below,
-    # and keeps enough of its call graph to show every thread's wait.
-    local render_deadline_at launchd_sim_pid render_name render_pid render_pids
-    render_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
-    launchd_sim_pid="$(pgrep -f "launchd_sim .*/Devices/${SIMULATOR_UDID}/" 2>/dev/null | head -1)" || true
-    for render_name in backboardd SimRenderServer SimMetalHost; do
-      render_pids=""
-      if [[ "${render_name}" == "backboardd" ]]; then
-        if [[ -n "${launchd_sim_pid}" ]]; then
-          render_pids="$(pgrep -P "${launchd_sim_pid}" -x "${render_name}" 2>/dev/null)" || true
-        fi
-      else
-        render_pids="$(pgrep -x "${render_name}" 2>/dev/null)" || true
-      fi
-      if [[ -z "${render_pids}" ]]; then
-        echo "${render_name} not found for simulator ${SIMULATOR_UDID}"
-        continue
-      fi
-      for render_pid in ${render_pids}; do
-        echo "${render_name} (pid ${render_pid})"
-        "${command_deadline}" run --label "diag:sample-${render_name}-${render_pid}" \
-          --deadline-at "${render_deadline_at}" --receipt "${receipts_file}" \
-          -- sample "${render_pid}" 3 1 2>&1 | sed -n '1,200p' || true
-      done
-    done
-    echo "--- host simulator service state ---"
-    local svc_pids
-    svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')" || true
-    [[ -n "${svc_pids}" ]] && ps -o pid,stat,etime,command -p "${svc_pids}" || true
-    echo "--- host simulator service stacks (sample 3s each) ---"
-    local svc
-    for svc in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline" 2>/dev/null); do
-      sample "${svc}" 3 1 2>&1 | sed -n '1,40p' || true
-    done
+    # The render path (backboardd, SimRenderServer, SimMetalHost), the host
+    # load and the simulator services are sampled by the in-flight stall
+    # sampler while a screenshot is stuck; idle samples taken here after the
+    # kill would show nothing.
     echo "--- host log, simulator domain, last 5m ---"
     # `log show` can take tens of seconds on a loaded host — supervised so
     # the collection keeps its own bound even when the log is slow.
@@ -297,6 +260,38 @@ if [[ "${platform}" == "ios" ]]; then
   # Diagnostic collectors share one bounded budget — defined before the
   # sampler because its subshell inherits it at launch time.
   DIAG_DEADLINE_S=30
+  # Samples the simulator's render processes. backboardd runs inside the
+  # simulator as a child of this device's launchd_sim (whose command line
+  # names the UDID); SimRenderServer and SimMetalHost are host processes
+  # (parent launchd) that name no device, so they are matched by name — this
+  # shard boots the only simulator on the runner. Each sample is supervised
+  # under its own diagnostics deadline and keeps enough of its call graph to
+  # show every thread's wait. A missing process is reported, never fatal.
+  sample_render_processes() {
+    local render_deadline_at launchd_sim_pid render_name render_pid render_pids
+    render_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
+    launchd_sim_pid="$(pgrep -f "launchd_sim .*/Devices/${SIMULATOR_UDID}/" 2>/dev/null | head -1)" || true
+    for render_name in backboardd SimRenderServer SimMetalHost; do
+      render_pids=""
+      if [[ "${render_name}" == "backboardd" ]]; then
+        if [[ -n "${launchd_sim_pid}" ]]; then
+          render_pids="$(pgrep -P "${launchd_sim_pid}" -x "${render_name}" 2>/dev/null)" || true
+        fi
+      else
+        render_pids="$(pgrep -x "${render_name}" 2>/dev/null)" || true
+      fi
+      if [[ -z "${render_pids}" ]]; then
+        echo "${render_name} not found for simulator ${SIMULATOR_UDID}"
+        continue
+      fi
+      for render_pid in ${render_pids}; do
+        echo "--- sample ${render_name} (pid ${render_pid}) ---"
+        "${command_deadline}" run --label "diag:sample-${render_name}-${render_pid}" \
+          --deadline-at "${render_deadline_at}" --receipt "${receipts_file}" \
+          -- sample "${render_pid}" 3 1 2>&1 | sed -n '1,200p' || true
+      done
+    done
+  }
   stall_sampler_start() {
     local diag="$1"
     (
@@ -306,6 +301,13 @@ if [[ "${platform}" == "ios" ]]; then
       touch "${diag}.fired.${BASHPID}"
       {
         echo "=== screenshot stall sample $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
+        # Host load and memory pressure first: neither needs a process lookup,
+        # so they land even when the host is starved enough that the pgrep and
+        # sample commands below take tens of seconds (#4147).
+        echo "--- host load ---"
+        ps -Axo pid,pcpu,stat,etime,command | sort -k2 -rn | sed -n '1,12p' || true
+        echo "--- host memory pressure level ---"
+        sysctl kern.memorystatus_vm_pressure_level || true
         echo "--- simctl / CoreSimulator processes ---"
         pgrep -fl "simctl|CoreSimulatorService|SimulatorTrampoline" || true
         # The wedged `simctl` itself goes first: on a 30 s scoped capture the
@@ -317,14 +319,13 @@ if [[ "${platform}" == "ios" ]]; then
           echo "--- sample ${p} ---"
           sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
         done
+        # What a slow screenshot waits on lives in the simulator's render
+        # path, sampled here while the capture is still stuck.
+        sample_render_processes
         for p in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline"); do
           echo "--- sample ${p} ---"
           sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
         done
-        echo "--- host load ---"
-        ps -Axo pid,pcpu,stat,etime,command | sort -k2 -rn | sed -n '1,12p' || true
-        echo "--- host memory pressure ---"
-        memory_pressure 2>/dev/null | tail -8 || true
         echo "--- CoreSimulator log, last 2m ---"
         "${command_deadline}" run --label "diag:stall-log-show" \
           --deadline-at "$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")" \
