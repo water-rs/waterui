@@ -457,11 +457,14 @@ capture_frame() {
   # The command writes a staging file that replaces the target only once it
   # exited 0 and produced an image: a capture killed mid-way leaves the
   # previous successful frame in place, and a command that exits 0 without
-  # writing cannot let a stale staging frame pass as this capture. Like the
-  # settle anchor it is a dotfile, so no shot glob ever reads it as a frame,
-  # and it keeps the .png extension — simctl picks the format from it.
+  # writing cannot let a stale staging frame pass as this capture. It lives in
+  # a hidden directory beside the shots, so no shot glob or artifact upload
+  # reads it as a frame; the file itself keeps an ordinary name with the .png
+  # extension — simctl picks the format from it, and screencapture exited 0
+  # without writing a dot-prefixed name (run 42760685670).
   local staging
-  staging="$(dirname "${target}")/.$(basename "${target%.png}").staging.png"
+  staging="$(dirname "${target}")/.staging/$(basename "${target}")"
+  mkdir -p "$(dirname "${staging}")"
   rm -f "${staging}"
   if [[ "${platform}" == "ios" ]]; then
     local sampler_pid capture_rc
