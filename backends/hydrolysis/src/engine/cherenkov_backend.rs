@@ -356,7 +356,7 @@ impl AndroidCherenkovSurface {
 
     /// Renders the frame at `at`, the frame instant the pump runs.
     pub(crate) fn render(
-        &mut self,
+        &self,
         at: cherenkov::FrameTime,
     ) -> Result<cherenkov::Next, cherenkov::RenderError> {
         self.core.own(self.core.engine.render(at))
