@@ -351,7 +351,7 @@ impl GhostRun {
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
     fn update_blur(&self, radius: f32) {
         if radius > 0.0 && !self.blur_warned.replace(true) {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: a blur transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"
             );
