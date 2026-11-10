@@ -1530,15 +1530,21 @@ impl Engine for Cherenkov {
             }
             self.motion_committed = true;
         }
-        // Motion and live scenes record their content once: later encodes
-        // only set live bindings and advance the clock. Static scenes keep
-        // re-recording each frame, drifted so no frame repeats the last.
-        if first_frame || !(self.has_motion || self.has_live || input.scroll_offset.is_some()) {
+        // Content is recorded on the first frame and again on every frame
+        // the bench drifts — each frame of a static scene, and a motion
+        // scene's frames once its motion has come to rest — so no frame
+        // repeats the last. Otherwise encodes only set live bindings and
+        // advance the clock.
+        if first_frame || input.drift.is_some() {
             surface.update(|tx| {
                 if self.has_motion {
                     for cl in &self.content_layers {
-                        tx[cl.handle(surface)]
-                            .record(|c| record_ops(c, &cl.ops, &cl.live, &cl.motions));
+                        tx[cl.handle(surface)].record(|c| match input.drift {
+                            Some(drift) => c.transform(Fixed(drift), |c| {
+                                record_ops(c, &cl.ops, &cl.live, &cl.motions);
+                            }),
+                            None => record_ops(c, &cl.ops, &cl.live, &cl.motions),
+                        });
                     }
                 } else {
                     for cl in &self.content_layers {
@@ -1674,6 +1680,16 @@ impl Engine for Cherenkov {
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn animating(&self) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| matches!(surface.next_frame(), cherenkov::Next::At { .. }))
+    }
+
+    fn drew_nothing(&self) -> bool {
+        self.engine.stats().frame.is_none()
     }
 
     fn completion_signal(&self) -> crate::CompletionSignal {
