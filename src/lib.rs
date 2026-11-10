@@ -91,7 +91,7 @@ pub mod prelude {
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
     pub use super::theme::{
-        self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color,
+        self, ColorScheme, ColorSettings, FontSettings, Theme, Tint, color as theme_color,
     };
 
     pub use super::text::{TextConfig, font, highlight, styled};
