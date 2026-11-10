@@ -6,6 +6,7 @@
 //! overrides — and resolve them through the functions here, so the two can
 //! never drift apart.
 
+use std::path::Path;
 use std::time::Duration;
 
 use clap::ValueEnum;
@@ -465,6 +466,7 @@ pub fn resolve_hydrolysis_preview_theme(
 /// Returns an error if a required toolchain component is missing.
 pub async fn check_toolchain_for_backend(
     host: &crate::toolchain::Host,
+    project_root: &Path,
     backend: ResolvedPreviewBackend,
 ) -> Result<Option<crate::android::KotlinToolchain>> {
     match backend {
@@ -475,7 +477,7 @@ pub async fn check_toolchain_for_backend(
             return toolchain_checks::check_android_run(host).await.map(Some);
         }
         ResolvedPreviewBackend::Hydrolysis(_) => {
-            toolchain_checks::check_hydrolysis(host).await?;
+            toolchain_checks::check_hydrolysis(host, project_root).await?;
         }
     }
     Ok(None)
@@ -685,7 +687,6 @@ mod tests {
         use crate::android::platform::{AndroidAbi, resolve_android_build_context};
         use crate::toolchain::testing::TestMachine;
         use std::ffi::OsString;
-        use std::path::Path;
 
         // The NDK host tag the build context resolves on the unix hosts the
         // CLI supports (Apple support is ARM64-only).
@@ -745,6 +746,7 @@ mod tests {
             // resolution the launcher's cargo build performs.
             let kotlin = check_toolchain_for_backend(
                 &host,
+                machine.root(),
                 ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android),
             )
             .await
