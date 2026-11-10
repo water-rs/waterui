@@ -17,16 +17,50 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use cherenkov_record::Recorder;
+use cherenkov_record::{MaterialEffect, Recorder, ShapeData};
 use kurbo::{Point, Rect, Vec2};
 use nami::{Binding, Signal};
 use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::interaction::InteractionState;
 
-use crate::renderer::chrome::LiveSource;
+use crate::renderer::chrome::{LiveSource, varies_live};
 use crate::renderer::recording::{LoweredResources, SceneResources};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
-use crate::theme::{Change, Inputs, InteractionMotion, RealizedCustom, Retarget, ToggleControl};
+use crate::theme::live::Operand;
+use crate::theme::{
+    Backdrop, Change, Inputs, InteractionMotion, LiveDriven, RealizedCustom, Retarget,
+    ToggleControl,
+};
+
+/// A backdrop effect, which reads the interaction state alone, retargeted
+/// with a toggle's inputs.
+struct EffectOperand(Rc<LiveDriven<MaterialEffect, ()>>);
+
+impl Retarget<bool> for EffectOperand {
+    fn retarget(&self, inputs: &Inputs<'_, bool>, change: Change<'_>) {
+        self.0.retarget(
+            &Inputs {
+                frame: inputs.frame,
+                state: inputs.state,
+                value: &(),
+                drag: inputs.drag,
+                press_point: inputs.press_point,
+            },
+            change,
+        );
+    }
+
+    fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>> {
+        self.0.subscribe(notify)
+    }
+}
+
+/// The control's backdrop stage, realized.
+struct RealizedBackdrop {
+    shape: Rc<LiveDriven<ShapeData, bool>>,
+    effect: Rc<LiveDriven<MaterialEffect, ()>>,
+    material: Backdrop,
+}
 
 /// One toggle control's parts, recorded once with live operands.
 ///
@@ -43,7 +77,14 @@ pub struct LiveToggle {
     state: Cell<InteractionState>,
     press_point: Cell<Option<Point>>,
     drag: Cell<Option<Vec2>>,
-    parts: Vec<RealizedCustom<bool>>,
+    /// The parts below the backdrop, bottom first.
+    below: Vec<RealizedCustom<bool>>,
+    backdrop: Option<RealizedBackdrop>,
+    /// The parts above the backdrop, bottom first.
+    above: Vec<RealizedCustom<bool>>,
+    group_opacity: Rc<LiveDriven<f32, bool>>,
+    /// Every operand of the control, for retargeting.
+    drivens: Vec<Rc<dyn Retarget<bool>>>,
     /// The subscriptions to the value and to the signals the parts' values
     /// follow.
     guards: RefCell<Vec<Box<dyn Any>>>,
@@ -66,11 +107,30 @@ impl LiveToggle {
     /// The control realized on `frame`, at rest in `state` showing `value`.
     fn new(control: ToggleControl, frame: Rect, state: InteractionState, value: bool) -> Self {
         let inputs = Inputs::at_rest(frame, state, &value);
-        let parts = control
-            .parts()
+        let below = control.realize_below(&inputs);
+        let above = control.realize_above(&inputs);
+        let backdrop = control.get_backdrop().map(|backdrop| RealizedBackdrop {
+            shape: Rc::new(LiveDriven::new(backdrop.shape().clone(), &inputs)),
+            effect: Rc::new(LiveDriven::new(
+                backdrop.material().effect().clone(),
+                &Inputs::at_rest(frame, state, &()),
+            )),
+            material: backdrop.material().clone(),
+        });
+        let group_opacity = Rc::new(LiveDriven::new(
+            control.get_group_opacity().clone(),
+            &inputs,
+        ));
+        let mut drivens: Vec<Rc<dyn Retarget<bool>>> = below
             .iter()
-            .map(|part| part.realize(&inputs))
+            .flat_map(|part| part.drivens.iter().cloned())
             .collect();
+        if let Some(backdrop) = &backdrop {
+            drivens.push(Rc::clone(&backdrop.shape) as Rc<dyn Retarget<bool>>);
+            drivens.push(Rc::new(EffectOperand(Rc::clone(&backdrop.effect))));
+        }
+        drivens.extend(above.iter().flat_map(|part| part.drivens.iter().cloned()));
+        drivens.push(Rc::clone(&group_opacity) as Rc<dyn Retarget<bool>>);
         Self {
             control,
             frame,
@@ -78,7 +138,11 @@ impl LiveToggle {
             state: Cell::new(state),
             press_point: Cell::new(None),
             drag: Cell::new(None),
-            parts,
+            below,
+            backdrop,
+            above,
+            group_opacity,
+            drivens,
             guards: RefCell::new(Vec::new()),
             #[cfg(test)]
             recordings: Cell::new(0),
@@ -113,9 +177,35 @@ impl LiveToggle {
     }
 
     fn drivens(&self) -> impl Iterator<Item = Rc<dyn Retarget<bool>>> + '_ {
-        self.parts
-            .iter()
-            .flat_map(|part| part.drivens.iter().cloned())
+        self.drivens.iter().cloned()
+    }
+
+    /// The group opacity operand, when the control's group opacity varies
+    /// between renders in `state`: with a signal, with hover, press, focus
+    /// or the value. A fixed opacity is [`Self::fixed_group_opacity`].
+    pub(crate) fn live_group_opacity(&self, state: InteractionState) -> Option<Operand<f32>> {
+        varies_live(
+            self.control.get_group_opacity(),
+            self.frame,
+            state,
+            &[false, true],
+        )
+        .then(|| self.group_opacity.operand().clone())
+    }
+
+    /// The group opacity of the control at rest in `state`.
+    pub(crate) fn fixed_group_opacity(&self, state: InteractionState) -> f32 {
+        self.control.get_group_opacity().target(&Inputs::at_rest(
+            self.frame,
+            state,
+            &self.value.get(),
+        ))
+    }
+
+    /// The area the control's parts draw in: its frame and its reach.
+    pub(crate) fn visual_bounds(&self) -> Rect {
+        let reach = self.control.get_reach();
+        self.frame.inflate(reach, reach)
     }
 
     fn with_inputs<R>(&self, f: impl FnOnce(&Inputs<'_, bool>) -> R) -> R {
@@ -261,9 +351,17 @@ impl LiveToggle {
     }
 }
 
-/// The source that records a toggle's parts into the live layer.
+/// Which side of the backdrop a source records.
+#[derive(Clone, Copy)]
+enum Layer {
+    Below,
+    Above,
+}
+
+/// The source that records one layer of a toggle's parts.
 struct ToggleSource {
     toggle: Rc<LiveToggle>,
+    layer: Layer,
 }
 
 impl LiveSource for ToggleSource {
@@ -274,29 +372,41 @@ impl LiveSource for ToggleSource {
     ) -> Option<LoweredResources> {
         #[cfg(test)]
         self.toggle.recordings.set(self.toggle.recordings.get() + 1);
-        for part in &self.toggle.parts {
+        let parts = match self.layer {
+            Layer::Below => &self.toggle.below,
+            Layer::Above => &self.toggle.above,
+        };
+        for part in parts {
             part.record(recorder, self.toggle.frame);
         }
         None
     }
 }
 
-/// A toggle's live control and the source its program lists: the identity
-/// the mount keeps the recording by.
+/// A toggle's live control and the sources its program lists: the identity
+/// the mount keeps the recordings by. A layer with no parts has no source.
 #[derive(Clone)]
 pub struct LiveToggleParts {
     toggle: Rc<LiveToggle>,
-    source: Rc<dyn LiveSource>,
+    below: Option<Rc<dyn LiveSource>>,
+    above: Option<Rc<dyn LiveSource>>,
 }
 
 impl LiveToggleParts {
     fn new(toggle: LiveToggle, binding: &Binding<bool>) -> Self {
         let toggle = Rc::new(toggle);
         LiveToggle::subscribe(&toggle, binding);
+        let source = |layer, parts: &[RealizedCustom<bool>]| -> Option<Rc<dyn LiveSource>> {
+            (!parts.is_empty()).then(|| -> Rc<dyn LiveSource> {
+                Rc::new(ToggleSource {
+                    toggle: Rc::clone(&toggle),
+                    layer,
+                })
+            })
+        };
         Self {
-            source: Rc::new(ToggleSource {
-                toggle: Rc::clone(&toggle),
-            }),
+            below: source(Layer::Below, &toggle.below),
+            above: source(Layer::Above, &toggle.above),
             toggle,
         }
     }
@@ -327,12 +437,28 @@ impl LiveToggleParts {
         &self.toggle
     }
 
-    /// Lists the control's parts in `ctx`.
+    /// Lists the control's parts in `ctx`: those below the backdrop, the
+    /// backdrop material over them, then those above it.
     pub(crate) fn push<E: crate::text::TextEngine>(
         &self,
         renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
     ) {
-        renderer.push_live(ctx, &self.source);
+        if let Some(below) = &self.below {
+            renderer.push_live(ctx, below);
+        }
+        if let Some(backdrop) = &self.toggle.backdrop {
+            renderer.draw_context(ctx, |recorder| {
+                recorder.backdrop_material(
+                    backdrop.shape.live(),
+                    backdrop.material.shader(),
+                    backdrop.material.capture(),
+                    backdrop.effect.live(),
+                );
+            });
+        }
+        if let Some(above) = &self.above {
+            renderer.push_live(ctx, above);
+        }
     }
 }

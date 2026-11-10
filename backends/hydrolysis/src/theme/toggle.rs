@@ -10,19 +10,24 @@
 //! operands of the recording the engine animates, so a toggle, a hover, a
 //! press or a drag records nothing and walks no tree.
 //!
-//! A toggle's parts record into one live layer, once, and keep that
-//! recording while the toggle's look and frame are unchanged. A part cannot
-//! declare a backdrop material: a layered recording is a draw-time context a
-//! live layer does not have.
+//! A toggle's parts record into live layers, once, and keep those
+//! recordings while the toggle's look and frame are unchanged. A control may
+//! declare a [`ToggleBackdrop`] stage among its parts: the parts added before
+//! it record below the backdrop material, the parts added after it above.
 
 use std::rc::Rc;
 
+use cherenkov_record::ShapeData;
 use kurbo::{Rect, Size, Vec2};
 use waterui_controls::ControlSize;
 use waterui_controls::toggle::ToggleStyle;
 use waterui_core::layout::LayoutDirection;
+use waterui_graphics::color::Color;
 
-use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Motion};
+#[cfg(hydrolysis_runtime)]
+use super::look::RealizedCustom;
+use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Inputs, Motion, SpecTint};
+use super::{Backdrop, Driven};
 
 /// What Hydrolysis asks a theme's [`switch`](super::WidgetTheme::switch) or
 /// [`checkbox`](super::WidgetTheme::checkbox) look for: everything
@@ -30,22 +35,38 @@ use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Motion};
 ///
 /// A spec change requests the look again; everything else reaches the look
 /// through its [`Driven`](super::Driven) values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToggleSpec {
     style: ToggleStyle,
     size: ControlSize,
     direction: LayoutDirection,
+    tint: SpecTint,
 }
 
 impl ToggleSpec {
-    /// The spec of a `style` toggle of `size`, laid out `direction`.
+    /// The spec of a `style` toggle of `size`, laid out `direction`, drawn
+    /// with `tint`.
     #[must_use]
-    pub const fn new(style: ToggleStyle, size: ControlSize, direction: LayoutDirection) -> Self {
+    pub const fn new(
+        style: ToggleStyle,
+        size: ControlSize,
+        direction: LayoutDirection,
+        tint: SpecTint,
+    ) -> Self {
         Self {
             style,
             size,
             direction,
+            tint,
         }
+    }
+
+    /// The toggle's tint: its subtree's nearest `.tint(...)`, else the
+    /// theme's `Accent` token. The colour is live: a tint signal's change
+    /// reaches the look's drawing without requesting the look again.
+    #[must_use]
+    pub fn tint(&self) -> Color {
+        self.tint.color()
     }
 
     /// The toggle's resolved style: never `Automatic`.
@@ -67,13 +88,52 @@ impl ToggleSpec {
     }
 }
 
+/// A backdrop material a toggle's control draws between its parts.
+///
+/// It is a live shape the material covers and the [`Backdrop`] it is made
+/// of; the backdrop's effect ([`Backdrop::effect`]) retargets as the toggle's
+/// inputs change. A switch's pressed knob is the reason: it becomes a glass
+/// lens over the track, below the knob's own fill.
+#[derive(Debug, Clone)]
+pub struct ToggleBackdrop {
+    shape: Driven<ShapeData, bool>,
+    material: Backdrop,
+}
+
+impl ToggleBackdrop {
+    /// The `material` over `shape`, in the widget's own space.
+    #[must_use]
+    pub const fn new(shape: Driven<ShapeData, bool>, material: Backdrop) -> Self {
+        Self { shape, material }
+    }
+
+    /// The shape the material covers.
+    #[must_use]
+    pub const fn shape(&self) -> &Driven<ShapeData, bool> {
+        &self.shape
+    }
+
+    /// The material.
+    #[must_use]
+    pub const fn material(&self) -> &Backdrop {
+        &self.material
+    }
+}
+
 #[derive(Clone)]
 struct ControlParts {
     size: Size,
+    reach: f64,
     label_spacing: f64,
     motion: Motion,
     hit: HitRegion,
-    parts: Vec<Rc<dyn CustomPart<bool>>>,
+    group_opacity: Driven<f32, bool>,
+    /// The parts recorded below the backdrop, bottom first; every part when
+    /// the control has no backdrop.
+    below: Vec<Rc<dyn CustomPart<bool>>>,
+    backdrop: Option<ToggleBackdrop>,
+    /// The parts recorded above the backdrop, bottom first.
+    above: Vec<Rc<dyn CustomPart<bool>>>,
 }
 
 /// The control a toggle draws beside its label: its size, the parts it is
@@ -81,7 +141,9 @@ struct ControlParts {
 ///
 /// Hydrolysis measures, places, hit-tests, records and animates the toggle
 /// from this one value, so its layout and its drawing cannot diverge. The
-/// parts record in the order they are added: the later one is above.
+/// parts record in the order they are added: the later one is above. A
+/// [`ToggleBackdrop`] added among them splits them in two layers, the parts
+/// before it below the material and the parts after it above.
 #[derive(Clone)]
 pub struct ToggleControl(Rc<ControlParts>);
 
@@ -89,26 +151,72 @@ impl core::fmt::Debug for ToggleControl {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ToggleControl")
             .field("size", &self.0.size)
+            .field("reach", &self.0.reach)
             .field("label_spacing", &self.0.label_spacing)
             .field("motion", &self.0.motion)
             .field("hit", &self.0.hit)
-            .field("parts", &self.0.parts.len())
+            .field("group_opacity", &self.0.group_opacity)
+            .field("below", &self.0.below.len())
+            .field("backdrop", &self.0.backdrop)
+            .field("above", &self.0.above.len())
             .finish()
     }
 }
 
 impl ToggleControl {
     /// A control of `size` whose values run with `motion`, with no parts,
-    /// no spacing to its label and a hit region of its own frame.
+    /// no spacing to its label, no reach beyond its frame, a hit region of
+    /// its own frame and drawn opaque.
     #[must_use]
     pub fn new(size: Size, motion: Motion) -> Self {
         Self(Rc::new(ControlParts {
             size,
+            reach: 0.0,
             label_spacing: 0.0,
             motion,
             hit: HitRegion::NONE,
-            parts: Vec::new(),
+            group_opacity: Driven::constant(1.0),
+            below: Vec::new(),
+            backdrop: None,
+            above: Vec::new(),
         }))
+    }
+
+    /// Declares that the parts draw up to `reach` beyond the control's frame
+    /// on every side — an overhanging track, a grown press lens — so a group
+    /// opacity layer does not clip them.
+    #[must_use]
+    pub fn reach(mut self, reach: f64) -> Self {
+        self.parts_mut().reach = reach;
+        self
+    }
+
+    /// Draws the whole control as one group at `opacity` — a disabled switch
+    /// that fades as a whole, its overlapping parts blending once. An
+    /// opacity that varies with hover, press, focus or the value follows the
+    /// operand live; one that varies with the disabled state applies at the
+    /// next render.
+    #[must_use]
+    pub fn group_opacity(mut self, opacity: impl Into<Driven<f32, bool>>) -> Self {
+        self.parts_mut().group_opacity = opacity.into();
+        self
+    }
+
+    /// Records `backdrop` above the parts already added: the parts added
+    /// before it record below the material, those added after it above.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the control already has a backdrop: it has one stage.
+    #[must_use]
+    pub fn backdrop(mut self, backdrop: ToggleBackdrop) -> Self {
+        let parts = self.parts_mut();
+        assert!(
+            parts.backdrop.is_none(),
+            "a toggle control has one backdrop stage"
+        );
+        parts.backdrop = Some(backdrop);
+        self
     }
 
     fn parts_mut(&mut self) -> &mut ControlParts {
@@ -136,7 +244,13 @@ impl ToggleControl {
     where
         D::Live: 'static,
     {
-        self.parts_mut().parts.push(Rc::new(part));
+        let parts = self.parts_mut();
+        let layer = if parts.backdrop.is_some() {
+            &mut parts.above
+        } else {
+            &mut parts.below
+        };
+        layer.push(Rc::new(part));
         self
     }
 
@@ -171,10 +285,44 @@ impl ToggleControl {
         self.0.hit.target(frame, frame)
     }
 
-    /// The parts, bottom first.
+    /// How far the parts draw beyond the control's frame.
+    #[must_use]
+    pub fn get_reach(&self) -> f64 {
+        self.0.reach
+    }
+
+    /// The group opacity.
+    #[must_use]
+    pub fn get_group_opacity(&self) -> &Driven<f32, bool> {
+        &self.0.group_opacity
+    }
+
+    /// The backdrop stage, when the control has one.
+    #[must_use]
+    pub fn get_backdrop(&self) -> Option<&ToggleBackdrop> {
+        self.0.backdrop.as_ref()
+    }
+
+    /// The parts recorded below the backdrop, bottom first, realized at
+    /// `inputs`.
     #[cfg(hydrolysis_runtime)]
-    pub(crate) fn parts(&self) -> &[Rc<dyn CustomPart<bool>>] {
-        &self.0.parts
+    pub(crate) fn realize_below(&self, inputs: &Inputs<'_, bool>) -> Vec<RealizedCustom<bool>> {
+        self.0
+            .below
+            .iter()
+            .map(|part| part.realize(inputs))
+            .collect()
+    }
+
+    /// The parts recorded above the backdrop, bottom first, realized at
+    /// `inputs`.
+    #[cfg(hydrolysis_runtime)]
+    pub(crate) fn realize_above(&self, inputs: &Inputs<'_, bool>) -> Vec<RealizedCustom<bool>> {
+        self.0
+            .above
+            .iter()
+            .map(|part| part.realize(inputs))
+            .collect()
     }
 
     /// Whether `other` is this control.

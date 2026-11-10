@@ -65,7 +65,7 @@ pub use look::{
 };
 #[cfg(hydrolysis_runtime)]
 pub(crate) use look::{Change, LiveDriven, RealizedCustom, Retarget};
-pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleControl, ToggleSpec};
+pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};
 pub use widget::{
     BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
     ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,

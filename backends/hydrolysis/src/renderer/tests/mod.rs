@@ -93,6 +93,7 @@ mod tab_item_layout;
 mod teardown_order;
 mod text_ink;
 mod text_measure_direction;
+mod toggle_glass;
 mod toggle_looks;
 mod top_edge;
 mod touch_scroll;
@@ -2694,6 +2695,9 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
     assert!(renderer.hit_test.modal_interaction.is_none());
 }
 
+/// The switch look a test theme hands out for a toggle spec.
+type SwitchLookFor = Rc<dyn Fn(&ToggleSpec, &Environment) -> SwitchLook>;
+
 /// A recorded `draw_progress_linear_track` call: `(bounds, active_end)`.
 type ProgressTrackDraw = (Rect, Option<f64>);
 /// A recorded `draw_radio_indicator` call: `(center, state)`.
@@ -2732,9 +2736,9 @@ pub struct MinimalTestTheme {
     /// (water-rs/waterui#1788): the registry entries, and the materials the
     /// plan's [`ChromePlan::chrome`] replays.
     chrome: ChromePlan,
-    /// The switch look the theme hands out; `None` answers a plain
-    /// control with no parts.
-    switch_look: Option<SwitchLook>,
+    /// The switch look the theme hands out for a spec and environment;
+    /// `None` answers a plain control with no parts.
+    switch_look: Option<SwitchLookFor>,
     /// Every `draw_progress_linear_track` call.
     progress_linear_track_draws: Rc<RefCell<Vec<ProgressTrackDraw>>>,
     /// Every `draw_radio_indicator` call.
@@ -2787,8 +2791,17 @@ impl MinimalTestTheme {
 
     /// Hands out `look` for every switch.
     #[must_use]
-    pub fn with_switch_look(mut self, look: SwitchLook) -> Self {
-        self.switch_look = Some(look);
+    pub fn with_switch_look(self, look: SwitchLook) -> Self {
+        self.with_switch(move |_, _| look.clone())
+    }
+
+    /// Hands out the look `look` makes for each switch's spec.
+    #[must_use]
+    pub fn with_switch(
+        mut self,
+        look: impl Fn(&ToggleSpec, &Environment) -> SwitchLook + 'static,
+    ) -> Self {
+        self.switch_look = Some(Rc::new(look));
         self
     }
 
@@ -2940,13 +2953,16 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn switch(&self, spec: &ToggleSpec, _env: &Environment) -> SwitchLook {
-        self.switch_look.clone().unwrap_or_else(|| {
-            SwitchLook::new(
-                crate::testing::plain_toggle_control(),
-                SwitchDrag::new(6.0, spec.direction()),
-            )
-        })
+    fn switch(&self, spec: &ToggleSpec, env: &Environment) -> SwitchLook {
+        self.switch_look.as_ref().map_or_else(
+            || {
+                SwitchLook::new(
+                    crate::testing::plain_toggle_control(),
+                    SwitchDrag::new(6.0, spec.direction()),
+                )
+            },
+            |look| look(spec, env),
+        )
     }
 
     fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
