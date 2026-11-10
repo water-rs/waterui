@@ -764,3 +764,75 @@ fn the_shared_renderer_shapes_through_the_platform_engine() {
     // é: bytes 0..2, unit 0; 🌊: bytes 2..6, units 1..3; a: byte 6, unit 3.
     assert_eq!(layout.hit_test(31.0, 5.0), position(6));
 }
+
+/// Canvas text on the HWUI target: the platform lays the text out, the
+/// registration leases that platform layout under its own id, and the box
+/// it reports is the platform's.
+#[test]
+fn canvas_text_registers_the_platform_layout_it_leases() {
+    use std::rc::Rc;
+
+    use waterui_core::layout::Point;
+    use waterui_graphics::canvas::{CanvasText, TextPlacement};
+    use waterui_text::styled::StyledStr;
+
+    use cherenkov_record::SurfaceId;
+
+    use crate::hwui::{HwuiResources, HwuiSurface};
+    use crate::renderer::mount::hwui::HwuiHost;
+
+    let provider = Arc::new(Mono::default());
+    let ids = TextLayoutIds::new();
+    let service = Arc::new(crate::text::TextService::new(
+        crate::text::HwuiTextEngine::new(
+            Arc::clone(&provider),
+            ids,
+            crate::text::FontFamilyResolution::Strict,
+        ),
+    ));
+    let surface = HwuiSurface::new(SurfaceId::new(9), || {}).expect("an empty root encodes");
+    let backend = Rc::new(HwuiResources::new(
+        Box::new(crate::hwui::platform::tests::Fake::default()),
+        surface.encoder().registry().clone(),
+        surface.encoder().effects().clone(),
+    ));
+    let host = HwuiHost::new(
+        backend,
+        Rc::new(cherenkov_record::MaterialRegistry::default()),
+        Arc::new(|| {}),
+    );
+    <crate::hwui::HwuiTarget as crate::renderer::mount::target::LayerTarget<_>>::install_text(
+        &host, &service,
+    );
+    let resources = <crate::hwui::HwuiTarget as crate::renderer::mount::target::LayerTarget<
+        crate::text::HwuiTextEngine<Mono>,
+    >>::resources(&host)
+    .waterui();
+    let env = crate::renderer::tests::test_environment();
+
+    let text = |text: &str| CanvasText::from(StyledStr::plain(text.to_owned()));
+    let registered = resources
+        .text(
+            text("hello 你好"),
+            TextPlacement::at(Point::zero()),
+            env.clone(),
+        )
+        .expect("the platform lays the text out")
+        .expect("a text with lines draws");
+    // Mono is 10 px per UTF-16 unit: "hello 你好" is eight units.
+    assert!((registered.size().width - 80.0).abs() < f32::EPSILON);
+    assert!(registered.size().height > 0.0);
+    assert_eq!(
+        provider.texts.lock().unwrap().len(),
+        1,
+        "the platform laid out the one text, and the registration leases that layout"
+    );
+
+    assert!(
+        resources
+            .text(text(""), TextPlacement::at(Point::zero()), env)
+            .expect("empty text registers")
+            .is_none(),
+        "no lines, nothing to draw"
+    );
+}

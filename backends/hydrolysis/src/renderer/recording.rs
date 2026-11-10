@@ -247,6 +247,10 @@ pub struct SceneResources {
     /// that fonts and images are not re-registered per frame.
     font_registrations: std::cell::Cell<u64>,
     image_registrations: std::cell::Cell<u64>,
+    /// The address of the text service the table's canvas-text registry was
+    /// built over; the registry holds the service, so the address names it
+    /// for as long as it is installed.
+    text_owner: std::cell::Cell<usize>,
 }
 
 /// What identifies a peniko resource in an identity cache.
@@ -410,6 +414,20 @@ impl SceneResources {
             images: IdentityCache::new(),
             font_registrations: std::cell::Cell::new(0),
             image_registrations: std::cell::Cell::new(0),
+            text_owner: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Installs the registry canvas text lays out through, built by `make`
+    /// over `service`, unless the table already has the one over `service`.
+    pub(crate) fn install_text<E: crate::text::TextEngine, B: waterui_graphics::TextBackend>(
+        &self,
+        service: &Arc<crate::text::TextService<E>>,
+        make: impl FnOnce() -> Rc<B>,
+    ) {
+        let owner = Arc::as_ptr(service).addr();
+        if self.text_owner.replace(owner) != owner {
+            self.inner.set_text(make());
         }
     }
 

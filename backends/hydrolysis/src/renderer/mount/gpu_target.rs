@@ -2,14 +2,15 @@
 //! shader attach and the chrome/group sampling queries against a
 //! `CherenkovHost`.
 
+use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
+use cherenkov_record::{FilterId, Layer, MaterialRegistry, ResourceError, Transaction};
 use rustc_hash::FxHashMap;
-use waterui_graphics::Reactive;
 use waterui_graphics::filtrate::filters::OverscrollStretch;
 use waterui_graphics::gpu::PresentedSize;
+use waterui_graphics::{Handle, Reactive, TextBackend, TextRegistration, TextRequest};
 
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
@@ -19,6 +20,8 @@ use crate::renderer::mount::backdrop::{
     MaterialBackdropGroups, MaterialMembership, MemberBind, MemberJoin,
 };
 use crate::renderer::recording::SceneResources;
+use crate::text::TextService;
+use crate::text::{CanvasLayout, shape_canvas_text};
 
 use super::{FilterHandle, FilterRegistration, LayerTarget, MaterialTerms};
 
@@ -56,6 +59,61 @@ pub fn attach_material_shaders(
             (key, shader)
         })
         .collect()
+}
+
+/// Installs on `resources` the registry that lays canvas text out through
+/// `text` and registers it with `engine`.
+pub fn install_gpu_text<E: crate::text::TextEngine>(
+    resources: &SceneResources,
+    engine: &Rc<crate::engine::GpuEngine>,
+    text: &Arc<TextService<E>>,
+) {
+    resources.install_text(text, || {
+        Rc::new(GpuText {
+            engine: Rc::clone(engine),
+            service: Arc::clone(text),
+            faces: RefCell::default(),
+        })
+    });
+}
+
+/// Canvas text on the GPU target: laid out by the session's text engine,
+/// registered with the Cherenkov engine as glyph runs.
+struct GpuText<E: crate::text::TextEngine> {
+    engine: Rc<crate::engine::GpuEngine>,
+    service: Arc<TextService<E>>,
+    /// The faces text layouts have registered, by blob and index, so a text
+    /// laid out again does not register its fonts again. Each layout holds
+    /// its own share of a face; the cache holds one for as long as the
+    /// registry lives.
+    faces: RefCell<FxHashMap<(u64, u32), cherenkov::Font>>,
+}
+
+impl<E: crate::text::TextEngine> TextBackend for GpuText<E> {
+    fn register_text(
+        &self,
+        request: TextRequest,
+    ) -> Result<Option<TextRegistration>, ResourceError> {
+        let Some(CanvasLayout { layout, size }) = shape_canvas_text(&self.service, &request) else {
+            return Ok(None);
+        };
+        let mut faces = self.faces.borrow_mut();
+        let text = self.service.cherenkov_text(&layout, &mut |face| {
+            let key = (face.data.id(), face.index);
+            if let Some(font) = faces.get(&key) {
+                return Ok(font.clone());
+            }
+            let font = self.engine.font(cherenkov::FontSource {
+                data: Arc::from(face.data.data()),
+                index: face.index,
+            })?;
+            faces.insert(key, font.clone());
+            Ok(font)
+        })?;
+        drop(faces);
+        let handle = self.engine.text_layout(text)?;
+        Ok(Some(TextRegistration::new(Handle::new(handle), size)))
+    }
 }
 
 /// The Cherenkov GPU target's host: one per engine window surface.
@@ -104,6 +162,10 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
 
     fn resources(host: &CherenkovHost) -> &Rc<SceneResources> {
         &host.resources
+    }
+
+    fn install_text(host: &CherenkovHost, text: &Arc<TextService<E>>) {
+        install_gpu_text(&host.resources, &host.engine, text);
     }
 
     fn mount_gpu_content(

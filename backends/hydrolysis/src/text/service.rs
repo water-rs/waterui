@@ -185,6 +185,27 @@ impl<E: TextEngine> TextService<E> {
         layout
     }
 
+    /// `layout` as Cherenkov text; see [`TextEngine::cherenkov_text`].
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) fn cherenkov_text(
+        &self,
+        layout: &E::Layout,
+        font: &mut dyn FnMut(
+            &parley::FontData,
+        ) -> Result<cherenkov::Font, cherenkov::ResourceError>,
+    ) -> Result<cherenkov::TextLayout, cherenkov::ResourceError> {
+        self.engine.cherenkov_text(layout, font)
+    }
+
+    /// The platform layout `layout` is; see [`TextEngine::platform_text`].
+    #[cfg(any(test, hydrolysis_hwui))]
+    pub(crate) fn platform_text(
+        &self,
+        layout: &E::Layout,
+    ) -> Option<std::sync::Arc<crate::hwui::text::TextLayoutResource>> {
+        self.engine.platform_text(layout)
+    }
+
     /// Horizontal ink extent of `layout` at the draw-time line limit — what
     /// the measured-frame contract widens by and the record path shifts by.
     pub(crate) fn ink_extent(

@@ -15,9 +15,12 @@ use waterui::graphics::canvas::{
     Layer, LinearGradient, MeshGradient, Path, PixelBuffer, PixelFormat, RadialGradient,
     RoundedRect, Sampling, Shadow, StrokeStyle,
 };
-use waterui::graphics::color::WorkingColor;
+use waterui::graphics::canvas::{CanvasText, TextPlacement};
+use waterui::graphics::color::{Srgb, WorkingColor};
 use waterui::reactive::Signal as _;
 use waterui::reactive::binding;
+use waterui::text::StyledStr;
+use waterui_core::layout::HorizontalAlignment;
 use waterui_core::layout::{Affine2, Point, Rect, Size};
 
 use crate::{Role, ui};
@@ -353,4 +356,77 @@ fn canvas_scope_records_its_region_again() {
     app.snapshot()
         .save_png(output("scope_after.png"))
         .expect("the scope snapshot is writable");
+}
+
+/// Canvas text through the offscreen Hydrolysis renderer: Latin, Chinese,
+/// Japanese and Korean, the three alignments about one anchor, a width
+/// that wraps, and a live text update.
+#[test]
+fn canvas_draws_text_anchored_aligned_wrapped_and_live() {
+    let white = Srgb::new(1.0, 1.0, 1.0);
+    let styled =
+        move |text: &str| CanvasText::from(StyledStr::from(text.to_owned()).foreground(white));
+    let label = binding::<String>(String::from("Live"));
+    let mut app = ui()
+        .viewport(360, 300)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let label = label.clone();
+            move || {
+                let label = label.clone();
+                Canvas::new(move |cx| {
+                    cx.fill(cx.size().map(Rect::from_size), rgb(0.08, 0.08, 0.1));
+                    // The anchor the three alignments share.
+                    cx.stroke(
+                        Path::builder()
+                            .move_to(Point::new(180.0, 8.0))
+                            .line_to(Point::new(180.0, 150.0))
+                            .build(),
+                        StrokeStyle::new(1.0),
+                        rgb(0.9, 0.3, 0.3),
+                    );
+                    let rows = [
+                        (HorizontalAlignment::Leading, "Leading 左对齐"),
+                        (HorizontalAlignment::Center, "Center 中央揃え"),
+                        (HorizontalAlignment::Trailing, "Trailing 오른쪽"),
+                    ];
+                    for (index, (alignment, text)) in rows.into_iter().enumerate() {
+                        #[expect(clippy::cast_precision_loss, reason = "three rows")]
+                        let y = (index as f32).mul_add(30.0, 12.0);
+                        cx.text(
+                            styled(text),
+                            TextPlacement::at(Point::new(180.0, y)).aligned(alignment),
+                        );
+                    }
+                    // A width that wraps mixed-script text, centered.
+                    cx.stroke(
+                        Path::builder()
+                            .move_to(Point::new(20.0, 110.0))
+                            .line_to(Point::new(160.0, 110.0))
+                            .build(),
+                        StrokeStyle::new(1.0),
+                        rgb(0.3, 0.8, 0.5),
+                    );
+                    cx.text(
+                        styled("Wrapped text 自动换行的中文、日本語の折り返し、한국어 줄바꿈"),
+                        TextPlacement::at(Point::new(90.0, 114.0))
+                            .aligned(HorizontalAlignment::Center)
+                            .width(140.0),
+                    );
+                    // The live line.
+                    cx.text(
+                        label.map(move |text| styled(&text)),
+                        TextPlacement::at(Point::new(20.0, 250.0)),
+                    );
+                })
+            }
+        });
+    app.snapshot()
+        .save_png(output("text_before.png"))
+        .expect("the text snapshot is writable");
+    label.set(String::from("Updated 更新 更新済み 업데이트"));
+    app.pump_for(Duration::from_millis(100));
+    app.snapshot()
+        .save_png(output("text_after.png"))
+        .expect("the updated text snapshot is writable");
 }
