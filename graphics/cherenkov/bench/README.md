@@ -36,6 +36,26 @@ timing, and `percentiles` gives p50/p90/p99 of each field:
   `percentiles.completion_interval_seconds`. Both fields are `null` when the
   adapter has no completion signal, and `completion_unavailable` says why.
 
+## What a measured frame contains
+
+Every warmup and measured frame of a scene that does not change on its own
+draws content no earlier frame drew, so each does the work of drawing the
+scene fresh: lowering, path and glyph rasterization, encoding and the GPU
+passes. Engines keep what they can of unchanged content — Cherenkov keeps
+the preparation of an equivalent recording and skips the frame, and its path
+and glyph atlases keep rasters under the same transform — and a static scene
+re-recorded unchanged would time an empty frame.
+
+The bench therefore draws frame `n` of such a scene under a uniform scale
+about the scene's centre of `1 + (n + 1) * 2^-20`, identically for every
+adapter (`content_drift`). The scale alters the linear part of every
+element's transform, which keys the retained picture, preparation and
+rasters, and moves no edge by a pixel in thousands of frames. A translation
+would not do: engines serve a moved picture from rasters kept across
+translation. Draw count, coverage, blends and effects stay those of the scene.
+A scene that changes on its own — a scroll sweep, a motion, a live slot, like
+`perf/live-dashboard` — keeps its own behaviour and is not drifted.
+
 By default frames are submitted asynchronously, so one frame's encode can
 overlap an earlier frame's GPU work. The stage fields therefore do not add
 up to a frame time, and the report never derives one from them. The

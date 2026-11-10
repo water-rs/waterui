@@ -286,7 +286,7 @@ impl Engine for VelloCpu {
             .lowered
             .take()
             .ok_or_else(|| BenchError::Engine("vello-cpu: encode before prepare".into()))?;
-        replay(self, &lowered, &mut counters, input.scroll_transform());
+        replay(self, &lowered, &mut counters, input.frame_transform());
         self.lowered = Some(lowered);
         self.counters = counters;
         Ok(())

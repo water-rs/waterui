@@ -130,8 +130,8 @@ ROOTS = {'lower': ('13lower_content', ('cherenkov_gpu',)), 'encode': ('6Engine6e
 # in every scene. A motion or live scene records its content on the first
 # frame only and later frames open no transaction (the bench's Cherenkov
 # adapter), so `run_transaction` is not one of its roots. Every root is a
-# dump trigger in every profile. Retained frames may eliminate lower entirely;
-# fresh profiles still require it. Other missing or unexpected roots fail.
+# dump trigger in every profile: a declared root that stops running, or an
+# undeclared one that starts, fails the profile.
 EVERY_FRAME = ('lower', 'encode', 'run_transaction')
 RECORDED_ONCE = ('lower', 'encode')
 SCENES = {'map': EVERY_FRAME, 'chart': EVERY_FRAME, 'text-page': EVERY_FRAME, 'ui-list': EVERY_FRAME,
@@ -638,7 +638,7 @@ def frame_samples(out, prefix, triggers, roots, frames=CPU_SAMPLES):
         sample = dict(sample)
         sample['jobs'] = sum(1 for c in frame_calls if c['function'] != roots.render)
         sample['messages'] = sum(1 for c in frame_calls if c['function'] == roots.render)
-        assert sample['messages'], (prefix, index, sample, 'a sampled frame handled no render message')
+        assert sample['jobs'] and sample['messages'], (prefix, index, sample, 'a sampled frame ran no raster job')
         sample['rust_ir'] = sample['ir'] - sample['alloc_ir'] - sample['mem_ir'] - sample['sync_ir']
         sample['path'] = f'{prefix}.{max(c["window"][-1] for c in frame_calls)}'
         samples.append(sample)
@@ -715,9 +715,7 @@ def sampled(after, phases, label, returns=4):
     if undeclared := [phase for phase, dumps in after.items() if dumps and phase not in phases]:
         raise RuntimeError(f'{label}: {undeclared} run in steady state but are not among the scene\'s roots '
                            f'{phases}; declare them in SCENES.')
-    done = all(len(after[phase]) >= returns or (
-        phase == 'lower' and returns > 1 and not after[phase]
-        and len(after[FRAME_ROOT]) >= STALL_FRAMES) for phase in phases)
+    done = all(len(after[phase]) >= returns for phase in phases)
     if not done and len(after[FRAME_ROOT]) > STALL_FRAMES:
         raise RuntimeError(f'{label}: after {len(after[FRAME_ROOT])} frames the roots returned '
                            f'{ {phase: len(after[phase]) for phase in phases} } times; a declared root does not '
@@ -876,16 +874,6 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
               'sample_mode': 'fresh' if fresh else 'retained'}
     for phase in phases:
         symbol = roots[phase]
-        if phase == 'lower' and not fresh and not after[phase]:
-            # No call in eight completed frames: no preparation work occurred.
-            # A partially sampled root still fails in sampled().
-            empty = {k: 0 for k in ('ir', 'ncalls', 'alloc_ir', 'mem_ir', 'mem_calls',
-                                   'sync_ir', 'sync_calls', 'rust_ir', *KINDS)}
-            empty['path'] = str(prefix)
-            result[phase] = {'root': symbol, 'first': empty, 'second': empty,
-                             'third': empty, 'third_delta_percent': 0}
-            print(tag, scene, phase, 'NO CALLS', flush=True)
-            continue
         samples = call_samples(out, prefix.name, symbol, after[phase],
                                count=1 if fresh else 3, allow_inflight=not fresh,
                                workers=workers if phase == 'lower' else (),
@@ -1031,8 +1019,7 @@ def compare(out, base, head, leg=LEGS['gpu']):
         a, b = load(out, base, scene), load(out, head, scene)
         for phase in phases:
             x, y = a[phase]['second'], b[phase]['second']
-            delta = (100 * (y['rust_ir'] / x['rust_ir'] - 1) if x['rust_ir'] else
-                     (float('inf') if y['rust_ir'] else 0))
+            delta = 100 * (y['rust_ir'] / x['rust_ir'] - 1)
             ok = delta <= 1 and all(y[k] <= x[k] for k in ('allocs', 'reallocs', 'deallocs', 'mem_calls'))
             failed |= not ok
             counts = [f"{x[k]} → {y[k]}" for k in ('allocs', 'reallocs', 'deallocs', 'mem_calls')]

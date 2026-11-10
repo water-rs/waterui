@@ -230,8 +230,6 @@ class Sampling(unittest.TestCase):
 
     def test_profile_stops_on_its_declared_roots(self):
         every, once = ir_gate.EVERY_FRAME, ir_gate.RECORDED_ONCE
-        self.assertTrue(ir_gate.sampled({'lower': [], 'encode': [1] * 8, 'run_transaction': [2] * 8}, every, 'retained'))
-        self.assertFalse(ir_gate.sampled({'lower': [], 'encode': [1] * 8, 'run_transaction': [2] * 8}, every, 'fresh', returns=1))
         self.assertTrue(ir_gate.sampled({'lower': [2] * 4, 'encode': [1] * 4, 'run_transaction': []}, once, 's'))
         self.assertFalse(ir_gate.sampled({'lower': [2] * 3, 'encode': [1] * 8, 'run_transaction': []}, once, 's'))
         with self.assertRaisesRegex(RuntimeError, 'declare'):

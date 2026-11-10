@@ -829,6 +829,7 @@ fn alloc_diag_cmd(
     let blobs = convert::load_blobs(&scene, dir)?;
     let input = EncodeInput {
         scroll_offset: None,
+        drift: None,
         scene: &scene,
         blobs: &blobs,
     };
@@ -1484,6 +1485,7 @@ fn render_scene(
     t.reference = at.elapsed().as_secs_f64();
     let input = EncodeInput {
         scroll_offset: None,
+        drift: None,
         scene: &scene,
         blobs: &blobs,
     };
@@ -1590,7 +1592,13 @@ struct FrameLoopOptions {
     wait_for_completion: bool,
 }
 
-fn scroll_frame_input<'a>(
+/// The input of frame `frame` of a run of `warmup` warmup and `frames`
+/// measured frames: a scrolling scene's offset for the frame, or a static
+/// scene's [`crate::content_drift`]. Every frame of a static scene thus
+/// carries content no earlier frame drew, so each does the work of drawing
+/// the scene fresh instead of being served from what the engine kept of the
+/// last. A scene that changes on its own keeps its behaviour.
+fn frame_input<'a>(
     input: &EncodeInput<'a>,
     frame: u32,
     warmup: u32,
@@ -1604,10 +1612,12 @@ fn scroll_frame_input<'a>(
         };
         extent * (f64::from(index) / f64::from(count.saturating_sub(1).max(1)))
     });
+    let drift = (!crate::animates(input.scene)).then(|| crate::content_drift(input.scene, frame));
     EncodeInput {
         scene: input.scene,
         blobs: input.blobs,
         scroll_offset,
+        drift,
     }
 }
 
@@ -1716,7 +1726,7 @@ fn run_frames(
         if pause_at == Some(frame) {
             pause_before_frame(frame)?;
         }
-        engine.encode(&scroll_frame_input(input, frame, warmup, frames))?;
+        engine.encode(&frame_input(input, frame, warmup, frames))?;
         let t1 = Instant::now();
         let submit = engine.submit(u64::from(frame), false)?;
         let t2 = Instant::now();
@@ -2027,6 +2037,7 @@ fn measure_scene(
     let blobs = convert::load_blobs(&scene, dir)?;
     let input = EncodeInput {
         scroll_offset: None,
+        drift: None,
         scene: &scene,
         blobs: &blobs,
     };
@@ -2348,6 +2359,7 @@ fn probe_once(
         scene,
         blobs,
         scroll_offset: None,
+        drift: None,
     };
     engine.prepare(&input)?;
     let prepare_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
@@ -2626,16 +2638,43 @@ mod scroll_tests {
             scene: &scene,
             blobs: &blobs,
             scroll_offset: None,
+            drift: None,
         };
         let offsets: Vec<_> = (0..5)
-            .map(|frame| {
-                scroll_frame_input(&input, frame, 3, 2)
-                    .scroll_offset
-                    .unwrap()
-                    .y
-            })
+            .map(|frame| frame_input(&input, frame, 3, 2).scroll_offset.unwrap().y)
             .collect();
         assert_eq!(offsets, [0.0, 100.0, 200.0, 0.0, 200.0]);
+        assert!(
+            (0..5).all(|frame| frame_input(&input, frame, 3, 2).drift.is_none()),
+            "a scrolling scene is not drifted"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the engines key rasters on the f32 linear part"
+    )]
+    fn static_frames_never_repeat_the_linear_part_of_a_transform() {
+        let scene = Scene::new(100, 100, cherenkov_scene::Color::srgb(1.0, 1.0, 1.0));
+        let blobs = std::collections::BTreeMap::default();
+        let input = EncodeInput {
+            scene: &scene,
+            blobs: &blobs,
+            scroll_offset: None,
+            drift: None,
+        };
+        let linear: Vec<_> = (0..4096)
+            .map(|frame| {
+                let drift = frame_input(&input, frame, 16, 4080)
+                    .drift
+                    .expect("a static scene drifts");
+                let [a, b, c, d, ..] = drift.as_coeffs();
+                [a, b, c, d].map(|v| (v as f32).to_bits())
+            })
+            .collect();
+        let distinct: std::collections::BTreeSet<_> = linear.iter().collect();
+        assert_eq!(distinct.len(), linear.len());
     }
 }
 
@@ -2740,6 +2779,7 @@ mod completion_tests {
             scene: &scene,
             blobs: &blobs,
             scroll_offset: None,
+            drift: None,
         };
         run_frames(
             engine,
