@@ -196,11 +196,9 @@ impl Environment {
         match state {
             EnvironmentState::Map(map) => {
                 if let Some(value) = map.get(&TypeId::of::<T>()) {
-                    matches.push(
-                        value
-                            .downcast_ref::<T>()
-                            .expect("failed to downcast value while collecting environment state"),
-                    );
+                    matches.push(value.downcast_ref::<T>().expect(
+                        "an environment entry keyed by TypeId::of::<T>() holds a value of type T",
+                    ));
                 }
             }
             EnvironmentState::Overlay { parent, key, entry } => {
@@ -209,11 +207,10 @@ impl Environment {
                     return;
                 }
                 match entry {
-                    EnvironmentEntry::Present(value) => matches.push(
-                        value
-                            .downcast_ref::<T>()
-                            .expect("failed to downcast value while collecting environment state"),
-                    ),
+                    EnvironmentEntry::Present(value) => matches
+                        .push(value.downcast_ref::<T>().expect(
+                        "an environment entry keyed by TypeId::of::<T>() holds a value of type T",
+                    )),
                     EnvironmentEntry::Removed => matches.clear(),
                 }
             }
@@ -330,8 +327,10 @@ impl Environment {
     #[must_use]
     #[allow(clippy::coerce_container_to_any)]
     pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.lookup_any(TypeId::of::<T>())
-            .map(|v| v.downcast_ref::<T>().expect("failed to downcast value"))
+        self.lookup_any(TypeId::of::<T>()).map(|v| {
+            v.downcast_ref::<T>()
+                .expect("an environment entry keyed by TypeId::of::<T>() holds a value of type T")
+        })
     }
 
     /// Retrieves the `index`-th visible value of type `T`, counting from the
@@ -367,7 +366,7 @@ impl Environment {
             self.insert(f());
         }
         self.get::<T>()
-            .expect("value missing from environment after insertion")
+            .expect("a value inserted into the environment is visible to the next lookup")
     }
 
     /// Extracts a value from the environment using the `Extractor` trait.

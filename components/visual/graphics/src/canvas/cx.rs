@@ -46,13 +46,11 @@ pub enum Stale {
 }
 
 impl Shared {
-    /// The shared state of a canvas mounted in `env`, reading its box from
-    /// `size`: the cell the [`Canvas`](crate::canvas::Canvas) created.
-    pub(crate) fn new(env: Environment, size: SignalCell<Size>) -> Rc<Self> {
+    pub(crate) fn new(env: Environment) -> Rc<Self> {
         Rc::new(Self {
             env,
             invalidator: RefCell::new(None),
-            size,
+            size: SignalCell::new(Size::zero()),
             clock: SignalCell::new(Duration::ZERO),
             stale: RefCell::new(Vec::new()),
         })
