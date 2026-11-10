@@ -23,7 +23,8 @@ use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
 use waterui::animation::{Animation, ChangeAnimation};
 use waterui::component::list::{
-    ListConfig, ListItem, ListSection, ListSelection, Move, OnDelete, OnMove,
+    ListConfig, ListItem, ListRowTags, ListSection, ListSections, ListSelection, ListTagId, Move,
+    OnDelete, OnMove,
 };
 use waterui::id::Id as RawId;
 use waterui::layout::padding::EdgeInsets;
@@ -81,12 +82,6 @@ fn row_height(content_height: f64, insets: KitInsets, minimum: f64) -> f64 {
     (content_height + insets.top + insets.bottom).max(minimum)
 }
 
-/// `peekListItemSection`: the `ListSection` marker `index` carries, when
-/// it starts a section.
-fn peek_section(snapshot: &AnyViewsSnapshot<ListItem>, index: usize) -> Option<ListSection> {
-    snapshot.get_view(index).and_then(ListItem::into_section)
-}
-
 /// A resolved section `Text` as its live styled-string signal.
 fn resolve_text(text: &Text, env: &Environment) -> Computed<StyledStr> {
     text.resolve(env).into_content()
@@ -105,66 +100,38 @@ struct SectionGroup {
     count: usize,
 }
 
-/// `computeListSectionGroups`: a section marker starts a group, items
-/// accumulate into the pending group, and the pending group flushes when
-/// the next marker — or the end — arrives.
+/// `computeListSectionGroups`: consecutive items of one section form a
+/// group carrying that section's chrome. The section comes from each item's
+/// id, so grouping materializes no row, and a section without items forms
+/// no group — it draws neither header nor footer.
 fn compute_section_groups(
-    snapshot: &AnyViewsSnapshot<ListItem>,
-    positions: &HashMap<ItemId, usize>,
+    sections: &ListSections,
     item_ids: &[ItemId],
     env: &Environment,
 ) -> Vec<SectionGroup> {
-    let mut groups = Vec::new();
-    let mut pending: Option<SectionGroup> = None;
+    let mut groups: Vec<SectionGroup> = Vec::new();
+    let mut current = None;
     for &id in item_ids {
-        let index = positions[&id];
-        if let Some(section) = peek_section(snapshot, index) {
-            if let Some(group) = pending.take() {
-                groups.push(group);
+        let section = sections.section_of(id);
+        if current == Some(section) {
+            if let Some(group) = groups.last_mut() {
+                group.count += 1;
             }
-            pending = Some(SectionGroup {
-                label: section.label().map(|text| resolve_text(text, env)),
-                footer: section.get_footer().map(|text| resolve_text(text, env)),
-                count: 0,
-            });
+            continue;
         }
-        match &mut pending {
-            Some(group) => group.count += 1,
-            None => {
-                pending = Some(SectionGroup {
-                    label: None,
-                    footer: None,
-                    count: 1,
-                });
-            }
-        }
-    }
-    if let Some(group) = pending.take() {
-        groups.push(group);
+        current = Some(section);
+        let chrome = sections.section(section);
+        groups.push(SectionGroup {
+            label: chrome
+                .and_then(ListSection::label)
+                .map(|text| resolve_text(text, env)),
+            footer: chrome
+                .and_then(ListSection::get_footer)
+                .map(|text| resolve_text(text, env)),
+            count: 1,
+        });
     }
     groups
-}
-
-/// `resolveListSectionGroups`: with `uses_sections` on, group by the
-/// items' markers; off, one unlabeled group covers everything.
-fn resolve_section_groups(
-    snapshot: &AnyViewsSnapshot<ListItem>,
-    positions: &HashMap<ItemId, usize>,
-    item_ids: &[ItemId],
-    uses_sections: bool,
-    env: &Environment,
-) -> Vec<SectionGroup> {
-    if uses_sections {
-        compute_section_groups(snapshot, positions, item_ids, env)
-    } else if item_ids.is_empty() {
-        Vec::new()
-    } else {
-        vec![SectionGroup {
-            label: None,
-            footer: None,
-            count: item_ids.len(),
-        }]
-    }
 }
 
 /// `isSinglePlainSection`: one group carrying no chrome is the shape batch
@@ -292,15 +259,16 @@ fn is_navigation_scroll_surface(table: &TableView) -> bool {
 }
 
 /// The selection mode `ListConfig` carries — `WuiList`'s
-/// `SelectionController`.
+/// `SelectionController`. The bindings hold row tags (`ListRowTags`), not
+/// row ids.
 enum SelectionMode {
     /// Rows are not selectable.
     None,
-    /// A single selected row; `None` inside the binding means nothing is
+    /// A single selected tag; `None` inside the binding means nothing is
     /// selected.
-    Single(Binding<Option<ItemId>>),
-    /// The set of selected row ids.
-    Multiple(Binding<BTreeSet<ItemId>>),
+    Single(Binding<Option<ListTagId>>),
+    /// The set of selected tags.
+    Multiple(Binding<BTreeSet<ListTagId>>),
 }
 
 impl fmt::Debug for SelectionMode {
@@ -321,8 +289,9 @@ impl SelectionMode {
         matches!(self, Self::Multiple(_))
     }
 
-    /// `SelectionController.selectedIds`: the binding's current selection.
-    fn selected_ids(&self) -> BTreeSet<ItemId> {
+    /// `SelectionController.selectedIds`: the binding's current selection,
+    /// as tags.
+    fn selected_tags(&self) -> BTreeSet<ListTagId> {
         match self {
             Self::None => BTreeSet::new(),
             Self::Single(binding) => {
@@ -336,12 +305,12 @@ impl SelectionMode {
         }
     }
 
-    /// The table's selected ids written back into the binding.
-    fn write(&self, ids: &BTreeSet<ItemId>) {
+    /// The table's selected rows' tags written back into the binding.
+    fn write(&self, tags: &BTreeSet<ListTagId>) {
         match self {
             Self::None => {}
-            Self::Single(binding) => binding.set(ids.iter().next().copied()),
-            Self::Multiple(binding) => binding.set(ids.clone()),
+            Self::Single(binding) => binding.set(tags.iter().next().copied()),
+            Self::Multiple(binding) => binding.set(tags.clone()),
         }
     }
 }
@@ -583,6 +552,8 @@ struct Shared {
     flat_layout: Vec<FlatEntry>,
     /// Selection bookkeeping.
     selection: SelectionMode,
+    /// The tag each row is selected by, by item id.
+    tags: ListRowTags,
     /// `SelectionController.applyingToTable` — guards re-entrancy while a
     /// binding change applies to the table.
     applying_selection: Cell<bool>,
@@ -593,8 +564,8 @@ struct Shared {
     on_delete: Option<OnDelete>,
     /// Reorder callback.
     on_move: Option<OnMove>,
-    /// `uses_sections` — whether item markers group the list.
-    uses_sections: bool,
+    /// The sections the items group into, by item id.
+    sections: ListSections,
     /// The theme's row insets for `None` inputs.
     #[cfg(target_os = "macos")]
     theme_insets: KitInsets,
@@ -655,13 +626,7 @@ impl Shared {
     /// Regroups over the current `item_ids` — after a local delete or
     /// move mutates them.
     fn regroup(&mut self) {
-        self.groups = resolve_section_groups(
-            &self.snapshot,
-            &self.positions,
-            &self.item_ids,
-            self.uses_sections,
-            &self.env,
-        );
+        self.groups = compute_section_groups(&self.sections, &self.item_ids, &self.env);
     }
 
     /// Whether `flat`'s row resolved under `.disabled` on its last render
@@ -676,20 +641,40 @@ impl Shared {
             .is_some_and(Signal::snapshot)
     }
 
-    /// `writeSelectionFromTable`: `flat` item indexes selected on the
-    /// table written into the binding — skipped while a binding change is
-    /// applying to the table.
+    /// Whether input may select `flat`'s row: it carries a tag and is not
+    /// disabled. A row without a tag is not selectable.
+    fn row_selectable(&self, flat: usize) -> bool {
+        self.tags.tag(self.item_ids[flat]).is_some() && !self.row_disabled(flat)
+    }
+
+    /// Whether `flat`'s row carries a tag in the binding's selection.
+    fn row_selected(&self, flat: usize, selected: &BTreeSet<ListTagId>) -> bool {
+        self.tags
+            .tag(self.item_ids[flat])
+            .is_some_and(|tag| selected.contains(&tag))
+    }
+
+    /// The flat indexes of the rows the binding's selection holds: every row
+    /// carrying a selected tag.
+    fn selected_flats(&self) -> Vec<usize> {
+        let selected = self.selection.selected_tags();
+        (0..self.item_ids.len())
+            .filter(|flat| self.row_selected(*flat, &selected))
+            .collect()
+    }
+
+    /// `writeSelectionFromTable`: the tags of the `flat` item indexes
+    /// selected on the table written into the binding — skipped while a
+    /// binding change is applying to the table.
     fn write_selection(&self, flats: impl Iterator<Item = usize>) {
         if self.applying_selection.get() {
             return;
         }
-        let mut ids = BTreeSet::new();
-        for flat in flats {
-            if let Some(&id) = self.item_ids.get(flat) {
-                ids.insert(id);
-            }
-        }
-        self.selection.write(&ids);
+        let tags = flats
+            .filter_map(|flat| self.item_ids.get(flat))
+            .filter_map(|id| self.tags.tag(*id))
+            .collect();
+        self.selection.write(&tags);
     }
 
     /// Renders `flat`'s item, returning its insets, deletable signal and leaf.
@@ -698,7 +683,7 @@ impl Shared {
             .snapshot
             .get_view(self.positions[&self.item_ids[flat]])
             .expect("list item index is in bounds");
-        let (content, deletable, _, insets) = item.into_parts();
+        let (content, deletable, insets) = item.into_parts();
         // The row's `Disabled` signal comes from the scope this render
         // resolves the content under — the same pass, not a second walk.
         let (leaf, resolved_env) = self.renderer.render_resolved(content);
@@ -1295,7 +1280,7 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
         return;
     }
     borrowed.applying_selection.set(true);
-    let selected = borrowed.selection.selected_ids();
+    let selected = borrowed.selected_flats();
     #[cfg(target_os = "ios")]
     {
         let current: HashSet<usize> = table
@@ -1306,10 +1291,7 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
                 _ => None,
             })
             .collect();
-        let wanted: HashSet<usize> = selected
-            .iter()
-            .filter_map(|id| borrowed.flat_of_id(*id))
-            .collect();
+        let wanted: HashSet<usize> = selected.into_iter().collect();
         for flat in &current {
             if !wanted.contains(flat)
                 && let Some((section, row)) = borrowed.display_index_of(DisplayRow::Live(*flat))
@@ -1328,8 +1310,7 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
     #[cfg(target_os = "macos")]
     {
         let wanted: Vec<usize> = selected
-            .iter()
-            .filter_map(|id| borrowed.flat_of_id(*id))
+            .into_iter()
             .filter_map(|flat| {
                 borrowed
                     .flat_layout
@@ -1608,8 +1589,9 @@ mod platform_impl {
             return;
         };
         // A `.disabled` row is inert — accessibility activation must not
-        // select it, the way a pointer press must not.
-        if state.borrow().row_disabled(flat) {
+        // select it, the way a pointer press must not — and a row without a
+        // tag is not selectable at all.
+        if !state.borrow().row_selectable(flat) {
             return;
         }
         if selected.contains(&flat) {
@@ -1943,7 +1925,7 @@ mod platform_impl {
         fn should_select(&self, _table: &TableView, index: IndexPath) -> bool {
             let state = self.state.borrow();
             match state.display_at(index.section, index.row) {
-                Some(DisplayRow::Live(flat)) => !state.row_disabled(flat),
+                Some(DisplayRow::Live(flat)) => state.row_selectable(flat),
                 _ => false,
             }
         }
@@ -1955,9 +1937,8 @@ mod platform_impl {
                 return;
             };
             let state = self.state.borrow();
-            if let Some(&id) = state.item_ids.get(flat)
-                && state.selection.allows_multiple()
-                && state.selection.selected_ids().contains(&id)
+            if state.selection.allows_multiple()
+                && state.row_selected(flat, &state.selection.selected_tags())
             {
                 table.deselect_row(index, false);
             }
@@ -2317,7 +2298,7 @@ mod platform_impl {
             let state = self.state.borrow();
             state.selection.allows_selection()
                 && match state.flat_layout.get(row) {
-                    Some(&FlatEntry::Row(flat)) => !state.row_disabled(flat),
+                    Some(&FlatEntry::Row(flat)) => state.row_selectable(flat),
                     _ => false,
                 }
         }
@@ -2560,12 +2541,13 @@ fn render(mut config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
             ListSelection::Single(binding) => SelectionMode::Single(binding.clone()),
             ListSelection::Multiple(binding) => SelectionMode::Multiple(binding.clone()),
         },
+        tags: config.row_tags().clone(),
         applying_selection: Cell::new(false),
         #[cfg(target_os = "macos")]
         editing: config.editing().clone(),
         on_delete: config.take_on_delete(),
         on_move: config.take_on_move(),
-        uses_sections: config.uses_sections(),
+        sections: config.sections().clone(),
         #[cfg(target_os = "macos")]
         theme_insets,
         resolved_min_height: min_row_height(config.min_row_height(), stock_height),
