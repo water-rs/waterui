@@ -901,7 +901,7 @@ impl ResolvedFramework {
 
     /// The framework manifest the selection's metadata was read from, as a
     /// diagnostic names it.
-    fn origin(&self) -> String {
+    pub(crate) fn origin(&self) -> String {
         match &self.source {
             Source::Stable { release, .. } => release.as_ref().map_or_else(
                 || "the stable framework manifest".to_owned(),
