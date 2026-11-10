@@ -313,6 +313,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
+    /// The frame triggers, for a watcher that outlives the read and only
+    /// needs to wake the pump without re-encoding the tree.
+    pub(crate) fn frame_signals(&self) -> FrameSignals {
+        self.signals.clone()
+    }
+
     /// The cell an outside-reader watch marks, shared by the identity-less
     /// and identity-keyed paths below.
     fn root_weak(&self) -> Weak<NodeCell<E>> {

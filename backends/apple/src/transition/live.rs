@@ -211,7 +211,7 @@ impl LiveChild {
         // ended at once: the site's `None` answer releases the slot.
         #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
         if state.captures_content() {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: a pixel transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"
             );

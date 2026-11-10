@@ -22,7 +22,8 @@ use kurbo::{
 };
 
 use super::{
-    DashCost, GpuBound, GpuPath, RowCharge, RowProfile, StraightChords, encodable, shape_path,
+    DashCost, GpuBound, GpuPath, InputCounts, InputUnit, RowCharge, RowProfile, StraightChords,
+    encodable, shape_path,
 };
 use crate::render::stroke_abi::{
     CAP_BUTT, CAP_END, CAP_ROUND, CAP_SQUARE, CAP_START, CLOSE, JOIN_BEVEL, JOIN_MASK, JOIN_MITER,
@@ -172,6 +173,7 @@ fn empty(origin: Vec2, surface: (f64, f64)) -> GpuPath {
         origin,
         bound: GpuBound::default(),
         profile: Arc::default(),
+        subpaths: Arc::from([]),
     }
     .placed(origin, surface)
 }
@@ -763,6 +765,10 @@ struct Encoder<'a> {
     joins: Vec<RowCharge>,
     /// A dashed stroke's records' shares of its dash starts.
     dash_charges: Vec<RowCharge>,
+    /// The finished subpaths, and the rows the current one's charges
+    /// reach (water-rs/waterui#4131).
+    subpaths: Vec<InputUnit>,
+    subpath_rows: [f64; 2],
     // Curved records retain one subdivision-rounding allowance when dashed.
     curved_records: usize,
     // The dash capacities.
@@ -801,6 +807,8 @@ impl<'a> Encoder<'a> {
             charges: Vec::new(),
             joins: Vec::new(),
             dash_charges: Vec::new(),
+            subpaths: Vec::new(),
+            subpath_rows: [f64::INFINITY, f64::NEG_INFINITY],
             curved_records: 0,
             subpath_polygon: 0.0,
             stage_total: 0,
@@ -1301,6 +1309,7 @@ impl<'a> Encoder<'a> {
         }
         let margin = self.s * self.tol;
         let body = self.cap_reach() + margin;
+        let mut rows = [dev.y0 - body, dev.y1 + body];
         let (lines_bins, lines_fragments) = straight.map_or((0, 0), |s| (s.bins, s.fragments));
         self.charges.push(RowCharge {
             top: dev.y0 - body,
@@ -1313,6 +1322,7 @@ impl<'a> Encoder<'a> {
         if (self.bins, self.fragments) != body_end {
             let at = (self.raster * piece.p0).y;
             let reach = self.outline_reach() + margin;
+            rows = [rows[0].min(at - reach), rows[1].max(at + reach)];
             self.joins.push(RowCharge {
                 top: at - reach,
                 bottom: at + reach,
@@ -1337,6 +1347,12 @@ impl<'a> Encoder<'a> {
                 dashes: Some(plan.on() * polygon * (1.0 + POLYGON_MARGIN) / plan.period),
             });
         }
+        // The subpath's outline, caps and dashes lie within its records'
+        // charges, which its unit reaches (water-rs/waterui#4131).
+        self.subpath_rows = [
+            self.subpath_rows[0].min(rows[0]),
+            self.subpath_rows[1].max(rows[1]),
+        ];
     }
 
     /// How far a record's offsets, caps and dashes reach from its
@@ -1462,6 +1478,15 @@ impl<'a> Encoder<'a> {
         }
         let first = self.first;
         let last = self.records.len() - 1;
+        let (start, end) = (
+            self.cap_row(self.stroke.start_cap),
+            self.cap_row(self.stroke.end_cap),
+        );
+        let segments_before = self.segments;
+        let mut counts = InputCounts {
+            records: last + 1 - first,
+            ..InputCounts::default()
+        };
         if let Some(plan) = &self.dash {
             if self.subpath_polygon >= FIXED_LIMIT {
                 return Err(RenderError::Unsupported("dashed subpath too long"));
@@ -1485,9 +1510,23 @@ impl<'a> Encoder<'a> {
                 record.aux[2] = first_rel;
                 record.aux[3] = last_rel;
             }
-            self.dashes = self
-                .dashes
-                .saturating_add(plan.starts(self.subpath_polygon).saturating_add(1));
+            let dashes = plan.starts(self.subpath_polygon).saturating_add(1);
+            self.dashes = self.dashes.saturating_add(dashes);
+            // The subpath's share of what `finish_path` adds for the whole
+            // dashed path: its dashes' allowances and caps, and its curved
+            // records' rounding allowance.
+            let records = &self.records[first..=last];
+            let curved = records
+                .iter()
+                .filter(|record| {
+                    matches!(record.head[0] & PIECE_MASK, PIECE_CURVE | PIECE_POINT_ARC)
+                })
+                .count();
+            counts.stage = records.iter().map(|record| record.head[1] as usize).sum();
+            counts.dashes = dashes;
+            counts.segments = self.body_chords[first..=last].iter().sum::<usize>()
+                + 2 * (dashes + curved)
+                + dashes * (start.chords + end.chords);
             // A run of the subpath's records can begin at its first record,
             // and its terminal dot lies on its last (`DashCost`). Every
             // dashed record has its share, in record order.
@@ -1498,10 +1537,6 @@ impl<'a> Encoder<'a> {
                     .expect("a dashed record's share") += starts;
             }
         } else {
-            let (start, end) = (
-                self.cap_row(self.stroke.start_cap),
-                self.cap_row(self.stroke.end_cap),
-            );
             if !closed {
                 self.records[first].head[0] |= CAP_START;
                 self.records[last].head[0] |= CAP_END;
@@ -1525,7 +1560,19 @@ impl<'a> Encoder<'a> {
                 self.records[i].head[3] = count_u32(self.segments, "stroke segment count")?;
                 self.segments += n;
             }
+            counts.segments = self.segments - segments_before;
         }
+        let [top, bottom] =
+            std::mem::replace(&mut self.subpath_rows, [f64::INFINITY, f64::NEG_INFINITY]);
+        self.subpaths.push(InputUnit {
+            top,
+            bottom,
+            inputs: [
+                count_u32(first, "stroke records")?,
+                count_u32(last + 1, "stroke records")?,
+            ],
+            counts,
+        });
         self.has_forward = false;
         self.subpath_polygon = 0.0;
         Ok(())
@@ -1608,7 +1655,7 @@ impl<'a> Encoder<'a> {
             end_cap: cap_code(self.stroke.end_cap),
             k_cap: self.k_cap,
         };
-        GpuPath {
+        let path = GpuPath {
             elements: Arc::from([]),
             strokes: self.records.into(),
             stroke,
@@ -1623,8 +1670,17 @@ impl<'a> Encoder<'a> {
                     .chain(&self.dash_charges),
                 dash_cost,
             )),
-        }
-        .placed(origin, surface)
+            subpaths: self.subpaths.into(),
+        };
+        debug_assert_eq!(
+            path.subpaths
+                .iter()
+                .map(|unit| unit.counts)
+                .sum::<InputCounts>(),
+            path.inputs(),
+            "the subpaths partition the path's inputs"
+        );
+        path.placed(origin, surface)
     }
 }
 

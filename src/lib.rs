@@ -120,7 +120,8 @@ pub mod prelude {
 
     // Gradient views
     #[cfg(feature = "gpu")]
-    pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient};
+    pub use super::gradient::FlowingGradient;
+    pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
     pub use super::gradient::{Gradient, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
@@ -225,7 +226,7 @@ pub use waterui_url::Url;
 
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, ContentLedger, Error, Str, animation,
+    AnyView, ContentLedger, Error, Str, animation, contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     event,

@@ -168,7 +168,7 @@ waterui-text = { version = "0.5", features = ["highlight"] }
 ```rust
 use waterui_text::highlight::{DefaultHighlighter, Language, highlight_text};
 use waterui_core::Str;
-use waterui_graphics::color::ColorScheme;
+use waterui_color::ColorScheme;
 
 // Create highlighter with the palette for the surface it is read against
 let mut highlighter = DefaultHighlighter::new(ColorScheme::Light);
@@ -249,7 +249,7 @@ Key dependencies that shape the API:
 
 - **waterui-core** - Provides `View` trait, `Environment`, and reactive primitives
 - **nami** - Fine-grained reactivity system (`Binding`, `Computed`, `Signal`)
-- **waterui-graphics** - Color types for text and background styling
+- **waterui-color** - Color types for text and background styling
 - **pulldown-cmark** - Markdown parsing engine
 - **syntect** - Syntax highlighting for code blocks
 - **two-face** - Extended syntax definitions including Swift

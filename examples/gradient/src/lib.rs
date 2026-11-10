@@ -2,7 +2,7 @@
 //!
 //! This example showcases the gradient views:
 //! - A mesh gradient whose colours follow a signal
-//! - A GPU-animated mesh gradient driven by the engine's frame clock
+//! - An animated mesh gradient driven by the canvas clock
 //! - A GPU flowing shader gradient
 //! - Linear, radial, angular gradients
 //! - Mesh gradients with per-vertex colors
@@ -102,7 +102,7 @@ fn animated_background_section() -> impl View {
     .task(animate_mesh_colors(colors.clone()))
 }
 
-/// Demo: GPU-animated mesh gradient (shader animated, no per-frame CPU updates)
+/// Demo: mesh gradient animated by the canvas clock (no per-frame CPU updates)
 fn gpu_animated_mesh_gradient_section() -> impl View {
     let animating = Binding::container(true);
     // The configuration is a signal: pausing sets the speed to zero, which

@@ -198,10 +198,13 @@ Every placed view has a response rectangle. It obeys:
   `INFINITY`; `.width(v)` (`min = max = v`) and `.max_width(100)` do not
   stretch.
 - `Absolute` is `Both` regardless of its children.
-- A lazy container (`List`, lazy stacks) cannot enumerate its children before
-  they are realised, so it reports its layout's axis over an empty child set:
-  `None` for a lazy stack. A lazy stack that must fill is placed by a parent
-  that stretches it (`ScrollView`, `Absolute`, a `Frame` with `max = INFINITY`).
+- A lazy stack cannot enumerate its children before they are realised, so it
+  reports its layout's axis over an empty child set: `None`. A lazy stack that
+  must fill is placed by a parent that stretches it (`ScrollView`, `Absolute`,
+  a `Frame` with `max = INFINITY`).
+- A `List` is `Both`: like a `ScrollView`, it fills the space it is offered,
+  and `List`s stacked in one container share the space left after their
+  siblings by the stack's main-axis negotiation (§4.2).
 - A `ScrollView` stretches on its scrolling axis, and on the non-scrolling
   axis only when its content stretches there (`Axis::All` is `Both`);
   `Spacer` is `MainAxis`; `Divider` is `CrossAxis`;

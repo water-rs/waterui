@@ -6,7 +6,6 @@ use core::time::Duration;
 use kurbo::{BezPath, Point, Rect};
 use nami::signal::IntoComputed;
 use waterui::navigation::tab::NativeTabStyle;
-use waterui_controls::ControlSize;
 use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
@@ -455,93 +454,6 @@ pub struct PickerMetrics {
     /// `horizontal_inset` padding on both sides (M3 `ButtonDefaults.MinWidth`
     /// is 58dp per segment; unused by non-segmented styles).
     pub segment_min_width: f64,
-}
-
-/// Slider layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct SliderMetrics {
-    /// Horizontal slider inset.
-    pub horizontal_inset: f64,
-    /// Gap between slider labels and track.
-    pub horizontal_spacing: f64,
-    /// Vertical spacing around the track.
-    pub vertical_spacing: f64,
-    /// Minimum track width.
-    pub min_track_width: f64,
-    /// Track height.
-    pub track_height: f64,
-    /// Width of the handle. A theme whose handle is a bar rather than a circle
-    /// sets this independently of [`Self::handle_height`].
-    pub handle_width: f64,
-    /// Height of the handle, which also sets the control row's height.
-    pub handle_height: f64,
-}
-
-impl SliderMetrics {
-    /// Create slider layout metrics.
-    #[must_use]
-    pub const fn new(
-        horizontal_inset: f64,
-        horizontal_spacing: f64,
-        vertical_spacing: f64,
-        min_track_width: f64,
-        track_height: f64,
-        handle_width: f64,
-        handle_height: f64,
-    ) -> Self {
-        Self {
-            horizontal_inset,
-            horizontal_spacing,
-            vertical_spacing,
-            min_track_width,
-            track_height,
-            handle_width,
-            handle_height,
-        }
-    }
-
-    /// Horizontal room the handle needs beyond each end of the track, so it
-    /// stays inside the control at either extreme.
-    #[must_use]
-    pub const fn handle_overhang(&self) -> f64 {
-        self.handle_width / 2.0
-    }
-}
-
-/// Layout metrics of the value indicator a slider shows above its thumb while
-/// the thumb is dragged.
-#[derive(Debug, Clone, Copy)]
-pub struct SliderValueIndicatorMetrics {
-    /// Horizontal padding inside the bubble around the value text.
-    pub padding_x: f64,
-    /// Vertical padding inside the bubble around the value text.
-    pub padding_y: f64,
-    /// Gap between the top of the thumb and the bottom of the bubble.
-    pub thumb_gap: f64,
-    /// Smallest bubble width regardless of how narrow the label is.
-    pub min_width: f64,
-    /// Smallest bubble height regardless of how short the label is.
-    pub min_height: f64,
-}
-
-impl SliderValueIndicatorMetrics {
-    /// Create value indicator metrics.
-    #[must_use]
-    pub const fn new(
-        padding_x: f64,
-        padding_y: f64,
-        thumb_gap: f64,
-        min_width: f64,
-        min_height: f64,
-    ) -> Self {
-        Self {
-            padding_x,
-            padding_y,
-            thumb_gap,
-            min_width,
-            min_height,
-        }
-    }
 }
 
 /// Progress indicator layout metrics.
@@ -1178,47 +1090,13 @@ pub trait WidgetTheme {
     ) {
     }
 
-    /// Return slider metrics for the given control size.
-    fn slider_metrics(&self, size: ControlSize) -> SliderMetrics;
-    /// Draw slider track chrome for a control of `size`. `state` carries the
-    /// disabled flag so themes can render the inactive track.
-    fn draw_slider_track(
-        &self,
-        recorder: &mut Recorder,
-        track_rect: Rect,
-        fill_rect: Rect,
-        size: ControlSize,
-        state: WidgetInteractionState,
-    );
-    /// Draw slider thumb chrome for a control of `size`.
-    fn draw_slider_thumb(
-        &self,
-        recorder: &mut Recorder,
-        center: Point,
-        radius: f64,
-        size: ControlSize,
-        state: WidgetInteractionState,
-    );
-    /// Draw slider thumb state layer.
-    fn draw_slider_thumb_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _size: ControlSize,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Return the layout metrics of the value indicator shown above the thumb
-    /// while the slider is dragged.
-    fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics;
-    /// Return the value indicator's label foreground color.
-    fn slider_value_indicator_color(&self) -> Color;
-    /// Return the value indicator's label font.
-    fn slider_value_indicator_font(&self) -> Font;
-    /// Draw the value indicator's chrome behind its label. `bounds` is the
-    /// bubble rect the renderer laid out above the thumb.
-    fn draw_slider_value_indicator(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Return how the slider of `spec` looks and responds, as plain data
+    /// (water-rs/waterui#1434): the measures it is laid out by, its track,
+    /// fill, knob and value indicator as parts over the normalized value,
+    /// the motion of that value and how a drag maps to it. Hydrolysis
+    /// measures, places, hit-tests, records and animates the slider from
+    /// the look alone.
+    fn slider(&self, spec: &super::SliderSpec, env: &Environment) -> super::SliderLook;
 
     /// Return progress indicator metrics.
     fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics;

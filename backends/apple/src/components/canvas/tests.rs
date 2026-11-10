@@ -1745,4 +1745,70 @@ mod render {
             SCALE,
         );
     }
+
+    /// The animated mesh gradient, driven as a host drives it: recorded at
+    /// mount, then updated in place by frames presented ten seconds apart.
+    /// Both captures go through the layer tree and Core Animation's own
+    /// `renderInContext`.
+    #[test]
+    fn the_animated_mesh_gradient_flows_with_the_canvas_clock() {
+        use core::time::Duration;
+        use waterui_graphics::draw::{Instant, LayoutSize};
+        use waterui_graphics::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
+        use waterui_graphics::resources::SceneResources;
+        use waterui_graphics::{SceneFrame, SceneUpdate};
+
+        const WIDTH: usize = 360;
+        const HEIGHT: usize = 240;
+        const WIDTH_PT: f32 = 360.0;
+        const HEIGHT_PT: f32 = 240.0;
+        let mut scene = canvas_view(AnimatedMeshGradient::new(
+            AnimatedMeshGradientConfig::aqua_bloom().speed(1.0),
+        ));
+        let registry = Rc::new(Registry::default());
+        let resources = SceneResources::new(Rc::new(Backend::new(Rc::clone(&registry), u64::MAX)));
+        let mut names = resources.recording();
+        let mut content = Content::record(&LayoutSize::new(), |recorder| {
+            let again = scene.build_scene(recorder, &mut names, WIDTH_PT, HEIGHT_PT);
+            assert!(again, "a gradient bound to the clock asks for frames");
+        });
+        let _held = names.finish();
+        let fixture = Fixture::new(registry);
+        let ctx = fixture.at(1.0);
+        let mut tree = Tree::new(&first_list(&mut content), ctx);
+        tree.settle();
+        save(
+            "animated_mesh_t0",
+            &pixels(tree.root(), WIDTH, HEIGHT, 1),
+            WIDTH,
+            HEIGHT,
+            1,
+        );
+
+        let start = Instant::now();
+        for time in [start, start + Duration::from_secs(10)] {
+            let update = scene.update_scene(
+                &resources,
+                SceneFrame {
+                    width: WIDTH_PT,
+                    height: HEIGHT_PT,
+                    time,
+                },
+            );
+            assert!(matches!(update, SceneUpdate::Retained { again: true }));
+            let _ = content.sample(time);
+        }
+        let Some(ContentChange::Update(updates)) = content.take_change() else {
+            panic!("the clock updates the mesh operand in place");
+        };
+        tree.update(&updates, ctx);
+        tree.settle();
+        save(
+            "animated_mesh_t10",
+            &pixels(tree.root(), WIDTH, HEIGHT, 1),
+            WIDTH,
+            HEIGHT,
+            1,
+        );
+    }
 }

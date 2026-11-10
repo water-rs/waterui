@@ -2159,7 +2159,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4717,7 +4717,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#1be98ebff6796cd38ea97912646354e68f1a8513"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#a46e53101b7c2e4bd96acf25d7c03ce885828aca"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -12977,6 +12977,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-color"
+version = "0.5.1"
+dependencies = [
+ "cherenkov-record",
+ "color",
+ "filtrate-core",
+ "nami",
+ "pastey 0.2.3",
+ "waterui-core",
+]
+
+[[package]]
 name = "waterui-controls"
 version = "0.5.1"
 dependencies = [
@@ -13007,6 +13019,7 @@ dependencies = [
  "smallvec",
  "suiteki",
  "thiserror 2.0.21",
+ "tracing",
  "waterui-macros",
 ]
 
@@ -13054,7 +13067,6 @@ dependencies = [
  "cherenkov-gpu",
  "cherenkov-oracle",
  "cherenkov-record",
- "color",
  "event-listener",
  "filtrate",
  "filtrate-core",
@@ -13068,7 +13080,6 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-video",
  "objc2-metal 0.3.2",
- "pastey 0.2.3",
  "pollster 1.0.1",
  "send_wrapper",
  "shaderloom",
@@ -13076,6 +13087,7 @@ dependencies = [
  "tracing",
  "ttf-parser",
  "waterui",
+ "waterui-color",
  "waterui-core",
  "waterui-testing",
  "wgpu",
@@ -13561,8 +13573,8 @@ dependencies = [
  "two-face",
  "waterkit-clipboard",
  "waterui",
+ "waterui-color",
  "waterui-core",
- "waterui-graphics",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",

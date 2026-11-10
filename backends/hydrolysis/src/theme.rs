@@ -60,21 +60,21 @@ pub use chrome::{
     Ripple, StateLayer, Surface, Wash,
 };
 pub use look::{
-    ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion, SpecTint,
-    Transition, ValueMotion,
+    ButtonLook, ButtonSpec, Custom, DragMapping, Driven, DrivenSet, HitRegion, Inputs, Knob, Label,
+    Motion, SliderLayout, SliderLook, SliderSpec, SpecTint, Transition, ValueIndicator,
+    ValueMotion,
 };
 #[cfg(hydrolysis_runtime)]
-pub(crate) use look::{Change, LiveDriven, RealizedCustom, Retarget};
+pub(crate) use look::{Change, CustomPart, LiveDriven, RealizedCustom, Retarget};
 pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};
 pub use widget::{
     BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
     ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,
     ListTrailingControlMetrics, MAX_PRESS_WAVES, ModalInteraction, NavigationMetrics,
     NavigationMotion, PickerMetrics, PressWave, PressWaves, ProgressIndicatorStyle,
-    ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-    SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
-    TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, WidgetInteractionState,
-    WidgetTheme,
+    ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, StepperEnd,
+    StepperMetrics, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
+    TextContextMenuMetrics, WidgetInteractionState, WidgetTheme,
 };
 
 #[cfg(hydrolysis_runtime)]
