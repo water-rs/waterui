@@ -1371,6 +1371,7 @@ impl GpuCoverage {
             ));
         }
         let previous = self.buffers.as_ref();
+        let limit = self.limit.bytes;
         // Tests read the buffers back; the runtime never does.
         let storage = wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
@@ -1387,39 +1388,39 @@ impl GpuCoverage {
                 PARAMS_BLOCKS * u64::from(PARAMS_STRIDE),
                 wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             ),
-            elements: sized_buffer(
+            elements: grown_buffer(
                 device,
                 previous.map(|b| &b.elements),
                 "cov elements",
-                sizes[1].max(48),
+                (sizes[1].max(48), limit),
                 storage,
             ),
-            paths: sized_buffer(
+            paths: grown_buffer(
                 device,
                 previous.map(|b| &b.paths),
                 "cov paths",
-                sizes[3],
+                (sizes[3], limit),
                 storage,
             ),
-            segments: sized_buffer(
+            segments: grown_buffer(
                 device,
                 previous.map(|b| &b.segments),
                 "cov segments",
-                sizes[4].max(16),
+                (sizes[4].max(16), limit),
                 storage,
             ),
-            coverage: sized_buffer(
+            coverage: grown_buffer(
                 device,
                 previous.map(|b| &b.coverage),
                 "cov scratch",
-                sizes[0],
+                (sizes[0], limit),
                 storage,
             ),
-            strokes: sized_buffer(
+            strokes: grown_buffer(
                 device,
                 previous.map(|b| &b.strokes),
                 "cov strokes",
-                sizes[2].next_multiple_of(16).max(16),
+                (sizes[2].next_multiple_of(16).max(16), limit),
                 storage,
             ),
             args: sized_buffer(
@@ -1429,11 +1430,11 @@ impl GpuCoverage {
                 DISPATCH_ARGS_WORDS * 4,
                 storage | wgpu::BufferUsages::INDIRECT,
             ),
-            work: sized_buffer(
+            work: grown_buffer(
                 device,
                 previous.map(|b| &b.work),
                 "cov work",
-                sizes[6],
+                (sizes[6], limit),
                 storage,
             ),
         });
@@ -2331,6 +2332,25 @@ fn record_in_place(
     }
     write_back(encoder, &mut phase);
     *bounce = Some(staging);
+}
+
+/// A retained generation scratch buffer of at least `size` bytes: the
+/// `previous` one while it is large enough, otherwise a new one that grows
+/// at least twofold over it, within `limit`, so a working set creeping up
+/// frame by frame reallocates a logarithmic number of times rather than
+/// once per frame (water-rs/waterui#4174).
+fn grown_buffer(
+    device: &wgpu::Device,
+    previous: Option<&wgpu::Buffer>,
+    label: &'static str,
+    (size, limit): (u64, u64),
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    if let Some(buffer) = previous.filter(|buffer| buffer.size() >= size) {
+        return buffer.clone();
+    }
+    let grown = previous.map_or(size, |buffer| (buffer.size() * 2).min(limit).max(size));
+    sized_buffer(device, None, label, grown, usage)
 }
 
 fn sized_buffer(
