@@ -461,6 +461,27 @@ impl<O: Operation, E> Content<O, E> {
         stale
     }
 
+    /// Apply a structural edit of live content: its splices change the
+    /// command structure, so the content is lowered again at the next
+    /// prepare, as after a replacement, while the layer keeps it.
+    ///
+    /// # Panics
+    /// When the edit targets immutable picture content.
+    pub fn edit(&mut self, edit: crate::Edit) {
+        assert!(
+            self.live,
+            "a structural edit targets immutable picture content"
+        );
+        self.list.edit(edit);
+        self.dirty = Dirty::default();
+        self.emissions.clear();
+        if let Some(lowered) = &mut self.lowered {
+            lowered.ops.clear();
+            lowered.spans.clear();
+        }
+        self.rebuild = true;
+    }
+
     /// Accumulate every commit arriving before the next render.
     ///
     /// # Panics

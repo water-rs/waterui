@@ -697,9 +697,21 @@ impl ContentData {
 
     pub fn replace(&mut self, list: cherenkov::Picture) -> cherenkov::Picture {
         let (previous, changed) = self.retained.replace(list);
-        if !changed {
-            return previous;
+        if changed {
+            self.reset_storage();
         }
+        previous
+    }
+
+    /// Applies a structural edit: the content is lowered again, so its
+    /// emitted storage goes as after a replacement.
+    pub fn edit(&mut self, edit: cherenkov::Edit) {
+        self.retained.edit(edit);
+        self.reset_storage();
+    }
+
+    /// Drops the device storage emitted for the previous lowering.
+    fn reset_storage(&mut self) {
         self.range = None;
         self.storage.instances.clear();
         self.storage.stops.clear();
@@ -710,7 +722,6 @@ impl ContentData {
         // check (#119).
         self.storage.refs.clear();
         self.storage.geometry.flag_reconcile();
-        previous
     }
 
     pub fn gpu_input_bytes(&self) -> u64 {

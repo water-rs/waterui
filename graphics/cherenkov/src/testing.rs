@@ -460,6 +460,13 @@ impl Renderer for NullRenderer {
                     .apply(updates);
                 None
             }
+            Some(ContentOp::Edit(edit)) => {
+                self.pictures
+                    .get_mut(&(surface, layer))
+                    .expect("a structural edit targets a layer without content")
+                    .edit(*edit);
+                None
+            }
             None => self.pictures.remove(&(surface, layer)),
         };
         self.unbind(surface, layer);

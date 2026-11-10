@@ -531,20 +531,23 @@ pub fn content_drift(scene: &Scene, frame: u32) -> kurbo::Affine {
         * kurbo::Affine::translate(-centre)
 }
 
-/// Whether `scene` changes on its own every frame: a scroll sweep, a
-/// motion or a live slot. Such a scene keeps its own behaviour; only a
-/// scene that does not gets a [`content_drift`].
+/// Whether `scene` changes on its own on every frame: a scroll sweep or a
+/// live slot.
+///
+/// Such a scene keeps its own behaviour and never gets a
+/// [`content_drift`]. A motion is not such a change: it runs once and comes
+/// to rest, after which its frames are static; the frame loop asks the
+/// engine whether one is still running ([`Engine::animating`]).
 #[must_use]
-pub fn animates(scene: &Scene) -> bool {
-    fn layer_animates(layer: &cherenkov_scene::Layer) -> bool {
-        layer.motion.is_some()
-            || !layer.live.is_empty()
+pub fn changes_every_frame(scene: &Scene) -> bool {
+    fn layer_is_live(layer: &cherenkov_scene::Layer) -> bool {
+        !layer.live.is_empty()
             || layer.items.iter().any(|item| match item {
-                cherenkov_scene::Item::Layer(child) => layer_animates(child),
+                cherenkov_scene::Item::Layer(child) => layer_is_live(child),
                 _ => false,
             })
     }
-    scene.scroll_extent.is_some() || layer_animates(&scene.root)
+    scene.scroll_extent.is_some() || layer_is_live(&scene.root)
 }
 
 #[cfg(any(
@@ -645,6 +648,19 @@ pub trait Engine {
     /// `None` the frame loop fails a run whose measured frame carries no GPU
     /// time: that frame submitted no GPU work, so it measured nothing.
     fn gpu_timing_unavailable(&self) -> Option<&'static str>;
+    /// Whether what the last [`Engine::submit`] drew is still animating on
+    /// the engine's own clock — a scene motion that has not come to rest —
+    /// so the next frame draws new content with no change from the bench.
+    /// An adapter without [`Feature::Animation`] runs no motion.
+    fn animating(&self) -> bool {
+        false
+    }
+    /// Whether the last [`Engine::submit`] drew nothing because no surface
+    /// content changed since the frame before. Only an adapter that skips
+    /// unchanged frames reports it; every other adapter draws each frame.
+    fn drew_nothing(&self) -> bool {
+        false
+    }
     /// The backend signal [`Engine::completion`] comes from, or why the
     /// adapter has none.
     fn completion_signal(&self) -> CompletionSignal;
