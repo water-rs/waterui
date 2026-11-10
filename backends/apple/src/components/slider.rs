@@ -27,6 +27,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
+use crate::components::button_chrome;
 use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -409,6 +410,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     Some(text.as_str())
                 });
             }
+        });
+
+        // The tint colours the filled part of the track.
+        leaf.bind(&button_chrome::tint_signal(ctx.env()), {
+            let slider = slider.clone();
+            move |color| slider.set_track_tint(&button_chrome::platform_color(&color))
         });
 
         // A disabled subtree must not respond to input.
