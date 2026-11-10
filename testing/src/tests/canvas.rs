@@ -418,6 +418,24 @@ fn canvas_draws_text_anchored_aligned_wrapped_and_live() {
                         label.map(move |text| styled(&text)),
                         TextPlacement::at(Point::new(20.0, 250.0)),
                     );
+                    // Chunk styles: weight, italics, colour, decorations and
+                    // a highlight.
+                    let marked = StyledStr::from("plain ")
+                        + StyledStr::from("bold").bold()
+                        + " "
+                        + StyledStr::from("italic")
+                            .italic(true)
+                            .foreground(Srgb::new(0.4, 0.8, 1.0))
+                        + " "
+                        + StyledStr::from("under").underline(true)
+                        + " "
+                        + StyledStr::from("struck").strikethrough(true)
+                        + " "
+                        + StyledStr::from("mark").background_color(Srgb::new(0.8, 0.2, 0.2));
+                    cx.text(
+                        CanvasText::from(marked.foreground(white)),
+                        TextPlacement::at(Point::new(20.0, 272.0)),
+                    );
                 })
             }
         });

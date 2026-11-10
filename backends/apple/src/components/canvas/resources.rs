@@ -14,6 +14,7 @@ use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
+use super::text::LaidOutText;
 use cocoa_ui::objc2_core_foundation::{CFData, CFRetained, CFString};
 use cocoa_ui::objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
@@ -23,7 +24,9 @@ use cocoa_ui::objc2_core_graphics::{
     kCGColorSpaceLinearSRGB, kCGColorSpaceSRGB,
 };
 use cocoa_ui::objc2_core_text::{CTFontDescriptor, CTFontManagerCreateFontDescriptorsFromData};
-use waterui_graphics::draw::{FontId, ImageId, ImageLimits, ImageStorage};
+use waterui_graphics::draw::{
+    FontId, ImageId, ImageLimits, ImageStorage, Paint, Picture, TextLayoutId,
+};
 use waterui_graphics::resources::{Handle, ResourceHandle, SceneBackend};
 use waterui_graphics::source::{
     FontSource, Format, ImageColorSpace, ImageData, ResourceError, Rgba8, Rgba16F,
@@ -39,6 +42,7 @@ pub struct Registry {
     next: Cell<u64>,
     images: RefCell<HashMap<u64, CFRetained<CGImage>>>,
     fonts: RefCell<HashMap<u64, CFRetained<CTFontDescriptor>>>,
+    texts: RefCell<HashMap<u64, LaidOutText>>,
 }
 
 impl core::fmt::Debug for Registry {
@@ -46,6 +50,7 @@ impl core::fmt::Debug for Registry {
         f.debug_struct("Registry")
             .field("images", &self.images.borrow().len())
             .field("fonts", &self.fonts.borrow().len())
+            .field("texts", &self.texts.borrow().len())
             .finish_non_exhaustive()
     }
 }
@@ -55,6 +60,40 @@ impl Registry {
         let id = self.next.get() + 1;
         self.next.set(id);
         id
+    }
+
+    /// Registers `descriptor` as a font, for a glyph run to name.
+    pub(super) fn add_font(&self, descriptor: CFRetained<CTFontDescriptor>) -> FontId {
+        let id = self.fresh();
+        self.fonts.borrow_mut().insert(id, descriptor);
+        FontId::new(id)
+    }
+
+    /// Registers a laid-out text under a fresh id.
+    pub(super) fn add_text(&self, text: LaidOutText) -> TextLayoutId {
+        let id = self.fresh();
+        self.texts.borrow_mut().insert(id, text);
+        TextLayoutId::new(id)
+    }
+
+    /// The commands a text draws, as a picture: `paint` takes the place of
+    /// the colour the text draws in by default.
+    ///
+    /// # Panics
+    ///
+    /// When no live registration has that id.
+    #[must_use]
+    pub fn text(&self, id: TextLayoutId, paint: Option<&Paint>) -> Picture {
+        self.texts
+            .borrow()
+            .get(&id.raw())
+            .unwrap_or_else(|| {
+                panic!(
+                    "text layout {} is named by a recording but not registered",
+                    id.raw()
+                )
+            })
+            .picture(paint)
     }
 
     /// The image registered as `id`.
@@ -137,6 +176,46 @@ impl Drop for FontHandle {
     fn drop(&mut self) {
         if let Some(registry) = self.registry.upgrade() {
             registry.fonts.borrow_mut().remove(&self.id.raw());
+        }
+    }
+}
+
+/// A laid-out text's registration, released with its handle together with
+/// the fonts its glyph runs name.
+pub(super) struct TextHandle {
+    id: TextLayoutId,
+    registry: Weak<Registry>,
+}
+
+impl TextHandle {
+    /// The registration of `text` in `registry`.
+    pub(super) fn new(registry: &Rc<Registry>, text: LaidOutText) -> Self {
+        Self {
+            id: registry.add_text(text),
+            registry: Rc::downgrade(registry),
+        }
+    }
+}
+
+impl ResourceHandle for TextHandle {
+    type Id = TextLayoutId;
+
+    fn id(&self) -> TextLayoutId {
+        self.id
+    }
+}
+
+impl Drop for TextHandle {
+    fn drop(&mut self) {
+        let Some(registry) = self.registry.upgrade() else {
+            return;
+        };
+        let text = registry.texts.borrow_mut().remove(&self.id.raw());
+        if let Some(text) = text {
+            let mut fonts = registry.fonts.borrow_mut();
+            for font in text.fonts() {
+                fonts.remove(&font.raw());
+            }
         }
     }
 }

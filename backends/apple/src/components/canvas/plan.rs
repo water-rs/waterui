@@ -29,7 +29,7 @@ use core::ops::Range;
 use kurbo::{Affine, Stroke};
 use waterui_graphics::draw::{
     BlendMode, Command, GlyphRun, GlyphStyle, Group, ImageId, MeshGradient, Paint, Picture,
-    Sampling, Shadow, ShapeData, WorkingColor,
+    Sampling, Shadow, ShapeData, TextLayoutId, WorkingColor,
 };
 
 /// How a paint reaches the screen.
@@ -140,14 +140,19 @@ pub enum Node {
         /// Where it is placed.
         transform: Affine,
     },
+    /// A registered text layout drawn under a transform: a picture the
+    /// registry holds, which the layout's registration keeps.
+    Text {
+        /// The layout.
+        layout: TextLayoutId,
+        /// Where it is placed.
+        transform: Affine,
+        /// What the colour the text draws in by default becomes.
+        paint: Option<Paint>,
+    },
 }
 
 /// The node `command` realizes as; `None` for the end of a scope.
-///
-/// # Panics
-///
-/// On a text layout, which a canvas does not record until semantic text
-/// exists (water-rs/waterui#4053).
 #[must_use]
 pub fn describe(command: &Command) -> Option<Node> {
     Some(match command {
@@ -190,9 +195,15 @@ pub fn describe(command: &Command) -> Option<Node> {
             picture: picture.clone(),
             transform: *transform,
         },
-        Command::Text { .. } => {
-            panic!("a canvas records no text layout until semantic text exists (#4053)")
-        }
+        Command::Text {
+            layout,
+            transform,
+            paint,
+        } => Node::Text {
+            layout: *layout,
+            transform: *transform,
+            paint: paint.clone(),
+        },
         Command::BeginClip { shape, .. } => Node::Clip(shape.clone()),
         Command::BeginTransform { transform, .. } => Node::Transform(*transform),
         Command::BeginGroup { group, .. } => Node::Group(*group),
@@ -395,7 +406,7 @@ pub fn kind_of(node: &Node) -> LayerKind {
             opacity: group.opacity,
             composite: composite(group.blend),
         },
-        Node::Picture { .. } => LayerKind::Picture,
+        Node::Picture { .. } | Node::Text { .. } => LayerKind::Picture,
     }
 }
 
