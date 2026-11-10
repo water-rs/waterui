@@ -25,7 +25,9 @@
 # as the run log so the uploaded artifacts look as they did when the shard
 # packaged inline. Package-size recording moves to the build job with the
 # package; when PREBUILT_DIR is unset the script still packages inline and
-# records sizes itself (the targeted e2e workflow runs that way).
+# records sizes itself (the targeted e2e workflow runs that way). Either way
+# every example is packaged or resolved before the iOS simulator's clean-state
+# reboot, so the capture pass installs into the simulator it just booted.
 #
 # PREBUILT_REFERENCE_APP supplies an already-built E2EReference.app instead
 # of compiling the SwiftUI twin on the capture host. Its platform executable
@@ -164,20 +166,6 @@ if ! compare_tool="$(command -v compare-screenshots)" || [[ ! -x "${compare_tool
 fi
 
 if [[ "${platform}" == "ios" ]]; then
-  # A `simctl launch` opens the app over whatever is currently frontmost, and
-  # iOS answers with the status-bar "back to <app>" breadcrumb — pixels the
-  # parity compare counts. The harness terminates every app it starts before
-  # the next launch, so the only breadcrumb source is a foreign app left
-  # frontmost outside the run (a diagnostic launch, an aborted previous run).
-  # Rebooting is the deterministic way to guarantee SpringBoard is frontmost
-  # for the first launch; every launch afterwards inherits that clean state.
-  xcrun simctl shutdown "${SIMULATOR_UDID}" >/dev/null 2>&1 || true
-  if ! xcrun simctl boot "${SIMULATOR_UDID}" >/dev/null 2>&1; then
-    echo "::error::Failed to boot simulator ${SIMULATOR_UDID} for a clean launch state."
-    exit 1
-  fi
-  xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
-
   # A screenshot command still running this long is mid-stall, not slow —
   # a healthy answer lands in ~0.5 s. The sampler fires inside the command
   # bound, so the wedge's stacks land in the log while the guilty process is
@@ -251,38 +239,12 @@ if [[ "${platform}" == "ios" ]]; then
     fi
     rm -f "${diag}.fired.${pid}"
   }
-
-  # An iOS capture is the whole display (macOS captures the app's own window),
-  # so a SpringBoard notification banner lands in the frame and reads as a
-  # divergence from the app's own baseline and from the SwiftUI twin. Booting
-  # out the delivery daemon stops every banner for this boot, so it runs after
-  # the reboot above.
-  xcrun simctl spawn "${SIMULATOR_UDID}" \
-    launchctl bootout system/com.apple.usernotificationsd 2>/dev/null || true
-
-  # Pin the status bar for the whole shard — WaterUI and twin captures alike —
-  # so the clock, battery and signal pixels compare equal on every shot. The
-  # override persists until it is cleared at the end of the shard (the EXIT
-  # trap covers failure paths too).
-  if ! xcrun simctl status_bar "${SIMULATOR_UDID}" override \
-    --time "9:41" \
-    --batteryState charged --batteryLevel 100 \
-    --wifiMode active --wifiBars 3 \
-    --cellularMode active --cellularBars 4 \
-    --dataNetwork wifi; then
-    echo "::error::Failed to set the status bar override on ${SIMULATOR_UDID}."
-    exit 1
-  fi
-  trap 'xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
 fi
 
 # Compile the macOS launch/window helpers once per job, not per capture poll.
+# The iOS status-bar override joins this trap once it is set, after packaging.
 swift_tools_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-swift-tools.XXXXXX")"
-if [[ "${platform}" == "ios" ]]; then
-  trap 'rm -rf "${swift_tools_dir}"; xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
-else
-  trap 'rm -rf "${swift_tools_dir}"' EXIT
-fi
+trap 'rm -rf "${swift_tools_dir}"' EXIT
 if [[ "${platform}" == "macos" ]]; then
   if ! swiftc -O -o "${swift_tools_dir}/window-id" \
        "${workspace}/.github/scripts/window-id.swift"; then
@@ -598,8 +560,12 @@ collect_simulator_stall_diagnostics() {
   {
     echo "=== simulator stall diagnostics: ${reason} ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
     echo "--- shard app process (pid ${app_pid:-unset}) ---"
+    # Every lookup and sample below tolerates its process being absent: a
+    # pgrep without a match exits 1, which under errexit and pipefail would
+    # end the shard mid-collection — and a missing process (a device that is
+    # no longer booted) is itself the finding.
     if [[ -n "${app_pid:-}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
-      sample "${app_pid}" 3 1 2>&1 | head -60
+      sample "${app_pid}" 3 1 2>&1 | head -60 || true
     else
       echo "app pid ${app_pid:-unset} is not running"
     fi
@@ -614,13 +580,15 @@ collect_simulator_stall_diagnostics() {
     # and keeps enough of its call graph to show every thread's wait.
     local render_deadline_at launchd_sim_pid render_name render_pid render_pids
     render_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
-    launchd_sim_pid="$(pgrep -f "launchd_sim .*/Devices/${SIMULATOR_UDID}/" 2>/dev/null | head -1)"
+    launchd_sim_pid="$(pgrep -f "launchd_sim .*/Devices/${SIMULATOR_UDID}/" 2>/dev/null | head -1)" || true
     for render_name in backboardd SimRenderServer SimMetalHost; do
+      render_pids=""
       if [[ "${render_name}" == "backboardd" ]]; then
-        render_pids=""
-        [[ -n "${launchd_sim_pid}" ]] && render_pids="$(pgrep -P "${launchd_sim_pid}" -x "${render_name}" 2>/dev/null)"
+        if [[ -n "${launchd_sim_pid}" ]]; then
+          render_pids="$(pgrep -P "${launchd_sim_pid}" -x "${render_name}" 2>/dev/null)" || true
+        fi
       else
-        render_pids="$(pgrep -x "${render_name}" 2>/dev/null)"
+        render_pids="$(pgrep -x "${render_name}" 2>/dev/null)" || true
       fi
       if [[ -z "${render_pids}" ]]; then
         echo "${render_name} not found for simulator ${SIMULATOR_UDID}"
@@ -635,12 +603,12 @@ collect_simulator_stall_diagnostics() {
     done
     echo "--- host simulator service state ---"
     local svc_pids
-    svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
+    svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')" || true
     [[ -n "${svc_pids}" ]] && ps -o pid,stat,etime,command -p "${svc_pids}" || true
     echo "--- host simulator service stacks (sample 3s each) ---"
     local svc
     for svc in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline" 2>/dev/null); do
-      sample "${svc}" 3 1 2>&1 | sed -n '1,40p'
+      sample "${svc}" 3 1 2>&1 | sed -n '1,40p' || true
     done
     echo "--- host log, simulator domain, last 5m ---"
     # `log show` can take tens of seconds on a loaded host — supervised so
@@ -871,6 +839,17 @@ capture_reference() {
   fi
 }
 
+# The shard simulator's CoreSimulator state (Booted, Shutdown, ...).
+simulator_state() {
+  xcrun simctl list devices --json | python3 -c '
+import json, sys
+for group in json.load(sys.stdin)["devices"].values():
+    for device in group:
+        if device.get("udid") == sys.argv[1]:
+            print(device["state"])
+' "${SIMULATOR_UDID}"
+}
+
 # Comparison identity comes from the running OS, not the build SDK.
 if [[ "${platform}" == "ios" ]]; then
   comparison_os_major="$(xcrun simctl list devices --json | python3 -c '
@@ -945,34 +924,35 @@ find_packaged_app() {
   [[ -n "${app_path}" && -d "${app_path}" ]] && echo "${app_path}"
 }
 
+example_path_of() {
+  local path="${waterui_dir}/examples/$1"
+  [[ -d "${path}" ]] || path="${waterui_dir}/backends/apple/Examples/$1"
+  echo "${path}"
+}
+
 declare -a failures=()
 declare -a report=()
 
+# ── Packaging ───────────────────────────────────────────────────────────────
+# Every example is packaged (or its prebuilt bundle resolved) before the iOS
+# simulator is rebooted below, so no build runs between the clean-state boot
+# and the first install. A cold release build takes tens of minutes, and a
+# simulator booted before it has been found shut down when the build finished
+# and the install ran (#4101); the nightly's prebuilt shards, which install
+# seconds after the boot, never were. Each example's outcome is recorded here
+# and reported in example order by the capture loop.
+declare -A package_app=() package_outcome=() package_size_cell=()
+package_platform="macos"
+[[ "${platform}" == "ios" ]] && package_platform="ios-simulator"
 for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
-  comparison_args=(--platform "${platform}" --os-major "${comparison_os_major}" --example "${example}")
-  mem_cell="—"
-  fp_cell="—"
-  size_cell="—"
-  example_path="${waterui_dir}/examples/${example}"
-  [[ -d "${example_path}" ]] || example_path="${waterui_dir}/backends/apple/Examples/${example}"
+  example_path="$(example_path_of "${example}")"
   run_log="${logs_dir}/${platform}-${example}.log"
-  marker_log="${logs_dir}/${platform}-${example}-marker.log"
-  shot="${shots_dir}/${platform}-${example}.png"
-  rm -f "${shot}"
+  size_cell="—"
 
-  echo "::group::${platform} example ${example}"
+  echo "::group::${platform} package ${example}"
 
-  # The product name is Water.toml's package.name; the running process is the
-  # executable inside the built .app bundle.
-  product="$(sed -n 's/^name = "\([^"]*\)"$/\1/p' "${example_path}/Water.toml" | head -1)"
-  bundle_id="$(sed -n 's/^bundle_identifier = "\([^"]*\)"$/\1/p' "${example_path}/Water.toml" | head -1)"
-  package_platform="macos"
-  [[ "${platform}" == "ios" ]] && package_platform="ios-simulator"
-
-  : > "${marker_log}"
   app_path=""
-  runner_pid=""
-  stuck=0
+  outcome=""
   if [[ -n "${prebuilt_dir}" ]]; then
     # The build job packaged this example already; its package log stands in
     # as the run log so the artifacts look as they did when the shard built
@@ -989,47 +969,61 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     : > "${run_log}"
     # The package is backgrounded so the wait loop can bound a hung build by
     # silence rather than duration.
-    {
-      water package --platform "${package_platform}" --backend apple --release \
-        --path "${example_path}" >> "${run_log}" 2>&1 &
-      runner_pid=$!
+    water package --platform "${package_platform}" --backend apple --release \
+      --path "${example_path}" >> "${run_log}" 2>&1 &
+    runner_pid=$!
 
-      # The wait covers `water package`'s cold release build, not just a launch:
-      # without a shared sccache a first-in-shard example compiles for tens of
-      # minutes, and release codegen runs longer than debug. The bound is
-      # therefore on *silence*, not duration — a build that is writing to the log
-      # or running compiler processes is making progress and must not be killed
-      # (#140). A dead runner still short-circuits, and a hard ceiling caps hung
-      # cases.
-      built=0
-      log_size=-1
-      silent_since=${SECONDS}
-      deadline=$((SECONDS + 2700))
-      while (( SECONDS < deadline )); do
-        if ! kill -0 "${runner_pid}" 2>/dev/null; then
-          if wait "${runner_pid}"; then built=1; fi
-          break
-        fi
-        new_size=$(stat -f%z "${run_log}" 2>/dev/null || echo -1)
-        if (( new_size != log_size )); then
-          log_size=${new_size}
-          silent_since=${SECONDS}
-        elif pgrep -f 'xcodebuild|swiftc|swift-frontend|cargo|rustc|clang' >/dev/null 2>&1; then
-          silent_since=${SECONDS}
-        elif (( SECONDS - silent_since > 300 )); then
-          stuck=1
-          break
-        fi
-        sleep 2
-      done
-
-      if (( built == 1 )); then
-        app_path="$(find_packaged_app "${run_log}")"
+    # The wait covers `water package`'s cold release build, not just a launch:
+    # without a shared sccache a first-in-shard example compiles for tens of
+    # minutes, and release codegen runs longer than debug. The bound is
+    # therefore on *silence*, not duration — a build that is writing to the log
+    # or running compiler processes is making progress and must not be killed
+    # (#140). A dead runner still short-circuits, and a hard ceiling caps hung
+    # cases.
+    runner_exited=0
+    built=0
+    log_size=-1
+    silent_since=${SECONDS}
+    deadline=$((SECONDS + 2700))
+    while (( SECONDS < deadline )); do
+      if ! kill -0 "${runner_pid}" 2>/dev/null; then
+        runner_exited=1
+        if wait "${runner_pid}"; then built=1; fi
+        break
       fi
-    }
+      new_size=$(stat -f%z "${run_log}" 2>/dev/null || echo -1)
+      if (( new_size != log_size )); then
+        log_size=${new_size}
+        silent_since=${SECONDS}
+      elif pgrep -f 'xcodebuild|swiftc|swift-frontend|cargo|rustc|clang' >/dev/null 2>&1; then
+        silent_since=${SECONDS}
+      elif (( SECONDS - silent_since > 300 )); then
+        outcome="stuck"
+        break
+      fi
+      sleep 2
+    done
+
+    if (( built == 1 )); then
+      # No bundle named in the log leaves app_path empty: a package failure,
+      # classified below with the log tail.
+      app_path="$(find_packaged_app "${run_log}")" || true
+    elif (( ! runner_exited )); then
+      # Still running: silent past the bound, or past the hard ceiling. The
+      # runner is stopped here, before the next example's build starts.
+      if [[ "${outcome}" == "stuck" ]]; then
+        echo "::error::No build progress for 5 minutes packaging ${example} (${platform}); declaring the runner stuck."
+      else
+        outcome="timeout"
+        echo "::error::Packaging ceiling (45 min) exceeded for ${example} (${platform})."
+      fi
+      kill "${runner_pid}" 2>/dev/null || true
+      wait "${runner_pid}" || true
+    fi
   fi
 
   if [[ -n "${app_path}" ]]; then
+    outcome="packaged"
     app_bytes="$(find "${app_path}" -type f -exec stat -f%z {} + | awk '{s+=$1} END {print s}')"
     if [[ "${platform}" == "macos" ]]; then
       executable="${app_path}/Contents/MacOS/$(basename "${app_path}" .app)"
@@ -1043,41 +1037,116 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     fi
     size_cell="$(awk -v b="${app_bytes}" 'BEGIN{printf "%.1f MB", b/1048576}')"
     echo "::notice::${example} packaged: .app=${app_bytes}B executable=${executable_bytes}B (${platform})"
-  fi
-
-  if [[ -z "${app_path}" ]]; then
-    if [[ -n "${runner_pid}" ]] && kill -0 "${runner_pid}" 2>/dev/null; then
-      if (( stuck == 1 )); then
-        echo "::error::No build progress for 5 minutes packaging ${example} (${platform}); declaring the runner stuck."
-        failures+=("${example}: package stuck")
-        report+=("| \`${example}\` | package stuck | — | — | — | ${mem_cell} |")
-      else
-        echo "::error::Packaging ceiling (45 min) exceeded for ${example} (${platform})."
-        failures+=("${example}: package timeout")
-        report+=("| \`${example}\` | package timeout | — | — | — | ${mem_cell} |")
-      fi
-      kill "${runner_pid}" 2>/dev/null || true
-    else
+  else
+    if [[ -z "${outcome}" ]]; then
       if grep -qi "unsupported for" "${run_log}"; then
         # The CLI refused a platform-impossible configuration (e.g. a CEF
         # WebView on iOS) — by-design, not a defect (#154). Skipped, not failed.
+        outcome="unsupported"
         echo "::notice::${example} is unsupported on ${platform}; skipping."
-        report+=("| \`${example}\` | skipped (unsupported) | — | — | — | ${mem_cell} |")
       else
+        outcome="failed"
         echo "::error::water package failed for ${example} (${platform})."
-        failures+=("${example}: package")
-        report+=("| \`${example}\` | package failed | — | — | — | ${mem_cell} |")
       fi
     fi
-    printf '  "%s": null,\n' "${example}" >> "${startup_entries}"
-    printf '  "%s": null,\n' "${example}" >> "${memory_entries}"
     if [[ -z "${prebuilt_dir}" ]]; then
       printf '  "%s": null,\n' "${example}" >> "${size_entries}"
     fi
     tail -n 120 "${run_log}" || true
-    if [[ -n "${runner_pid}" ]]; then
-      wait "${runner_pid}" || true
-    fi
+  fi
+
+  package_app["${example}"]="${app_path}"
+  package_outcome["${example}"]="${outcome}"
+  package_size_cell["${example}"]="${size_cell}"
+  echo "::endgroup::"
+done
+
+if [[ "${platform}" == "ios" ]]; then
+  # A `simctl launch` opens the app over whatever is currently frontmost, and
+  # iOS answers with the status-bar "back to <app>" breadcrumb — pixels the
+  # parity compare counts. The harness terminates every app it starts before
+  # the next launch, so the only breadcrumb source is a foreign app left
+  # frontmost outside the run (a diagnostic launch, an aborted previous run).
+  # Rebooting is the deterministic way to guarantee SpringBoard is frontmost
+  # for the first launch; every launch afterwards inherits that clean state.
+  # The reboot follows packaging (above), so the booted state it establishes
+  # is the one the first install meets.
+  xcrun simctl shutdown "${SIMULATOR_UDID}" >/dev/null 2>&1 || true
+  if ! xcrun simctl boot "${SIMULATOR_UDID}" >/dev/null 2>&1; then
+    echo "::error::Failed to boot simulator ${SIMULATOR_UDID} for a clean launch state."
+    exit 1
+  fi
+  xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
+
+  # An iOS capture is the whole display (macOS captures the app's own window),
+  # so a SpringBoard notification banner lands in the frame and reads as a
+  # divergence from the app's own baseline and from the SwiftUI twin. Booting
+  # out the delivery daemon stops every banner for this boot, so it runs after
+  # the reboot above.
+  xcrun simctl spawn "${SIMULATOR_UDID}" \
+    launchctl bootout system/com.apple.usernotificationsd 2>/dev/null || true
+
+  # Pin the status bar for the whole shard — WaterUI and twin captures alike —
+  # so the clock, battery and signal pixels compare equal on every shot. The
+  # override persists until it is cleared at the end of the shard (the EXIT
+  # trap covers failure paths too).
+  if ! xcrun simctl status_bar "${SIMULATOR_UDID}" override \
+    --time "9:41" \
+    --batteryState charged --batteryLevel 100 \
+    --wifiMode active --wifiBars 3 \
+    --cellularMode active --cellularBars 4 \
+    --dataNetwork wifi; then
+    echo "::error::Failed to set the status bar override on ${SIMULATOR_UDID}."
+    exit 1
+  fi
+  trap 'rm -rf "${swift_tools_dir}"; xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
+fi
+
+# ── Capture ─────────────────────────────────────────────────────────────────
+for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
+  comparison_args=(--platform "${platform}" --os-major "${comparison_os_major}" --example "${example}")
+  mem_cell="—"
+  fp_cell="—"
+  size_cell="${package_size_cell[${example}]}"
+  app_path="${package_app[${example}]}"
+  example_path="$(example_path_of "${example}")"
+  marker_log="${logs_dir}/${platform}-${example}-marker.log"
+  shot="${shots_dir}/${platform}-${example}.png"
+  rm -f "${shot}"
+
+  echo "::group::${platform} example ${example}"
+
+  # The product name is Water.toml's package.name; the running process is the
+  # executable inside the built .app bundle.
+  product="$(sed -n 's/^name = "\([^"]*\)"$/\1/p' "${example_path}/Water.toml" | head -1)"
+  bundle_id="$(sed -n 's/^bundle_identifier = "\([^"]*\)"$/\1/p' "${example_path}/Water.toml" | head -1)"
+
+  : > "${marker_log}"
+
+  if [[ -z "${app_path}" ]]; then
+    case "${package_outcome[${example}]}" in
+      stuck)
+        failures+=("${example}: package stuck")
+        report+=("| \`${example}\` | package stuck | — | — | — | ${mem_cell} |")
+        ;;
+      timeout)
+        failures+=("${example}: package timeout")
+        report+=("| \`${example}\` | package timeout | — | — | — | ${mem_cell} |")
+        ;;
+      unsupported)
+        report+=("| \`${example}\` | skipped (unsupported) | — | — | — | ${mem_cell} |")
+        ;;
+      failed)
+        failures+=("${example}: package")
+        report+=("| \`${example}\` | package failed | — | — | — | ${mem_cell} |")
+        ;;
+      *)
+        echo "::error::${example}: no bundle and no packaging outcome '${package_outcome[${example}]}' — the packaging pass left this example unclassified."
+        exit 1
+        ;;
+    esac
+    printf '  "%s": null,\n' "${example}" >> "${startup_entries}"
+    printf '  "%s": null,\n' "${example}" >> "${memory_entries}"
     echo "::endgroup::"
     continue
   fi
@@ -1122,7 +1191,10 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     fi
   else
     if ! xcrun simctl install "${SIMULATOR_UDID}" "${app_path}"; then
-      echo "::error::${example} packaged app failed to install in the simulator."
+      # A device that left the booted state is evidence of what stopped it;
+      # the host CoreSimulator log is read while that window is recent.
+      echo "::error::${example} packaged app failed to install in the simulator (device state: $(simulator_state))."
+      collect_simulator_stall_diagnostics "simctl install failed for ${example}"
       failures+=("${example}: install")
       report+=("| \`${example}\` | install failed | — | — | ${size_cell} | ${mem_cell} |")
       printf '  "%s": null,\n' "${example}" >> "${startup_entries}"
