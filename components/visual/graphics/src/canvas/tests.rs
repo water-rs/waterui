@@ -483,6 +483,7 @@ mod text {
 
     use nami::binding;
     use waterui_core::layout::{HorizontalAlignment, Point, Size};
+    use waterui_text::styled::StyledStr;
 
     use super::{Canvas, ContentChange, Operand, counting_invalidator, mount};
     use crate::canvas::TextPlacement;
@@ -515,7 +516,7 @@ mod text {
             &self,
             request: TextRequest,
         ) -> Result<Option<TextRegistration>, ResourceError> {
-            let text = request.text().to_plain();
+            let text = request.text().to_plain().to_string();
             let placement = request.placement();
             self.asked
                 .borrow_mut()
