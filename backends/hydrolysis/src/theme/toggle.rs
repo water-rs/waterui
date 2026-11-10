@@ -24,9 +24,9 @@ use waterui_controls::toggle::ToggleStyle;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
 
+use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Motion, SpecTint};
 #[cfg(hydrolysis_runtime)]
-use super::look::RealizedCustom;
-use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Inputs, Motion, SpecTint};
+use super::look::{Inputs, RealizedCustom};
 use super::{Backdrop, Driven};
 
 /// What Hydrolysis asks a theme's [`switch`](super::WidgetTheme::switch) or

@@ -450,7 +450,9 @@ impl Toggle {
     pub fn set_tint(&self, color: &UIColor) {
         match &self.control {
             Control::Switch(switch) => switch.setOnTintColor(Some(color)),
-            Control::Checkbox(button) => button.setTintColor(Some(color)),
+            // SAFETY: `setTintColor:` is marked unsafe in the bindings; it is
+            // an ordinary main-thread `UIKit` setter.
+            Control::Checkbox(button) => unsafe { button.setTintColor(Some(color)) },
         }
     }
 
