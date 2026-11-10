@@ -1249,6 +1249,13 @@ pub struct ValueIndicator {
     padding: Vec2,
     minimum: Size,
     gap: f64,
+    #[cfg_attr(
+        not(hydrolysis_runtime),
+        expect(
+            dead_code,
+            reason = "only the renderer records the bubble's container; a build without a painter compiles the theme contract alone"
+        )
+    )]
     container: Rc<dyn CustomPart<f64>>,
 }
 
