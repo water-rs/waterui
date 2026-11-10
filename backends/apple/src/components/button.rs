@@ -7,7 +7,8 @@
 //! against a cloned environment whose `Foreground` slot is the color the
 //! style dictates — accent, primary or accent-foreground, per platform.
 //! Disabled state, the accent color and the accessibility label arrive
-//! through watchers; every change is an imperative kit call.
+//! through watchers; every change is an imperative kit call. The style and
+//! size mapping is [`button_chrome`]'s, shared with the menu trigger.
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -15,18 +16,8 @@ use core::cell::RefCell;
 use cocoa_ui::action::ActionTarget;
 use cocoa_ui::{PlatformView, Rect as KitRect, Retained, view};
 use waterui::component::button::{ButtonConfig, ButtonStyle};
-use waterui::graphics::color::WorkingColor;
-use waterui::reactive::{Computed, SignalExt};
-use waterui::resolve::Resolvable;
+use waterui::reactive::Computed;
 use waterui::text::StyledStr;
-#[cfg(target_os = "macos")]
-use waterui::text::font::{Body, ResolvedFont};
-#[cfg(target_os = "macos")]
-use waterui::theme::color::MutedForeground;
-use waterui::theme::color::{Accent, AccentForeground, Foreground};
-use waterui::theme::install_color_signal;
-#[cfg(target_os = "macos")]
-use waterui::theme::install_font_signal;
 use waterui_backend_core::{AnyView, Environment};
 use waterui_core::handler::BoxedAction;
 use waterui_core::interaction::Disabled;
@@ -34,16 +25,14 @@ use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
 
-#[cfg(target_os = "macos")]
-use crate::components::control_size::platform_control_size;
+use crate::components::button_chrome;
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
-    pub(super) use cocoa_ui::appkit::{Button, HitTest, HostView, colors};
-    pub(super) use cocoa_ui::objc2_app_kit::{NSBezelStyle, NSColor, NSControlSize};
+    pub(super) use cocoa_ui::appkit::{Button, HitTest, HostView};
 
     /// An owned handle to the platform button: `Retained` on `AppKit`.
     pub(super) type OwnedButton = cocoa_ui::Retained<Button>;
@@ -52,9 +41,7 @@ mod platform {
 #[cfg(target_os = "ios")]
 mod platform {
     pub(super) use cocoa_ui::action::ControlEvents;
-    pub(super) use cocoa_ui::objc2_ui_kit::UIColor;
-    pub(super) use cocoa_ui::uikit::button::Chrome;
-    pub(super) use cocoa_ui::uikit::{Button, HitTest, HostView, colors};
+    pub(super) use cocoa_ui::uikit::{Button, HitTest, HostView};
 
     /// An owned handle to the platform button: the wrapper itself on `UIKit`.
     pub(super) type OwnedButton = Button;
@@ -74,130 +61,16 @@ fn as_view(button: &Button) -> &PlatformView {
     button.as_ref()
 }
 
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object.
+/// The button as the platform button its style draws on.
+#[cfg(target_os = "macos")]
+fn styled(button: &platform::OwnedButton) -> button_chrome::StyledButton {
+    Retained::into_super(button.clone())
+}
+
+/// The button as the platform button its style draws on.
 #[cfg(target_os = "ios")]
-fn platform_color(color: &WorkingColor) -> Retained<platform::UIColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        platform::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
-    }
-}
-
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object, with HDR
-/// headroom applied as a content-headroom multiplier — the `AppKit` variant.
-#[cfg(target_os = "macos")]
-fn platform_color(color: &WorkingColor) -> Retained<platform::NSColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        platform::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
-    }
-}
-
-/// The color the label's `Foreground` slot resolves to under `style` — the
-/// `UIKit` table: chrome carries the emphasis for glass, accent for
-/// prominent fills. Inside a navigation or bottom bar an automatic or
-/// borderless label takes the primary label color instead, as `SwiftUI` and
-/// `UIBarButtonItem` draw it there.
-#[cfg(target_os = "ios")]
-fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingColor> {
-    match style {
-        ButtonStyle::BorderedProminent | ButtonStyle::GlassProminent => {
-            AccentForeground.resolve(env).computed()
-        }
-        ButtonStyle::Plain | ButtonStyle::Glass => Foreground.resolve(env).computed(),
-        ButtonStyle::Automatic | ButtonStyle::Borderless
-            if env.get::<crate::toolbar_chrome::ToolbarChrome>().is_some() =>
-        {
-            Foreground.resolve(env).computed()
-        }
-        ButtonStyle::Automatic
-        | ButtonStyle::Link
-        | ButtonStyle::Borderless
-        | ButtonStyle::Bordered => Accent.resolve(env).computed(),
-        _ => panic!("unsupported WaterUI button style: {style:?}"),
-    }
-}
-
-/// The `AppKit` table: bordered titles draw in the primary label color;
-/// only link and borderless styles are accent-tinted. Inside the window
-/// toolbar a borderless label takes the toolbar's secondary label color
-/// instead, as `SwiftUI` draws it there.
-#[cfg(target_os = "macos")]
-fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingColor> {
-    match style {
-        ButtonStyle::BorderedProminent | ButtonStyle::GlassProminent => {
-            AccentForeground.resolve(env).computed()
-        }
-        ButtonStyle::Automatic
-        | ButtonStyle::Bordered
-        | ButtonStyle::Plain
-        | ButtonStyle::Glass => Foreground.resolve(env).computed(),
-        ButtonStyle::Borderless if env.get::<crate::toolbar_chrome::ToolbarChrome>().is_some() => {
-            MutedForeground.resolve(env).computed()
-        }
-        ButtonStyle::Link | ButtonStyle::Borderless => Accent.resolve(env).computed(),
-        _ => panic!("unsupported WaterUI button style: {style:?}"),
-    }
-}
-
-/// The label's `Body` slot: the environment's resolved body font resized to
-/// `size`'s own system font size. `AppKit` pairs each `NSControlSize` with a
-/// point size — 11 pt for small, 9 pt for mini — and `configure_button`
-/// resolves the same `NSControlSize` for the bezel. Weight, family and
-/// typography metrics keep the values the theme resolved.
-#[cfg(target_os = "macos")]
-fn label_font(env: &Environment, size: platform::NSControlSize) -> Computed<ResolvedFont> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "ResolvedFont is f32; AppKit's control-size point sizes are small exact values"
-    )]
-    let points = cocoa_ui::font::system_size_for_control_size(size) as f32;
-    Body.resolve(env)
-        .map(move |mut font| {
-            font.set_size(points);
-            font
-        })
-        .computed()
-}
-
-/// Whether the style draws chrome around its label — `AppKit`'s bezel, plus
-/// `Automatic`, which resolves to the bordered push bezel. Chrome-less
-/// styles pad nothing.
-#[cfg(target_os = "macos")]
-const fn draws_chrome(style: ButtonStyle) -> bool {
-    matches!(
-        style,
-        ButtonStyle::Automatic
-            | ButtonStyle::Bordered
-            | ButtonStyle::BorderedProminent
-            | ButtonStyle::Glass
-            | ButtonStyle::GlassProminent
-    )
-}
-
-/// The chrome `style` draws on `UIKit`, matching what `SwiftUI`'s button
-/// styles resolve to.
-#[cfg(target_os = "ios")]
-const fn chrome_of(style: ButtonStyle) -> Option<platform::Chrome> {
-    match style {
-        // SwiftUI's .bordered is the neutral gray capsule; .filled() is
-        // reserved for the prominent accent fill.
-        ButtonStyle::Bordered => Some(platform::Chrome::Gray),
-        ButtonStyle::BorderedProminent => Some(platform::Chrome::Filled),
-        ButtonStyle::Glass => Some(platform::Chrome::Glass),
-        ButtonStyle::GlassProminent => Some(platform::Chrome::ProminentGlass),
-        _ => None,
-    }
+fn styled(button: &platform::OwnedButton) -> button_chrome::StyledButton {
+    button.clone()
 }
 
 /// Sets the button's chrome for `style` and reports the padding the label
@@ -209,25 +82,7 @@ fn configure_button(
     style: ButtonStyle,
     mtm: cocoa_ui::MainThreadMarker,
 ) -> (f32, f32) {
-    let insets = chrome_of(style).map_or(cocoa_ui::EdgeInsets::ZERO, |chrome| {
-        Button::chrome_content_insets(chrome, mtm)
-    });
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the layout contract is f32; chrome insets are a few points"
-    )]
-    (insets.left as f32, insets.top as f32)
-}
-
-/// A `cocoa-ui` control size as `NSControlSize`.
-#[cfg(target_os = "macos")]
-const fn ns_control_size(size: cocoa_ui::slider::ControlSize) -> platform::NSControlSize {
-    match size {
-        cocoa_ui::slider::ControlSize::Mini => platform::NSControlSize::Mini,
-        cocoa_ui::slider::ControlSize::Small => platform::NSControlSize::Small,
-        cocoa_ui::slider::ControlSize::Regular => platform::NSControlSize::Regular,
-        cocoa_ui::slider::ControlSize::Large => platform::NSControlSize::Large,
-    }
+    button_chrome::chrome_padding(style, mtm)
 }
 
 /// Sets the button's bezel for `style` and reports the padding the bezel
@@ -236,28 +91,13 @@ const fn ns_control_size(size: cocoa_ui::slider::ControlSize) -> platform::NSCon
 fn configure_button(
     button: &Button,
     style: ButtonStyle,
-    size: platform::NSControlSize,
+    size: button_chrome::NSControlSize,
 ) -> (f32, f32) {
-    button.control().setControlSize(size);
-    match style {
-        ButtonStyle::Automatic | ButtonStyle::Bordered | ButtonStyle::BorderedProminent => {
-            button.set_bordered(true);
-            button.set_bezel_style(platform::NSBezelStyle::FlexiblePush);
-        }
-        ButtonStyle::Glass | ButtonStyle::GlassProminent => {
-            button.set_bordered(true);
-            button.set_bezel_style(platform::NSBezelStyle::Glass);
-        }
-        ButtonStyle::Plain | ButtonStyle::Link | ButtonStyle::Borderless => {
-            button.set_bordered(false);
-            button.set_transparent(true);
-        }
-        _ => panic!("unsupported WaterUI button style: {style:?}"),
-    }
+    button_chrome::apply_bezel(button, style, size);
     // A transparent borderless NSButton reports AXUnknown instead of
     // AXButton.
     button.mark_accessible_as_button();
-    if draws_chrome(style) {
+    if button_chrome::draws_chrome(style) {
         let (horizontal, vertical) = button.content_padding();
         #[expect(
             clippy::cast_possible_truncation,
@@ -325,24 +165,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let style = config.style();
 
         // The label subtree resolves `Foreground` from the color the style
-        // prescribes for its platform.
-        let mut label_env = ctx.env().clone();
-        install_color_signal::<Foreground>(&mut label_env, label_foreground(style, ctx.env()));
-
-        // `AppKit` pairs each control size with its own system font size; the
-        // label's default `Body` follows it. Another slot or an explicit font
-        // keeps what it resolves to.
-        #[cfg(target_os = "macos")]
-        let control_size = {
-            // `Button`'s documented default is `Small`; a bare button
-            // therefore draws at `regular` like a bare `NSButton`.
-            let size = ns_control_size(platform_control_size(
-                config.size(),
-                waterui::component::ControlSize::Small,
-            ));
-            install_font_signal::<Body>(&mut label_env, label_font(ctx.env(), size));
-            size
-        };
+        // prescribes for its platform, and on `AppKit` its default `Body`
+        // from the control size.
+        let label_env = button_chrome::label_environment(style, config.size(), ctx.env());
 
         let container = HostView::new(mtm, cocoa_ui::Rect::ZERO);
         let button = Button::new(mtm);
@@ -353,7 +178,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         #[cfg(target_os = "ios")]
         let padding = configure_button(&button, style, mtm);
         #[cfg(target_os = "macos")]
-        let padding = configure_button(&button, style, control_size);
+        let padding = configure_button(&button, style, button_chrome::control_size(config.size()));
 
         let (label, action, ..) = config.into_parts();
         let accessibility_label = label.accessibility_label();
@@ -420,7 +245,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         bind_accessibility(&mut leaf, &button, &label_container, &accessibility_label);
         bind_disabled(&mut leaf, &button, &label_container, ctx.env());
-        bind_accent(&mut leaf, button.clone(), style, ctx.env(), mtm);
+        button_chrome::bind_accent(&mut leaf, styled(&button), style, ctx.env(), mtm);
         #[cfg(target_os = "macos")]
         if style == ButtonStyle::Link {
             enable_link_chrome(&button, &link_child);
@@ -527,37 +352,6 @@ fn bind_disabled(
     wire_highlight(leaf, button, label_container);
 }
 
-/// The accent color: `UIKit` tints chrome and title with it, `AppKit`
-/// paints it only into prominent bezels. `UIKit` also re-applies the
-/// configuration each time, matching `applyThemeAppearance`.
-fn bind_accent(
-    leaf: &mut NativeLeaf,
-    button: platform::OwnedButton,
-    style: ButtonStyle,
-    env: &Environment,
-    mtm: cocoa_ui::MainThreadMarker,
-) {
-    let accent = Accent.resolve(env);
-    #[cfg(target_os = "macos")]
-    let _ = mtm;
-    leaf.bind(&accent, move |color| {
-        #[cfg(target_os = "ios")]
-        {
-            button.set_tint_color(&platform_color(&color));
-            button.set_chrome(chrome_of(style).unwrap_or(platform::Chrome::Plain), mtm);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            if matches!(
-                style,
-                ButtonStyle::BorderedProminent | ButtonStyle::GlassProminent
-            ) {
-                button.set_bezel_color(Some(&platform_color(&color)));
-            }
-        }
-    });
-}
-
 /// The link style's affordances on `AppKit`: the pointing-hand cursor over
 /// the button, and press feedback dimming the label — `AppKit` draws no
 /// pressed state for a transparent bezel.
@@ -599,45 +393,5 @@ mod tests {
         );
         assert_eq!(clamped.width, Some(0.0));
         assert_eq!(clamped.height, None);
-    }
-
-    #[cfg(target_os = "ios")]
-    #[test]
-    fn chrome_mapping_matches_swift() {
-        use platform::Chrome;
-        assert!(matches!(
-            chrome_of(ButtonStyle::Bordered),
-            Some(Chrome::Gray)
-        ));
-        assert!(matches!(
-            chrome_of(ButtonStyle::BorderedProminent),
-            Some(Chrome::Filled)
-        ));
-        assert!(matches!(chrome_of(ButtonStyle::Glass), Some(Chrome::Glass)));
-        assert!(matches!(
-            chrome_of(ButtonStyle::GlassProminent),
-            Some(Chrome::ProminentGlass)
-        ));
-        // Automatic, Plain, Link, Borderless carry no configuration and draw
-        // through `.plain` with zeroed content insets.
-        assert!(chrome_of(ButtonStyle::Automatic).is_none());
-        assert!(chrome_of(ButtonStyle::Plain).is_none());
-        assert!(chrome_of(ButtonStyle::Link).is_none());
-        assert!(chrome_of(ButtonStyle::Borderless).is_none());
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn chrome_mapping_matches_swift() {
-        // AppKit draws chrome for Automatic, Bordered, and the prominent and
-        // glass styles; Plain, Link, and Borderless are transparent.
-        assert!(draws_chrome(ButtonStyle::Automatic));
-        assert!(draws_chrome(ButtonStyle::Bordered));
-        assert!(draws_chrome(ButtonStyle::BorderedProminent));
-        assert!(draws_chrome(ButtonStyle::Glass));
-        assert!(draws_chrome(ButtonStyle::GlassProminent));
-        assert!(!draws_chrome(ButtonStyle::Plain));
-        assert!(!draws_chrome(ButtonStyle::Link));
-        assert!(!draws_chrome(ButtonStyle::Borderless));
     }
 }
