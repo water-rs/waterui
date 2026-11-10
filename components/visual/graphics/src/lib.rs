@@ -5,8 +5,6 @@ extern crate alloc;
 /// The bridge from the framework's animations to the engine's.
 pub mod animation;
 pub mod canvas;
-/// Color types and conversion utilities.
-pub mod color;
 #[cfg(feature = "effects")]
 mod effects;
 #[cfg(feature = "gpu")]
@@ -31,7 +29,9 @@ pub use cherenkov_record as draw;
 #[cfg(feature = "cherenkov")]
 pub use cherenkov;
 
-pub use color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
+/// Color types and conversion utilities.
+pub use waterui_color as color;
+pub use waterui_color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
 #[cfg(feature = "effects")]
 pub use effects::filter_view;
 #[cfg(feature = "gpu")]

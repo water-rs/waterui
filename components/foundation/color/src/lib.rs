@@ -15,7 +15,7 @@
 mod oklch;
 pub use oklch::Oklch;
 pub mod working;
-pub use crate::draw::WorkingColor;
+pub use cherenkov_record::WorkingColor;
 mod p3;
 pub use p3::P3;
 mod srgb;
@@ -46,7 +46,7 @@ use waterui_core::{
 /// # Examples
 ///
 /// ```rust
-/// use waterui_graphics::Color;
+/// use waterui_color::Color;
 ///
 /// // A named colour in the working space.
 /// let blue = Color::blue();
