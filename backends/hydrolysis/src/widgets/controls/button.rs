@@ -563,11 +563,6 @@ pub fn render_button_node<E: crate::text::TextEngine>(
     render_button_parts(ctx, state, env);
 }
 
-/// A menu trigger has no style or size of its own: it takes the default
-/// button's.
-const MENU_TRIGGER_STYLE: ButtonStyle = ButtonStyle::Automatic;
-const MENU_TRIGGER_SIZE: ControlSize = ControlSize::Small;
-
 /// The retained render state of a menu trigger. `ResolvedMenu::label` is a
 /// move-only `AnyView`, so the persistent `Widget` node holds it as a
 /// [`RetainedSubview`] built once and re-flushed each frame (unless it is a
@@ -581,6 +576,9 @@ pub struct MenuRenderState<E: crate::text::TextEngine> {
     /// once at build from the label's own display-mode resolution, so the
     /// trigger takes the icon-button look like a button.
     icon_only: bool,
+    /// The trigger button's style and size, from the menu.
+    style: ButtonStyle,
+    size: ControlSize,
     items: nami::Computed<Vec<waterui_controls::menu::ResolvedMenuItem>>,
     #[cfg(feature = "accessibility")]
     accessibility_label: nami::Computed<StyledStr>,
@@ -606,6 +604,8 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
             accessibility_label,
             #[cfg(not(feature = "accessibility"))]
                 accessibility_label: _,
+            style,
+            size,
         } = menu;
         let icon_only = label
             .downcast_ref::<Label>()
@@ -618,6 +618,8 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
         Self {
             label,
             icon_only,
+            style,
+            size,
             items,
             #[cfg(feature = "accessibility")]
             accessibility_label,
@@ -626,7 +628,7 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
     }
 
     fn spec(&self, env: &Environment) -> ButtonSpec {
-        button_spec(MENU_TRIGGER_STYLE, MENU_TRIGGER_SIZE, self.icon_only, env)
+        button_spec(self.style, self.size, self.icon_only, env)
     }
 
     /// Apply the look's label styling and build the label sub-view. Called
@@ -1149,7 +1151,7 @@ pub fn measure_menu_intrinsic<E: crate::text::TextEngine>(
         .label
         .downcast_ref::<Label>()
         .is_some_and(|label| label_resolves_icon_only(label, env));
-    let spec = button_spec(MENU_TRIGGER_STYLE, MENU_TRIGGER_SIZE, icon_only, env);
+    let spec = button_spec(menu.style, menu.size, icon_only, env);
     let look = resolve_look(theme, spec, env);
     let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
         && renders_as_plain_title(label)
@@ -1289,7 +1291,7 @@ pub fn emit_menu_accessibility<E: crate::text::TextEngine>(
 #[cfg(test)]
 mod tests {
     use super::{
-        ButtonChromeState, MENU_TRIGGER_STYLE, button_size, look_color, retained_label_color,
+        ButtonChromeState, MenuRenderState, button_size, look_color, retained_label_color,
     };
     use crate::theme::{
         ButtonLook, Chrome, CornerShape, FocusIndicator, Label, Motion, PressFeedback, StateLayer,
@@ -1299,14 +1301,51 @@ mod tests {
     use kurbo::Rect;
     use nami::Signal as _;
     use waterui::Color;
+    use waterui::{AnyView, View};
+    use waterui_controls::ControlSize;
     use waterui_controls::button::ButtonStyle;
+    use waterui_controls::menu::{Menu, ResolvedMenu};
+    use waterui_core::Environment;
     use waterui_core::animation::Animation;
     use waterui_core::interaction::{InteractionState, StateValue};
     use waterui_core::layout::{ProposalSize, Size};
 
+    /// The trigger spec of `menu` resolved in `env`.
+    fn trigger_spec(menu: Menu, env: &Environment) -> crate::theme::ButtonSpec {
+        let resolved = AnyView::new(View::body(menu, env))
+            .downcast::<ResolvedMenu>()
+            .expect("a menu resolves to its native config");
+        MenuRenderState::<crate::text::ParleyEngine>::from_resolved(*resolved, env).spec(env)
+    }
+
     #[test]
-    fn menu_trigger_uses_material_default_button_style() {
-        assert_eq!(MENU_TRIGGER_STYLE, ButtonStyle::Automatic);
+    fn menu_trigger_takes_the_menus_style_and_size() {
+        let env = Environment::new();
+        let plain = trigger_spec(Menu::new("Sort", ()), &env);
+        assert_eq!(
+            (plain.style(), plain.size()),
+            (ButtonStyle::Automatic, ControlSize::Small),
+            "a menu defaults to the default button"
+        );
+
+        let styled = trigger_spec(
+            Menu::new("Sort", ())
+                .style(ButtonStyle::BorderedProminent)
+                .size(ControlSize::Large),
+            &env,
+        );
+        assert_eq!(
+            (styled.style(), styled.size()),
+            (ButtonStyle::BorderedProminent, ControlSize::Large)
+        );
+
+        let mut ambient = Environment::new();
+        ambient.install(ButtonStyle::Bordered);
+        assert_eq!(
+            trigger_spec(Menu::new("Sort", ()), &ambient).style(),
+            ButtonStyle::Bordered,
+            "an automatic trigger takes the ambient button style"
+        );
     }
 
     #[test]
