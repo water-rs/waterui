@@ -1672,6 +1672,92 @@ mod render {
             .map_or_else(|_| panic!("a canvas mounts as a canvas view"), |view| *view)
     }
 
+    /// Linear, radial and mesh gradients authored through the canvas, each
+    /// placed by a non-uniform scale, a rotation and a move (nested paint
+    /// transforms), on a fill (top row) and a thick stroke (bottom row). The
+    /// radial gradient is an ellipse and the shapes stay where they are.
+    #[test]
+    fn transformed_canvas_paints_move_the_paint_and_not_the_shape() {
+        use waterui_core::layout::{Affine2, Point as LPoint, Rect as LRect, Size as LSize};
+        use waterui_core::{Environment, View as _};
+        use waterui_graphics::canvas::{
+            Canvas, LinearGradient as CLinear, MeshGradient as CMesh, Paint,
+            RadialGradient as CRadial, StrokeStyle,
+        };
+        use waterui_graphics::color::WorkingColor;
+        use waterui_graphics::resources::SceneResources;
+
+        let color = |r: f32, g: f32, b: f32| WorkingColor::new([r, g, b, 1.0]);
+        let rect = |x: f32, y: f32, w: f32, h: f32| LRect::new(LPoint::new(x, y), LSize::new(w, h));
+        let canvas = Canvas::new(move |cx| {
+            for (column, x) in [60.0_f32, 180.0, 300.0].into_iter().enumerate() {
+                for (row, y) in [60.0_f32, 170.0].into_iter().enumerate() {
+                    let paint = match column {
+                        0 => Paint::from(
+                            CLinear::new(LPoint::new(-50.0, 0.0), LPoint::new(50.0, 0.0))
+                                .stop(0.0, color(1.0, 0.2, 0.2))
+                                .stop(1.0, color(0.2, 0.3, 1.0)),
+                        ),
+                        1 => Paint::from(
+                            CRadial::new(LPoint::zero(), 50.0)
+                                .stop(0.0, color(1.0, 1.0, 1.0))
+                                .stop(1.0, color(0.1, 0.6, 0.2)),
+                        ),
+                        _ => Paint::from(CMesh::new(
+                            1,
+                            1,
+                            vec![
+                                LPoint::new(-50.0, -50.0),
+                                LPoint::new(50.0, -50.0),
+                                LPoint::new(-50.0, 50.0),
+                                LPoint::new(50.0, 50.0),
+                            ],
+                            vec![
+                                color(1.0, 0.0, 0.0),
+                                color(0.0, 1.0, 0.0),
+                                color(0.0, 0.0, 1.0),
+                                color(1.0, 1.0, 0.0),
+                            ],
+                        )),
+                    }
+                    .transformed(Affine2::scale(1.8, 0.6))
+                    .transformed(Affine2::rotate(0.5))
+                    .transformed(Affine2::translate(x, y));
+                    if row == 0 {
+                        cx.fill(rect(x - 50.0, y - 50.0, 100.0, 100.0), paint);
+                    } else {
+                        cx.stroke(
+                            rect(x - 42.0, y - 42.0, 84.0, 84.0),
+                            StrokeStyle::new(16.0),
+                            paint,
+                        );
+                    }
+                }
+            }
+        });
+        let env = Environment::new();
+        let mut scene = *waterui_core::AnyView::new(canvas.body(&env))
+            .downcast::<waterui_graphics::canvas::CanvasView>()
+            .unwrap_or_else(|_| panic!("a canvas mounts as a canvas view"));
+        let registry = Rc::new(Registry::default());
+        let resources = SceneResources::new(Rc::new(Backend::new(Rc::clone(&registry), u64::MAX)));
+        let mut names = resources.recording();
+        let mut content = Content::record(&LayoutSize::new(), |recorder| {
+            let _ = scene.build_scene(recorder, &mut names, 360.0, 240.0);
+        });
+        let _held = names.finish();
+        let fixture = Fixture::new(registry);
+        let tree = Tree::new(&first_list(&mut content), fixture.at(1.0));
+        tree.settle();
+        save(
+            "transformed_canvas_paints",
+            &pixels(tree.root(), 360, 240, 1),
+            360,
+            240,
+            1,
+        );
+    }
+
     /// The animated mesh gradient, driven as a host drives it: recorded at
     /// mount, then updated in place by frames presented ten seconds apart.
     /// Both captures go through the layer tree and Core Animation's own

@@ -6,13 +6,15 @@ use nami::{Signal, SignalExt as _, binding};
 use waterui_core::Environment;
 use waterui_core::layout::{Affine2, Point, Rect, Size};
 
+use super::names::Names;
+use super::paint::affine;
 use super::scene::CanvasScene;
 use super::{
-    Canvas, Circle, Drawing, ImagePattern, ImageSource, ImageStatus, Layer, PixelBuffer,
-    PixelFormat, Sampling, StrokeStyle,
+    Canvas, Circle, Drawing, ImagePattern, ImageSource, ImageStatus, Layer, LinearGradient, Paint,
+    PixelBuffer, PixelFormat, Sampling, StrokeStyle,
 };
 use crate::color::WorkingColor;
-use crate::draw::{Content, ContentChange, LayoutSize, Operand};
+use crate::draw::{self, Content, ContentChange, LayoutSize, Operand};
 use crate::scene::resources::tests::{Mount, null_resources, removed_images};
 use crate::scene_view::{SceneContent, SceneFrame, SceneInvalidator, SceneUpdate};
 
@@ -475,4 +477,71 @@ fn size_follows_the_box() {
     }));
     let _ = record(&mut scene);
     assert_eq!(seen.get(), Size::new(100.0, 50.0));
+}
+
+fn skew() -> Affine2 {
+    Affine2::new(2.0, 0.5, -0.5, 1.0, 3.0, 4.0)
+}
+
+#[test]
+fn a_transformed_paint_lowers_to_a_transformed_draw_paint() {
+    let gradient = LinearGradient::new(Point::new(0.0, 0.0), Point::new(10.0, 0.0));
+    let paint = Paint::from(gradient.clone()).transformed(skew());
+    let lowered = paint
+        .lower(&Names::default())
+        .expect("a gradient needs no resource");
+    let draw::Paint::Transformed(lowered) = lowered else {
+        panic!("a transformed paint lowers to a transformed draw paint");
+    };
+    assert_eq!(lowered.transform, affine(skew()));
+    assert_eq!(
+        *lowered.paint,
+        Paint::from(gradient)
+            .lower(&Names::default())
+            .expect("a gradient needs no resource")
+    );
+}
+
+#[test]
+fn the_identity_transform_leaves_a_paint_alone() {
+    let paint = Paint::from(red());
+    assert_eq!(paint.clone().transformed(Affine2::IDENTITY), paint);
+}
+
+#[test]
+fn transforming_a_transformed_paint_nests_it() {
+    let inner = Affine2::scale(2.0, 3.0);
+    let outer = Affine2::rotate(0.5);
+    let paint = Paint::from(red()).transformed(inner).transformed(outer);
+    let draw::Paint::Transformed(lowered) = paint.lower(&Names::default()).expect("a colour")
+    else {
+        panic!("a transformed paint lowers to a transformed draw paint");
+    };
+    assert_eq!(lowered.transform, affine(outer));
+    let draw::Paint::Transformed(nested) = &*lowered.paint else {
+        panic!("the earlier transform stays inside");
+    };
+    assert_eq!(nested.transform, affine(inner));
+}
+
+#[test]
+fn a_transformed_image_pattern_is_still_registered() {
+    let image = pixel();
+    let mut scene = mount(Canvas::new({
+        move |cx| {
+            cx.fill(
+                Rect::from_size(Size::new(8.0, 8.0)),
+                Paint::from(ImagePattern::new(image)).transformed(skew()),
+            );
+        }
+    }));
+    let report = Mount::new().frame(&mut scene);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event, cherenkov::testing::Event::AddImage(_))),
+        "the image under the transform is registered: {:?}",
+        report.events
+    );
 }

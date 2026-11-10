@@ -78,7 +78,7 @@ pub use operand::Operand;
 pub use paint::{
     BlendMode, BlendSpace, Cap, ColorStop, ConicGradient, Extend, ImagePattern, Interpolation,
     IntoPaint, Join, Layer, LinearGradient, MeshGradient, Paint, RadialGradient, Sampling, Shadow,
-    StrokeStyle,
+    StrokeStyle, TransformedPaint,
 };
 pub use resource::{
     Font, Glyph, GlyphRun, GlyphStyle, ImageColorSpace, ImageSource, ImageStatus, PixelBuffer,
