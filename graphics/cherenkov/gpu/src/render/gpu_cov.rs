@@ -280,6 +280,11 @@ pub struct GpuCoverage {
     budget: u64,
     /// The device's binding limit.
     limit: CoverageLimit,
+    /// The largest buffer the backend's allocator suballocates
+    /// ([`crate::interop::suballocation_limit`]), `None` where it takes
+    /// no hint. Bounds the ordered upload's staging chunks
+    /// ([`Self::staging_chunk`]).
+    suballocation: Option<u64>,
     /// An unrecorded compaction's copy plan. Held until a submit lands
     /// it — a failed or retried commit re-records it rather than
     /// pointing entries at content that never moved.
@@ -439,14 +444,31 @@ impl BufferBounds {
 }
 
 impl GpuCoverage {
-    pub fn new(device: &wgpu::Device, budget: u64, cache: super::PipelineCache) -> Self {
+    /// `suballocation` is the backend's
+    /// [`crate::interop::suballocation_limit`].
+    pub fn new(
+        device: &wgpu::Device,
+        suballocation: Option<u64>,
+        budget: u64,
+        cache: super::PipelineCache,
+    ) -> Self {
         Self {
             cache,
-            ..Self::with_limits(&device.limits(), budget)
+            ..Self::with_limits(&device.limits(), suballocation, budget)
         }
     }
 
-    fn with_limits(limits: &wgpu::Limits, budget: u64) -> Self {
+    /// The size bound of one ordered-upload staging chunk: the allocator's
+    /// suballocation block where the backend has one, so a chunk
+    /// suballocates from the blocks the allocator retains instead of
+    /// taking a dedicated driver allocation every frame
+    /// (water-rs/waterui#4174), and never above the binding limit.
+    fn staging_chunk(&self) -> u64 {
+        self.suballocation
+            .map_or(self.limit.bytes, |block| block.min(self.limit.bytes))
+    }
+
+    fn with_limits(limits: &wgpu::Limits, suballocation: Option<u64>, budget: u64) -> Self {
         Self {
             cache: super::PipelineCache::default(),
             paths: Vec::new(),
@@ -460,6 +482,7 @@ impl GpuCoverage {
             undrawn_bytes: 0,
             budget,
             limit: CoverageLimit::new(limits),
+            suballocation,
             compaction: None,
             elements: Vec::new(),
             element_sources: Vec::new(),
@@ -1471,7 +1494,7 @@ impl GpuCoverage {
         let dash_blocks = params[21];
         let buffers = self.buffers.as_ref().expect("coverage buffers sized");
 
-        let mut upload = BatchUpload::new(queue, !self.batches.is_empty(), self.limit.bytes);
+        let mut upload = BatchUpload::new(queue, !self.batches.is_empty(), self.staging_chunk());
         for radix_pass in 0..radix_pass_count.max(1) {
             let mut block = params;
             block[17] = radix_pass;
@@ -1860,9 +1883,12 @@ impl GpuCoverage {
 
 /// Queue writes suffice for one batch. Multiple batches must upload between
 /// their compute passes rather than all writing the shared destinations before submit.
-/// The ordered path stages the bytes in chunks of at most `chunk` bytes,
-/// each a buffer within the binding limit ([`CoverageLimit`]); every
-/// write fits one, being no larger than the buffer it targets.
+/// The ordered path stages the bytes in chunks of at most `chunk` bytes
+/// ([`GpuCoverage::staging_chunk`]: the allocator's suballocation block,
+/// within the binding limit), so each chunk suballocates from retained
+/// device memory. A write larger than `chunk` takes a chunk of its own,
+/// which is no larger than the binding limit, being no larger than the
+/// buffer it targets.
 struct BatchUpload<'a> {
     queue: &'a wgpu::Queue,
     ordered: bool,
@@ -2334,7 +2360,12 @@ mod tests {
     /// A coverage frame on `device` with an undrawn budget that never
     /// evicts.
     fn uncapped(device: &wgpu::Device) -> GpuCoverage {
-        GpuCoverage::new(device, u64::MAX, super::super::PipelineCache::default())
+        GpuCoverage::new(
+            device,
+            None,
+            u64::MAX,
+            super::super::PipelineCache::default(),
+        )
     }
 
     #[test]
@@ -2486,7 +2517,7 @@ mod tests {
             max_storage_buffer_binding_size: probe.batch.bound.largest() / 2,
             ..wgpu::Limits::default()
         };
-        let mut frame = GpuCoverage::with_limits(&small, u64::MAX);
+        let mut frame = GpuCoverage::with_limits(&small, None, u64::MAX);
         frame.begin_frame();
         assert!(
             frame
@@ -2505,7 +2536,7 @@ mod tests {
             max_storage_buffer_binding_size: probe.batch.bound.largest(),
             ..wgpu::Limits::default()
         };
-        let mut frame = GpuCoverage::with_limits(&between, u64::MAX);
+        let mut frame = GpuCoverage::with_limits(&between, None, u64::MAX);
         frame.begin_frame();
         frame
             .draw(
@@ -2623,6 +2654,39 @@ mod tests {
             frame.buffers.is_none(),
             "a frame that generates nothing releases generation scratch"
         );
+    }
+
+    /// The ordered upload stages within the chunk bound — the allocator's
+    /// suballocation block under the binding limit — except a write larger
+    /// than it, which takes a chunk of its own (water-rs/waterui#4174).
+    #[test]
+    fn ordered_upload_chunks_stay_within_the_suballocation_block() {
+        let Some((device, queue, _)) = delivery_device() else {
+            return;
+        };
+        let mut frame = uncapped(&device);
+        frame.limit.bytes = 64;
+        assert_eq!(frame.staging_chunk(), 64, "no block: the binding limit");
+        frame.suballocation = Some(1024);
+        assert_eq!(frame.staging_chunk(), 64, "never above the binding limit");
+        frame.limit.bytes = 4096;
+        assert_eq!(frame.staging_chunk(), 1024, "the block bounds a chunk");
+        let chunk = frame.staging_chunk();
+        let target = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("upload target"),
+            size: 4096,
+            usage: wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut upload = BatchUpload::new(&queue, true, chunk);
+        for size in [600, 600, 300, 3000, 100] {
+            upload.write_buffer(&target, 0, &vec![0; size]);
+        }
+        let sizes: Vec<_> = upload.chunks.iter().map(Vec::len).collect();
+        assert_eq!(sizes, [600, 900, 3000, 100]);
+        for &size in &sizes {
+            assert!(size as u64 <= chunk || size == 3000, "chunk of {size}");
+        }
     }
 
     /// The binding limit the sliced frames below run under: below the
@@ -3141,7 +3205,7 @@ mod tests {
         let gpu = (&device, &queue, delivery);
         let paths = road_paths();
         let words = |path: &crate::render::path::GpuPath| {
-            let mut probe = GpuCoverage::with_limits(&device.limits(), 0);
+            let mut probe = GpuCoverage::with_limits(&device.limits(), None, 0);
             probe.begin_frame();
             let draw = GpuDraw::new(1, 0, Affine::IDENTITY, path.clone(), (1024, 768));
             probe.draw(&device, &draw).expect("road draw fits");
@@ -3159,7 +3223,7 @@ mod tests {
         let step =
             |content| GpuDraw::new(content, 0, Affine::IDENTITY, moving.clone(), (1024, 768));
         // A zero undrawn budget evicts each step's placement at the next.
-        let mut frame = GpuCoverage::new(&device, 0, super::super::PipelineCache::default());
+        let mut frame = GpuCoverage::new(&device, None, 0, super::super::PipelineCache::default());
         let first = coverage_frame(&mut frame, gpu, &[&step(100), &still]);
         assert!(first.iter().all(|&count| count > 0), "both roads emit");
         let arena = frame.arena().expect("sized arena").clone();

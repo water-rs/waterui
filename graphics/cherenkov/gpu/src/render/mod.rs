@@ -3021,6 +3021,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         };
         let gpu_cov = gpu_cov::GpuCoverage::new(
             &device,
+            crate::interop::suballocation_limit(info.backend),
             config.budget.gpu.0 / gpu_cov::BUDGET_SHARE,
             PipelineCache::new(pipeline_cache.as_ref(), &config),
         );
@@ -3392,6 +3393,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     )?;
     let gpu_cov = gpu_cov::GpuCoverage::new(
         &device,
+        crate::interop::suballocation_limit(info.backend),
         config.budget.gpu.0 / gpu_cov::BUDGET_SHARE,
         PipelineCache::new(pipeline_cache.as_ref(), &config),
     );
