@@ -129,9 +129,10 @@ impl ListSelection<ListTagId> {
 ///
 /// A [`ForEach`] row is selected by its item's id. The rows of
 /// [`List::content`](super::List::content) are selected by `T` when every
-/// selectable row in the content is: `ForEach` items with ids of type `T`,
-/// and static rows tagged with `.tag(value)` where `value: T`. A row that
-/// carries no value is not selectable.
+/// selectable row in the content is — `ForEach` items with ids of type `T`,
+/// and static rows tagged with `.tag(value)` where `value: T` — and at least
+/// one row is. A row that carries no value is not selectable, so content of
+/// only such rows is selectable by no type.
 #[diagnostic::on_unimplemented(
     message = "the rows of `{Self}` are not selected by `{T}`",
     label = "rows not selected by `{T}`",

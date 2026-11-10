@@ -34,7 +34,8 @@ mod section;
 mod selection;
 
 pub use content::{
-    ListContent, ListScope, Row, RowLayout, SectionScope, TaggedBy, detail_row, row,
+    ContentTags, HoldsTag, ListContent, ListScope, Row, RowLayout, SectionScope, TagPresence,
+    Tagged, TaggedBy, Untagged, detail_row, row,
 };
 use rows::RowSections;
 pub use rows::{
