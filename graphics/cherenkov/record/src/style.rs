@@ -243,7 +243,9 @@ impl crate::animation::AnimLanes for Shadow {
     )]
     fn with_lanes(&self, lanes: &[f64]) -> Self {
         Self {
-            sigma: lanes[0],
+            // A spring that overshoots its target passes below a zero blur,
+            // which the engine rejects: a blur has no negative extent.
+            sigma: lanes[0].max(0.0),
             offset: Vec2::new(lanes[1], lanes[2]),
             spread: lanes[3],
             color: WorkingColor::new([
