@@ -23,10 +23,11 @@ use crate::render::bindings;
 use crate::render::glyph::GpuDraw;
 use crate::render::instance::Instance;
 use crate::render::path::stroke::{DashTable, GpuStrokeRecord};
-use crate::render::path::{CoverageKey, GpuBound, GpuElement, GpuPath};
+use crate::render::path::{CoverageKey, GpuBound, GpuElement, GpuPath, STRIP_H};
 use crate::render::stroke_abi::{
     LIST_WORDS, RECORD_WORDS, SCAN_BLOCK, SLOT_WORDS, SLOTS, STAGE_WORDS,
 };
+use kurbo::Affine;
 
 /// The divisor taking the engine's GPU budget to the retained-but-undrawn
 /// coverage share (water-rs/waterui#3081).
@@ -68,8 +69,9 @@ const WORKGROUP: u32 = 64;
 const CLASSIFY_WIDTH: u32 = super::path::GPU_CLASSIFY_WIDTH;
 /// Decision R2's hard per-batch cap on the coverage buffers' total
 /// size. A path whose own bound passes it is routed to the CPU sweep
-/// ([`CoverageLimit::admits`]); a frame whose paths together pass it is
-/// refused at [`GpuCoverage::draw`], never retried.
+/// ([`CoverageLimit::admits`]); paths that pass it together go into
+/// separate batches, and a forced path that passes it alone is generated
+/// in row slices ([`GpuCoverage::draw`]).
 const GPU_COV_MAX_BYTES: u64 = 256 << 20;
 /// The bytes a frame binds beside its paths' rows: the `Params` blocks,
 /// the dispatch arguments and the work header.
@@ -78,8 +80,17 @@ const FRAME_FIXED_BYTES: u64 = 18 * 1024 + 128 + 48;
 /// u32 words of one geometry record in the arena: the device bounds
 /// vec4 plus `(texel offset, interior)`; an all-ones offset denotes a span.
 const GEOMETRY_WORDS: u32 = 6;
-/// u32 words of one block's header: the emitted instance count and pad.
+/// u32 words of one block's header: the emitted instance count, then the
+/// first instance and texel words a following row slice starts from, and
+/// pad (water-rs/waterui#4108).
 const BLOCK_HEADER_WORDS: u32 = 4;
+/// The `GpuPath` record word marking a record that continues an entry an
+/// earlier batch began; the host reads it, the kernels do not.
+const CONTINUES_WORD: usize = 45;
+/// Byte offset of a record's `atom[4..7]` — instance count, first
+/// instance, texel words — that a continuing record seeds from its
+/// block's header.
+const SEEDED_COUNTERS: u64 = 16;
 /// Capacity of the staging buffer an in-place compaction moves live
 /// blocks through, since a buffer copy cannot read and write one buffer
 /// (water-rs/waterui#4108). It bounds a compaction's copy phases to the
@@ -112,9 +123,11 @@ struct Entry {
     words: u32,
     /// Geometry slots the block reserves.
     geometry_slots: u32,
-    /// This commit's `paths` record index while the entry awaits
+    /// This commit's first `paths` record while the entry awaits
     /// generation — the compaction's record fix-up needs it.
     record: u32,
+    /// The consecutive records generating the entry, one per row slice.
+    slices: u32,
     /// The generating frame's submit landed. Entries that never made
     /// it into a submission die at the next `begin_frame`, so no frame
     /// can replay a block whose kernels never ran.
@@ -300,6 +313,14 @@ pub struct GpuCoverage {
     buffers: Option<Buffers>,
 }
 
+/// One generation record of a miss: the bound of the rows it generates
+/// and the generation-frame clip narrowed to them
+/// ([`GpuCoverage::slices`]).
+struct Slice {
+    bound: GpuBound,
+    clip: [f32; 4],
+}
+
 /// A contiguous range of misses sharing one temporary buffer allocation.
 #[derive(Clone, Copy, Default)]
 struct Batch {
@@ -361,31 +382,51 @@ impl BufferBounds {
             + self.unbound
     }
 
-    fn largest(&self) -> u64 {
+    /// The largest generation scratch buffer. The arena is retained
+    /// output, not scratch, and is bound separately.
+    fn largest_scratch(&self) -> u64 {
         [
             self.elements,
             self.paths,
             self.segments,
             self.scratch,
             self.work,
-            self.arena,
             self.strokes,
         ]
         .into_iter()
         .max()
-        .expect("seven buffers")
+        .expect("six buffers")
+    }
+
+    /// The largest bound buffer, the retained arena included.
+    fn largest(&self) -> u64 {
+        self.largest_scratch().max(self.arena)
+    }
+
+    /// Whether a batch of these rows can be dispatched: every scratch
+    /// buffer within the scratch bound, the arena blocks within the
+    /// binding limit and the whole within the per-batch cap.
+    fn fits(&self, limit: CoverageLimit) -> bool {
+        self.largest_scratch() <= limit.scratch
+            && self.arena <= limit.bytes
+            && self.total() + FRAME_FIXED_BYTES <= GPU_COV_MAX_BYTES
     }
 }
 
 impl GpuCoverage {
-    pub fn new(device: &wgpu::Device, budget: u64, cache: super::PipelineCache) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        backend: wgpu::Backend,
+        budget: u64,
+        cache: super::PipelineCache,
+    ) -> Self {
         Self {
             cache,
-            ..Self::with_limits(&device.limits(), budget)
+            ..Self::with_limits(&device.limits(), backend, budget)
         }
     }
 
-    fn with_limits(limits: &wgpu::Limits, budget: u64) -> Self {
+    fn with_limits(limits: &wgpu::Limits, backend: wgpu::Backend, budget: u64) -> Self {
         Self {
             cache: super::PipelineCache::default(),
             paths: Vec::new(),
@@ -398,7 +439,7 @@ impl GpuCoverage {
             live_words: 0,
             undrawn_bytes: 0,
             budget,
-            limit: CoverageLimit::new(limits),
+            limit: CoverageLimit::new(limits, backend),
             compaction: None,
             elements: Vec::new(),
             element_sources: Vec::new(),
@@ -570,15 +611,9 @@ impl GpuCoverage {
     /// Join one applied `GpuPath` draw into the frame, as the path's
     /// draw index. A resident entry replays its block untouched; a miss
     /// allocates a block, evicts undrawn entries LRU-first over the
-    /// budget, and pushes the generation record the kernels run on.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "device coordinates are f32"
-    )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "hit arm plus the miss's bound and record"
-    )]
+    /// budget, and pushes the generation records the kernels run on —
+    /// one, or one per row slice when the whole path's scratch does not
+    /// fit a batch ([`GpuCoverage::slices`]).
     pub fn draw(&mut self, device: &wgpu::Device, draw: &GpuDraw) -> Result<u32, RenderError> {
         let &GpuDraw {
             key,
@@ -596,53 +631,182 @@ impl GpuCoverage {
             self.draws.push(Draw { key, shift });
             return Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"));
         }
+        let [.., ty] = raster.as_coeffs();
+        let slices = self.slices(prepared, ty, clip)?;
+        // One block holds every slice's output, each slice's capacity
+        // after the previous one's.
+        let geometry_slots: usize = slices.iter().map(|slice| slice.bound.instance_cap).sum();
+        let texels: usize = slices
+            .iter()
+            .map(|slice| slice.bound.texels.div_ceil(4) + slice.bound.cell_cap)
+            .sum();
+        let geometry_slots = u32::try_from(geometry_slots).expect("instance cap fits u32");
+        let texels = u32::try_from(texels).expect("texel words fit u32");
+        let (base, texel_base, block_words) = self.alloc_block(device, geometry_slots, texels)?;
+        let record = u32::try_from(self.paths.len()).expect("path count fits u32");
+        for (index, slice) in slices.iter().enumerate() {
+            self.push_slice(
+                prepared,
+                slice,
+                index > 0,
+                (rule, raster),
+                (base, texel_base),
+            );
+        }
+        self.entries.insert(
+            key,
+            Entry {
+                base,
+                texel_base,
+                words: block_words,
+                geometry_slots,
+                record,
+                slices: u32::try_from(slices.len()).expect("slice count fits u32"),
+                generated: false,
+                src: None,
+                last_used: self.epoch,
+            },
+        );
+        self.generated += 1;
+        self.draws.push(Draw { key, shift });
+        Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"))
+    }
+
+    /// The row slices that generate `prepared`, placed at its bound in a
+    /// generation frame whose raster translates by `ty` vertically and
+    /// clips to `clip`: the whole path when its rows fit an empty batch
+    /// ([`BufferBounds::fits`]), otherwise the fewest consecutive windows
+    /// of whole strips, top to bottom, each the largest that fits on its
+    /// own (water-rs/waterui#4108). The kernels compute winding along rows
+    /// only, so each window is the whole path's record with its clip
+    /// narrowed to the window's rows: it flattens and strokes the whole
+    /// path, whose bbox, columns and left-of-grid row seeds are the whole
+    /// path's, and bins only the segments reaching its rows.
+    ///
+    /// Only the bins, fragments and their sort shrink with the rows; the
+    /// path's elements, stroke records, segments and stroker scratch are
+    /// every slice's. A path one of whose strips does not fit an empty
+    /// batch stays whole; slices whose blocks together pass the binding
+    /// limit refuse the draw before anything is appended.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the placed bound's rows are integers"
+    )]
+    fn slices(
+        &self,
+        prepared: &GpuPath,
+        ty: f64,
+        clip: [f32; 4],
+    ) -> Result<Vec<Slice>, RenderError> {
+        let bound = prepared.bound;
+        if path_rows(prepared, &bound, FrameTotals::default())
+            .is_ok_and(|(rows, _)| rows.fits(self.limit))
+        {
+            return Ok(vec![Slice { bound, clip }]);
+        }
+        let window = |top: i32, bottom: i32| -> Result<Option<(GpuBound, u64)>, RenderError> {
+            let slice = prepared.row_slice(&bound, ty, top..bottom);
+            let (rows, _) = path_rows(prepared, &slice, FrameTotals::default())?;
+            Ok(rows.fits(self.limit).then_some((slice, rows.arena)))
+        };
+        let strip = i32::try_from(STRIP_H).expect("strip height fits i32");
+        let [top, bottom] = [bound.rect[1], bound.rect[3]].map(|row| row as i32);
+        let mut slices = Vec::new();
+        let mut arena = 0;
+        let mut from = top;
+        while from < bottom {
+            let mut to = (from + strip).min(bottom);
+            let Some(mut fitting) = window(from, to)? else {
+                // The parts that do not shrink with rows (elements, stroke
+                // records, segments, stroker scratch) already pass the
+                // block, so every slice would too: slicing would repeat
+                // the expansion without sparing a dedicated allocation.
+                // The path, admitted under the binding limit, is drawn
+                // whole in a batch of its own.
+                return Ok(vec![Slice { bound, clip }]);
+            };
+            while to < bottom {
+                let next = (to + strip).min(bottom);
+                let Some(larger) = window(from, next)? else {
+                    break;
+                };
+                (fitting, to) = (larger, next);
+            }
+            arena += fitting.1;
+            if arena > self.limit.bytes {
+                return Err(RenderError::Unsupported(
+                    "GPU coverage output exceeds device buffer limit",
+                ));
+            }
+            let [_, rows_top, _, rows_bottom] = fitting.0.rect;
+            slices.push(Slice {
+                bound: fitting.0,
+                clip: [
+                    clip[0],
+                    clip[1].max(rows_top),
+                    clip[2],
+                    clip[3].min(rows_bottom),
+                ],
+            });
+            from = to;
+        }
+        Ok(slices)
+    }
+
+    /// Append one slice's generation record to the frame's batches. A
+    /// continuing slice — any after an entry's first — starts a batch of
+    /// its own, since it reads the counters its predecessor's batch left
+    /// in the block header; every other slice joins the current batch
+    /// when it fits there. [`GpuCoverage::slices`] checked that each fits
+    /// an empty batch.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "device coordinates are f32"
+    )]
+    fn push_slice(
+        &mut self,
+        prepared: &GpuPath,
+        slice: &Slice,
+        continues: bool,
+        (rule, raster): (u32, Affine),
+        (base, texel_base): (u32, u32),
+    ) {
         let GpuPath {
             elements,
             strokes,
             stroke,
             dash,
-            bound,
             ..
         } = prepared;
-        let append = |batch: &Batch| {
-            path_rows(prepared, bound, batch.totals).and_then(|(rows, totals)| {
-                let mut next = batch.bound;
-                next.add(&rows);
-                if next.total() + FRAME_FIXED_BYTES > GPU_COV_MAX_BYTES {
-                    return Err(RenderError::Unsupported(
-                        "GPU coverage bound exceeds the per-batch cap",
-                    ));
-                }
-                if next.largest() > self.limit.bytes {
-                    return Err(RenderError::Unsupported(
-                        "GPU coverage bound exceeds the device buffer limit",
-                    ));
-                }
-                Ok((next, totals))
-            })
+        let Slice { ref bound, clip } = *slice;
+        let empty = |paths: usize| Batch {
+            start: paths,
+            end: paths,
+            ..Batch::default()
         };
-        let (next, totals) = match append(&self.batch) {
-            Ok(fits) => fits,
-            Err(_) if self.batch.start != self.batch.end => {
-                let empty = Batch {
-                    start: self.paths.len(),
-                    end: self.paths.len(),
-                    ..Batch::default()
-                };
-                let fits = append(&empty)?;
-                self.batches.push(self.batch);
-                self.batch = empty;
-                fits
-            }
-            Err(error) => return Err(error),
+        if continues {
+            let next = empty(self.paths.len());
+            self.batches.push(std::mem::replace(&mut self.batch, next));
+        }
+        let append = |batch: &Batch, limit: CoverageLimit| {
+            let (rows, totals) = path_rows(prepared, bound, batch.totals).ok()?;
+            let mut next = batch.bound;
+            next.add(&rows);
+            next.fits(limit).then_some((next, totals))
         };
+        let (next, totals) = append(&self.batch, self.limit).unwrap_or_else(|| {
+            let fresh = empty(self.paths.len());
+            // A path whose single strip passes the scratch bound is one
+            // whole slice (`slices`): its batch is bounded by the binding
+            // limit, and no later draw fits beside it under the bound.
+            let fits = append(&fresh, self.limit)
+                .or_else(|| append(&fresh, self.limit.binding()))
+                .expect("a slice fits an empty batch under the binding limit");
+            self.batches.push(std::mem::replace(&mut self.batch, fresh));
+            fits
+        });
         self.batch.bound = next;
-        let record = u32::try_from(self.paths.len()).expect("path count fits u32");
         let elem_base = self.batch.element_total;
-        let geometry_slots = u32::try_from(bound.instance_cap).expect("instance cap fits u32");
-        let texels =
-            u32::try_from(bound.texels.div_ceil(4) + bound.cell_cap).expect("texel words fit u32");
-        let (base, texel_base, block_words) = self.alloc_block(device, geometry_slots, texels)?;
         let grid_base = self.batch.totals.columns;
         let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
         let mut words = [0u32; PATH_WORDS];
@@ -692,6 +856,7 @@ impl GpuCoverage {
             words[41] = u32::try_from(dash.cum.len() - 1).expect("dash entries fit u32");
             [words[42], words[43]] = dash.phase;
         }
+        words[CONTINUES_WORD] = u32::from(continues);
 
         self.paths.push(words);
         self.batch.end = self.paths.len();
@@ -709,27 +874,10 @@ impl GpuCoverage {
                 u32::try_from(dash.cum.len() * 2).expect("dash table fits u32");
         }
         self.dash_sources.push(dash.clone());
-        self.entries.insert(
-            key,
-            Entry {
-                base,
-                texel_base,
-                words: block_words,
-                geometry_slots,
-                record,
-                generated: false,
-                src: None,
-                last_used: self.epoch,
-            },
-        );
-        self.generated += 1;
-        self.draws.push(Draw { key, shift });
         self.batch.seg_total += u32::try_from(bound.segments).expect("segments");
         self.batch.bin_total += u32::try_from(bound.bins).expect("bins");
         self.batch.totals = totals;
         self.batch.row_total += u32::try_from(bound.grid_h).expect("rows");
-
-        Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"))
     }
 
     /// Settle the retained set once per commit, after the frame's
@@ -869,9 +1017,12 @@ impl GpuCoverage {
                 }
                 entry.src = Some(src);
             } else {
-                let record = &mut self.paths[entry.record as usize];
-                record[14] = new_base + BLOCK_HEADER_WORDS;
-                record[13] = new_base + BLOCK_HEADER_WORDS + entry.geometry_slots * GEOMETRY_WORDS;
+                let records = entry.record as usize..(entry.record + entry.slices) as usize;
+                for record in &mut self.paths[records] {
+                    record[14] = new_base + BLOCK_HEADER_WORDS;
+                    record[13] =
+                        new_base + BLOCK_HEADER_WORDS + entry.geometry_slots * GEOMETRY_WORDS;
+                }
             }
             entry.texel_base =
                 new_base + BLOCK_HEADER_WORDS + entry.geometry_slots * GEOMETRY_WORDS;
@@ -1055,6 +1206,9 @@ impl GpuCoverage {
     }
 
     fn size_buffers(&mut self, device: &wgpu::Device, sizes: [u64; 7]) -> Result<(), RenderError> {
+        // Batching holds every scratch buffer to the scratch bound except
+        // a path that cannot be sliced under it; the binding limit is the
+        // device's hard bound.
         if sizes.into_iter().any(|size| size > self.limit.bytes) {
             return Err(RenderError::Unsupported(
                 "GPU coverage input exceeds device buffer limit",
@@ -1184,7 +1338,7 @@ impl GpuCoverage {
         let dash_blocks = params[21];
         let buffers = self.buffers.as_ref().expect("coverage buffers sized");
 
-        let mut upload = BatchUpload::new(queue, !self.batches.is_empty());
+        let mut upload = BatchUpload::new(queue, !self.batches.is_empty(), self.limit.scratch);
         for radix_pass in 0..radix_pass_count.max(1) {
             let mut block = params;
             block[17] = radix_pass;
@@ -1260,12 +1414,24 @@ impl GpuCoverage {
             0,
             bytemuck::cast_slice(self.paths[batch.start..batch.end].as_flattened()),
         );
-        if let Some(source) = upload.finish(device, encoder) {
-            self.uploads.push(source);
-        }
+        self.uploads.extend(upload.finish(device, encoder));
         encoder.clear_buffer(&buffers.work, 0, Some(work_header_bytes));
-
         let arena = self.arena.buffer().expect("coverage arena sized");
+        // A continuing slice's counters start where its predecessor's
+        // `emit_counts`, in an earlier batch of this encoder, left them in
+        // the block header (water-rs/waterui#4108).
+        for (index, path) in self.paths[batch.start..batch.end].iter().enumerate() {
+            if path[CONTINUES_WORD] != 0 {
+                encoder.copy_buffer_to_buffer(
+                    arena,
+                    u64::from(path[14] - BLOCK_HEADER_WORDS) * 4,
+                    &buffers.paths,
+                    (index * PATH_WORDS * 4) as u64 + SEEDED_COUNTERS,
+                    12,
+                );
+            }
+        }
+
         let layout = self.layout.as_ref().expect("coverage layout");
         let entries = [
             wgpu::BindGroupEntry {
@@ -1531,19 +1697,25 @@ impl GpuCoverage {
 
 /// Queue writes suffice for one batch. Multiple batches must upload between
 /// their compute passes rather than all writing the shared destinations before submit.
+/// The ordered path stages the bytes in chunks of at most `chunk` bytes,
+/// each a buffer within the scratch bound ([`CoverageLimit`]); every
+/// write fits one, being no larger than the buffer it targets.
 struct BatchUpload<'a> {
     queue: &'a wgpu::Queue,
     ordered: bool,
-    bytes: Vec<u8>,
-    copies: Vec<(wgpu::Buffer, u64, u64, u64)>,
+    chunk: u64,
+    chunks: Vec<Vec<u8>>,
+    /// `(target, target offset, chunk, chunk offset, size)`.
+    copies: Vec<(wgpu::Buffer, u64, usize, u64, u64)>,
 }
 
 impl<'a> BatchUpload<'a> {
-    const fn new(queue: &'a wgpu::Queue, ordered: bool) -> Self {
+    const fn new(queue: &'a wgpu::Queue, ordered: bool, chunk: u64) -> Self {
         Self {
             queue,
             ordered,
-            bytes: Vec::new(),
+            chunk,
+            chunks: Vec::new(),
             copies: Vec::new(),
         }
     }
@@ -1556,29 +1728,45 @@ impl<'a> BatchUpload<'a> {
             self.queue.write_buffer(target, offset, bytes);
             return;
         }
-        let source_offset = self.bytes.len() as u64;
-        self.bytes.extend_from_slice(bytes);
+        let size = bytes.len() as u64;
+        // A write past the chunk size — an input of a path drawn whole
+        // because it cannot be sliced under the scratch bound — takes a
+        // chunk of its own, which nothing else joins.
+        if self
+            .chunks
+            .last()
+            .is_none_or(|last| last.len() as u64 + size > self.chunk)
+        {
+            self.chunks.push(Vec::new());
+        }
+        let index = self.chunks.len() - 1;
+        let staged = &mut self.chunks[index];
+        let source_offset = staged.len() as u64;
+        staged.extend_from_slice(bytes);
         self.copies
-            .push((target.clone(), offset, source_offset, bytes.len() as u64));
+            .push((target.clone(), offset, index, source_offset, size));
     }
 
     fn finish(
         self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-    ) -> Option<wgpu::Buffer> {
-        if !self.ordered {
-            return None;
+    ) -> Vec<wgpu::Buffer> {
+        let sources: Vec<_> = self
+            .chunks
+            .iter()
+            .map(|bytes| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("coverage batch upload"),
+                    contents: bytes,
+                    usage: wgpu::BufferUsages::COPY_SRC,
+                })
+            })
+            .collect();
+        for (target, offset, chunk, source_offset, size) in self.copies {
+            encoder.copy_buffer_to_buffer(&sources[chunk], source_offset, &target, offset, size);
         }
-        let source = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("coverage batch upload"),
-            contents: &self.bytes,
-            usage: wgpu::BufferUsages::COPY_SRC,
-        });
-        for (target, offset, source_offset, size) in self.copies {
-            encoder.copy_buffer_to_buffer(&source, source_offset, &target, offset, size);
-        }
-        Some(source)
+        sources
     }
 }
 
@@ -1726,25 +1914,44 @@ impl Batch {
     }
 }
 
-/// The device's coverage binding limit,
-/// `max_storage_buffer_binding_size.min(max_buffer_size)`: every buffer
-/// the coverage kernels bind must fit it.
+/// The device's coverage buffer limits. Every buffer the coverage
+/// kernels bind must fit the binding limit,
+/// `max_storage_buffer_binding_size.min(max_buffer_size)`; the
+/// generation scratch must also fit the allocator's suballocated block
+/// ([`crate::interop::suballocation_limit`]), so it comes from and
+/// returns to the allocator instead of being a dedicated driver
+/// allocation per frame (water-rs/waterui#4108).
 #[derive(Clone, Copy, Debug)]
 pub struct CoverageLimit {
+    /// The binding limit, which bounds the retained arena.
     bytes: u64,
+    /// The bound of every generation scratch buffer.
+    scratch: u64,
 }
 
 impl CoverageLimit {
-    pub fn new(limits: &wgpu::Limits) -> Self {
+    pub fn new(limits: &wgpu::Limits, backend: wgpu::Backend) -> Self {
+        let bytes = limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size);
         Self {
-            bytes: limits
-                .max_storage_buffer_binding_size
-                .min(limits.max_buffer_size),
+            bytes,
+            scratch: crate::interop::suballocation_limit(backend)
+                .map_or(bytes, |block| block.min(bytes)),
         }
     }
 
     const fn words(self) -> u64 {
         self.bytes / 4
+    }
+
+    /// This limit with the scratch bound raised to the binding limit, for
+    /// a path that cannot be sliced under the scratch bound.
+    const fn binding(self) -> Self {
+        Self {
+            bytes: self.bytes,
+            scratch: self.bytes,
+        }
     }
 
     /// The capacity term of the automatic route's predicate (decisions R1
@@ -1754,8 +1961,10 @@ impl CoverageLimit {
     /// bytes, the per-batch cap. Its inputs are the path's content, scale
     /// and placement, the surface size and the device limit, so it is as
     /// deterministic as the rest of the predicate. A path it refuses takes
-    /// the CPU sweep. The rows are the ones [`GpuCoverage::draw`] adds, from
-    /// the same [`path_rows`].
+    /// the CPU sweep. The rows are the whole path's, from the same
+    /// [`path_rows`] [`GpuCoverage::draw`] sizes from. The allocator block
+    /// takes no part: a path whose scratch passes it is generated in row
+    /// slices that each fit it (water-rs/waterui#4108).
     pub fn admits(self, path: &GpuPath, bound: &GpuBound) -> bool {
         path_rows(path, bound, FrameTotals::default()).is_ok_and(|(rows, _)| {
             rows.largest() <= self.bytes && rows.total() + FRAME_FIXED_BYTES <= GPU_COV_MAX_BYTES
@@ -1971,13 +2180,27 @@ mod tests {
     use crate::render::stroke_abi::{CLOSE, FRAG_START_CAP};
     use kurbo::{Affine, PathEl, Point};
 
+    /// A backend whose allocator takes no hint, so the scratch is bound
+    /// only by the device's binding limit.
+    const UNCAPPED: wgpu::Backend = wgpu::Backend::Noop;
+
+    /// A coverage frame on `device` with [`UNCAPPED`] scratch and an
+    /// undrawn budget that never evicts.
+    fn uncapped(device: &wgpu::Device) -> GpuCoverage {
+        GpuCoverage::new(
+            device,
+            UNCAPPED,
+            u64::MAX,
+            super::super::PipelineCache::default(),
+        )
+    }
+
     #[test]
     fn coverage_pipelines_follow_later_stroke_and_dash_use() {
         let Some((device, _, delivery)) = delivery_device() else {
             return;
         };
-        let mut coverage =
-            GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
+        let mut coverage = uncapped(&device);
         let mut batch = Batch::default();
         coverage.ensure_pipes(&device, delivery, batch);
         let pipes = coverage.pipes.as_ref().unwrap();
@@ -2024,7 +2247,7 @@ mod tests {
             ]);
         }
         let path = crate::render::path::prepare_gpu(&elements, Affine::IDENTITY, (64.0, 64.0));
-        let mut frame = GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
+        let mut frame = uncapped(&device);
         frame.begin_frame();
         frame
             .draw(
@@ -2066,7 +2289,7 @@ mod tests {
         let Some(device) = device() else {
             return;
         };
-        let mut frame = GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
+        let mut frame = uncapped(&device);
         frame.begin_frame();
         frame
             .draw(
@@ -2107,7 +2330,7 @@ mod tests {
         let Some(device) = device() else {
             return;
         };
-        let mut probe = GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
+        let mut probe = uncapped(&device);
         probe.begin_frame();
         probe
             .draw(
@@ -2121,7 +2344,7 @@ mod tests {
             max_storage_buffer_binding_size: probe.batch.bound.largest() / 2,
             ..wgpu::Limits::default()
         };
-        let mut frame = GpuCoverage::with_limits(&small, u64::MAX);
+        let mut frame = GpuCoverage::with_limits(&small, UNCAPPED, u64::MAX);
         frame.begin_frame();
         assert!(
             frame
@@ -2140,7 +2363,7 @@ mod tests {
             max_storage_buffer_binding_size: probe.batch.bound.largest(),
             ..wgpu::Limits::default()
         };
-        let mut frame = GpuCoverage::with_limits(&between, u64::MAX);
+        let mut frame = GpuCoverage::with_limits(&between, UNCAPPED, u64::MAX);
         frame.begin_frame();
         frame
             .draw(
@@ -2165,7 +2388,7 @@ mod tests {
         let [first, second] = &draws[..] else {
             panic!("two road layers")
         };
-        let mut frame = GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
+        let mut frame = uncapped(&device);
         let output_bytes: u64 = draws
             .iter()
             .map(|draw| {
@@ -2249,6 +2472,318 @@ mod tests {
             frame.buffers.is_none(),
             "replay releases generation scratch"
         );
+    }
+
+    /// Generation scratch comes from the allocator's suballocated
+    /// blocks (water-rs/waterui#4108). On the Vulkan policy each road,
+    /// admitted on the binding limit though its scratch alone spans
+    /// several blocks, is generated in row slices across batches whose
+    /// every scratch buffer and upload staging chunk stays within the
+    /// block; the slices compose into the one entry the draw replays, and
+    /// its coverage matches the unsliced coverage of an uncapped device.
+    #[test]
+    fn generation_scratch_stays_within_the_allocator_block() {
+        // The per-batch sizes below are the evidence for the slicing; they
+        // must be visible on a plain `--no-capture` run.
+        let _tracing = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_test_writer()
+                .with_max_level(tracing::level_filters::LevelFilter::DEBUG)
+                .finish(),
+        );
+        let Some((device, queue, delivery)) = delivery_device() else {
+            return;
+        };
+        let block = crate::interop::suballocation_limit(wgpu::Backend::Vulkan)
+            .expect("the Vulkan policy suballocates");
+        let paths = road_paths();
+        let draws: Vec<_> = (0..2 * paths.len())
+            .map(|index| {
+                let path = paths[index % paths.len()].clone();
+                GpuDraw::new(index as u64 + 1, 0, Affine::IDENTITY, path, (1024, 768))
+            })
+            .collect();
+        let mut frame = GpuCoverage::new(
+            &device,
+            wgpu::Backend::Vulkan,
+            u64::MAX,
+            super::super::PipelineCache::default(),
+        );
+        for draw in &draws {
+            assert!(frame.limit.admits(&draw.path, &draw.path.bound));
+        }
+        assert!(
+            paths.iter().any(|path| {
+                path_rows(path, &path.bound, FrameTotals::default())
+                    .expect("road rows")
+                    .0
+                    .largest_scratch()
+                    > block
+            }),
+            "a road's scratch outgrows the block"
+        );
+        frame.begin_frame();
+        for draw in &draws {
+            frame
+                .draw(&device, draw)
+                .expect("road slices fit the block");
+        }
+        let slices: Vec<u32> = draws
+            .iter()
+            .map(|draw| frame.entries[&draw.key].slices)
+            .collect();
+        assert!(slices.iter().any(|&n| n > 1), "a road is sliced");
+        for (index, &n) in slices.iter().enumerate() {
+            assert_eq!(n, slices[index % paths.len()], "same road, same slices");
+        }
+        for batch in frame.batches.iter().chain([&frame.batch]) {
+            let bound = batch.bound;
+            assert!(bound.largest_scratch() <= block, "bound within block");
+            tracing::debug!(
+                records = batch.end - batch.start,
+                elements = bound.elements,
+                segments = bound.segments,
+                scratch = bound.scratch,
+                strokes = bound.strokes,
+                work = bound.work,
+                arena = bound.arena,
+                "sliced batch"
+            );
+        }
+        tracing::debug!(
+            ?slices,
+            batches = frame.batches.len() + 1,
+            block,
+            "road slices"
+        );
+        for draw in &draws[..paths.len()] {
+            let [.., ty] = draw.raster.as_coeffs();
+            for slice in frame
+                .slices(&draw.path, ty, draw.clip)
+                .expect("road slices")
+            {
+                assert_slice_fits_its_bound(draw, &slice, (&device, &queue, delivery));
+            }
+        }
+        let in_slices = coverage_blocks(&mut frame, (&device, &queue, delivery), &draws, block);
+        let mut whole = uncapped(&device);
+        whole.begin_frame();
+        for draw in &draws {
+            whole.draw(&device, draw).expect("road fits uncapped");
+            assert_eq!(whole.entries[&draw.key].slices, 1, "uncapped is unsliced");
+        }
+        let at_once = coverage_blocks(&mut whole, (&device, &queue, delivery), &draws, u64::MAX);
+        for (sliced, unsliced) in in_slices.iter().zip(&at_once) {
+            cherenkov_oracle::metrics::assert_images_match(unsliced, sliced);
+        }
+    }
+
+    /// A path whose rows-independent part alone passes the scratch bound
+    /// cannot be sliced under it: it is drawn whole in a batch of its own
+    /// under the binding limit and covers exactly as without the bound
+    /// (water-rs/waterui#4108).
+    #[test]
+    fn a_path_that_cannot_slice_under_the_bound_draws_whole() {
+        let Some((device, queue, delivery)) = delivery_device() else {
+            return;
+        };
+        let paths = road_paths();
+        let draws: Vec<_> = paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| {
+                GpuDraw::new(
+                    index as u64 + 1,
+                    0,
+                    Affine::IDENTITY,
+                    path.clone(),
+                    (1024, 768),
+                )
+            })
+            .collect();
+        let mut frame = uncapped(&device);
+        frame.limit.scratch = 1 << 20;
+        frame.begin_frame();
+        for draw in &draws {
+            frame
+                .draw(&device, draw)
+                .expect("an unsliceable road draws");
+            assert_eq!(frame.entries[&draw.key].slices, 1, "drawn whole");
+        }
+        let bounded = coverage_blocks(&mut frame, (&device, &queue, delivery), &draws, u64::MAX);
+        let mut whole = uncapped(&device);
+        whole.begin_frame();
+        for draw in &draws {
+            whole.draw(&device, draw).expect("road fits uncapped");
+        }
+        let unbounded = coverage_blocks(&mut whole, (&device, &queue, delivery), &draws, u64::MAX);
+        for (with, without) in bounded.iter().zip(&unbounded) {
+            cherenkov_oracle::metrics::assert_images_match(without, with);
+        }
+    }
+
+    /// `slice` of `draw`, generated alone, uses no more bins and
+    /// fragments than the bound its rows were sized for.
+    fn assert_slice_fits_its_bound(
+        draw: &GpuDraw,
+        slice: &Slice,
+        (device, queue, delivery): (
+            &wgpu::Device,
+            &wgpu::Queue,
+            crate::render::shaders::ShaderDelivery,
+        ),
+    ) {
+        let mut probe = uncapped(device);
+        probe.begin_frame();
+        let alone = GpuDraw {
+            key: draw.key,
+            shift: draw.shift,
+            rule: draw.rule,
+            raster: draw.raster,
+            clip: slice.clip,
+            path: draw.path.clone().with_bound(slice.bound),
+        };
+        probe.draw(device, &alone).expect("a slice draws alone");
+        probe.ensure(device);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        probe
+            .record_prologue(device, queue, &mut encoder, delivery, None)
+            .expect("slice prologue");
+        let work = probe.buffers.as_ref().expect("scratch sized").work.clone();
+        let used = read_back(device, queue, &[(&work, 0, 8)], encoder);
+        let (bins, fragments) = (used[0][0] as usize, used[0][1] as usize);
+        assert!(
+            bins <= slice.bound.bins && fragments <= slice.bound.fragments,
+            "slice rows {:?} used ({bins}, {fragments}) of ({}, {})",
+            slice.clip,
+            slice.bound.bins,
+            slice.bound.fragments
+        );
+        probe.submitted();
+    }
+
+    /// Records `frame`'s prologue for `draws`, checks every generation
+    /// buffer and upload staging chunk against `scratch`, and returns each
+    /// draw's coverage on its 1024 × 768 target, decoded from the block
+    /// the draw replays the way the cell-buffer vertex and fragment
+    /// stages read it.
+    fn coverage_blocks(
+        frame: &mut GpuCoverage,
+        (device, queue, delivery): (
+            &wgpu::Device,
+            &wgpu::Queue,
+            crate::render::shaders::ShaderDelivery,
+        ),
+        draws: &[GpuDraw],
+        scratch: u64,
+    ) -> Vec<cherenkov_oracle::image::F32Image> {
+        frame.ensure(device);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        frame
+            .record_prologue(device, queue, &mut encoder, delivery, None)
+            .expect("coverage prologue");
+        let buffers = frame.buffers.as_ref().expect("scratch sized");
+        for buffer in [
+            &buffers.params,
+            &buffers.elements,
+            &buffers.paths,
+            &buffers.segments,
+            &buffers.coverage,
+            &buffers.strokes,
+            &buffers.args,
+            &buffers.work,
+        ] {
+            assert!(
+                buffer.size() <= scratch,
+                "scratch is {} bytes",
+                buffer.size()
+            );
+        }
+        for upload in &frame.uploads {
+            assert!(
+                upload.size() <= scratch,
+                "upload staging is {}",
+                upload.size()
+            );
+        }
+        let arena = frame.arena().expect("retained arena");
+        let copies: Vec<_> = draws
+            .iter()
+            .map(|draw| {
+                let entry = &frame.entries[&draw.key];
+                (arena, u64::from(entry.base) * 4, u64::from(entry.words) * 4)
+            })
+            .collect();
+        let blocks = read_back(device, queue, &copies, encoder);
+        let images = draws
+            .iter()
+            .zip(&blocks)
+            .map(|(draw, block)| {
+                let entry = &frame.entries[&draw.key];
+                assert!(block[0] > 0, "the road emits");
+                assert!(block[0] <= entry.geometry_slots, "within the block's slots");
+                decode_block(block, entry.texel_base - entry.base, draw.shift)
+            })
+            .collect();
+        frame.submitted();
+        assert!(
+            frame.buffers.is_none(),
+            "submit releases generation scratch"
+        );
+        images
+    }
+
+    /// The coverage one arena block holds — its count word, geometry
+    /// records and packed R8 texels (`shared.wgsl`'s `join_gpu_instance`
+    /// and `path_cell_coverage`) — on a 1024 × 768 target, moved by the
+    /// draw's shift.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "integer pixel bounds on the target"
+    )]
+    fn decode_block(
+        block: &[u32],
+        texel_base: u32,
+        shift: [i32; 2],
+    ) -> cherenkov_oracle::image::F32Image {
+        const SIZE: (usize, usize) = (1024, 768);
+        let mut coverage = vec![0.0f32; SIZE.0 * SIZE.1];
+        for record in block[BLOCK_HEADER_WORDS as usize..]
+            .as_chunks::<{ GEOMETRY_WORDS as usize }>()
+            .0
+            .iter()
+            .take(block[0] as usize)
+        {
+            let [x0, y0, x1, y1] = [0, 1, 2, 3].map(|i| f32::from_bits(record[i]) as usize);
+            let (offset, interior) = (record[4], record[5]);
+            let (start, end) = ((interior & 0xffff) as usize, (interior >> 16) as usize);
+            let stored = x1 - x0 - (end - start);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let column = x - x0;
+                    let value = if offset == u32::MAX || (start..end).contains(&column) {
+                        1.0
+                    } else {
+                        let packed = column - if column >= end { end - start } else { 0 };
+                        let pixel = (y - y0) * stored + packed;
+                        let word = block[(texel_base + offset) as usize + pixel / 4];
+                        f32::from(((word >> ((pixel % 4) * 8)) & 255) as u8) / 255.0
+                    };
+                    let (px, py) = (
+                        usize::try_from(i64::try_from(x).unwrap() + i64::from(shift[0])).unwrap(),
+                        usize::try_from(i64::try_from(y).unwrap() + i64::from(shift[1])).unwrap(),
+                    );
+                    assert!(px < SIZE.0 && py < SIZE.1, "coverage lies on the target");
+                    coverage[py * SIZE.0 + px] = value;
+                }
+            }
+        }
+        cherenkov_oracle::image::F32Image {
+            width: 1024,
+            height: 768,
+            pixels: coverage.into_iter().map(|value| [value; 4]).collect(),
+        }
     }
 
     /// The generated road scene's two stroked roads, prepared for GPU
@@ -2341,7 +2876,7 @@ mod tests {
         let gpu = (&device, &queue, delivery);
         let paths = road_paths();
         let words = |path: &crate::render::path::GpuPath| {
-            let mut probe = GpuCoverage::with_limits(&device.limits(), 0);
+            let mut probe = GpuCoverage::with_limits(&device.limits(), UNCAPPED, 0);
             probe.begin_frame();
             let draw = GpuDraw::new(1, 0, Affine::IDENTITY, path.clone(), (1024, 768));
             probe.draw(&device, &draw).expect("road draw fits");
@@ -2359,7 +2894,8 @@ mod tests {
         let step =
             |content| GpuDraw::new(content, 0, Affine::IDENTITY, moving.clone(), (1024, 768));
         // A zero undrawn budget evicts each step's placement at the next.
-        let mut frame = GpuCoverage::new(&device, 0, super::super::PipelineCache::default());
+        let mut frame =
+            GpuCoverage::new(&device, UNCAPPED, 0, super::super::PipelineCache::default());
         let first = coverage_frame(&mut frame, gpu, &[&step(100), &still]);
         assert!(first.iter().all(|&count| count > 0), "both roads emit");
         let arena = frame.arena().expect("sized arena").clone();
@@ -2731,8 +3267,7 @@ mod tests {
             .chain(singles.chunks(1))
             .chain(miters.chunks(1))
         {
-            let mut frame =
-                GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
+            let mut frame = uncapped(&device);
             frame.begin_frame();
             let mut kept = Vec::new();
             for (path, stroke) in chunk {

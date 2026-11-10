@@ -279,6 +279,23 @@ pub const fn memory_hints(backend: wgpu::Backend) -> wgpu::MemoryHints {
     }
 }
 
+/// The largest buffer, in bytes, the allocator [`memory_hints`] selects
+/// suballocates from its device-memory blocks, or `None` where the
+/// backend's allocator takes no hint.
+///
+/// A buffer past it is a dedicated driver allocation, whose release the
+/// driver may keep charged to the process (water-rs/waterui#4108); the
+/// per-frame scratch is sized within it.
+#[must_use]
+pub const fn suballocation_limit(backend: wgpu::Backend) -> Option<u64> {
+    match memory_hints(backend) {
+        wgpu::MemoryHints::Manual {
+            suballocated_device_memory_block_size,
+        } => Some(suballocated_device_memory_block_size.end),
+        _ => None,
+    }
+}
+
 /// The compute predicate: wgpu reports the stage as a downlevel flag plus
 /// the workgroup limits it dispatches on.
 const fn supports_compute(flags: wgpu::DownlevelFlags, limits: &wgpu::Limits) -> bool {

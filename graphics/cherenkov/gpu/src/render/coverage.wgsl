@@ -30,8 +30,12 @@ struct Element {
 }
 
 // One GPU-routed path's dispatch record. atom[0..3] is the device bbox
-// (seeded +/-inf by the uploader, reduced by `flatten`); atom[4..6]
-// counts emitted instances and texel words; atom[7] is the packed work offset.
+// (seeded +/-inf by the uploader, reduced by `flatten`); atom[4] counts
+// emitted instances, atom[5] is the first of them this record fills and
+// atom[6] counts texel words; atom[7] is the packed work offset. A record
+// generating one row slice of an entry an earlier batch began starts its
+// three counters where the entry's block header left them, copied in by
+// the host (water-rs/waterui#4108).
 // `rect_*` is written by `finish` from the reduced bbox — the bound
 // fields only size scratch. The stroke fields (from `stroke_base`) belong to
 // the compute stroker (water-rs/waterui#2544) and are zero for a fill.
@@ -74,7 +78,9 @@ struct GpuPath {
     dash_phase: vec2<u32>,
     // The path's first entry in the dash staging area.
     stage_base: u32,
-    _pad3a: u32,
+    // Read by the host only: nonzero when the record continues an entry
+    // an earlier batch began, so its counters are seeded from the header.
+    continues: u32,
     _pad3b: u32,
     _pad3c: u32,
 }
@@ -1046,7 +1052,7 @@ fn prepare_cells(@builtin(local_invocation_index) lane: u32) {
     var total = 0u;
     for (var pi = 0u; pi < params.path_count; pi += 1u) {
         atomicStore(&paths[pi].atom[7], total);
-        total += atomicLoad(&paths[pi].atom[4]);
+        total += atomicLoad(&paths[pi].atom[4]) - atomicLoad(&paths[pi].atom[5]);
     }
     let base = 9u;
     args[base] = min(total, 256u);
@@ -1065,7 +1071,8 @@ fn fill_cells(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_i
         if atomicLoad(&paths[mid].atom[7]) <= i { lo = mid; } else { hi = mid; }
     }
     let pi = lo;
-    let local = i - atomicLoad(&paths[pi].atom[7]);
+    // A continuing slice fills only the instances it emitted.
+    let local = atomicLoad(&paths[pi].atom[5]) + i - atomicLoad(&paths[pi].atom[7]);
     if local >= atomicLoad(&paths[pi].atom[4]) { return; }
     let dst = paths[pi].inst_base + local * 6u;
     if arena[dst + 4u] == 0xffffffffu { return; }
@@ -1133,12 +1140,18 @@ fn fill_cells(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_i
 
 // One invocation per path: the block's count word supplies the frame's
 // per-draw indirect records through the prologue's 4-byte copies
-// (water-rs/waterui#3081).
+// (water-rs/waterui#3081). The header's next two words are the counters a
+// following row slice of the entry starts from — its first instance and
+// its texel words (water-rs/waterui#4108).
 @compute @workgroup_size(64)
 fn emit_counts(@builtin(global_invocation_id) gid: vec3<u32>) {
     if invocation(gid) >= params.path_count {
         return;
     }
     let pi = invocation(gid);
-    arena[paths[pi].inst_base - 4u] = atomicLoad(&paths[pi].atom[4]);
+    let header = paths[pi].inst_base - 4u;
+    let count = atomicLoad(&paths[pi].atom[4]);
+    arena[header] = count;
+    arena[header + 1u] = count;
+    arena[header + 2u] = atomicLoad(&paths[pi].atom[6]);
 }
