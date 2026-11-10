@@ -262,8 +262,8 @@ waterui-navigation = { version = "0.5.1", path = "components/foundation/navigati
 waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
 waterui-widgets = { version = "0.5.1", path = "components/platform/widgets" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
-waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "dev", default-features = false }
-waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "dev", default-features = false }
+waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "feat/surface-input-break", default-features = false }
+waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "feat/surface-input-break", default-features = false }
 wgpu-external-frame = "0.4.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
@@ -725,9 +725,9 @@ wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame",
 waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "dev" }
 waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "dev" }
 waterui-chart = { git = "https://github.com/water-rs/chart", branch = "dev" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "dev" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "dev" }
-waterui-particle = { git = "https://github.com/water-rs/particle", branch = "dev" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "feat/surface-input-break" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "feat/surface-input-break" }
+waterui-particle = { git = "https://github.com/water-rs/particle", branch = "feat/surface-input-break" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }

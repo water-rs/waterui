@@ -1380,7 +1380,7 @@ fn a_keyframed_operand_records_the_sampled_frames() {
 
     let paint = nami::binding(solid(0.0, 0.0, 0.0));
     let recordings = Cell::new(0);
-    let (mut animated, _layer) = surface_with(
+    let (mut animated, layer) = surface_with(
         12,
         paint
             .with(KeyframeAnimation::new(keyframes.clone(), Repeat::Forever))
@@ -1418,6 +1418,21 @@ fn a_keyframed_operand_records_the_sampled_frames() {
         );
     }
     assert_eq!(recordings.get(), 1, "running keyframes record nothing");
+
+    // Detached with its handle alive, the layer's track is not sampled
+    // and asks for no frame.
+    let shared = animated.shared().clone();
+    let root = Shared::root(&shared);
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].remove(&layer);
+    });
+    let detached = animated
+        .frame(start + Duration::from_secs(102) / 120, 1.0)
+        .expect("the detaching frame encodes");
+    assert!(
+        !detached.content_animating(),
+        "a detached track keeps no frame loop awake"
+    );
 }
 
 /// Keyframed layer properties run on HWUI as its other animated layer

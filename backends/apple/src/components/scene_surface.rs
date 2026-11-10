@@ -472,7 +472,7 @@ impl HostedRenderer for SceneRenderer {
             // later frame, never compositing a stale texture into this
             // timestamp and never reporting Idle.
             return Ok(Next::At {
-                time: target_time.0,
+                time: target_time.instant(),
                 rate: self.part.refresh.clone(),
             });
         }
@@ -643,7 +643,7 @@ mod tests {
         let size = OffscreenSize::try_from_pixels(20, 20).expect("nonzero size");
         let part = ScenePart::new(&generation, &redraw, size, &scene, &sink())
             .expect("the participant settles");
-        let time = FrameTime(std::time::Instant::now());
+        let time = FrameTime::now();
         part.stage(
             (20, 20),
             Display {
@@ -688,7 +688,7 @@ mod tests {
         let size = OffscreenSize::try_from_pixels(20, 20).expect("nonzero size");
         let part = ScenePart::new(&generation, &redraw, size, &scene, &sink())
             .expect("the participant settles");
-        let time = FrameTime(std::time::Instant::now());
+        let time = FrameTime::now();
         part.stage(
             (20, 20),
             Display {
@@ -871,7 +871,7 @@ mod tests {
         let record = |part: &Rc<ScenePart>, pixels: u32, scale: f64, headroom: f32| {
             part.stage((pixels, pixels), Display { scale, headroom });
             drop(
-                part.prepare(FrameTime(std::time::Instant::now()))
+                part.prepare(FrameTime::now())
                     .expect("the staged contract applies"),
             );
         };
@@ -973,7 +973,7 @@ mod tests {
         let record = |part: &Rc<ScenePart>| {
             part.stage((20, 20), display);
             drop(
-                part.prepare(FrameTime(std::time::Instant::now()))
+                part.prepare(FrameTime::now())
                     .expect("the staged contract applies"),
             );
         };
@@ -1148,7 +1148,7 @@ mod tests {
         };
         owner_a.part.stage((u32::MAX, u32::MAX), display);
         owner_b.part.stage((u32::MAX, u32::MAX), display);
-        let time = FrameTime(std::time::Instant::now());
+        let time = FrameTime::now();
         assert!(
             owner_a.part.prepare(time).is_err(),
             "the rejected extent fails A's prepare"
@@ -1173,11 +1173,7 @@ mod tests {
         // routes its failure a second time.
         owner_a
             .renderer
-            .present(
-                &target(&context, 20),
-                display,
-                FrameTime(std::time::Instant::now()),
-            )
+            .present(&target(&context, 20), display, FrameTime::now())
             .expect("owner A's next present produces");
         assert_eq!(owner_a.routes.get(), 1, "no failure routes again for A");
         assert_eq!(
@@ -1189,20 +1185,14 @@ mod tests {
         // B restages and produces the same way.
         owner_b
             .renderer
-            .present(
-                &target(&context, 20),
-                display,
-                FrameTime(std::time::Instant::now()),
-            )
+            .present(&target(&context, 20), display, FrameTime::now())
             .expect("owner B's next present produces");
         assert_eq!(owner_b.routes.get(), 2, "B's repaired stage routes nothing");
 
         // A scene's own failure never seals the shared generation.
         let requester: Rc<dyn SceneParticipant> = owner_a.part.clone();
         assert!(
-            generation
-                .produce(FrameTime(std::time::Instant::now()), &requester)
-                .is_ok(),
+            generation.produce(FrameTime::now(), &requester).is_ok(),
             "a scene's own prepare failure never seals the shared generation"
         );
     }
@@ -1291,7 +1281,7 @@ mod tests {
         };
 
         let texture = target(&context, 20);
-        let time = FrameTime(std::time::Instant::now());
+        let time = FrameTime::now();
         let outcome = renderer.present(&texture, display, time);
         assert!(
             matches!(outcome, Err(HostedError::Scene(_))),

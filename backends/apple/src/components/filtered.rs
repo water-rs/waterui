@@ -1408,13 +1408,19 @@ fn finish_presented_frame(
     // The live GPU context already checked above; the remaining gates are
     // the presenter's own — generation and drawable size — plus the
     // visibility contract: attached, windowed, unsuppressed, not
-    // externally captured and not parked on a publication.
+    // externally captured, not parked on a publication, and the same
+    // render gate the link issued the frame under. A participant's owed
+    // first frame presents while occluded — a filter below the fold of
+    // its scroll viewport — as the GPU surface's does: refusing it here
+    // while `can_render_frame` keeps issuing it re-renders the frame on
+    // every display update, never reveals, and the first-paint wait
+    // never ends.
     let presentable = state.attached.get()
         && !state.park.is_held()
         && cocoa_ui::view::window(&state.view).is_some()
         && state.capture_suppression.get() == 0
         && state.external_count.get() == 0
-        && !presentation_occluded(&state.view);
+        && can_render_frame(state);
     // `present` consumes the frame's lease; `None` — stale generation or
     // size — settles it without presenting.
     let presented = if presentable {
@@ -1744,8 +1750,14 @@ fn request_ready_frame(state: &Rc<FilteredState>, waker: std::task::Waker) {
     cocoa_ui::view::layout_immediately(&state.view);
     initialize_gpu(state);
     request_render(state);
+    // The waiter queues whether or not the leaf attached: an attach this
+    // pass deferred — a parked publication, an inactive scene — is
+    // retaken by the publication or visibility wake, whose attach owes
+    // the first paint and whose presented frame drains the queue.
+    // Dropping the waker instead would leave the first-paint wait with
+    // nothing to wake it once that frame lands.
+    state.ready_waiters.borrow_mut().push(waker);
     if !state.attached.get() {
-        complete_ready(state);
         return;
     }
     // The waiter is a first-paint participant — owe the reveal frame so
@@ -1753,7 +1765,6 @@ fn request_ready_frame(state: &Rc<FilteredState>, waker: std::task::Waker) {
     state
         .first_paint_owed
         .set(participates_in_first_paint_ready(state));
-    state.ready_waiters.borrow_mut().push(waker);
     update_link_demand(state);
 }
 

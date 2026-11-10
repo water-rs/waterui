@@ -497,8 +497,54 @@ pub struct EncodeInput<'a> {
     /// Its resource blobs (fonts, images).
     pub blobs: &'a Blobs,
     /// Additional root-content scroll in scene coordinates for this frame.
-    /// `None` retains the static workload's recording behavior.
+    /// `None` leaves the scene unscrolled.
     pub scroll_offset: Option<kurbo::Vec2>,
+    /// The frame's content drift in scene coordinates: a transform of
+    /// everything the scene draws that differs on every frame, so a static
+    /// scene's measured frame is real work. `None` draws the scene as
+    /// authored. See [`content_drift`].
+    pub drift: Option<kurbo::Affine>,
+}
+
+/// Content drift added per frame to the scale of a static scene.
+///
+/// Large enough that the `f32` linear part of every frame's transform
+/// differs from every other frame's (the engines key rasters on it), small
+/// enough that a run of thousands of frames moves no edge by a pixel.
+const DRIFT_STEP: f64 = 1.0 / 1_048_576.0;
+
+/// The drift of frame `frame` (counted from the first warmup frame) of a
+/// static `scene`: a uniform scale about the scene's centre of
+/// `1 + (frame + 1) * 2^-20`, so no two frames of a run draw the same
+/// geometry.
+///
+/// A translation would not do: engines serve a moved picture from rasters
+/// kept across translation. A scale changes the linear part of every
+/// element's transform, which keys path and glyph rasters, and the recorded
+/// picture itself, which keys the retained preparation and the frame.
+#[must_use]
+pub fn content_drift(scene: &Scene, frame: u32) -> kurbo::Affine {
+    let centre = kurbo::Vec2::new(f64::from(scene.width) / 2.0, f64::from(scene.height) / 2.0);
+    let scale = (f64::from(frame) + 1.0).mul_add(DRIFT_STEP, 1.0);
+    kurbo::Affine::translate(centre)
+        * kurbo::Affine::scale(scale)
+        * kurbo::Affine::translate(-centre)
+}
+
+/// Whether `scene` changes on its own every frame: a scroll sweep, a
+/// motion or a live slot. Such a scene keeps its own behaviour; only a
+/// scene that does not gets a [`content_drift`].
+#[must_use]
+pub fn animates(scene: &Scene) -> bool {
+    fn layer_animates(layer: &cherenkov_scene::Layer) -> bool {
+        layer.motion.is_some()
+            || !layer.live.is_empty()
+            || layer.items.iter().any(|item| match item {
+                cherenkov_scene::Item::Layer(child) => layer_animates(child),
+                _ => false,
+            })
+    }
+    scene.scroll_extent.is_some() || layer_animates(&scene.root)
 }
 
 #[cfg(any(
@@ -509,12 +555,19 @@ pub struct EncodeInput<'a> {
     feature = "vello-hybrid"
 ))]
 impl EncodeInput<'_> {
-    /// Map a root-content scroll into the device-space recording transform.
-    pub(crate) fn scroll_transform(&self) -> Option<kurbo::Affine> {
-        self.scroll_offset.map(|offset| {
-            let root = self.scene.root.transform;
-            root * kurbo::Affine::translate(-offset) * root.inverse()
-        })
+    /// Map the frame's scroll and drift, both in scene coordinates, into
+    /// the device-space recording transform.
+    pub(crate) fn frame_transform(&self) -> Option<kurbo::Affine> {
+        let scroll = self
+            .scroll_offset
+            .map(|offset| kurbo::Affine::translate(-offset));
+        let scene = match (scroll, self.drift) {
+            (Some(scroll), Some(drift)) => drift * scroll,
+            (Some(only), None) | (None, Some(only)) => only,
+            (None, None) => return None,
+        };
+        let root = self.scene.root.transform;
+        Some(root * scene * root.inverse())
     }
 }
 
@@ -569,6 +622,9 @@ impl PresentKind {
     }
 }
 
+/// [`Engine::gpu_timing_unavailable`] of every CPU rasterizer.
+pub const CPU_RASTERIZER: &str = "a CPU rasterizer submits no GPU work to time";
+
 /// A rendering-engine adapter.
 ///
 /// Lifecycle: [`Engine::prepare`] runs once per scene outside the timed
@@ -584,10 +640,11 @@ impl PresentKind {
 pub trait Engine {
     /// Provenance pinned into every result JSON.
     fn info(&self) -> &EngineInfo;
-    /// Why this adapter cannot report GPU execution time using engine APIs.
-    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
-        None
-    }
+    /// Why this adapter cannot report GPU execution time using engine APIs,
+    /// or `None` when it times every frame from real GPU timestamps. Under
+    /// `None` the frame loop fails a run whose measured frame carries no GPU
+    /// time: that frame submitted no GPU work, so it measured nothing.
+    fn gpu_timing_unavailable(&self) -> Option<&'static str>;
     /// The backend signal [`Engine::completion`] comes from, or why the
     /// adapter has none.
     fn completion_signal(&self) -> CompletionSignal;

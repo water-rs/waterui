@@ -451,7 +451,9 @@ fn animated_parameters_rerender_and_request_frames() {
     }
     let start = Instant::now();
     assert_eq!(
-        engine.render(FrameTime::at(start)).expect("initial frame"),
+        engine
+            .render(FrameTime::unpresented_at(start))
+            .expect("initial frame"),
         Next::Idle
     );
     // Count only the filter's wakes: installing it woke both hosts.
@@ -465,7 +467,7 @@ fn animated_parameters_rerender_and_request_frames() {
     );
     assert_eq!(
         engine
-            .render(FrameTime::at(start + Duration::from_millis(10)))
+            .render(FrameTime::unpresented_at(start + Duration::from_millis(10)))
             .expect("snap frame"),
         Next::Idle
     );
@@ -486,7 +488,7 @@ fn animated_parameters_rerender_and_request_frames() {
     );
     let mid_time = start + Duration::from_millis(60);
     let next = engine
-        .render(FrameTime::at(mid_time))
+        .render(FrameTime::unpresented_at(mid_time))
         .expect("animated frame");
     assert!(matches!(next, Next::At { .. }));
     if let Next::At { rate, .. } = next {
@@ -496,7 +498,7 @@ fn animated_parameters_rerender_and_request_frames() {
     assert!((mid[0] - 0.6).abs() < 1.0e-6, "mid pixel: {mid:?}");
 
     let repeated = engine
-        .render(FrameTime::at(mid_time))
+        .render(FrameTime::unpresented_at(mid_time))
         .expect("repeated frame");
     assert!(matches!(repeated, Next::At { .. }));
     let unchanged = surface.readback().expect("repeated readback").pixels[2 * 4 + 2];
@@ -504,7 +506,9 @@ fn animated_parameters_rerender_and_request_frames() {
 
     assert_eq!(
         engine
-            .render(FrameTime::at(start + Duration::from_millis(120)))
+            .render(FrameTime::unpresented_at(
+                start + Duration::from_millis(120)
+            ))
             .expect("settled frame"),
         Next::Idle
     );
@@ -568,7 +572,9 @@ fn hidden_surface_filters_wake_nothing_and_ask_no_frame() {
     });
     let start = Instant::now();
     assert_eq!(
-        engine.render(FrameTime::at(start)).expect("initial frame"),
+        engine
+            .render(FrameTime::unpresented_at(start))
+            .expect("initial frame"),
         Next::Idle
     );
     // Count only the filter's wakes: installing it woke the host.
@@ -604,7 +610,7 @@ fn hidden_surface_filters_wake_nothing_and_ask_no_frame() {
     );
     assert_eq!(
         engine
-            .render(FrameTime::at(start + Duration::from_millis(10)))
+            .render(FrameTime::unpresented_at(start + Duration::from_millis(10)))
             .expect("visible frame"),
         Next::Idle,
         "a hidden surface's animating filter asks for no frame"
@@ -618,7 +624,9 @@ fn hidden_surface_filters_wake_nothing_and_ask_no_frame() {
     );
     assert_eq!(
         engine
-            .render(FrameTime::at(start + Duration::from_millis(500)))
+            .render(FrameTime::unpresented_at(
+                start + Duration::from_millis(500)
+            ))
             .expect("shown frame"),
         Next::Idle,
         "the filter's animation is sampled at the frame time, past its end"

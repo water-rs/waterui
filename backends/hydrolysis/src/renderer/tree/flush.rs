@@ -622,6 +622,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         content: Rc::clone(&node.content),
                         invalidator: Rc::clone(&node.invalidator),
                         association: Rc::clone(&node.association),
+                        resize: Rc::clone(&node.resize),
                         bounds: ctx.bounds(),
                         time: renderer.frame_instant(),
                     }));

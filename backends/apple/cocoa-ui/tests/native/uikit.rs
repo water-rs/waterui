@@ -11,7 +11,9 @@ use cocoa_ui::objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, msg_send, 
 use cocoa_ui::objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use cocoa_ui::objc2_foundation::ns_string;
 use cocoa_ui::objc2_quartz_core::{CABasicAnimation, CAMediaTiming};
-use cocoa_ui::objc2_ui_kit::{UIGestureRecognizerState, UIPanGestureRecognizer, UIView, UIWindow};
+use cocoa_ui::objc2_ui_kit::{
+    UIGestureRecognizerState, UIPanGestureRecognizer, UITouch, UIView, UIWindow,
+};
 use cocoa_ui::uikit::input_view::InputView;
 use cocoa_ui::uikit::{HostView, Label};
 use cocoa_ui::{PlatformView, Rect};
@@ -62,6 +64,14 @@ pub fn trials() -> Vec<Trial> {
         case!(
             "uikit::input_view",
             indirect_scroll_input_arrives_as_surface_scroll_events
+        ),
+        case!(
+            "uikit::input_view",
+            a_touch_press_and_release_carry_the_tap_count
+        ),
+        case!(
+            "uikit::input_view",
+            the_paste_command_is_enabled_only_by_text_on_the_pasteboard
         ),
         case!(
             "uikit::menu_panel",
@@ -410,6 +420,8 @@ fn the_text_input_selectors_register_under_uikits_names() {
         sel!(becomeFirstResponder),
         sel!(touchesBegan:withEvent:),
         sel!(pressesBegan:withEvent:),
+        sel!(paste:),
+        sel!(canPerformAction:withSender:),
     ] {
         // SAFETY: `respondsToSelector:` is a plain `NSObject` query on the
         // live view.
@@ -500,19 +512,140 @@ impl SeededPan {
     }
 }
 
+/// The ivars of a [`SeededTouch`].
+#[derive(Debug)]
+struct SeededTouchIvars {
+    /// What `locationInView:` reports.
+    location: Cell<CGPoint>,
+    /// What `tapCount` reports.
+    taps: Cell<usize>,
+}
+
+cocoa_ui::objc2::define_class!(
+    // SAFETY: `UITouch` permits subclassing for input the process itself
+    // generates; the overrides answer seeded values from ivars.
+    #[unsafe(super(UITouch))]
+    #[name = "CocoaUiNativeTestSeededTouch"]
+    #[thread_kind = cocoa_ui::objc2::MainThreadOnly]
+    #[ivars = SeededTouchIvars]
+    /// A `UITouch` whose location and tap count come from cells — a headless
+    /// process cannot make `UIKit` report a real touch.
+    struct SeededTouch;
+
+    impl SeededTouch {
+        // SAFETY: `locationInView:`'s signature.
+        #[unsafe(method(locationInView:))]
+        fn location_in_view(&self, _view: Option<&UIView>) -> CGPoint {
+            self.ivars().location.get()
+        }
+
+        // SAFETY: `tapCount`'s signature.
+        #[unsafe(method(tapCount))]
+        fn tap_count(&self) -> usize {
+            self.ivars().taps.get()
+        }
+    }
+);
+
+impl SeededTouch {
+    /// A touch at `location` reporting `taps` taps.
+    fn new(mtm: MainThreadMarker, location: CGPoint, taps: usize) -> Retained<Self> {
+        let ivars = SeededTouchIvars {
+            location: Cell::new(location),
+            taps: Cell::new(taps),
+        };
+        let this = Self::alloc(mtm).set_ivars(ivars);
+        // SAFETY: `init` is `NSObject`'s designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// A touch press or release is a primary pointer button with the tap count
+/// `UITouch.tapCount` reports — the same on the release as on the press.
+fn a_touch_press_and_release_carry_the_tap_count() {
+    use cocoa_ui::input::{PointerButton, SurfaceEvent};
+    use cocoa_ui::objc2_foundation::NSSet;
+
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    view.set_event_handler({
+        let events = Rc::clone(&events);
+        move |event| events.borrow_mut().push(event)
+    });
+    for taps in [1_usize, 2, 3, 6] {
+        let touch = SeededTouch::new(mtm, CGPoint::new(7.0, 9.0), taps);
+        let touches = NSSet::from_retained_slice(&[touch.into_super()]);
+        // SAFETY: `touchesBegan:withEvent:` and `touchesEnded:withEvent:`
+        // take the touch set and a null event.
+        unsafe {
+            let _: () = msg_send![&*view, touchesBegan: &*touches, withEvent: std::ptr::null::<AnyObject>()];
+            let _: () = msg_send![&*view, touchesEnded: &*touches, withEvent: std::ptr::null::<AnyObject>()];
+        }
+        let buttons: Vec<_> = events
+            .take()
+            .into_iter()
+            .filter_map(|event| match event {
+                SurfaceEvent::PointerButton {
+                    pressed,
+                    button,
+                    click_count,
+                    ..
+                } => Some((pressed, button, click_count.get())),
+                _ => None,
+            })
+            .collect();
+        let taps = u32::try_from(taps).expect("a small count");
+        assert_eq!(
+            buttons,
+            [
+                (true, PointerButton::Primary, taps),
+                (false, PointerButton::Primary, taps)
+            ]
+        );
+    }
+}
+
+/// Paste is offered only while the pasteboard has text.
+fn the_paste_command_is_enabled_only_by_text_on_the_pasteboard() {
+    use cocoa_ui::objc2_ui_kit::UIPasteboard;
+
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let can_paste = || {
+        // SAFETY: `canPerformAction:withSender:` takes the action and a
+        // null sender and answers a BOOL.
+        let can: Bool = unsafe {
+            msg_send![&*view, canPerformAction: sel!(paste:), withSender: std::ptr::null::<AnyObject>()]
+        };
+        can.as_bool()
+    };
+    let pasteboard = UIPasteboard::generalPasteboard();
+    // SAFETY: plain pasteboard accessors on the main thread.
+    let before = unsafe { pasteboard.string() };
+    // SAFETY: as above.
+    unsafe { pasteboard.setString(Some(ns_string!("pasted"))) };
+    assert!(can_paste(), "Paste is disabled with text on the pasteboard");
+    // SAFETY: as above.
+    unsafe { pasteboard.setItems(&cocoa_ui::objc2_foundation::NSArray::new()) };
+    assert!(!can_paste(), "Paste is enabled with an empty pasteboard");
+    // SAFETY: as above.
+    unsafe { pasteboard.setString(before.as_deref()) };
+}
+
 /// GPU-surface scroll input on `UIKit` (#2068): indirect scrolling
 /// reaches a view as `UIPanGestureRecognizer`s — a trackpad glide through
 /// the `Continuous` scroll type, a wheel notch through `Discrete` — and
 /// each must land as a `SurfaceEvent::Scroll` with the pan's incremental
 /// translation negated into the W3C content-motion sign — always a
-/// logical-point `Pixel` displacement, whatever the mask — and `finished`
-/// per gesture kind. A finger drag is
+/// logical-point `Pixel` displacement, whatever the mask — and its scroll
+/// phase per gesture kind. A finger drag is
 /// pointer input, not a scroll: both recognizers take zero touches.
 #[allow(clippy::too_many_lines)] // The wiring check plus the five scroll probes it verifies.
 fn indirect_scroll_input_arrives_as_surface_scroll_events() {
     use std::cell::RefCell;
 
-    use cocoa_ui::input::{ScrollUnit, SurfaceEvent};
+    use cocoa_ui::input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceEvent};
     use cocoa_ui::objc2_ui_kit::{UIPanGestureRecognizer, UIScrollTypeMask};
 
     let mtm = marker();
@@ -568,7 +701,7 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
             delta_x,
             delta_y,
             unit,
-            finished,
+            phase,
         } = event
         else {
             panic!("expected a scroll event, got {event:?}");
@@ -579,13 +712,23 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         // and up.
         assert_eq!((*delta_x, *delta_y), (-12.0, 30.0));
         assert_eq!(*unit, ScrollUnit::Pixel);
-        assert!(
-            !finished,
-            "a mid-gesture callback marked the scroll finished"
-        );
+        assert_eq!(*phase, ScrollPhase::Contact(GesturePhase::Changed));
     }
 
-    // The gesture's terminal callback carries `finished`.
+    // A recognizer's first callback begins the gesture.
+    gesture.ivars().state.set(UIGestureRecognizerState::Began);
+    let before = events.borrow().len();
+    view.scroll_probe_for_test(&gesture, UIScrollTypeMask::Continuous);
+    assert_eq!(events.borrow().len(), before + 1);
+    assert!(matches!(
+        events.borrow().last(),
+        Some(SurfaceEvent::Scroll {
+            phase: ScrollPhase::Contact(GesturePhase::Began),
+            ..
+        })
+    ));
+
+    // The gesture's terminal callback ends it.
     gesture.setTranslation_inView(CGPoint::new(4.0, 0.0), Some(this));
     gesture.ivars().state.set(UIGestureRecognizerState::Ended);
     let before = events.borrow().len();
@@ -608,7 +751,7 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         let SurfaceEvent::Scroll {
             delta_x,
             unit,
-            finished,
+            phase,
             ..
         } = event
         else {
@@ -616,10 +759,10 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         };
         assert_eq!(*delta_x, -4.0);
         assert_eq!(*unit, ScrollUnit::Pixel);
-        assert!(*finished, "a glide's end did not mark the scroll finished");
+        assert_eq!(*phase, ScrollPhase::Contact(GesturePhase::Ended));
     }
 
-    // Cancelled and Failed terminate a glide the same way Ended does.
+    // Cancelled and Failed both abandon a glide: `Cancelled`.
     for terminal in [
         UIGestureRecognizerState::Cancelled,
         UIGestureRecognizerState::Failed,
@@ -646,7 +789,7 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
             delta_x,
             delta_y,
             unit,
-            finished,
+            phase,
             ..
         } = event
         else {
@@ -654,14 +797,15 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         };
         assert_eq!((*delta_x, *delta_y), (-2.0, 0.0));
         assert_eq!(*unit, ScrollUnit::Pixel);
-        assert!(
-            *finished,
-            "a {terminal:?} callback did not mark the scroll finished"
+        assert_eq!(
+            *phase,
+            ScrollPhase::Contact(GesturePhase::Cancelled),
+            "a {terminal:?} callback did not cancel the gesture"
         );
     }
 
     // A wheel notch is complete on its own: the same logical-point
-    // `Pixel` displacement, `finished` on every callback — even
+    // `Pixel` displacement, `Discrete` on every callback — even
     // mid-`Changed`.
     gesture.ivars().state.set(UIGestureRecognizerState::Changed);
     gesture.setTranslation_inView(CGPoint::new(0.0, 5.0), Some(this));
@@ -685,7 +829,7 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         let SurfaceEvent::Scroll {
             delta_y,
             unit,
-            finished,
+            phase,
             ..
         } = event
         else {
@@ -693,7 +837,11 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         };
         assert_eq!(*delta_y, -5.0);
         assert_eq!(*unit, ScrollUnit::Pixel);
-        assert!(*finished, "a wheel notch is a complete scroll on its own");
+        assert_eq!(
+            *phase,
+            ScrollPhase::Discrete,
+            "a wheel notch is a complete scroll on its own"
+        );
     }
 }
 

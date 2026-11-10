@@ -16,6 +16,8 @@ pub mod wgpu {
     pub use ::wgpu::*;
     use std::time::Duration;
 
+    use cherenkov::Instant;
+
     /// Persistent device resources supplied once before rendering content.
     #[derive(Debug)]
     pub struct Context<'a> {
@@ -54,6 +56,9 @@ pub mod wgpu {
         pub elapsed: Duration,
         /// Time since the previous presentation of this content.
         pub delta: Duration,
+        /// The platform's target presentation time for this frame, when its
+        /// frame clock reports one.
+        pub presentation_time: Option<Instant>,
         pub(crate) redraw: bool,
     }
 

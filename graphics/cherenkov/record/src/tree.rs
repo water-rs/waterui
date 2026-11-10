@@ -146,6 +146,10 @@ pub struct LayerNode {
     /// window.
     host_window: Option<u64>,
     parent: Option<LayerId>,
+    /// The parent chain reaches the root, so the layer is drawn and its
+    /// tracks are sampled. Every layer of a subtree shares its top's
+    /// state.
+    attached: bool,
     transform_track: Option<Track<Affine>>,
     components: Option<Box<components::Components>>,
     opacity_track: Option<Track<f32>>,
@@ -264,6 +268,7 @@ impl LayerNode {
             has_content: false,
             host_window: None,
             parent: None,
+            attached: false,
             transform_track: None,
             components: None,
             opacity_track: None,
@@ -576,7 +581,9 @@ impl SurfaceTree {
     #[must_use]
     pub fn new() -> Self {
         let mut nodes = FxHashMap::default();
-        nodes.insert(0, LayerNode::new());
+        let mut root = LayerNode::new();
+        root.attached = true;
+        nodes.insert(0, root);
         Self {
             nodes,
             root: LayerId::new(0),
@@ -705,19 +712,22 @@ impl SurfaceTree {
         }
     }
 
-    /// Steps every projective layer's tilt and depth tracks and
+    /// Steps every attached projective layer's tilt and depth tracks and
     /// recomposes its pose from the freshly sampled affine components.
     /// Returns `(stepped, still running)`.
     fn sample_projective(&mut self, time: Instant) -> (bool, bool) {
         let (mut stepped, mut running) = (false, false);
         for (id, state) in &mut self.projective {
-            let (step, run) = state.sample(time);
-            stepped |= step;
-            running |= run;
             let node = self
                 .nodes
                 .get_mut(id)
                 .expect("projective state belongs to a layer in the tree");
+            if !node.attached {
+                continue;
+            }
+            let (step, run) = state.sample(time);
+            stepped |= step;
+            running |= run;
             if step {
                 self.clock += 1;
                 node.outer_stamp = self.clock;
@@ -823,6 +833,7 @@ impl SurfaceTree {
         let node = self.nodes.remove(&id.raw()).expect("checked above");
         for child in node.children {
             self.node_mut(child).parent = None;
+            self.set_attached(child, false);
         }
         self.projective.remove(&id.raw());
     }
@@ -966,6 +977,8 @@ impl SurfaceTree {
                 let parent_node = self.node_mut(parent);
                 parent_node.children.push(child);
                 parent_node.blending_children += u32::from(blends);
+                let attached = parent_node.attached;
+                self.set_attached(child, attached);
             }
             LayerOp::Insert {
                 parent,
@@ -985,6 +998,8 @@ impl SurfaceTree {
                 let index = index.min(node.children.len());
                 node.children.insert(index, child);
                 node.blending_children += u32::from(blends);
+                let attached = node.attached;
+                self.set_attached(child, attached);
             }
             LayerOp::Detach { parent, child } => {
                 assert_eq!(
@@ -993,6 +1008,25 @@ impl SurfaceTree {
                     "detaching from the wrong parent"
                 );
                 self.detach(child);
+                self.set_attached(child, false);
+            }
+        }
+    }
+
+    /// Marks `id`'s subtree as reaching the root or not. A subtree
+    /// already in that state is left alone: its layers share its top's.
+    fn set_attached(&mut self, id: LayerId, attached: bool) {
+        let node = self.node_mut(id);
+        if node.attached == attached {
+            return;
+        }
+        node.attached = attached;
+        let mut pending = node.children.clone();
+        while let Some(id) = pending.pop() {
+            let node = self.node_mut(id);
+            if node.attached != attached {
+                node.attached = attached;
+                pending.extend_from_slice(&node.children);
             }
         }
     }
@@ -1022,14 +1056,25 @@ impl SurfaceTree {
             .unwrap_or_else(|| panic!("layer {} is not in the tree", id.raw()))
     }
 
-    /// Samples every animation track at `time`, updating the layers'
-    /// sampled properties. `scale` snaps the scroll offset to the
-    /// device-pixel grid and classifies slow decays.
+    /// Samples the animation tracks of every layer whose parent chain
+    /// reaches the root at `time`, updating their sampled properties.
+    /// `scale` snaps the scroll offset to the device-pixel grid and
+    /// classifies slow decays.
+    ///
+    /// A detached layer is not drawn, so its tracks are not sampled and
+    /// ask for no frame. They stay on the host's clock: re-attached, a
+    /// track shows the value its clock gives at that frame — the target,
+    /// when it ended meanwhile — as though it had run out of view. See
+    /// [`Layer`](crate::surface::Layer).
     pub fn sample(&mut self, time: Instant, scale: f64) -> Sampling {
         let mut stepped = false;
         let mut fast = false;
         let mut slow = false;
         for node in self.nodes.values_mut() {
+            if !node.attached {
+                node.animation_rate = None;
+                continue;
+            }
             let mut node_fast = false;
             // Opacity is outer and scroll inner: any running track steps.
             let mut outer_changed = node.opacity_track.is_some();

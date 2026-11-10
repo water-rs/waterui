@@ -86,7 +86,7 @@ pub fn component_animation<B: Backend>(config: B::Config) {
             tx[reference.root()].transform(matrix);
         });
         let next = wait!(engine
-            .render(FrameTime::at(
+            .render(FrameTime::unpresented_at(
                 start + Duration::from_millis(u64::from(step) * 125),
             )))
             .expect("frame");
@@ -136,7 +136,7 @@ fn signal_drops_with_the_layer<B: Backend>(
     start: Instant,
 ) {
     wait!(engine
-        .render(FrameTime::at(start + Duration::from_secs(2))))
+        .render(FrameTime::unpresented_at(start + Duration::from_secs(2))))
         .expect("remove bound layer");
     let before = wakes.load(Ordering::Relaxed);
     angle.set(1.);

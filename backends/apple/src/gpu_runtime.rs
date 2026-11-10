@@ -566,7 +566,7 @@ pub fn filter_pipelines(env: &Environment) -> Rc<FilterPipelines> {
 #[cfg(all(test, target_os = "macos", feature = "gpu_surface"))]
 mod tests {
     use super::*;
-    use waterui_graphics::cherenkov::{Instant, Surface};
+    use waterui_graphics::cherenkov::Surface;
     use waterui_graphics::cherenkov_gpu::interop::TextureTarget;
 
     /// A mounted scene's contract reduced to observation: whether `prepare`
@@ -662,7 +662,7 @@ mod tests {
             .expect("the generation settles");
         let first_part = Probe::mount(&generation);
         let second_part = Probe::mount(&generation);
-        let time = FrameTime(Instant::now());
+        let time = FrameTime::now();
 
         let requester: Rc<dyn SceneParticipant> = first_part.clone();
         generation
@@ -684,7 +684,7 @@ mod tests {
             !second_part.produced_at(time),
             "late dirt stays unproduced at this timestamp"
         );
-        let later = FrameTime(Instant::now());
+        let later = FrameTime::now();
         generation
             .produce(later, &requester_b)
             .expect("the owed frame produces at its own timestamp");
@@ -708,7 +708,7 @@ mod tests {
         ));
         let failing = Probe::mount_failing(&generation, prepare_error.clone());
         let healthy = Probe::mount(&generation);
-        let time = FrameTime(Instant::now());
+        let time = FrameTime::now();
 
         // The healthy requester produces the batch: the failing
         // participant's contract was rejected, routed and left behind —

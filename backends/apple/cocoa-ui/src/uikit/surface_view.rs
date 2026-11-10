@@ -368,12 +368,15 @@ define_class!(
         fn touches_began(&self, touches: &NSSet<UITouch>, event: Option<&objc2_ui_kit::UIEvent>) {
             guarded("SurfaceView touchesBegan:withEvent:", || {
                 let _ = event;
-                if let Some(position) = self.touch_point(touches) {
+                if let Some(position) = self.touch_point(touches)
+                    && let Some(touch) = touches.iter().next()
+                {
                     emit(
                         &self.ivars().on_interaction,
                         PointerInteraction::PrimaryDown {
                             position,
-                            click_count: 1,
+                            // The tap's place in a run of rapid taps.
+                            click_count: i64::from(crate::input::click_count(touch.tapCount()).get()),
                         },
                     );
                 }

@@ -1443,7 +1443,7 @@ pub(crate) mod tests {
                 SceneFrame {
                     width: 8.0,
                     height: 8.0,
-                    time: time.0,
+                    time: time.instant(),
                 },
             );
             if let SceneUpdate::Retained { .. } = update {

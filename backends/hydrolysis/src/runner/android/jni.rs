@@ -82,8 +82,11 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// platform view it sits above; `onNativeBandShow` tells a band to show its
 /// newest image in a named colour space and `onNativeBandClear` to show
 /// nothing (water-rs/waterui#2225). 26 = the HWUI `DefineEffect` wire carries
-/// the overscroll stretch stage kind.
-pub const JNI_SCHEMA: jint = 26;
+/// the overscroll stretch stage kind. 27 = `nativeSetMetrics` carries the
+/// `ViewConfiguration` double-tap timeout and slop, and `nativeOnFrame`
+/// carries the vsync callback's expected presentation time in place of the
+/// advisory vsync timestamp.
+pub const JNI_SCHEMA: jint = 27;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -453,6 +456,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             min_fling_velocity_px: 0.0,
             max_fling_velocity_px: 0.0,
             scroll_friction: 0.0,
+            double_tap_timeout_ms: 0,
+            double_tap_slop_px: 0.0,
         };
         let session = AndroidSession::create(
             env,
@@ -521,6 +526,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
     min_fling_velocity: jfloat,
     max_fling_velocity: jfloat,
     scroll_friction: jfloat,
+    double_tap_timeout_ms: jint,
+    double_tap_slop: jfloat,
 ) {
     guard(&mut env, |_env| {
         session(session_ptr).set_metrics(MetricsSnapshot {
@@ -535,23 +542,57 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
             min_fling_velocity_px: min_fling_velocity,
             max_fling_velocity_px: max_fling_velocity,
             scroll_friction: f64::from(scroll_friction),
+            double_tap_timeout_ms: crate::num_cast::i32_as_u32(double_tap_timeout_ms.max(0)),
+            double_tap_slop_px: double_tap_slop,
         });
         Ok(())
     });
 }
 
+/// The instant on the `Instant` clock that a `CLOCK_MONOTONIC` reading in
+/// nanoseconds names — the clock `Choreographer` frame times and
+/// `System.nanoTime` are in. Both clocks are read in the same moment, so the
+/// difference between the reading and now carries over exactly.
+fn monotonic_nanos_to_instant(nanos: i64) -> crate::time::Instant {
+    let mut now_ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let now = crate::time::Instant::now();
+    // SAFETY: `now_ts` is a valid, writable `timespec`, and `CLOCK_MONOTONIC`
+    // is a clock every Android kernel provides.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now_ts) };
+    assert_eq!(status, 0, "clock_gettime(CLOCK_MONOTONIC) failed");
+    // `time_t` and `c_long` are 64-bit on the 64-bit ABIs Android ships.
+    let now_nanos = now_ts.tv_sec * 1_000_000_000 + now_ts.tv_nsec;
+    let ahead = nanos - now_nanos;
+    let offset = std::time::Duration::from_nanos(ahead.unsigned_abs());
+    if ahead >= 0 {
+        now + offset
+    } else {
+        now.checked_sub(offset)
+            .expect("a presentation time in the past stays within the clock's range")
+    }
+}
+
 /// The Choreographer callback. Returns a bitmask: `1` = the engine wants
 /// another frame; `2` = the window asked to close. A deadline is read out
 /// with `nativeFrameDeadlineInNanos` when `4` is set.
+///
+/// `has_presentation` says the frame came from a vsync callback, and
+/// `presentation_nanos` is then its expected presentation time on the
+/// `CLOCK_MONOTONIC` clock; a delayed deadline frame has none.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
-    _vsync_nanos: jlong,
+    has_presentation: jboolean,
+    presentation_nanos: jlong,
 ) -> jlong {
     guard_val(&mut env, 0, |_env| {
-        let outcome = session(session_ptr).on_frame();
+        let presentation = has_presentation.then(|| monotonic_nanos_to_instant(presentation_nanos));
+        let outcome = session(session_ptr).on_frame(presentation);
         let mut bits: jlong = 0;
         if outcome.wants_next_frame {
             bits |= 1;
