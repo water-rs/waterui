@@ -607,13 +607,19 @@ held to that block, so generation memory comes from and returns to the
 suballocator instead of a dedicated driver allocation per frame
 (water-rs/waterui#4108). Draws are batched so no batch passes it, and a
 path that alone would is generated in slices of whole strips across
-batches: each slice is the path with its clip narrowed to those rows,
-which is exact because winding is carried only along a row, and all of
-a path's slices fill one arena block replayed as one entry. A path whose
-row-independent part — elements, stroke records, segments and stroker
-scratch — alone passes the block cannot shrink by slicing and is drawn
-whole in a batch of its own under the binding limit. The block never
-decides the route.
+batches: each slice is the path with its clip narrowed to those rows
+and its inputs narrowed to the units reaching them, which is exact
+because winding is carried only along a row, and all of a path's slices
+fill one arena block replayed as one entry. A unit is a fill element or
+a stroke subpath, whose vertex links, joins and dash scan stay within
+it; it reaches the rows its control hull, or its subpath's outline
+charges, spans, widened by a row for the kernels' f32 evaluation. A
+slice uploads, flattens and strokes only its units, renumbered as one
+range, so a sliced path's inputs are read about once per frame rather
+than once per slice (water-rs/waterui#4131), and its grid is the bbox
+of those units within its rows. A path one of whose strips alone passes
+the block cannot shrink by slicing and is drawn whole in a batch of its
+own under the binding limit. The block never decides the route.
 
 *Alternatives considered:* grow-and-retry across frames (needs a
 readback of the overflow flag, and makes a frame's output depend on
