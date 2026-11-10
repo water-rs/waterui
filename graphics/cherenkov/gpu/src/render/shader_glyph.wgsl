@@ -22,5 +22,5 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
         }
     }
     cov = clamp(cov * mask_coverage(in), 0.0, 1.0) * in.params.y;
-    return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
+    return move_space(vec4<f32>(in.color * ColorScalar(cov)), SPACE_LINEAR, globals.space);
 }
