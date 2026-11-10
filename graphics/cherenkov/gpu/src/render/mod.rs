@@ -5854,7 +5854,14 @@ impl GpuRenderer {
             self.producers
                 .get_mut(&id)
                 .expect("composed GPU producer")
-                .render(&self.adapter, &self.device, &self.queue, time, size, scale)?;
+                .render(
+                    &self.instance,
+                    &self.adapter,
+                    &self.device,
+                    &self.queue,
+                    time,
+                    (size, scale),
+                )?;
         }
         Ok(())
     }
@@ -5897,7 +5904,14 @@ impl GpuRenderer {
             self.producers
                 .get_mut(&id)
                 .expect("composed GPU producer")
-                .render(&self.adapter, &self.device, &self.queue, time, size, scale)
+                .render(
+                    &self.instance,
+                    &self.adapter,
+                    &self.device,
+                    &self.queue,
+                    time,
+                    (size, scale),
+                )
                 .await?;
         }
         Ok(())
