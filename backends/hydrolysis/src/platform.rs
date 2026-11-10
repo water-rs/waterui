@@ -2029,8 +2029,8 @@ pub trait PlatformWindow: 'static {
     /// shortcut. Read afresh with every input batch, so a setting changed
     /// while the app runs applies to the next press.
     ///
-    /// A host with no platform settings of its own reports
-    /// [`InputConventions::for_platform`] for the system it runs on.
+    /// A host with no platform settings of its own reports its system
+    /// family's data defaults.
     fn input_conventions(&self) -> InputConventions;
     /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
