@@ -3,19 +3,13 @@
 //! bitmap), so no window is shown. Set `WATERUI_CANVAS_REVIEW_DIR` to keep
 //! each rendered case as a PNG there.
 
-use std::rc::Rc;
-use std::sync::Arc;
-
-use waterui_graphics::draw::kurbo::{Affine, Cap, Circle, Point, Rect, RoundedRect, Stroke};
+use waterui_graphics::draw::kurbo::{Affine, Cap, Circle, Rect, RoundedRect, Stroke};
 use waterui_graphics::draw::{
-    BlendMode, ColorStop, Content, ContentChange, Draw as _, Extend, Group, Interpolation,
-    LayoutSize, LinearGradient, RadialGradient, Recorder, Shadow, SweepGradient, WorkingColor,
+    BlendMode, ColorStop, Content, ContentChange, Draw as _, Group, LayoutSize, LinearGradient,
+    Recorder, Shadow, WorkingColor,
 };
 
-use super::layers::{Ctx, Wake};
 use super::plan::{self, Composite, LayerKind, Outline};
-use super::resources::Registry;
-use super::tree::Tree;
 
 /// A linear-light colour from sRGB channels in `0..=1`.
 fn rgb(red: f32, green: f32, blue: f32) -> WorkingColor {
@@ -31,11 +25,6 @@ fn rgba(red: f32, green: f32, blue: f32, alpha: f32) -> WorkingColor {
         }
     };
     WorkingColor::new([linear(red), linear(green), linear(blue), alpha])
-}
-
-/// A small count as a coordinate.
-fn px(count: usize) -> f64 {
-    f64::from(u32::try_from(count).expect("test counts are small"))
 }
 
 /// A small count as a gradient offset.
@@ -226,7 +215,21 @@ fn a_stroke_with_different_caps_is_a_shape_layer() {
 
 #[cfg(target_os = "macos")]
 mod render {
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use waterui_graphics::draw::kurbo::Point;
+    use waterui_graphics::draw::{Extend, Interpolation, RadialGradient, SweepGradient};
+
+    use super::super::layers::{Ctx, Wake};
+    use super::super::resources::Registry;
+    use super::super::tree::Tree;
     use super::*;
+
+    /// A small count as a coordinate.
+    fn px(count: usize) -> f64 {
+        f64::from(u32::try_from(count).expect("test counts are small"))
+    }
     use cocoa_ui::bitmap::{
         bitmap_context, context_image, image_from_rgba, render_layer, scale_to_pixels,
     };

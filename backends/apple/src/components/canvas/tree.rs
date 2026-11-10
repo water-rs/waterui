@@ -50,7 +50,7 @@ impl Entry {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     fn settle(&self) {
         self.built.settle();
         if let Some(picture) = &self.picture {
@@ -363,7 +363,7 @@ impl Tree {
 
     /// Waits for every mesh paint the GPU is still running and shows it:
     /// for a test that rasterizes the tree right away.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub fn settle(&self) {
         for slot in &self.slots {
             if let Slot::Layer(entry) = slot {

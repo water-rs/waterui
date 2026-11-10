@@ -33,7 +33,7 @@ use cocoa_ui::objc2_core_graphics::{
     CGImageByteOrderInfo, CGImageComponentInfo, CGPath, kCGColorSpaceExtendedSRGB,
 };
 use cocoa_ui::objc2_foundation::{NSArray, NSNull, NSNumber, NSObjectProtocol, NSString};
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 use cocoa_ui::objc2_metal::{MTLCommandBuffer, MTLCommandBufferStatus};
 use cocoa_ui::objc2_quartz_core::{
     CAAction, CADynamicRangeHigh, CALayer, CALayerDelegate, CAShapeLayer,
@@ -83,7 +83,7 @@ impl core::fmt::Debug for Ctx<'_> {
 /// A mesh paint the GPU is running.
 struct Pending {
     /// What a test waits on; the host waits for the completion instead.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     buffer: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
     generation: u64,
     /// The surface it paints.
@@ -166,8 +166,8 @@ impl MeshState {
             .expect("the back surface was just made");
         let (done, wake) = (Arc::clone(&surfaces.done), Arc::clone(wake));
         #[cfg_attr(
-            not(test),
-            expect(unused_variables, reason = "only a test waits on it")
+            not(all(test, target_os = "macos")),
+            expect(unused_variables, reason = "only a macOS render test waits on it")
         )]
         let buffer = self
             .pass
@@ -176,7 +176,7 @@ impl MeshState {
                 wake();
             });
         surfaces.pending = Some(Pending {
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "macos"))]
             buffer,
             generation,
             surface: back,
@@ -208,7 +208,7 @@ impl MeshState {
 
     /// Waits for the latest paint and shows it: for a test that
     /// rasterizes the tree before any host is woken.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     fn settle(&self) {
         let mut surfaces = self.surfaces.borrow_mut();
         let Some(pending) = &surfaces.pending else {
@@ -1028,7 +1028,7 @@ impl Built {
     }
 
     /// Waits for the layer's mesh paint and shows it.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub fn settle(&self) {
         if let Parts::Mesh(state) = &self.parts {
             state.settle();
