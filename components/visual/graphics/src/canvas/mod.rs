@@ -67,6 +67,9 @@ use waterui_core::layout::{Affine2, Size};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, Str, View};
 
+#[cfg(any(feature = "gpu", feature = "cpu"))]
+pub(crate) use scene::lower_drawing;
+
 pub use cx::Cx;
 pub use drawing::{Drawing, DrawingCx};
 pub use geometry::{Circle, Ellipse, FillRule, Line, Path, PathBuilder, RoundedRect, Shape};

@@ -13049,6 +13049,7 @@ dependencies = [
  "cherenkov",
  "cherenkov-cpu",
  "cherenkov-gpu",
+ "cherenkov-oracle",
  "cherenkov-record",
  "color",
  "event-listener",
