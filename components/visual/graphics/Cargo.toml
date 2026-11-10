@@ -61,12 +61,13 @@ cherenkov-record.workspace = true
 cherenkov = { workspace = true, optional = true }
 cherenkov-gpu = { workspace = true, optional = true }
 cherenkov-cpu = { workspace = true, optional = true }
-color.workspace = true
+# The colour types (`Color`, `Srgb`, `P3`, `Oklch`, the theme tokens),
+# re-exported as `color`.
+waterui-color.workspace = true
 # The working-space ↔ sRGB matrices and transfer, the engine's one
 # definition (`filtrate_core::space`).
 filtrate-core.workspace = true
 filtrate = { workspace = true, optional = true }
-pastey.workspace = true
 wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1", optional = true, features = ["derive"] }
 keyboard-types.workspace = true

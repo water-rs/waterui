@@ -352,6 +352,9 @@ enum FlatEntry {
     Ghost(GhostKey),
     /// A section footer for `groups[section]`.
     Footer(usize),
+    /// The platform list's top gap, seated below a leading section header
+    /// (the header sits at the list's top, the gap scrolls with the rows).
+    Spacer,
 }
 
 /// `rebuildFlatLayout`: the section header → rows → section footer
@@ -367,6 +370,9 @@ fn rebuild_flat_layout(state: &mut Shared) {
             && group.label.is_some()
         {
             state.flat_layout.push(FlatEntry::Header(section));
+            if section == 0 && !state.sidebar {
+                state.flat_layout.push(FlatEntry::Spacer);
+            }
         }
         for (member_section, member) in &rows {
             if *member_section == section {
@@ -550,6 +556,10 @@ struct Shared {
     /// `AppKit`: `flatLayout` — the table's flat entry list.
     #[cfg(target_os = "macos")]
     flat_layout: Vec<FlatEntry>,
+    /// `AppKit`: whether the table is a navigation sidebar, which keeps the
+    /// source list's own section bands instead of the platform list's.
+    #[cfg(target_os = "macos")]
+    sidebar: bool,
     /// Selection bookkeeping.
     selection: SelectionMode,
     /// The tag each row is selected by, by item id.
@@ -1001,15 +1011,21 @@ impl Shared {
         insets.map_or(self.theme_insets, kit_insets)
     }
 
-    /// Whether the flat entry at `row` paints the hairline under it —
-    /// every member but its section's last, matching `SwiftUI`'s inset
-    /// list (water-rs/waterui#3592).
+    /// Whether the flat entry at `row` paints the hairline under it. The
+    /// platform list separates every row from whatever follows it, a
+    /// section's last row from the next section's header included, and
+    /// draws none under the list's final row; a sidebar separates only
+    /// rows of one section (water-rs/waterui#3592).
     #[cfg(target_os = "macos")]
     fn shows_separator(&self, row: usize) -> bool {
         let member = |entry: Option<&FlatEntry>| {
             matches!(entry, Some(FlatEntry::Row(_) | FlatEntry::Ghost(_)))
         };
-        member(self.flat_layout.get(row)) && member(self.flat_layout.get(row + 1))
+        if self.sidebar {
+            member(self.flat_layout.get(row)) && member(self.flat_layout.get(row + 1))
+        } else {
+            member(self.flat_layout.get(row)) && row + 1 < self.flat_layout.len()
+        }
     }
 
     /// `id`'s flat index — linear, row lookups are short.
@@ -2101,12 +2117,19 @@ mod platform_impl {
             view::retain_base(&*container)
         }
 
+        /// A section band: the platform list's group row for a header (a
+        /// sidebar keeps the source list's).
         fn band_view(
             &self,
             kind: SectionKind,
             signal: &Computed<StyledStr>,
         ) -> Retained<cocoa_ui::PlatformView> {
-            let band = SectionHeader::new(self.mtm, kind);
+            let group_row = kind == SectionKind::Header && !self.state.borrow().sidebar;
+            let band = if group_row {
+                SectionHeader::group_row(self.mtm)
+            } else {
+                SectionHeader::new(self.mtm, kind)
+            };
             let weak = cocoa_ui::objc2::rc::Weak::from_retained(&band);
             let apply = move |styled: &StyledStr| {
                 let Some(band) = weak.load() else {
@@ -2129,15 +2152,20 @@ mod platform_impl {
                 band.set_text_color(&Self::platform_color(ctx.value()));
             });
 
-            let font = match kind {
-                SectionKind::Header => waterui::text::font::Caption
-                    .resolve(&self.state.borrow().env)
-                    .snapshot(),
-                SectionKind::Footer => waterui::text::font::Footnote
-                    .resolve(&self.state.borrow().env)
-                    .snapshot(),
-            };
-            band.set_font(&self.platform_font(&font));
+            // The platform list's group row carries its own bold small
+            // system font (`SectionHeader::group_row`); the sidebar and
+            // footers take the caption/footnote tokens.
+            if !group_row {
+                let font = match kind {
+                    SectionKind::Header => waterui::text::font::Caption
+                        .resolve(&self.state.borrow().env)
+                        .snapshot(),
+                    SectionKind::Footer => waterui::text::font::Footnote
+                        .resolve(&self.state.borrow().env)
+                        .snapshot(),
+                };
+                band.set_font(&self.platform_font(&font));
+            }
             let guards: Vec<BoxWatcherGuard> = vec![Box::new(text_guard), Box::new(color_guard)];
             band.set_payload(Box::new(guards));
             view::retain_base(&*band)
@@ -2204,6 +2232,7 @@ mod platform_impl {
                         .and_then(|group| group.footer.clone());
                     signal.map(|signal| self.band_view(SectionKind::Footer, &signal))
                 }
+                FlatEntry::Spacer => None,
                 FlatEntry::Ghost(key) => {
                     let container = RowContainer::new(self.mtm);
                     {
@@ -2221,17 +2250,25 @@ mod platform_impl {
         }
 
         fn row_view(&self, _table: &TableView, row: usize) -> Option<Retained<TableRowView>> {
-            let shows_separator = {
+            let (shows_separator, group_row) = {
                 let state = self.state.borrow();
                 let entry = *state.flat_layout.get(row)?;
-                if !matches!(entry, FlatEntry::Row(_) | FlatEntry::Ghost(_)) {
+                // The platform list hairlines the group row band under a
+                // section header; a sidebar's bands and footers draw none.
+                let group_row = matches!(entry, FlatEntry::Header(_)) && !state.sidebar;
+                if !group_row && !matches!(entry, FlatEntry::Row(_) | FlatEntry::Ghost(_)) {
                     return None;
                 }
-                state.shows_separator(row)
+                (group_row || state.shows_separator(row), group_row)
             };
             let row_view = TableRowView::new(self.mtm);
             row_view.set_shows_separator(shows_separator);
-            row_view.set_separator_handler(Some(Rc::new(|row_view| {
+            row_view.set_separator_handler(Some(Rc::new(move |row_view| {
+                if group_row {
+                    // A group row band separates edge to edge of the
+                    // content, 16 pt in from both sides.
+                    return (16.0, 16.0);
+                }
                 // `resolvedSeparatorLeading`: the leftmost text x inside
                 // the row's cell view — 16 + the insets' surplus over the
                 // row-content inset.
@@ -2248,8 +2285,12 @@ mod platform_impl {
             let (flat, id, insets) = {
                 let state = self.state.borrow();
                 match state.flat_layout.get(row) {
+                    Some(FlatEntry::Header(_)) if !state.sidebar => {
+                        return SectionHeader::GROUP_ROW_HEIGHT;
+                    }
                     Some(FlatEntry::Header(_)) => return 38.0,
                     Some(FlatEntry::Footer(_)) => return 32.0,
+                    Some(FlatEntry::Spacer) => return TableView::TOP_GAP,
                     Some(FlatEntry::Ghost(key)) => {
                         return state.ghosts.get(key).map_or(30.0, |(_, height)| *height);
                     }
@@ -2290,7 +2331,14 @@ mod platform_impl {
         fn is_group_row(&self, _table: &TableView, row: usize) -> bool {
             !matches!(
                 self.state.borrow().flat_layout.get(row),
-                Some(FlatEntry::Row(_) | FlatEntry::Ghost(_))
+                Some(FlatEntry::Row(_) | FlatEntry::Ghost(_) | FlatEntry::Spacer)
+            )
+        }
+
+        fn is_accessibility_element(&self, _table: &TableView, row: usize) -> bool {
+            !matches!(
+                self.state.borrow().flat_layout.get(row),
+                Some(FlatEntry::Spacer)
             )
         }
 
@@ -2536,6 +2584,8 @@ fn render(mut config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         groups: Vec::new(),
         #[cfg(target_os = "macos")]
         flat_layout: Vec::new(),
+        #[cfg(target_os = "macos")]
+        sidebar: table.is_sidebar(),
         selection: match &config.selection() {
             ListSelection::None => SelectionMode::None,
             ListSelection::Single(binding) => SelectionMode::Single(binding.clone()),
