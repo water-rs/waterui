@@ -2158,7 +2158,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -12760,7 +12760,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#a30f6b41512cf19f21b655f4ba46ec1c1199fc8e"
+source = "git+https://github.com/water-rs/browsers?branch=dev#b8f4a596a954f19c387bbec5f2795ee21a14a9d8"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12800,7 +12800,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#a30f6b41512cf19f21b655f4ba46ec1c1199fc8e"
+source = "git+https://github.com/water-rs/browsers?branch=dev#b8f4a596a954f19c387bbec5f2795ee21a14a9d8"
 dependencies = [
  "cookie",
  "executor-core",
