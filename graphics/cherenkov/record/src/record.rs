@@ -911,6 +911,27 @@ impl LiveState {
         drop(retired);
     }
 
+    /// Keeps a subscription or value alive with the content. A region
+    /// takes what its recording kept back off the end of the list when it
+    /// closes ([`take_guards`](Self::take_guards)), so a recording pushes
+    /// here whether or not a region is open.
+    #[expect(
+        clippy::inline_always,
+        reason = "a subscription's guard push stays as inline in the record loop as dev's, \
+                  with no region test or call in it"
+    )]
+    #[inline(always)]
+    fn keep(&self, value: Box<dyn Any>) {
+        self.changeable.set(true);
+        self.guards.borrow_mut().push(value);
+    }
+
+    /// The guards kept since the list held `from`: what a closing region's
+    /// own commands kept, its nested regions having taken theirs.
+    fn take_guards(&self, from: usize) -> Vec<Box<dyn Any>> {
+        self.guards.borrow_mut().drain(from..).collect()
+    }
+
     fn push(&self, update: SlotUpdate) {
         let mut pending = self.pending.borrow_mut();
         let slot = update.slot();
@@ -1091,20 +1112,14 @@ pub struct Recorder {
     /// The state of a recording opened with [`Content::record_layered`];
     /// `None` for a plain recording, which takes no material.
     layered: Option<Layered>,
-    /// The regions open around the current call; `None` until the
-    /// recording opens one, so a recording without regions starts and
-    /// finishes with one field more than a plain one.
-    levels: Option<Levels>,
-}
-
-/// The region levels of a recording that opened one, or of a region's own
-/// recording.
-struct Levels {
     /// The key of this recording's first command: zero for a content's
-    /// recording, the content's next free key for a region's.
+    /// recording, the content's next free key for a region's. A plain
+    /// field, so a subscription adds it without testing for regions.
     key_base: u32,
-    /// The levels open around the current call, outermost first.
-    frames: Vec<Frame>,
+    /// The region levels open around the current call, outermost first;
+    /// `None` until the recording opens one, so a recording without
+    /// regions starts and finishes with one field more than a plain one.
+    levels: Option<Vec<Frame>>,
 }
 
 /// One level of the region tree being recorded.
@@ -1116,18 +1131,20 @@ struct Frame {
     run_start: u32,
     /// Where this level's region began.
     start: u32,
-    /// The subscriptions and kept values of this level's own commands.
-    kept: Vec<Box<dyn Any>>,
+    /// The length of the content's guard list when this level opened: the
+    /// subscriptions and kept values of the level's own commands are the
+    /// guards after it once its nested levels have closed.
+    guards: usize,
 }
 
 impl Frame {
-    const fn new(slot: Option<u32>, start: u32) -> Self {
+    const fn new(slot: Option<u32>, start: u32, guards: usize) -> Self {
         Self {
             slot,
             segments: Vec::new(),
             run_start: start,
             start,
-            kept: Vec::new(),
+            guards,
         }
     }
 
@@ -1173,6 +1190,7 @@ impl Recorder {
             size,
             depth: 0,
             layered: None,
+            key_base: 0,
             levels: None,
         }
     }
@@ -1204,13 +1222,10 @@ impl Recorder {
         );
         let here = self.here();
         self.live.changeable.set(true);
-        let frames = &mut self
+        let guards = self.live.guards.borrow().len();
+        let frames = self
             .levels
-            .get_or_insert_with(|| Levels {
-                key_base: 0,
-                frames: vec![Frame::new(None, 0)],
-            })
-            .frames;
+            .get_or_insert_with(|| vec![Frame::new(None, 0, 0)]);
         let outer = frames.last_mut().expect("a recording has its own level");
         let parent = outer.slot.map_or(Parent::Root, Parent::Region);
         outer.close_run(here);
@@ -1220,25 +1235,22 @@ impl Recorder {
                 .get_or_insert_with(|| Box::new(Table::new(self.size.clone())))
                 .allocate(parent)
         };
-        frames.push(Frame::new(Some(slot), here));
+        frames.push(Frame::new(Some(slot), here, guards));
         body(self);
         let end = self.here();
-        let frames = &mut self
-            .levels
-            .as_mut()
-            .expect("the region's level is open")
-            .frames;
+        let frames = self.levels.as_mut().expect("the region's level is open");
         let mut frame = frames.pop().expect("the region's level is open");
         frame.close_run(end);
         let outer = frames.last_mut().expect("a recording has its own level");
         outer.segments.push(Segment::Region(slot));
         outer.run_start = end;
+        let kept = self.live.take_guards(frame.guards);
         self.live
             .regions
             .borrow_mut()
             .as_mut()
             .expect("the region's table was made when it opened")
-            .fill(slot, frame.segments, end - frame.start, frame.kept);
+            .fill(slot, frame.segments, end - frame.start, kept);
         Region::new(Rc::downgrade(&self.live), slot, generation)
     }
 
@@ -1249,19 +1261,7 @@ impl Recorder {
     /// Dropping it must not change a signal the content records: the
     /// release can run while the content's surface sends a frame.
     pub fn keep(&mut self, value: impl Any) {
-        self.keep_boxed(Box::new(value));
-    }
-
-    fn keep_boxed(&mut self, value: Box<dyn Any>) {
-        self.live.changeable.set(true);
-        match self
-            .levels
-            .as_mut()
-            .and_then(|levels| levels.frames.last_mut())
-        {
-            Some(frame) => frame.kept.push(value),
-            None => self.live.guards.borrow_mut().push(value),
-        }
+        self.live.keep(Box::new(value));
     }
 
     /// Records the region in `slot` of `live` anew with `body`.
@@ -1285,14 +1285,13 @@ impl Recorder {
                 .expect("a content with regions keeps their table");
             (table.size.clone(), table.key_base())
         };
+        let guards = live.guards.borrow().len();
         let mut recorder = Self::new(DisplayList::default(), Rc::clone(live), None, size);
-        recorder.levels = Some(Levels {
-            key_base,
-            frames: vec![Frame::new(Some(slot), 0)],
-        });
+        recorder.key_base = key_base;
+        recorder.levels = Some(vec![Frame::new(Some(slot), 0, guards)]);
         body(&mut recorder);
         let end = recorder.here();
-        let Levels { mut frames, .. } = recorder.levels.take().expect("the region's level is open");
+        let mut frames = recorder.levels.take().expect("the region's level is open");
         let mut frame = frames.pop().expect("the region's level is open");
         assert!(frames.is_empty(), "every nested region closed");
         frame.close_run(end);
@@ -1301,7 +1300,7 @@ impl Recorder {
         Recorded {
             list: std::mem::take(&mut recorder.list),
             segments: frame.segments,
-            kept: frame.kept,
+            kept: live.take_guards(frame.guards),
             key_base,
         }
     }
@@ -1390,7 +1389,7 @@ impl Recorder {
     #[inline]
     pub(crate) fn finish(mut self) -> Content {
         // Moved out, not taken: a recording without regions then leaves
-        // no `Option<Levels>` behind to drop.
+        // no level list behind to drop.
         if let Some(levels) = self.levels {
             Self::finish_regions(&self.live, &self.list, levels);
         }
@@ -1406,9 +1405,9 @@ impl Recorder {
     }
 
     /// Closes the top level of a recording that opened regions: the
-    /// table learns the root's segments, and the content keeps what the
-    /// top level kept.
-    fn finish_regions(live: &LiveState, list: &DisplayList, Levels { mut frames, .. }: Levels) {
+    /// table learns the root's segments. What the top level kept stays
+    /// with the content's own guards.
+    fn finish_regions(live: &LiveState, list: &DisplayList, mut frames: Vec<Frame>) {
         let mut top = frames.pop().expect("a recording has its own level");
         assert!(frames.is_empty(), "every region closed");
         let end = Self::end_of(list);
@@ -1418,7 +1417,6 @@ impl Recorder {
             .as_mut()
             .expect("a recording with regions made their table")
             .finish_root(top.segments, end);
-        live.guards.borrow_mut().extend(top.kept);
     }
 
     /// Subscribes to a value's later changes, which update operand `convert`
@@ -1429,7 +1427,7 @@ impl Recorder {
     )]
     #[inline(always)]
     fn subscribe<T: 'static>(
-        &mut self,
+        &self,
         subscribe: Subscribe<T>,
         command: u32,
         convert: fn(T) -> Operand,
@@ -1437,15 +1435,12 @@ impl Recorder {
         let guard = subscribe.start(Watch {
             destination: Destination::Slot {
                 state: Rc::downgrade(&self.live),
-                command: self
-                    .levels
-                    .as_ref()
-                    .map_or(command, |levels| levels.key_base + command),
+                command: self.key_base + command,
                 convert,
             },
         });
         if let Some(guard) = guard {
-            self.keep_boxed(guard);
+            self.live.keep(guard);
         }
     }
 }
