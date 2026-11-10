@@ -2141,6 +2141,26 @@ pub fn row_list(
     (leaf, table)
 }
 
+/// A sectioned list's table, rendered but not mounted: "A" with two rows
+/// and "B" with one, each under a header.
+#[must_use]
+pub fn sectioned_row_list() -> (crate::contract::NativeLeaf, cocoa_ui::Retained<ListSurface>) {
+    use objc2::Message;
+    use waterui::component::list::{List, Section};
+    use waterui::views::ForEach;
+
+    let leaf = render(List::content((
+        Section::new("A").content(ForEach::new(["a1", "a2"], |_| row_item())),
+        Section::new("B").content(ForEach::new(["b1"], |_| row_item())),
+    )));
+    let table = leaf
+        .view()
+        .downcast_ref::<ListSurface>()
+        .expect("a List renders the kit's table surface")
+        .retain();
+    (leaf, table)
+}
+
 /// Reads the standard menu bar as `menus::install` builds it — for the
 /// native suite to assert the standard items' rows without an `AppKit`
 /// handle of its own.

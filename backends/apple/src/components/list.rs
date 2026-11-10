@@ -2335,6 +2335,13 @@ mod platform_impl {
             )
         }
 
+        fn is_accessibility_element(&self, _table: &TableView, row: usize) -> bool {
+            !matches!(
+                self.state.borrow().flat_layout.get(row),
+                Some(FlatEntry::Spacer)
+            )
+        }
+
         fn should_select(&self, _table: &TableView, row: usize) -> bool {
             let state = self.state.borrow();
             state.selection.allows_selection()

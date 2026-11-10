@@ -98,6 +98,14 @@ pub trait TableSource {
         false
     }
 
+    /// Whether `row` is content an assistive client may see. A row that
+    /// only reserves space answers `false` and is left out of the table's
+    /// accessibility rows and children.
+    fn is_accessibility_element(&self, table: &TableView, row: usize) -> bool {
+        let _ = (table, row);
+        true
+    }
+
     /// Whether a pointer click may select `row`.
     fn should_select(&self, table: &TableView, row: usize) -> bool {
         let _ = (table, row);
@@ -287,8 +295,24 @@ impl InnerTable {
     fn exposes_row(&self, row: NSInteger, keep_selected: bool) -> bool {
         row >= 0
             && row < self.numberOfRows()
+            && self.is_content_row(row)
             && (self.rowViewAtRow_makeIfNecessary(row, false).is_some()
                 || (keep_selected && self.isRowSelected(row)))
+    }
+
+    /// Whether the table's source counts `row` as content rather than
+    /// reserved space.
+    fn is_content_row(&self, row: NSInteger) -> bool {
+        let Some(table) = self
+            .enclosingScrollView()
+            .and_then(|scroll| scroll.downcast::<TableView>().ok())
+        else {
+            return true;
+        };
+        table
+            .ivars()
+            .source()
+            .is_none_or(|source| source.is_accessibility_element(&table, row.cast_unsigned()))
     }
 }
 
