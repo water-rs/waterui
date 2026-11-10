@@ -294,19 +294,18 @@ mod token_probe {
     use std::time::Duration;
 
     use hydrolysis::theme::{
-        BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, FocusIndicator,
-        HitRegion, InputFieldMetrics, InteractionMotion, Label, ListMetrics, Motion,
-        NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback, ProgressIndicatorStyle,
-        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StateLayer, StepperEnd, StepperMetrics, Surface,
-        TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
-        TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
+        BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
+        FocusIndicator, HitRegion, InputFieldMetrics, InteractionMotion, Knob, Label, ListMetrics,
+        Motion, NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback,
+        ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
+        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperEnd,
+        StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
+        TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
     use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
-    use waterui::component::ControlSize;
     use waterui::component::text;
     use waterui::env::use_env;
     use waterui::form::picker::PickerStyle;
@@ -556,51 +555,24 @@ mod token_probe {
         ) {
         }
 
-        fn slider_metrics(&self, _size: ControlSize) -> SliderMetrics {
-            SliderMetrics {
-                horizontal_inset: 12.0,
-                horizontal_spacing: 8.0,
-                vertical_spacing: 6.0,
-                min_track_width: 72.0,
-                track_height: 6.0,
-                handle_width: 4.0,
-                handle_height: 44.0,
-            }
+        fn slider(&self, _spec: &SliderSpec, _env: &Environment) -> SliderLook {
+            SliderLook::new(
+                SliderLayout {
+                    row_height: 44.0,
+                    track_inset: 12.0,
+                    label_inset: 12.0,
+                    label_gap: 8.0,
+                    minimum_track: 72.0,
+                    label_spacing: Some(6.0),
+                },
+                Knob {
+                    size: kurbo::Size::new(4.0, 44.0),
+                    hit: HitRegion::NONE,
+                },
+                DragMapping::Absolute,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
         }
-
-        fn draw_slider_track(
-            &self,
-            _recorder: &mut Recorder,
-            _track_rect: Rect,
-            _fill_rect: Rect,
-            _size: ControlSize,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_slider_thumb(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _size: ControlSize,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
-            SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
-        }
-
-        fn slider_value_indicator_color(&self) -> Color {
-            Color::srgb(255, 255, 255)
-        }
-
-        fn slider_value_indicator_font(&self) -> Font {
-            Font::default()
-        }
-
-        fn draw_slider_value_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
             match style {

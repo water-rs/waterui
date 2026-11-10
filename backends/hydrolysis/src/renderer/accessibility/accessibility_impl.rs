@@ -459,6 +459,20 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     /// (water-rs/waterui#1874). Cleared and republished with the tree.
     pub(crate) content_types: AccessibilityContentTypes,
     pub(crate) pending_tree_update: Option<AccessibilityTreeUpdate>,
+    /// The numeric values that follow their binding in the published tree
+    /// without their widget re-rendering, by the widget's interaction
+    /// identity. Kept across flushes.
+    live_numeric: BTreeMap<InteractionKey, LiveNumeric>,
+}
+
+/// A widget's numeric accessibility value that follows its binding between
+/// renders: the widget's watcher raises `changed`, and the next publish
+/// writes the binding's value into the node it emitted.
+#[cfg(feature = "accessibility")]
+struct LiveNumeric {
+    changed: Rc<core::cell::Cell<bool>>,
+    value: nami::Binding<f64>,
+    range: core::ops::RangeInclusive<f64>,
 }
 
 #[cfg(feature = "accessibility")]
@@ -494,6 +508,7 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             suppressed_leaf_parents: BTreeSet::new(),
             content_types: BTreeMap::new(),
             pending_tree_update: None,
+            live_numeric: BTreeMap::new(),
         }
     }
 }
@@ -1072,6 +1087,55 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         }
     }
 
+    /// Writes the current value of every live numeric whose binding changed
+    /// since it was last described into the node the widget emitted, and
+    /// queues those nodes as an incremental tree update: no widget
+    /// re-renders for it.
+    pub(crate) fn apply_live_numeric(&mut self) {
+        // A widget that left the tree dropped its watcher, which held the
+        // other reference to `changed`.
+        self.live_numeric
+            .retain(|_, live| Rc::strong_count(&live.changed) > 1);
+        let mut changed = Vec::new();
+        for (key, live) in &self.live_numeric {
+            if !live.changed.replace(false) {
+                continue;
+            }
+            let Some(id) = self.interaction_nodes.get(key).copied() else {
+                continue;
+            };
+            let Some(index) = self.node_index.get(&id).copied() else {
+                continue;
+            };
+            let node = &mut self.nodes[index].1;
+            node.set_numeric_value(
+                nami::Signal::snapshot(&live.value).clamp(*live.range.start(), *live.range.end()),
+            );
+            changed.push((id, node.clone()));
+        }
+        if changed.is_empty() {
+            return;
+        }
+        match &mut self.pending_tree_update {
+            Some(update) => {
+                for (id, node) in changed {
+                    match update.nodes.iter_mut().find(|(known, _)| *known == id) {
+                        Some(entry) => entry.1 = node,
+                        None => update.nodes.push((id, node)),
+                    }
+                }
+            }
+            None => {
+                self.pending_tree_update = Some(AccessibilityTreeUpdate {
+                    nodes: changed,
+                    tree: None,
+                    tree_id: AccessibilityTreeId::ROOT,
+                    focus: self.focus,
+                });
+            }
+        }
+    }
+
     pub(crate) fn finalize_tree_update(&mut self) {
         // §B.4: regions resolve now — a placement moved since the record
         // re-publishes bounds through the same chain the registrations use.
@@ -1304,10 +1368,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
         const ROOT: AccessibilityNodeId = AccessibilityNodeId(0);
 
+        self.accessibility.apply_live_numeric();
         let main_pending = pending(self);
         let popups: Vec<(&mut Self, Option<AccessibilityTreeUpdate>)> = popups
             .into_iter()
             .map(|popup| {
+                popup.accessibility.apply_live_numeric();
                 let update = pending(popup);
                 (popup, update)
             })
@@ -1327,9 +1393,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 content_types,
             });
         }
-        // A focus-only main update carries no root for the popup graft —
-        // rebuild the main window's full emission and keep the moved focus.
-        if merged.nodes.is_empty()
+        // An incremental main update (a focus move, a changed value) carries
+        // no root for the popup graft — rebuild the main window's full
+        // emission and keep the moved focus.
+        if merged.tree.is_none()
             && let Some(mut full) = self.current_accessibility_tree_update()
         {
             full.focus = merged.focus;
@@ -1581,6 +1648,26 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The map exists only where the semantic tree does — under the
     /// accessibility feature.
     #[cfg(feature = "accessibility")]
+    /// Has the published tree follow `value` between `key`'s renders: when
+    /// `changed` is raised, the node `key` emitted takes the binding's
+    /// current value, clamped to `range`, in an incremental update.
+    pub(crate) fn register_live_numeric(
+        &mut self,
+        key: crate::renderer::InteractionKey,
+        changed: Rc<core::cell::Cell<bool>>,
+        value: nami::Binding<f64>,
+        range: core::ops::RangeInclusive<f64>,
+    ) {
+        self.accessibility.live_numeric.insert(
+            key,
+            LiveNumeric {
+                changed,
+                value,
+                range,
+            },
+        );
+    }
+
     pub(crate) fn register_accessibility_focus_link(
         &mut self,
         key: &crate::renderer::InteractionKey,
