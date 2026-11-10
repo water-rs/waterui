@@ -111,5 +111,7 @@ pub use crate::style::{BlendMode, BlendSpace, FilterId, Group, Shadow};
 pub use crate::surface::{Layer, LayerContent, LayerEdit, LayerOwner, Shared, Transaction};
 pub use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
 pub use crate::text::TextLayoutId;
-pub use crate::tree::{LayerAnimations, LayerNode, Realize, SurfaceTree, snap_animating};
+pub use crate::tree::{
+    LayerAnimations, LayerNode, Realize, RunningTracks, SurfaceTree, snap_animating,
+};
 pub use kurbo::Stroke;

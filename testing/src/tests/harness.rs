@@ -778,3 +778,90 @@ fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
         "reading the tree must have applied the update, not merely waited for it"
     );
 }
+
+/// A headless rendered runtime over `view`, pumped on the clock `at` until
+/// its first tree update lands. Every later pump advances `at`, so animations
+/// run on the frame clock rather than the wall clock.
+fn mounted_runtime(
+    view: impl Fn() -> AnyView + 'static,
+    at: &mut std::time::Instant,
+) -> hydrolysis::HeadlessRuntime {
+    let mut runtime = hydrolysis::HeadlessRuntime::new_for_tests(
+        Environment::new(),
+        AnyViewBuilder::new(view),
+        390,
+        844,
+        Material3::defaults(),
+    );
+    for _ in 0..64 {
+        if runtime.pump_at(false, *at).tree_update().is_some() {
+            return runtime;
+        }
+        *at += FRAME;
+    }
+    panic!("initial pumps produced no accessibility tree");
+}
+
+/// One frame at 60 Hz.
+const FRAME: Duration = Duration::from_millis(16);
+
+/// A linear indeterminate bar moves through repeat-forever operand keyframes
+/// inside its recording. They keep the runtime busy while on screen, and are
+/// the perpetual work `is_settled_except_perpetual` ignores.
+#[test]
+fn a_linear_indeterminate_progress_alone_is_perpetual_work() {
+    let mut at = std::time::Instant::now();
+    let mut runtime = mounted_runtime(
+        || AnyView::new(waterui::component::progress::Progress::infinity().linear()),
+        &mut at,
+    );
+    for _ in 0..8 {
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+    }
+    assert!(
+        !runtime.is_settled(),
+        "a repeating operand track is scheduled work for as long as the bar is on screen"
+    );
+    assert!(
+        runtime.is_settled_except_perpetual(),
+        "nothing but repeat-forever work remains"
+    );
+}
+
+/// Flipping a toggle runs the knob's spring as operand tracks inside the
+/// recording: the runtime stays unsettled until the spring finishes.
+#[test]
+fn flipping_a_toggle_keeps_the_runtime_unsettled_until_the_knob_spring_finishes() {
+    let on = waterui::reactive::binding(false);
+    let flipped = on.clone();
+    let mut at = std::time::Instant::now();
+    let mut runtime = mounted_runtime(
+        move || AnyView::new(waterui::component::toggle::toggle("Wi-Fi", &on).switch()),
+        &mut at,
+    );
+    for _ in 0..8 {
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+    }
+    assert!(runtime.is_settled(), "a switch at rest is settled");
+
+    flipped.set(true);
+    at += FRAME;
+    let _ = runtime.pump_at(false, at);
+    assert!(
+        !runtime.is_settled(),
+        "the knob spring is still running right after the flip"
+    );
+    let mut frames = 1;
+    while !runtime.is_settled() {
+        assert!(frames < 240, "the knob spring never finished");
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+        frames += 1;
+    }
+    assert!(
+        frames > 3,
+        "the spring takes several frames, not the one that applied the flip"
+    );
+}

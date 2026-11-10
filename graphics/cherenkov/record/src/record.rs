@@ -27,6 +27,7 @@ use crate::shape::Shape;
 use crate::size::LayoutSize;
 use crate::style::{Group, Shadow};
 use crate::text::TextLayoutId;
+use crate::tree::RunningTracks;
 
 /// The drawing verbs, shared by [`StaticRecorder`] and [`Recorder`].
 ///
@@ -1014,6 +1015,21 @@ impl LiveState {
         self.push(update);
     }
 
+    /// Counts the tracks this state runs and the animated changes queued
+    /// to start one: the answer stays raised until the last settles.
+    fn note_running(&self, running: &mut RunningTracks) {
+        let Some(anim) = self.anim.take() else {
+            return;
+        };
+        for track in anim.tracks.values() {
+            running.note(track.repeats_forever());
+        }
+        for (_, _, motion) in &anim.animates {
+            running.note(motion.repeats_forever());
+        }
+        self.anim.set(Some(anim));
+    }
+
     /// Starts or retargets tracks for the queued animated changes, then
     /// samples every running operand track at `time`, queuing the operand
     /// updates the next [`Content::take_change`] drains. An animate's
@@ -1944,6 +1960,12 @@ impl Content {
         );
         body(&mut recorder);
         recorder.finish()
+    }
+
+    /// Counts the operand animations still running or queued on this
+    /// content into `running`.
+    pub fn note_running(&self, running: &mut RunningTracks) {
+        self.live.note_running(running);
     }
 
     /// Whether a [`sample`](Self::sample) call has work: an animated

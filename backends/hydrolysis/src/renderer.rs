@@ -521,6 +521,10 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// Reserves the address of every owner keying a live renderer-local
     /// slot in `animation_controller`; begins and retires with it.
     animation_owner_pins: AnimationOwnerPins,
+    /// The layer tracks the engine still ran at the last presented frame:
+    /// scheduled work the host-side `animation_controller` cannot see.
+    #[cfg(hydrolysis_gpu_painter)]
+    engine_tracks: cherenkov_record::RunningTracks,
     frame_instant: Instant,
     /// When the platform reports the frame being rendered will reach the
     /// display — Android's Choreographer expected presentation time. `None`
@@ -894,6 +898,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             signals,
             animation_controller: AnimationController::default(),
             animation_owner_pins: AnimationOwnerPins::default(),
+            #[cfg(hydrolysis_gpu_painter)]
+            engine_tracks: cherenkov_record::RunningTracks::default(),
             frame_instant,
             #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
             presentation_target: None,

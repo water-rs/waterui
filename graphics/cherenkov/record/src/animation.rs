@@ -996,6 +996,11 @@ impl<V: AnimLanes> KeyframeLanes<V> {
 }
 
 impl<V> KeyframeLanes<V> {
+    /// Whether the track repeats until it is replaced, never settling.
+    pub(crate) const fn repeats_forever(&self) -> bool {
+        matches!(self.repeat, Repeat::Forever)
+    }
+
     /// The number of lanes per value.
     pub(crate) const fn width(&self) -> usize {
         self.width
@@ -1193,6 +1198,14 @@ pub(crate) enum Motion<V = Operand> {
 }
 
 impl<V> Motion<V> {
+    /// Whether the motion is a keyframe track that repeats until replaced.
+    pub(crate) const fn repeats_forever(&self) -> bool {
+        match self {
+            Self::Keyframes(keyframes) => keyframes.repeats_forever(),
+            Self::Animation(_) => false,
+        }
+    }
+
     /// The animation, unless the motion is a keyframe track.
     pub(crate) const fn animation(&self) -> Option<&Animation> {
         match self {
@@ -1217,6 +1230,11 @@ impl std::fmt::Debug for OperandTrack {
 type Sampled = (Instant, Box<[f64]>, Box<[f64]>);
 
 impl OperandTrack {
+    /// Whether the track is a keyframe track that repeats until replaced.
+    pub(crate) const fn repeats_forever(&self) -> bool {
+        self.motion.repeats_forever()
+    }
+
     /// A track from `from`'s lanes to `target` with zero velocity.
     ///
     /// # Panics

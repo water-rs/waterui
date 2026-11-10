@@ -18,7 +18,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use cherenkov_record::{ChangeSet, Instant, Layer, Queue, Shared, SurfaceId, Transaction};
+use cherenkov_record::{
+    ChangeSet, Instant, Layer, Queue, RunningTracks, Shared, SurfaceId, Transaction,
+};
 
 use crate::WorkingColor;
 use crate::animation::Animation;
@@ -99,6 +101,9 @@ pub struct Surface<B: Backend> {
     /// The next frame this surface asked for, published by each
     /// [`Engine::render`](crate::Engine::render).
     pub(crate) next_frame: Rc<RefCell<crate::frame::Next>>,
+    /// The layer tracks the engine still ran when it last rendered this
+    /// surface.
+    pub(crate) running_tracks: Rc<Cell<RunningTracks>>,
     /// The surface's host wake-up — held here too so dropping the handle
     /// retires it without borrowing the shared state.
     pub(crate) waker: Arc<SurfaceWaker>,
@@ -134,6 +139,7 @@ impl<B: Backend> Surface<B> {
             max_dimension: info.max_dimension,
             root,
             next_frame: Rc::new(RefCell::new(crate::frame::Next::Idle)),
+            running_tracks: Rc::new(Cell::new(RunningTracks::default())),
             waker,
             tx,
         }
@@ -225,6 +231,22 @@ impl<B: Backend> Surface<B> {
     #[must_use]
     pub fn next_frame(&self) -> crate::frame::Next {
         self.next_frame.borrow().clone()
+    }
+
+    /// The animations still running on this surface: the layer tracks the
+    /// engine ran when it last rendered it (none for a layer whose track
+    /// the compositor owns, none before the first render), and the operand
+    /// animations its contents run or have queued. What a host asking
+    /// whether the surface has come to rest reads, since
+    /// [`Self::next_frame`] carries only a cadence.
+    ///
+    /// # Panics
+    /// Panics while a transaction on the surface holds its shared state.
+    #[must_use]
+    pub fn running_tracks(&self) -> RunningTracks {
+        self.running_tracks
+            .get()
+            .union(self.shared.borrow().running_operands())
     }
 
     /// Announces whether the user can see the surface, from the platform's
