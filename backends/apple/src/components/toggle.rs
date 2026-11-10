@@ -175,7 +175,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<ToggleConfig>(|config, ctx| {
         let mtm = ctx.mtm();
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let (label, binding, style) = config.into_parts();
+        let (label, binding, style, _size) = config.into_parts();
         let toggle = Toggle::new(mtm, kind(style), binding.snapshot());
         let disabled = Disabled::resolve(ctx.env(), false);
 

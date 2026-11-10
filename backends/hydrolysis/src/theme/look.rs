@@ -400,7 +400,7 @@ mod realized {
     use std::any::Any;
     use std::rc::Rc;
 
-    use waterui_core::animation::Animation;
+    use waterui_core::animation::{Animation, ChangeAnimation};
 
     use super::{Inputs, Motion};
 
@@ -411,6 +411,12 @@ mod realized {
         /// value without motion of its own runs with `motion`.
         Interaction {
             old: waterui_core::interaction::InteractionState,
+            motion: &'a Motion,
+        },
+        /// The widget's value changed under `change`; a value without
+        /// motion of its own runs with `motion`'s value motion.
+        Value {
+            change: &'a ChangeAnimation,
             motion: &'a Motion,
         },
         /// A signal the value follows, the frame or the press point
@@ -487,6 +493,12 @@ impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V
                 .unwrap_or(motion)
                 .interaction(old, inputs.state)
                 .cloned(),
+            Change::Value { change, motion } => self
+                .driven
+                .get_motion()
+                .unwrap_or(motion)
+                .value
+                .animation(change.clone()),
             Change::Animated(animation) => animation.cloned(),
         };
         self.operand

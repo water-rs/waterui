@@ -301,12 +301,6 @@ impl<T: 'static, G> SubscribedSnapshot<T, G> {
     }
 }
 
-/// The renderer-local animation-key discriminator of a toggle's
-/// thumb-progress slot on its owning node. It must stay disjoint from the
-/// discriminators the interaction engine claims for the same owner address
-/// (`input/interaction.rs`'s `animation_discriminator`).
-const TOGGLE_PROGRESS_KEY: usize = 0x0100_0008;
-
 impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Pushes a watcher guard onto the store the current phase reads into:
     /// the reading node's `subscriptions` while it records, its
@@ -510,52 +504,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     pub(crate) const fn frame_instant(&self) -> Instant {
         self.frame_instant
-    }
-
-    /// Resolves a boolean toggle signal into its animated progress and the
-    /// current target value (the direction the animation is heading).
-    ///
-    /// The slot is keyed on `owner`, the retained toggle state, never on the
-    /// signal (see [`Self::owned_scalar_key`]).
-    pub(crate) fn resolve_toggle_progress<S, T: 'static>(
-        &mut self,
-        signal: &S,
-        owner: &Rc<T>,
-        default_animation: Animation,
-    ) -> (f32, bool)
-    where
-        S: Signal<Output = bool> + Clone + 'static,
-    {
-        let (subscription, selected) = SubscribedSnapshot::new(signal);
-        let now = self.frame_instant;
-        let target = if selected { 1.0 } else { 0.0 };
-        let key = self.owned_scalar_key(owner, TOGGLE_PROGRESS_KEY);
-        let handle = self.animation_controller.bind_scalar_target(
-            key,
-            target,
-            default_animation.clone(),
-            now,
-        );
-        let watcher_handle = handle.clone();
-        let owner = self.mark_owner_for_animation(key, Dirty::PAINT);
-        let clock = self.signals.clone();
-        // A subscription's registration emission echoes the value `bind`
-        // already sampled — only a later fire may mark the owner.
-        let armed = Rc::new(Cell::new(false));
-        let armed_for_watch = Rc::clone(&armed);
-        let guard = subscription.activate(move |update| {
-            let target = if *update.value() { 1.0 } else { 0.0 };
-            let animation = ChangeAnimation::of(update.metadata()).or(default_animation.clone());
-            watcher_handle.apply_target(target, animation, clock.frame_clock());
-            if armed_for_watch.get()
-                && let Some(cell) = owner.upgrade()
-            {
-                cell.mark(Dirty::PAINT);
-            }
-        });
-        armed.set(true);
-        self.push_guard(Retain::new(guard));
-        (handle.sample(now).clamp(0.0, 1.0), selected)
     }
 
     /// Registers `key`'s animation slot against the node now reading and
