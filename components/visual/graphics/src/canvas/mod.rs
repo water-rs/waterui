@@ -58,6 +58,7 @@ mod operand;
 mod paint;
 mod resource;
 mod scene;
+mod view;
 
 use alloc::boxed::Box;
 use core::fmt;
@@ -66,6 +67,9 @@ use nami::{Computed, SignalExt as _};
 use waterui_core::layout::{Affine2, Size};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, Str, View};
+
+#[cfg(any(feature = "gpu", feature = "cpu"))]
+pub(crate) use scene::lower_drawing;
 
 pub use cx::Cx;
 pub use drawing::{Drawing, DrawingCx};
@@ -81,7 +85,7 @@ pub use resource::{
     PixelFormat,
 };
 
-use crate::scene_view::SceneView;
+pub use view::CanvasView;
 
 /// A view drawn by vector commands.
 ///
@@ -161,7 +165,7 @@ impl From<Drawing> for Canvas {
 
 impl View for Canvas {
     fn body(self, env: &Environment) -> impl View {
-        SceneView::new(scene::CanvasScene::mount(self, env))
+        CanvasView::mount(self, env)
     }
 }
 

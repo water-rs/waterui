@@ -93,6 +93,9 @@ mod tab_item_layout;
 mod teardown_order;
 mod text_ink;
 mod text_measure_direction;
+mod text_wrap_width;
+mod toggle_glass;
+mod toggle_looks;
 mod top_edge;
 mod touch_scroll;
 mod tree;
@@ -115,7 +118,7 @@ use waterui_controls::label::{LabelDisplayMode, label};
 use waterui_controls::slider::slider;
 #[cfg(feature = "accessibility")]
 use waterui_controls::text_field::field;
-use waterui_controls::toggle::{ToggleStyle, toggle};
+use waterui_controls::toggle::toggle;
 use waterui_form::picker::PickerStyle;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::{Picker, color::ColorPicker, date::DatePicker};
@@ -135,8 +138,9 @@ use crate::theme::{
     PickerMetrics, PressFeedback, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion,
     RadioIndicatorState, RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer,
     StepperEnd, StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
-    TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, ValueIndicator, WidgetInteractionState,
+    TextCaretMotion, TextContextMenuMetrics, ToggleSpec, ValueIndicator, WidgetInteractionState,
 };
+use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
 use waterui_graphics::draw::{
@@ -518,20 +522,6 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
 }
 
 #[test]
-fn toggle_progress_subscribes_before_reading_its_snapshot() {
-    let signal = registration_signal(false, nami::watcher::Context::from(false));
-    let mut renderer = test_renderer();
-    let owner = Rc::new(());
-
-    let (progress, selected) =
-        renderer.resolve_toggle_progress(&signal, &owner, Animation::linear(Duration::ZERO));
-
-    approx::assert_relative_eq!(progress, 0.0);
-    assert!(!selected);
-    assert!(signal.subscribed.get());
-}
-
-#[test]
 fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -642,91 +632,6 @@ fn bit(source: &Binding<u8>, bit: u8) -> Binding<bool> {
             });
         },
     )
-}
-
-/// Regression for #2232: toggles whose bindings share a `SignalIdentity` must
-/// still own their thumb-progress animation slots. Two switches bound to
-/// mappings minted at one call site — the shape of the inspector's channel
-/// toggles — used to collapse onto one slot, so the off switch drew at the
-/// on switch's progress.
-#[test]
-fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
-    let toggle_draws = Rc::new(RefCell::new(Vec::new()));
-    let theme = MinimalTestTheme {
-        toggle_switch_draws: Rc::clone(&toggle_draws),
-        ..Default::default()
-    };
-    let mut renderer = test_renderer_with_theme(theme);
-    let env = test_environment();
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-    let s = Binding::container(0b01_u8);
-
-    // The collision the test exists for: both bindings carry one identity.
-    assert_eq!(
-        bit(&s, 1).identity(),
-        bit(&s, 2).identity(),
-        "same-site mappings must share a SignalIdentity for this test to cover the bug"
-    );
-
-    let draw_progress = |toggle_draws: &Rc<RefCell<Vec<ToggleSwitchDraw>>>| {
-        let mut frame = toggle_draws.borrow_mut().drain(..).collect::<Vec<_>>();
-        frame.sort_by(|a, b| a.0.y0.total_cmp(&b.0.y0));
-        frame
-            .iter()
-            .map(|(_, progress, selected)| (*progress, *selected))
-            .collect::<Vec<_>>()
-    };
-
-    capture_root_window(
-        &mut renderer,
-        vstack((
-            toggle("A", &bit(&s, 1)).switch(),
-            toggle("B", &bit(&s, 2)).switch(),
-        )),
-        &env,
-        bounds,
-    );
-    let first = draw_progress(&toggle_draws);
-    approx::assert_relative_eq!(first[0].0, 1.0);
-    assert!(first[0].1, "A is bound to an on bit");
-    approx::assert_relative_eq!(first[1].0, 0.0);
-    assert!(!first[1].1, "B is bound to an off bit");
-
-    // Toggling B animates only B's slot: mid-animation A still draws 1.0
-    // while B is in flight toward 1.0 (100ms linear in MinimalTestTheme).
-    let started = renderer.frame_instant();
-    bit(&s, 2).set(true);
-    renderer.set_frame_instant(started + Duration::from_millis(50));
-    capture_root_window(
-        &mut renderer,
-        vstack((
-            toggle("A", &bit(&s, 1)).switch(),
-            toggle("B", &bit(&s, 2)).switch(),
-        )),
-        &env,
-        bounds,
-    );
-    let mid = draw_progress(&toggle_draws);
-    approx::assert_relative_eq!(mid[0].0, 1.0);
-    assert!(
-        mid[1].0 > 0.0 && mid[1].0 < 1.0,
-        "B's thumb must be mid-animation, got {}",
-        mid[1].0
-    );
-
-    renderer.set_frame_instant(started + Duration::from_millis(200));
-    capture_root_window(
-        &mut renderer,
-        vstack((
-            toggle("A", &bit(&s, 1)).switch(),
-            toggle("B", &bit(&s, 2)).switch(),
-        )),
-        &env,
-        bounds,
-    );
-    let finished = draw_progress(&toggle_draws);
-    approx::assert_relative_eq!(finished[0].0, 1.0);
-    approx::assert_relative_eq!(finished[1].0, 1.0);
 }
 
 fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {
@@ -2790,8 +2695,9 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
     assert!(renderer.hit_test.modal_interaction.is_none());
 }
 
-/// A recorded `draw_toggle_switch` call: `(bounds, progress, selected)`.
-type ToggleSwitchDraw = (Rect, f32, bool);
+/// The switch look a test theme hands out for a toggle spec.
+type SwitchLookFor = Rc<dyn Fn(&ToggleSpec, &Environment) -> SwitchLook>;
+
 /// A recorded `draw_progress_linear_track` call: `(bounds, active_end)`.
 type ProgressTrackDraw = (Rect, Option<f64>);
 /// A recorded `draw_radio_indicator` call: `(center, state)`.
@@ -2833,8 +2739,9 @@ pub struct MinimalTestTheme {
     /// (water-rs/waterui#1788): the registry entries, and the materials the
     /// plan's [`ChromePlan::chrome`] replays.
     chrome: ChromePlan,
-    /// Every `draw_toggle_switch` call.
-    toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
+    /// The switch look the theme hands out for a spec and environment;
+    /// `None` answers a plain control with no parts.
+    switch_look: Option<SwitchLookFor>,
     /// Every `draw_progress_linear_track` call.
     progress_linear_track_draws: Rc<RefCell<Vec<ProgressTrackDraw>>>,
     /// Every `draw_radio_indicator` call.
@@ -2882,6 +2789,22 @@ impl MinimalTestTheme {
     #[must_use]
     pub fn with_button_chrome(mut self, chrome: Chrome) -> Self {
         self.button_chrome = Some(chrome);
+        self
+    }
+
+    /// Hands out `look` for every switch.
+    #[must_use]
+    pub fn with_switch_look(self, look: SwitchLook) -> Self {
+        self.with_switch(move |_, _| look.clone())
+    }
+
+    /// Hands out the look `look` makes for each switch's spec.
+    #[must_use]
+    pub fn with_switch(
+        mut self,
+        look: impl Fn(&ToggleSpec, &Environment) -> SwitchLook + 'static,
+    ) -> Self {
+        self.switch_look = Some(Rc::new(look));
         self
     }
 
@@ -3033,38 +2956,20 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
-        ToggleMetrics {
-            width: 10.0,
-            height: 20.0,
-            label_spacing: 3.0,
-        }
+    fn switch(&self, spec: &ToggleSpec, env: &Environment) -> SwitchLook {
+        self.switch_look.as_ref().map_or_else(
+            || {
+                SwitchLook::new(
+                    crate::testing::plain_toggle_control(),
+                    SwitchDrag::new(6.0, spec.direction()),
+                )
+            },
+            |look| look(spec, env),
+        )
     }
 
-    fn toggle_value_animation(&self) -> Animation {
-        Animation::linear(Duration::from_millis(100))
-    }
-
-    fn draw_toggle_switch(
-        &self,
-        _draw: &mut Recorder,
-        bounds: Rect,
-        progress: f32,
-        selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-        self.toggle_switch_draws
-            .borrow_mut()
-            .push((bounds, progress, selected));
-    }
-
-    fn draw_toggle_checkbox(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _state: WidgetInteractionState,
-    ) {
+    fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+        CheckboxLook::new(crate::testing::plain_toggle_control())
     }
 
     fn stepper_metrics(&self) -> StepperMetrics {

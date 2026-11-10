@@ -47,6 +47,19 @@ pub fn artifact_snapshot_path(suite: &str, case: &str, stage: &str) -> PathBuf {
     artifact_case_dir(suite, case).join(format!("{stage}.png"))
 }
 
+/// A toggle control with no parts, 10 by 20 points and 3 points from its
+/// label: what a test style's toggles measure, place and hit-test as.
+#[must_use]
+pub fn plain_toggle_control() -> crate::theme::ToggleControl {
+    crate::theme::ToggleControl::new(
+        kurbo::Size::new(10.0, 20.0),
+        crate::theme::Motion::uniform(waterui::animation::Animation::linear(
+            std::time::Duration::from_millis(100),
+        )),
+    )
+    .label_spacing(3.0)
+}
+
 mod test_style {
     use std::time::Duration;
 
@@ -57,13 +70,12 @@ mod test_style {
         ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
         RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperEnd,
         StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
-        TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
-        WidgetTheme,
+        TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
+    use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::{Color, EasingCurve, Environment};
-    use waterui_controls::toggle::ToggleStyle;
     use waterui_form::picker::PickerStyle;
     use waterui_graphics::color::Srgb;
     use waterui_graphics::draw::{Paint, Recorder};
@@ -206,35 +218,15 @@ mod test_style {
                 .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
-        fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
-            ToggleMetrics {
-                width: 10.0,
-                height: 20.0,
-                label_spacing: 3.0,
-            }
+        fn switch(&self, spec: &ToggleSpec, _env: &Environment) -> SwitchLook {
+            SwitchLook::new(
+                super::plain_toggle_control(),
+                SwitchDrag::new(6.0, spec.direction()),
+            )
         }
 
-        fn toggle_value_animation(&self) -> Animation {
-            Animation::linear(Duration::from_millis(100))
-        }
-
-        fn draw_toggle_switch(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _selected: bool,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_toggle_checkbox(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _state: WidgetInteractionState,
-        ) {
+        fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+            CheckboxLook::new(super::plain_toggle_control())
         }
 
         fn stepper_metrics(&self) -> StepperMetrics {

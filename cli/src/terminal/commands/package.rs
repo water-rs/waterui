@@ -1,6 +1,6 @@
 //! `water package` command implementation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, ValueEnum};
 use eyre::{Result, bail};
@@ -253,8 +253,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         args.profile(),
         args.distribution,
     );
-    let kotlin_toolchain =
-        check_packaging_toolchain(shell, args.platform, context.backend, &args.arch).await?;
+    let kotlin_toolchain = check_packaging_toolchain(
+        shell,
+        context.project.root(),
+        args.platform,
+        context.backend,
+        &args.arch,
+    )
+    .await?;
     // The per-backend artifact builds cross clippy's `large_futures` threshold
     // (16 KiB) on Windows, so the future is pinned on the heap.
     let built = Box::pin(build_packaging_artifacts(
@@ -396,6 +402,7 @@ fn print_packaging_header(
 
 async fn check_packaging_toolchain(
     shell: &Shell,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
@@ -403,6 +410,7 @@ async fn check_packaging_toolchain(
     let spinner = shell.spinner("Checking toolchain...");
     let kotlin_toolchain = check_toolchain_for_backend(
         &waterui_cli::toolchain::Host::current(),
+        project_root,
         platform,
         backend,
         arch,
@@ -758,6 +766,7 @@ fn validate_arch_args(
 
 async fn check_toolchain_for_backend(
     host: &waterui_cli::toolchain::Host,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
@@ -781,7 +790,7 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_gtk4(host).await?;
+            toolchain_checks::check_gtk4(host, project_root).await?;
         }
         TargetBackend::Hydrolysis => {
             if platform != TargetPlatform::Macos
@@ -804,7 +813,7 @@ async fn check_toolchain_for_backend(
             if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
             } else {
-                toolchain_checks::check_hydrolysis(host).await?;
+                toolchain_checks::check_hydrolysis(host, project_root).await?;
             }
         }
         TargetBackend::WinUi => {

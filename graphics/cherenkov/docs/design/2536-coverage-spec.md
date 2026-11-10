@@ -601,6 +601,20 @@ less can still be sent to the sweep by a loose row; tightening the rows
 (water-rs/waterui#3238) is what brings such content back to the GPU
 route.
 
+Where the allocator suballocates device memory from bounded blocks
+(Vulkan: `interop::suballocation_limit`), every scratch buffer is also
+held to that block, so generation memory comes from and returns to the
+suballocator instead of a dedicated driver allocation per frame
+(water-rs/waterui#4108). Draws are batched so no batch passes it, and a
+path that alone would is generated in slices of whole strips across
+batches: each slice is the path with its clip narrowed to those rows,
+which is exact because winding is carried only along a row, and all of
+a path's slices fill one arena block replayed as one entry. A path whose
+row-independent part — elements, stroke records, segments and stroker
+scratch — alone passes the block cannot shrink by slicing and is drawn
+whole in a batch of its own under the binding limit. The block never
+decides the route.
+
 *Alternatives considered:* grow-and-retry across frames (needs a
 readback of the overflow flag, and makes a frame's output depend on
 history); a fixed cap with clipped output (silently drops geometry,

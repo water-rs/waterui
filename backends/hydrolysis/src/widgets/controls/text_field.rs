@@ -1040,6 +1040,7 @@ fn flush_material_prompt_label<E: crate::text::TextEngine>(
     let renderer = ctx.renderer_mut();
     renderer.render_styled_text_limited(
         child,
+        child.bounds_width_f32(),
         prompt_styled,
         HorizontalAlignment::Leading,
         env,

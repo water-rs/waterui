@@ -611,7 +611,7 @@ fn render_tree_chart_switch_snapshot() {
     eprintln!("wrote /tmp/waterui_tree_switch_before.png and /tmp/waterui_tree_switch_after.png");
 }
 
-/// The exact chart case: a `watch`-driven swap between two `Canvas` (`SceneView`)
+/// The exact chart case: a `watch`-driven swap between two `Canvas`
 /// charts — the effect-slot path where a swap could render the previous scene. On the render-tree path the
 /// switch must visibly take effect (red -> blue scene), proving the `SceneView`
 /// `SceneView` fixed (the patched node is re-dispatched in isolation).
@@ -1313,6 +1313,19 @@ fn menu_picker_draws_its_label_above_the_value() {
     assert!(
         label_band.0 >= field.y0 && value_band.1 <= field.y1,
         "both text bands must lie inside the field {field:?}"
+    );
+    // The label's run starts where the value's does: flush with the content's
+    // leading edge, not centred over the field (water-rs/waterui#4126).
+    let origins: Vec<_> = labelled
+        .renderer()
+        .painted_scene()
+        .glyph_runs()
+        .map(|(transform, _)| transform * kurbo::Point::ORIGIN)
+        .collect();
+    assert_eq!(origins.len(), 2, "one run per drawn text: {origins:?}");
+    assert!(
+        (origins[0].x - origins[1].x).abs() < 0.5,
+        "the label and the value share a leading edge, got {origins:?}"
     );
 
     let mut hidden = mount_labelled(true);
