@@ -10,7 +10,7 @@ use mdi::plus;
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::background::Material;
-use waterui::component::list::{List, ListItem, ListSection};
+use waterui::component::list::{List, ListItem, Section};
 use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
@@ -399,86 +399,69 @@ fn content_header(dest: SidebarDestination) -> impl View {
         .padding_with([14.0, 18.0, 12.0, 18.0])
 }
 
-/// One visible row of the detail list. `header` names the section the row
-/// opens; the id also encodes it, so a row that becomes (or stops being) the
-/// first of its section is rebuilt with the right marker.
-#[derive(Clone, PartialEq, Identifiable)]
-struct Entry {
-    #[id]
-    id: u64,
-    row: ReminderRow,
-    header: Option<&'static str>,
-}
-
-/// The rows matching the search, flattened in section order with the first row
-/// of each non-empty section carrying that section's title.
-fn visible_entries(
-    sections: [(&'static str, &'static [ReminderRow]); 2],
-    query: &Str,
-) -> Vec<Entry> {
-    let query = normalized_search_query(query);
-    sections
-        .into_iter()
-        .flat_map(|(title, rows)| {
-            rows.iter()
-                .filter(|row| {
-                    query
-                        .as_deref()
-                        .is_none_or(|query| reminder_matches_query(row, query))
-                })
-                .enumerate()
-                .map(move |(index, row)| {
-                    let header = (index == 0).then_some(title);
-                    Entry {
-                        id: row.id * 2 + u64::from(header.is_some()),
-                        row: row.clone(),
-                        header,
-                    }
-                })
-        })
-        .collect()
+/// The reminders of `rows` matching the search, as a collection that follows
+/// the search field.
+fn matching_rows(
+    rows: &'static [ReminderRow],
+    search: &Binding<Str>,
+) -> SignalCollection<Computed<Vec<ReminderRow>>> {
+    SignalCollection::new(
+        search
+            .clone()
+            .map(move |query| {
+                let query = normalized_search_query(&query);
+                rows.iter()
+                    .filter(|row| {
+                        query
+                            .as_deref()
+                            .is_none_or(|query| reminder_matches_query(row, query))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .computed(),
+    )
 }
 
 // `row.flagged` is immutable fixture data: the `&'static [ReminderRow]` rows
 // never change, so reading the field in the row builder cannot go stale.
 #[allow(unknown_lints, collection_item_snapshot)]
+fn reminder_item(row: ReminderRow) -> ListItem {
+    ListItem::new(
+        hstack((
+            circle_outline().size(16.0, 16.0).muted(),
+            vstack((
+                text(row.title).body().foreground(Foreground),
+                row.subtitle
+                    .map(|subtitle| text(subtitle).caption().muted()),
+            ))
+            .spacing(2.0)
+            .leading(),
+            spacer(),
+            when(row.flagged, || {
+                flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
+            })
+            .otherwise(|| spacer().width(12.0)),
+        ))
+        .padding_with((10.0, 18.0)),
+    )
+}
+
 fn reminder_list(
     today_rows: &'static [ReminderRow],
     upcoming_rows: &'static [ReminderRow],
     search: &Binding<Str>,
 ) -> impl View {
-    let entries = SignalCollection::new(
-        search
-            .clone()
-            .map(move |query| {
-                visible_entries([("Today", today_rows), ("Upcoming", upcoming_rows)], &query)
-            })
-            .computed(),
-    );
-    List::new(ForEach::new(entries, |Entry { row, header, .. }| {
-        let item = ListItem::new(
-            hstack((
-                circle_outline().size(16.0, 16.0).muted(),
-                vstack((
-                    text(row.title).body().foreground(Foreground),
-                    row.subtitle
-                        .map(|subtitle| text(subtitle).caption().muted()),
-                ))
-                .spacing(2.0)
-                .leading(),
-                spacer(),
-                when(row.flagged, || {
-                    flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
-                })
-                .otherwise(|| spacer().width(12.0)),
-            ))
-            .padding_with((10.0, 18.0)),
-        );
-        match header {
-            Some(title) => item.section(ListSection::new(title)),
-            None => item,
-        }
-    }))
+    List::content((
+        Section::new("Today").content(ForEach::new(
+            matching_rows(today_rows, search),
+            reminder_item,
+        )),
+        Section::new("Upcoming").content(ForEach::new(
+            matching_rows(upcoming_rows, search),
+            reminder_item,
+        )),
+    ))
 }
 
 pub fn app(env: Environment) -> App {
