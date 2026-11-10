@@ -26,8 +26,8 @@ use super::backdrop::{
 use super::cell::NodeCell;
 use super::placement::Placement;
 use super::program::{
-    ChromeMaterial, InnerProgram, Item, LiveItem, MaterialRequest, ProducerContent, Program,
-    RunKey, SceneContentSource, ScopeKey, ScopeProps,
+    ChromeMaterial, InnerProgram, Item, LiveItem, LiveOpacity, MaterialRequest, ProducerContent,
+    Program, RunKey, SceneContentSource, ScopeKey, ScopeLive, ScopeProps,
 };
 use super::stretch::{ShownStretch, StretchFilter};
 use super::target::LayerTarget;
@@ -75,6 +75,8 @@ struct LayerProps {
     clip: Option<ShapeData>,
     filter: Option<FilterId>,
     scroll: kurbo::Vec2,
+    /// Live properties, written over `transform` and in place of `opacity`.
+    live: ScopeLive,
 }
 
 impl LayerProps {
@@ -84,7 +86,25 @@ impl LayerProps {
         clip: None,
         filter: None,
         scroll: kurbo::Vec2::ZERO,
+        live: ScopeLive::NONE,
     };
+
+    /// The layer's opacity now: its live operand's value, or its fixed one.
+    fn opacity_now(&self) -> f32 {
+        self.live
+            .opacity
+            .as_ref()
+            .map_or(self.opacity, LiveOpacity::now)
+    }
+
+    /// The layer's transform now: its live operand's value over its at-rest
+    /// transform, or the at-rest one.
+    fn transform_now(&self) -> kurbo::Affine {
+        self.live
+            .transform
+            .as_ref()
+            .map_or(self.transform, |live| self.transform * live.now())
+    }
 }
 
 fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
@@ -97,11 +117,30 @@ fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
         return;
     }
     let edit = &mut tx[layer];
-    if written.transform != props.transform {
-        edit.transform(props.transform);
+    if written.transform != props.transform || written.live.transform != props.live.transform {
+        match &props.live.transform {
+            Some(live) => {
+                let rest = props.transform;
+                edit.transform(live.live().map(move |transform| rest * transform));
+            }
+            None => {
+                edit.transform(props.transform);
+            }
+        }
     }
-    if written.opacity.to_bits() != props.opacity.to_bits() {
-        edit.opacity(props.opacity);
+    let opacity_changed = match (&written.live.opacity, &props.live.opacity) {
+        (None, None) => written.opacity.to_bits() != props.opacity.to_bits(),
+        (written, props) => written != props,
+    };
+    if opacity_changed {
+        match &props.live.opacity {
+            Some(live) => {
+                edit.opacity(live.live());
+            }
+            None => {
+                edit.opacity(props.opacity);
+            }
+        }
     }
     if written.clip != props.clip {
         match &props.clip {
@@ -1049,6 +1088,7 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
             clip,
             filter,
             scroll: kurbo::Vec2::ZERO,
+            live: ScopeLive::NONE,
         },
     );
     // A platform-view leaf's frame marks where its external host window
@@ -1907,6 +1947,7 @@ fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
             transform: props.transform,
             opacity: props.alpha,
             clip: props.clip.clone(),
+            live: props.live.clone(),
             ..LayerProps::DEFAULT
         },
     );
@@ -2056,7 +2097,7 @@ pub fn visit<E: crate::text::TextEngine>(
 }
 
 fn props_world(parent: kurbo::Affine, props: &LayerProps) -> kurbo::Affine {
-    parent * props.transform * kurbo::Affine::translate(-props.scroll)
+    parent * props.transform_now() * kurbo::Affine::translate(-props.scroll)
 }
 
 /// Opens `props`' opacity, clip and filter around `content`, which receives
@@ -2068,12 +2109,13 @@ fn with_props<E: crate::text::TextEngine>(
     visitor: &mut dyn LayerVisitor<E>,
     content: impl FnOnce(kurbo::Affine, &mut Vec<f32>, &mut dyn LayerVisitor<E>),
 ) {
-    let faded = props.opacity < 1.0;
+    let opacity = props.opacity_now();
+    let faded = opacity < 1.0;
     if faded {
-        alphas.push(props.opacity);
+        alphas.push(opacity);
     }
     if let Some(clip) = &props.clip {
-        visitor.open_clip(parent * props.transform, clip);
+        visitor.open_clip(parent * props.transform_now(), clip);
     }
     if props.filter.is_some() {
         visitor.open_filter();

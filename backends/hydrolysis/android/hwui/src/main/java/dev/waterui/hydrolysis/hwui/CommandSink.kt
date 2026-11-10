@@ -70,6 +70,9 @@ interface CommandSink {
 
     fun text(layout: Int, matrix: FloatArray)
 
+    /** [text], the layout's default-coloured runs drawn in `color`. */
+    fun paintedText(layout: Int, matrix: FloatArray, color: Long)
+
     fun image(bitmap: Int, left: Float, top: Float, right: Float, bottom: Float, sampling: Int)
 
     /**

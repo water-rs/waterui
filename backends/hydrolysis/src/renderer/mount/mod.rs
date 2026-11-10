@@ -30,7 +30,8 @@ pub use cell::{Dirty, NodeCell, NodeCore};
 pub use layers::{Mount, MountStats};
 pub use placement::{HitClasses, HitGate, Placement, PlacementClock, ScopeDelta};
 pub use program::{
-    MaterialRequest, ProducerContent, ProgramBuilder, SceneContentSource, ScopeKey, ScopeProps,
+    LiveOpacity, LiveTransform, MaterialRequest, ProducerContent, ProgramBuilder,
+    SceneContentSource, ScopeKey, ScopeLive, ScopeProps,
 };
 #[cfg(feature = "accessibility")]
 pub use registry::Region;

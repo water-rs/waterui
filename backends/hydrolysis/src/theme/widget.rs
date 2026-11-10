@@ -3,253 +3,20 @@
 
 use cherenkov_record::{MaterialRegistry, Paint, Recorder};
 use core::time::Duration;
-use kurbo::{BezPath, Point, Rect, RoundedRectRadii};
+use kurbo::{BezPath, Point, Rect};
 use nami::signal::IntoComputed;
 use waterui::navigation::tab::NativeTabStyle;
+use waterui_controls::ControlSize;
 use waterui_controls::toggle::ToggleStyle;
-use waterui_controls::{ControlSize, button::ButtonStyle};
 use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
-use waterui_core::interaction::{InteractionState, StateValue};
+use waterui_core::interaction::InteractionState;
 use waterui_core::plugin::Plugin;
-use waterui_core::{Binding, Computed, Signal};
+use waterui_core::{Binding, Computed, Environment, Signal};
 use waterui_form::picker::PickerStyle;
-use waterui_graphics::WorkingColor;
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
-
-/// Button layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct ButtonMetrics {
-    /// Horizontal content padding.
-    pub padding_x: f64,
-    /// Vertical content padding.
-    pub padding_y: f64,
-    /// Minimum button width.
-    pub min_width: f64,
-    /// Minimum button height.
-    pub min_height: f64,
-}
-
-impl ButtonMetrics {
-    /// Create button layout metrics.
-    #[must_use]
-    pub const fn new(padding_x: f64, padding_y: f64, min_width: f64, min_height: f64) -> Self {
-        Self {
-            padding_x,
-            padding_y,
-            min_width,
-            min_height,
-        }
-    }
-}
-
-/// What Hydrolysis asks a theme's button hooks for: the button's style, its
-/// control size and whether its label resolved to an icon-only
-/// presentation.
-///
-/// Parameters travel by name, so a new one does not break a theme that
-/// reads the others.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct ButtonSpec {
-    /// The button's style.
-    style: ButtonStyle,
-    /// The button's control size.
-    size: ControlSize,
-    /// Whether the label resolved to `IconOnly`: the bounds are the theme's
-    /// touch target, and the chrome is the icon-button container centred
-    /// inside them.
-    icon_only: bool,
-}
-
-impl ButtonSpec {
-    /// The button's style.
-    #[must_use]
-    pub const fn style(&self) -> ButtonStyle {
-        self.style
-    }
-
-    /// The button's control size.
-    #[must_use]
-    pub const fn size(&self) -> ControlSize {
-        self.size
-    }
-
-    /// Whether the label resolved to `IconOnly`: the bounds are the theme's
-    /// touch target, and the chrome is the icon-button container centred
-    /// inside them.
-    #[must_use]
-    pub const fn icon_only(&self) -> bool {
-        self.icon_only
-    }
-}
-
-impl ButtonSpec {
-    /// The spec of a `style` button of `size`.
-    #[must_use]
-    pub const fn new(style: ButtonStyle, size: ControlSize, icon_only: bool) -> Self {
-        Self {
-            style,
-            size,
-            icon_only,
-        }
-    }
-}
-
-/// Backend-neutral presentation for a semantic interactive surface whose visual
-/// chrome is composed by its content view.
-///
-/// Installing this plugin on a `Button` or tappable view keeps the control's
-/// input, keyboard, focus, and accessibility semantics while allowing theme
-/// packages to supply exact state-layer geometry and colors for composed
-/// controls such as icon buttons, FABs, chips, and navigation destinations.
-#[derive(Debug, Clone)]
-pub struct InteractionStyle {
-    /// Layout metrics used by the semantic button wrapper.
-    pub metrics: ButtonMetrics,
-    /// State-layer and ripple color.
-    pub state_layer_color: Color,
-    /// State-layer clipping radii, per interaction state — a list item's
-    /// shape morphs from 8 to 12 to 16 as it is hovered and pressed.
-    pub state_layer_radii: StateValue<RoundedRectRadii>,
-    /// Optional fixed state-layer width.
-    pub state_layer_width: Option<f64>,
-    /// Optional fixed state-layer height.
-    pub state_layer_height: Option<f64>,
-    /// Horizontal alignment of a fixed state layer in the hit bounds.
-    pub state_layer_alignment_x: f64,
-    /// Vertical alignment of a fixed state layer in the hit bounds.
-    pub state_layer_alignment_y: f64,
-    /// Label color for semantic text labels, per interaction state; `None`
-    /// leaves the label's own color.
-    pub label_color: StateValue<Option<Color>>,
-    /// The ring drawn around the state layer while the control shows
-    /// keyboard focus; `None` draws none.
-    pub focus_ring: Option<FocusRing>,
-    /// Whether this pointer action participates in keyboard focus traversal.
-    pub keyboard_focusable: bool,
-}
-
-/// A focus indicator drawn around an interactive control while it shows
-/// keyboard focus ([`InteractionState::FOCUSED`]).
-///
-/// The ring follows the state layer's shape, grown outward by `offset`, so it
-/// matches the control's current corner radii.
-#[derive(Debug, Clone)]
-pub struct FocusRing {
-    /// Ring color.
-    pub color: Color,
-    /// Stroke width.
-    pub width: f64,
-    /// Gap between the state layer's edge and the ring's inner edge.
-    pub offset: f64,
-}
-
-impl InteractionStyle {
-    /// Creates an interaction presentation with transparent semantic-button
-    /// chrome and no label-color override.
-    #[must_use]
-    pub fn new(
-        metrics: ButtonMetrics,
-        state_layer_color: impl Into<Color>,
-        state_layer_radii: impl Into<RoundedRectRadii>,
-    ) -> Self {
-        Self {
-            metrics,
-            state_layer_color: state_layer_color.into(),
-            state_layer_radii: StateValue::new(state_layer_radii.into()),
-            state_layer_width: None,
-            state_layer_height: None,
-            state_layer_alignment_x: 0.5,
-            state_layer_alignment_y: 0.5,
-            label_color: StateValue::new(None),
-            focus_ring: None,
-            keyboard_focusable: true,
-        }
-    }
-
-    /// Uses a fixed state-layer size aligned within the semantic hit bounds.
-    #[must_use]
-    pub const fn fixed_state_layer(
-        mut self,
-        width: f64,
-        height: f64,
-        alignment_x: f64,
-        alignment_y: f64,
-    ) -> Self {
-        self.state_layer_width = Some(width);
-        self.state_layer_height = Some(height);
-        self.state_layer_alignment_x = alignment_x;
-        self.state_layer_alignment_y = alignment_y;
-        self
-    }
-
-    /// Resolves the state-layer drawing bounds inside the semantic hit bounds.
-    #[must_use]
-    pub fn state_layer_bounds(&self, hit_bounds: Rect) -> Rect {
-        let width = self
-            .state_layer_width
-            .unwrap_or_else(|| hit_bounds.width())
-            .min(hit_bounds.width());
-        let height = self
-            .state_layer_height
-            .unwrap_or_else(|| hit_bounds.height())
-            .min(hit_bounds.height());
-        let x0 = (hit_bounds.width() - width)
-            .mul_add(self.state_layer_alignment_x.clamp(0.0, 1.0), hit_bounds.x0);
-        let y0 = (hit_bounds.height() - height)
-            .mul_add(self.state_layer_alignment_y.clamp(0.0, 1.0), hit_bounds.y0);
-        Rect::new(x0, y0, x0 + width, y0 + height)
-    }
-
-    /// Sets the state-layer clipping radii per interaction state.
-    #[must_use]
-    pub fn state_layer_radii(mut self, radii: StateValue<RoundedRectRadii>) -> Self {
-        self.state_layer_radii = radii;
-        self
-    }
-
-    /// Sets enabled and disabled label colors for semantic text labels.
-    #[must_use]
-    pub fn label_colors(self, enabled: impl Into<Color>, disabled: impl Into<Color>) -> Self {
-        self.label_color(
-            StateValue::new(Some(enabled.into()))
-                .when(InteractionState::DISABLED, Some(disabled.into())),
-        )
-    }
-
-    /// Sets the label color for semantic text labels per interaction state.
-    #[must_use]
-    pub fn label_color(mut self, color: StateValue<Option<Color>>) -> Self {
-        self.label_color = color;
-        self
-    }
-
-    /// Draws `ring` around the state layer while the control shows keyboard
-    /// focus.
-    #[must_use]
-    pub fn focus_ring(mut self, ring: FocusRing) -> Self {
-        self.focus_ring = Some(ring);
-        self
-    }
-
-    /// Returns the label color for `state`.
-    #[must_use]
-    pub fn resolved_label_color(&self, state: InteractionState) -> Option<Color> {
-        self.label_color.resolve(state).clone()
-    }
-
-    /// Keeps the interaction pointer-only, for modal scrims and similar layers.
-    #[must_use]
-    pub const fn pointer_only(mut self) -> Self {
-        self.keyboard_focusable = false;
-        self
-    }
-}
-
-impl Plugin for InteractionStyle {}
 
 /// Publishes whether an interactive subtree owns keyboard focus.
 #[derive(Debug, Clone)]
@@ -412,8 +179,9 @@ impl PressWaves {
 pub struct WidgetInteractionState {
     /// The widget's interaction flags for this frame — hovered, pressed,
     /// keyboard-focus-visible, dragged, selected, disabled — resolved by the
-    /// renderer's bookkeeping. Themes read it to resolve [`StateValue`]
-    /// fields directly. When [`InteractionState::DISABLED`] is set the widget
+    /// renderer's bookkeeping. Themes read it to resolve
+    /// [`StateValue`](waterui_core::interaction::StateValue) fields
+    /// directly. When [`InteractionState::DISABLED`] is set the widget
     /// renders its inactive appearance and the renderer suppresses hover,
     /// press, and focus, so the remaining flags stay at rest.
     pub state: InteractionState,
@@ -1253,82 +1021,25 @@ pub trait WidgetTheme {
     /// right for a theme that records no backdrop material.
     fn register_backdrop_shaders(&self, _registry: &mut MaterialRegistry) {}
 
-    /// Return metrics for a button style.
-    fn button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics;
-    /// Return metrics for a button whose label presents only its icon.
+    /// The look of a button: a `Button`, an icon-only button and a menu
+    /// trigger.
     ///
-    /// Resolved by the backend when the label's own configuration — its
-    /// display-mode preference resolved against the environment — is
-    /// `IconOnly`. A theme's icon button lays out at its minimum touch
-    /// target with no text padding, so its bounds are also its hit area;
-    /// the chrome draws the smaller icon-button container centred inside
-    /// them. The default returns the text-button metrics, so a theme with
-    /// no icon-button presentation is unchanged.
-    fn icon_button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics {
-        self.button_metrics(style, size)
-    }
-    /// Optional button label foreground override. `disabled` selects the
-    /// inactive label color (e.g. Material's on-surface at 38%).
-    fn button_label_color(&self, _style: ButtonStyle, _disabled: bool) -> Option<Color> {
-        None
-    }
-    /// Optional button label font override.
-    fn button_label_font(&self, _style: ButtonStyle) -> Option<Font> {
-        None
-    }
+    /// Hydrolysis measures, places, hit-tests, records and animates the
+    /// button from the returned look, and requests it again only when
+    /// `spec` changes; everything else reaches the look through its
+    /// [`Driven`](super::Driven) values. A button inside a composed
+    /// control's [`Chrome`](super::Chrome) plugin takes that chrome, with
+    /// no padding, no minimum size and its label unstyled; a button on a
+    /// floating surface keeps this look's state-layer tokens, press
+    /// feedback, focus indicator, motion and hit region over the floating
+    /// style's container, colours and metrics.
+    fn button(&self, spec: &super::ButtonSpec, env: &Environment) -> super::ButtonLook;
+
     /// Content alpha for labels accompanying a disabled control (Material's
     /// 38% disabled-content token). Backends dim a disabled control's label
     /// views with this alpha.
     fn disabled_content_alpha(&self) -> f32 {
         0.38
-    }
-    /// The button's chrome as engine-provided primitives.
-    ///
-    /// `Some` hands the button's container, interaction tint, press feedback
-    /// and focus indicator to Hydrolysis, which records them once and
-    /// animates hover, press and focus as live operands; the renderer then
-    /// does not call [`Self::draw_button_chrome`] or
-    /// [`Self::draw_button_state_layer`] for the button. `None`, the
-    /// default, keeps those draw hooks. A button inside an
-    /// [`InteractionStyle`] or a floating scope keeps the presentation that
-    /// scope supplies.
-    fn button_chrome(&self, _spec: ButtonSpec) -> Option<super::Chrome> {
-        None
-    }
-    /// Draw button chrome for a style. `state` carries the disabled flag so
-    /// themes can render the inactive container. `icon_only` marks a button
-    /// whose label resolved to `IconOnly`: the bounds are the theme's touch
-    /// target and the chrome draws the icon-button container centred inside
-    /// them rather than filling them.
-    fn draw_button_chrome(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        style: ButtonStyle,
-        icon_only: bool,
-        state: WidgetInteractionState,
-    );
-    /// Draw the button state layer for a style. `icon_only` selects the
-    /// icon-button layer geometry — centred inside the touch-target bounds —
-    /// for a button whose label resolved to `IconOnly`.
-    fn draw_button_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _style: ButtonStyle,
-        _icon_only: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw a state layer supplied by a composed semantic control.
-    fn draw_interaction_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _radii: RoundedRectRadii,
-        _color: WorkingColor,
-        _state: WidgetInteractionState,
-    ) {
     }
 
     /// Return metrics for a toggle style.

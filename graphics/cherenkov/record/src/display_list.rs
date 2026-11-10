@@ -73,6 +73,10 @@ pub enum Command {
         layout: TextLayoutId,
         /// Where it is placed.
         transform: Affine,
+        /// The paint the layout's default-coloured runs draw with in place
+        /// of the colour it was laid out with; `None` draws it as laid out.
+        /// Runs the text styled with their own colour keep it.
+        paint: Option<Paint>,
     },
     /// Clip the scope to a shape.
     BeginClip {
@@ -105,7 +109,8 @@ pub enum Command {
 pub enum OperandKind {
     /// The shape of a fill, stroke, shadow or clip.
     Shape,
-    /// The paint of a fill, stroke or glyph run.
+    /// The paint of a fill, stroke or glyph run, or the default-run paint
+    /// of a painted text layout.
     Paint,
     /// The stroke style of a stroke.
     Stroke,
@@ -473,7 +478,12 @@ impl DisplayList {
                 resource == ResourceId::Font(run.font) || paint.references(resource)
             }
             Command::Image { image, .. } => resource == ResourceId::Image(*image),
-            Command::Text { layout, .. } => resource == ResourceId::TextLayout(*layout),
+            Command::Text { layout, paint, .. } => {
+                resource == ResourceId::TextLayout(*layout)
+                    || paint
+                        .as_ref()
+                        .is_some_and(|paint| paint.references(resource))
+            }
             Command::Picture { picture, .. } => picture.display_list().references(resource),
             Command::Shadow { .. }
             | Command::BeginClip { .. }
@@ -526,7 +536,10 @@ impl DisplayList {
                 (
                     Command::Fill { paint, .. }
                     | Command::Stroke { paint, .. }
-                    | Command::Glyphs { paint, .. },
+                    | Command::Glyphs { paint, .. }
+                    | Command::Text {
+                        paint: Some(paint), ..
+                    },
                     Operand::Paint(new),
                 ) => {
                     *paint = new;
@@ -593,7 +606,10 @@ impl DisplayList {
             (
                 Command::Fill { paint, .. }
                 | Command::Stroke { paint, .. }
-                | Command::Glyphs { paint, .. },
+                | Command::Glyphs { paint, .. }
+                | Command::Text {
+                    paint: Some(paint), ..
+                },
                 OperandKind::Paint,
             ) => Operand::Paint(paint.clone()),
             (Command::Stroke { stroke, .. }, OperandKind::Stroke) => {
@@ -819,11 +835,14 @@ impl From<OperandRef<'_>> for Operand {
 /// The operand count a command exposes, in [`Operands`] order.
 const fn operand_count(command: &Command) -> u8 {
     match command {
-        Command::Fill { .. } | Command::Shadow { .. } | Command::Glyphs { .. } => 2,
+        Command::Fill { .. }
+        | Command::Shadow { .. }
+        | Command::Glyphs { .. }
+        | Command::Text { paint: Some(_), .. } => 2,
         Command::Stroke { .. } => 3,
         Command::Image { .. }
         | Command::Picture { .. }
-        | Command::Text { .. }
+        | Command::Text { paint: None, .. }
         | Command::BeginClip { .. }
         | Command::BeginTransform { .. }
         | Command::BeginGroup { .. } => 1,
@@ -855,7 +874,14 @@ impl<'a> Iterator for Operands<'a> {
                 | Command::BeginClip { shape, .. },
                 0,
             ) => (OperandKind::Shape, OperandRef::Shape(shape)),
-            (Command::Fill { paint, .. } | Command::Glyphs { paint, .. }, 1)
+            (
+                Command::Fill { paint, .. }
+                | Command::Glyphs { paint, .. }
+                | Command::Text {
+                    paint: Some(paint), ..
+                },
+                1,
+            )
             | (Command::Stroke { paint, .. }, 2) => (OperandKind::Paint, OperandRef::Paint(paint)),
             (Command::Stroke { stroke, .. }, 1) => {
                 (OperandKind::Stroke, OperandRef::Stroke(stroke))

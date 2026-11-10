@@ -17,6 +17,8 @@ pub mod badge;
 pub mod border;
 #[cfg(feature = "button")]
 pub mod button;
+#[cfg(any(feature = "button", feature = "menu"))]
+mod button_chrome;
 #[cfg(any(feature = "calendar", feature = "multi_date_picker"))]
 pub mod calendar;
 #[cfg(feature = "clip_shape")]
@@ -27,7 +29,11 @@ pub mod color_picker;
 pub mod container;
 #[cfg(feature = "context_menu")]
 pub mod context_menu;
-#[cfg(any(test, feature = "slider", all(target_os = "macos", feature = "button")))]
+#[cfg(any(
+    test,
+    feature = "slider",
+    all(target_os = "macos", any(feature = "button", feature = "menu"))
+))]
 pub mod control_size;
 #[cfg(feature = "cursor")]
 pub mod cursor;

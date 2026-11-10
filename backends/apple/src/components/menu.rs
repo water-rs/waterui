@@ -2,12 +2,15 @@
 //! trigger — an `NSPopUpButton` on `AppKit`, a `UIButton` presenting a
 //! `UIMenu` on `UIKit` — with the resolved label drawn inside the button.
 //!
-//! Mirrors `WuiMenu`: the label is an arbitrary child view framed inside
-//! the trigger (zero padding on `UIKit`, 12pt leading + 36pt chevron +
-//! 4pt vertical on `AppKit`), measured under the offer minus that padding.
-//! `accessibility_label` speaks on the trigger; on `UIKit` the trigger
-//! tints with the theme accent and the label resolves `Foreground` to the
-//! accent, as `makeMenuLabelEnvironment` installed it.
+//! The trigger is drawn in the menu's resolved `ButtonStyle` and
+//! `ControlSize` exactly as a `Button` of that style and size is
+//! ([`button_chrome`]): the bezel and control size on `AppKit`, the chrome
+//! on `UIKit`, the accent tint, and the label's `Foreground` and `Body`.
+//! The label is an arbitrary child view framed inside the trigger — under
+//! the chrome's content insets on `UIKit`, and on `AppKit` 12pt leading +
+//! 36pt chevron + 4pt vertical inside a bezel and nothing around a
+//! transparent trigger — measured under the offer minus that padding.
+//! `accessibility_label` speaks on the trigger.
 //!
 //! The items collection is a `Computed<Vec<ResolvedMenuItem>>`: the whole
 //! menu rebuilds on every change — the collection itself, or any item's
@@ -20,6 +23,7 @@ use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 
 use cocoa_ui::{PlatformView, Rect, view};
+use waterui::component::button::ButtonStyle;
 use waterui::component::menu::{ResolvedMenu, ResolvedMenuItem};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
@@ -29,6 +33,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
+use crate::components::button_chrome;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 use crate::proposal::{self, Placement};
@@ -51,40 +56,88 @@ mod platform {
 
 use platform::{HostView, MenuButton};
 
-/// The padding the trigger keeps around the label: the leading text inset
-/// plus the chevron column on `AppKit`, nothing on `UIKit`.
-#[cfg(target_os = "macos")]
-const LABEL_PADDING: (f32, f32) = (48.0, 8.0);
+/// The padding the trigger keeps around its label, in points: `leading`
+/// and `trailing` along the reading direction, `vertical` above and below.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LabelPadding {
+    leading: f32,
+    trailing: f32,
+    vertical: f32,
+}
 
-/// The padding the trigger keeps around the label: `UIKit` buttons draw
-/// their chrome around the label edge-to-edge.
-#[cfg(target_os = "ios")]
-const LABEL_PADDING: (f32, f32) = (0.0, 0.0);
+impl LabelPadding {
+    /// A trigger whose label fills it edge to edge.
+    #[cfg(target_os = "macos")]
+    const NONE: Self = Self {
+        leading: 0.0,
+        trailing: 0.0,
+        vertical: 0.0,
+    };
 
-/// The offer the embedded label measures under: the trigger's proposal
-/// minus its label padding on each axis, never negative — `labelOffer`.
-fn label_offer(proposal: ProposalSize) -> ProposalSize {
-    let (horizontal, vertical) = LABEL_PADDING;
-    ProposalSize {
-        width: proposal.width.map(|width| (width - horizontal).max(0.0)),
-        height: proposal.height.map(|height| (height - vertical).max(0.0)),
+    /// Both horizontal insets together.
+    fn horizontal(self) -> f32 {
+        self.leading + self.trailing
+    }
+
+    /// The offer the embedded label measures under: the trigger's proposal
+    /// minus the padding on each axis, never negative — `labelOffer`.
+    fn label_offer(self, proposal: ProposalSize) -> ProposalSize {
+        ProposalSize {
+            width: proposal
+                .width
+                .map(|width| (width - self.horizontal()).max(0.0)),
+            height: proposal
+                .height
+                .map(|height| self.vertical.mul_add(-2.0, height).max(0.0)),
+        }
+    }
+
+    /// The label's frame inside a `width` × `height` trigger, in the
+    /// trigger's own space: the leading inset sits on the right when
+    /// `right_to_left`.
+    fn label_frame(self, width: f64, height: f64, right_to_left: bool) -> Rect {
+        let leading = if right_to_left {
+            self.trailing
+        } else {
+            self.leading
+        };
+        let vertical = f64::from(self.vertical);
+        Rect::new(
+            f64::from(leading),
+            vertical,
+            (width - f64::from(self.horizontal())).max(0.0),
+            vertical.mul_add(-2.0, height).max(0.0),
+        )
     }
 }
 
-/// A `WorkingColor` as `UIColor` — the same extended linear Display-P3 conversion
-/// `button` uses for its tint.
+/// The padding a pull-down trigger in `style` keeps around its label: a
+/// bezel keeps the 12pt leading text inset, the 36pt trailing chevron
+/// column and 4pt above and below; a transparent trigger, which draws
+/// neither bezel nor chevron, keeps nothing — as a `Button` of that style
+/// pads.
+#[cfg(target_os = "macos")]
+const fn label_padding(style: ButtonStyle) -> LabelPadding {
+    if button_chrome::draws_chrome(style) {
+        LabelPadding {
+            leading: 12.0,
+            trailing: 36.0,
+            vertical: 4.0,
+        }
+    } else {
+        LabelPadding::NONE
+    }
+}
+
+/// The padding a trigger in `style` keeps around its label: the chrome's
+/// own content insets, as a `Button` of that style pads.
 #[cfg(target_os = "ios")]
-fn platform_color(
-    color: &waterui::graphics::color::WorkingColor,
-) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        cocoa_ui::uikit::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
+fn label_padding(style: ButtonStyle, mtm: cocoa_ui::MainThreadMarker) -> LabelPadding {
+    let (horizontal, vertical) = button_chrome::chrome_padding(style, mtm);
+    LabelPadding {
+        leading: horizontal,
+        trailing: horizontal,
+        vertical,
     }
 }
 
@@ -208,6 +261,8 @@ impl Drop for EndOpenMenu {
 struct MenuSubView {
     /// The mounted label child.
     label: Mounted,
+    /// The padding the trigger keeps around the label.
+    padding: LabelPadding,
 }
 
 impl core::fmt::Debug for MenuSubView {
@@ -226,11 +281,13 @@ impl SubView for MenuSubView {
     }
 
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        let measured = self.label.layout().measure(label_offer(proposal));
-        let (horizontal, vertical) = LABEL_PADDING;
+        let measured = self
+            .label
+            .layout()
+            .measure(self.padding.label_offer(proposal));
         ViewDimensions::new(waterui_core::layout::Size::new(
-            measured.size.width + horizontal,
-            measured.size.height + vertical,
+            measured.size.width + self.padding.horizontal(),
+            self.padding.vertical.mul_add(2.0, measured.size.height),
         ))
     }
 
@@ -262,20 +319,21 @@ pub fn install(dispatcher: &mut Dispatcher) {
         view::add_subview(host_view, button.view());
         view::add_subview(button.view(), &label_container);
 
-        // `makeMenuLabelEnvironment`: on `UIKit` the label's `Foreground`
-        // resolves to the accent so it reads as the button's title.
-        #[cfg(target_os = "ios")]
-        let label_env = {
-            use waterui::reactive::SignalExt;
-            use waterui::resolve::Resolvable;
-            use waterui::theme::color::{Accent, Foreground};
-            use waterui::theme::install_color_signal;
-            let mut env = ctx.env().clone();
-            install_color_signal::<Foreground>(&mut env, Accent.resolve(ctx.env()).computed());
-            env
-        };
+        // The trigger and its label take the menu's style and size the way
+        // a `Button` of that style and size does.
+        let style = config.style;
         #[cfg(target_os = "macos")]
-        let label_env = ctx.env().clone();
+        let padding = {
+            button_chrome::apply_bezel(
+                &button.button(),
+                style,
+                button_chrome::control_size(config.size),
+            );
+            label_padding(style)
+        };
+        #[cfg(target_os = "ios")]
+        let padding = label_padding(style, mtm);
+        let label_env = button_chrome::label_environment(style, config.size, ctx.env());
 
         let label_leaf = ctx.with_env(&label_env).render(config.label);
         let child_view = view::retain_base(label_leaf.view());
@@ -313,27 +371,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 view::set_frame(state.button.view(), bounds);
                 let width = bounds.size.width;
                 let height = bounds.size.height;
-                #[cfg(target_os = "macos")]
-                {
-                    // 12pt leading text inset, 36pt trailing chevron, 4pt
-                    // top and bottom; RTL mirrors the leading inset.
-                    let leading = if view::is_right_to_left(host) {
-                        36.0
-                    } else {
-                        12.0
-                    };
-                    view::set_frame(
-                        &label_container,
-                        Rect::new(
-                            leading,
-                            4.0,
-                            (width - 48.0).max(0.0),
-                            (height - 8.0).max(0.0),
-                        ),
-                    );
-                }
-                #[cfg(target_os = "ios")]
-                view::set_frame(&label_container, Rect::new(0.0, 0.0, width, height));
+                view::set_frame(
+                    &label_container,
+                    padding.label_frame(width, height, view::is_right_to_left(host)),
+                );
 
                 let placement = state.placement.get();
                 let base = placement.proposal.unwrap_or({
@@ -351,7 +392,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 proposal::deliver(
                     &child_view,
                     Placement {
-                        proposal: Some(label_offer(base)),
+                        proposal: Some(padding.label_offer(base)),
                         offset: placement.offset,
                         ..Placement::UNPLACED
                     },
@@ -361,7 +402,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         #[cfg(all(target_os = "ios", target_abi = "macabi"))]
         let button_for_teardown = state.borrow().button.clone();
-        let mut leaf = NativeLeaf::new(host_view, MenuSubView { label: mounted });
+        let mut leaf = NativeLeaf::new(
+            host_view,
+            MenuSubView {
+                label: mounted,
+                padding,
+            },
+        );
         leaf.keep(label_env);
 
         // Items → menu: rebuild on every change (`watch` so the rebuild
@@ -402,17 +449,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
             view::set_accessibility_label(&trigger, &item_title(&styled));
         });
 
-        // `UIKit` tints the trigger by the theme accent.
+        // The accent tints the trigger as it tints a `Button` of its style.
+        #[cfg(target_os = "macos")]
+        let styled = state.borrow().button.button();
         #[cfg(target_os = "ios")]
-        {
-            use waterui::resolve::Resolvable;
-            use waterui::theme::color::Accent;
-            let accent = Accent.resolve(ctx.env());
-            leaf.bind(&accent, {
-                let button = state.borrow().button.clone();
-                move |color| button.set_tint_color(&platform_color(&color))
-            });
-        }
+        let styled = state.borrow().button.button().clone();
+        button_chrome::bind_accent(&mut leaf, styled, style, ctx.env(), mtm);
 
         leaf.keep(state);
         // Kept after the state, so it drops first (reverse order).
@@ -427,24 +469,69 @@ mod tests {
     use super::*;
     use waterui::text::StyledStr;
 
+    const PADDING: LabelPadding = LabelPadding {
+        leading: 12.0,
+        trailing: 36.0,
+        vertical: 4.0,
+    };
+
     #[test]
     fn label_offer_subtracts_padding_and_clamps() {
-        let (horizontal, vertical) = LABEL_PADDING;
-        let offer = label_offer(ProposalSize {
+        let offer = PADDING.label_offer(ProposalSize {
             width: Some(120.0),
             height: Some(40.0),
         });
-        assert_eq!(offer.width, Some((120.0 - horizontal).max(0.0)));
-        assert_eq!(offer.height, Some((40.0 - vertical).max(0.0)));
+        assert_eq!(offer.width, Some(72.0));
+        assert_eq!(offer.height, Some(32.0));
 
         // Padding larger than the proposal clamps to zero rather than
         // going negative, matching the Swift `max(0, ...)`.
-        let clamped = label_offer(ProposalSize {
+        let clamped = PADDING.label_offer(ProposalSize {
             width: Some(0.0),
             height: Some(0.0),
         });
         assert_eq!(clamped.width, Some(0.0));
         assert_eq!(clamped.height, Some(0.0));
+    }
+
+    #[test]
+    fn the_label_frame_mirrors_its_leading_inset_right_to_left() {
+        assert_eq!(
+            PADDING.label_frame(120.0, 40.0, false),
+            Rect::new(12.0, 4.0, 72.0, 32.0)
+        );
+        assert_eq!(
+            PADDING.label_frame(120.0, 40.0, true),
+            Rect::new(36.0, 4.0, 72.0, 32.0)
+        );
+    }
+
+    /// A pull-down trigger pads its label as a `Button` of the menu's
+    /// style does: inside a bezel the label clears the text inset and the
+    /// chevron, and a transparent trigger, drawing neither, pads nothing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_pull_down_pads_like_a_button_of_its_style() {
+        for style in [
+            ButtonStyle::Automatic,
+            ButtonStyle::Bordered,
+            ButtonStyle::BorderedProminent,
+            ButtonStyle::Glass,
+            ButtonStyle::GlassProminent,
+        ] {
+            assert_eq!(label_padding(style), PADDING, "{style:?} draws a bezel");
+        }
+        for style in [
+            ButtonStyle::Plain,
+            ButtonStyle::Link,
+            ButtonStyle::Borderless,
+        ] {
+            assert_eq!(
+                label_padding(style),
+                LabelPadding::NONE,
+                "{style:?} is transparent"
+            );
+        }
     }
 
     #[test]

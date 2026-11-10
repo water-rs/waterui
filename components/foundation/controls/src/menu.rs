@@ -31,8 +31,9 @@ use waterui_locale::locale_binding;
 use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::{
-    button::Button,
+    button::{Button, ButtonStyle},
     label::{IntoLabel, Label},
+    size::ControlSize,
 };
 
 /// Keyboard shortcut modifiers used by commands and system menus.
@@ -420,17 +421,37 @@ pub struct Menu {
     /// The menu items to display when the menu is opened.
     pub items: Computed<Vec<MenuItem>>,
     identity: Rc<()>,
+    style: ButtonStyle,
+    size: ControlSize,
 }
 
 impl Menu {
-    /// Creates a menu with a semantic label.
+    /// Creates a menu with a semantic label. Its trigger is drawn as an
+    /// [`Automatic`](ButtonStyle::Automatic) button of
+    /// [`ControlSize::Small`], like a [`Button`].
     #[must_use]
     pub fn new(label: impl IntoLabel, items: impl MenuView) -> Self {
         Self {
             label: label.into_label(),
             items: items.into_menu_items(),
             identity: Rc::new(()),
+            style: ButtonStyle::Automatic,
+            size: ControlSize::Small,
         }
+    }
+
+    /// Sets the style the menu's trigger button is drawn in.
+    #[must_use]
+    pub const fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Sets how large the menu's trigger button is drawn.
+    #[must_use]
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
     }
 
     #[must_use]
@@ -457,6 +478,8 @@ impl View for Menu {
             label: AnyView::new(label),
             items: resolve_menu_items(&self.items, env),
             accessibility_label,
+            style: self.style.resolve(env),
+            size: self.size,
         })
     }
 
@@ -1345,6 +1368,11 @@ pub struct ResolvedMenu {
     pub items: Computed<Vec<ResolvedMenuItem>>,
     /// Semantic accessibility label for the menu trigger.
     pub accessibility_label: Computed<StyledStr>,
+    /// The style the trigger button is drawn in, `Automatic` already
+    /// resolved against the ambient [`ButtonStyle`].
+    pub style: ButtonStyle,
+    /// How large the trigger button is drawn.
+    pub size: ControlSize,
 }
 
 raw_view!(ResolvedMenu, StretchAxis::None);

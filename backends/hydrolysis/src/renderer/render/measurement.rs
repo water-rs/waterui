@@ -671,6 +671,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         ctx: RenderContext,
         styled: StyledStr,
         env: &Environment,
+        scale: Option<(&Rc<crate::renderer::chrome::LiveChrome>, kurbo::Affine)>,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
         let state = &mut self.state;
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
@@ -688,22 +690,33 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds().width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds().height() - height) * 0.5).max(0.0);
-        let fragment = state.text.record(
-            &input,
-            None,
-            TailMark::Clip(1),
-            &mut state.counters,
-            &mut state.text_scenes,
-        );
-        let source: Rc<dyn crate::renderer::chrome::LiveSource> = fragment;
-        self.push_live(
-            {
-                let mut literal = ctx;
-                literal.set_local(ctx.local() * kurbo::Affine::translate((x, y)));
-                literal
-            },
-            &source,
-        );
+        let fragment = match paint {
+            Some(paint) => state.text.record_painted(
+                &input,
+                None,
+                TailMark::Clip(1),
+                paint,
+                &mut state.counters,
+            ),
+            None => state.text.record(
+                &input,
+                None,
+                TailMark::Clip(1),
+                &mut state.counters,
+                &mut state.text_scenes,
+            ),
+        };
+        let mut literal = ctx;
+        literal.set_local(ctx.local() * kurbo::Affine::translate((x, y)));
+        let source: Rc<dyn crate::renderer::chrome::LiveSource> = match scale {
+            Some((chrome, widget)) => Rc::new(crate::renderer::chrome::ScaledContent::new(
+                fragment,
+                Rc::clone(chrome),
+                widget.inverse() * literal.local(),
+            )),
+            None => fragment,
+        };
+        self.push_live(literal, &source);
     }
 
     #[expect(
@@ -1616,18 +1629,13 @@ pub fn measure_button_view_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = if crate::widgets::controls::button::label_resolves_icon_only(button.label(), env)
-    {
-        theme.icon_button_metrics(button.button_style(), button.button_size())
-    } else {
-        theme.button_metrics(button.button_style(), button.button_size())
-    };
-    let label_size = measure_label_intrinsic(button.label(), state, env, theme);
-    let content_width = f64::mul_add(metrics.padding_x, 2.0, f64::from(label_size.width));
-    let content_height = f64::mul_add(metrics.padding_y, 2.0, f64::from(label_size.height));
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(content_width.max(metrics.min_width)),
-        crate::num_cast::f64_as_f32(content_height.max(metrics.min_height)),
+    crate::widgets::controls::button::measure_button_look_intrinsic(
+        button.button_style(),
+        button.button_size(),
+        button.label(),
+        state,
+        env,
+        theme,
     )
 }
 

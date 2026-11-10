@@ -394,6 +394,37 @@ impl Lower<'_> {
         )
     }
 
+    /// `PaintedText`: draws platform text layout `layout` under
+    /// `transform`, its default-coloured runs in `paint`.
+    ///
+    /// # Errors
+    ///
+    /// [`HwuiError::Unregistered`] naming the layer when the platform holds
+    /// no such layout, and [`HwuiError::Encoding`] for a paint other than a
+    /// solid colour — a platform layout's default runs take one colour.
+    pub fn painted_text(
+        &mut self,
+        layout: TextLayoutId,
+        transform: Affine,
+        paint: &Paint,
+    ) -> Result<(), HwuiError> {
+        let Paint::Solid(color) = paint else {
+            return Err(HwuiError::Encoding {
+                op: "PaintedText",
+                reason: format!("a text layout's default runs take a solid colour, not {paint:?}"),
+            });
+        };
+        let layout = self.text_layouts.resolve(layout.raw(), self.layer)?;
+        self.buffer.op(
+            Op::PaintedText,
+            &[
+                Field::U("layout", layout),
+                Field::Fs("matrix", &affine_matrix(transform)),
+                Field::Color("color", color_long(*color, 1.0)),
+            ],
+        )
+    }
+
     /// Releases what `owned` holds, dropping cached definitions nothing
     /// else uses.
     pub fn release(&mut self, owned: Owned) -> Result<(), HwuiError> {
@@ -727,14 +758,21 @@ impl Lower<'_> {
                     sampling,
                 } => self.image(*image, *dst, *sampling)?,
                 Command::Picture { picture, transform } => self.picture(picture, *transform)?,
-                Command::Text { layout, transform } => {
+                Command::Text {
+                    layout,
+                    transform,
+                    paint,
+                } => {
                     if alpha < 1.0 {
                         return Err(HwuiError::Encoding {
                             op: "Text",
                             reason: "a text layout's node cannot take a folded opacity".to_owned(),
                         });
                     }
-                    self.text(*layout, *transform)?;
+                    match paint {
+                        Some(paint) => self.painted_text(*layout, *transform, paint)?,
+                        None => self.text(*layout, *transform)?,
+                    }
                 }
                 Command::BeginClip { shape, .. } => {
                     self.buffer.op(Op::Save, &[])?;
@@ -1690,6 +1728,7 @@ pub fn content_ink(
             Command::Text {
                 layout,
                 transform: placed,
+                ..
             } => {
                 if let Some(bounds) = text_layouts.bounds(layout.raw()) {
                     add(bounds, transform * *placed, clip);

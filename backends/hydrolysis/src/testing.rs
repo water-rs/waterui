@@ -51,18 +51,18 @@ mod test_style {
     use std::time::Duration;
 
     use crate::theme::{
-        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
-        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
+        BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, FocusIndicator,
+        HitRegion, InputFieldMetrics, InteractionMotion, Label, ListMetrics, Motion,
+        NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback, ProgressIndicatorStyle,
         ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
-        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
+        SliderValueIndicatorMetrics, StateLayer, StepperEnd, StepperMetrics, Surface,
+        TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
+        TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
     };
     use kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::{Color, EasingCurve, Environment};
     use waterui_controls::ControlSize;
-    use waterui_controls::button::ButtonStyle;
     use waterui_controls::toggle::ToggleStyle;
     use waterui_form::picker::PickerStyle;
     use waterui_graphics::color::Srgb;
@@ -188,23 +188,22 @@ mod test_style {
             }
         }
 
-        fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-            ButtonMetrics {
-                padding_x: 1.0,
-                padding_y: 2.0,
-                min_width: 123.0,
-                min_height: 45.0,
-            }
-        }
-
-        fn draw_button_chrome(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _style: ButtonStyle,
-            _icon_only: bool,
-            _state: WidgetInteractionState,
-        ) {
+        /// A button with no visible chrome: a clear surface, a state layer
+        /// with no opacity in any state and no press feedback, so a test
+        /// sees the button's content and layout alone.
+        fn button(&self, _spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
+            let chrome = Chrome::new(
+                Surface::clear(CornerShape::radius(0.0)),
+                StateLayer::new(Color::new(waterui::theme::color::Foreground)),
+                PressFeedback::new(),
+                FocusIndicator::Tint,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+            // The theme's `touch_delay`.
+            .hit(HitRegion::NONE.press_delay(Duration::from_millis(150)));
+            ButtonLook::new(chrome, Label::new())
+                .padding(1.0, 2.0)
+                .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
         fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {

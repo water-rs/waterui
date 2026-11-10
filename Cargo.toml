@@ -645,11 +645,11 @@ waterui-chromium = { path = "components/platform/chromium" }
 waterui-watcher-set = { path = "utils/watcher-set" }
 # `hydrolysis-m3` declares its renderer requirement against the registry;
 # this entry makes it resolve to the in-tree backend so the graph carries
-# exactly one hydrolysis. The registry 0.3.1 theme implements the
-# four-argument `draw_button_chrome` removed on this branch; the pinned
-# revision carries the icon-button contract (water-rs/hydrolysis#115) and the
-# split tabs-bar surface and divider calls (#1982). Drop the git pin once a
-# release has both changes.
+# exactly one hydrolysis. The registry 0.3.1 theme implements button hooks
+# this branch replaced with `WidgetTheme::button`; the pinned revision carries
+# the icon-button contract (water-rs/hydrolysis#115), the button look (#4037)
+# and the split tabs-bar surface and divider calls (#1982). Drop the git pin
+# once a release has these changes.
 hydrolysis = { path = "backends/hydrolysis" }
 hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "dev" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its

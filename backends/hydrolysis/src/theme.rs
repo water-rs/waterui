@@ -11,16 +11,20 @@
 //!   [`WidgetInteractionState`] with its [`PressWaves`], and
 //!   [`RadioIndicatorState`];
 //! - the motion and metric token tables a theme returns, such as
-//!   [`InteractionMotion`], [`ProgressMotion`] and [`ButtonMetrics`];
+//!   [`InteractionMotion`] and [`ProgressMotion`];
+//! - the looks a theme returns for the widgets ported to the declarative
+//!   contract (water-rs/waterui#1434), such as [`ButtonLook`] for a
+//!   [`ButtonSpec`], built from the look vocabulary: [`Driven`] values over
+//!   the widget's [`Inputs`] with their [`Motion`], [`Custom`] parts,
+//!   [`Label`] styling and [`HitRegion`]s;
 //! - the engine-provided chrome primitives a theme describes interactive
-//!   chrome with instead of drawing it — [`Surface`], [`CornerShape`],
-//!   [`Elevation`], [`StateLayer`], [`PressFeedback`] and
-//!   [`FocusIndicator`], bundled per widget part as [`Chrome`] — which
-//!   Hydrolysis records once and animates through live operands;
+//!   chrome with instead of drawing it — [`Surface`] with its [`Fill`] or
+//!   [`Backdrop`], [`CornerShape`], [`Elevation`], [`StateLayer`],
+//!   [`PressFeedback`] and [`FocusIndicator`], bundled per widget part as
+//!   [`Chrome`] — which Hydrolysis records once and animates through live
+//!   operands;
 //! - the presentation plugins a style package installs on composed controls:
-//!   [`InteractionStyle`], [`InteractionFocusBinding`],
-//!   [`ModalInteraction`], and the [`IconOnlyButtonLabel`] marker the
-//!   renderer installs for a theme to read.
+//!   [`Chrome`], [`InteractionFocusBinding`] and [`ModalInteraction`].
 //!
 //! Drawing goes through the render-target-neutral recording vocabulary of
 //! `cherenkov-record` ([`Recorder`](cherenkov_record::Recorder),
@@ -44,35 +48,31 @@
 //! overwrites both.
 
 mod chrome;
+#[cfg(hydrolysis_runtime)]
+pub(crate) mod live;
+mod look;
 mod widget;
 
 pub use chrome::{
-    Border, Chrome, CornerShape, Corners, Elevation, FocusIndicator, PressFeedback, Ripple,
-    StateLayer, Surface,
+    Backdrop, Border, Chrome, CornerShape, Corners, Elevation, Fill, FocusIndicator, PressFeedback,
+    Ripple, StateLayer, Surface, Wash,
 };
+pub use look::{
+    ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion,
+    Transition, ValueMotion,
+};
+#[cfg(hydrolysis_runtime)]
+pub(crate) use look::{Change, LiveDriven, RealizedCustom, Retarget};
 pub use widget::{
-    BadgeMetrics, ButtonMetrics, ButtonSpec, DividerMetrics, FocusRing, InputFieldMetrics,
-    InteractionFocusBinding, InteractionMotion, InteractionStyle, ListDividerMetrics, ListMetrics,
-    ListRowMetrics, ListSectionMetrics, ListTrailingControlMetrics, MAX_PRESS_WAVES,
-    ModalInteraction, NavigationMetrics, NavigationMotion, PickerMetrics, PressWave, PressWaves,
-    ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-    RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics, StepperEnd, StepperMetrics,
-    TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
-    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
+    ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,
+    ListTrailingControlMetrics, MAX_PRESS_WAVES, ModalInteraction, NavigationMetrics,
+    NavigationMotion, PickerMetrics, PressWave, PressWaves, ProgressIndicatorStyle,
+    ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
+    SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
+    TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+    WidgetInteractionState, WidgetTheme,
 };
-
-/// Marks the subtree of a button label that resolved to an icon-only
-/// presentation.
-///
-/// The backend installs it into the icon-only label's environment so a
-/// theme's resolvable [`WidgetTheme::button_label_color`] can paint the
-/// standard icon button's content color rather than the filled text
-/// button's — `ButtonStyle::Automatic` resolves to a different variant for
-/// the two.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IconOnlyButtonLabel;
-
-impl waterui::Plugin for IconOnlyButtonLabel {}
 
 #[cfg(hydrolysis_runtime)]
 use waterui::{

@@ -2437,7 +2437,15 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             }
         }
         if let Some(target) = self.hit_test.active_pointer_target.take()
-            && target.bounds.contains(point)
+            && {
+                // A release within the slot's cancel distance of the target
+                // still activates it.
+                let reach = target
+                    .press_slot
+                    .as_ref()
+                    .map_or(0.0, |slot| slot.cancel_distance);
+                target.bounds.inflate(reach, reach).contains(point)
+            }
         {
             // The action's verdict is "the tap landed", not a layout
             // input: whatever it writes marks its own readers through the
@@ -2504,9 +2512,20 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         {
             return false;
         }
+        // A waiting touch press survives a move within its slot's slop of
+        // where it landed; a farther move cancels it, so a scroll that
+        // starts under the finger never shows or activates it.
         if pointer_kind != PointerKind::Mouse
-            && self.hit_test.pending_pointer_press.take().is_some()
+            && self
+                .hit_test
+                .pending_pointer_press
+                .as_ref()
+                .is_some_and(|pending| {
+                    let moved = kurbo::Point::new(f64::from(x), f64::from(y)) - pending.origin;
+                    moved.hypot() > pending.slot.slop
+                })
         {
+            self.hit_test.pending_pointer_press = None;
             self.hit_test.active_pointer_target = None;
             self.hit_test.active_press_bounds = None;
             self.hit_test.active_press_origin = None;
@@ -4706,25 +4725,31 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
     /// Binds the interaction target of a control whose chrome is
     /// engine-realized ([`LiveChrome`](crate::renderer::chrome::LiveChrome),
-    /// water-rs/waterui#1433), steered with `motion`. Hover, press and focus
-    /// changes move the chrome's live operands — the caller attaches it to
-    /// the returned handles — and mark nothing, so they neither re-render
-    /// nor repaint the control. A control under an `InteractionReport`
-    /// still re-renders on each change: the report's binding is written at
-    /// bind time.
+    /// water-rs/waterui#1433) from `chrome`, on its touch `target`. Hover,
+    /// press and focus changes move the chrome's live operands — the caller
+    /// attaches it to the returned handles — and mark nothing, so they
+    /// neither re-render nor repaint the control. A control under an
+    /// `InteractionReport` still re-renders on each change: the report's
+    /// binding is written at bind time. The press slot carries the chrome's
+    /// hit-region slop and cancel distance.
     pub(crate) fn bind_live_chrome_target(
         &mut self,
         key: InteractionKey,
-        bounds: kurbo::Rect,
+        target: kurbo::Rect,
         env: &Environment,
         disabled: bool,
-        motion: InteractionMotion,
+        chrome: &crate::theme::Chrome,
     ) -> (
         WidgetInteractionState,
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, Some(motion))
+        let motion = crate::renderer::chrome::LiveChrome::handle_motion(chrome);
+        let (state, mut slot, handles) =
+            self.bind_interaction_target_with_focus(key, target, env, None, disabled, Some(motion));
+        slot.slop = chrome.get_hit().get_slop();
+        slot.cancel_distance = chrome.get_hit().get_cancel_distance();
+        (state, slot, handles)
     }
 
     pub(crate) fn bind_focused_control_interaction_target(

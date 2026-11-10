@@ -230,6 +230,11 @@ class CommandDecoder(private val sink: CommandSink) {
                 readMatrix()
                 sink.text(layout, matrix)
             }
+            Protocol.PAINTED_TEXT -> {
+                val layout = word()
+                readMatrix()
+                sink.paintedText(layout, matrix, color())
+            }
             Protocol.IMAGE -> {
                 val bitmap = word()
                 val left = float()

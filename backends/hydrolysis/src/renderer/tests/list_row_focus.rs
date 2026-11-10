@@ -5,8 +5,8 @@
 //! navigation `list_row_context` drives has a row to start from. The
 //! `.on_tap` the content carries never owns a node of its own — one
 //! variant claims the row's selection press through a nested gesture
-//! region, the other runs as a press-slot target under an
-//! `InteractionStyle` — and before the fix either left
+//! region, the other runs as a press-slot target under a `Chrome`
+//! plugin — and before the fix either left
 //! `accessibility.focus` on the tree root or parked `hit_test
 //! .keyboard_focus` on a machinery-less link the post-flush liveness pass
 //! declared dead, so every arrow fell through.
@@ -15,14 +15,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use crate::theme::{ButtonMetrics, InteractionStyle};
 use accesskit::{NodeId, Role, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
 use nami::collection::SignalCollection;
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
-use waterui::{AnyView, Color, Environment, ViewExt as _};
+use waterui::{AnyView, Environment, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_layout::stack::vstack;
@@ -186,18 +185,14 @@ fn tap_gesture_inside_row_focuses_the_row_for_arrows() {
     );
 }
 
-/// With an `InteractionStyle` installed the `.on_tap` registers a press
+/// With a `Chrome` installed the `.on_tap` registers a press
 /// target instead of a gesture region: the press commits to the tap's own
 /// interaction identity — a key linked to no node — and the row's
 /// `ListItem` node must take the focus all the same.
 #[test]
 fn tap_press_target_inside_row_focuses_the_row_for_arrows() {
     let mut env = test_environment();
-    env.install(InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        0.0_f64,
-    ));
+    env.install(super::invisible_chrome());
     let selection = Binding::container(None::<u64>);
     let taps: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
     let taps_for_rows = taps.clone();

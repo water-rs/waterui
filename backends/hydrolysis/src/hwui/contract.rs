@@ -116,6 +116,11 @@ fn rich_picture(font: u32, bitmap: u32, runtime: u32, text: u32) -> Picture {
             TextLayoutId::new(u64::from(text)),
             Affine::translate((2.0, 3.0)) * Affine::scale(1.5),
         );
+        r.painted_text(
+            TextLayoutId::new(u64::from(text)),
+            Affine::translate((2.0, 15.0)),
+            Paint::Solid(color(0.2, 0.4, 0.8, 1.0)),
+        );
         r.stroke(
             RoundedRect::new(2.0, 2.0, 38.0, 28.0, 4.0),
             Stroke::new(2.0).with_dashes(1.0, [4.0, 2.0]),
