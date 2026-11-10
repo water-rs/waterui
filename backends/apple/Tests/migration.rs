@@ -854,8 +854,8 @@ mod uikit_surface {
     pub fn stable_id_payload_replace_in_sectioned_rows() {
         let env = crate::resolve::env();
 
-        // Sectioned shape: a section marker produces a multi-group list,
-        // which applies changes through the whole-table `reloadData` path —
+        // Sectioned shape: a labeled section is not a single plain group,
+        // so changes apply through the whole-table `reloadData` path —
         // a stable-id replace must still evict the row's measured contract.
         let mut sectioned = ReactiveList::from(vec![
             ProbeRow { id: 10, tall: true },
@@ -864,21 +864,15 @@ mod uikit_surface {
                 tall: false,
             },
         ]);
-        let list = List::new(waterui::views::ForEach::new(
-            sectioned.clone(),
-            |row: ProbeRow| {
+        let list = List::content(waterui::component::list::Section::new("Sectioned").content(
+            waterui::views::ForEach::new(sectioned.clone(), |row: ProbeRow| {
                 let content: AnyView = if row.tall {
                     AnyView::new(text("updated tall row").height(60.0))
                 } else {
                     AnyView::new(text("row"))
                 };
-                let item = ListItem::new(content);
-                if row.id == 10 {
-                    item.section(waterui::component::list::ListSection::new("Sectioned"))
-                } else {
-                    item
-                }
-            },
+                ListItem::new(content)
+            }),
         ));
         let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
@@ -896,8 +890,8 @@ mod uikit_surface {
             .is_some()),
             "the sectioned rows materialize once deferred work drains"
         );
-        // The marker labels the group id 10 starts; id 11 has no marker and
-        // stays inside it — the labeled group takes the `reloadData` path.
+        // Both rows sit in the labeled section — a labeled group takes the
+        // `reloadData` path.
         let short = sectioned_table
             .cellForRowAtIndexPath(&untouched_row)
             .expect("the untouched sectioned row is mounted")

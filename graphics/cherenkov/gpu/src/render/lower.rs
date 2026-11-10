@@ -735,7 +735,7 @@ impl ContentData {
                 .storage
                 .gpu_paths
                 .values()
-                .map(|entry| entry.path.elements.len() * std::mem::size_of::<path::GpuElement>())
+                .map(|entry| entry.path.heap_bytes())
                 .sum::<usize>()) as u64
             + self.storage.geometry.heap_bytes()
     }
@@ -7120,7 +7120,7 @@ mod tests {
     /// The default device's coverage binding limit, which every engine
     /// device requests (`render/mod.rs`).
     fn test_limit() -> CoverageLimit {
-        CoverageLimit::new(&wgpu::Limits::default())
+        CoverageLimit::new(&wgpu::Limits::default(), wgpu::Backend::Noop)
     }
 
     /// A retained leaf's stored route decisions agree with the predicate
@@ -7158,11 +7158,14 @@ mod tests {
         // The smallest binding limit that admits the anchor grid refuses
         // the larger grids around it, so the window holds both decisions.
         let limit = |bytes| {
-            CoverageLimit::new(&wgpu::Limits {
-                max_storage_buffer_binding_size: bytes,
-                max_buffer_size: bytes,
-                ..wgpu::Limits::default()
-            })
+            CoverageLimit::new(
+                &wgpu::Limits {
+                    max_storage_buffer_binding_size: bytes,
+                    max_buffer_size: bytes,
+                    ..wgpu::Limits::default()
+                },
+                wgpu::Backend::Noop,
+            )
         };
         let (mut refused, mut fits) = (0, wgpu::Limits::default().max_buffer_size);
         assert!(lowering.automatic_gpu(&path, &path.bound));

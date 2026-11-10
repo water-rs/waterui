@@ -1670,11 +1670,11 @@ mod render {
         label: &waterui::reactive::Binding<String>,
     ) -> waterui::graphics::canvas::Canvas {
         use waterui::SignalExt as _;
-        use waterui::graphics::canvas::{Canvas, CanvasText, Path, StrokeStyle, TextPlacement};
+        use waterui::graphics::canvas::{Canvas, Path, StrokeStyle, TextPlacement};
         use waterui::text::StyledStr;
         use waterui_core::layout::{HorizontalAlignment, Point as P, Rect as R};
 
-        let styled = |text: &str| CanvasText::from(StyledStr::from(text.to_owned()));
+        let styled = |text: &str| StyledStr::from(text.to_owned());
         Canvas::new({
             let label = label.clone();
             move |cx| {
@@ -1805,7 +1805,7 @@ mod render {
     #[test]
     fn canvas_text_keeps_its_styles() {
         use cocoa_ui::MainThreadMarker;
-        use waterui::graphics::canvas::{CanvasText, TextPlacement};
+        use waterui::graphics::canvas::TextPlacement;
         use waterui::graphics::color::Srgb;
         use waterui::text::StyledStr;
         use waterui_core::layout::Point as P;
@@ -1838,7 +1838,7 @@ mod render {
         resources.set_text(Rc::new(CoreText::new(mtm, Rc::clone(&registry))));
         let registered = resources
             .text(
-                CanvasText::from(text),
+                text,
                 TextPlacement::at(P::new(0.0, 0.0)),
                 env,
             )
@@ -1867,6 +1867,84 @@ mod render {
             480,
             40,
             SCALE,
+        );
+    }
+
+    /// The `CanvasView` a canvas-composed view mounts as.
+    fn canvas_view(view: impl waterui_core::View) -> waterui_graphics::canvas::CanvasView {
+        use waterui_core::{AnyView, Environment, View as _};
+        let env = Environment::new();
+        let canvas = AnyView::new(view.body(&env))
+            .downcast::<waterui_graphics::canvas::Canvas>()
+            .unwrap_or_else(|_| panic!("the gradient composes to a canvas"));
+        AnyView::new(canvas.body(&env))
+            .downcast::<waterui_graphics::canvas::CanvasView>()
+            .map_or_else(|_| panic!("a canvas mounts as a canvas view"), |view| *view)
+    }
+
+    /// The animated mesh gradient, driven as a host drives it: recorded at
+    /// mount, then updated in place by frames presented ten seconds apart.
+    /// Both captures go through the layer tree and Core Animation's own
+    /// `renderInContext`.
+    #[test]
+    fn the_animated_mesh_gradient_flows_with_the_canvas_clock() {
+        use core::time::Duration;
+        use waterui_graphics::draw::{Instant, LayoutSize};
+        use waterui_graphics::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
+        use waterui_graphics::resources::SceneResources;
+        use waterui_graphics::{SceneFrame, SceneUpdate};
+
+        const WIDTH: usize = 360;
+        const HEIGHT: usize = 240;
+        const WIDTH_PT: f32 = 360.0;
+        const HEIGHT_PT: f32 = 240.0;
+        let mut scene = canvas_view(AnimatedMeshGradient::new(
+            AnimatedMeshGradientConfig::aqua_bloom().speed(1.0),
+        ));
+        let registry = Rc::new(Registry::default());
+        let resources = SceneResources::new(Rc::new(Backend::new(Rc::clone(&registry), u64::MAX)));
+        let mut names = resources.recording();
+        let mut content = Content::record(&LayoutSize::new(), |recorder| {
+            let again = scene.build_scene(recorder, &mut names, WIDTH_PT, HEIGHT_PT);
+            assert!(again, "a gradient bound to the clock asks for frames");
+        });
+        let _held = names.finish();
+        let fixture = Fixture::new(registry);
+        let ctx = fixture.at(1.0);
+        let mut tree = Tree::new(&first_list(&mut content), ctx);
+        tree.settle();
+        save(
+            "animated_mesh_t0",
+            &pixels(tree.root(), WIDTH, HEIGHT, 1),
+            WIDTH,
+            HEIGHT,
+            1,
+        );
+
+        let start = Instant::now();
+        for time in [start, start + Duration::from_secs(10)] {
+            let update = scene.update_scene(
+                &resources,
+                SceneFrame {
+                    width: WIDTH_PT,
+                    height: HEIGHT_PT,
+                    time,
+                },
+            );
+            assert!(matches!(update, SceneUpdate::Retained { again: true }));
+            let _ = content.sample(time);
+        }
+        let Some(ContentChange::Update(updates)) = content.take_change() else {
+            panic!("the clock updates the mesh operand in place");
+        };
+        tree.update(&updates, ctx);
+        tree.settle();
+        save(
+            "animated_mesh_t10",
+            &pixels(tree.root(), WIDTH, HEIGHT, 1),
+            WIDTH,
+            HEIGHT,
+            1,
         );
     }
 }

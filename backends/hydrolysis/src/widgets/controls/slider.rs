@@ -1,32 +1,40 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::chrome::{ChromeContent, IndicatorContent, LiveChromeParts, SliderContent};
 #[cfg(feature = "accessibility")]
 use crate::renderer::slider_step_for_range;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_slider_intrinsic, slider_value_epsilon,
+    slider_value_epsilon,
+};
+use crate::theme::{
+    DragMapping, Inputs, SliderLayout, SliderLook, SliderSpec, SpecTint, WidgetTheme,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use core::any::Any;
 use core::ops::RangeInclusive;
-use nami::{Binding, Signal};
-use std::cell::RefCell;
+use kurbo::{Point, Rect, Size};
+use nami::{Binding, Computed, Signal, SignalExt as _};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use waterui::ViewExt as _;
 use waterui_controls::ControlSize;
-use waterui_controls::label::Label;
-use waterui_controls::slider::{SliderConfig, ValueFormatter};
+use waterui_controls::label::{Label, LabelDisplayMode};
+use waterui_controls::slider::{SliderConfig, ValueFormatter, snap};
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::interaction::InteractionState;
+use waterui_core::layout::Alignment;
 use waterui_core::layout::Size as LayoutSize;
-use waterui_core::layout::{HorizontalAlignment, ProposalSize, ViewDimensions};
+use waterui_core::layout::{HorizontalAlignment, LayoutDirection, ProposalSize, ViewDimensions};
+use waterui_text::IntoText as _;
 use waterui_text::styled::StyledStr;
 
-use crate::renderer::RetainedSubview;
-use crate::renderer::local_interaction_state;
+use crate::renderer::{PressFilter, RetainedSubview};
 use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 
 /// The retained render state of a slider. A `SliderConfig`'s value-end labels are
@@ -41,25 +49,59 @@ pub struct SliderRenderState<E: crate::text::TextEngine> {
     label_view: RetainedSubview<E>,
     min_value_label: RetainedSubview<E>,
     max_value_label: RetainedSubview<E>,
+    /// Whether a label is set beside either end of the track.
+    value_labels: bool,
     range: RangeInclusive<f64>,
+    step: Option<f64>,
     value: Binding<f64>,
+    /// The value normalized to the range: what the look's parts follow.
+    normalized: Rc<Computed<f64>>,
     size: ControlSize,
     value_indicator: Option<ValueFormatter>,
+    /// The look for the spec it was requested for.
+    look: Option<(SliderSpec, SliderLook)>,
+    /// The live chrome realizing the look.
+    parts: Option<LiveChromeParts>,
+    /// The chrome's reported interaction state.
+    report: Binding<InteractionState>,
+    /// Raised when the value changes, for the accessibility tree to follow
+    /// it without this node re-rendering.
+    value_changed: Rc<Cell<bool>>,
+    /// Keeps the value watcher subscribed.
+    value_watch: Option<Box<dyn Any>>,
+    /// The value indicator's text, following the value through its own
+    /// reactive content; built for the current look.
+    indicator_text: Option<RetainedSubview<E>>,
 }
 
 impl<E: crate::text::TextEngine> SliderRenderState<E> {
     pub(crate) fn from_config(config: SliderConfig) -> Self {
-        let (label, min_value_label, max_value_label, range, value, size, value_indicator) =
+        let (label, min_value_label, max_value_label, range, value, size, value_indicator, step) =
             config.into_parts();
+        let start = *range.start();
+        let end = *range.end();
+        assert!(start < end, "hydrolysis slider requires range start < end");
+        let normalized = Computed::new(
+            value.map(move |value: f64| (value.clamp(start, end) - start) / (end - start)),
+        );
         Self {
             label_view: RetainedSubview::new(AnyView::new(label.clone())),
             label,
+            value_labels: !min_value_label.is::<()>() || !max_value_label.is::<()>(),
             min_value_label: RetainedSubview::new(min_value_label),
             max_value_label: RetainedSubview::new(max_value_label),
             range,
+            step,
             value,
+            normalized: Rc::new(normalized),
             size,
             value_indicator,
+            look: None,
+            parts: None,
+            report: Binding::container(InteractionState::empty()),
+            value_changed: Rc::new(Cell::new(false)),
+            value_watch: None,
+            indicator_text: None,
         }
     }
 
@@ -83,6 +125,69 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
             | self.min_value_label.take_layout_dirty_if_built()
             | self.max_value_label.take_layout_dirty_if_built()
     }
+
+    fn spec(&self, env: &Environment) -> SliderSpec {
+        slider_spec(
+            &self.label,
+            self.size,
+            &self.range,
+            self.step,
+            self.value_labels,
+            self.value_indicator.is_some(),
+            env,
+        )
+    }
+
+    /// The look for `spec`: the one already held when the spec is unchanged,
+    /// otherwise requested again.
+    fn look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: &SliderSpec,
+        env: &Environment,
+    ) -> &SliderLook {
+        if self.look.as_ref().is_none_or(|(held, _)| held != spec) {
+            self.look = Some((spec.clone(), theme.slider(spec, env)));
+            self.indicator_text = None;
+        }
+        &self.look.as_ref().expect("the look was just ensured").1
+    }
+
+    /// The look for `spec` without holding it: the held one, or a fresh one
+    /// for a measurement ahead of the render that holds it.
+    fn peek(
+        &self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: &SliderSpec,
+        env: &Environment,
+    ) -> SliderLook {
+        self.look
+            .as_ref()
+            .filter(|(held, _)| held == spec)
+            .map_or_else(|| theme.slider(spec, env), |(_, look)| look.clone())
+    }
+}
+
+/// The spec of a slider in `env`.
+fn slider_spec(
+    label: &Label,
+    size: ControlSize,
+    range: &RangeInclusive<f64>,
+    step: Option<f64>,
+    value_labels: bool,
+    value_indicator: bool,
+    env: &Environment,
+) -> SliderSpec {
+    SliderSpec::new(
+        size,
+        range.clone(),
+        step,
+        waterui_core::layout::layout_direction(env).snapshot(),
+        SpecTint::resolve(env),
+        !matches!(label.effective_display_mode(env), LabelDisplayMode::Hidden),
+        value_labels,
+        value_indicator,
+    )
 }
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SliderConfig> {
@@ -96,15 +201,184 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SliderConfig> {
     }
 }
 
+/// Measures a slider from its config, without a retained node.
+pub fn measure_slider_intrinsic<E: crate::text::TextEngine>(
+    slider: &SliderConfig,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
+) -> LayoutSize {
+    let value_labels = !slider.min_value_label().is::<()>() || !slider.max_value_label().is::<()>();
+    let spec = slider_spec(
+        slider.label(),
+        slider.size(),
+        slider.range(),
+        slider.step(),
+        value_labels,
+        slider.value_indicator().is_some(),
+        env,
+    );
+    let look = theme.slider(&spec, env);
+    let measured = Measured {
+        label: crate::renderer::measure_label_intrinsic(slider.label(), state, env, theme),
+        min: crate::renderer::measure_view_intrinsic(slider.min_value_label(), state, env, theme),
+        max: crate::renderer::measure_view_intrinsic(slider.max_value_label(), state, env, theme),
+    };
+    intrinsic_size(&look, &spec, &measured)
+}
+
+/// The sizes of a slider's labels, as measured.
+struct Measured {
+    label: LayoutSize,
+    min: LayoutSize,
+    max: LayoutSize,
+}
+
+/// What of the slider's labels the look draws: the main label above the
+/// row when the slider has one and the look reserves a band for it, the end
+/// labels when it has any. Everything else measures as zero, so the layout
+/// reserves nothing for a label that is not drawn.
+struct Drawn {
+    label: f64,
+    min: Size,
+    max: Size,
+}
+
+impl Drawn {
+    fn new(look: &SliderLook, spec: &SliderSpec, measured: &Measured) -> Self {
+        let size = |size: LayoutSize| Size::new(f64::from(size.width), f64::from(size.height));
+        let label = if spec.has_label() && look.layout().label_spacing.is_some() {
+            f64::from(measured.label.height)
+        } else {
+            0.0
+        };
+        let (min, max) = if spec.has_value_labels() {
+            (size(measured.min), size(measured.max))
+        } else {
+            (Size::ZERO, Size::ZERO)
+        };
+        Self { label, min, max }
+    }
+
+    /// The height reserved above the control row for the label.
+    fn band(&self, layout: &SliderLayout) -> f64 {
+        match layout.label_spacing {
+            Some(spacing) if self.label > 0.0 => self.label + spacing,
+            _ => 0.0,
+        }
+    }
+
+    /// The control row's height: the knob's travel, no shorter than a label
+    /// beside the track.
+    const fn row_height(&self, layout: &SliderLayout) -> f64 {
+        layout.row_height.max(self.min.height).max(self.max.height)
+    }
+
+    /// The room beside the track on its left and right: an end label, its
+    /// gap to the track and its inset from the edge, or the track's own
+    /// inset where there is no label. The minimum end is on the right in a
+    /// right-to-left layout.
+    fn sides(&self, layout: &SliderLayout, direction: LayoutDirection) -> (f64, f64) {
+        let side = |label: f64| {
+            if label > 0.0 {
+                layout.label_inset + label + layout.label_gap
+            } else {
+                layout.track_inset
+            }
+        };
+        match direction {
+            LayoutDirection::RightToLeft => (side(self.max.width), side(self.min.width)),
+            LayoutDirection::LeftToRight => (side(self.min.width), side(self.max.width)),
+        }
+    }
+}
+
+/// The slider's intrinsic size from its look: the narrowest the track and
+/// its end labels allow, and the label band over the control row.
+fn intrinsic_size(look: &SliderLook, spec: &SliderSpec, measured: &Measured) -> LayoutSize {
+    let layout = look.layout();
+    let drawn = Drawn::new(look, spec, measured);
+    let (left, right) = drawn.sides(layout, spec.direction());
+    let width = f64::from(measured.label.width).max(left + layout.minimum_track + right);
+    let height = drawn.band(layout) + drawn.row_height(layout);
+    LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    )
+}
+
+/// Where a slider's parts lie in `bounds`.
+struct Placed {
+    label: Option<Rect>,
+    min_label: Option<Rect>,
+    max_label: Option<Rect>,
+    /// The row between the two ends of the track.
+    track: Rect,
+}
+
+/// Lays the slider out in `bounds` by its look: the same measures
+/// [`intrinsic_size`] reads.
+fn place(look: &SliderLook, spec: &SliderSpec, measured: &Measured, bounds: Rect) -> Placed {
+    let layout = look.layout();
+    let drawn = Drawn::new(look, spec, measured);
+    let direction = spec.direction();
+    let (left, right) = drawn.sides(layout, direction);
+    let band = drawn.band(layout);
+    let label = (drawn.label > 0.0).then(|| {
+        Rect::new(
+            bounds.x0,
+            bounds.y0,
+            bounds.x1,
+            (bounds.y0 + drawn.label).min(bounds.y1),
+        )
+    });
+    let row = Rect::new(
+        bounds.x0,
+        (bounds.y0 + band).min(bounds.y1),
+        bounds.x1,
+        bounds.y1,
+    );
+    let center_y = f64::midpoint(row.y0, row.y1);
+    let track = Rect::from_center_size(
+        Point::new(f64::midpoint(bounds.x0 + left, bounds.x1 - right), center_y),
+        Size::new(bounds.width() - left - right, layout.row_height),
+    );
+    assert!(
+        track.width() > 0.0,
+        "hydrolysis slider resolved a non-positive track width"
+    );
+    let beside = |size: Size, x0: f64| {
+        (size.width > 0.0 && row.height() > 0.0)
+            .then(|| label_beside_control_bounds(x0, x0 + size.width, row, track, size.height))
+    };
+    let left_label = |size: Size| beside(size, bounds.x0 + layout.label_inset);
+    let right_label = |size: Size| beside(size, bounds.x1 - layout.label_inset - size.width);
+    let (min_label, max_label) = match direction {
+        LayoutDirection::RightToLeft => (right_label(drawn.min), left_label(drawn.max)),
+        LayoutDirection::LeftToRight => (left_label(drawn.min), right_label(drawn.max)),
+    };
+    Placed {
+        label,
+        min_label,
+        max_label,
+        track,
+    }
+}
+
 /// Field-level accessibility emission for the [`SliderRenderState`]-based
 /// retained node path.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the node's fields, passed apart because the caller holds the state borrowed"
+)]
 fn slider_accessibility_parts<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     label: &Label,
     range: &RangeInclusive<f64>,
+    step: Option<f64>,
     value: &Binding<f64>,
     env: &Environment,
     focus_keys: &[crate::renderer::InteractionKey],
@@ -132,11 +406,14 @@ fn slider_accessibility_parts<E: crate::text::TextEngine>(
         let start = *range.start();
         let end = *range.end();
         assert!(start < end, "hydrolysis slider requires range start < end");
-        let current = renderer.read_signal(value).clamp(start, end);
+        // Read without watching: the node does not re-render for a value
+        // change, the tree follows it through `register_live_numeric`.
+        let current = value.snapshot().clamp(start, end);
+        let step = step.unwrap_or_else(|| slider_step_for_range(range.clone()));
         node.set_numeric_value(current);
         node.set_min_numeric_value(start);
         node.set_max_numeric_value(end);
-        node.set_numeric_value_step(slider_step_for_range(range.clone()));
+        node.set_numeric_value_step(step);
         node.add_action(AccessibilityAction::Focus);
         // A disabled slider stays in the tree (focusable, announced as
         // disabled) but exposes no value actions and no action target.
@@ -150,7 +427,7 @@ fn slider_accessibility_parts<E: crate::text::TextEngine>(
             Some(AccessibilityActionTarget::Slider {
                 value: value.clone(),
                 range: range.clone(),
-                step: slider_step_for_range(range.clone()),
+                step,
             })
         };
         if let Some(node_id) = renderer.register_accessibility_leaf(ctx, node, env, action_target) {
@@ -161,14 +438,14 @@ fn slider_accessibility_parts<E: crate::text::TextEngine>(
     }
     #[cfg(not(feature = "accessibility"))]
     {
-        let _ = (renderer, ctx, label, range, value, env, focus_keys);
+        let _ = (renderer, ctx, label, range, step, value, env, focus_keys);
     }
 }
 
-/// Measures a retained slider leaf from its [`SliderRenderState`], mirroring
-/// [`measure_slider_intrinsic`] but reading the value-end labels from their
-/// already-built [`RetainedSubview`]s (the measure path has no renderer to build
-/// on, so the labels are pre-built at tree-build time).
+/// Measures a retained slider leaf from its [`SliderRenderState`], reading
+/// the value-end labels from their already-built [`RetainedSubview`]s (the
+/// measure path has no renderer to build on, so the labels are pre-built at
+/// tree-build time).
 pub fn measure_slider_node<E: crate::text::TextEngine>(
     render_state: &SliderRenderState<E>,
     _proposal: ProposalSize,
@@ -176,42 +453,22 @@ pub fn measure_slider_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let metrics = theme.slider_metrics(render_state.size);
-    let label_size = render_state.label_view.measure_built(state, env, theme);
-    let min_label_size = render_state
-        .min_value_label
-        .measure_built(state, env, theme);
-    let max_label_size = render_state
-        .max_value_label
-        .measure_built(state, env, theme);
-
-    let control_row_height = metrics
-        .handle_height
-        .max(f64::from(min_label_size.height))
-        .max(f64::from(max_label_size.height));
-    let label_height = f64::from(label_size.height);
-    let intrinsic_height = if label_height > 0.0 {
-        label_height + metrics.vertical_spacing + control_row_height
-    } else {
-        control_row_height
+    let spec = render_state.spec(env);
+    let look = render_state.peek(theme, &spec, env);
+    let measured = Measured {
+        label: render_state.label_view.measure_built(state, env, theme),
+        min: render_state
+            .min_value_label
+            .measure_built(state, env, theme),
+        max: render_state
+            .max_value_label
+            .measure_built(state, env, theme),
     };
-
-    let min_width = f64::from(label_size.width).max(metrics.horizontal_inset.mul_add(
-        2.0,
-        f64::from(min_label_size.width)
-            + metrics.horizontal_spacing
-            + metrics.min_track_width
-            + metrics.horizontal_spacing
-            + f64::from(max_label_size.width),
-    ));
-    ViewDimensions::new(LayoutSize::new(
-        crate::num_cast::f64_as_f32(min_width),
-        crate::num_cast::f64_as_f32(intrinsic_height),
-    ))
+    ViewDimensions::new(intrinsic_size(&look, &spec, &measured))
 }
 
 /// Renders a retained slider leaf every flush: emits a11y (unless hidden) then the
-/// track + thumb + labels + drag target, reading the value signal each frame.
+/// track + knob + labels + drag target.
 pub fn render_slider_node<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<SliderRenderState<E>>>,
@@ -228,6 +485,7 @@ pub fn render_slider_node<E: crate::text::TextEngine>(
             Some(render_ctx),
             &slider.label,
             &slider.range,
+            slider.step,
             &slider.value,
             env,
             &[crate::renderer::InteractionKey::for_rc(state, 0)],
@@ -236,6 +494,43 @@ pub fn render_slider_node<E: crate::text::TextEngine>(
     render_slider_parts(ctx, state, env);
 }
 
+/// The knob's centre for the normalized `value` on `track`.
+fn knob_center(track: Rect, value: f64, direction: LayoutDirection) -> Point {
+    let along = value * track.width();
+    Point::new(
+        match direction {
+            LayoutDirection::RightToLeft => track.x1 - along,
+            LayoutDirection::LeftToRight => track.x0 + along,
+        },
+        track.center().y,
+    )
+}
+
+/// The value a drag to `local` sets, normalized to the range, under
+/// `mapping`; `None` when the mapping needs a press point and there is none.
+fn dragged_value(
+    mapping: DragMapping,
+    track: Rect,
+    direction: LayoutDirection,
+    local: Point,
+    press: Option<(Point, f64)>,
+) -> Option<f64> {
+    let rtl = matches!(direction, LayoutDirection::RightToLeft);
+    let toward_end = |along: f64| if rtl { -along } else { along };
+    let value = match mapping {
+        DragMapping::Absolute => {
+            toward_end((local.x - track.x0) / track.width() - if rtl { 1.0 } else { 0.0 })
+        }
+        DragMapping::Relative { .. } => {
+            let (press, value) = press?;
+            value + toward_end((local.x - press.x) / track.width())
+        }
+    };
+    Some(value.clamp(0.0, 1.0))
+}
+
+/// Binds the slider's interaction, lays its look out and lists it: the
+/// labels, the live parts of the look and the drag target.
 #[expect(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
@@ -248,7 +543,8 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
-    let metrics = theme.slider_metrics(state.size);
+    let spec = state.spec(env);
+    let look = state.look(&theme, &spec, env).clone();
     // Reading the disabled signal watches it, so a change schedules a frame
     // and this persistent node re-renders (and re-registers input) with the
     // new state.
@@ -256,271 +552,314 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
         let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
+    // The value is deliberately not watched: a value change re-renders
+    // nothing. The look's parts and the indicator's text follow it live, the
+    // accessibility tree through the watcher below, and a drag reads it when
+    // the press lands.
+    let value_binding = state.value.clone();
+    let range_start = *state.range.start();
+    let range_end = *state.range.end();
+    let span = range_end - range_start;
+    let direction = spec.direction();
+    if state.value_watch.is_none() {
+        let changed = Rc::clone(&state.value_changed);
+        let frames = ctx.renderer_mut().frame_signals();
+        let armed = Rc::new(Cell::new(false));
+        let armed_for_watch = Rc::clone(&armed);
+        state.value_watch = Some(Box::new(value_binding.watch(move |_| {
+            // The registration-time emission echoes the value read now.
+            if !armed_for_watch.get() {
+                return;
+            }
+            changed.set(true);
+            // Wakes the pump for the accessibility publish. A redraw is the
+            // cheapest request: it marks nothing and re-encodes nothing.
+            frames.request_redraw();
+        })));
+        armed.set(true);
+    }
+    #[cfg(feature = "accessibility")]
+    ctx.renderer_mut().register_live_numeric(
+        interaction_key.clone(),
+        Rc::clone(&state.value_changed),
+        value_binding.clone(),
+        state.range.clone(),
+    );
+
     // Every label is a retained node sub-view re-flushed at its rect; reactive
     // content stays live through the node's own per-frame re-flush, with no
-    // dispatch. The main label sizes the top row, the value-end labels flank the
-    // track. A disabled control dims every label to the theme's
+    // dispatch. A disabled control dims every label to the theme's
     // disabled-content alpha (Material: on-surface at 38%).
-    let label_height = if ctx.bounds.height() >= 36.0 {
-        f64::from(
+    let measured = Measured {
+        label: layout_size(state.label_view.measure_intrinsic(ctx.renderer_mut(), env)),
+        min: layout_size(
             state
-                .label_view
-                .measure_intrinsic(ctx.renderer_mut(), env)
-                .height,
-        )
-        .max(20.0)
-    } else {
-        0.0
+                .min_value_label
+                .measure_intrinsic(ctx.renderer_mut(), env),
+        ),
+        max: layout_size(
+            state
+                .max_value_label
+                .measure_intrinsic(ctx.renderer_mut(), env),
+        ),
     };
-    if label_height > 0.0 {
-        let label_rect = kurbo::Rect::new(
-            ctx.bounds.x0,
-            ctx.bounds.y0,
-            ctx.bounds.x1,
-            (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
+    let placed = place(&look, &spec, &measured, ctx.bounds);
+    let dim = |ctx: &mut WidgetRenderContext<'_, E>,
+               role: &'static str,
+               rect: Rect,
+               place: &mut dyn FnMut(&mut WidgetRenderContext<'_, E>)| {
+        ctx.with_scope_if(
+            disabled,
+            crate::renderer::mount::ScopeKey { role, item: 0 },
+            theme.disabled_content_alpha(),
+            rect,
+            place,
         );
+    };
+    if let Some(label_rect) = placed.label {
         // The label's semantics are merged into the slider's own node by
         // `slider_accessibility_parts`, so the sub-view flushes visual-only.
         // The min/max value labels below stay exposed: their text (e.g.
         // "Dark"/"Bright") is not carried by the slider node.
-        ctx.with_scope_if(
-            disabled,
-            crate::renderer::mount::ScopeKey {
-                role: "label-dim",
-                item: 0,
-            },
-            theme.disabled_content_alpha(),
-            label_rect,
-            |ctx| {
-                let render_ctx = ctx.render_context();
-                let label_area = ctx.safe_area_for(label_rect);
-                let label_view = &mut state.label_view;
-                ctx.renderer_mut()
-                    .with_suppressed_accessibility(|renderer| {
-                        label_view.place(
-                            renderer,
-                            render_ctx,
-                            env,
-                            ProposalSize::UNSPECIFIED,
-                            label_rect,
-                            label_area,
-                        );
-                    });
-            },
-        );
+        dim(ctx, "label-dim", label_rect, &mut |ctx| {
+            let render_ctx = ctx.render_context();
+            let label_area = ctx.safe_area_for(label_rect);
+            let label_view = &mut state.label_view;
+            ctx.renderer_mut()
+                .with_suppressed_accessibility(|renderer| {
+                    label_view.place(
+                        renderer,
+                        render_ctx,
+                        env,
+                        ProposalSize::UNSPECIFIED,
+                        label_rect,
+                        label_area,
+                    );
+                });
+        });
     }
-
-    let min_label_size = state
-        .min_value_label
-        .measure_intrinsic(ctx.renderer_mut(), env);
-    let max_label_size = state
-        .max_value_label
-        .measure_intrinsic(ctx.renderer_mut(), env);
-    let min_label_width = f64::from(min_label_size.width);
-    let max_label_width = f64::from(max_label_size.width);
-    let min_label_x0 = ctx.bounds.x0 + metrics.horizontal_inset;
-    let min_label_x1 = min_label_x0 + min_label_width;
-    let max_label_x1 = ctx.bounds.x1 - metrics.horizontal_inset;
-    let max_label_x0 = max_label_x1 - max_label_width;
-    let control_top = ctx.bounds.y0 + label_height;
-    let control_bottom = ctx.bounds.y1;
-    let control_height = control_bottom - control_top;
-    let controls_row = kurbo::Rect::new(ctx.bounds.x0, control_top, ctx.bounds.x1, control_bottom);
-    let track_left = if min_label_width > 0.0 {
-        min_label_x1 + metrics.horizontal_spacing
-    } else {
-        ctx.bounds.x0 + metrics.horizontal_inset
-    };
-    let track_right = if max_label_width > 0.0 {
-        max_label_x0 - metrics.horizontal_spacing
-    } else {
-        ctx.bounds.x1 - metrics.horizontal_inset
-    };
-    let track_center_y = control_top + control_height / 2.0;
-    let track_rect = kurbo::Rect::new(
-        track_left,
-        track_center_y - metrics.track_height / 2.0,
-        track_right,
-        track_center_y + metrics.track_height / 2.0,
-    );
-
-    if min_label_width > 0.0 && control_height > 0.0 {
-        let min_label_rect = label_beside_control_bounds(
-            min_label_x0,
-            min_label_x1,
-            controls_row,
-            track_rect,
-            f64::from(min_label_size.height),
-        );
-        ctx.with_scope_if(
-            disabled,
-            crate::renderer::mount::ScopeKey {
-                role: "min-label-dim",
-                item: 0,
-            },
-            theme.disabled_content_alpha(),
-            min_label_rect,
-            |ctx| {
-                let render_ctx = ctx.render_context();
-                let label_area = ctx.safe_area_for(min_label_rect);
-                state.min_value_label.place(
-                    ctx.renderer_mut(),
-                    render_ctx,
-                    env,
-                    ProposalSize::UNSPECIFIED,
-                    min_label_rect,
-                    label_area,
-                );
-            },
-        );
-    }
-    if max_label_width > 0.0 && control_height > 0.0 {
-        let max_label_rect = label_beside_control_bounds(
-            max_label_x0,
-            max_label_x1,
-            controls_row,
-            track_rect,
-            f64::from(max_label_size.height),
-        );
-        ctx.with_scope_if(
-            disabled,
-            crate::renderer::mount::ScopeKey {
-                role: "max-label-dim",
-                item: 0,
-            },
-            theme.disabled_content_alpha(),
-            max_label_rect,
-            |ctx| {
-                let render_ctx = ctx.render_context();
-                let label_area = ctx.safe_area_for(max_label_rect);
-                state.max_value_label.place(
-                    ctx.renderer_mut(),
-                    render_ctx,
-                    env,
-                    ProposalSize::UNSPECIFIED,
-                    max_label_rect,
-                    label_area,
-                );
-            },
-        );
-    }
-
-    let range_start = *state.range.start();
-    let range_end = *state.range.end();
-    let span = range_end - range_start;
-    assert!(span > 0.0, "hydrolysis slider requires range start < end");
-
-    // Reading the value through `read_signal` watches it (registers a
-    // retained-refresh watcher), so a value change schedules a frame and this
-    // persistent node re-renders the new fill/thumb position.
-    let value_binding = state.value.clone();
-    let clamped = ctx
-        .renderer_mut()
-        .read_signal(&value_binding)
-        .clamp(range_start, range_end);
-    let progress = (clamped - range_start) / span;
-    let fill_right = f64::mul_add(track_right - track_left, progress, track_left);
-    let fill_rect = kurbo::Rect::new(
-        track_left,
-        track_center_y - metrics.track_height / 2.0,
-        fill_right,
-        track_center_y + metrics.track_height / 2.0,
-    );
-    let hit_bounds = kurbo::Rect::new(
-        track_left - metrics.handle_overhang(),
-        control_top,
-        track_right + metrics.handle_overhang(),
-        control_bottom,
-    );
-    let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
-        interaction_key,
-        hit_bounds,
-        env,
-        disabled,
-    );
-    let thumb_center = kurbo::Point::new(fill_right, track_center_y);
-    let interaction =
-        local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
-    {
-        ctx.draw_context(|draw| {
-            theme.draw_slider_track(&mut *draw, track_rect, fill_rect, state.size, interaction);
-            theme.draw_slider_thumb(
-                &mut *draw,
-                thumb_center,
-                metrics.handle_overhang(),
-                state.size,
-                interaction,
+    if let Some(rect) = placed.min_label {
+        dim(ctx, "min-label-dim", rect, &mut |ctx| {
+            let render_ctx = ctx.render_context();
+            let label_area = ctx.safe_area_for(rect);
+            state.min_value_label.place(
+                ctx.renderer_mut(),
+                render_ctx,
+                env,
+                ProposalSize::UNSPECIFIED,
+                rect,
+                label_area,
             );
-            theme.draw_slider_thumb_state_layer(
-                &mut *draw,
-                thumb_center,
-                metrics.handle_overhang(),
-                state.size,
-                interaction,
+        });
+    }
+    if let Some(rect) = placed.max_label {
+        dim(ctx, "max-label-dim", rect, &mut |ctx| {
+            let render_ctx = ctx.render_context();
+            let label_area = ctx.safe_area_for(rect);
+            state.max_value_label.place(
+                ctx.renderer_mut(),
+                render_ctx,
+                env,
+                ProposalSize::UNSPECIFIED,
+                rect,
+                label_area,
             );
         });
     }
 
-    // The value indicator floats above the thumb while the pointer holds the
-    // drag; the theme draws the chrome and the renderer lays the formatted
-    // value inside it. It stays visual-only — the slider node already carries
-    // the live numeric value to assistive technology.
-    if interaction.state.contains(InteractionState::PRESSED)
-        && let Some(formatter) = &state.value_indicator
-    {
-        let indicator_metrics = theme.slider_value_indicator_metrics();
-        let label = StyledStr::plain(formatter.format(clamped))
-            .font(theme.slider_value_indicator_font())
-            .foreground(theme.slider_value_indicator_color());
-        let text_size = HydrolysisRenderer::measure_text_dimensions(
-            ctx.state_mut(),
-            label.clone(),
-            HorizontalAlignment::Center,
-            env,
-            None,
-            Some(1),
+    let track = placed.track;
+    let knob = *look.knob();
+    // Where a press lands: the track and the room for the knob beyond its
+    // ends. A drag that holds the knob alone declines a press off the knob
+    // when it lands, against the knob's position then.
+    let hit_bounds = {
+        let target = knob.target(track.center());
+        Rect::new(
+            track.x0 - target.width() / 2.0,
+            track.y0.min(target.y0),
+            track.x1 + target.width() / 2.0,
+            track.y1.max(target.y1),
         )
-        .size;
-        let bubble_width = indicator_metrics
-            .padding_x
-            .mul_add(2.0, f64::from(text_size.width))
-            .max(indicator_metrics.min_width);
-        let bubble_height = indicator_metrics
-            .padding_y
-            .mul_add(2.0, f64::from(text_size.height))
-            .max(indicator_metrics.min_height);
-        let thumb_top = track_center_y - metrics.handle_height / 2.0;
-        let bubble_bottom = thumb_top - indicator_metrics.thumb_gap;
-        let bubble_center_x = thumb_center.x.clamp(
-            ctx.bounds.x0 + bubble_width / 2.0,
-            ctx.bounds.x1 - bubble_width / 2.0,
-        );
-        let bubble = kurbo::Rect::new(
-            bubble_center_x - bubble_width / 2.0,
-            bubble_bottom - bubble_height,
-            bubble_center_x + bubble_width / 2.0,
-            bubble_bottom,
-        );
-        {
-            ctx.draw_context(|draw| {
-                theme.draw_slider_value_indicator(&mut *draw, bubble);
-            });
-        }
-        let text_rect = kurbo::Rect::new(
-            bubble.x0,
-            (bubble.height() - f64::from(text_size.height)).mul_add(0.5, bubble.y0),
-            bubble.x1,
-            bubble.y1,
-        );
-        let text_ctx = RenderContext::new(ctx.local, text_rect);
-        ctx.renderer_mut()
-            .render_styled_text(text_ctx, label, HorizontalAlignment::Center, env);
-    }
-    let usable_track = track_right - track_left;
-    assert!(
-        usable_track > 0.0,
-        "hydrolysis slider resolved a non-positive track width"
+    };
+    let chrome = look.chrome().clone();
+    let (_, press_slot, handles) = ctx.renderer_mut().bind_live_chrome_target(
+        interaction_key.clone(),
+        hit_bounds,
+        env,
+        disabled,
+        &chrome,
     );
+    let flags = ctx
+        .renderer_mut()
+        .reported_interaction_state(&interaction_key);
+
+    // The value indicator: a bubble resting above the start of the track
+    // and carried along with the knob while the slider is held. It is as
+    // wide as the widest of the range's ends needs, so it holds its shape
+    // through a drag.
+    let indicator = look
+        .get_value_indicator()
+        .filter(|_| spec.has_value_indicator())
+        .zip(state.value_indicator.clone())
+        .map(|(indicator, formatter)| {
+            let font = indicator.get_font().clone();
+            let color = indicator.get_color().clone();
+            let text: Rc<dyn Fn(f64) -> StyledStr> = Rc::new(move |value: f64| {
+                StyledStr::plain(formatter.format(value))
+                    .font(font.clone())
+                    .foreground(color.clone())
+            });
+            let measure = |renderer: &mut WidgetRenderContext<'_, E>, value: f64| {
+                HydrolysisRenderer::measure_text_dimensions(
+                    renderer.state_mut(),
+                    text(value),
+                    HorizontalAlignment::Center,
+                    env,
+                    None,
+                    Some(1),
+                )
+                .size
+            };
+            let start_size = measure(ctx, range_start);
+            let end_size = measure(ctx, range_end);
+            let text_size = LayoutSize::new(
+                start_size.width.max(end_size.width),
+                start_size.height.max(end_size.height),
+            );
+            let padding = indicator.get_padding();
+            let minimum = indicator.get_minimum_size();
+            let width = padding
+                .x
+                .mul_add(2.0, f64::from(text_size.width))
+                .max(minimum.width);
+            let height = padding
+                .y
+                .mul_add(2.0, f64::from(text_size.height))
+                .max(minimum.height);
+            let start = knob_center(track, 0.0, direction);
+            let bottom = start.y - knob.size.height / 2.0 - indicator.get_gap();
+            let rest = Rect::new(
+                start.x - width / 2.0,
+                bottom - height,
+                start.x + width / 2.0,
+                bottom,
+            );
+            let least = ctx.bounds.x0 + width / 2.0;
+            let greatest = (ctx.bounds.x1 - width / 2.0).max(least);
+            (
+                IndicatorContent {
+                    container: Rc::clone(indicator.container()),
+                    rest,
+                    limits: (least, greatest),
+                },
+                text,
+            )
+        });
+    // The indicator's text is its own retained node following the value
+    // reactively; the bubble's rect centres it.
+    let mut indicator_text = state.indicator_text.take();
+    if let Some((_, text)) = &indicator
+        && indicator_text.is_none()
+    {
+        let text = Rc::clone(text);
+        let styled: Computed<StyledStr> =
+            Computed::new(value_binding.map(move |value: f64| text(value)));
+        let mut subview = RetainedSubview::new(AnyView::new(
+            styled.into_text().alignment(Alignment::Center),
+        ));
+        subview.ensure_built(ctx.renderer_mut(), env);
+        indicator_text = Some(subview);
+    }
+    let content = ChromeContent {
+        group_opacity: Some(look.get_group_opacity().clone()),
+        label_color: None,
+        slider: Some(SliderContent {
+            parts: look.parts().to_vec(),
+            value: Rc::clone(&state.normalized),
+            mirrored: matches!(direction, LayoutDirection::RightToLeft),
+            indicator: indicator.as_ref().map(|(content, ..)| content.clone()),
+        }),
+    };
+    let report = state.report.clone();
+    let parts = LiveChromeParts::ensure(
+        &mut state.parts,
+        &chrome,
+        &content,
+        track,
+        flags,
+        env,
+        &report,
+    )
+    .clone();
+    handles.attach_live(Rc::clone(parts.chrome()));
+    let live = Rc::clone(parts.chrome());
+
+    // The slider as one group at the look's group opacity: its parts, then
+    // the value indicator over them.
+    let clip = indicator
+        .as_ref()
+        .map_or(ctx.bounds, |(content, ..)| ctx.bounds.union(content.rest));
+    let clip = clip.union(track.inflate(knob.size.width, knob.size.height / 2.0));
+    let body = |ctx: &mut WidgetRenderContext<'_, E>| {
+        let render_ctx = ctx.render_context();
+        parts.push_below(ctx.renderer_mut(), render_ctx);
+        if let (Some((content, _)), Some(indicator_text), Some((opacity, offset))) = (
+            &indicator,
+            indicator_text.as_mut(),
+            live.indicator_operands(),
+        ) {
+            let operands = crate::renderer::ScopeOperands {
+                opacity: Some(opacity),
+                transform: Some(offset),
+            };
+            ctx.with_live_scope(
+                crate::renderer::mount::ScopeKey {
+                    role: "slider-indicator",
+                    item: 0,
+                },
+                operands,
+                clip,
+                |ctx| {
+                    let render_ctx = ctx.render_context();
+                    parts.push_indicator(ctx.renderer_mut(), render_ctx);
+                    let text_rect = content.rest;
+                    let label_area = ctx.safe_area_for(text_rect);
+                    let render_ctx = ctx.render_context();
+                    indicator_text.place(
+                        ctx.renderer_mut(),
+                        render_ctx,
+                        env,
+                        ProposalSize::UNSPECIFIED,
+                        text_rect,
+                        label_area,
+                    );
+                },
+            );
+        }
+        let render_ctx = ctx.render_context();
+        parts.push_above(ctx.renderer_mut(), render_ctx);
+    };
+    // An opacity that varies between renders draws the slider as one group
+    // following the chrome's operand; a fixed one groups it only when it
+    // fades.
+    let key = crate::renderer::mount::ScopeKey {
+        role: "slider-group",
+        item: 0,
+    };
+    if let Some(opacity) = live.group_opacity() {
+        let operands = crate::renderer::ScopeOperands {
+            opacity: Some(opacity),
+            transform: None,
+        };
+        ctx.with_live_scope(key, operands, clip, body);
+    } else {
+        let opacity = look
+            .get_group_opacity()
+            .target(&Inputs::at_rest(track, flags, &()));
+        ctx.with_scope_if(opacity < 1.0, key, opacity, clip, body);
+    }
+    state.indicator_text = indicator_text;
+
     // A disabled slider registers no drag target: the pointer neither presses
     // nor drags it. Targets are re-registered every flush, so re-enabling
     // restores interactivity on the next frame.
@@ -533,22 +872,56 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
     // here goes stale the moment an ancestor moves the slider without
     // re-recording it (a scroll, a transition).
     let placement = ctx.renderer_mut().current_placement();
-    let value_epsilon = slider_value_epsilon(span, usable_track);
-    let keyboard_value = value_binding.clone();
-    let keyboard_step = span / 100.0;
+    let value_epsilon = slider_value_epsilon(span, track.width());
+    let mapping = look.get_drag();
+    let step = state.step;
+    let drag_value = value_binding.clone();
+    let drag_chrome = Rc::clone(&live);
+    // A drag that holds the knob alone takes only a press on the knob, at
+    // the knob's position as the press lands; any other press reaches
+    // whatever lies beneath, a scroll view's drag among them. The value is
+    // read for that one press, not watched.
+    let press_filter: Option<PressFilter> = (mapping
+        == (DragMapping::Relative { knob_only: true }))
+    .then(|| {
+        let placement = placement.clone();
+        let value = value_binding.clone();
+        Rc::new(move |point: Point| {
+            let local = placement.resolved_transform(true).inverse() * point;
+            let normalized = (value.snapshot().clamp(range_start, range_end) - range_start) / span;
+            knob.target(knob_center(track, normalized, direction))
+                .contains(local)
+        }) as PressFilter
+    });
+    let drag_range = state.range.clone();
+    let keyboard_range = state.range.clone();
+    let keyboard_value = value_binding;
+    let keyboard_step = step.unwrap_or(span / 100.0);
     ctx.renderer_mut().register_interactive_pointer_drag_target(
         hit_bounds,
         press_slot,
+        press_filter,
         move |_renderer, point, _env| {
-            let local_point = placement.resolved_transform(true).inverse() * point;
-            let x = local_point.x.clamp(track_left, track_right);
-            let t = (x - track_left) / usable_track;
-            let next = span.mul_add(t, range_start);
-            if (value_binding.snapshot() - next).abs() <= value_epsilon {
+            let local = placement.resolved_transform(true).inverse() * point;
+            let press = drag_chrome
+                .press_point()
+                .map(|press| (press, drag_chrome.press_value()));
+            let Some(along) = dragged_value(mapping, track, direction, local, press) else {
+                return false;
+            };
+            let next = snap(span.mul_add(along, range_start), &drag_range, step);
+            if let Some((press, _)) = press {
+                drag_chrome.set_drag(Some(local - press));
+            }
+            if (drag_value.snapshot() - next).abs() <= value_epsilon {
                 return false;
             }
-            value_binding.set(next);
-            true
+            // The parts follow the pointer at once, the value change that
+            // follows finding them already there. Nothing re-records, so the
+            // drag asks for no layout.
+            drag_chrome.track_value((next - range_start) / span);
+            drag_value.set(next);
+            false
         },
         move |forward| {
             let current = keyboard_value.snapshot();
@@ -557,14 +930,20 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
             } else {
                 -keyboard_step
             };
-            let next = (current + delta).clamp(range_start, range_end);
-            if (current - next).abs() <= f64::EPSILON {
-                return false;
+            let next = snap(current + delta, &keyboard_range, step);
+            if (current - next).abs() > f64::EPSILON {
+                keyboard_value.set(next);
             }
-            keyboard_value.set(next);
-            true
+            // The parts, the indicator and the accessibility tree follow the
+            // value on their own: nothing asks for layout.
+            false
         },
     );
+}
+
+/// `size` as a layout size.
+const fn layout_size(size: LayoutSize) -> LayoutSize {
+    size
 }
 
 /// Emits a retained slider's accessibility nodes for the semantic walk: the
@@ -585,6 +964,7 @@ pub fn emit_slider_accessibility<E: crate::text::TextEngine>(
         None,
         &state.label,
         &state.range,
+        state.step,
         &state.value,
         env,
         &[interaction_key],

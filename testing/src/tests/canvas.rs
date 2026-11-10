@@ -15,8 +15,9 @@ use waterui::graphics::canvas::{
     Layer, LinearGradient, MeshGradient, Path, PixelBuffer, PixelFormat, RadialGradient,
     RoundedRect, Sampling, Shadow, StrokeStyle,
 };
-use waterui::graphics::canvas::{CanvasText, TextPlacement};
+use waterui::graphics::canvas::TextPlacement;
 use waterui::graphics::color::{Srgb, WorkingColor};
+use waterui::graphics::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
 use waterui::reactive::Signal as _;
 use waterui::reactive::binding;
 use waterui::text::StyledStr;
@@ -364,8 +365,7 @@ fn canvas_scope_records_its_region_again() {
 #[test]
 fn canvas_draws_text_anchored_aligned_wrapped_and_live() {
     let white = Srgb::new(1.0, 1.0, 1.0);
-    let styled =
-        move |text: &str| CanvasText::from(StyledStr::from(text.to_owned()).foreground(white));
+    let styled = move |text: &str| StyledStr::from(text.to_owned()).foreground(white);
     let label = binding::<String>(String::from("Live"));
     let mut app = ui()
         .viewport(360, 300)
@@ -433,7 +433,7 @@ fn canvas_draws_text_anchored_aligned_wrapped_and_live() {
                         + " "
                         + StyledStr::from("mark").background_color(Srgb::new(0.8, 0.2, 0.2));
                     cx.text(
-                        CanvasText::from(marked.foreground(white)),
+                        marked.foreground(white),
                         TextPlacement::at(Point::new(20.0, 272.0)),
                     );
                 })
@@ -447,4 +447,29 @@ fn canvas_draws_text_anchored_aligned_wrapped_and_live() {
     app.snapshot()
         .save_png(output("text_after.png"))
         .expect("the updated text snapshot is writable");
+}
+
+#[test]
+fn animated_mesh_gradient_flows_with_the_canvas_clock() {
+    let mut app = ui()
+        .viewport(360, 240)
+        .theme(Material3::defaults())
+        .mount_offscreen(|| {
+            AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom().speed(1.0))
+                .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+                .a11y_label("Animated mesh")
+        });
+    app.query()
+        .role(Role::IMAGE)
+        .label("Animated mesh")
+        .assert_exists();
+    let _ = app.snapshot();
+    app.pump_for(Duration::from_millis(500));
+    app.snapshot()
+        .save_png(output("animated_mesh_early.png"))
+        .expect("the early snapshot is writable");
+    app.pump_for(Duration::from_secs(20));
+    app.snapshot()
+        .save_png(output("animated_mesh_late.png"))
+        .expect("the late snapshot is writable");
 }

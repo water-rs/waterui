@@ -3025,6 +3025,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         };
         let gpu_cov = gpu_cov::GpuCoverage::new(
             &device,
+            adapter.get_info().backend,
             config.budget.gpu.0 / gpu_cov::BUDGET_SHARE,
             PipelineCache::new(pipeline_cache.as_ref(), &config),
         );
@@ -3397,6 +3398,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     )?;
     let gpu_cov = gpu_cov::GpuCoverage::new(
         &device,
+        adapter.get_info().backend,
         config.budget.gpu.0 / gpu_cov::BUDGET_SHARE,
         PipelineCache::new(pipeline_cache.as_ref(), &config),
     );
@@ -6815,7 +6817,9 @@ impl GpuRenderer {
 
     /// The device's coverage binding limit, when it computes.
     fn coverage_limit(&self, has_compute: bool) -> Option<gpu_cov::CoverageLimit> {
-        has_compute.then(|| gpu_cov::CoverageLimit::new(&self.device.limits()))
+        has_compute.then(|| {
+            gpu_cov::CoverageLimit::new(&self.device.limits(), self.adapter.get_info().backend)
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]

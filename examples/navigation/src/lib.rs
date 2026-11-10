@@ -31,7 +31,9 @@ use mdi::pencil;
 use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::App;
-use waterui::component::list::{List, ListDelete, ListItem, ListMove, Section, row};
+use waterui::component::list::{
+    List, ListContent, ListDelete, ListItem, ListMove, Section, SectionScope, TaggedBy, row,
+};
 use waterui::id::{Id, SelfId};
 use waterui::navigation::{NavigationSplitView, NavigationView, Navigator};
 use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
@@ -622,30 +624,25 @@ fn placeholder() -> impl View {
 }
 
 fn album_sidebar(selection: Binding<Option<Album>>) -> impl View {
-    const ALBUMS: [Album; 3] = [Album::Recents, Album::Favorites, Album::Shared];
-    // `List::content` keys rows by index, so the album selection travels
-    // through a binding mapped to and from those row ids.
-    let selection = Binding::mapping(
-        &selection,
-        |album| album.map(|album| album as usize),
-        move |binding, index| binding.set(index.map(|index| ALBUMS[index])),
-    );
     List::content((Section::new("Albums").content((
         album_row(Album::Recents),
         album_row(Album::Favorites),
         album_row(Album::Shared),
     )),))
-    // The framework writes the binding on pointer, keyboard and accessibility
-    // input; the platform draws its own selection chrome for the row.
+    // Each row is tagged with its album, so the selection is the album
+    // itself. The framework writes the binding on pointer, keyboard and
+    // accessibility input; the platform draws its own selection chrome for
+    // the row.
     .selection(&selection)
 }
 
 /// Static list content is built from row *builders*, so the platform list can
-/// rematerialize a row whenever it scrolls back into view.
-fn album_row(album: Album) -> impl Fn() -> ListItem + 'static {
+/// rematerialize a row whenever it scrolls back into view. The tag is the
+/// value that selects the row.
+fn album_row(album: Album) -> impl ListContent<SectionScope> + TaggedBy<Album> {
     let count = album.count();
 
-    move || {
+    (move || {
         ListItem::new(
             hstack((
                 album_icon().size(20.0, 20.0).foreground(Accent),
@@ -656,7 +653,8 @@ fn album_row(album: Album) -> impl Fn() -> ListItem + 'static {
             .spacing(10.0)
             .padding_with((10.0, 12.0)),
         )
-    }
+    })
+    .tag(album)
 }
 
 fn album_detail(album: Album) -> NavigationView {

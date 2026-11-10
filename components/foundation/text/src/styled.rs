@@ -11,12 +11,11 @@ use nami::signal::IntoComputed;
 use nami::{Signal, impl_constant};
 #[cfg(feature = "markdown")]
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
+use waterui_color::{Color, SurfaceVariantColor};
 use waterui_core::{
     Environment, Str, View,
     handler::{EventHandler, SharedAction},
 };
-use waterui_graphics::canvas::CanvasText;
-use waterui_graphics::color::{Color, SurfaceVariantColor};
 
 /// A set of text attributes for rich text formatting.
 #[derive(Debug, Clone, Default)]
@@ -801,14 +800,6 @@ impl From<String> for StyledStr {
     }
 }
 
-impl From<StyledStr> for CanvasText {
-    /// The text a canvas draws with [`Cx::text`](waterui_graphics::canvas::Cx::text);
-    /// the render target lays it out with the same text stack as a `Text`.
-    fn from(value: StyledStr) -> Self {
-        Self::new(value)
-    }
-}
-
 impl Display for StyledStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_plain())
@@ -912,7 +903,7 @@ mod tests {
             .on_tap(3_u8, move |v: u8| {
                 seen.borrow_mut().push(v);
             })
-            .foreground(waterui_graphics::color::Srgb::new(1.0, 0.0, 0.0))
+            .foreground(waterui_color::Srgb::new(1.0, 0.0, 0.0))
             .underline(true)
             .set_style(&Style::new().italic());
         assert_eq!(text.tap_spans()[0].range(), 0..6);

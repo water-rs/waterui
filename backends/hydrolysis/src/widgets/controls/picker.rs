@@ -21,6 +21,7 @@ use waterui_core::Native;
 use waterui_core::id::Id;
 use waterui_core::layout::{
     HorizontalAlignment, ProposalSize, Size as LayoutSize, StretchAxis, ViewDimensions,
+    layout_direction,
 };
 use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
@@ -694,8 +695,9 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
         .measure_intrinsic(ctx.renderer_mut(), env);
     // One rule decides the label's presence in both measure and render: it is
     // drawn iff its measured height is nonzero.
+    let right_to_left = layout_direction(env).snapshot().is_right_to_left();
     let (label_bounds, text_bounds) =
-        menu_picker_content_rects(ctx.bounds, metrics, f64::from(label_size.height));
+        menu_picker_content_rects(ctx.bounds, metrics, label_size, right_to_left);
     if let Some(label_bounds) = label_bounds {
         flush_picker_label(ctx, owner, env, label_bounds);
     }
@@ -711,20 +713,31 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
 /// selected value, both inset by the metrics' horizontal inset and kept clear
 /// of the dropdown indicator, with the theme's label spacing between them.
 /// A label that measures empty (a hidden or content-free label) draws nothing
-/// and takes no space — the value keeps its full-height inset.
+/// and takes no space — the value keeps its full-height inset. The label is
+/// placed at its measured width, flush with the content's leading edge — the
+/// left in left-to-right layout, the right in right-to-left — so it lines up
+/// with the value, never centred over the field.
 pub fn menu_picker_content_rects(
     bounds: kurbo::Rect,
     metrics: PickerMetrics,
-    label_height: f64,
+    label_size: LayoutSize,
+    right_to_left: bool,
 ) -> (Option<kurbo::Rect>, kurbo::Rect) {
+    let label_height = f64::from(label_size.height);
+    let label_width = f64::from(label_size.width);
     let text_x0 = bounds.x0 + metrics.horizontal_inset;
     let text_x1 = (bounds.x1 - metrics.horizontal_inset - metrics.indicator_space).max(text_x0);
     let text_bottom = bounds.y1 - metrics.vertical_inset;
     if label_height > 0.0 {
+        let (label_x0, label_x1) = if right_to_left {
+            ((text_x1 - label_width).max(text_x0), text_x1)
+        } else {
+            (text_x0, (text_x0 + label_width).min(text_x1))
+        };
         let label_rect = kurbo::Rect::new(
-            text_x0,
+            label_x0,
             bounds.y0 + metrics.vertical_inset,
-            text_x1,
+            label_x1,
             bounds.y0 + metrics.vertical_inset + label_height,
         );
         let value_rect = kurbo::Rect::new(
@@ -1113,6 +1126,7 @@ mod tests {
     use super::{menu_picker_content_rects, radio_group_label_area, segmented_label_area};
     use crate::theme::PickerMetrics;
     use kurbo::Rect;
+    use waterui_core::layout::Size;
 
     fn metrics() -> PickerMetrics {
         PickerMetrics {
@@ -1137,13 +1151,33 @@ mod tests {
     #[test]
     fn labelled_content_places_label_above_value_inside_the_field() {
         let bounds = Rect::new(0.0, 0.0, 320.0, 56.0);
-        let (label, value) = menu_picker_content_rects(bounds, metrics(), 12.0);
+        let (label, value) =
+            menu_picker_content_rects(bounds, metrics(), Size::new(40.0, 12.0), false);
         let label = label.expect("a drawn label must be placed");
 
-        assert_eq!(label, Rect::new(16.0, 8.0, 286.0, 20.0));
+        assert_eq!(label, Rect::new(16.0, 8.0, 56.0, 20.0));
         assert_eq!(value, Rect::new(16.0, 28.0, 286.0, 48.0));
         assert!(bounds.contains_rect(label) && bounds.contains_rect(value));
         approx::assert_relative_eq!(value.y0, label.y1 + metrics().label_spacing);
+    }
+
+    /// The label starts at the content's leading edge at its measured width,
+    /// aligned with the value, and a label wider than the content is clamped to
+    /// the content's far edge. In right-to-left layout the leading edge is the
+    /// right one.
+    #[test]
+    fn label_aligns_with_the_value_at_the_leading_edge() {
+        let bounds = Rect::new(0.0, 0.0, 320.0, 56.0);
+        let rects = |width, right_to_left| {
+            menu_picker_content_rects(bounds, metrics(), Size::new(width, 12.0), right_to_left)
+        };
+        let (label, value) = rects(40.0, false);
+        assert_eq!(label.expect("drawn").x0, value.x0);
+        let (label, value) = rects(40.0, true);
+        let label = label.expect("drawn");
+        assert_eq!((label.x0, label.x1), (246.0, value.x1));
+        assert_eq!(rects(900.0, false).0.expect("drawn").x1, value.x1);
+        assert_eq!(rects(900.0, true).0.expect("drawn").x0, value.x0);
     }
 
     /// A hidden label measures empty: it draws nothing, takes no space, and the
@@ -1151,7 +1185,8 @@ mod tests {
     #[test]
     fn hidden_label_leaves_the_value_alone_in_the_field() {
         let bounds = Rect::new(0.0, 0.0, 320.0, 56.0);
-        let (label, value) = menu_picker_content_rects(bounds, metrics(), 0.0);
+        let (label, value) =
+            menu_picker_content_rects(bounds, metrics(), Size::new(40.0, 0.0), false);
 
         assert!(label.is_none());
         assert_eq!(value, Rect::new(16.0, 8.0, 286.0, 48.0));

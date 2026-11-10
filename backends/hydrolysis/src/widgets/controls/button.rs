@@ -827,6 +827,7 @@ fn bind_button_chrome<E: crate::text::TextEngine>(
         label_color: (title && env.get::<ListRowChrome>().is_none())
             .then(|| look.label().get_color().cloned())
             .flatten(),
+        slider: None,
     };
     let parts = LiveChromeParts::ensure(
         &mut chrome_state.parts,
