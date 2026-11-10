@@ -47,6 +47,13 @@ pub fn centered_label_rect(rect: kurbo::Rect, size: waterui_core::layout::Size) 
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
+/// `rect` reflected about the vertical centre line of `bounds`: where a
+/// right-to-left layout places what a left-to-right one placed at `rect`.
+pub fn mirrored_in(rect: kurbo::Rect, bounds: kurbo::Rect) -> kurbo::Rect {
+    let sum = bounds.x0 + bounds.x1;
+    kurbo::Rect::new(sum - rect.x1, rect.y0, sum - rect.x0, rect.y1)
+}
+
 /// The rect for a label that sits beside its control on a row — a toggle's
 /// label next to its switch or checkbox, a stepper's label next to its
 /// buttons. The label keeps the horizontal extent the widget picked for it,

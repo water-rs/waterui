@@ -1,31 +1,56 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, local_interaction_state,
+    HydroNativeView, HydroState, InteractionKey, RenderContext, SemanticCore, WidgetRenderContext,
     measure_label_intrinsic,
 };
-use crate::theme::StepperEnd;
+use crate::theme::{Chrome, SpecTint, StepperLook, StepperSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use kurbo::{Point, Rect};
 use nami::Signal;
 use std::cell::RefCell;
+use std::ops::RangeInclusive;
 use std::rc::Rc;
 use waterui_controls::stepper::StepperConfig;
+use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
-use waterui_core::layout::{ProposalSize, ViewDimensions};
+use waterui_core::layout::{LayoutDirection, ProposalSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
 use crate::renderer::RetainedSubview;
-use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
+use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disabled};
 
 /// The retained render state of a stepper: the cloneable [`StepperConfig`] drives the
 /// +/- buttons + accessibility, and its main label is held as a [`RetainedSubview`]
 /// built once and re-flushed each frame so reactive label content stays live.
+/// The look the theme gave, and the parts recorded from it, are held across
+/// renders while the stepper's spec and frame stay the same.
 pub struct StepperRenderState<E: crate::text::TextEngine> {
     config: StepperConfig,
     label_view: RetainedSubview<E>,
+    look: Option<(StepperSpec, StepperLook)>,
+    decrement: EndParts,
+    increment: EndParts,
+}
+
+/// What one end of a stepper keeps across renders: its live chrome, and the
+/// reported-state binding the chrome keeps current.
+struct EndParts {
+    parts: Option<LiveChromeParts>,
+    report: nami::Binding<InteractionState>,
+}
+
+impl EndParts {
+    fn new() -> Self {
+        Self {
+            parts: None,
+            report: nami::Binding::container(InteractionState::empty()),
+        }
+    }
 }
 
 impl<E: crate::text::TextEngine> StepperRenderState<E> {
@@ -33,6 +58,9 @@ impl<E: crate::text::TextEngine> StepperRenderState<E> {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
+            look: None,
+            decrement: EndParts::new(),
+            increment: EndParts::new(),
         }
     }
 
@@ -52,6 +80,43 @@ impl<E: crate::text::TextEngine> StepperRenderState<E> {
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
         self.label_view.take_layout_dirty_if_built()
     }
+
+    /// The look for the stepper's spec in `env`: the one already held when
+    /// the spec is unchanged, otherwise requested again.
+    fn look(&mut self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> &StepperLook {
+        let spec = stepper_spec(&self.config, env);
+        if self.held(&spec).is_none() {
+            let look = theme.stepper(&spec, env);
+            self.look = Some((spec, look));
+        }
+        &self.look.as_ref().expect("the look was just ensured").1
+    }
+
+    fn held(&self, spec: &StepperSpec) -> Option<&StepperLook> {
+        self.look
+            .as_ref()
+            .filter(|(held, _)| held == spec)
+            .map(|(_, look)| look)
+    }
+
+    /// The look for the stepper's spec in `env` without holding it: the held
+    /// one, or a fresh one for a measurement ahead of the render that holds
+    /// it.
+    fn peek(&self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> StepperLook {
+        let spec = stepper_spec(&self.config, env);
+        self.held(&spec)
+            .cloned()
+            .unwrap_or_else(|| theme.stepper(&spec, env))
+    }
+}
+
+/// The spec of the stepper `config` describes in `env`.
+fn stepper_spec(config: &StepperConfig, env: &Environment) -> StepperSpec {
+    StepperSpec::new(
+        config.size(),
+        waterui_core::layout::layout_direction(env).snapshot(),
+        SpecTint::resolve(env),
+    )
 }
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<StepperConfig> {
@@ -142,6 +207,8 @@ pub fn stepper_accessibility<E: crate::text::TextEngine>(
 
 /// Measures a retained stepper leaf from its [`StepperRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and render agree.
+/// The proposal changes nothing: the look fixes the size of the controls, so
+/// the stepper measures the same at every height it is proposed.
 pub fn measure_stepper_node<E: crate::text::TextEngine>(
     render_state: &StepperRenderState<E>,
     _proposal: ProposalSize,
@@ -149,22 +216,9 @@ pub fn measure_stepper_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let metrics = theme.stepper_metrics();
+    let look = render_state.peek(theme, env);
     let label_size = render_state.label_view.measure_built(state, env, theme);
-    let controls_width = metrics
-        .button_intrinsic_size
-        .mul_add(2.0, metrics.button_spacing);
-    let label_width = f64::from(label_size.width);
-    let width = if label_width > 0.0 {
-        label_width + metrics.label_spacing + controls_width
-    } else {
-        controls_width
-    };
-    let height = f64::from(label_size.height).max(metrics.button_intrinsic_size);
-    ViewDimensions::new(LayoutSize::new(
-        crate::num_cast::f64_as_f32(width),
-        crate::num_cast::f64_as_f32(height),
-    ))
+    ViewDimensions::new(stepper_size(&look, label_size))
 }
 
 /// Renders a retained stepper leaf every flush: emits a11y (unless hidden) then
@@ -194,19 +248,82 @@ pub fn render_stepper_node<E: crate::text::TextEngine>(
     render_stepper_parts(ctx, state, env);
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-)]
+/// Which way a stepper's end moves the value.
+#[derive(Clone, Copy)]
+enum End {
+    Decrement,
+    Increment,
+}
+
+impl End {
+    /// The interaction key discriminator of the end.
+    const fn index(self) -> usize {
+        match self {
+            Self::Decrement => 0,
+            Self::Increment => 1,
+        }
+    }
+
+    /// Whether `value` is at this end's limit of `range`.
+    const fn at_limit(self, value: i32, range: &RangeInclusive<i32>) -> bool {
+        match self {
+            Self::Decrement => value <= *range.start(),
+            Self::Increment => value >= *range.end(),
+        }
+    }
+
+    /// The value one `step` from `value` towards this end, held in `range`.
+    fn stepped(self, value: i32, step: i32, range: &RangeInclusive<i32>) -> i32 {
+        match self {
+            Self::Decrement => value.saturating_sub(step),
+            Self::Increment => value.saturating_add(step),
+        }
+        .clamp(*range.start(), *range.end())
+    }
+}
+
+/// The action of a stepper's `end`: one step towards it, held in the range.
+fn stepping_action<E: crate::text::TextEngine>(
+    end: End,
+    stepping: Stepping,
+) -> impl FnMut(&mut SemanticCore<E>, Point, &Environment) -> bool {
+    move |_renderer, _point, _env| {
+        let step = stepping.step.snapshot();
+        assert!((step > 0), "hydrolysis stepper requires positive step");
+        let next = end.stepped(stepping.value.snapshot(), step, &stepping.range);
+        stepping.value.set(next);
+        true
+    }
+}
+
+/// What stepping a stepper reads: its value, its step and its range.
+#[derive(Clone)]
+struct Stepping {
+    value: nami::Binding<i32>,
+    step: nami::Computed<i32>,
+    range: RangeInclusive<i32>,
+}
+
+/// One end of a stepper as a render realizes it: which end, its interaction
+/// key, its chrome, the rect it lies in and whether it is disabled.
+struct EndPlan<'a> {
+    end: End,
+    key: InteractionKey,
+    chrome: &'a Chrome,
+    bounds: Rect,
+    disabled: bool,
+}
+
 pub fn render_stepper_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<StepperRenderState<E>>>,
     env: &Environment,
 ) {
-    let minus_interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
-    let plus_interaction_key = crate::renderer::InteractionKey::for_rc(state, 1);
+    let decrement_key = InteractionKey::for_rc(state, End::Decrement.index());
+    let increment_key = InteractionKey::for_rc(state, End::Increment.index());
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
+    let state = &mut *state;
     let (range, value, step) = {
         let stepper = &state.config;
         (
@@ -216,9 +333,9 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
         )
     };
     // Watch the value/step signals so a change schedules a frame and this
-    // persistent node re-renders (the stepper itself shows only the label, but the
-    // bound value drives a11y and any value-formatter display).
-    let _ = ctx.renderer_mut().read_signal(&value);
+    // persistent node re-renders: the value decides which ends are at a
+    // limit, and drives a11y and any value-formatter display.
+    let current = ctx.renderer_mut().read_signal(&value);
     let _ = ctx.renderer_mut().read_signal(&step);
     // Reading the disabled signal watches it, so a change schedules a frame
     // and this persistent node re-renders (and re-registers input).
@@ -226,16 +343,19 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
         let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
-    let theme_metrics = theme.stepper_metrics();
+    assert!(
+        (range.start() <= range.end()),
+        "hydrolysis stepper requires an ordered range"
+    );
+    let look = state.look(&theme, env).clone();
+    let direction = waterui_core::layout::layout_direction(env).snapshot();
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
-    let (controls_bounds, label_bounds) =
-        stepper_control_and_label_bounds(ctx.bounds, theme_metrics, f64::from(label_size.height));
-    let button_size = controls_bounds.height();
+    let rects = stepper_rects(ctx.bounds, &look, direction, f64::from(label_size.height));
     // The label is a retained node sub-view re-flushed at its rect; reactive
     // content stays live through the node's own per-frame re-flush, with no dispatch.
     // Its semantics are merged into the stepper's own node by
     // `stepper_accessibility`, so the sub-view flushes visual-only.
-    if label_bounds.width() > 0.0 {
+    if rects.label.width() > 0.0 {
         // A disabled control dims its label to the theme's disabled-content
         // alpha (Material: on-surface at 38% for default-colored labels).
         ctx.with_scope_if(
@@ -245,10 +365,10 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
                 item: 0,
             },
             theme.disabled_content_alpha(),
-            label_bounds,
+            rects.label,
             |ctx| {
                 let render_ctx = ctx.render_context();
-                let label_area = ctx.safe_area_for(label_bounds);
+                let label_area = ctx.safe_area_for(rects.label);
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
@@ -257,7 +377,7 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
                             render_ctx,
                             env,
                             ProposalSize::UNSPECIFIED,
-                            label_bounds,
+                            rects.label,
                             label_area,
                         );
                     });
@@ -265,112 +385,96 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
         );
     }
 
-    let minus_bounds = kurbo::Rect::new(
-        controls_bounds.x0,
-        controls_bounds.y0,
-        controls_bounds.x0 + button_size,
-        controls_bounds.y1,
-    );
-    let plus_bounds = kurbo::Rect::new(
-        controls_bounds.x1 - button_size,
-        controls_bounds.y0,
-        controls_bounds.x1,
-        controls_bounds.y1,
-    );
-    let hit_transform = ctx.renderer_mut().current_hit_transform();
-    let minus_hit_bounds = minus_bounds;
-    let plus_hit_bounds = plus_bounds;
-    let (minus_interaction, minus_press_slot, _) = ctx
-        .renderer_mut()
-        .bind_control_interaction_target(minus_interaction_key, minus_hit_bounds, env, disabled);
-    let (plus_interaction, plus_press_slot, _) = ctx
-        .renderer_mut()
-        .bind_control_interaction_target(plus_interaction_key, plus_hit_bounds, env, disabled);
-    let minus_interaction = local_interaction_state(minus_interaction, hit_transform);
-    let plus_interaction = local_interaction_state(plus_interaction, hit_transform);
-    ctx.with_scope_if(
-        disabled,
-        crate::renderer::mount::ScopeKey {
-            role: "controls-dim",
-            item: 0,
-        },
-        theme.disabled_content_alpha(),
-        controls_bounds,
-        |ctx| {
-            ctx.draw_context(|draw| {
-                theme.draw_stepper_button(
-                    &mut *draw,
-                    minus_bounds,
-                    StepperEnd::Decrement,
-                    minus_interaction,
-                );
-                theme.draw_stepper_decrement_icon(&mut *draw, minus_bounds);
-                theme.draw_stepper_button_state_layer(
-                    &mut *draw,
-                    minus_bounds,
-                    StepperEnd::Decrement,
-                    minus_interaction,
-                );
-                theme.draw_stepper_button(
-                    &mut *draw,
-                    plus_bounds,
-                    StepperEnd::Increment,
-                    plus_interaction,
-                );
-                theme.draw_stepper_increment_icon(&mut *draw, plus_bounds);
-                theme.draw_stepper_button_state_layer(
-                    &mut *draw,
-                    plus_bounds,
-                    StepperEnd::Increment,
-                    plus_interaction,
-                );
-            });
-        },
-    );
+    // Each end binds its own interaction target and realizes its own chrome;
+    // an end at the limit of the range is disabled, and the chrome sees it
+    // as its state.
+    let stepping = Stepping { value, step, range };
+    let decrement = EndPlan {
+        end: End::Decrement,
+        key: decrement_key,
+        chrome: look.decrement(),
+        bounds: rects.decrement,
+        disabled: disabled || End::Decrement.at_limit(current, &stepping.range),
+    };
+    let increment = EndPlan {
+        end: End::Increment,
+        key: increment_key,
+        chrome: look.increment(),
+        bounds: rects.increment,
+        disabled: disabled || End::Increment.at_limit(current, &stepping.range),
+    };
+    render_end(ctx, decrement, &mut state.decrement, &stepping, env);
+    render_end(ctx, increment, &mut state.increment, &stepping, env);
+}
 
-    // A disabled stepper registers no tap targets: the pointer neither presses
-    // nor steps it. Targets are re-registered every flush, so re-enabling
-    // restores interactivity on the next frame.
+/// Binds one end's interaction target, realizes its chrome on its rect,
+/// lists its layers around the icon and, unless the end is disabled,
+/// registers its tap target.
+fn render_end<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    plan: EndPlan<'_>,
+    kept: &mut EndParts,
+    stepping: &Stepping,
+    env: &Environment,
+) {
+    let EndPlan {
+        end,
+        key,
+        chrome,
+        bounds,
+        disabled,
+    } = plan;
+    let target = chrome.target(bounds);
+    let (_, press_slot, handles) =
+        ctx.renderer_mut()
+            .bind_live_chrome_target(key.clone(), target, env, disabled, chrome);
+    let flags = ctx.renderer_mut().reported_interaction_state(&key);
+    let parts = LiveChromeParts::ensure(
+        &mut kept.parts,
+        chrome,
+        &ChromeContent::default(),
+        bounds,
+        flags,
+        env,
+        &kept.report,
+    )
+    .clone();
+    handles.attach_live(Rc::clone(parts.chrome()));
+    let render_ctx = ctx.render_context();
+    parts.push_below(ctx.renderer_mut(), render_ctx);
+    parts.push_above(ctx.renderer_mut(), render_ctx);
+
+    // A disabled end registers no tap target: the pointer neither presses
+    // nor steps it. Targets are re-registered every flush, so an end leaving
+    // its limit takes taps again on the next frame.
     if disabled {
         return;
     }
+    ctx.renderer_mut()
+        .register_interactive_pointer_target_with_keyboard(
+            target,
+            press_slot,
+            chrome.keyboard_focusable(),
+            stepping_action(end, stepping.clone()),
+        );
+}
 
-    let range_start = *range.start();
-    let range_end = *range.end();
-    assert!(
-        (range_start <= range_end),
-        "hydrolysis stepper requires an ordered range"
-    );
-
-    let value_binding_minus = value.clone();
-    let value_binding_plus = value;
-    let step_signal_minus = step.clone();
-    let step_signal_plus = step;
-
-    ctx.renderer_mut().register_interactive_pointer_target(
-        minus_hit_bounds,
-        minus_press_slot,
-        move |_renderer, _point, _env| {
-            let step = step_signal_minus.snapshot();
-            assert!((step > 0), "hydrolysis stepper requires positive step");
-            let current = value_binding_minus.snapshot();
-            let next = current.saturating_sub(step).clamp(range_start, range_end);
-            value_binding_minus.set(next);
-            true
-        },
-    );
-    ctx.renderer_mut().register_interactive_pointer_target(
-        plus_hit_bounds,
-        plus_press_slot,
-        move |_renderer, _point, _env| {
-            let step = step_signal_plus.snapshot();
-            assert!((step > 0), "hydrolysis stepper requires positive step");
-            let current = value_binding_plus.snapshot();
-            let next = current.saturating_add(step).clamp(range_start, range_end);
-            value_binding_plus.set(next);
-            true
-        },
-    );
+/// The size of a stepper from its look and its label: the label, the space
+/// to the controls and the controls, the row as tall as the taller of the
+/// label and the controls. Measurement and drawing both read it.
+fn stepper_size(look: &StepperLook, label: LayoutSize) -> LayoutSize {
+    let controls = look.controls();
+    let label_width = f64::from(label.width);
+    let width = if label_width > 0.0 {
+        label_width + look.get_label_spacing() + controls.width
+    } else {
+        controls.width
+    };
+    let height = f64::from(label.height).max(controls.height);
+    LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    )
 }
 
 pub fn measure_stepper_intrinsic<E: crate::text::TextEngine>(
@@ -379,22 +483,9 @@ pub fn measure_stepper_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = theme.stepper_metrics();
+    let look = theme.stepper(&stepper_spec(stepper, env), env);
     let label_size = measure_label_intrinsic(stepper.label(), state, env, theme);
-    let controls_width = metrics
-        .button_intrinsic_size
-        .mul_add(2.0, metrics.button_spacing);
-    let label_width = f64::from(label_size.width);
-    let width = if label_width > 0.0 {
-        label_width + metrics.label_spacing + controls_width
-    } else {
-        controls_width
-    };
-    let height = f64::from(label_size.height).max(metrics.button_intrinsic_size);
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(width),
-        crate::num_cast::f64_as_f32(height),
-    )
+    stepper_size(&look, label_size)
 }
 
 /// Emits a retained stepper's accessibility node for the semantic walk — the
@@ -418,49 +509,138 @@ pub fn emit_stepper_accessibility<E: crate::text::TextEngine>(
     );
 }
 
-/// The strip the `-`/`+` buttons occupy and the label's rect beside them. The
-/// buttons keep their size, vertically centred in the row; the label keeps its
-/// own height on the buttons' centre line — see [`label_beside_control_bounds`].
-fn stepper_control_and_label_bounds(
-    bounds: kurbo::Rect,
-    metrics: crate::theme::StepperMetrics,
+/// Where a stepper places its two ends and its label in its bounds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct StepperRects {
+    decrement: Rect,
+    increment: Rect,
+    label: Rect,
+}
+
+/// Where a stepper in `direction` places the ends of `look` and its label in
+/// `bounds`: the ends side by side at the trailing edge, each the look's size
+/// and centred in the row — a row shorter than the buttons caps their height
+/// and never their width — and the label on their centre line, keeping its
+/// own height, in the room before them. A right-to-left layout mirrors all
+/// of it about the bounds' centre line, so the decrement end leads the pair
+/// in either direction.
+fn stepper_rects(
+    bounds: Rect,
+    look: &StepperLook,
+    direction: LayoutDirection,
     label_height: f64,
-) -> (kurbo::Rect, kurbo::Rect) {
-    let button_size = bounds
-        .height()
-        .clamp(metrics.button_min_size, metrics.button_max_size);
-    let controls_width = button_size.mul_add(2.0, metrics.button_spacing);
-    let controls_x0 = (bounds.x1 - controls_width).max(bounds.x0);
-    let button_y0 = bounds.y0 + ((bounds.height() - button_size) / 2.0).max(0.0);
-    let controls = kurbo::Rect::new(
-        controls_x0,
-        button_y0,
-        controls_x0 + controls_width,
-        button_y0 + button_size,
+) -> StepperRects {
+    let controls = look.controls();
+    let button = look.button();
+    let height = button.height.min(bounds.height());
+    let y0 = bounds.y0 + (bounds.height() - height) / 2.0;
+    let controls_x0 = (bounds.x1 - controls.width).max(bounds.x0);
+    let decrement = Rect::new(controls_x0, y0, controls_x0 + button.width, y0 + height);
+    let increment = Rect::new(
+        controls_x0 + controls.width - button.width,
+        y0,
+        controls_x0 + controls.width,
+        y0 + height,
     );
     let label = label_beside_control_bounds(
         bounds.x0,
-        (controls_x0 - metrics.label_spacing).max(bounds.x0),
+        (controls_x0 - look.get_label_spacing()).max(bounds.x0),
         bounds,
-        controls,
+        decrement.union(increment),
         label_height,
     );
-    (controls, label)
+    let rects = StepperRects {
+        decrement,
+        increment,
+        label,
+    };
+    match direction {
+        LayoutDirection::LeftToRight => rects,
+        LayoutDirection::RightToLeft => StepperRects {
+            decrement: mirrored_in(rects.decrement, bounds),
+            increment: mirrored_in(rects.increment, bounds),
+            label: mirrored_in(rects.label, bounds),
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::stepper_control_and_label_bounds;
-    use crate::theme::StepperMetrics;
+    use super::{stepper_rects, stepper_size};
+    use crate::testing::plain_stepper_look;
     use kurbo::Rect;
+    use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
 
+    /// The plain look's ends are 14 by 14, 4 apart, 8 from the label.
+    const LABEL: LayoutSize = LayoutSize::new(60.0, 16.0);
+
+    /// The controls measure at the width the look declares and draw at it
+    /// too, whatever the height the stepper lands in.
     #[test]
-    fn label_shares_the_controls_centre_line() {
-        let metrics = StepperMetrics::new(24.0, 32.0, 28.0, 8.0, 8.0);
-        let (controls, label) =
-            stepper_control_and_label_bounds(Rect::new(16.0, 20.0, 320.0, 60.0), metrics, 16.0);
-        assert_eq!(controls, Rect::new(248.0, 24.0, 320.0, 56.0));
-        assert_eq!(label, Rect::new(16.0, 32.0, 240.0, 48.0));
-        approx::assert_relative_eq!(label.center().y, controls.center().y);
+    fn controls_are_as_wide_as_they_were_measured_at_every_height() {
+        let look = plain_stepper_look();
+        let measured = stepper_size(&look, LABEL);
+        let width = f64::from(measured.width);
+        // The label, 8 points, two 14 point ends and 4 points between them.
+        assert!((width - (60.0 + 8.0 + 14.0 + 4.0 + 14.0)).abs() < 1e-4);
+        for height in [4.0, 10.0, 14.0, 16.0, 17.0, 30.0, 100.0] {
+            let bounds = Rect::new(10.0, 20.0, 10.0 + width, 20.0 + height);
+            let rects = stepper_rects(bounds, &look, LayoutDirection::LeftToRight, 16.0);
+            assert!(
+                (rects.decrement.width() - 14.0).abs() < 1e-9
+                    && (rects.increment.width() - 14.0).abs() < 1e-9,
+                "height {height}: the ends keep the look's width"
+            );
+            assert!(
+                (rects.increment.x1 - bounds.x1).abs() < 1e-9,
+                "height {height}: the controls end at the trailing edge"
+            );
+            assert!(
+                (rects.increment.x0 - rects.decrement.x1 - 4.0).abs() < 1e-9,
+                "height {height}: the ends keep the look's spacing"
+            );
+            assert!(
+                (rects.decrement.x0 - rects.label.x1 - 8.0).abs() < 1e-9,
+                "height {height}: the label keeps the look's spacing"
+            );
+            assert!(
+                (rects.label.width() - 60.0).abs() < 1e-9,
+                "height {height}: the label keeps its measured width"
+            );
+            let expected = 14.0_f64.min(height);
+            assert!(
+                (rects.decrement.height() - expected).abs() < 1e-9
+                    && (rects.increment.height() - expected).abs() < 1e-9,
+                "height {height}: the ends keep the look's height, capped to the row"
+            );
+            assert!(
+                (rects.decrement.center().y - bounds.center().y).abs() < 1e-9,
+                "height {height}: the ends are centred in the row"
+            );
+            assert!(
+                (rects.label.center().y - bounds.center().y).abs() < 1e-9,
+                "height {height}: the label shares the controls' centre line"
+            );
+        }
+    }
+
+    /// A right-to-left layout mirrors the row: the label leads on the right
+    /// and the decrement end leads the pair.
+    #[test]
+    fn right_to_left_mirrors_the_row() {
+        let look = plain_stepper_look();
+        let measured = stepper_size(&look, LABEL);
+        let bounds = Rect::new(
+            0.0,
+            0.0,
+            f64::from(measured.width),
+            f64::from(measured.height),
+        );
+        let ltr = stepper_rects(bounds, &look, LayoutDirection::LeftToRight, 16.0);
+        let rtl = stepper_rects(bounds, &look, LayoutDirection::RightToLeft, 16.0);
+        assert!(ltr.decrement.x1 < ltr.increment.x0 && ltr.label.x1 < ltr.decrement.x0);
+        assert!(rtl.increment.x1 < rtl.decrement.x0 && rtl.decrement.x1 < rtl.label.x0);
+        assert!((rtl.decrement.x0 - (bounds.x1 - ltr.decrement.x1)).abs() < 1e-9);
+        assert!((rtl.label.x1 - (bounds.x1 - ltr.label.x0)).abs() < 1e-9);
     }
 }

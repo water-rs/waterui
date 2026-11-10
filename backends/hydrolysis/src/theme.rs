@@ -14,7 +14,8 @@
 //!   [`InteractionMotion`] and [`ProgressMotion`];
 //! - the looks a theme returns for the widgets ported to the declarative
 //!   contract (water-rs/waterui#1434), such as [`ButtonLook`] for a
-//!   [`ButtonSpec`] and [`SwitchLook`] for a [`ToggleSpec`], built from the
+//!   [`ButtonSpec`], [`SwitchLook`] for a [`ToggleSpec`] and [`StepperLook`]
+//!   for a [`StepperSpec`], built from the
 //!   look vocabulary: [`Driven`] values over
 //!   the widget's [`Inputs`] with their [`Motion`], [`Custom`] parts,
 //!   [`Label`] styling and [`HitRegion`]s;
@@ -52,6 +53,7 @@ mod chrome;
 #[cfg(hydrolysis_runtime)]
 pub(crate) mod live;
 mod look;
+mod stepper;
 mod toggle;
 mod widget;
 
@@ -66,15 +68,16 @@ pub use look::{
 };
 #[cfg(hydrolysis_runtime)]
 pub(crate) use look::{Change, CustomPart, LiveDriven, RealizedCustom, Retarget};
+pub use stepper::{StepperLook, StepperSpec};
 pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};
 pub use widget::{
     BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
     ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,
     ListTrailingControlMetrics, MAX_PRESS_WAVES, ModalInteraction, NavigationMetrics,
     NavigationMotion, PickerMetrics, PressWave, PressWaves, ProgressIndicatorStyle,
-    ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, StepperEnd,
-    StepperMetrics, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
-    TextContextMenuMetrics, WidgetInteractionState, WidgetTheme,
+    ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, TabItemGeometry,
+    TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
+    WidgetInteractionState, WidgetTheme,
 };
 
 #[cfg(hydrolysis_runtime)]

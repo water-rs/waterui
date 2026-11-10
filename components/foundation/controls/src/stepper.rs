@@ -5,6 +5,7 @@
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
 use crate::label::{IntoLabel, Label, LabelDisplayMode, impl_label_style_methods};
+use crate::size::ControlSize;
 use alloc::rc::Rc;
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_core::{Environment, configurable, layout::StretchAxis};
@@ -26,6 +27,8 @@ pub struct StepperConfig {
     value_formatter: Option<Computed<StyledStr>>,
     /// The valid range of values for the stepper.
     range: RangeInclusive<i32>,
+    /// How large the stepper is drawn.
+    size: ControlSize,
 }
 
 impl StepperConfig {
@@ -71,6 +74,12 @@ impl StepperConfig {
         &self.range
     }
 
+    /// How large the stepper is drawn.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
     #[expect(
@@ -85,6 +94,7 @@ impl StepperConfig {
         Label,
         Option<Computed<StyledStr>>,
         RangeInclusive<i32>,
+        ControlSize,
     ) {
         (
             self.value,
@@ -92,6 +102,7 @@ impl StepperConfig {
             self.label,
             self.value_formatter,
             self.range,
+            self.size,
         )
     }
 }
@@ -198,7 +209,17 @@ impl Stepper {
             label,
             value_formatter: None,
             range: i32::MIN..=i32::MAX,
+            size: ControlSize::Small,
         })
+    }
+
+    /// Sets how large the stepper is drawn. A stepper is
+    /// [`ControlSize::Small`], like a [`Button`](crate::button::Button), when
+    /// none is chosen; a theme decides what each size changes.
+    #[must_use]
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.0.size = size;
+        self
     }
 
     /// Sets the step size for the stepper.

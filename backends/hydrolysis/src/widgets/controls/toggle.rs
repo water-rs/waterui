@@ -24,7 +24,7 @@ use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
 use crate::renderer::RetainedSubview;
-use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
+use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disabled};
 
 /// A toggle's look: the theme's switch or checkbox for a [`ToggleSpec`].
 #[derive(Clone)]
@@ -531,12 +531,6 @@ fn toggle_control_and_label_bounds(
         LayoutDirection::LeftToRight => (control, label),
         LayoutDirection::RightToLeft => (mirrored_in(control, bounds), mirrored_in(label, bounds)),
     }
-}
-
-/// `rect` reflected about the vertical centre line of `bounds`.
-fn mirrored_in(rect: kurbo::Rect, bounds: kurbo::Rect) -> kurbo::Rect {
-    let sum = bounds.x0 + bounds.x1;
-    kurbo::Rect::new(sum - rect.x1, rect.y0, sum - rect.x0, rect.y1)
 }
 
 #[expect(
