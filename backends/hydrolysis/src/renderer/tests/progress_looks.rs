@@ -14,10 +14,11 @@ use cherenkov_record::{Curve, Draw as _, Keyframes, Paint, Repeat, ShapeData, Wo
 use kurbo::{Rect, Size};
 use nami::Signal as _;
 use waterui::component::progress::{Progress, progress};
-use waterui::{AnyView, Binding, Color, View, ViewExt as _};
+use waterui::theme::ColorScheme;
+use waterui::{AnyView, Binding, Color, Environment, View, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 
-use super::{MinimalTestTheme, pumped_test_environment};
+use super::{MinimalTestTheme, pumped_test_environment, test_environment_with_scheme};
 use crate::renderer::FrameWorkCounters;
 use crate::theme::{Custom, Driven, Motion, ProgressControl};
 use crate::{HeadlessRuntime, HeadlessSnapshot};
@@ -29,6 +30,18 @@ const CYCLE: Duration = Duration::from_secs(1);
 
 fn red() -> Paint {
     Paint::from(WorkingColor::new([1.0, 0.0, 0.0, 1.0]))
+}
+
+fn blue() -> Paint {
+    Paint::from(WorkingColor::new([0.0, 0.0, 1.0, 1.0]))
+}
+
+fn cyan() -> Paint {
+    Paint::from(WorkingColor::new([0.0, 1.0, 1.0, 1.0]))
+}
+
+fn yellow() -> Paint {
+    Paint::from(WorkingColor::new([1.0, 1.0, 0.0, 1.0]))
 }
 
 fn control(size: Size) -> ProgressControl {
@@ -56,6 +69,28 @@ pub(super) fn moving_bar() -> ProgressControl {
             Driven::<Paint, f64>::constant(red()),
         ),
         |recorder, _frame, (bar, paint)| recorder.fill(bar, paint),
+    ))
+}
+
+/// A solid bar whose colour keyframes are built from the colour scheme: red
+/// in the light scheme, blue in the dark one.
+pub(super) fn scheme_bar(env: &Environment) -> ProgressControl {
+    control(Size::new(72.0, 8.0)).part(Custom::new(
+        (Driven::<Paint, f64>::repeating_following(
+            waterui::theme::current_color_scheme(env),
+            |scheme: &ColorScheme, _frame| {
+                let [first, second] = match scheme {
+                    ColorScheme::Dark => [blue(), cyan()],
+                    ColorScheme::Light => [red(), yellow()],
+                };
+                let linear = Curve::linear(CYCLE);
+                Keyframes::new(CYCLE, first.clone())
+                    .then(0.5, linear, second)
+                    .then(1.0, linear, first)
+            },
+            Repeat::Forever,
+        ),),
+        |recorder, frame, (paint,)| recorder.fill(frame, paint),
     ))
 }
 
@@ -104,13 +139,17 @@ pub(super) fn morphing() -> ProgressControl {
 }
 
 fn runtime_with(view: impl View, theme: MinimalTestTheme) -> HeadlessRuntime {
+    runtime_in(pumped_test_environment(), view, theme)
+}
+
+fn runtime_in(env: Environment, view: impl View, theme: MinimalTestTheme) -> HeadlessRuntime {
     let view = RefCell::new(Some(AnyView::new(view)));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         view.borrow_mut()
             .take()
             .expect("the fixture view is built once")
     });
-    HeadlessRuntime::new_for_tests(pumped_test_environment(), builder, WINDOW, WINDOW, theme)
+    HeadlessRuntime::new_for_tests(env, builder, WINDOW, WINDOW, theme)
 }
 
 /// Pumps rendering frames on a fixed 16 ms cadence.
@@ -210,6 +249,67 @@ fn indeterminate_circular_progress_runs_its_keyframes_without_frame_work() {
 #[test]
 fn loading_indicator_runs_its_keyframes_without_frame_work() {
     assert_runs_on_the_engine(waterui::component::progress::loading());
+}
+
+/// The colour of the fixture's solid bar: the one colour the window shows
+/// besides its own background, which covers most of it.
+fn bar_color(snapshot: &HeadlessSnapshot) -> [u8; 4] {
+    let mut counts = std::collections::BTreeMap::new();
+    for pixel in snapshot.rgba8().as_chunks::<4>().0 {
+        *counts.entry(*pixel).or_insert(0_usize) += 1;
+    }
+    let background = *counts
+        .iter()
+        .max_by_key(|(_, count)| **count)
+        .expect("a window has pixels")
+        .0;
+    counts.remove(&background);
+    assert_eq!(counts.len(), 1, "the bar is one solid colour: {counts:?}");
+    counts.into_keys().next().expect("one colour")
+}
+
+/// A running track built from a signal follows it: flipping the colour
+/// scheme under a running indicator changes the colours it runs, and
+/// records, builds and mounts nothing to do so.
+#[test]
+fn a_running_track_follows_the_signal_it_is_built_from() {
+    let scheme = Binding::container(ColorScheme::Light);
+    let theme = MinimalTestTheme {
+        scheme_progress: true,
+        ..Default::default()
+    };
+    let mut runtime = runtime_in(
+        test_environment_with_scheme(scheme.clone()),
+        Progress::infinity().label(""),
+        theme,
+    );
+    let mut frames = Frames::new();
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+    let [red, _, blue, _] = bar_color(&frames.snapshot(&mut runtime));
+    assert!(red > 200 && blue < 100, "the light bar is red");
+
+    scheme.set(ColorScheme::Dark);
+    let work = frames.work(&mut runtime, 8);
+    assert_eq!(
+        [work[0], work[1], work[5], work[6], work[7]],
+        [0; 5],
+        "the flip builds, patches, records and mounts nothing"
+    );
+    let [red, _, blue, _] = bar_color(&frames.snapshot(&mut runtime));
+    assert!(blue > 200 && red < 100, "the dark bar is blue");
+
+    // The new colours keep running: the track started again rather than
+    // the operand holding the new first colour.
+    let before = bar_color(&frames.snapshot(&mut runtime));
+    frames.work(&mut runtime, 20);
+    let after = bar_color(&frames.snapshot(&mut runtime));
+    assert_ne!(before, after, "the dark colours cycle");
+    assert!(
+        after[2] > 200 && after[0] < 100,
+        "and stay the dark scheme's"
+    );
 }
 
 /// A value change moves the parts' operands: nothing is recorded again.

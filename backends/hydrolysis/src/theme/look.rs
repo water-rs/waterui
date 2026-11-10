@@ -307,6 +307,42 @@ impl<T: 'static, V: 'static> Driven<T, V> {
         }
     }
 
+    /// A [repeating](Self::repeating) value whose keyframes are built from
+    /// `signal`'s current value, and run again from their start whenever the
+    /// signal changes: a track made of theme tokens follows a colour-scheme
+    /// or application override on the running indicator.
+    #[must_use]
+    pub fn repeating_following<O: Clone + 'static>(
+        signal: impl IntoComputed<O>,
+        keyframes: impl Fn(&O, Rect) -> Keyframes<T> + 'static,
+        repeat: Repeat,
+    ) -> Self
+    where
+        T: Clone,
+    {
+        let source = signal.into_computed();
+        let watched = source.clone();
+        let keyframes = Rc::new(keyframes);
+        Self {
+            target: Rc::new({
+                let (source, keyframes) = (source.clone(), Rc::clone(&keyframes));
+                move |inputs| {
+                    source.with_ref(|value| keyframes(value, inputs.frame).first().clone())
+                }
+            }),
+            follows: Some(Rc::new(move |notify: Notify| -> Box<dyn Any> {
+                Box::new(watched.watch(move |context: Context<O>| {
+                    notify(ChangeAnimation::of(context.metadata()).animation());
+                }))
+            })),
+            motion: None,
+            value_motion: None,
+            repeating: Some(Rc::new(move |frame| {
+                source.with_ref(|value| KeyframeAnimation::new(keyframes(value, frame), repeat))
+            })),
+        }
+    }
+
     /// One value, whatever the inputs.
     #[must_use]
     pub fn constant(value: T) -> Self
@@ -596,6 +632,11 @@ impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V
         };
         self.operand
             .set(self.driven.target(inputs), animation.as_ref());
+        // A plain change replaces a running track, so a signal the track is
+        // built from changing — or the frame — starts the new one.
+        if matches!(change, Change::Animated(_)) {
+            self.run(inputs.frame);
+        }
     }
 
     fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>> {
@@ -614,7 +655,7 @@ impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V
 /// type ties it to its declaration with no index lookup.
 ///
 /// Implemented for `()` — a part that reads no driven value — and for tuples
-/// of one to six `Driven`s over the same value type.
+/// of one to eight `Driven`s over the same value type.
 pub trait DrivenSet<V>: sealed::Sealed {
     /// The tuple of live handles the recording closure receives.
     type Live;
@@ -672,6 +713,8 @@ driven_set!(A 0, B 1, C 2);
 driven_set!(A 0, B 1, C 2, D 3);
 driven_set!(A 0, B 1, C 2, D 3, E 4);
 driven_set!(A 0, B 1, C 2, D 3, E 4, F 5);
+driven_set!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+driven_set!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
 
 type RecordCustom<L> = Rc<dyn Fn(&mut Recorder, Rect, L)>;
 

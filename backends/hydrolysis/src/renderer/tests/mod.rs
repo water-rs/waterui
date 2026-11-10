@@ -2845,6 +2845,9 @@ pub struct MinimalTestTheme {
     /// Whether the indeterminate progress looks move: a bar that travels, a
     /// tick that turns, a square that swells.
     moving_progress: bool,
+    /// Whether the indeterminate linear look is a bar whose colour keyframes
+    /// are built from the colour scheme.
+    scheme_progress: bool,
     /// Every `draw_radio_indicator` call.
     radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
     /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
@@ -3266,10 +3269,12 @@ impl WidgetTheme for MinimalTestTheme {
         self.slider_value_indicator_draws.borrow_mut().push(bounds);
     }
 
-    fn linear_progress(&self, spec: &ProgressSpec, _env: &Environment) -> LinearProgressLook {
+    fn linear_progress(&self, spec: &ProgressSpec, env: &Environment) -> LinearProgressLook {
         self.progress_specs.borrow_mut().push(spec.clone());
         let control = if self.moving_progress && !spec.determinate() {
             progress_looks::moving_bar()
+        } else if self.scheme_progress && !spec.determinate() {
+            progress_looks::scheme_bar(env)
         } else {
             let realizations = Rc::clone(&self.progress_bar_realizations);
             let recordings = Rc::clone(&self.progress_bar_recordings);

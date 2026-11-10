@@ -680,6 +680,9 @@ pub struct Keyframes<T> {
 struct Segment<T> {
     at: f64,
     easing: Easing,
+    /// The share of the travel that runs steadily over the segment, with
+    /// the rest following `easing`.
+    steady: f64,
     value: T,
 }
 
@@ -748,7 +751,31 @@ impl<T> Keyframes<T> {
     /// Panics when `at` is outside `[0, 1]` or before the previous value's
     /// time.
     #[must_use]
-    pub fn then(mut self, at: f64, easing: impl Into<Easing>, value: T) -> Self {
+    pub fn then(self, at: f64, easing: impl Into<Easing>, value: T) -> Self {
+        self.then_steadily(at, easing, value, 0.0)
+    }
+
+    /// Appends `value` at normalized time `at` like [`then`](Self::then),
+    /// with `steady` of the travel from the previous value running at a
+    /// constant rate and the rest following `easing`: the sum of a steady
+    /// drift and an eased move, such as a spinner's constant turn with an
+    /// eased kick on top.
+    ///
+    /// # Panics
+    /// Panics when `at` is outside `[0, 1]` or before the previous value's
+    /// time, or when `steady` is outside `[0, 1]`.
+    #[must_use]
+    pub fn then_steadily(
+        mut self,
+        at: f64,
+        easing: impl Into<Easing>,
+        value: T,
+        steady: f64,
+    ) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&steady),
+            "the steady share {steady} of a keyframe segment must lie in [0, 1]"
+        );
         let previous = self.segments.last().map_or(0.0, |segment| segment.at);
         assert!(
             (previous..=1.0).contains(&at),
@@ -758,6 +785,7 @@ impl<T> Keyframes<T> {
         self.segments.push(Segment {
             at,
             easing: easing.into(),
+            steady,
             value,
         });
         self
@@ -800,9 +828,14 @@ impl<T: AnimLanes + Clone> Keyframes<T> {
     pub(crate) fn lanes(&self, repeat: Repeat) -> KeyframeLanes<T> {
         KeyframeLanes::new(
             self.first.clone(),
-            self.segments
-                .iter()
-                .map(|segment| (segment.at, segment.easing, segment.value.clone())),
+            self.segments.iter().map(|segment| {
+                (
+                    segment.at,
+                    segment.easing,
+                    segment.steady,
+                    segment.value.clone(),
+                )
+            }),
             self.duration,
             repeat,
         )
@@ -896,6 +929,7 @@ impl KeyframeAnimation {
                 (
                     segment.at,
                     segment.easing,
+                    segment.steady,
                     convert((typed.clone)(&segment.value)),
                 )
             }),
@@ -920,6 +954,7 @@ impl KeyframeAnimation {
                 .map(|segment| Segment {
                     at: segment.at,
                     easing: segment.easing,
+                    steady: segment.steady,
                     value: (typed.clone)(&segment.value),
                 })
                 .collect(),
@@ -949,8 +984,8 @@ impl KeyframeAnimation {
 pub(crate) struct KeyframeLanes<V> {
     /// The first value: the layout sampled lanes rebuild into.
     layout: V,
-    /// Each segment's end time and easing.
-    segments: Box<[(f64, Easing)]>,
+    /// Each segment's end time, easing and steady share.
+    segments: Box<[(f64, Easing, f64)]>,
     /// Every value's lanes, the first value's first, `width` apiece.
     lanes: Box<[f64]>,
     width: usize,
@@ -964,7 +999,7 @@ impl<V: AnimLanes> KeyframeLanes<V> {
     /// Panics when a value does not share `first`'s lane layout.
     pub(crate) fn new(
         first: V,
-        segments: impl ExactSizeIterator<Item = (f64, Easing, V)>,
+        segments: impl ExactSizeIterator<Item = (f64, Easing, f64, V)>,
         duration: Duration,
         repeat: Repeat,
     ) -> Self {
@@ -975,13 +1010,13 @@ impl<V: AnimLanes> KeyframeLanes<V> {
         let width = lanes.len();
         lanes.reserve(width * segments.len());
         let segments = segments
-            .map(|(at, easing, value)| {
+            .map(|(at, easing, steady, value)| {
                 let value_lanes = value
                     .anim_lanes(&first)
                     .filter(|value_lanes| value_lanes.len() == width)
                     .expect("every keyframe value must share the first value's lane layout");
                 lanes.extend_from_slice(&value_lanes);
-                (at, easing)
+                (at, easing, steady)
             })
             .collect();
         Self {
@@ -1017,22 +1052,27 @@ impl<V> KeyframeLanes<V> {
             return false;
         }
         let phase = cycles.fract();
-        let mut previous = 0.0;
-        for (index, (at, easing)) in self.segments.iter().enumerate() {
-            // A zero-length segment is never entered: its value replaces
-            // the previous one at once.
-            if phase < *at {
-                let span = at - previous;
-                let (progress, rate) =
-                    easing.progress((phase - previous) / span, span * self.duration);
-                let (start, end) = (self.value(index), self.value(index + 1));
-                for lane in 0..self.width {
-                    let delta = end[lane] - start[lane];
-                    write(lane, delta.mul_add(progress, start[lane]), delta * rate);
-                }
-                return true;
+        // The first segment whose end the phase has not reached: the
+        // segments are in time order, so this is a binary search. A
+        // zero-length segment is never entered: its value replaces the
+        // previous one at once.
+        let index = self.segments.partition_point(|(at, ..)| phase >= *at);
+        if let Some((at, easing, steady)) = self.segments.get(index) {
+            let previous = index
+                .checked_sub(1)
+                .map_or(0.0, |before| self.segments[before].0);
+            let span = at - previous;
+            let seconds = span * self.duration;
+            let local = (phase - previous) / span;
+            let (eased, eased_rate) = easing.progress(local, seconds);
+            let progress = steady.mul_add(local, (1.0 - steady) * eased);
+            let rate = steady.mul_add(1.0 / seconds, (1.0 - steady) * eased_rate);
+            let (start, end) = (self.value(index), self.value(index + 1));
+            for lane in 0..self.width {
+                let delta = end[lane] - start[lane];
+                write(lane, delta.mul_add(progress, start[lane]), delta * rate);
             }
-            previous = *at;
+            return true;
         }
         // Past the last keyframe the track holds its value.
         for (lane, &value) in self.value(self.segments.len()).iter().enumerate() {
@@ -1572,6 +1612,40 @@ mod tests {
         }
         // The first peak, π / ω_d in, overshoots the end value.
         assert!(at(0.278) > 1.05, "a damping ratio of 0.6 overshoots");
+    }
+
+    #[test]
+    fn a_steady_share_adds_a_constant_drift_to_the_eased_move() {
+        // A spinner's constant turn of 1 per second with an eased kick of
+        // 0.5 over the first half second, then the turn alone.
+        let unit = Duration::from_secs(1);
+        let spring = Spring {
+            response: 2.0 * std::f64::consts::PI / 200.0_f64.sqrt(),
+            damping: 0.6,
+        };
+        let keyframes = Keyframes::new(unit, 0.0_f64)
+            .then_steadily(0.5, spring, 1.0, 0.5)
+            .then_steadily(1.0, Curve::linear(unit), 1.5, 1.0);
+        let omega = 2.0 * std::f64::consts::PI / spring.response;
+        let at = |seconds: f64| {
+            keyframes
+                .sample(Duration::from_secs_f64(seconds), Repeat::Forever)
+                .expect("forever runs")
+        };
+        for seconds in [0.0, 0.05, 0.1, 0.25, 0.4] {
+            let kick = f64::midpoint(
+                1.0,
+                spring_lane(-1.0, 0.0, omega, spring.damping, seconds).0,
+            );
+            let expected = seconds + kick;
+            assert!(
+                (at(seconds) - expected).abs() < 1e-9,
+                "{seconds}: {} vs {expected}",
+                at(seconds)
+            );
+        }
+        // The second half is the turn alone, at a constant rate.
+        assert!((at(0.75) - 1.25).abs() < 1e-9, "{}", at(0.75));
     }
 
     #[test]
