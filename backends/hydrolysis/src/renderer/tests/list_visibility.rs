@@ -16,7 +16,7 @@ use std::time::Instant;
 use accesskit::{NodeId, Role, TreeUpdate};
 use nami::Binding;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem, ListRowId, Section};
+use waterui::component::list::{List, ListItem, Section};
 use waterui::component::text;
 use waterui::{AnyView, Environment, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
@@ -98,7 +98,7 @@ fn click(runtime: &mut HeadlessRuntime, x: f64, y: f64) {
 /// the press slots `focus_node_for_key` resolves.
 fn sectioned_list(
     shown: Binding<bool>,
-    selection: Binding<Option<ListRowId>>,
+    selection: Binding<Option<u64>>,
 ) -> AnyViewBuilder<AnyView> {
     AnyViewBuilder::<AnyView>::new(move || {
         let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
@@ -123,7 +123,7 @@ fn hiding_a_mounted_list_section_emits_no_stale_parent() {
     let shown = Binding::bool(true);
     let mut runtime = runtime(
         test_environment(),
-        sectioned_list(shown.clone(), Binding::container(None::<ListRowId>)),
+        sectioned_list(shown.clone(), Binding::container(None::<u64>)),
     );
     let mut at = Instant::now();
 
@@ -161,7 +161,7 @@ fn hiding_a_mounted_list_section_emits_no_stale_parent() {
 #[test]
 fn a_focused_row_hidden_and_shown_again_refocuses() {
     let shown = Binding::bool(true);
-    let selection = Binding::container(None::<ListRowId>);
+    let selection = Binding::container(None::<u64>);
     let mut runtime = runtime(test_environment(), sectioned_list(shown.clone(), selection));
     let mut at = Instant::now();
 

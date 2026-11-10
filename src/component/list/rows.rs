@@ -13,12 +13,19 @@
 //! contiguous. A part forwards its own changes, re-based onto the rows before
 //! it; a section's header therefore attaches to whichever row currently
 //! opens it, and a section with no rows has no span and draws no chrome.
+//!
+//! Each part also keeps what its rows are selected by — a static row's
+//! `.tag(…)` value, a collection item's id — erased until a selection names
+//! the type; [`TaggedBy`] makes that type agree with the content at compile
+//! time.
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::any::{Any, type_name};
 use core::cell::RefCell;
 use core::fmt;
+use core::marker::PhantomData;
 use core::ops::{Range, RangeBounds};
 
 use nami::collection::{CollectionChange, Edit};
@@ -30,6 +37,8 @@ use waterui_core::id::{Id as RawId, Mapping};
 
 use crate::views::{AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 
+use super::content::TaggedBy;
+use super::selection::SelectableRows;
 use super::{ListItem, ListSection};
 
 // ============================================================================
@@ -218,6 +227,9 @@ impl RowSections<RawId> {
 /// A row's identity in a list built by [`List::content`](super::List::content):
 /// the part of the content that produced it and its identity within that
 /// part — a static row's position, or a collection item's own id.
+///
+/// Rows are told apart by it; they are selected by their tags (see
+/// [`SelectableRows`]), never by this id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ListRowId {
     part: usize,
@@ -226,15 +238,108 @@ pub struct ListRowId {
 
 /// The rows of a [`List::content`](super::List::content) tree: every part of
 /// every section, concatenated in declaration order.
-pub struct ContentRows {
+///
+/// `C` is the content the rows were collected from. It holds no data; it
+/// carries the content's type to [`ListBuilder::selection`](super::ListBuilder::selection),
+/// which accepts a selection type only when the content is [`TaggedBy`] it.
+pub struct ContentRows<C> {
     parts: Rc<[SharedAnyViews<ListItem>]>,
+    tags: Rc<[PartTags]>,
+    _content: PhantomData<fn() -> C>,
 }
 
-impl fmt::Debug for ContentRows {
+/// What the rows of one part are selected by, erased until a selection
+/// names the type.
+enum PartTags {
+    /// A run of static rows: each row's `.tag(…)` value, by position, and
+    /// the mapping from the part's erased row ids to those positions.
+    Static {
+        positions: Mapping<usize>,
+        tags: Rc<[Option<Rc<dyn Any>>]>,
+    },
+    /// A collection: the `Mapping<Id>` from the part's erased row ids to its
+    /// items' ids.
+    Items(Rc<dyn Any>),
+}
+
+/// [`PartTags`] once the selection type `T` is known.
+enum TypedPartTags<T> {
+    Static {
+        positions: Mapping<usize>,
+        tags: Rc<[Option<T>]>,
+    },
+    Items(Mapping<T>),
+}
+
+/// The panic for a part whose tags are not of the type its list is selected
+/// by — reachable only through a `TaggedBy` implementation that disagrees
+/// with the rows its content collects.
+fn mistagged<T>() -> ! {
+    panic!(
+        "a list selected by `{}` holds rows tagged by another type: a `TaggedBy` implementation does not match the rows its content collects",
+        type_name::<T>()
+    )
+}
+
+impl PartTags {
+    fn typed<T: 'static + Clone>(&self) -> TypedPartTags<T> {
+        match self {
+            Self::Static { positions, tags } => TypedPartTags::Static {
+                positions: positions.clone(),
+                tags: tags
+                    .iter()
+                    .map(|tag| {
+                        tag.as_ref().map(|tag| {
+                            tag.downcast_ref::<T>()
+                                .cloned()
+                                .unwrap_or_else(|| mistagged::<T>())
+                        })
+                    })
+                    .collect(),
+            },
+            Self::Items(ids) => TypedPartTags::Items(
+                ids.downcast_ref::<Mapping<T>>()
+                    .cloned()
+                    .unwrap_or_else(|| mistagged::<T>()),
+            ),
+        }
+    }
+}
+
+impl<T: Ord + Clone> TypedPartTags<T> {
+    /// The tag of the part's row `row`.
+    fn tag(&self, row: RawId) -> Option<T> {
+        fn unreported(row: RawId) -> ! {
+            panic!("list row id {row:?} was never reported by its part")
+        }
+        match self {
+            Self::Static { positions, tags } => {
+                tags[positions.to_data(row).unwrap_or_else(|| unreported(row))].clone()
+            }
+            Self::Items(ids) => Some(ids.to_data(row).unwrap_or_else(|| unreported(row))),
+        }
+    }
+}
+
+/// The rows of `List::content` are selected by `T` when the content is
+/// tagged by `T`: a static row by its `.tag(…)` value, a `ForEach` row by
+/// its item's id, and an untagged static row not at all.
+impl<C, T> SelectableRows<T> for ContentRows<C>
+where
+    C: TaggedBy<T>,
+    T: 'static + Ord + Clone,
+{
+    fn row_tags(&self) -> impl Fn(&ListRowId) -> Option<T> + 'static {
+        let parts: Rc<[TypedPartTags<T>]> = self.tags.iter().map(PartTags::typed).collect();
+        move |id: &ListRowId| parts[id.part].tag(id.row)
+    }
+}
+
+impl<C> fmt::Debug for ContentRows<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContentRows")
             .field("parts", &self.parts.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -328,7 +433,7 @@ fn shifted(edit: &Edit, offset: usize) -> Edit {
     }
 }
 
-impl Views for ContentRows {
+impl<C> Views for ContentRows<C> {
     type Id = ListRowId;
     type Guard = ContentRowsGuard;
     type View = ListItem;
@@ -452,12 +557,23 @@ impl Views for StaticRows {
 // Sink
 // ============================================================================
 
+/// One static row a [`ListItemSink`] collected.
+struct StaticRow {
+    builder: AnyViewBuilder<ListItem>,
+    /// The row's `.tag(…)` value; `None` when the row is not selectable.
+    tag: Option<Rc<dyn Any>>,
+}
+
 /// One part a [`ListItemSink`] is collecting.
 enum SinkPart {
     /// Consecutive static rows of one section.
-    Static(Vec<AnyViewBuilder<ListItem>>),
-    /// One reactive collection.
-    Rows(SharedAnyViews<ListItem>),
+    Static(Vec<StaticRow>),
+    /// One reactive collection and the `Mapping<Id>` its rows were erased
+    /// through.
+    Rows {
+        rows: SharedAnyViews<ListItem>,
+        ids: Rc<dyn Any>,
+    },
 }
 
 /// Accumulator handed to [`ListContent::collect_items`](super::ListContent::collect_items).
@@ -507,25 +623,41 @@ impl ListItemSink {
         })
     }
 
-    /// Pushes one static row built from a cloneable builder.
+    /// Pushes one static row built from a cloneable builder. The row carries
+    /// no tag, so it is not selectable.
     pub fn push(&mut self, builder: AnyViewBuilder<ListItem>) {
+        self.push_static(builder, None);
+    }
+
+    /// Pushes one static row selected by `tag`.
+    pub(crate) fn push_tagged<T: 'static>(&mut self, builder: AnyViewBuilder<ListItem>, tag: T) {
+        self.push_static(builder, Some(Rc::new(tag)));
+    }
+
+    fn push_static(&mut self, builder: AnyViewBuilder<ListItem>, tag: Option<Rc<dyn Any>>) {
         let section = self.open_section();
-        if let (Some(SinkPart::Static(builders)), Some(last)) =
+        if let (Some(SinkPart::Static(rows)), Some(last)) =
             (self.parts.last_mut(), self.part_sections.last())
             && *last == section
         {
-            builders.push(builder);
+            rows.push(StaticRow { builder, tag });
             return;
         }
-        self.parts.push(SinkPart::Static(alloc::vec![builder]));
+        self.parts
+            .push(SinkPart::Static(alloc::vec![StaticRow { builder, tag }]));
         self.part_sections.push(section);
     }
 
-    /// Pushes a reactive collection of rows. Its rows are inserted, removed
-    /// and moved in place as the collection changes.
-    pub fn push_rows(&mut self, rows: impl Views<View = ListItem> + 'static) {
+    /// Pushes a reactive collection of rows, each selected by its own id.
+    /// Its rows are inserted, removed and moved in place as the collection
+    /// changes.
+    pub fn push_rows<V: Views<View = ListItem> + 'static>(&mut self, rows: V) {
         let section = self.open_section();
-        self.parts.push(SinkPart::Rows(SharedAnyViews::new(rows)));
+        let (rows, ids) = SharedAnyViews::new_with_ids(rows);
+        self.parts.push(SinkPart::Rows {
+            rows,
+            ids: Rc::new(ids),
+        });
         self.part_sections.push(section);
     }
 
@@ -541,21 +673,37 @@ impl ListItemSink {
         self.open = None;
     }
 
-    /// The collected rows and the section each belongs to.
-    pub(crate) fn finish(self) -> (ContentRows, RowSections<ListRowId>) {
-        let parts = self
+    /// The collected rows of the content `C` and the section each belongs
+    /// to.
+    pub(crate) fn finish<C>(self) -> (ContentRows<C>, RowSections<ListRowId>) {
+        let (parts, tags): (Vec<_>, Vec<_>) = self
             .parts
             .into_iter()
             .map(|part| match part {
-                SinkPart::Static(builders) => SharedAnyViews::new(StaticRows {
-                    builders: Rc::from(builders),
-                }),
-                SinkPart::Rows(rows) => rows,
+                SinkPart::Static(rows) => {
+                    let (builders, tags): (Vec<_>, Vec<_>) =
+                        rows.into_iter().map(|row| (row.builder, row.tag)).unzip();
+                    let (rows, positions) = SharedAnyViews::new_with_ids(StaticRows {
+                        builders: Rc::from(builders),
+                    });
+                    (
+                        rows,
+                        PartTags::Static {
+                            positions,
+                            tags: Rc::from(tags),
+                        },
+                    )
+                }
+                SinkPart::Rows { rows, ids } => (rows, PartTags::Items(ids)),
             })
-            .collect();
+            .unzip();
         let part_sections: Rc<[usize]> = Rc::from(self.part_sections);
         (
-            ContentRows { parts },
+            ContentRows {
+                parts: Rc::from(parts),
+                tags: Rc::from(tags),
+                _content: PhantomData,
+            },
             RowSections {
                 section_of: Rc::new(move |id: &ListRowId| part_sections[id.part]),
                 sections: Rc::from(self.sections),

@@ -715,18 +715,41 @@ pub fn components_reactive_section_prose(
 // components.md § "## Lists and collections" (prose): the `ListItem` modifiers.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn components_list_item_prose() {
-    use waterui::component::list::ListRowId;
+pub fn components_list_item_prose(records: waterui::reactive::collection::List<Record>) {
     use waterui::layout::padding::EdgeInsets;
+    use waterui::views::ForEach;
+
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Mailbox {
+        Inbox,
+        Archive,
+    }
 
     let signal = Binding::bool(true);
-    let selection = Binding::container(None::<ListRowId>);
-    let multi = Binding::container(alloc::collections::BTreeSet::<ListRowId>::new());
+    let selection = Binding::container(None::<Mailbox>);
+    let multi = Binding::container(alloc::collections::BTreeSet::<Mailbox>::new());
+    let record_selection = Binding::container(None::<u64>);
 
     let _ = ListItem::new(text("a")).deletable(signal.clone());
     let _ = ListItem::new(text("a")).insets(EdgeInsets::all(4.0));
-    let _ = List::content((row("a", text("1")),)).selection(&selection);
-    let _ = List::content((row("a", text("1")),)).multi_selection(&multi);
+    let _ = List::for_each(records.clone(), |r: Record| ListItem::new(text(r.title)))
+        .selection(&record_selection);
+    let _ = List::content((
+        (|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox),
+        row("Archive", "12").tag(Mailbox::Archive),
+    ))
+    .selection(&selection);
+    let _ = List::content((
+        row("Archive", "12").tag(Mailbox::Archive),
+        row("Storage", "3 GB"), // untagged: not selectable
+    ))
+    .multi_selection(&multi);
+    let _ = List::content(
+        Section::new("Records").content(ForEach::new(records, |r: Record| {
+            ListItem::new(text(r.title))
+        })),
+    )
+    .selection(&record_selection);
     // A row under `.disabled(true)` is inert to selection; there is no
     // per-item selectable flag — selection follows the content's disabled state.
     let _ = ListItem::new(text("a").disabled(true));

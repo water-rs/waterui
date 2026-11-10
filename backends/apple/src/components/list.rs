@@ -23,7 +23,8 @@ use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
 use waterui::animation::{Animation, ChangeAnimation};
 use waterui::component::list::{
-    ListConfig, ListItem, ListSection, ListSections, ListSelection, Move, OnDelete, OnMove,
+    ListConfig, ListItem, ListRowTags, ListSection, ListSections, ListSelection, Move, OnDelete,
+    OnMove,
 };
 use waterui::id::Id as RawId;
 use waterui::layout::padding::EdgeInsets;
@@ -258,15 +259,16 @@ fn is_navigation_scroll_surface(table: &TableView) -> bool {
 }
 
 /// The selection mode `ListConfig` carries — `WuiList`'s
-/// `SelectionController`.
+/// `SelectionController`. The bindings hold row tags (`ListRowTags`), not
+/// row ids.
 enum SelectionMode {
     /// Rows are not selectable.
     None,
-    /// A single selected row; `None` inside the binding means nothing is
+    /// A single selected tag; `None` inside the binding means nothing is
     /// selected.
-    Single(Binding<Option<ItemId>>),
-    /// The set of selected row ids.
-    Multiple(Binding<BTreeSet<ItemId>>),
+    Single(Binding<Option<RawId>>),
+    /// The set of selected tags.
+    Multiple(Binding<BTreeSet<RawId>>),
 }
 
 impl fmt::Debug for SelectionMode {
@@ -287,8 +289,9 @@ impl SelectionMode {
         matches!(self, Self::Multiple(_))
     }
 
-    /// `SelectionController.selectedIds`: the binding's current selection.
-    fn selected_ids(&self) -> BTreeSet<ItemId> {
+    /// `SelectionController.selectedIds`: the binding's current selection,
+    /// as tags.
+    fn selected_tags(&self) -> BTreeSet<RawId> {
         match self {
             Self::None => BTreeSet::new(),
             Self::Single(binding) => {
@@ -302,12 +305,12 @@ impl SelectionMode {
         }
     }
 
-    /// The table's selected ids written back into the binding.
-    fn write(&self, ids: &BTreeSet<ItemId>) {
+    /// The table's selected rows' tags written back into the binding.
+    fn write(&self, tags: &BTreeSet<RawId>) {
         match self {
             Self::None => {}
-            Self::Single(binding) => binding.set(ids.iter().next().copied()),
-            Self::Multiple(binding) => binding.set(ids.clone()),
+            Self::Single(binding) => binding.set(tags.iter().next().copied()),
+            Self::Multiple(binding) => binding.set(tags.clone()),
         }
     }
 }
@@ -549,6 +552,8 @@ struct Shared {
     flat_layout: Vec<FlatEntry>,
     /// Selection bookkeeping.
     selection: SelectionMode,
+    /// The tag each row is selected by, by item id.
+    tags: ListRowTags,
     /// `SelectionController.applyingToTable` — guards re-entrancy while a
     /// binding change applies to the table.
     applying_selection: Cell<bool>,
@@ -636,20 +641,40 @@ impl Shared {
             .is_some_and(Signal::snapshot)
     }
 
-    /// `writeSelectionFromTable`: `flat` item indexes selected on the
-    /// table written into the binding — skipped while a binding change is
-    /// applying to the table.
+    /// Whether input may select `flat`'s row: it carries a tag and is not
+    /// disabled. A row without a tag is not selectable.
+    fn row_selectable(&self, flat: usize) -> bool {
+        self.tags.tag(self.item_ids[flat]).is_some() && !self.row_disabled(flat)
+    }
+
+    /// Whether `flat`'s row carries a tag in the binding's selection.
+    fn row_selected(&self, flat: usize, selected: &BTreeSet<RawId>) -> bool {
+        self.tags
+            .tag(self.item_ids[flat])
+            .is_some_and(|tag| selected.contains(&tag))
+    }
+
+    /// The flat indexes of the rows the binding's selection holds: every row
+    /// carrying a selected tag.
+    fn selected_flats(&self) -> Vec<usize> {
+        let selected = self.selection.selected_tags();
+        (0..self.item_ids.len())
+            .filter(|flat| self.row_selected(*flat, &selected))
+            .collect()
+    }
+
+    /// `writeSelectionFromTable`: the tags of the `flat` item indexes
+    /// selected on the table written into the binding — skipped while a
+    /// binding change is applying to the table.
     fn write_selection(&self, flats: impl Iterator<Item = usize>) {
         if self.applying_selection.get() {
             return;
         }
-        let mut ids = BTreeSet::new();
-        for flat in flats {
-            if let Some(&id) = self.item_ids.get(flat) {
-                ids.insert(id);
-            }
-        }
-        self.selection.write(&ids);
+        let tags = flats
+            .filter_map(|flat| self.item_ids.get(flat))
+            .filter_map(|id| self.tags.tag(*id))
+            .collect();
+        self.selection.write(&tags);
     }
 
     /// Renders `flat`'s item, returning its insets, deletable signal and leaf.
@@ -1255,7 +1280,7 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
         return;
     }
     borrowed.applying_selection.set(true);
-    let selected = borrowed.selection.selected_ids();
+    let selected = borrowed.selected_flats();
     #[cfg(target_os = "ios")]
     {
         let current: HashSet<usize> = table
@@ -1266,10 +1291,7 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
                 _ => None,
             })
             .collect();
-        let wanted: HashSet<usize> = selected
-            .iter()
-            .filter_map(|id| borrowed.flat_of_id(*id))
-            .collect();
+        let wanted: HashSet<usize> = selected.into_iter().collect();
         for flat in &current {
             if !wanted.contains(flat)
                 && let Some((section, row)) = borrowed.display_index_of(DisplayRow::Live(*flat))
@@ -1288,8 +1310,7 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
     #[cfg(target_os = "macos")]
     {
         let wanted: Vec<usize> = selected
-            .iter()
-            .filter_map(|id| borrowed.flat_of_id(*id))
+            .into_iter()
             .filter_map(|flat| {
                 borrowed
                     .flat_layout
@@ -1568,8 +1589,9 @@ mod platform_impl {
             return;
         };
         // A `.disabled` row is inert — accessibility activation must not
-        // select it, the way a pointer press must not.
-        if state.borrow().row_disabled(flat) {
+        // select it, the way a pointer press must not — and a row without a
+        // tag is not selectable at all.
+        if !state.borrow().row_selectable(flat) {
             return;
         }
         if selected.contains(&flat) {
@@ -1903,7 +1925,7 @@ mod platform_impl {
         fn should_select(&self, _table: &TableView, index: IndexPath) -> bool {
             let state = self.state.borrow();
             match state.display_at(index.section, index.row) {
-                Some(DisplayRow::Live(flat)) => !state.row_disabled(flat),
+                Some(DisplayRow::Live(flat)) => state.row_selectable(flat),
                 _ => false,
             }
         }
@@ -1915,9 +1937,8 @@ mod platform_impl {
                 return;
             };
             let state = self.state.borrow();
-            if let Some(&id) = state.item_ids.get(flat)
-                && state.selection.allows_multiple()
-                && state.selection.selected_ids().contains(&id)
+            if state.selection.allows_multiple()
+                && state.row_selected(flat, &state.selection.selected_tags())
             {
                 table.deselect_row(index, false);
             }
@@ -2277,7 +2298,7 @@ mod platform_impl {
             let state = self.state.borrow();
             state.selection.allows_selection()
                 && match state.flat_layout.get(row) {
-                    Some(&FlatEntry::Row(flat)) => !state.row_disabled(flat),
+                    Some(&FlatEntry::Row(flat)) => state.row_selectable(flat),
                     _ => false,
                 }
         }
@@ -2520,6 +2541,7 @@ fn render(mut config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
             ListSelection::Single(binding) => SelectionMode::Single(binding.clone()),
             ListSelection::Multiple(binding) => SelectionMode::Multiple(binding.clone()),
         },
+        tags: config.row_tags().clone(),
         applying_selection: Cell::new(false),
         #[cfg(target_os = "macos")]
         editing: config.editing().clone(),

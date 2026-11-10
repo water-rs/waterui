@@ -2922,6 +2922,7 @@ mod split {
     use cocoa_ui::appkit::ListTableView;
     use cocoa_ui::objc2_app_kit::NSTableViewStyle;
     use cocoa_ui::{PlatformView, view};
+    use waterui::ViewExt as _;
     use waterui::component::list::{List, ListItem};
     use waterui::navigation::{NavigationSplitView, NavigationView};
     use waterui::prelude::text;
@@ -2948,7 +2949,8 @@ mod split {
         let leaf = resolve::render(NavigationSplitView::new(
             &selection,
             move || {
-                List::content((|| ListItem::new(text("row")),)).selection(&binding(Some(0_usize)))
+                List::content(((|| ListItem::new(text("row"))).tag(0_usize),))
+                    .selection(&binding(Some(0_usize)))
             },
             |_id: i32| NavigationView::new("Detail", text("detail")),
         ));
@@ -2967,8 +2969,9 @@ mod split {
     /// The same list outside a split keeps the regular table chrome.
     pub fn a_plain_list_keeps_the_regular_chrome() {
         let selection = binding(Some(0_usize));
-        let leaf =
-            resolve::render(List::content((|| ListItem::new(text("row")),)).selection(&selection));
+        let leaf = resolve::render(
+            List::content(((|| ListItem::new(text("row"))).tag(0_usize),)).selection(&selection),
+        );
         let table = sidebar_table(leaf.view()).expect("the list mounts a table");
         assert!(
             !table.is_sidebar(),

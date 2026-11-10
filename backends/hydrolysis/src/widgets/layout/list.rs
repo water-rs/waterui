@@ -21,7 +21,9 @@ use accesskit::{
 };
 #[cfg(feature = "accessibility")]
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
-use waterui::component::list::{ListConfig, ListItem, ListSectionSpan, ListSelection, Move};
+use waterui::component::list::{
+    ListConfig, ListItem, ListRowTags, ListSectionSpan, ListSelection, Move,
+};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
 use waterui_core::animation::Animation;
@@ -140,10 +142,17 @@ impl RowBinding {
 /// `ListSelection` binding under the same rules: a plain click selects, the
 /// toggle modifier toggles the clicked row in multi mode, and Shift extends a
 /// range from the anchor the last non-Shift write set (water-rs/waterui#1226).
+///
+/// The selection holds row *tags*, not row ids: a row is selected when its
+/// tag is in the binding, a write stores the row's tag, and a row without a
+/// tag is not selectable at all.
 pub struct ListRowSelection {
-    /// The erased selection `ListConfig` carries — keyed by the same row ids
-    /// the snapshot's `get_id` reports.
-    selection: ListSelection<ListItemId>,
+    /// The erased selection `ListConfig` carries — keyed by the tags `tags`
+    /// answers for the rows.
+    selection: ListSelection<RawId>,
+    /// The tag each row is selected by, keyed by the row ids the snapshot's
+    /// `get_id` reports.
+    tags: ListRowTags,
     /// The list's retained row snapshot — row ids by index, resolved for
     /// Shift-range writes against the membership the list actually rendered.
     snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
@@ -157,31 +166,41 @@ impl ListRowSelection {
     /// `ListSelection::None`, so a non-selectable list keeps its old input
     /// behaviour — no row press target, no selected state.
     fn new(
-        selection: &ListSelection<ListItemId>,
+        config: &ListConfig,
         snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
     ) -> Option<Rc<Self>> {
-        match selection {
+        match config.selection() {
             ListSelection::None => None,
-            _ => Some(Rc::new(Self {
+            selection => Some(Rc::new(Self {
                 selection: selection.clone(),
+                tags: config.row_tags().clone(),
                 snapshot,
                 anchor: Cell::new(None),
             })),
         }
     }
 
+    /// Whether the row carries a tag, so input may select it.
+    pub(crate) fn selects(&self, id: ListItemId) -> bool {
+        self.tags.tag(id).is_some()
+    }
+
     /// Whether the row is selected, as a signal the flush reads like any other
-    /// row state — a binding write repaints the row's chrome.
+    /// row state — a binding write repaints the row's chrome. A row without a
+    /// tag is never selected.
     pub(crate) fn is_selected(&self, id: ListItemId) -> Computed<bool> {
+        let Some(tag) = self.tags.tag(id) else {
+            return nami::constant(false).computed();
+        };
         match &self.selection {
             ListSelection::None => nami::constant(false).computed(),
             ListSelection::Single(selection) => selection
                 .clone()
-                .map(move |current| current == Some(id))
+                .map(move |current| current == Some(tag))
                 .computed(),
             ListSelection::Multiple(selection) => selection
                 .clone()
-                .map(move |current| current.contains(&id))
+                .map(move |current| current.contains(&tag))
                 .computed(),
         }
     }
@@ -199,12 +218,22 @@ impl ListRowSelection {
     /// Writes a row interaction into the selection binding: plain selects the
     /// row (and anchors the next range), the toggle modifier toggles the row
     /// in multi mode (also anchoring), and Shift writes the whole range
-    /// between the anchor and this row without moving the anchor.
+    /// between the anchor and this row without moving the anchor; the range
+    /// selects only the rows in it that carry a tag.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the row carries no tag: callers offer selection input only
+    /// on rows [`ListRowSelection::selects`].
     pub(crate) fn write(&self, index: usize, id: ListItemId, modifiers: Modifiers) {
+        let tag = self
+            .tags
+            .tag(id)
+            .expect("selection input reached a list row that carries no tag");
         match &self.selection {
             ListSelection::None => {}
             ListSelection::Single(selection) => {
-                selection.set(Some(id));
+                selection.set(Some(tag));
             }
             ListSelection::Multiple(selection) if modifiers.shift => {
                 let anchor = self
@@ -221,18 +250,19 @@ impl ListRowSelection {
                 selection.set(
                     (start..=end)
                         .filter_map(|row| snapshot.get_id(row))
+                        .filter_map(|row| self.tags.tag(row))
                         .collect(),
                 );
             }
             ListSelection::Multiple(selection) => {
                 if modifiers.control || modifiers.super_key {
                     selection.with_mut(|selected| {
-                        if !selected.insert(id) {
-                            selected.remove(&id);
+                        if !selected.insert(tag) {
+                            selected.remove(&tag);
                         }
                     });
                 } else {
-                    selection.set(std::collections::BTreeSet::from([id]));
+                    selection.set(std::collections::BTreeSet::from([tag]));
                 }
                 self.anchor.set(Some(id));
             }
@@ -464,7 +494,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                 cell.mark(crate::renderer::Dirty::STRUCTURE);
             }
         });
-        let row_selection = ListRowSelection::new(config.selection(), Rc::clone(&rows_snapshot));
+        let row_selection = ListRowSelection::new(&config, Rc::clone(&rows_snapshot));
         Self {
             config,
             row_selection,
@@ -1393,8 +1423,12 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
             }
             row_node.add_action(AccessibilityAction::Focus);
             // The selected state belongs to the list's selection, not the
-            // item: a row exposes it only when the list is selectable.
-            if let Some(selection) = state.row_selection.as_ref() {
+            // item: a row exposes it only when the list can select it.
+            if let Some(selection) = state
+                .row_selection
+                .as_ref()
+                .filter(|selection| selection.selects(row_id))
+            {
                 row_node.set_selected(renderer.read_signal(&selection.is_selected(row_id)));
             }
             let row_node_id = if row_hidden {
@@ -1424,7 +1458,10 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     selection: if row_disabled {
                         None
                     } else {
-                        state.row_selection.clone()
+                        state
+                            .row_selection
+                            .clone()
+                            .filter(|selection| selection.selects(row_id))
                     },
                 });
                 match ctx {
@@ -2039,7 +2076,12 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         // A selectable row carries its selection as `Selected`, so the row's
         // press target reports SELECTED — claims are owner-scoped, so nested
         // controls inside the row do not pick it up.
-        let row_env = match state.borrow().row_selection.clone() {
+        let row_env = match state
+            .borrow()
+            .row_selection
+            .clone()
+            .filter(|selection| selection.selects(row_id))
+        {
             Some(selection) => {
                 let mut env = row_env;
                 env.insert(Selected(selection.is_selected(row_id)));
@@ -2227,6 +2269,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         );
         if let Some(selection) = state.borrow().row_selection.clone()
             && !row_disabled
+            && selection.selects(row_id)
         {
             let hit_bounds = row_rect;
             let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 3);

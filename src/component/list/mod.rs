@@ -31,14 +31,18 @@ use waterui_text::{IntoText, Text};
 mod content;
 mod rows;
 mod section;
+mod selection;
 
-pub use content::{ListContent, ListScope, Row, RowLayout, SectionScope, detail_row, row};
+pub use content::{
+    ListContent, ListScope, Row, RowLayout, SectionScope, TaggedBy, detail_row, row,
+};
 use rows::RowSections;
 pub use rows::{
-    ContentRows, ContentRowsGuard, ContentRowsSnapshot, ListItemSink, ListRowId, ListSectionSpan,
-    ListSections,
+    ContentRows, ContentRowsGuard, ContentRowsSnapshot, ListItemSink, ListSectionSpan, ListSections,
 };
 pub use section::Section;
+use selection::RowTags;
+pub use selection::{ListRowTags, ListSelection, SelectableRows};
 
 /// A list reorder operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -84,91 +88,18 @@ pub type OnDelete = Box<dyn Fn(&Environment, usize)>;
 /// Callback type for move/reorder operations (receives environment and movement).
 pub type OnMove = Box<dyn Fn(&Environment, Move)>;
 
-/// Selection a list binds to row identity: no selection, a single row, or a
-/// set of rows — at most one mode per list.
-///
-/// The generic `Id` is the row's identity type: `V::Id` while the binding is
-/// stored typed on [`ListBuilder`], `RawId` after `config()` erases
-/// it through the same generator the collection's `get_id` reports, so the
-/// backends and the FFI read and write exactly the ids the rows answer to.
-#[derive(Clone, Default)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each selection mode variant by variant; a new selection mode must fail their build instead of falling into a wildcard arm"
-)]
-pub enum ListSelection<Id: 'static> {
-    /// Rows are not selectable.
-    #[default]
-    None,
-    /// A single selected row — `None` inside the binding means nothing is
-    /// selected.
-    Single(Binding<Option<Id>>),
-    /// The set of selected row ids.
-    Multiple(Binding<BTreeSet<Id>>),
-}
-
-impl<Id: 'static> core::fmt::Debug for ListSelection<Id> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(core::any::type_name::<Self>())
-    }
-}
-
-impl<Id: 'static + Ord + Clone> ListSelection<Id> {
-    /// Re-keys the bindings through `ids`, the same generator the erased
-    /// contents feed: reads register each `Id` to the `RawId` the
-    /// collection reports, and backend writes resolve it back — both
-    /// directions the way `Mapping::binding` maps a `Picker` selection.
-    fn erased(self, ids: &Mapping<Id>) -> ListSelection<RawId> {
-        match self {
-            Self::None => ListSelection::None,
-            Self::Single(binding) => {
-                let to = ids.clone();
-                let from = ids.clone();
-                ListSelection::Single(Binding::mapping(
-                    &binding,
-                    move |selected| selected.map(|id| to.to_id(id)),
-                    move |binding, erased| {
-                        binding.set(erased.map(|id| {
-                            from.to_data(id).expect(
-                                "list selection row id is not registered in the list's id mapping",
-                            )
-                        }));
-                    },
-                ))
-            }
-            Self::Multiple(binding) => {
-                let to = ids.clone();
-                let from = ids.clone();
-                ListSelection::Multiple(Binding::mapping(
-                    &binding,
-                    move |selected| selected.iter().map(|id| to.to_id(id.clone())).collect(),
-                    move |binding, erased: BTreeSet<RawId>| {
-                        binding.set(
-                            erased
-                                .iter()
-                                .map(|id| {
-                                    from.to_data(*id).expect(
-                                        "list selection row id is not registered in the list's id mapping",
-                                    )
-                                })
-                                .collect(),
-                        );
-                    },
-                ))
-            }
-        }
-    }
-}
-
 /// Configuration for a list component.
 #[non_exhaustive]
 pub struct ListConfig {
     /// Content items to be displayed in the list.
     contents: SharedAnyViews<ListItem>,
-    /// The list's selection bindings, keyed by the same erased row ids
-    /// `contents.get_id` returns. `ListSelection::None` when the list is not
+    /// The list's selection bindings, keyed by the erased tags `tags`
+    /// answers for the rows. `ListSelection::None` when the list is not
     /// selectable.
     selection: ListSelection<RawId>,
+    /// The tag each row is selected by, keyed by the same row ids
+    /// `contents.get_id` returns.
+    tags: ListRowTags,
     /// Read-only signal for edit mode state.
     editing: Computed<bool>,
     /// Optional callback when any item is deleted.
@@ -191,12 +122,20 @@ impl ListConfig {
         &self.contents
     }
 
-    /// The list's selection bindings, keyed by the same erased row ids
-    /// `contents.get_id` returns. `ListSelection::None` when the list is not
-    /// selectable.
+    /// The list's selection bindings, keyed by the erased tags
+    /// [`ListConfig::row_tags`] answers for the rows: a row is selected when
+    /// its tag is in the selection, and selecting it writes its tag.
+    /// `ListSelection::None` when the list is not selectable.
     #[must_use]
     pub const fn selection(&self) -> &ListSelection<RawId> {
         &self.selection
+    }
+
+    /// The tag each row is selected by, keyed by the same row ids
+    /// `contents.get_id` returns. A row without a tag is not selectable.
+    #[must_use]
+    pub const fn row_tags(&self) -> &ListRowTags {
+        &self.tags
     }
 
     /// Read-only signal for edit mode state.
@@ -309,6 +248,7 @@ where
         ListBuilder {
             contents: self.contents,
             selection: ListSelection::None,
+            tags: RowTags::none(),
             editing: Computed::new(false),
             on_delete: None,
             on_move: None,
@@ -353,22 +293,35 @@ where
         self.builder().scroll_controller(controller)
     }
 
-    /// Single selection keyed by row identity. The framework and backends
-    /// write it on pointer, keyboard and accessibility input.
+    /// Single selection by the value each row is selected by: a `ForEach`
+    /// row's item id, a static row's `.tag(…)` value (see
+    /// [`SelectableRows`]). The framework and backends write it on pointer,
+    /// keyboard and accessibility input.
     ///
-    /// A row whose content is under `.disabled(true)` cannot be selected:
-    /// input routes around it and the binding stays unchanged.
+    /// A row without such a value is not selectable, and neither is a row
+    /// whose content is under `.disabled(true)`: input routes around it and
+    /// the binding stays unchanged.
     #[must_use]
-    pub fn selection(self, selection: &Binding<Option<V::Id>>) -> ListBuilder<V> {
+    pub fn selection<T>(self, selection: &Binding<Option<T>>) -> ListBuilder<V>
+    where
+        V: SelectableRows<T>,
+        T: 'static + Ord + Clone,
+    {
         self.builder().selection(selection)
     }
 
-    /// Multiple selection keyed by row identity.
+    /// Multiple selection by the value each row is selected by, as
+    /// [`List::selection`].
     ///
-    /// A row whose content is under `.disabled(true)` cannot be selected:
-    /// input routes around it and the binding stays unchanged.
+    /// A row without such a value is not selectable, and neither is a row
+    /// whose content is under `.disabled(true)`: input routes around it and
+    /// the binding stays unchanged.
     #[must_use]
-    pub fn multi_selection(self, selection: &Binding<BTreeSet<V::Id>>) -> ListBuilder<V> {
+    pub fn multi_selection<T>(self, selection: &Binding<BTreeSet<T>>) -> ListBuilder<V>
+    where
+        V: SelectableRows<T>,
+        T: 'static + Ord + Clone,
+    {
         self.builder().multi_selection(selection)
     }
 }
@@ -391,7 +344,7 @@ where
     }
 }
 
-impl List<ContentRows> {
+impl<C: ListContent> List<ContentRows<C>> {
     /// Creates a list from a [`ListContent`] tree.
     ///
     /// `ListContent` accepts `|| ListItem::new(…)` row builders, [`Row`] (the
@@ -401,12 +354,34 @@ impl List<ContentRows> {
     /// `SwiftUI`'s `Section { row; ForEach(items) { … } }` form. A static row
     /// is a builder rather than a finished [`ListItem`] because the list
     /// rebuilds it whenever the row is realized again; a `ForEach` follows
-    /// its collection row by row. A row's id is a [`ListRowId`]. For one
-    /// identity-keyed collection without sections, [`List::for_each`] keeps
-    /// the collection's own ids; for any pre-built [`Views`] implementation,
-    /// use [`List::new`].
+    /// its collection row by row. For any pre-built [`Views`]
+    /// implementation, use [`List::new`].
+    ///
+    /// The list is selected the way `SwiftUI`'s `List(selection:)` is: a
+    /// `ForEach` row by its item's id, a static row by the value it is
+    /// tagged with — `(|| ListItem::new(…)).tag(value)` or
+    /// [`Row::tag`] — and an untagged static row not at all.
+    ///
+    /// ```rust
+    /// use waterui::component::list::{List, ListItem, Section, row};
+    /// use waterui::prelude::*;
+    ///
+    /// #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    /// enum Mailbox {
+    ///     Inbox,
+    ///     Archive,
+    /// }
+    ///
+    /// let selection = binding(Some(Mailbox::Inbox));
+    /// let list = List::content(Section::new("Mailboxes").content((
+    ///     (|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox),
+    ///     row("Archive", "12").tag(Mailbox::Archive),
+    ///     row("Storage", "3 GB"),
+    /// )))
+    /// .selection(&selection);
+    /// ```
     #[must_use]
-    pub fn content(content: impl ListContent) -> Self {
+    pub fn content(content: C) -> Self {
         let mut sink = ListItemSink::new();
         content.collect_items(&mut sink);
         let (contents, sections) = sink.finish();
@@ -443,17 +418,18 @@ impl From<ListConfig> for List<SharedAnyViews<ListItem>> {
 }
 
 fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
-    // Erasing the themed contents again re-keys every row id, so the erased
-    // selection and sections travel through the same generator — a
-    // backend's `get_id` must return exactly the ids both are keyed by.
+    // Erasing the themed contents again re-keys every row id, so the row
+    // tags and sections travel through the same generator — a backend's
+    // `get_id` must return exactly the ids both are keyed by. The selection
+    // holds tags, which the re-keying leaves alone.
     let selection = config.selection.clone();
-    let theme_selection = selection.clone();
+    let tags = config.tags.clone();
     let (contents, ids) = AnyViews::new_with_ids(WithId {
         contents: config.contents.clone(),
-        transform: Rc::new(move |id, item| selection_themed(item, &theme_selection, id)),
+        transform: Rc::new(move |id, item| selection_themed(item, &selection, tags.tag(id))),
     });
     config.contents = SharedAnyViews::from(contents);
-    config.selection = selection.erased(&ids);
+    config.tags = config.tags.clone().rekeyed(&ids);
     // Section headers and footers are semantic text: they localize, and they
     // may be driven by a signal. Resolving them here is the one place the
     // environment is in hand.
@@ -575,25 +551,33 @@ where
 /// Material tints the row with a tonal container and writes its own on-container
 /// color over it. Anything the row resolves through the theme's foreground,
 /// muted-foreground, or accent slots follows the `selected` signal reactively;
-/// the row itself is not rebuilt.
-fn selection_themed(mut item: ListItem, selection: &ListSelection<RawId>, id: RawId) -> ListItem {
+/// the row itself is not rebuilt. A row without a tag is never selected and
+/// is left as it is.
+fn selection_themed(
+    mut item: ListItem,
+    selection: &ListSelection<RawId>,
+    tag: Option<RawId>,
+) -> ListItem {
     use crate::color::WorkingColor;
     use crate::theme::{color, install_color_signal};
     use nami::SignalExt;
     use waterui_core::env::use_env;
     use waterui_core::resolve::Resolvable;
 
+    let Some(tag) = tag else {
+        return item;
+    };
     // A row's selected state derives from the list selection and the row's
-    // own id: the row is selected exactly when its id is in the binding.
+    // tag: the row is selected exactly when its tag is in the binding.
     let selected: Computed<bool> = match selection {
         ListSelection::None => return item,
         ListSelection::Single(selection) => selection
             .clone()
-            .map(move |current| current == Some(id))
+            .map(move |current| current == Some(tag))
             .computed(),
         ListSelection::Multiple(selection) => selection
             .clone()
-            .map(move |current| current.contains(&id))
+            .map(move |current| current.contains(&tag))
             .computed(),
     };
     let content = core::mem::take(&mut item.content);
@@ -644,7 +628,10 @@ where
 /// Builder for configuring a list with editing, delete, and move capabilities.
 pub struct ListBuilder<V: Views<View = ListItem>> {
     contents: V,
-    selection: ListSelection<V::Id>,
+    /// The selection, already erased into tags through the value mapping
+    /// `tags` erases the rows' values with.
+    selection: ListSelection<RawId>,
+    tags: RowTags<V::Id>,
     editing: Computed<bool>,
     on_delete: Option<OnDelete>,
     on_move: Option<OnMove>,
@@ -700,18 +687,31 @@ where
         self
     }
 
-    /// Single selection keyed by row identity. The framework and backends
-    /// write it on pointer, keyboard and accessibility input.
+    /// Single selection by the value each row is selected by, as
+    /// [`List::selection`].
     #[must_use]
-    pub fn selection(mut self, selection: &Binding<Option<V::Id>>) -> Self {
-        self.selection = ListSelection::Single(selection.clone());
+    pub fn selection<T>(mut self, selection: &Binding<Option<T>>) -> Self
+    where
+        V: SelectableRows<T>,
+        T: 'static + Ord + Clone,
+    {
+        let values = Mapping::new();
+        self.tags = RowTags::new(self.contents.row_tags(), &values);
+        self.selection = ListSelection::single(selection, &values);
         self
     }
 
-    /// Multiple selection keyed by row identity.
+    /// Multiple selection by the value each row is selected by, as
+    /// [`List::multi_selection`].
     #[must_use]
-    pub fn multi_selection(mut self, selection: &Binding<BTreeSet<V::Id>>) -> Self {
-        self.selection = ListSelection::Multiple(selection.clone());
+    pub fn multi_selection<T>(mut self, selection: &Binding<BTreeSet<T>>) -> Self
+    where
+        V: SelectableRows<T>,
+        T: 'static + Ord + Clone,
+    {
+        let values = Mapping::new();
+        self.tags = RowTags::new(self.contents.row_tags(), &values);
+        self.selection = ListSelection::multiple(selection, &values);
         self
     }
 }
@@ -726,7 +726,8 @@ where
         let (contents, ids) = AnyViews::new_with_ids(self.contents);
         ListConfig {
             contents: SharedAnyViews::from(contents),
-            selection: self.selection.erased(&ids),
+            selection: self.selection,
+            tags: self.tags.erased(&ids),
             editing: self.editing,
             on_delete: self.on_delete,
             on_move: self.on_move,
@@ -1004,14 +1005,10 @@ mod tests {
     #[test]
     fn min_row_height_resolves_from_the_environment() {
         let (content, env) = modifier_parts(
-            List::content((
-                || ListItem::new(text!("Alice joined")),
-                || ListItem::new(text!("Hello")),
-            ))
-            .list_min_row_height(0.0),
+            List::content((row("Alice", "joined"), row("Hello", ""))).list_min_row_height(0.0),
         );
         let list = *content
-            .downcast::<List<ContentRows>>()
+            .downcast::<List<ContentRows<(Row, Row)>>>()
             .unwrap_or_else(|_| panic!("the metadata did not wrap the list"));
         let with_floor = render_config(ConfigurableView::config(list), &env);
         assert_eq!(with_floor.min_row_height, Some(0.0));
@@ -1030,12 +1027,12 @@ mod tests {
     /// selection transforms `render_list_config` wraps every item in.
     #[test]
     fn row_insets_survive_the_section_and_selection_transform() {
-        let selection = nami::Binding::container(Option::<ListRowId>::None);
+        let selection = nami::Binding::container(Option::<i32>::None);
         let config = render_config(
             ConfigurableView::config(
                 List::content((
-                    || ListItem::new(text!("Alice joined")).insets(EdgeInsets::all(4.0)),
-                    || ListItem::new(text!("Hello")),
+                    (|| ListItem::new(text!("Alice joined")).insets(EdgeInsets::all(4.0))).tag(1),
+                    (|| ListItem::new(text!("Hello"))).tag(2),
                 ))
                 .selection(&selection),
             ),

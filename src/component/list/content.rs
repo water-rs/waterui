@@ -16,12 +16,19 @@
 //! The scope parameter keeps sections flat: a [`super::Section`] is
 //! [`ListContent`] of the list ([`ListScope`]) but not of another section
 //! ([`SectionScope`]), so nesting one section in another does not compile.
+//!
+//! A static row becomes selectable by tagging it with the value that selects
+//! it — `(|| ListItem::new(…)).tag(value)` through
+//! [`ViewExt::tag`](crate::ViewExt::tag), or [`Row::tag`] — and a `ForEach`
+//! row is selected by its item's id. [`TaggedBy`] states, per selection
+//! type, which content a list may select by it.
 
 use alloc::vec::Vec;
 
 use nami::collection::Collection;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
+use waterui_core::id::TaggedView;
 
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_layout::{
@@ -74,6 +81,26 @@ pub trait ListContent<Scope = ListScope> {
     fn collect_items(self, sink: &mut ListItemSink);
 }
 
+/// List content whose selectable rows are all selected by values of `T`.
+///
+/// A list built by [`List::content`](super::List::content) accepts a
+/// selection of `T` only when its content is `TaggedBy<T>`, so a selection
+/// type the rows do not carry fails to compile. A static row tagged with
+/// `.tag(value)` is `TaggedBy` the value's type; a [`ForEach`] row is
+/// `TaggedBy` its item's id type; an untagged static row is `TaggedBy`
+/// every type, because it is not selectable. Sections, tuples, arrays,
+/// vectors and `Option` are `TaggedBy<T>` when everything they hold is.
+///
+/// An implementation for custom [`ListContent`] must agree with the rows it
+/// collects: a row tagged by another type panics when the list's selection
+/// is set.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` holds rows that are not selected by `{T}`",
+    label = "rows not selected by `{T}`",
+    note = "a `ForEach` row is selected by its item's id and a static row by the value given to `.tag(…)`; every selectable row of one list is selected by the same type"
+)]
+pub trait TaggedBy<T> {}
+
 // ----------------------------------------------------------------------------
 // Leaf impls
 // ----------------------------------------------------------------------------
@@ -82,7 +109,9 @@ impl<S> ListContent<S> for () {
     fn collect_items(self, _sink: &mut ListItemSink) {}
 }
 
-impl<S, T: ListContent<S>> ListContent<S> for Option<T> {
+impl<T> TaggedBy<T> for () {}
+
+impl<S, C: ListContent<S>> ListContent<S> for Option<C> {
     fn collect_items(self, sink: &mut ListItemSink) {
         if let Some(content) = self {
             content.collect_items(sink);
@@ -90,7 +119,9 @@ impl<S, T: ListContent<S>> ListContent<S> for Option<T> {
     }
 }
 
-impl<S, T: ListContent<S>> ListContent<S> for Vec<T> {
+impl<T, C: TaggedBy<T>> TaggedBy<T> for Option<C> {}
+
+impl<S, C: ListContent<S>> ListContent<S> for Vec<C> {
     fn collect_items(self, sink: &mut ListItemSink) {
         for item in self {
             item.collect_items(sink);
@@ -98,13 +129,17 @@ impl<S, T: ListContent<S>> ListContent<S> for Vec<T> {
     }
 }
 
-impl<S, T: ListContent<S>, const N: usize> ListContent<S> for [T; N] {
+impl<T, C: TaggedBy<T>> TaggedBy<T> for Vec<C> {}
+
+impl<S, C: ListContent<S>, const N: usize> ListContent<S> for [C; N] {
     fn collect_items(self, sink: &mut ListItemSink) {
         for item in self {
             item.collect_items(sink);
         }
     }
 }
+
+impl<T, C: TaggedBy<T>, const N: usize> TaggedBy<T> for [C; N] {}
 
 /// Closures that return a fresh [`ListItem`] are valid leaf content. This is
 /// the escape hatch for embedding arbitrary [`ListItem`] producers — e.g.
@@ -120,10 +155,29 @@ where
     }
 }
 
+/// An untagged row builder is not selectable, so it fits a list selected by
+/// any type.
+impl<T, F> TaggedBy<T> for F where F: Fn() -> ListItem + 'static {}
+
+/// A row builder tagged with [`ViewExt::tag`](crate::ViewExt::tag) is
+/// selected by its tag: `(|| ListItem::new(…)).tag(value)`.
+impl<S, T, F> ListContent<S> for TaggedView<T, F>
+where
+    T: 'static,
+    F: Fn() -> ListItem + 'static,
+{
+    fn collect_items(self, sink: &mut ListItemSink) {
+        sink.push_tagged(AnyViewBuilder::new(self.content), self.tag);
+    }
+}
+
+impl<T, F> TaggedBy<T> for TaggedView<T, F> where F: Fn() -> ListItem + 'static {}
+
 /// A [`ForEach`] over a reactive collection contributes one row per item,
-/// keyed by the item's id. The rows follow the collection: items it inserts,
-/// removes or moves are inserted, removed or moved in place, and inside a
-/// [`super::Section`] the header opens whichever row currently leads it.
+/// keyed and selected by the item's id. The rows follow the collection:
+/// items it inserts, removes or moves are inserted, removed or moved in
+/// place, and inside a [`super::Section`] the header opens whichever row
+/// currently leads it.
 impl<S, C, F> ListContent<S> for ForEach<C, F, ListItem>
 where
     C: Collection + Clone + 'static,
@@ -133,6 +187,13 @@ where
     fn collect_items(self, sink: &mut ListItemSink) {
         sink.push_rows(self);
     }
+}
+
+impl<C, F> TaggedBy<C::Id> for ForEach<C, F, ListItem>
+where
+    C: Collection,
+    F: Fn(C::Item) -> ListItem,
+{
 }
 
 // ----------------------------------------------------------------------------
@@ -172,6 +233,8 @@ macro_rules! impl_tuple_list_content {
                 )+
             }
         }
+
+        impl<Tag, $($T: TaggedBy<Tag>),+> TaggedBy<Tag> for ($($T,)+) {}
     };
 }
 
@@ -250,6 +313,24 @@ impl Row {
         self
     }
 
+    /// Makes the row selectable by `tag`: a list whose selection holds `tag`
+    /// shows this row selected, and selecting the row writes `tag`.
+    #[must_use]
+    pub const fn tag<T>(self, tag: T) -> TaggedView<T, Self> {
+        TaggedView { tag, content: self }
+    }
+
+    /// The builder the list calls whenever it realizes this row.
+    fn into_builder(self) -> AnyViewBuilder<ListItem> {
+        AnyViewBuilder::new(move || {
+            let item = self.build_item();
+            match self.deletable {
+                Some(deletable) => item.deletable(deletable),
+                None => item,
+            }
+        })
+    }
+
     fn build_item(&self) -> ListItem {
         let label = self.label.clone();
         let value = self.value.clone();
@@ -279,18 +360,22 @@ impl Row {
 
 impl<S> ListContent<S> for Row {
     fn collect_items(self, sink: &mut ListItemSink) {
-        let row = self;
-        let deletable_override = row.deletable;
-        let builder = AnyViewBuilder::new(move || {
-            let mut item = row.build_item();
-            if let Some(d) = deletable_override {
-                item = item.deletable(d);
-            }
-            item
-        });
-        sink.push(builder);
+        sink.push(self.into_builder());
     }
 }
+
+/// An untagged [`Row`] is not selectable, so it fits a list selected by any
+/// type.
+impl<T> TaggedBy<T> for Row {}
+
+/// A [`Row`] tagged with [`Row::tag`] is selected by its tag.
+impl<S, T: 'static> ListContent<S> for TaggedView<T, Row> {
+    fn collect_items(self, sink: &mut ListItemSink) {
+        sink.push_tagged(self.content.into_builder(), self.tag);
+    }
+}
+
+impl<T> TaggedBy<T> for TaggedView<T, Row> {}
 
 /// Builds a single-line key/value [`Row`].
 ///
