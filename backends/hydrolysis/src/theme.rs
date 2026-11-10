@@ -58,7 +58,7 @@ pub use chrome::{
     Ripple, StateLayer, Surface, Wash,
 };
 pub use look::{
-    ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion,
+    ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion, SpecTint,
     Transition, ValueMotion,
 };
 #[cfg(hydrolysis_runtime)]

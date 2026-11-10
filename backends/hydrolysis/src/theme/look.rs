@@ -27,8 +27,10 @@ use kurbo::{Point, Rect, Size, Vec2};
 use nami::Signal;
 use nami::signal::IntoComputed;
 use nami::watcher::Context;
+use waterui::theme::Tint;
 use waterui_controls::ControlSize;
 use waterui_controls::button::ButtonStyle;
+use waterui_core::Environment;
 use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::interaction::{InteractionState, StateValue};
 use waterui_core::layout::LayoutDirection;
@@ -822,29 +824,58 @@ impl HitRegion {
 ///
 /// A spec change requests the look again; everything else reaches the look
 /// through its [`Driven`] values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ButtonSpec {
     style: ButtonStyle,
     size: ControlSize,
     icon_only: bool,
     direction: LayoutDirection,
+    tint: SpecTint,
+}
+
+/// The tint a widget's spec carries: the nearest [`Tint`] of its subtree,
+/// or the theme's `Accent` token when the subtree sets none.
+///
+/// Every spec that exposes a tint holds one. Two are equal when they come
+/// from the same installed `Tint`, so a spec is requested again when the
+/// subtree is re-tinted and never when a tint signal changes: the colour
+/// is a live [`Color`] the look draws, which updates in place.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpecTint(Option<Tint>);
+
+impl SpecTint {
+    /// The tint of the subtree `env` belongs to.
+    #[must_use]
+    pub fn resolve(env: &Environment) -> Self {
+        Self(Tint::inherited(env).cloned())
+    }
+
+    /// The tint colour: resolved against the environment the look draws
+    /// in, and live when the tint is a signal.
+    #[must_use]
+    pub fn color(&self) -> Color {
+        Tint::color_or_accent(self.0.as_ref())
+    }
 }
 
 impl ButtonSpec {
     /// The spec of a `style` button of `size`, laid out `direction`, whose
-    /// label resolved to an icon-only presentation when `icon_only`.
+    /// label resolved to an icon-only presentation when `icon_only`, drawn
+    /// with `tint`.
     #[must_use]
     pub const fn new(
         style: ButtonStyle,
         size: ControlSize,
         icon_only: bool,
         direction: LayoutDirection,
+        tint: SpecTint,
     ) -> Self {
         Self {
             style,
             size,
             icon_only,
             direction,
+            tint,
         }
     }
 
@@ -873,11 +904,12 @@ impl ButtonSpec {
         self.direction
     }
 
-    /// The button's tint: its subtree's accent colour, which an application
-    /// overrides for a subtree through the theme's `Accent` token.
+    /// The button's tint: its subtree's nearest `.tint(...)`, else the
+    /// theme's `Accent` token. The colour is live: a tint signal's change
+    /// reaches the look's drawing without requesting the look again.
     #[must_use]
     pub fn tint(&self) -> Color {
-        Color::new(waterui::theme::color::Accent)
+        self.tint.color()
     }
 }
 
