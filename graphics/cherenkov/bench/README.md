@@ -23,8 +23,14 @@ timing, and `percentiles` gives p50/p90/p99 of each field:
   pass, and per render-thread phase; `null` or omitted where the backend
   provides none, with `gpu_timing_unavailable` naming why. Never estimated.
   When `gpu_timing_unavailable` is `null`, a measured frame without GPU
-  time fails the run: it submitted no timed GPU work, so the run would
-  report none of the scene's GPU cost.
+  time fails the run, unless the frame is `unchanged`: it submitted no
+  timed GPU work, so the run would report none of the scene's GPU cost.
+- `unchanged`, `unchanged_frames` — a frame the engine drew nothing for
+  because no surface changed (the pixel-snapped content of a settling
+  motion, say) while the scene's own animation was still running. It
+  carries no GPU time and is left out of the GPU-time percentiles;
+  `unchanged_frames` counts them, so a number built from fewer drawn frames
+  is visible. A frame drawn nothing for in any other case fails the run.
 - `latency_seconds` — encode-to-completion wall time, present only under
   `--wait-for-completion`, which finishes each frame before the next
   encode.
@@ -53,8 +59,11 @@ element's transform, which keys the retained picture, preparation and
 rasters, and moves no edge by a pixel in thousands of frames. A translation
 would not do: engines serve a moved picture from rasters kept across
 translation. Draw count, coverage, blends and effects stay those of the scene.
-A scene that changes on its own — a scroll sweep, a motion, a live slot, like
-`perf/live-dashboard` — keeps its own behaviour and is not drifted.
+A scene that changes on every frame — a scroll sweep, or a live slot like
+`perf/live-dashboard` — keeps its own behaviour and is not drifted. A motion
+runs once and comes to rest, like the fling in `perf/scroll-list`: its frames
+are not drifted while the engine reports it still animating, and drift once
+it has settled.
 
 By default frames are submitted asynchronously, so one frame's encode can
 overlap an earlier frame's GPU work. The stage fields therefore do not add
