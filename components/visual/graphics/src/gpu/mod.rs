@@ -43,7 +43,7 @@ use std::sync::Mutex;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, View};
-use wgpu::{Adapter, Device, Queue, Texture, TextureFormat, TextureView};
+use wgpu::{Adapter, Device, Instance, Queue, Texture, TextureFormat, TextureView};
 
 use crate::draw::kurbo;
 
@@ -90,6 +90,8 @@ impl RedrawHandle {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Context<'a> {
+    /// The instance the adapter was created from.
+    instance: &'a Instance,
     /// The adapter the device was created from.
     adapter: &'a Adapter,
     /// The device the engine renders with.
@@ -103,11 +105,12 @@ pub struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    /// A context over the engine's device: the adapter it was created from,
-    /// the device and its queue, the format content renders into, and the
-    /// handle that wakes the host for another frame.
+    /// A context over the engine's device: the instance and adapter it was
+    /// created from, the device and its queue, the format content renders
+    /// into, and the handle that wakes the host for another frame.
     #[must_use]
     pub const fn new(
+        instance: &'a Instance,
         adapter: &'a Adapter,
         device: &'a Device,
         queue: &'a Queue,
@@ -115,12 +118,19 @@ impl<'a> Context<'a> {
         redraw: RedrawHandle,
     ) -> Self {
         Self {
+            instance,
             adapter,
             device,
             queue,
             format,
             redraw,
         }
+    }
+
+    /// The instance the adapter was created from.
+    #[must_use]
+    pub const fn instance(&self) -> &'a Instance {
+        self.instance
     }
 
     /// The adapter the device was created from.
@@ -655,6 +665,7 @@ impl cherenkov_gpu::interop::GpuContent for GpuContentHandle {
     ) -> impl core::future::Future<Output = ()> {
         let redraw = gpu.redraw.clone();
         self.lock().setup(&Context {
+            instance: gpu.instance,
             adapter: gpu.adapter,
             device: gpu.device,
             queue: gpu.queue,

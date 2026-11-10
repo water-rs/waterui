@@ -21,6 +21,8 @@ pub mod wgpu {
     /// Persistent device resources supplied once before rendering content.
     #[derive(Debug)]
     pub struct Context<'a> {
+        /// Instance that created the adapter.
+        pub instance: &'a Instance,
         /// Adapter that owns the engine's device.
         pub adapter: &'a Adapter,
         /// Engine-owned device.
