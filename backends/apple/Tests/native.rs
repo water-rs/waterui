@@ -10668,11 +10668,13 @@ mod list_ax {
         let table = surface.table_view();
         // Header, spacer, two rows, header, one row.
         assert_eq!(table.numberOfRows(), 6);
-        assert_eq!(
-            realized_rows(&table),
-            6,
-            "a six-row list realizes every row"
-        );
+        // A window that never draws does not tile its table, so the rows
+        // are realized explicitly: the accessibility answers expose only
+        // realized rows, and the spacer must be left out even once it is.
+        for row in 0..table.numberOfRows() {
+            let _ = table.rowViewAtRow_makeIfNecessary(row, true);
+        }
+        assert_eq!(realized_rows(&table), 6, "every row is realized");
         assert_eq!(
             ax_rows(&table).count(),
             5,
