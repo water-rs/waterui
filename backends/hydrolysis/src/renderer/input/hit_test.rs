@@ -13,7 +13,7 @@ use waterui::drag_drop::{DragPayload, Files};
 use waterui::gesture::PointerButton as WuiPointerButton;
 use waterui_backend_core::gesture::{GesturePlacement, LONG_PRESS_SLOP};
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
-use waterui_graphics::input::ScrollUnit;
+use waterui_graphics::input::{Code, GesturePhase, ScrollPhase, ScrollUnit};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -306,6 +306,9 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     pub(crate) embedded_input_targets: Vec<EmbeddedInputTarget<E>>,
     /// The target holding the pointer capture, kept across frames.
     pub(crate) active_embedded_target: Option<EmbeddedInputTarget<E>>,
+    /// The click count of the press that took `active_embedded_target`'s
+    /// capture, which its release carries.
+    pub(crate) active_embedded_click_count: core::num::NonZeroU32,
     /// The sink holding keyboard focus, kept across frames.
     pub(crate) focused_embedded_sink: Option<Rc<dyn EmbeddedInputSink>>,
     /// The interaction identity of the surface holding embedded focus —
@@ -401,6 +404,23 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     /// a state a [`PointerKind::Touch`] press panics on rather than
     /// skipping the gesture.
     pub(crate) touch_scroll_config: Option<crate::platform::TouchScrollConfig>,
+    /// The platform's multi-click and paste-shortcut conventions, pushed by
+    /// the runner each input dispatch.
+    pub(crate) input_conventions: crate::platform::InputConventions,
+    /// The multi-click run of the last press, shared by every target that
+    /// counts clicks.
+    pub(crate) multi_click: MultiClickTracker,
+    /// Where a surface paste reads the clipboard's text from.
+    pub(crate) clipboard_read: ClipboardRead,
+    /// Whether a trackpad scroll gesture has begun and not yet ended — the
+    /// fingers are down. See `trackpad_scroll_phase`.
+    pub(crate) trackpad_scroll_contact: bool,
+    /// The paste queue of every surface that has one, by receiver identity.
+    /// An entry lives while a sink or a pending paste holds its queue.
+    pub(crate) paste_queues: std::collections::HashMap<*const (), Weak<RefCell<PasteQueue>>>,
+    /// The physical keys whose press was the paste shortcut of a focused
+    /// surface, so the matching releases are consumed with them.
+    pub(crate) paste_shortcut_keys: Vec<Code>,
     /// The touch-drag scroll gesture's in-flight claim, kept across frames
     /// like `active_pointer` — driven only by `PointerKind::Touch`
     /// sequences; mouse and pen pointers never arm it.
@@ -2040,8 +2060,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     }
                 }
             }
-            target.sink.pointer_button(true, button, local_position);
+            let click_count = self.next_click_count(&target.interaction_key, button, point, at);
+            target
+                .sink
+                .pointer_button(true, button, local_position, click_count);
             self.hit_test.active_embedded_target = Some(target);
+            self.hit_test.active_embedded_click_count = click_count;
             return true;
         }
         if self.hit_test.focused_embedded_sink.is_some() {
@@ -2380,7 +2404,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         if let Some(target) = self.hit_test.active_embedded_target.take() {
             let position = target.local_position_unclamped(point);
             target.sink.pointer_move(position);
-            target.sink.pointer_button(false, button, position);
+            target.sink.pointer_button(
+                false,
+                button,
+                position,
+                self.hit_test.active_embedded_click_count,
+            );
             self.hit_test.active_pointer = None;
             self.hit_test.active_pointer_button = None;
             let at = self.frame_instant();
@@ -3843,7 +3872,53 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     }
 
     /// Handles a scroll event at `(x, y)` with deltas `(dx, dy)`; `is_line_delta` selects line vs pixel units.
+    ///
+    /// The delta is complete on its own — a wheel notch, or a pixel delta from
+    /// a platform that reports no gesture around it — so an embedded surface
+    /// receives it as [`ScrollPhase::Discrete`].
     pub fn handle_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> bool {
+        self.scroll_with_phase(x, y, dx, dy, is_line_delta, ScrollPhase::Discrete)
+    }
+
+    /// The phase an embedded surface hears for a trackpad pan step whose
+    /// platform phase is `phase`.
+    ///
+    /// winit reports one `TouchPhase` for both the fingers' phase and the
+    /// platform's momentum phase, and `Moved` for a scroll that has no phase
+    /// at all — a precise-delta wheel. A `Moved` or `Ended` with no gesture
+    /// begun is therefore no part of a contact: it is delivered as a delta
+    /// complete on its own.
+    fn trackpad_scroll_phase(&mut self, phase: TouchPhase) -> ScrollPhase {
+        let contact = &mut self.hit_test.trackpad_scroll_contact;
+        match phase {
+            TouchPhase::Started => {
+                *contact = true;
+                ScrollPhase::Contact(GesturePhase::Started)
+            }
+            TouchPhase::Moved if *contact => ScrollPhase::Contact(GesturePhase::Moved),
+            TouchPhase::Ended if *contact => {
+                *contact = false;
+                ScrollPhase::Contact(GesturePhase::Ended)
+            }
+            TouchPhase::Cancelled if *contact => {
+                *contact = false;
+                ScrollPhase::Contact(GesturePhase::Cancelled)
+            }
+            TouchPhase::Moved | TouchPhase::Ended | TouchPhase::Cancelled => ScrollPhase::Discrete,
+        }
+    }
+
+    /// Delivers a scroll delta to whatever consumes it at `(x, y)`: an
+    /// embedded surface, with `phase`, or the scroll view under the point.
+    fn scroll_with_phase(
+        &mut self,
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        is_line_delta: bool,
+        phase: ScrollPhase,
+    ) -> bool {
         self.registries();
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let unit = if is_line_delta {
@@ -3851,9 +3926,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         } else {
             ScrollUnit::Pixel
         };
-        // A discrete wheel notch is complete on its own; a pixel-precise wheel
-        // delta arriving through this path carries no phase, so neither ends a
-        // gesture that the surface should settle.
         let scroll_priority = self
             .hit_test
             .scroll_targets
@@ -3867,7 +3939,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         if let Some((_, target, position)) =
             self.embedded_target_wins_at(point, scroll_priority, None)
         {
-            target.sink.scroll(position, dx, dy, unit, is_line_delta);
+            target.sink.scroll(position, dx, dy, unit, phase);
             return true;
         }
         // Newest-registered first: every scroll container registers its target
@@ -3937,28 +4009,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         dy: f32,
         phase: TouchPhase,
     ) -> bool {
-        self.registries();
-        let point = kurbo::Point::new(f64::from(x), f64::from(y));
-        let finished = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
-        let contender_priority = self
-            .hit_test
-            .scroll_targets
-            .iter()
-            .enumerate()
-            .filter(|(_, target)| target.bounds.contains(point))
-            .map(|(index, target)| {
-                SemanticCore::<E>::target_hit_priority(target.depth, target.order, index)
-            })
-            .max();
-        if let Some((_, target, position)) =
-            self.embedded_target_wins_at(point, contender_priority, None)
-        {
-            target
-                .sink
-                .scroll(position, dx, dy, ScrollUnit::Pixel, finished);
-            return true;
-        }
-        self.handle_scroll(x, y, dx, dy, false)
+        let phase = self.trackpad_scroll_phase(phase);
+        self.scroll_with_phase(x, y, dx, dy, false, phase)
     }
 
     /// Arms the touch-scroll claim for a `PointerKind::Touch` sequence: the
@@ -5265,6 +5317,7 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
         Self {
             embedded_input_targets: Vec::default(),
             active_embedded_target: Option::default(),
+            active_embedded_click_count: core::num::NonZeroU32::MIN,
             focused_embedded_sink: Option::default(),
             focused_embedded_key: Option::default(),
             focused_embedded_binding: Option::default(),
@@ -5307,6 +5360,14 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
             pointer_press_origin: Option::default(),
             scroll_targets: Vec::default(),
             touch_scroll_config: Option::default(),
+            input_conventions: crate::platform::InputConventions::for_platform(
+                crate::platform::ScrollPlatform::native(),
+            ),
+            multi_click: MultiClickTracker::default(),
+            clipboard_read: system_clipboard_read(),
+            trackpad_scroll_contact: false,
+            paste_queues: std::collections::HashMap::default(),
+            paste_shortcut_keys: Vec::default(),
             touch_scroll: TouchScrollGesture::default(),
             scroll_motions: Vec::default(),
             traversal_anchor: Option::default(),

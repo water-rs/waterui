@@ -354,9 +354,11 @@ impl AndroidCherenkovSurface {
         self.core.engine.set_band(&self.core.surface, view, target)
     }
 
-    pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        self.core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()))
+    pub(crate) fn render(
+        &self,
+        time: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        self.core.own(self.core.engine.render(time))
     }
 }
 

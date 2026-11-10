@@ -487,6 +487,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.signals.set_frame_clock(at);
     }
 
+    /// Records when the frame about to render will be presented, as the
+    /// platform reported it, or clears it for a platform that reports none.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    pub(crate) const fn set_presentation_target(&mut self, target: Option<Instant>) {
+        self.presentation_target = target;
+    }
+
+    /// The time the engine renders the next frame against: the platform's
+    /// reported presentation time, else the instant the frame starts.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    pub(crate) fn frame_time(&self) -> cherenkov::FrameTime {
+        self.presentation_target.map_or_else(
+            cherenkov::FrameTime::now,
+            cherenkov::FrameTime::presented_at,
+        )
+    }
+
     pub(crate) const fn frame_instant(&self) -> Instant {
         self.frame_instant
     }

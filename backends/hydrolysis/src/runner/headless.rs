@@ -34,6 +34,10 @@ pub(super) struct HeadlessPlatformWindow {
     /// through [`HeadlessRuntime::set_touch_scroll_config`], like a real
     /// touch platform pushing its `ViewConfiguration` values.
     touch_scroll_config: Cell<Option<crate::platform::TouchScrollConfig>>,
+    /// The input conventions a test pins through
+    /// [`HeadlessRuntime::set_input_conventions`]; without one the host
+    /// reports the offscreen window's data defaults.
+    input_conventions: Cell<Option<crate::platform::InputConventions>>,
     /// The last blur-behind request `set_blur_behind` delivered — the
     /// headless stand-in for the compositor protocol a real host dispatches
     /// to, read by the runner's background tests.
@@ -59,6 +63,7 @@ impl HeadlessPlatformWindow {
             occluded: Cell::new(false),
             pointer_position: None,
             touch_scroll_config: Cell::new(None),
+            input_conventions: Cell::new(None),
             blur_behind: Cell::new(None),
         }
     }
@@ -68,6 +73,12 @@ impl HeadlessPlatformWindow {
     #[cfg(any(test, feature = "testing"))]
     pub(super) fn set_touch_scroll_config(&self, config: crate::platform::TouchScrollConfig) {
         self.touch_scroll_config.set(Some(config));
+    }
+
+    /// The conventions [`PlatformWindow::input_conventions`] reports.
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) fn set_input_conventions(&self, conventions: crate::platform::InputConventions) {
+        self.input_conventions.set(Some(conventions));
     }
 
     pub(super) fn set_scale_factor(&mut self, scale_factor: f64) {
@@ -122,6 +133,12 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
     fn touch_scroll_config(&self) -> Option<crate::platform::TouchScrollConfig> {
         self.touch_scroll_config.get()
+    }
+
+    fn input_conventions(&self) -> crate::platform::InputConventions {
+        self.input_conventions
+            .get()
+            .unwrap_or_else(|| self.inner.input_conventions())
     }
 
     fn request_redraw(&self) {
@@ -1044,6 +1061,17 @@ impl HeadlessRuntime {
         self.runtime.platform.set_touch_scroll_config(config);
         for popup in &mut self.popup_windows {
             popup.platform.set_touch_scroll_config(config);
+        }
+    }
+
+    /// The input conventions this runtime's host reports — a test's stand-in
+    /// for the platform's double-click and paste-shortcut settings, applied by
+    /// the next input dispatch.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_input_conventions(&mut self, conventions: crate::platform::InputConventions) {
+        self.runtime.platform.set_input_conventions(conventions);
+        for popup in &mut self.popup_windows {
+            popup.platform.set_input_conventions(conventions);
         }
     }
 

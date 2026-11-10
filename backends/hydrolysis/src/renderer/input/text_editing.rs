@@ -65,7 +65,6 @@ pub struct TextEditingState<E: crate::text::TextEngine> {
     pub(crate) clearance_surfaces: RefCell<Vec<ClearanceSurface<E>>>,
     pub(crate) text_input_targets: Vec<TextInputTarget<E>>,
     pub(crate) active_text_selection_drag: Option<ActiveTextSelectionDrag>,
-    pub(crate) last_text_selection_click: Option<TextSelectionClickState>,
     pub(crate) active_text_context_menu: Option<ActiveTextContextMenu>,
     focused_text_input: RefCell<Option<InteractionKey>>,
     /// The `.focused()` binding of the field holding text focus, captured
@@ -164,14 +163,6 @@ pub struct TextSelectionSlot {
     pub(crate) anchor: usize,
     pub(crate) focus: usize,
     pub initialized: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct TextSelectionClickState {
-    pub(crate) target: InteractionKey,
-    pub(crate) point: kurbo::Point,
-    pub(crate) at: Instant,
-    pub(crate) count: u8,
 }
 
 /// An in-flight text-selection drag: which field it belongs to, the click
@@ -1772,6 +1763,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         )
     )]
     pub(crate) fn perform_focused_context_action(&mut self, action: TextContextMenuAction) -> bool {
+        // A platform paste command aimed at a focused embedded surface is
+        // that surface's paste, the same one its paste shortcut starts.
+        if matches!(action, TextContextMenuAction::Paste)
+            && let Some(sink) = self.hit_test.focused_embedded_sink.clone()
+        {
+            sink.paste(&self.hit_test.clipboard_read);
+            return true;
+        }
         let Some((index, model, selection)) = self.focused_text_target_data() else {
             return false;
         };
@@ -1823,9 +1822,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// Advance the double/triple-click streak for this frame's target at
-    /// `target_index`. The streak is remembered by stable identity, so it
-    /// continues across a reflow and never carries over to a different field
-    /// that happens to land at the same position.
+    /// `target_index`, counted by the shared multi-click tracker and capped
+    /// where selection stops growing: a double click selects a word, a
+    /// triple click a line, and further clicks stay on the line.
     pub(crate) fn next_text_selection_click_count(
         &mut self,
         target_index: usize,
@@ -1837,24 +1836,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .key_at(target_index)
             .expect("hydrolysis text selection click target must be emitted this frame")
             .clone();
-        let count = match self.text_editing.last_text_selection_click.as_ref() {
-            Some(previous)
-                if previous.target == target
-                    && at.saturating_duration_since(previous.at)
-                        <= TEXT_SELECTION_MULTI_CLICK_INTERVAL
-                    && previous.point.distance(point) <= TEXT_SELECTION_MULTI_CLICK_DISTANCE =>
-            {
-                previous.count.saturating_add(1).min(3)
-            }
-            _ => 1,
-        };
-        self.text_editing.last_text_selection_click = Some(TextSelectionClickState {
-            target,
-            point,
-            at,
-            count,
-        });
-        count
+        let count = self.next_click_count(&target, PointerButton::Primary, point, at);
+        u8::try_from(count.get().min(MAX_TEXT_SELECTION_CLICKS))
+            .expect("the capped click count fits a byte")
     }
 
     /// Apply the selection for a click of `click_count` at `point`. Returns the
@@ -2669,7 +2653,6 @@ impl<E: crate::text::TextEngine> Default for TextEditingState<E> {
             clearance_surfaces: RefCell::default(),
             text_input_targets: Vec::default(),
             active_text_selection_drag: Option::default(),
-            last_text_selection_click: Option::default(),
             active_text_context_menu: Option::default(),
             focused_text_input: RefCell::default(),
             focused_binding: Option::default(),

@@ -669,19 +669,21 @@ fn an_animating_layer_places_bitmap_glyphs_on_the_quarter_pixel_grid() {
     let start = Instant::now();
     translate.set(Affine::translate((1.2, 0.0)));
     engine
-        .render(FrameTime::at(start))
+        .render(FrameTime::unpresented_at(start))
         .expect("animation start");
     let at_start = surface.readback().expect("start readback").pixels;
     assert!(matches!(
         engine
-            .render(FrameTime::at(start + Duration::from_millis(250)))
+            .render(FrameTime::unpresented_at(
+                start + Duration::from_millis(250)
+            ))
             .expect("quarter-pixel frame"),
         cherenkov::Next::At { .. }
     ));
     let quarter = surface.readback().expect("quarter-pixel readback").pixels;
     assert_eq!(
         engine
-            .render(FrameTime::at(start + Duration::from_secs(2)))
+            .render(FrameTime::unpresented_at(start + Duration::from_secs(2)))
             .expect("settled frame"),
         cherenkov::Next::Idle
     );

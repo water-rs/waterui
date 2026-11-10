@@ -334,11 +334,8 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         // existing display range; native buffers retain source HDR metadata.
         let _frame =
             self.commit_window_frame(window, target, cherenkov::Display::default().headroom);
-        self.render_presented_window(
-            window,
-            target,
-            crate::engine::AndroidCherenkovSurface::render,
-        )
+        let time = self.frame_time();
+        self.render_presented_window(window, target, |surface| surface.render(time))
     }
 
     /// The common completion path for engine-presented native windows.

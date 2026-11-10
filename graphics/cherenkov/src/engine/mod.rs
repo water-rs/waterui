@@ -65,7 +65,7 @@ fn drain_visible<B: Backend>(
         if entry.waker.visibility() == Visibility::Visible {
             entry.waker.arm();
             let mut shared_mut = shared.borrow_mut();
-            if let Some(changes) = shared_mut.take_changes(time.0) {
+            if let Some(changes) = shared_mut.take_changes(time.instant()) {
                 commits.push((shared_mut.id, changes));
             }
         }

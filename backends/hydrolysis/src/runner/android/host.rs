@@ -103,6 +103,11 @@ pub struct MetricsSnapshot {
     /// host, so the creation-time snapshot's `0.0` reads as "not yet
     /// populated" until the first `nativeSetMetrics` lands.
     pub(crate) scroll_friction: f64,
+    /// `ViewConfiguration.getDoubleTapTimeout()`, in milliseconds — `0`
+    /// until the first `nativeSetMetrics` lands, like `scroll_friction`.
+    pub(crate) double_tap_timeout_ms: u32,
+    /// `ViewConfiguration.getScaledDoubleTapSlop()`, in physical px.
+    pub(crate) double_tap_slop_px: f32,
 }
 
 impl MetricsSnapshot {
@@ -683,6 +688,31 @@ impl PlatformWindow for AndroidHostWindow {
                 crate::platform::EdgeStretch::android(density),
             ),
         ))
+    }
+
+    /// The multi-click run's window is the platform's tap window:
+    /// `ViewConfiguration.getDoubleTapTimeout()` and
+    /// `getScaledDoubleTapSlop()` from the metrics snapshot, the slop in
+    /// logical units. Android's own detector compares the distance as a
+    /// radius; the per-axis tolerance here is the square around it. The
+    /// snapshot's creation-time zeros read as a run that never continues —
+    /// a window still waiting on its first metrics dispatches no press.
+    fn input_conventions(&self) -> crate::platform::InputConventions {
+        let metrics = &self.metrics;
+        let slop = f64::from(metrics.double_tap_slop_px) / metrics.density;
+        crate::platform::InputConventions {
+            multi_click: crate::platform::MultiClickConfig {
+                interval: std::time::Duration::from_millis(u64::from(
+                    metrics.double_tap_timeout_ms,
+                )),
+                tolerance: kurbo::Vec2::new(slop, slop),
+            },
+            // Android's paste shortcut, on a hardware keyboard, is Control-V:
+            // the non-Apple family's.
+            ..crate::platform::InputConventions::for_platform(
+                crate::platform::ScrollPlatform::Other,
+            )
+        }
     }
 
     fn refresh_rate_hz(&self) -> Option<f64> {
@@ -1490,8 +1520,24 @@ impl AndroidSession {
     /// run against the last presented geometry; the pump renders only when
     /// the engine's `Next` says there is work, and the outcome tells the
     /// scheduler whether another frame is owed.
-    pub(crate) fn on_frame(&mut self) -> FrameOutcome {
+    ///
+    /// `presentation` is when `Choreographer` expects this frame to reach
+    /// the display; the engine renders against it. A frame woken by a
+    /// deadline timer has none and renders at the instant it starts.
+    pub(crate) fn on_frame(
+        &mut self,
+        #[cfg_attr(
+            hydrolysis_hwui,
+            expect(
+                unused_variables,
+                reason = "the HWUI painter draws on the platform's own frame clock; only the engine renders against a presentation time"
+            )
+        )]
+        presentation: Option<Instant>,
+    ) -> FrameOutcome {
         tracing::debug!(target: "waterui::hydrolysis::android", "frame wake");
+        #[cfg(not(hydrolysis_hwui))]
+        self.runtime.renderer.set_presentation_target(presentation);
         // Tasks and input callbacks can start animations. Publish this frame's
         // time before either runs so idle time is not charged to a new track.
         let now = Instant::now();

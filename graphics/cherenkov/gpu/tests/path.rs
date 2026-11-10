@@ -748,15 +748,15 @@ use cherenkov::Instant;
     let start = Instant::now();
     translate.set(Affine::translate((1.2, 0.0)));
     // The track starts at the first sampled frame.
-    wait!(engine.render(cherenkov::FrameTime::at(start)))?;
+    wait!(engine.render(cherenkov::FrameTime::unpresented_at(start)))?;
     // Mid-animation at e = 0.3: snapped to 0.25, the edge lands at 10.25.
-    let next = wait!(engine.render(cherenkov::FrameTime::at(start + Duration::from_millis(250))))?;
+    let next = wait!(engine.render(cherenkov::FrameTime::unpresented_at(start + Duration::from_millis(250))))?;
     assert!(matches!(next, cherenkov::Next::At { .. }));
     let readback = wait!(surface.readback())?;
     let [r, ..] = px(&readback, 10, 25);
     assert!((r - 0.75).abs() < 0.03, "snapped edge: {r}");
     // Settled at e = 1.2 exactly: the edge lands at 11.2.
-    let next = wait!(engine.render(cherenkov::FrameTime::at(start + Duration::from_secs(2))))?;
+    let next = wait!(engine.render(cherenkov::FrameTime::unpresented_at(start + Duration::from_secs(2))))?;
     assert!(matches!(next, cherenkov::Next::Idle));
     let readback = wait!(surface.readback())?;
     let [r, ..] = px(&readback, 11, 25);
