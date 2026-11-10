@@ -1337,7 +1337,7 @@ impl GpuCoverage {
                         },
                     )
                 });
-                self.dispatch(device, batch, queue, encoder, delivery, timestamps);
+                self.dispatch(device, batch, encoder, delivery, timestamps);
             }
         }
         let draws_buffer = self.draws_buffer.clone().expect("draws buffer");
@@ -1453,7 +1453,6 @@ impl GpuCoverage {
         &mut self,
         device: &wgpu::Device,
         batch: Batch,
-        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         delivery: crate::render::shaders::ShaderDelivery,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
@@ -1495,7 +1494,7 @@ impl GpuCoverage {
         let dash_blocks = params[21];
         let buffers = self.buffers.as_ref().expect("coverage buffers sized");
 
-        let mut upload = BatchUpload::new(queue, !self.batches.is_empty(), self.staging_chunk());
+        let mut upload = BatchUpload::new(self.staging_chunk());
         for radix_pass in 0..radix_pass_count.max(1) {
             let mut block = params;
             block[17] = radix_pass;
@@ -1882,57 +1881,58 @@ impl GpuCoverage {
     }
 }
 
-/// Queue writes suffice for one batch. Multiple batches must upload between
-/// their compute passes rather than all writing the shared destinations before submit.
-/// The ordered path stages the bytes in chunks of at most `chunk` bytes
-/// ([`GpuCoverage::staging_chunk`]: the allocator's suballocation block,
-/// within the binding limit), so each chunk suballocates from retained
-/// device memory. A write larger than `chunk` takes a chunk of its own,
-/// which is no larger than the binding limit, being no larger than the
-/// buffer it targets.
-struct BatchUpload<'a> {
-    queue: &'a wgpu::Queue,
-    ordered: bool,
+/// A batch's uploads, recorded as copies between its compute passes, since
+/// batches share their destinations. The bytes are staged in chunks of at
+/// most `chunk` bytes ([`GpuCoverage::staging_chunk`]: the allocator's
+/// suballocation block, within the binding limit), a write that does not
+/// fit the current chunk filling it and continuing in the next, so every
+/// staging buffer suballocates from retained device memory instead of
+/// being a dedicated allocation each frame (water-rs/waterui#4174).
+struct BatchUpload {
     chunk: u64,
     chunks: Vec<Vec<u8>>,
     /// `(target, target offset, chunk, chunk offset, size)`.
     copies: Vec<(wgpu::Buffer, u64, usize, u64, u64)>,
 }
 
-impl<'a> BatchUpload<'a> {
-    const fn new(queue: &'a wgpu::Queue, ordered: bool, chunk: u64) -> Self {
+impl BatchUpload {
+    const fn new(chunk: u64) -> Self {
         Self {
-            queue,
-            ordered,
             chunk,
             chunks: Vec::new(),
             copies: Vec::new(),
         }
     }
 
-    fn write_buffer(&mut self, target: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a chunk's room is below the chunk size, which is a buffer size"
+    )]
+    fn write_buffer(&mut self, target: &wgpu::Buffer, mut offset: u64, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            if self
+                .chunks
+                .last()
+                .is_none_or(|last| last.len() as u64 >= self.chunk)
+            {
+                self.chunks.push(Vec::new());
+            }
+            let index = self.chunks.len() - 1;
+            let staged = &mut self.chunks[index];
+            let room = (self.chunk - staged.len() as u64) as usize;
+            let (piece, rest) = bytes.split_at(room.min(bytes.len()));
+            let source_offset = staged.len() as u64;
+            staged.extend_from_slice(piece);
+            self.copies.push((
+                target.clone(),
+                offset,
+                index,
+                source_offset,
+                piece.len() as u64,
+            ));
+            offset += piece.len() as u64;
+            bytes = rest;
         }
-        if !self.ordered {
-            self.queue.write_buffer(target, offset, bytes);
-            return;
-        }
-        let size = bytes.len() as u64;
-        // A write that does not fit the current chunk starts the next.
-        if self
-            .chunks
-            .last()
-            .is_none_or(|last| last.len() as u64 + size > self.chunk)
-        {
-            self.chunks.push(Vec::new());
-        }
-        let index = self.chunks.len() - 1;
-        let staged = &mut self.chunks[index];
-        let source_offset = staged.len() as u64;
-        staged.extend_from_slice(bytes);
-        self.copies
-            .push((target.clone(), offset, index, source_offset, size));
     }
 
     fn finish(
@@ -2676,12 +2676,12 @@ mod tests {
         );
     }
 
-    /// The ordered upload stages within the chunk bound — the allocator's
-    /// suballocation block under the binding limit — except a write larger
-    /// than it, which takes a chunk of its own (water-rs/waterui#4174).
+    /// Uploads stage within the chunk bound — the allocator's
+    /// suballocation block under the binding limit — a write larger than
+    /// the room left continuing in the next chunk (water-rs/waterui#4174).
     #[test]
-    fn ordered_upload_chunks_stay_within_the_suballocation_block() {
-        let Some((device, queue, _)) = delivery_device() else {
+    fn upload_chunks_stay_within_the_suballocation_block() {
+        let Some((device, _, _)) = delivery_device() else {
             return;
         };
         let mut frame = uncapped(&device);
@@ -2698,15 +2698,14 @@ mod tests {
             usage: wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mut upload = BatchUpload::new(&queue, true, chunk);
+        let mut upload = BatchUpload::new(chunk);
         for size in [600, 600, 300, 3000, 100] {
             upload.write_buffer(&target, 0, &vec![0; size]);
         }
         let sizes: Vec<_> = upload.chunks.iter().map(Vec::len).collect();
-        assert_eq!(sizes, [600, 900, 3000, 100]);
-        for &size in &sizes {
-            assert!(size as u64 <= chunk || size == 3000, "chunk of {size}");
-        }
+        assert_eq!(sizes, [1024, 1024, 1024, 1024, 504]);
+        let staged: u64 = upload.copies.iter().map(|copy| copy.4).sum();
+        assert_eq!(staged, 4600, "every byte is copied once");
     }
 
     /// The binding limit the sliced frames below run under: below the
