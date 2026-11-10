@@ -436,8 +436,11 @@ impl Table {
                 self.drop_subtree(child);
             }
         }
+        // The key runs are made explicit from the list's length before the
+        // edit, so they are moved before the length changes.
+        let shift = self.queue_insert(at, old_len, list, key_base);
         self.grow(parent, i64::from(len) - i64::from(old_len));
-        self.queue_insert(at, old_len, list, key_base)
+        shift
     }
 
     /// Places the freshly recorded region `slot` before `parent`'s
@@ -461,8 +464,9 @@ impl Table {
         self.segments_mut(parent)
             .insert(position, Segment::Region(slot));
         let at = self.start(slot);
+        let shift = self.queue_insert(at, 0, list, key_base);
         self.grow(parent, i64::from(len));
-        self.queue_insert(at, 0, list, key_base)
+        shift
     }
 
     /// Removes the region in `slot` and its commands.
@@ -472,8 +476,8 @@ impl Table {
         self.segments_mut(parent)
             .retain(|segment| *segment != Segment::Region(slot));
         self.drop_subtree(slot);
-        self.grow(parent, -i64::from(len));
         let _ = self.extract_runs(at, len);
+        self.grow(parent, -i64::from(len));
         let shift = Shift::Replace {
             at,
             remove: len,
@@ -818,6 +822,48 @@ mod tests {
         let moved: Vec<_> = (0..5).map(|i| shift.index(i).unwrap()).collect();
         // a d b c e
         assert_eq!(moved, [0, 2, 3, 1, 4]);
+    }
+
+    #[test]
+    fn a_first_edit_that_grows_a_region_keys_only_its_real_commands() {
+        let x = binding(0.0_f64);
+        let mut region = None;
+        let mut content = Content::record(&LayoutSize::new(), |c| {
+            region = Some(c.region(|_| {}));
+        });
+        let region = region.expect("the region was recorded");
+        let mut remote = Remote::install(&mut content);
+
+        let bound = x.clone();
+        region.record(move |c| c.fill(bound.map(square), grey()));
+        let _ = remote.sync(&mut content);
+
+        x.set(5.);
+        assert!(matches!(
+            remote.sync(&mut content),
+            Some(ContentChange::Update(_))
+        ));
+    }
+
+    #[test]
+    fn a_first_edit_that_removes_a_region_keeps_the_later_keys() {
+        let x = binding(0.0_f64);
+        let mut region = None;
+        let mut content = Content::record(&LayoutSize::new(), |c| {
+            region = Some(c.region(|c| c.fill(square(0.), grey())));
+            c.fill(x.clone().map(square), grey());
+        });
+        let region = region.expect("the region was recorded");
+        let mut remote = Remote::install(&mut content);
+
+        region.remove();
+        let _ = remote.sync(&mut content);
+
+        x.set(5.);
+        assert!(matches!(
+            remote.sync(&mut content),
+            Some(ContentChange::Update(_))
+        ));
     }
 
     #[test]
