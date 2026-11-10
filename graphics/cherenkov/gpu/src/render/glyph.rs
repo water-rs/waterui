@@ -3941,7 +3941,10 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            Some(crate::render::gpu_cov::CoverageLimit::new(&device.limits())),
+            Some(crate::render::gpu_cov::CoverageLimit::new(
+                &device.limits(),
+                renderer.adapter.get_info().backend,
+            )),
         );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         let plan = crate::render::planes::Plan {

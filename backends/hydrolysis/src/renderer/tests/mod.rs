@@ -1,6 +1,6 @@
 mod collection_update;
 mod frame_work;
-mod slider_size_indicator;
+mod slider_look;
 use super::*;
 use crate::text::{Affinity, TextEngine as _, TextLayout as _, TextPosition};
 use std::borrow::Cow;
@@ -94,6 +94,9 @@ mod tab_item_layout;
 mod teardown_order;
 mod text_ink;
 mod text_measure_direction;
+mod text_wrap_width;
+mod toggle_glass;
+mod toggle_looks;
 mod top_edge;
 mod touch_scroll;
 mod tree;
@@ -111,13 +114,12 @@ use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
-use waterui_controls::ControlSize;
 use waterui_controls::button::button;
 use waterui_controls::label::{LabelDisplayMode, label};
 use waterui_controls::slider::slider;
 #[cfg(feature = "accessibility")]
 use waterui_controls::text_field::field;
-use waterui_controls::toggle::{ToggleStyle, toggle};
+use waterui_controls::toggle::toggle;
 use waterui_form::picker::PickerStyle;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::{Picker, color::ColorPicker, date::DatePicker};
@@ -131,15 +133,16 @@ use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
-    BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DividerMetrics, Driven,
-    FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionFocusBinding,
-    InteractionMotion, Label, LinearProgressLook, ListMetrics, ModalInteraction, Motion,
+    BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DividerMetrics, DragMapping,
+    Driven, FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionFocusBinding,
+    InteractionMotion, Knob, Label, LinearProgressLook, ListMetrics, ModalInteraction, Motion,
     NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback, ProgressControl,
-    ProgressSpec, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-    SliderValueIndicatorMetrics, StateLayer, StepperEnd, StepperMetrics, Surface, TabItemGeometry,
-    TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
-    ToggleMetrics, WidgetInteractionState,
+    ProgressSpec, RadioIndicatorState, RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec,
+    StateLayer, StepperEnd, StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
+    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleSpec, ValueIndicator,
+    WidgetInteractionState,
 };
+use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
 use waterui_graphics::draw::{
@@ -521,20 +524,6 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
 }
 
 #[test]
-fn toggle_progress_subscribes_before_reading_its_snapshot() {
-    let signal = registration_signal(false, nami::watcher::Context::from(false));
-    let mut renderer = test_renderer();
-    let owner = Rc::new(());
-
-    let (progress, selected) =
-        renderer.resolve_toggle_progress(&signal, &owner, Animation::linear(Duration::ZERO));
-
-    approx::assert_relative_eq!(progress, 0.0);
-    assert!(!selected);
-    assert!(signal.subscribed.get());
-}
-
-#[test]
 fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -645,91 +634,6 @@ fn bit(source: &Binding<u8>, bit: u8) -> Binding<bool> {
             });
         },
     )
-}
-
-/// Regression for #2232: toggles whose bindings share a `SignalIdentity` must
-/// still own their thumb-progress animation slots. Two switches bound to
-/// mappings minted at one call site — the shape of the inspector's channel
-/// toggles — used to collapse onto one slot, so the off switch drew at the
-/// on switch's progress.
-#[test]
-fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
-    let toggle_draws = Rc::new(RefCell::new(Vec::new()));
-    let theme = MinimalTestTheme {
-        toggle_switch_draws: Rc::clone(&toggle_draws),
-        ..Default::default()
-    };
-    let mut renderer = test_renderer_with_theme(theme);
-    let env = test_environment();
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-    let s = Binding::container(0b01_u8);
-
-    // The collision the test exists for: both bindings carry one identity.
-    assert_eq!(
-        bit(&s, 1).identity(),
-        bit(&s, 2).identity(),
-        "same-site mappings must share a SignalIdentity for this test to cover the bug"
-    );
-
-    let draw_progress = |toggle_draws: &Rc<RefCell<Vec<ToggleSwitchDraw>>>| {
-        let mut frame = toggle_draws.borrow_mut().drain(..).collect::<Vec<_>>();
-        frame.sort_by(|a, b| a.0.y0.total_cmp(&b.0.y0));
-        frame
-            .iter()
-            .map(|(_, progress, selected)| (*progress, *selected))
-            .collect::<Vec<_>>()
-    };
-
-    capture_root_window(
-        &mut renderer,
-        vstack((
-            toggle("A", &bit(&s, 1)).switch(),
-            toggle("B", &bit(&s, 2)).switch(),
-        )),
-        &env,
-        bounds,
-    );
-    let first = draw_progress(&toggle_draws);
-    approx::assert_relative_eq!(first[0].0, 1.0);
-    assert!(first[0].1, "A is bound to an on bit");
-    approx::assert_relative_eq!(first[1].0, 0.0);
-    assert!(!first[1].1, "B is bound to an off bit");
-
-    // Toggling B animates only B's slot: mid-animation A still draws 1.0
-    // while B is in flight toward 1.0 (100ms linear in MinimalTestTheme).
-    let started = renderer.frame_instant();
-    bit(&s, 2).set(true);
-    renderer.set_frame_instant(started + Duration::from_millis(50));
-    capture_root_window(
-        &mut renderer,
-        vstack((
-            toggle("A", &bit(&s, 1)).switch(),
-            toggle("B", &bit(&s, 2)).switch(),
-        )),
-        &env,
-        bounds,
-    );
-    let mid = draw_progress(&toggle_draws);
-    approx::assert_relative_eq!(mid[0].0, 1.0);
-    assert!(
-        mid[1].0 > 0.0 && mid[1].0 < 1.0,
-        "B's thumb must be mid-animation, got {}",
-        mid[1].0
-    );
-
-    renderer.set_frame_instant(started + Duration::from_millis(200));
-    capture_root_window(
-        &mut renderer,
-        vstack((
-            toggle("A", &bit(&s, 1)).switch(),
-            toggle("B", &bit(&s, 2)).switch(),
-        )),
-        &env,
-        bounds,
-    );
-    let finished = draw_progress(&toggle_draws);
-    approx::assert_relative_eq!(finished[0].0, 1.0);
-    approx::assert_relative_eq!(finished[1].0, 1.0);
 }
 
 fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {
@@ -2793,12 +2697,35 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
     assert!(renderer.hit_test.modal_interaction.is_none());
 }
 
-/// A recorded `draw_toggle_switch` call: `(bounds, progress, selected)`.
-type ToggleSwitchDraw = (Rect, f32, bool);
+/// The switch look a test theme hands out for a toggle spec.
+type SwitchLookFor = Rc<dyn Fn(&ToggleSpec, &Environment) -> SwitchLook>;
+
 /// A linear progress bar the theme realized: `(frame, value)`.
 type ProgressBarRealization = (Rect, f64);
 /// A recorded `draw_radio_indicator` call: `(center, state)`.
 type RadioIndicatorDraw = (Point, RadioIndicatorState);
+
+/// How a test theme's indeterminate progress looks move.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum IndeterminateProgress {
+    /// Plain controls with no moving parts.
+    #[default]
+    Still,
+    /// A bar that travels, a tick that turns, a square that swells.
+    Moving,
+    /// As [`Self::Moving`], the tick turning with two nested rotation layers.
+    Nested,
+    /// The linear look is a bar whose colour keyframes are built from the
+    /// colour scheme.
+    Scheme,
+}
+
+impl IndeterminateProgress {
+    /// Whether the looks travel, turn and swell.
+    const fn moves(self) -> bool {
+        matches!(self, Self::Moving | Self::Nested)
+    }
+}
 
 #[derive(Default)]
 pub struct MinimalTestTheme {
@@ -2822,19 +2749,23 @@ pub struct MinimalTestTheme {
     /// When set, `tabs_item_layout` answers `Horizontal` from this bar extent
     /// up — a width-class theme like M3's medium-width boundary.
     horizontal_from_width: Option<f64>,
-    /// Every value-indicator chrome rect the theme was asked to draw — the
-    /// renderer reaches the hook only while the slider is pressed.
-    slider_value_indicator_draws: Rc<RefCell<Vec<Rect>>>,
-    /// The `ControlSize` each `slider_metrics` call was asked for.
-    slider_metric_sizes: Rc<RefCell<Vec<ControlSize>>>,
-    /// Every slider track rect the theme was asked to draw.
+    /// Every frame the slider's value-indicator bubble records on.
+    slider_indicator_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every spec the theme was asked for a slider look.
+    slider_specs: Rc<RefCell<Vec<SliderSpec>>>,
+    /// Every frame the slider's track part records on.
     slider_track_draws: Rc<RefCell<Vec<Rect>>>,
+    /// The drag mapping the slider look answers; `Absolute` when unset.
+    slider_drag: Option<DragMapping>,
+    /// Whether the slider look draws no label, so reserves no band for one.
+    slider_without_label: bool,
     /// The backdrop-material plan a chrome test registers
     /// (water-rs/waterui#1788): the registry entries, and the materials the
     /// plan's [`ChromePlan::chrome`] replays.
     chrome: ChromePlan,
-    /// Every `draw_toggle_switch` call.
-    toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
+    /// The switch look the theme hands out for a spec and environment;
+    /// `None` answers a plain control with no parts.
+    switch_look: Option<SwitchLookFor>,
     /// Every linear progress bar the theme's look realized, with the value
     /// its part read.
     progress_bar_realizations: Rc<RefCell<Vec<ProgressBarRealization>>>,
@@ -2842,14 +2773,8 @@ pub struct MinimalTestTheme {
     progress_bar_recordings: Rc<std::cell::Cell<u32>>,
     /// Every spec the theme was asked for a progress look.
     progress_specs: Rc<RefCell<Vec<ProgressSpec>>>,
-    /// Whether the indeterminate progress looks move: a bar that travels, a
-    /// tick that turns, a square that swells.
-    moving_progress: bool,
-    /// Whether the moving tick turns with two nested rotation layers.
-    nested_progress: bool,
-    /// Whether the indeterminate linear look is a bar whose colour keyframes
-    /// are built from the colour scheme.
-    scheme_progress: bool,
+    /// How the indeterminate progress looks move.
+    indeterminate_progress: IndeterminateProgress,
     /// Every `draw_radio_indicator` call.
     radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
     /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
@@ -2895,6 +2820,22 @@ impl MinimalTestTheme {
     #[must_use]
     pub fn with_button_chrome(mut self, chrome: Chrome) -> Self {
         self.button_chrome = Some(chrome);
+        self
+    }
+
+    /// Hands out `look` for every switch.
+    #[must_use]
+    pub fn with_switch_look(self, look: SwitchLook) -> Self {
+        self.with_switch(move |_, _| look.clone())
+    }
+
+    /// Hands out the look `look` makes for each switch's spec.
+    #[must_use]
+    pub fn with_switch(
+        mut self,
+        look: impl Fn(&ToggleSpec, &Environment) -> SwitchLook + 'static,
+    ) -> Self {
+        self.switch_look = Some(Rc::new(look));
         self
     }
 
@@ -3036,38 +2977,20 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
-        ToggleMetrics {
-            width: 10.0,
-            height: 20.0,
-            label_spacing: 3.0,
-        }
+    fn switch(&self, spec: &ToggleSpec, env: &Environment) -> SwitchLook {
+        self.switch_look.as_ref().map_or_else(
+            || {
+                SwitchLook::new(
+                    crate::testing::plain_toggle_control(),
+                    SwitchDrag::new(6.0, spec.direction()),
+                )
+            },
+            |look| look(spec, env),
+        )
     }
 
-    fn toggle_value_animation(&self) -> Animation {
-        Animation::linear(Duration::from_millis(100))
-    }
-
-    fn draw_toggle_switch(
-        &self,
-        _draw: &mut Recorder,
-        bounds: Rect,
-        progress: f32,
-        selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-        self.toggle_switch_draws
-            .borrow_mut()
-            .push((bounds, progress, selected));
-    }
-
-    fn draw_toggle_checkbox(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _state: WidgetInteractionState,
-    ) {
+    fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+        CheckboxLook::new(crate::testing::plain_toggle_control())
     }
 
     fn stepper_metrics(&self) -> StepperMetrics {
@@ -3219,63 +3142,53 @@ impl WidgetTheme for MinimalTestTheme {
             .push((center, state));
     }
 
-    fn slider_metrics(&self, size: ControlSize) -> SliderMetrics {
-        self.slider_metric_sizes.borrow_mut().push(size);
-        SliderMetrics {
-            horizontal_inset: 12.0,
-            horizontal_spacing: 8.0,
-            vertical_spacing: 6.0,
-            min_track_width: 72.0,
-            // A 6pt track for the ExtraSmall default, four points deeper per
-            // size — the per-size tests read this back off the drawn track.
-            track_height: 4.0f64.mul_add(f64::from(size as u8), 6.0),
-            handle_width: 4.0,
-            handle_height: 44.0,
-        }
-    }
-
-    fn draw_slider_track(
-        &self,
-        _draw: &mut Recorder,
-        track_rect: Rect,
-        _fill_rect: Rect,
-        _size: ControlSize,
-        _state: WidgetInteractionState,
-    ) {
-        self.slider_track_draws.borrow_mut().push(track_rect);
-    }
-
-    fn draw_slider_thumb(
-        &self,
-        _draw: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _size: ControlSize,
-        _state: WidgetInteractionState,
-    ) {
-    }
-
-    fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
-        SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
-    }
-
-    fn slider_value_indicator_color(&self) -> Color {
-        Color::srgb(255, 255, 255)
-    }
-
-    fn slider_value_indicator_font(&self) -> waterui_text::font::Font {
-        waterui_text::font::Font::default()
-    }
-
-    fn draw_slider_value_indicator(&self, _draw: &mut Recorder, bounds: Rect) {
-        self.slider_value_indicator_draws.borrow_mut().push(bounds);
+    fn slider(&self, spec: &SliderSpec, _env: &Environment) -> SliderLook {
+        self.slider_specs.borrow_mut().push(spec.clone());
+        let tracks = Rc::clone(&self.slider_track_draws);
+        let indicators = Rc::clone(&self.slider_indicator_draws);
+        let layout = SliderLayout {
+            // 44pt for the ExtraSmall default, four points deeper per size:
+            // the per-size tests read this back off the measured row.
+            row_height: 4.0f64.mul_add(f64::from(spec.size() as u8), 44.0),
+            track_inset: 12.0,
+            label_inset: 12.0,
+            label_gap: 8.0,
+            minimum_track: 72.0,
+            label_spacing: (!self.slider_without_label).then_some(6.0),
+        };
+        let knob = Knob {
+            size: Size::new(4.0, 44.0),
+            hit: HitRegion::NONE,
+        };
+        SliderLook::new(
+            layout,
+            knob,
+            self.slider_drag.unwrap_or(DragMapping::Absolute),
+            Motion::uniform(Animation::linear(Duration::from_millis(15))),
+        )
+        .part(Custom::<f64, _>::new((), move |_draw, frame, ()| {
+            tracks.borrow_mut().push(frame);
+        }))
+        .value_indicator(
+            ValueIndicator::new(
+                waterui_text::font::Font::default(),
+                Color::srgb(255, 255, 255),
+                Custom::<f64, _>::new((), move |_draw, frame, ()| {
+                    indicators.borrow_mut().push(frame);
+                }),
+            )
+            .padding(8.0, 4.0)
+            .gap(4.0),
+        )
     }
 
     fn linear_progress(&self, spec: &ProgressSpec, env: &Environment) -> LinearProgressLook {
         self.progress_specs.borrow_mut().push(spec.clone());
-        let control = if self.moving_progress && !spec.determinate() {
+        let control = if self.indeterminate_progress.moves() && !spec.determinate() {
             progress_looks::moving_bar()
-        } else if self.scheme_progress && !spec.determinate() {
+        } else if self.indeterminate_progress == IndeterminateProgress::Scheme
+            && !spec.determinate()
+        {
             progress_looks::scheme_bar(env)
         } else {
             let realizations = Rc::clone(&self.progress_bar_realizations);
@@ -3301,19 +3214,23 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn circular_progress(&self, spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
         self.progress_specs.borrow_mut().push(spec.clone());
-        IndicatorLook::new(if self.moving_progress && !spec.determinate() {
-            progress_looks::spinner(self.nested_progress)
-        } else {
-            ProgressControl::new(
-                Size::new(32.0, 32.0),
-                Motion::uniform(Animation::linear(Duration::from_millis(15))),
-            )
-        })
+        IndicatorLook::new(
+            if self.indeterminate_progress.moves() && !spec.determinate() {
+                progress_looks::spinner(
+                    self.indeterminate_progress == IndeterminateProgress::Nested,
+                )
+            } else {
+                ProgressControl::new(
+                    Size::new(32.0, 32.0),
+                    Motion::uniform(Animation::linear(Duration::from_millis(15))),
+                )
+            },
+        )
     }
 
     fn loading_indicator(&self, spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
         self.progress_specs.borrow_mut().push(spec.clone());
-        IndicatorLook::new(if self.moving_progress {
+        IndicatorLook::new(if self.indeterminate_progress.moves() {
             progress_looks::morphing()
         } else {
             ProgressControl::new(

@@ -6,8 +6,6 @@ use core::time::Duration;
 use kurbo::{Point, Rect};
 use nami::signal::IntoComputed;
 use waterui::navigation::tab::NativeTabStyle;
-use waterui_controls::ControlSize;
-use waterui_controls::toggle::ToggleStyle;
 use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
@@ -295,29 +293,6 @@ pub struct NavigationMotion {
     pub fade_through_threshold: f32,
 }
 
-/// Toggle layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct ToggleMetrics {
-    /// Toggle control width.
-    pub width: f64,
-    /// Toggle control height.
-    pub height: f64,
-    /// Spacing between label and toggle control.
-    pub label_spacing: f64,
-}
-
-impl ToggleMetrics {
-    /// Create toggle layout metrics.
-    #[must_use]
-    pub const fn new(width: f64, height: f64, label_spacing: f64) -> Self {
-        Self {
-            width,
-            height,
-            label_spacing,
-        }
-    }
-}
-
 /// Which of a stepper's two buttons is being drawn.
 ///
 /// A stepper is a pair, and Material joins a pair into one silhouette: the two
@@ -459,93 +434,6 @@ pub struct PickerMetrics {
     /// `horizontal_inset` padding on both sides (M3 `ButtonDefaults.MinWidth`
     /// is 58dp per segment; unused by non-segmented styles).
     pub segment_min_width: f64,
-}
-
-/// Slider layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct SliderMetrics {
-    /// Horizontal slider inset.
-    pub horizontal_inset: f64,
-    /// Gap between slider labels and track.
-    pub horizontal_spacing: f64,
-    /// Vertical spacing around the track.
-    pub vertical_spacing: f64,
-    /// Minimum track width.
-    pub min_track_width: f64,
-    /// Track height.
-    pub track_height: f64,
-    /// Width of the handle. A theme whose handle is a bar rather than a circle
-    /// sets this independently of [`Self::handle_height`].
-    pub handle_width: f64,
-    /// Height of the handle, which also sets the control row's height.
-    pub handle_height: f64,
-}
-
-impl SliderMetrics {
-    /// Create slider layout metrics.
-    #[must_use]
-    pub const fn new(
-        horizontal_inset: f64,
-        horizontal_spacing: f64,
-        vertical_spacing: f64,
-        min_track_width: f64,
-        track_height: f64,
-        handle_width: f64,
-        handle_height: f64,
-    ) -> Self {
-        Self {
-            horizontal_inset,
-            horizontal_spacing,
-            vertical_spacing,
-            min_track_width,
-            track_height,
-            handle_width,
-            handle_height,
-        }
-    }
-
-    /// Horizontal room the handle needs beyond each end of the track, so it
-    /// stays inside the control at either extreme.
-    #[must_use]
-    pub const fn handle_overhang(&self) -> f64 {
-        self.handle_width / 2.0
-    }
-}
-
-/// Layout metrics of the value indicator a slider shows above its thumb while
-/// the thumb is dragged.
-#[derive(Debug, Clone, Copy)]
-pub struct SliderValueIndicatorMetrics {
-    /// Horizontal padding inside the bubble around the value text.
-    pub padding_x: f64,
-    /// Vertical padding inside the bubble around the value text.
-    pub padding_y: f64,
-    /// Gap between the top of the thumb and the bottom of the bubble.
-    pub thumb_gap: f64,
-    /// Smallest bubble width regardless of how narrow the label is.
-    pub min_width: f64,
-    /// Smallest bubble height regardless of how short the label is.
-    pub min_height: f64,
-}
-
-impl SliderValueIndicatorMetrics {
-    /// Create value indicator metrics.
-    #[must_use]
-    pub const fn new(
-        padding_x: f64,
-        padding_y: f64,
-        thumb_gap: f64,
-        min_width: f64,
-        min_height: f64,
-    ) -> Self {
-        Self {
-            padding_x,
-            padding_y,
-            thumb_gap,
-            min_width,
-            min_height,
-        }
-    }
 }
 
 /// How a tab bar lays out each item's icon and label.
@@ -939,50 +827,20 @@ pub trait WidgetTheme {
         0.38
     }
 
-    /// Return metrics for a toggle style.
-    fn toggle_metrics(&self, style: ToggleStyle) -> ToggleMetrics;
-    /// Return the default animation for toggle value changes.
-    fn toggle_value_animation(&self) -> Animation;
-    /// Draw switch-style toggle chrome. `progress` is the animated 0..=1
-    /// value and `selected` is the toggle's current target, so staged
-    /// choreography (e.g. a thumb icon that enters late and exits early) can
-    /// tell which direction the animation is heading.
-    fn draw_toggle_switch(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        progress: f32,
-        selected: bool,
-        state: WidgetInteractionState,
-    );
-    /// Draw switch-style toggle state layer.
-    fn draw_toggle_switch_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw checkbox-style toggle chrome. `state` carries the disabled flag
-    /// so themes can render the inactive container.
-    fn draw_toggle_checkbox(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        progress: f32,
-        state: WidgetInteractionState,
-    );
-    /// Draw checkbox-style toggle state layer.
-    fn draw_toggle_checkbox_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _state: WidgetInteractionState,
-    ) {
-    }
+    /// The look of a switch toggle.
+    ///
+    /// Hydrolysis measures, places, hit-tests, records and animates the
+    /// switch from the returned look, and requests it again only when `spec`
+    /// changes; everything else reaches the look through its
+    /// [`Driven`](super::Driven) values, which read the toggle's `bool`, so a
+    /// toggle, hover, press or drag moves live operands and records nothing.
+    /// The look's [`SwitchDrag`](super::SwitchDrag) maps a drag of the knob
+    /// to the value it settles on.
+    fn switch(&self, spec: &super::ToggleSpec, env: &Environment) -> super::SwitchLook;
+
+    /// The look of a checkbox toggle, requested and realized like
+    /// [`Self::switch`] but taking taps only.
+    fn checkbox(&self, spec: &super::ToggleSpec, env: &Environment) -> super::CheckboxLook;
 
     /// Return stepper metrics.
     fn stepper_metrics(&self) -> StepperMetrics;
@@ -1129,47 +987,13 @@ pub trait WidgetTheme {
     ) {
     }
 
-    /// Return slider metrics for the given control size.
-    fn slider_metrics(&self, size: ControlSize) -> SliderMetrics;
-    /// Draw slider track chrome for a control of `size`. `state` carries the
-    /// disabled flag so themes can render the inactive track.
-    fn draw_slider_track(
-        &self,
-        recorder: &mut Recorder,
-        track_rect: Rect,
-        fill_rect: Rect,
-        size: ControlSize,
-        state: WidgetInteractionState,
-    );
-    /// Draw slider thumb chrome for a control of `size`.
-    fn draw_slider_thumb(
-        &self,
-        recorder: &mut Recorder,
-        center: Point,
-        radius: f64,
-        size: ControlSize,
-        state: WidgetInteractionState,
-    );
-    /// Draw slider thumb state layer.
-    fn draw_slider_thumb_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _size: ControlSize,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Return the layout metrics of the value indicator shown above the thumb
-    /// while the slider is dragged.
-    fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics;
-    /// Return the value indicator's label foreground color.
-    fn slider_value_indicator_color(&self) -> Color;
-    /// Return the value indicator's label font.
-    fn slider_value_indicator_font(&self) -> Font;
-    /// Draw the value indicator's chrome behind its label. `bounds` is the
-    /// bubble rect the renderer laid out above the thumb.
-    fn draw_slider_value_indicator(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Return how the slider of `spec` looks and responds, as plain data
+    /// (water-rs/waterui#1434): the measures it is laid out by, its track,
+    /// fill, knob and value indicator as parts over the normalized value,
+    /// the motion of that value and how a drag maps to it. Hydrolysis
+    /// measures, places, hit-tests, records and animates the slider from
+    /// the look alone.
+    fn slider(&self, spec: &super::SliderSpec, env: &Environment) -> super::SliderLook;
 
     /// The look of a linear progress indicator, determinate or not.
     ///

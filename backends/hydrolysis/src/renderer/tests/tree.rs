@@ -1314,6 +1314,19 @@ fn menu_picker_draws_its_label_above_the_value() {
         label_band.0 >= field.y0 && value_band.1 <= field.y1,
         "both text bands must lie inside the field {field:?}"
     );
+    // The label's run starts where the value's does: flush with the content's
+    // leading edge, not centred over the field (water-rs/waterui#4126).
+    let origins: Vec<_> = labelled
+        .renderer()
+        .painted_scene()
+        .glyph_runs()
+        .map(|(transform, _)| transform * kurbo::Point::ORIGIN)
+        .collect();
+    assert_eq!(origins.len(), 2, "one run per drawn text: {origins:?}");
+    assert!(
+        (origins[0].x - origins[1].x).abs() < 0.5,
+        "the label and the value share a leading edge, got {origins:?}"
+    );
 
     let mut hidden = mount_labelled(true);
     let result = hidden.pump_at(true, Instant::now());

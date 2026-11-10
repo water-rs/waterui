@@ -1062,14 +1062,15 @@ mod tests {
     }
 
     fn rendered_bin_names(ctx: &TemplateContext, package_name: &str) -> Vec<String> {
-        let cargo_toml = crate::templates::hydrolysis::rendered_outputs(ctx, package_name)
-            .expect("hydrolysis outputs should render")
-            .into_iter()
-            .find_map(|(path, content)| {
-                (path == Path::new("Cargo.toml"))
-                    .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
-            })
-            .expect("hydrolysis Cargo.toml output should exist");
+        let cargo_toml =
+            crate::templates::hydrolysis::rendered_outputs_with_painters(ctx, package_name)
+                .expect("hydrolysis outputs should render")
+                .into_iter()
+                .find_map(|(path, content)| {
+                    (path == Path::new("Cargo.toml"))
+                        .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+                })
+                .expect("hydrolysis Cargo.toml output should exist");
         cargo_toml
             .parse::<toml::Table>()
             .expect("hydrolysis Cargo.toml should parse")["bin"]

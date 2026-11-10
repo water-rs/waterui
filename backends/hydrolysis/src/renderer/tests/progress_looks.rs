@@ -18,7 +18,9 @@ use waterui::theme::ColorScheme;
 use waterui::{AnyView, Binding, Color, Environment, View, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 
-use super::{MinimalTestTheme, pumped_test_environment, test_environment_with_scheme};
+use super::{
+    IndeterminateProgress, MinimalTestTheme, pumped_test_environment, test_environment_with_scheme,
+};
 use crate::renderer::FrameWorkCounters;
 use crate::theme::{Custom, Driven, Motion, ProgressControl};
 use crate::{HeadlessRuntime, HeadlessSnapshot};
@@ -207,7 +209,7 @@ impl Frames {
 /// the scene has settled.
 fn settled(view: impl View) -> (HeadlessRuntime, Frames) {
     let theme = MinimalTestTheme {
-        moving_progress: true,
+        indeterminate_progress: IndeterminateProgress::Moving,
         ..Default::default()
     };
     let mut runtime = runtime_with(view, theme);
@@ -260,8 +262,11 @@ fn loading_indicator_runs_its_keyframes_without_frame_work() {
 fn nested_rotation_stages_sum() {
     let frames_at = |nested: bool| {
         let theme = MinimalTestTheme {
-            moving_progress: true,
-            nested_progress: nested,
+            indeterminate_progress: if nested {
+                IndeterminateProgress::Nested
+            } else {
+                IndeterminateProgress::Moving
+            },
             ..Default::default()
         };
         let mut runtime = runtime_with(Progress::infinity().circular(), theme);
@@ -313,7 +318,7 @@ fn bar_color(snapshot: &HeadlessSnapshot) -> [u8; 4] {
 fn a_running_track_follows_the_signal_it_is_built_from() {
     let scheme = Binding::container(ColorScheme::Light);
     let theme = MinimalTestTheme {
-        scheme_progress: true,
+        indeterminate_progress: IndeterminateProgress::Scheme,
         ..Default::default()
     };
     let mut runtime = runtime_in(

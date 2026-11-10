@@ -4717,7 +4717,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#76507e297c40fbea727a9fa102f7539e27ae75be"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#a46e53101b7c2e4bd96acf25d7c03ce885828aca"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -13682,7 +13682,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=dev#4eeb3349544e9ec801a7ece5fcd296540d600c07"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#e78cd6eb90ea2a5f175f22e498e00a5985063828"
 dependencies = [
  "async-channel",
  "executor-core",
