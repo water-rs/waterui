@@ -29,13 +29,14 @@ use waterui::graphics::color::WorkingColor;
 use waterui::reactive::watcher::Metadata;
 use waterui::reactive::{Signal, SignalExt};
 use waterui::resolve::Resolvable;
-use waterui::theme::color::{Accent, AccentContainer, Border, Tertiary, TertiaryContainer};
+use waterui::theme::color::{AccentContainer, Border, Tertiary, TertiaryContainer};
 use waterui_backend_core::Environment;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
 
+use crate::components::button_chrome;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
@@ -588,12 +589,12 @@ fn install_tint(
     env: &Environment,
     four_color: bool,
 ) {
-    let accent = Accent.resolve(env);
+    let tint = button_chrome::tint_signal(env);
     {
         let mut state_mut = state.borrow_mut();
-        state_mut.palette = Vec::from([accent.snapshot()]);
+        state_mut.palette = Vec::from([tint.snapshot()]);
     }
-    leaf.bind(&accent, {
+    leaf.bind(&tint, {
         let state = Rc::clone(state);
         move |color| {
             let mut state_mut = state.borrow_mut();

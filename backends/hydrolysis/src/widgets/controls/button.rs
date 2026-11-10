@@ -6,8 +6,8 @@ use crate::renderer::{
     WidgetRenderContext, measure_label_intrinsic, measure_view_intrinsic, popup_menu_nodes,
 };
 use crate::theme::{
-    ButtonLook, ButtonSpec, Chrome, CornerShape, Corners, Inputs, Label as LookLabel, StateLayer,
-    Surface, WidgetTheme,
+    ButtonLook, ButtonSpec, Chrome, CornerShape, Corners, Inputs, Label as LookLabel, SpecTint,
+    StateLayer, Surface, WidgetTheme,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -70,29 +70,34 @@ impl ButtonChromeState {
     fn look(
         &mut self,
         theme: &Rc<dyn WidgetTheme>,
-        spec: ButtonSpec,
+        spec: &ButtonSpec,
         env: &Environment,
     ) -> &ButtonLook {
         if self.held(spec, env).is_none() {
-            self.look = Some((spec, resolve_look(theme, spec, env)));
+            self.look = Some((spec.clone(), resolve_look(theme, spec, env)));
         }
         &self.look.as_ref().expect("the look was just ensured").1
     }
 
     /// The held look when it is the one `spec` in `env` takes.
-    fn held(&self, spec: ButtonSpec, env: &Environment) -> Option<&ButtonLook> {
+    fn held(&self, spec: &ButtonSpec, env: &Environment) -> Option<&ButtonLook> {
         let plugin = env.get::<Chrome>();
         self.look
             .as_ref()
             .filter(|(held, look)| {
-                *held == spec && plugin.is_none_or(|plugin| plugin.same(look.chrome()))
+                held == spec && plugin.is_none_or(|plugin| plugin.same(look.chrome()))
             })
             .map(|(_, look)| look)
     }
 
     /// The look for `spec` in `env` without holding it: the held one, or a
     /// fresh one for a measurement ahead of the render that holds it.
-    fn peek(&self, theme: &Rc<dyn WidgetTheme>, spec: ButtonSpec, env: &Environment) -> ButtonLook {
+    fn peek(
+        &self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: &ButtonSpec,
+        env: &Environment,
+    ) -> ButtonLook {
         self.held(spec, env)
             .cloned()
             .unwrap_or_else(|| resolve_look(theme, spec, env))
@@ -103,17 +108,17 @@ impl ButtonChromeState {
 /// [`Chrome`] plugin with no padding, minimum or label styling; otherwise
 /// the theme's look, lowered onto the enclosing floating surface's style
 /// when there is one.
-fn resolve_look(theme: &Rc<dyn WidgetTheme>, spec: ButtonSpec, env: &Environment) -> ButtonLook {
+fn resolve_look(theme: &Rc<dyn WidgetTheme>, spec: &ButtonSpec, env: &Environment) -> ButtonLook {
     if let Some(chrome) = env.get::<Chrome>() {
         // The composed control's content draws its own container; a text
         // label keeps the theme's button font.
         let mut label = LookLabel::new();
-        if let Some(font) = theme.button(&spec, env).label().get_font() {
+        if let Some(font) = theme.button(spec, env).label().get_font() {
             label = label.font(font.clone());
         }
         return ButtonLook::new(chrome.clone(), label);
     }
-    let look = theme.button(&spec, env);
+    let look = theme.button(spec, env);
     if env.get::<MenuRowChrome>().is_some() {
         return lower_menu_row(&look, theme.text_context_menu_metrics().horizontal_padding);
     }
@@ -222,6 +227,7 @@ fn button_spec(
         size,
         icon_only,
         waterui_core::layout::layout_direction(env).snapshot(),
+        SpecTint::resolve(env),
     )
 }
 
@@ -340,7 +346,7 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
         }
         let theme = renderer.theme();
         let spec = self.spec(env);
-        let look = self.chrome.look(&theme, spec, env).clone();
+        let look = self.chrome.look(&theme, &spec, env).clone();
         let color = retained_label_color(&look, &self.chrome, env);
         let font = look_font(
             &look,
@@ -489,7 +495,7 @@ pub fn measure_button_node<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let spec = render_state.spec(env);
-    let look = render_state.chrome.peek(theme, spec, env);
+    let look = render_state.chrome.peek(theme, &spec, env);
     let label_size = if let Some(subview) = &render_state.label_view {
         subview.measure_built(state, env, theme)
     } else {
@@ -607,7 +613,7 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
         if subview.is_built() {
             return;
         }
-        let look = self.chrome.look(&theme, spec, env).clone();
+        let look = self.chrome.look(&theme, &spec, env).clone();
         let color = retained_label_color(&look, &self.chrome, env);
         subview.map_source(|view| button_label_view(color, view));
         subview.ensure_built(renderer, env);
@@ -733,7 +739,7 @@ pub fn measure_menu_node<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let spec = state.spec(env);
-    let look = state.chrome.peek(theme, spec, env);
+    let look = state.chrome.peek(theme, &spec, env);
     let label_size = match &state.label {
         MenuLabel::Title(label) => {
             let font = look_font(
@@ -794,7 +800,7 @@ fn bind_button_chrome<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     chrome_state: &mut ButtonChromeState,
     key: crate::renderer::InteractionKey,
-    spec: ButtonSpec,
+    spec: &ButtonSpec,
     disabled: bool,
     title: bool,
     env: &Environment,
@@ -1012,7 +1018,7 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
         let mut state_mut = state.borrow_mut();
         let spec = state_mut.spec(env);
         let title = state_mut.label_view.is_none();
-        bind_button_chrome(ctx, &mut state_mut.chrome, key, spec, disabled, title, env)
+        bind_button_chrome(ctx, &mut state_mut.chrome, key, &spec, disabled, title, env)
     };
     record_button_chrome(ctx, &rendered, |ctx| {
         let mut state_mut = state.borrow_mut();
@@ -1058,7 +1064,7 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
         let mut state_mut = state.borrow_mut();
         let spec = state_mut.spec(env);
         let title = matches!(state_mut.label, MenuLabel::Title(_));
-        bind_button_chrome(ctx, &mut state_mut.chrome, key, spec, false, title, env)
+        bind_button_chrome(ctx, &mut state_mut.chrome, key, &spec, false, title, env)
     };
     record_button_chrome(ctx, &rendered, |ctx| {
         let mut state_mut = state.borrow_mut();
@@ -1137,7 +1143,7 @@ pub fn measure_button_look_intrinsic<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let spec = button_spec(style, size, label_resolves_icon_only(label, env), env);
-    let look = resolve_look(theme, spec, env);
+    let look = resolve_look(theme, &spec, env);
     let font = look_font(&look, InteractionState::empty(), Rect::ZERO);
     let label_size = if renders_as_plain_title(label) {
         let styled = styled_button_title(state, font, label, env);
@@ -1160,7 +1166,7 @@ pub fn measure_menu_intrinsic<E: crate::text::TextEngine>(
         .downcast_ref::<Label>()
         .is_some_and(|label| label_resolves_icon_only(label, env));
     let spec = button_spec(menu.style, menu.size, icon_only, env);
-    let look = resolve_look(theme, spec, env);
+    let look = resolve_look(theme, &spec, env);
     let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
         && renders_as_plain_title(label)
     {
@@ -1307,7 +1313,7 @@ mod tests {
     };
     use cherenkov_record::WorkingColor;
     use kurbo::Rect;
-    use nami::Signal as _;
+    use nami::{Signal as _, SignalExt as _};
     use waterui::Color;
     use waterui::{AnyView, View};
     use waterui_controls::ControlSize;
@@ -1354,6 +1360,58 @@ mod tests {
             ButtonStyle::Bordered,
             "an automatic trigger takes the ambient button style"
         );
+    }
+
+    fn tint_of(spec: &crate::theme::ButtonSpec, env: &Environment) -> [f32; 4] {
+        spec.tint().resolve(env).snapshot().components
+    }
+
+    #[test]
+    fn a_tinted_subtree_carries_its_tint_and_an_untinted_one_the_accent() {
+        let accent = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+        let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+        let mut env = Environment::new();
+        waterui::theme::install_color_signal::<waterui::theme::color::Accent>(
+            &mut env,
+            nami::constant(accent).computed(),
+        );
+        let spec = |env: &Environment| {
+            super::button_spec(ButtonStyle::Automatic, ControlSize::Small, false, env)
+        };
+        assert_eq!(tint_of(&spec(&env), &env), accent.components);
+
+        let tinted = env.extending(waterui::theme::Tint::new(Color::new(
+            waterui_graphics::color::Working(red),
+        )));
+        assert_eq!(tint_of(&spec(&tinted), &tinted), red.components);
+        assert_ne!(
+            spec(&tinted),
+            spec(&env),
+            "a re-tint requests the look again"
+        );
+        assert_eq!(
+            spec(&tinted),
+            spec(&tinted),
+            "the same tint is the same spec"
+        );
+    }
+
+    #[test]
+    fn a_tint_signal_change_reaches_the_look_without_requesting_it_again() {
+        let source = nami::Binding::container(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
+        let tint = waterui::theme::Tint::new(waterui_graphics::color::signal_color(
+            source.map(|color| Color::new(waterui_graphics::color::Working(color))),
+        ));
+        let env = Environment::new().extending(tint);
+        let spec = super::button_spec(ButtonStyle::Automatic, ControlSize::Small, false, &env);
+        let color = spec.tint().resolve(&env);
+        assert_eq!(color.snapshot().components, [1.0, 0.0, 0.0, 1.0]);
+
+        source.set(WorkingColor::new([0.0, 1.0, 0.0, 1.0]));
+
+        assert_eq!(color.snapshot().components, [0.0, 1.0, 0.0, 1.0]);
+        let again = super::button_spec(ButtonStyle::Automatic, ControlSize::Small, false, &env);
+        assert_eq!(again, spec, "the held look stays: no rebuild");
     }
 
     #[test]

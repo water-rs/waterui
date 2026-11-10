@@ -15,10 +15,10 @@ use waterui::resolve::Resolvable;
 use waterui::text::font::{Body, ResolvedFont};
 #[cfg(target_os = "macos")]
 use waterui::theme::color::MutedForeground;
-use waterui::theme::color::{Accent, AccentForeground, Foreground};
-use waterui::theme::install_color_signal;
+use waterui::theme::color::{AccentForeground, Foreground};
 #[cfg(target_os = "macos")]
 use waterui::theme::install_font_signal;
+use waterui::theme::{install_color_signal, resolve_tint};
 use waterui_backend_core::Environment;
 
 #[cfg(target_os = "macos")]
@@ -51,7 +51,7 @@ pub(super) use platform::StyledButton;
 
 /// A `WorkingColor` as the platform's extended linear Display-P3 color object.
 #[cfg(target_os = "ios")]
-fn platform_color(color: &WorkingColor) -> Retained<platform::UIColor> {
+pub(super) fn platform_color(color: &WorkingColor) -> Retained<platform::UIColor> {
     let [red, green, blue, alpha] = color.components;
     platform::colors::extended_linear_display_p3(
         f64::from(red),
@@ -63,7 +63,7 @@ fn platform_color(color: &WorkingColor) -> Retained<platform::UIColor> {
 
 /// A `WorkingColor` as the platform's extended linear Display-P3 color object.
 #[cfg(target_os = "macos")]
-fn platform_color(color: &WorkingColor) -> Retained<platform::NSColor> {
+pub(super) fn platform_color(color: &WorkingColor) -> Retained<platform::NSColor> {
     let [red, green, blue, alpha] = color.components;
     platform::colors::extended_linear_display_p3(
         f64::from(red),
@@ -71,6 +71,13 @@ fn platform_color(color: &WorkingColor) -> Retained<platform::NSColor> {
         f64::from(blue),
         f64::from(alpha),
     )
+}
+
+/// The tint the native controls of `env`'s subtree draw with: the nearest
+/// `.tint(...)`, else the `Accent` token. Every native control takes its
+/// tint colour from this one resolution.
+pub(super) fn tint_signal(env: &Environment) -> Computed<WorkingColor> {
+    resolve_tint(env).resolve(env)
 }
 
 /// The color the label's `Foreground` slot resolves to under `style` — the
@@ -93,7 +100,7 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
         ButtonStyle::Automatic
         | ButtonStyle::Link
         | ButtonStyle::Borderless
-        | ButtonStyle::Bordered => Accent.resolve(env).computed(),
+        | ButtonStyle::Bordered => tint_signal(env),
         _ => panic!("unsupported WaterUI button style: {style:?}"),
     }
 }
@@ -115,7 +122,7 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
         ButtonStyle::Borderless if env.get::<crate::toolbar_chrome::ToolbarChrome>().is_some() => {
             MutedForeground.resolve(env).computed()
         }
-        ButtonStyle::Link | ButtonStyle::Borderless => Accent.resolve(env).computed(),
+        ButtonStyle::Link | ButtonStyle::Borderless => tint_signal(env),
         _ => panic!("unsupported WaterUI button style: {style:?}"),
     }
 }
@@ -243,20 +250,20 @@ pub(super) fn chrome_padding(style: ButtonStyle, mtm: cocoa_ui::MainThreadMarker
     (insets.left as f32, insets.top as f32)
 }
 
-/// The accent color: `UIKit` tints chrome and title with it and re-applies
-/// `style`'s chrome each time, matching `applyThemeAppearance`; `AppKit`
-/// paints it only into prominent bezels.
-pub(super) fn bind_accent(
+/// The tint ([`tint_signal`]): `UIKit` tints chrome and title with it and
+/// re-applies `style`'s chrome each time, matching `applyThemeAppearance`;
+/// `AppKit` paints it only into prominent bezels.
+pub(super) fn bind_tint(
     leaf: &mut NativeLeaf,
     button: StyledButton,
     style: ButtonStyle,
     env: &Environment,
     mtm: cocoa_ui::MainThreadMarker,
 ) {
-    let accent = Accent.resolve(env);
+    let tint = tint_signal(env);
     #[cfg(target_os = "macos")]
     let _ = mtm;
-    leaf.bind(&accent, move |color| {
+    leaf.bind(&tint, move |color| {
         #[cfg(target_os = "ios")]
         {
             button.set_tint_color(&platform_color(&color));
@@ -275,6 +282,52 @@ pub(super) fn bind_accent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui::graphics::color::{Color, Working};
+    use waterui::reactive::{Binding, Signal, constant};
+    use waterui::theme::Tint;
+    use waterui::theme::color::Accent;
+
+    fn components(signal: &Computed<WorkingColor>) -> [f32; 4] {
+        signal.snapshot().components
+    }
+
+    /// The native controls' tint is the nearest `.tint(...)`, else the
+    /// accent; a link label, which draws in the tint, follows it.
+    #[test]
+    fn native_controls_take_the_tint_else_the_accent() {
+        let accent = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+        let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+        let mut env = Environment::new();
+        install_color_signal::<Accent>(&mut env, constant(accent).computed());
+        assert_eq!(components(&tint_signal(&env)), accent.components);
+        assert_eq!(
+            components(&label_foreground(ButtonStyle::Link, &env)),
+            accent.components
+        );
+
+        let tinted = env.extending(Tint::new(Color::new(Working(red))));
+        assert_eq!(components(&tint_signal(&tinted)), red.components);
+        assert_eq!(
+            components(&label_foreground(ButtonStyle::Link, &tinted)),
+            red.components
+        );
+    }
+
+    /// A tint signal's change reaches the resolved tint in place.
+    #[test]
+    fn a_tint_signal_change_updates_the_resolved_tint() {
+        let source = Binding::container(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
+        let tint = Tint::new(waterui::graphics::color::signal_color(
+            source.map(|color| Color::new(Working(color))),
+        ));
+        let env = Environment::new().extending(tint);
+        let resolved = tint_signal(&env);
+        assert_eq!(components(&resolved), [1.0, 0.0, 0.0, 1.0]);
+
+        source.set(WorkingColor::new([0.0, 1.0, 0.0, 1.0]));
+
+        assert_eq!(components(&resolved), [0.0, 1.0, 0.0, 1.0]);
+    }
 
     #[cfg(target_os = "ios")]
     #[test]
