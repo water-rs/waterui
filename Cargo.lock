@@ -2159,7 +2159,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -13682,7 +13682,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=dev#4eeb3349544e9ec801a7ece5fcd296540d600c07"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#e78cd6eb90ea2a5f175f22e498e00a5985063828"
 dependencies = [
  "async-channel",
  "executor-core",
