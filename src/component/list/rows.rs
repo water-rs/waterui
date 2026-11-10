@@ -16,8 +16,8 @@
 //!
 //! Each part also keeps what its rows are selected by — a static row's
 //! `.tag(…)` value, a collection item's id — erased until a selection names
-//! the type; [`TaggedBy`] makes that type agree with the content at compile
-//! time.
+//! the type; [`ContentTags`] makes that type agree with the content, and
+//! requires a row selected by it, at compile time.
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -37,7 +37,7 @@ use waterui_core::id::{Id as RawId, Mapping};
 
 use crate::views::{AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 
-use super::content::TaggedBy;
+use super::content::{ContentTags, HoldsTag};
 use super::selection::SelectableRows;
 use super::{ListItem, ListSection};
 
@@ -241,7 +241,8 @@ pub struct ListRowId {
 ///
 /// `C` is the content the rows were collected from. It holds no data; it
 /// carries the content's type to [`ListBuilder::selection`](super::ListBuilder::selection),
-/// which accepts a selection type only when the content is [`TaggedBy`] it.
+/// which accepts a selection type only when the content is
+/// [`TaggedBy`](super::TaggedBy) it.
 pub struct ContentRows<C> {
     parts: Rc<[SharedAnyViews<ListItem>]>,
     tags: Rc<[PartTags]>,
@@ -272,11 +273,11 @@ enum TypedPartTags<T> {
 }
 
 /// The panic for a part whose tags are not of the type its list is selected
-/// by — reachable only through a `TaggedBy` implementation that disagrees
+/// by — reachable only through a `ContentTags` implementation that disagrees
 /// with the rows its content collects.
 fn mistagged<T>() -> ! {
     panic!(
-        "a list selected by `{}` holds rows tagged by another type: a `TaggedBy` implementation does not match the rows its content collects",
+        "a list selected by `{}` holds rows tagged by another type: a `ContentTags` implementation does not match the rows its content collects",
         type_name::<T>()
     )
 }
@@ -323,10 +324,12 @@ impl<T: Ord + Clone> TypedPartTags<T> {
 
 /// The rows of `List::content` are selected by `T` when the content is
 /// tagged by `T`: a static row by its `.tag(…)` value, a `ForEach` row by
-/// its item's id, and an untagged static row not at all.
+/// its item's id, and an untagged static row not at all. Content with no row
+/// selected by `T` is not selectable by it.
 impl<C, T> SelectableRows<T> for ContentRows<C>
 where
-    C: TaggedBy<T>,
+    C: ContentTags<T>,
+    C::Presence: HoldsTag,
     T: 'static + Ord + Clone,
 {
     fn row_tags(&self) -> impl Fn(&ListRowId) -> Option<T> + 'static {

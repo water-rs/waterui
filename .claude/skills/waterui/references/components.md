@@ -512,7 +512,8 @@ the index for an array or static slice. A static row of `List::content` is selec
 value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox)`
 or `row("Archive", "12").tag(Mailbox::Archive)` — and an untagged static row is not
 selectable. Every selectable row of one list is selected by the same type; a selection
-of another type does not compile. Rows carrying the same value are selected together.
+of another type does not compile, and neither does a selection over a `List::content`
+whose rows are all untagged. Rows carrying the same value are selected together.
 At most one mode per list: a later call replaces an earlier one.
 `List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
 structural tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
