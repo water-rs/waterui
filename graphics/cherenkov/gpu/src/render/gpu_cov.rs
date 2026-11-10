@@ -1171,16 +1171,19 @@ impl GpuCoverage {
             self.size_buffers(device, sizes)?;
             for index in 0..=self.batches.len() {
                 let batch = self.batches.get(index).copied().unwrap_or(self.batch);
-                let timestamps = timestamp_writes.map(|(query_set, beginning, end)| {
-                    wgpu::ComputePassTimestampWrites {
-                        query_set,
-                        beginning_of_pass_write_index: if index == 0 { beginning } else { None },
-                        end_of_pass_write_index: if index == self.batches.len() {
-                            end
-                        } else {
-                            None
+                // The first batch's pass opens the timing and the last one
+                // closes it; a batch between them writes no timestamp, and
+                // a pass given timestamp writes must carry an index.
+                let timestamps = timestamp_writes.and_then(|(query_set, beginning, end)| {
+                    let beginning = beginning.filter(|_| index == 0);
+                    let end = end.filter(|_| index == self.batches.len());
+                    (beginning.is_some() || end.is_some()).then_some(
+                        wgpu::ComputePassTimestampWrites {
+                            query_set,
+                            beginning_of_pass_write_index: beginning,
+                            end_of_pass_write_index: end,
                         },
-                    }
+                    )
                 });
                 self.dispatch(device, batch, queue, encoder, delivery, timestamps);
             }
@@ -2679,8 +2682,30 @@ mod tests {
     ) -> Vec<cherenkov_oracle::image::F32Image> {
         frame.ensure(device);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let timing = device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+            .then(|| {
+                device.create_query_set(&wgpu::QuerySetDescriptor {
+                    label: Some("coverage prologue timing"),
+                    ty: wgpu::QueryType::Timestamp,
+                    count: 2,
+                })
+            });
         frame
-            .record_prologue(device, queue, &mut encoder, delivery, None)
+            .record_prologue(
+                device,
+                queue,
+                &mut encoder,
+                delivery,
+                timing
+                    .as_ref()
+                    .map(|query_set| wgpu::ComputePassTimestampWrites {
+                        query_set,
+                        beginning_of_pass_write_index: Some(0),
+                        end_of_pass_write_index: Some(1),
+                    }),
+            )
             .expect("coverage prologue");
         let buffers = frame.buffers.as_ref().expect("scratch sized");
         for buffer in [
@@ -2953,7 +2978,11 @@ mod tests {
             _ => wgpu::Features::empty(),
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: required_features | wgpu::Features::SHADER_F16,
+            // Timestamps where the adapter has them, so the prologue's pass
+            // timing is validated across every batch it splits into.
+            required_features: required_features
+                | wgpu::Features::SHADER_F16
+                | (adapter.features() & wgpu::Features::TIMESTAMP_QUERY),
             ..wgpu::DeviceDescriptor::default()
         }))
         .ok()?;
