@@ -884,7 +884,7 @@ impl SurfaceTree {
         }
     }
 
-    /// Applies one op from a drained [`ChangeSet`] and returns what it
+    /// Applies one op from a drained [`ChangeSet`](crate::ops::ChangeSet) and returns what it
     /// asks the consumer to realise. Removes route through
     /// [`remove`](Self::remove) — [`apply`](Self::apply) panics on them —
     /// and a content op notes its picture slots on the layer before it
