@@ -1527,42 +1527,6 @@ pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
     }
 }
 
-pub fn measure_slider_intrinsic<E: crate::text::TextEngine>(
-    slider: &SliderConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    let metrics = theme.slider_metrics(slider.size());
-    let label_size = measure_label_intrinsic(slider.label(), state, env, theme);
-    let min_label_size = measure_view_intrinsic(slider.min_value_label(), state, env, theme);
-    let max_label_size = measure_view_intrinsic(slider.max_value_label(), state, env, theme);
-
-    let control_row_height = metrics
-        .handle_height
-        .max(f64::from(min_label_size.height))
-        .max(f64::from(max_label_size.height));
-    let label_height = f64::from(label_size.height);
-    let intrinsic_height = if label_height > 0.0 {
-        label_height + metrics.vertical_spacing + control_row_height
-    } else {
-        control_row_height
-    };
-
-    let min_width = f64::from(label_size.width).max(metrics.horizontal_inset.mul_add(
-        2.0,
-        f64::from(min_label_size.width)
-            + metrics.horizontal_spacing
-            + metrics.min_track_width
-            + metrics.horizontal_spacing
-            + f64::from(max_label_size.width),
-    ));
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(min_width),
-        crate::num_cast::f64_as_f32(intrinsic_height),
-    )
-}
-
 fn resolved_text_styled<E: crate::text::TextEngine>(
     text: &Text,
     env: &Environment,

@@ -34,10 +34,17 @@ pub struct SliderConfig {
     /// How the value indicator shown above the thumb while it is dragged
     /// formats the value; `None` shows no indicator.
     value_indicator: Option<ValueFormatter>,
+    /// The increment the value moves in, anchored at the range's start;
+    /// `None` moves it continuously.
+    step: Option<f64>,
 }
 
 impl SliderConfig {
     /// Takes the value apart into its fields, in declaration order.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the tuple is the config's fields in declaration order"
+    )]
     pub fn into_parts(
         self,
     ) -> (
@@ -48,6 +55,7 @@ impl SliderConfig {
         Binding<f64>,
         ControlSize,
         Option<ValueFormatter>,
+        Option<f64>,
     ) {
         (
             self.label,
@@ -57,11 +65,16 @@ impl SliderConfig {
             self.value,
             self.size,
             self.value_indicator,
+            self.step,
         )
     }
 
     /// Creates a `SliderConfig` from its parts.
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor takes the config's fields in declaration order"
+    )]
     pub const fn new(
         label: Label,
         min_value_label: AnyView,
@@ -70,6 +83,7 @@ impl SliderConfig {
         value: Binding<f64>,
         size: ControlSize,
         value_indicator: Option<ValueFormatter>,
+        step: Option<f64>,
     ) -> Self {
         Self {
             label,
@@ -79,6 +93,7 @@ impl SliderConfig {
             value,
             size,
             value_indicator,
+            step,
         }
     }
 
@@ -133,6 +148,13 @@ impl SliderConfig {
     #[must_use]
     pub const fn value_indicator(&self) -> Option<&ValueFormatter> {
         self.value_indicator.as_ref()
+    }
+
+    /// The increment the value moves in, anchored at the range's start;
+    /// `None` moves it continuously.
+    #[must_use]
+    pub const fn step(&self) -> Option<f64> {
+        self.step
     }
 }
 
@@ -243,7 +265,24 @@ impl Slider {
             value: value.clone(),
             size: ControlSize::ExtraSmall,
             value_indicator: None,
+            step: None,
         })
+    }
+
+    /// Moves the value in increments of `step`, anchored at the start of
+    /// the range: a drag rounds to the nearest multiple.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `step` is not positive and finite.
+    #[must_use]
+    pub fn step(mut self, step: f64) -> Self {
+        assert!(
+            step.is_finite() && step > 0.0,
+            "a slider step must be positive and finite"
+        );
+        self.0.step = Some(step);
+        self
     }
 
     /// Sets the inclusive value range for this slider.

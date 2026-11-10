@@ -1,6 +1,6 @@
 mod collection_update;
 mod frame_work;
-mod slider_size_indicator;
+mod slider_look;
 use super::*;
 use crate::text::{Affinity, TextEngine as _, TextLayout as _, TextPosition};
 use std::borrow::Cow;
@@ -110,7 +110,6 @@ use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
-use waterui_controls::ControlSize;
 use waterui_controls::button::button;
 use waterui_controls::label::{LabelDisplayMode, label};
 use waterui_controls::slider::slider;
@@ -130,13 +129,13 @@ use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
-    BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DividerMetrics,
-    FocusIndicator, HitRegion, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
+    BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DividerMetrics, DragMapping,
+    FocusIndicator, HitRegion, InputFieldMetrics, InteractionFocusBinding, InteractionMotion, Knob,
     Label, ListMetrics, ModalInteraction, Motion, NavigationMetrics, NavigationMotion,
     PickerMetrics, PressFeedback, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion,
-    RadioIndicatorState, RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics,
-    StateLayer, StepperEnd, StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
-    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
+    RadioIndicatorState, RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer,
+    StepperEnd, StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
+    TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, ValueIndicator, WidgetInteractionState,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -2820,13 +2819,16 @@ pub struct MinimalTestTheme {
     /// When set, `tabs_item_layout` answers `Horizontal` from this bar extent
     /// up — a width-class theme like M3's medium-width boundary.
     horizontal_from_width: Option<f64>,
-    /// Every value-indicator chrome rect the theme was asked to draw — the
-    /// renderer reaches the hook only while the slider is pressed.
-    slider_value_indicator_draws: Rc<RefCell<Vec<Rect>>>,
-    /// The `ControlSize` each `slider_metrics` call was asked for.
-    slider_metric_sizes: Rc<RefCell<Vec<ControlSize>>>,
-    /// Every slider track rect the theme was asked to draw.
+    /// Every frame the slider's value-indicator bubble records on.
+    slider_indicator_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every spec the theme was asked for a slider look.
+    slider_specs: Rc<RefCell<Vec<SliderSpec>>>,
+    /// Every frame the slider's track part records on.
     slider_track_draws: Rc<RefCell<Vec<Rect>>>,
+    /// The drag mapping the slider look answers; `Absolute` when unset.
+    slider_drag: Option<DragMapping>,
+    /// Whether the slider look draws no label, so reserves no band for one.
+    slider_without_label: bool,
     /// The backdrop-material plan a chrome test registers
     /// (water-rs/waterui#1788): the registry entries, and the materials the
     /// plan's [`ChromePlan::chrome`] replays.
@@ -3214,56 +3216,44 @@ impl WidgetTheme for MinimalTestTheme {
             .push((center, state));
     }
 
-    fn slider_metrics(&self, size: ControlSize) -> SliderMetrics {
-        self.slider_metric_sizes.borrow_mut().push(size);
-        SliderMetrics {
-            horizontal_inset: 12.0,
-            horizontal_spacing: 8.0,
-            vertical_spacing: 6.0,
-            min_track_width: 72.0,
-            // A 6pt track for the ExtraSmall default, four points deeper per
-            // size — the per-size tests read this back off the drawn track.
-            track_height: 4.0f64.mul_add(f64::from(size as u8), 6.0),
-            handle_width: 4.0,
-            handle_height: 44.0,
-        }
-    }
-
-    fn draw_slider_track(
-        &self,
-        _draw: &mut Recorder,
-        track_rect: Rect,
-        _fill_rect: Rect,
-        _size: ControlSize,
-        _state: WidgetInteractionState,
-    ) {
-        self.slider_track_draws.borrow_mut().push(track_rect);
-    }
-
-    fn draw_slider_thumb(
-        &self,
-        _draw: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _size: ControlSize,
-        _state: WidgetInteractionState,
-    ) {
-    }
-
-    fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
-        SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
-    }
-
-    fn slider_value_indicator_color(&self) -> Color {
-        Color::srgb(255, 255, 255)
-    }
-
-    fn slider_value_indicator_font(&self) -> waterui_text::font::Font {
-        waterui_text::font::Font::default()
-    }
-
-    fn draw_slider_value_indicator(&self, _draw: &mut Recorder, bounds: Rect) {
-        self.slider_value_indicator_draws.borrow_mut().push(bounds);
+    fn slider(&self, spec: &SliderSpec, _env: &Environment) -> SliderLook {
+        self.slider_specs.borrow_mut().push(spec.clone());
+        let tracks = Rc::clone(&self.slider_track_draws);
+        let indicators = Rc::clone(&self.slider_indicator_draws);
+        let layout = SliderLayout {
+            // 44pt for the ExtraSmall default, four points deeper per size:
+            // the per-size tests read this back off the measured row.
+            row_height: 4.0f64.mul_add(f64::from(spec.size() as u8), 44.0),
+            track_inset: 12.0,
+            label_inset: 12.0,
+            label_gap: 8.0,
+            minimum_track: 72.0,
+            label_spacing: (!self.slider_without_label).then_some(6.0),
+        };
+        let knob = Knob {
+            size: Size::new(4.0, 44.0),
+            hit: HitRegion::NONE,
+        };
+        SliderLook::new(
+            layout,
+            knob,
+            self.slider_drag.unwrap_or(DragMapping::Absolute),
+            Motion::uniform(Animation::linear(Duration::from_millis(15))),
+        )
+        .part(Custom::<f64, _>::new((), move |_draw, frame, ()| {
+            tracks.borrow_mut().push(frame);
+        }))
+        .value_indicator(
+            ValueIndicator::new(
+                waterui_text::font::Font::default(),
+                Color::srgb(255, 255, 255),
+                Custom::<f64, _>::new((), move |_draw, frame, ()| {
+                    indicators.borrow_mut().push(frame);
+                }),
+            )
+            .padding(8.0, 4.0)
+            .gap(4.0),
+        )
     }
 
     fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {

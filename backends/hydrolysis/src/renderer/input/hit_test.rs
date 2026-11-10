@@ -125,12 +125,30 @@ pub struct PointerTarget<E: crate::text::TextEngine> {
     pub(crate) interaction: Option<Rc<InteractionLayerHandles>>,
     pub(crate) action: PointerAction<E>,
     pub(crate) keyboard_step: Option<KeyboardStepAction>,
+    /// Whether a press at a window point inside `bounds` is this target's,
+    /// asked as the press lands. A press it declines is not a hit: it
+    /// reaches the next target beneath, as if `bounds` did not cover it.
+    pub(crate) press_filter: Option<PressFilter>,
     pub(crate) keyboard_focusable: bool,
     pub(crate) modal: bool,
     /// The `OnKeyPress` scopes enclosing the view this target was registered
     /// from, innermost first — the chain an unconsumed key bubbles through
     /// while this target holds keyboard focus.
     pub(crate) key_handlers: Option<Rc<KeyHandlerNode>>,
+}
+
+/// Answers whether a press at a window point belongs to a target.
+pub type PressFilter = Rc<dyn Fn(kurbo::Point) -> bool>;
+
+impl<E: crate::text::TextEngine> PointerTarget<E> {
+    /// Whether a press at `point` lands on this target.
+    fn takes_press_at(&self, point: kurbo::Point) -> bool {
+        self.bounds.contains(point)
+            && self
+                .press_filter
+                .as_ref()
+                .is_none_or(|filter| filter(point))
+    }
 }
 
 /// An in-flight scrollbar-thumb drag: which scroll slot owns it (the handle's
@@ -1904,7 +1922,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .pointer_targets
             .iter()
             .enumerate()
-            .filter(|(_, target)| target.bounds.contains(point))
+            .filter(|(_, target)| target.takes_press_at(point))
             .map(|(index, _)| index)
             .collect();
         pointer_indices.sort_unstable_by(|left, right| {
@@ -4448,6 +4466,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 interaction,
                 action,
                 keyboard_step: None,
+                press_filter: None,
                 keyboard_focusable: false,
                 modal,
                 key_handlers,
@@ -4500,6 +4519,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     |_: &mut Self, _: kurbo::Point, _: &Environment| true,
                 )),
                 keyboard_step: None,
+                press_filter: None,
                 keyboard_focusable: false,
                 modal: false,
                 key_handlers,
@@ -4607,6 +4627,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 interaction: None,
                 action: Rc::new(RefCell::new(action)),
                 keyboard_step: None,
+                press_filter: None,
                 keyboard_focusable: false,
                 modal: false,
                 key_handlers,
@@ -5013,6 +5034,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 interaction,
                 action: Rc::new(RefCell::new(action)),
                 keyboard_step: None,
+                press_filter: None,
                 keyboard_focusable,
                 modal,
                 key_handlers,
@@ -5026,6 +5048,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self,
         bounds: kurbo::Rect,
         press_slot: PressSlot,
+        press_filter: Option<PressFilter>,
         action: F,
         keyboard_step: K,
     ) where
@@ -5048,6 +5071,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 interaction,
                 action: Rc::new(RefCell::new(action)),
                 keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
+                press_filter,
                 keyboard_focusable: true,
                 modal,
                 key_handlers,
@@ -5467,6 +5491,7 @@ impl<E: crate::text::TextEngine> Clone for PointerTarget<E> {
             interaction: self.interaction.clone(),
             action: self.action.clone(),
             keyboard_step: self.keyboard_step.clone(),
+            press_filter: self.press_filter.clone(),
             keyboard_focusable: self.keyboard_focusable,
             modal: self.modal,
             key_handlers: self.key_handlers.clone(),
