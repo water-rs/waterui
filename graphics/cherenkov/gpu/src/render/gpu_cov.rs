@@ -80,6 +80,14 @@ const FRAME_FIXED_BYTES: u64 = 18 * 1024 + 128 + 48;
 const GEOMETRY_WORDS: u32 = 6;
 /// u32 words of one block's header: the emitted instance count and pad.
 const BLOCK_HEADER_WORDS: u32 = 4;
+/// Capacity of the staging buffer an in-place compaction moves live
+/// blocks through, since a buffer copy cannot read and write one buffer
+/// (water-rs/waterui#4108). It bounds a compaction's copy phases to the
+/// moved bytes over this size, and it is the smallest suballocated
+/// block the Vulkan allocation policy reserves
+/// ([`crate::interop::memory_hints`]), so the bounce never takes a
+/// dedicated device allocation of its own.
+const BOUNCE_BYTES: u64 = 4 << 20;
 
 /// One GPU draw of the frame: the coverage entry it replays and the
 /// draw's placement shift. Block addresses resolve at `write_draw` and
@@ -131,7 +139,9 @@ struct Compaction {
 /// blocks carry a count header, the emitted geometry records and the
 /// packed R8 texels. Blocks are appended through a bump frontier;
 /// holes from evicted or rolled-back entries are reclaimed by
-/// compaction into a fresh buffer under the 2× rule (§3.3).
+/// compaction under the 2× rule (§3.3) — in place while the buffer
+/// holds the live set and its headroom, into a larger buffer only when
+/// it does not (water-rs/waterui#4108).
 struct CoverageArena {
     buffer: Option<wgpu::Buffer>,
     /// Words `buffer` holds.
@@ -141,6 +151,9 @@ struct CoverageArena {
     /// Bumped on every buffer replacement; `bind0` is stale whenever it
     /// differs from the generation `bind0` was built against.
     generation: u64,
+    /// The staging buffer in-place compactions move blocks through,
+    /// created by the first one.
+    bounce: Option<wgpu::Buffer>,
 }
 
 impl CoverageArena {
@@ -150,6 +163,7 @@ impl CoverageArena {
             words: 0,
             tail: 0,
             generation: 0,
+            bounce: None,
         }
     }
 
@@ -165,6 +179,7 @@ impl CoverageArena {
 
     fn trim(&mut self) {
         self.buffer = None;
+        self.bounce = None;
         self.words = 0;
         self.tail = 0;
         self.generation += 1;
@@ -447,8 +462,9 @@ impl GpuCoverage {
     }
 
     /// GPU buffer bytes resident — the `Engine::memory()` contribution
-    /// of scope item 8. While a compaction is pending its source arena
-    /// is still held next to the new one until the submit lands.
+    /// of scope item 8. While a compaction into a larger buffer is
+    /// pending its source arena is still held next to the new one until
+    /// the submit lands; an in-place one holds only the bounce buffer.
     pub fn bytes(&self) -> u64 {
         self.uploads.iter().map(wgpu::Buffer::size).sum::<u64>()
             + self.buffers.as_ref().map_or(0, |b| {
@@ -462,9 +478,11 @@ impl GpuCoverage {
                     + b.work.size()
             })
             + self.arena.buffer.as_ref().map_or(0, wgpu::Buffer::size)
+            + self.arena.bounce.as_ref().map_or(0, wgpu::Buffer::size)
             + self
                 .compaction
                 .as_ref()
+                .filter(|compaction| self.arena.buffer.as_ref() != Some(&compaction.source))
                 .map_or(0, |compaction| compaction.source.size())
             + self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size)
     }
@@ -720,8 +738,8 @@ impl GpuCoverage {
     /// LRU-first until they fit the budget again. Entries this frame
     /// drew — `last_used` at the current epoch — are never touched. When
     /// the frame draws coverage and the arena's frontier then exceeds
-    /// twice the live words, the live blocks are rebuilt into a fresh
-    /// buffer, whether or not any draw misses. A frame without GPU
+    /// twice the live words, the live blocks are repacked to the front,
+    /// whether or not any draw misses. A frame without GPU
     /// draws records no encoder work to carry the copies, so its
     /// compaction waits for the next frame that has some.
     pub fn settle(&mut self, device: &wgpu::Device, draws_coverage: bool) {
@@ -764,8 +782,9 @@ impl GpuCoverage {
     ) -> Result<(u32, u32, u32), RenderError> {
         let block_words = (BLOCK_HEADER_WORDS + geometry_slots * GEOMETRY_WORDS + texels)
             .next_multiple_of(GEOMETRY_WORDS);
-        // A block that does not fit at the tail rebuilds the live blocks
-        // into a fresh buffer with room for it (§3.3).
+        // A block that does not fit at the tail repacks the live blocks
+        // with room for it, growing the buffer only when they do not
+        // fit it (§3.3).
         if self.arena.tail + block_words > self.arena.words {
             self.compact(device, block_words)?;
         }
@@ -779,11 +798,15 @@ impl GpuCoverage {
         ))
     }
 
-    /// Repack every live entry into a fresh arena buffer sized to the
-    /// live words plus this frame's immediate need, with a quarter of
-    /// that as headroom (§3.3). Generated entries
-    /// schedule one copy each into the coverage prologue; ungenerated
-    /// ones redirect their dispatch record to the new block.
+    /// Repack every live entry to the front of the arena, which must
+    /// then hold the live words plus this frame's immediate need with a
+    /// quarter of that as headroom (§3.3). The current buffer is reused
+    /// whenever it holds that much; only a working set that outgrows it
+    /// replaces it with one of exactly that size, so a scene whose live
+    /// set churns at a steady size repacks in place and allocates
+    /// nothing (water-rs/waterui#4108). Generated entries schedule one
+    /// copy each into the coverage prologue; ungenerated ones redirect
+    /// their dispatch record to the new block.
     fn compact(&mut self, device: &wgpu::Device, extra: u32) -> Result<(), RenderError> {
         let mut order: Vec<CoverageKey> = self.entries.keys().copied().collect();
         order.sort_by_key(|key| self.entries[key].base);
@@ -807,18 +830,9 @@ impl GpuCoverage {
         // size again in empty capacity. Clamped to what one binding can
         // address; the live set plus the immediate need already fit.
         let need = u64::from(tail) + u64::from(extra);
-        let size = (need + u64::from(extra).max(need / 4))
+        let words = (need + u64::from(extra).max(need / 4))
             .min(self.limit.words())
-            .max(16)
-            * 4;
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("coverage arena"),
-            size,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+            .max(16);
         // Generated content's source: an unrecorded compaction's buffer
         // still holds it, otherwise the live arena does.
         let source = self
@@ -826,16 +840,33 @@ impl GpuCoverage {
             .as_ref()
             .map(|compaction| compaction.source.clone())
             .or_else(|| self.arena.buffer.clone());
+        if self.arena.buffer.is_none() || u64::from(self.arena.words) < words {
+            self.arena.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("coverage arena"),
+                size: words * 4,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.arena.words = u32::try_from(words).expect("arena words fit u32");
+            self.arena.generation += 1;
+        }
+        // Content repacked within the buffer it already lives in moves
+        // only where its block shifts.
+        let in_place = source.as_ref() == self.arena.buffer.as_ref();
         let mut copies = Vec::new();
         for (key, new_base) in moves {
             let entry = self.entries.get_mut(&key).expect("compaction entry");
             if entry.generated {
                 let src = entry.src.unwrap_or(entry.base);
-                copies.push((
-                    u64::from(src) * 4,
-                    u64::from(new_base) * 4,
-                    u64::from(entry.words) * 4,
-                ));
+                if !(in_place && src == new_base) {
+                    copies.push((
+                        u64::from(src) * 4,
+                        u64::from(new_base) * 4,
+                        u64::from(entry.words) * 4,
+                    ));
+                }
                 entry.src = Some(src);
             } else {
                 let record = &mut self.paths[entry.record as usize];
@@ -849,10 +880,7 @@ impl GpuCoverage {
         self.compaction = source
             .filter(|_| !copies.is_empty())
             .map(|source| Compaction { source, copies });
-        self.arena.buffer = Some(buffer);
-        self.arena.words = u32::try_from(size / 4).expect("arena words fit u32");
         self.arena.tail = tail;
-        self.arena.generation += 1;
         Ok(())
     }
 
@@ -960,8 +988,18 @@ impl GpuCoverage {
         self.encoded = true;
         let arena = self.arena.buffer().expect("coverage arena sized").clone();
         if let Some(compaction) = &self.compaction {
-            for &(src, dst, len) in &compaction.copies {
-                encoder.copy_buffer_to_buffer(&compaction.source, src, &arena, dst, len);
+            if compaction.source == arena {
+                record_in_place(
+                    device,
+                    encoder,
+                    &arena,
+                    &compaction.copies,
+                    &mut self.arena.bounce,
+                );
+            } else {
+                for &(src, dst, len) in &compaction.copies {
+                    encoder.copy_buffer_to_buffer(&compaction.source, src, &arena, dst, len);
+                }
             }
         }
         if self.has_misses() {
@@ -1844,6 +1882,71 @@ const fn radix_passes(key_end: u32) -> u32 {
     key_end.bit_width().div_ceil(4)
 }
 
+/// Record an in-place compaction's copies, `(src, dst, len)` byte
+/// ranges of `arena`, through the `bounce` staging buffer, since a copy
+/// cannot read and write one buffer. A repack keeps block order, so
+/// every destination lies at or below its source: moving the blocks in
+/// ascending order, one bounce-sized phase at a time, never overwrites
+/// content a later phase still reads (water-rs/waterui#4108).
+fn record_in_place(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    arena: &wgpu::Buffer,
+    copies: &[(u64, u64, u64)],
+    bounce: &mut Option<wgpu::Buffer>,
+) {
+    let mut ascending = copies.to_vec();
+    ascending.sort_unstable_by_key(|&(src, ..)| src);
+    // Neighbouring blocks that shift by the same distance move as one run.
+    let mut runs: Vec<(u64, u64, u64)> = Vec::with_capacity(ascending.len());
+    for (src, dst, len) in ascending {
+        assert!(
+            dst < src,
+            "an in-place repack moves blocks toward the front"
+        );
+        match runs.last_mut() {
+            Some(run) if run.0 + run.2 == src && run.1 + run.2 == dst => run.2 += len,
+            _ => runs.push((src, dst, len)),
+        }
+    }
+    let moved: u64 = runs.iter().map(|run| run.2).sum();
+    let staging = sized_buffer(
+        device,
+        bounce.as_ref(),
+        "coverage bounce",
+        moved.min(BOUNCE_BYTES),
+        wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+    );
+    let capacity = staging.size();
+    // The current phase's `(dst, bounce offset, len)` write-backs, recorded
+    // once every read of the phase is.
+    let mut phase: Vec<(u64, u64, u64)> = Vec::new();
+    let write_back = |encoder: &mut wgpu::CommandEncoder, phase: &mut Vec<(u64, u64, u64)>| {
+        for &(dst, offset, len) in phase.iter() {
+            encoder.copy_buffer_to_buffer(&staging, offset, arena, dst, len);
+        }
+        phase.clear();
+    };
+    let mut used = 0;
+    for (mut src, mut dst, mut len) in runs {
+        while len > 0 {
+            let take = len.min(capacity - used);
+            encoder.copy_buffer_to_buffer(arena, src, &staging, used, take);
+            phase.push((dst, used, take));
+            used += take;
+            src += take;
+            dst += take;
+            len -= take;
+            if used == capacity {
+                write_back(encoder, &mut phase);
+                used = 0;
+            }
+        }
+    }
+    write_back(encoder, &mut phase);
+    *bounce = Some(staging);
+}
+
 fn sized_buffer(
     device: &wgpu::Device,
     previous: Option<&wgpu::Buffer>,
@@ -2048,47 +2151,14 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one scene setup, GPU readback and commit lifecycle check"
-    )]
     fn road_paths_share_bounded_scratch() {
         let Some((device, queue, delivery)) = delivery_device() else {
             return;
         };
-        let scene = cherenkov_scene::Scene::load(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../scenes/perf/road-network-batches"),
-        )
-        .expect("generated road scene");
-        let cherenkov_scene::Item::Layer(layer) = &scene.root.items[0] else {
-            panic!("road layer")
-        };
-        let draws: Vec<_> = layer
-            .items
-            .iter()
+        let draws: Vec<_> = road_paths()
+            .into_iter()
             .enumerate()
-            .map(|(index, item)| {
-                let cherenkov_scene::Item::Draw(cherenkov_scene::Draw::Stroke {
-                    shape,
-                    stroke,
-                    ..
-                }) = item
-                else {
-                    panic!("road stroke")
-                };
-                let shape = cherenkov::ShapeData::Path {
-                    elements: shape.to_path().elements().into(),
-                    rule: cherenkov::FillRule::NonZero,
-                };
-                let path = crate::render::path::stroke::prepare(
-                    &shape,
-                    &stroke.into(),
-                    Affine::IDENTITY,
-                    crate::render::path::FLATTEN,
-                    (1024.0, 768.0),
-                )
-                .expect("road encodes");
+            .map(|(index, path)| {
                 GpuDraw::new(index as u64 + 1, 0, Affine::IDENTITY, path, (1024, 768))
             })
             .collect();
@@ -2178,6 +2248,136 @@ mod tests {
         assert!(
             frame.buffers.is_none(),
             "replay releases generation scratch"
+        );
+    }
+
+    /// The generated road scene's two stroked roads, prepared for GPU
+    /// coverage on a 1024 × 768 target.
+    fn road_paths() -> Vec<crate::render::path::GpuPath> {
+        let scene = cherenkov_scene::Scene::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../scenes/perf/road-network-batches"),
+        )
+        .expect("generated road scene");
+        let cherenkov_scene::Item::Layer(layer) = &scene.root.items[0] else {
+            panic!("road layer")
+        };
+        layer
+            .items
+            .iter()
+            .map(|item| {
+                let cherenkov_scene::Item::Draw(cherenkov_scene::Draw::Stroke {
+                    shape,
+                    stroke,
+                    ..
+                }) = item
+                else {
+                    panic!("road stroke")
+                };
+                let shape = cherenkov::ShapeData::Path {
+                    elements: shape.to_path().elements().into(),
+                    rule: cherenkov::FillRule::NonZero,
+                };
+                crate::render::path::stroke::prepare(
+                    &shape,
+                    &stroke.into(),
+                    Affine::IDENTITY,
+                    crate::render::path::FLATTEN,
+                    (1024.0, 768.0),
+                )
+                .expect("road encodes")
+            })
+            .collect()
+    }
+
+    /// One commit of `draws` through the lifecycle the renderer drives —
+    /// touch, settle, draw, size, prologue, submit — returning the count
+    /// word each draw's block holds once the prologue ran.
+    fn coverage_frame(
+        frame: &mut GpuCoverage,
+        (device, queue, delivery): (
+            &wgpu::Device,
+            &wgpu::Queue,
+            crate::render::shaders::ShaderDelivery,
+        ),
+        draws: &[&GpuDraw],
+    ) -> Vec<u32> {
+        frame.begin_frame();
+        for draw in draws {
+            frame.touch(draw.key);
+        }
+        frame.settle(device, true);
+        for draw in draws {
+            frame.draw(device, draw).expect("road draw fits");
+        }
+        frame.ensure(device);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        frame
+            .record_prologue(device, queue, &mut encoder, delivery, None)
+            .expect("coverage prologue");
+        let arena = frame.arena().expect("retained arena");
+        let copies: Vec<_> = draws
+            .iter()
+            .map(|draw| (arena, u64::from(frame.entries[&draw.key].base) * 4, 4))
+            .collect();
+        let counts = read_back(device, queue, &copies, encoder)
+            .into_iter()
+            .map(|words| words[0])
+            .collect();
+        frame.submitted();
+        counts
+    }
+
+    /// A pan re-places content every step, so each frame misses with new
+    /// placements while what stays put keeps hitting. Once the first
+    /// frame sized it, the arena repacks in place — moving the still
+    /// road's block to the front through the bounce buffer — and no step
+    /// replaces it (water-rs/waterui#4108).
+    #[test]
+    fn panning_coverage_reuses_its_arena() {
+        let Some((device, queue, delivery)) = delivery_device() else {
+            return;
+        };
+        let gpu = (&device, &queue, delivery);
+        let paths = road_paths();
+        let words = |path: &crate::render::path::GpuPath| {
+            let mut probe = GpuCoverage::with_limits(&device.limits(), 0);
+            probe.begin_frame();
+            let draw = GpuDraw::new(1, 0, Affine::IDENTITY, path.clone(), (1024, 768));
+            probe.draw(&device, &draw).expect("road draw fits");
+            probe.entries[&draw.key].words
+        };
+        // The moving road is the larger, so evicting its last placement
+        // leaves the frontier past twice the live words and the settle
+        // repacks the still road's block, which sits above it.
+        let (moving, still) = if words(&paths[0]) > words(&paths[1]) {
+            (&paths[0], &paths[1])
+        } else {
+            (&paths[1], &paths[0])
+        };
+        let still = GpuDraw::new(1, 0, Affine::IDENTITY, still.clone(), (1024, 768));
+        let step =
+            |content| GpuDraw::new(content, 0, Affine::IDENTITY, moving.clone(), (1024, 768));
+        // A zero undrawn budget evicts each step's placement at the next.
+        let mut frame = GpuCoverage::new(&device, 0, super::super::PipelineCache::default());
+        let first = coverage_frame(&mut frame, gpu, &[&step(100), &still]);
+        assert!(first.iter().all(|&count| count > 0), "both roads emit");
+        let arena = frame.arena().expect("sized arena").clone();
+        let generation = frame.arena_generation();
+        let base = frame.entries[&still.key].base;
+        for content in 101..105 {
+            let counts = coverage_frame(&mut frame, gpu, &[&step(content), &still]);
+            assert_eq!(counts, first, "every step emits what the first did");
+            assert_eq!(
+                frame.arena_generation(),
+                generation,
+                "the arena is never replaced"
+            );
+            assert_eq!(frame.arena(), Some(&arena));
+        }
+        assert!(
+            frame.entries[&still.key].base < base && frame.arena.bounce.is_some(),
+            "the still road's block moved to the front in place"
         );
     }
 
