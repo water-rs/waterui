@@ -32,7 +32,8 @@ use kurbo::{Affine, BezPath, Circle, Ellipse, Line, Rect, RoundedRect, Vec2};
 
 use crate::convert::AnchorLayer as _;
 use crate::convert::{
-    self, Blobs, Op, ShapeKind, engine_blend, group_op, op, shape_kind, text_op, working,
+    self, Blobs, Op, ShapeKind, engine_blend, group_op, op, record_text, shape_kind, text_op,
+    working,
 };
 use crate::memory::{
     AdapterMemory, EngineBytes, Reading, wgpu_allocator, wgpu_metal_allocated_bytes,
@@ -2245,7 +2246,7 @@ fn record_op(c: &mut cherenkov::Recorder, op: &Op) {
                 record_op(c, op);
             }
         }),
-        Op::Text { layout, origin } => cherenkov::draw_text(c, layout, *origin),
+        Op::Text { layout, origin } => record_text(c, layout, *origin),
     }
 }
 
