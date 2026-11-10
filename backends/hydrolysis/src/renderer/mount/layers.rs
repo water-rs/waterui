@@ -1314,7 +1314,10 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
             mount_hosted(cx, layers, runtime, *bounds);
         }
         Some(ProducerContent::Scene(source)) => {
-            return Some(mount_scene(cx, cell, &layers.frame, source));
+            // Content updated in place keeps the set its installed
+            // recording named.
+            return mount_scene(cx, cell, &layers.frame, source)
+                .or_else(|| layers.content_held.clone());
         }
         #[cfg(hydrolysis_gpu)]
         Some(ProducerContent::Gpu {
@@ -1353,15 +1356,17 @@ fn announce_surface_size(
     }
 }
 
-/// Records a scene view's content into its frame against the target's
-/// resource table, rebuilding it when the table changed since its last
-/// record.
+/// Brings a scene view's content up to date for the presented frame: in
+/// place when it keeps its installed recording, otherwise recorded into
+/// its frame against the target's resource table, rebuilding it when the
+/// table changed since its last record. Returns the resources a new
+/// recording names; `None` when the installed recording stays.
 fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     cell: &Rc<NodeCell<E>>,
     frame: &Layer,
     source: &SceneContentSource,
-) -> HeldResources {
+) -> Option<HeldResources> {
     let resources = T::resources(cx.host);
     let stale = source.association.borrow().as_ref().is_some_and(|weak| {
         weak.upgrade()
@@ -1373,12 +1378,30 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
         content.set_invalidator(Some(Rc::clone(&source.invalidator)));
     }
     *source.association.borrow_mut() = Some(Rc::downgrade(resources));
-    let mut names = resources.waterui().recording();
     #[expect(
         clippy::cast_possible_truncation,
         reason = "scene content sizes are logical points well inside f32"
     )]
     let (width, height) = (source.bounds.width() as f32, source.bounds.height() as f32);
+    // A recording made against a replaced table is never updated: the
+    // content records anew on this one.
+    let update = (!stale).then(|| {
+        source.content.borrow_mut().update_scene(
+            resources.waterui(),
+            waterui_graphics::SceneFrame {
+                width,
+                height,
+                time: source.time,
+            },
+        )
+    });
+    if let Some(waterui_graphics::SceneUpdate::Retained { again }) = update {
+        if again {
+            cell.mark(super::Dirty::PAINT);
+        }
+        return None;
+    }
+    let mut names = resources.waterui().recording();
     let content = Rc::clone(&source.content);
     if content.borrow().wants_input_events() {
         announce_surface_size(
@@ -1398,7 +1421,7 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
         }
     });
     cx.stats.installs += 1;
-    names.finish()
+    Some(names.finish())
 }
 
 /// Ensures the node's install layer; returns whether it was just created.

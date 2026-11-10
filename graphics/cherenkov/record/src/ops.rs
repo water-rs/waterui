@@ -11,7 +11,7 @@ use crate::Target;
 use crate::WorkingColor;
 use crate::animation::{Animation, Keyframes, Repeat};
 use crate::backdrop::BackdropSample;
-use crate::display_list::{Picture, SlotUpdate};
+use crate::display_list::{Edit, Picture, SlotUpdate};
 use crate::projective::Projective;
 use crate::shape::ShapeData;
 use crate::style::{BlendMode, FilterId};
@@ -131,6 +131,12 @@ pub enum ContentOp {
     Replace(Picture),
     /// New values for a live content's bound slots.
     Update(Vec<SlotUpdate>),
+    /// A live content's regions edited in place, then slot updates: the
+    /// target applies it to the list it holds ([`Picture::edit`]).
+    ///
+    /// Boxed like [`ContentChange::Edit`](crate::ContentChange::Edit), so
+    /// the op keeps the size and layout of the frequent variants.
+    Edit(Box<Edit>),
     /// A shared immutable picture.
     Picture(Picture),
 }

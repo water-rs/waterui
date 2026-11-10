@@ -254,7 +254,6 @@ waterui-video-gpu = "0.4.0"
 waterui-form = { version = "0.5.1", path = "components/foundation/form" }
 waterui-controls = { version = "0.5.1", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.5.1", path = "components/visual/graphics", default-features = false }
-waterui-canvas = "0.2.0"
 waterui-shape = { version = "0.5.1", path = "components/foundation/shape", default-features = false }
 waterui-svg = "0.4.0"
 waterui-math = "0.2.0"

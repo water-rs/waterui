@@ -1,3 +1,4 @@
+mod canvas;
 mod harness;
 mod transitions;
 
@@ -18,13 +19,13 @@ use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
+use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
 use waterui::graphics::draw::{self, Draw as _, Recorder, kurbo};
 use waterui::graphics::scene_view::SceneViewMergeToParent;
 use waterui::graphics::{RecordingResources, SceneContent, SceneView, WorkingColor};
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
-use waterui_canvas::Canvas;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, ContentLedger, Native, Signal, View};
 
@@ -1099,9 +1100,11 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
 fn canvas_and_text_expose_accessibility_nodes_semantically() {
     let mut app = ui().viewport(320, 320).mount(|| {
         vstack((
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+            Canvas::new(|cx| {
+                cx.fill(
+                    Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)),
+                    Srgb::new(0.0, 0.85, 0.65).resolve(),
+                );
             })
             .size(240.0, 180.0)
             .a11y_role(waterui::accessibility::AccessibilityRole::Image)

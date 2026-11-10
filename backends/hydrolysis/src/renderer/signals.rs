@@ -495,13 +495,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// The time the engine renders the next frame against: the platform's
-    /// reported presentation time, else the instant the frame starts.
-    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
-    pub(crate) fn frame_time(&self) -> cherenkov::FrameTime {
-        self.presentation_target.map_or_else(
-            cherenkov::FrameTime::now,
-            cherenkov::FrameTime::presented_at,
-        )
+    /// reported presentation time, else the frame's own instant — the clock
+    /// every animation Hydrolysis samples reads, so an operand animated
+    /// inside the engine advances with the presented frames rather than
+    /// with the wall clock.
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) const fn frame_time(&self) -> cherenkov::FrameTime {
+        #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+        if let Some(target) = self.presentation_target {
+            return cherenkov::FrameTime::presented_at(target);
+        }
+        cherenkov::FrameTime::unpresented_at(self.frame_instant)
     }
 
     pub(crate) const fn frame_instant(&self) -> Instant {
