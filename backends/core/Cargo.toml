@@ -19,6 +19,9 @@ gestures = ["dep:waterui"]
 # Anchored-overlay window-space placement shared by every backend; pulls the
 # `waterui` facade where `AnchorPlacement` and the overlay metadata are defined.
 overlay = ["dep:waterui"]
+# The `WATERUI_LOG` / `RUST_LOG` filter every backend's subscriber shares;
+# pulls `tracing-subscriber`.
+log = ["dep:tracing-subscriber"]
 
 [dependencies]
 waterui = { version = "0.5.2", path = "../..", default-features = false, optional = true }
@@ -27,6 +30,7 @@ waterui-layout.workspace = true
 nami.workspace = true
 num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter"], optional = true }
 kurbo.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

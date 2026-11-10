@@ -27,7 +27,7 @@ waterui-watcher-set.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
-waterui-backend-core = { workspace = true, features = ["gestures", "overlay"] }
+waterui-backend-core = { workspace = true, features = ["gestures", "overlay", "log"] }
 waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.

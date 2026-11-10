@@ -652,7 +652,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<SceneView>>() {
             Ok(scene_view) => {
-                return Self::build_scene_view_node(*scene_view, renderer);
+                return Self::build_scene_view_node(
+                    scene_view.into_inner().into_content(),
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
+        // A canvas mounts through the same scene node as any scene content.
+        let view = match view.downcast::<Native<CanvasView>>() {
+            Ok(canvas) => {
+                return Self::build_scene_view_node(Box::new(canvas.into_inner()), renderer);
             }
             Err(view) => view,
         };
@@ -1178,10 +1188,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
     )]
     fn build_scene_view_node(
-        scene_view: Native<SceneView>,
+        mut content: Box<dyn waterui_graphics::SceneContent>,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let mut content = scene_view.into_inner().into_content();
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
         let invalidator: waterui_graphics::SceneInvalidator = Rc::new(move || {

@@ -264,12 +264,12 @@ impl Producer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render(
         &mut self,
+        instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         frame_time: FrameTime,
-        size: (u32, u32),
-        scale: f32,
+        (size, scale): ((u32, u32), f32),
     ) -> Result<(), RenderError> {
         if self.content.is_none() {
             // A submitted-frame producer draws nothing: its frame landed
@@ -305,6 +305,7 @@ impl Producer {
             let content = self.content.as_mut().expect("checked above");
             let redraw = content.redraw.clone();
             content.content.setup(&Context {
+                instance,
                 adapter,
                 device,
                 queue,
@@ -363,12 +364,12 @@ impl Producer {
     )]
     pub async fn render(
         &mut self,
+        instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         frame_time: FrameTime,
-        size: (u32, u32),
-        scale: f32,
+        (size, scale): ((u32, u32), f32),
     ) -> Result<(), RenderError> {
         if self.content.is_none() {
             return Ok(());
@@ -399,6 +400,7 @@ impl Producer {
             content
                 .content
                 .setup(&Context {
+                    instance,
                     adapter,
                     device,
                     queue,

@@ -624,9 +624,10 @@ impl HeadlessRuntime {
         ));
 
         // Headless binaries (preview, tests) have no platform runner to install
-        // a tracing subscriber; honor `RUST_LOG` here so they stay debuggable.
+        // a tracing subscriber; honor `RUST_LOG` and `WATERUI_LOG` here so they
+        // stay debuggable.
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_env_filter(waterui_backend_core::log::env_filter())
             .with_writer(std::io::stderr)
             .try_init();
         let local_executor = HeadlessMainThreadExecutor::thread_shared();

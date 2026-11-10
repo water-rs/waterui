@@ -21,6 +21,8 @@ pub mod button;
 mod button_chrome;
 #[cfg(any(feature = "calendar", feature = "multi_date_picker"))]
 pub mod calendar;
+#[cfg(feature = "canvas")]
+pub mod canvas;
 #[cfg(feature = "clip_shape")]
 pub mod clip_shape;
 #[cfg(feature = "color_picker")]

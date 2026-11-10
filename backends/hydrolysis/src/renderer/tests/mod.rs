@@ -93,6 +93,7 @@ mod tab_item_layout;
 mod teardown_order;
 mod text_ink;
 mod text_measure_direction;
+mod text_wrap_width;
 mod toggle_glass;
 mod toggle_looks;
 mod top_edge;

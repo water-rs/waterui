@@ -514,8 +514,9 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     winit_runner::run(app, style, executors);
 }
 
-/// Installs the process-wide tracing subscriber when `RUST_LOG` is set:
-/// its directives, to stderr.
+/// Installs the process-wide tracing subscriber when `RUST_LOG` or
+/// `WATERUI_LOG` (the level `water run --logs` sets) is set: the shared
+/// [`waterui_backend_core::log::env_filter`], to stderr.
 ///
 /// Entry points that run application code outside [`run`] — preview,
 /// preview-test and MCP runtimes mount the app through `waterui-testing`
@@ -525,11 +526,13 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
 /// writer at `nativeInit` instead, so this function does not exist there.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn init_tracing() {
-    if std::env::var_os("RUST_LOG").is_none() {
+    use waterui_backend_core::log::{env_filter, log_requested};
+
+    if !log_requested() {
         return;
     }
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(env_filter())
         .with_writer(std::io::stderr)
         .try_init();
 }

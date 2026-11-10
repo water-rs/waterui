@@ -10,9 +10,7 @@ use alloc::boxed::Box;
 
 use waterui::inspector::InspectorRuntime;
 
-/// The environment variable a launcher sets to name the level the application
-/// logs at — `water run --logs <level>` writes it.
-const LOG_LEVEL_ENV: &str = "WATERUI_LOG";
+use waterui_backend_core::log::{LOG_LEVEL_ENV, env_filter};
 
 /// One-time process startup. Returns the inspector runtime when the
 /// environment asked for one, for [`crate::entry`] to install.
@@ -152,22 +150,6 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
             )
             .expect("a refresh rate of at least 1 Hz")
         })
-}
-
-/// The `tracing` filter this process runs with: `RUST_LOG` wins outright,
-/// otherwise `WATERUI_LOG` names the level and the graphics stack stays at
-/// `error`.
-fn env_filter() -> tracing_subscriber::EnvFilter {
-    use tracing_subscriber::EnvFilter;
-
-    if let Ok(filter) = EnvFilter::try_from_default_env() {
-        return filter;
-    }
-    let level = std::env::var(LOG_LEVEL_ENV).unwrap_or_else(|_| String::from("error"));
-    EnvFilter::try_new(format!(
-        "{level},wgpu_core=error,wgpu_hal=error,naga=error,metal=error"
-    ))
-    .unwrap_or_else(|error| panic!("{LOG_LEVEL_ENV}={level:?} is not a tracing level: {error}"))
 }
 
 /// Sends `tracing` records to `os_log`, plus stderr when `WATERUI_LOG` asked

@@ -177,7 +177,8 @@ impl PreviewTool {
         let crate_name = read_project_crate_name(&self.project_path).await?;
         let request = args.resolve(&manifest, &crate_name)?;
         let kotlin_toolchain =
-            request::check_toolchain_for_backend(&self.host, request.backend()).await?;
+            request::check_toolchain_for_backend(&self.host, &self.project_path, request.backend())
+                .await?;
         let output_path = self.output_path(&request).await?;
 
         let android = if request.backend()

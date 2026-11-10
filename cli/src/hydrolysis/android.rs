@@ -887,15 +887,23 @@ pub(crate) async fn build_prepared(
 
     let platform = AndroidPlatform::new(abi);
     let triple = platform.triple();
-    let min_api_level = project
-        .resolved_framework()
-        .await?
-        .android_min_api_level()?;
+    let framework = project.resolved_framework().await?;
+    let min_api_level = framework.android_min_api_level()?;
     let context = resolve_android_build_context(host, abi, &triple, min_api_level, kotlin).await?;
 
     // The painter's feature is the launcher's own `gpu`/`hwui` selection —
     // the manifest routes it onto `hydrolysis` and `waterui`, so a `hwui`
-    // painter links no GPU stack at all.
+    // painter links no GPU stack at all. The manifest declares it only where
+    // the framework's `hydrolysis` does; a revision that predates the
+    // painter is an error here, never a Cargo feature error.
+    if !templates::generated_manifest_declares(&backend_path.join("Cargo.toml"), painter.name())? {
+        bail!(
+            "the `{painter}` Android painter is unavailable: the `hydrolysis` that {} resolves \
+             declares no `{painter}` feature. Select a painter that framework revision supports \
+             or move to a framework revision that ships it",
+            framework.origin(),
+        );
+    }
     let rust_build = RustBuild::for_project(project, &backend_path, triple.clone())
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
@@ -2041,9 +2049,11 @@ mod tests {
                     .expect("the launcher context carries Android's answers"),
                 Some("webview-system")
             );
-            let outputs =
-                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
-                    .expect("hydrolysis outputs render");
+            let outputs = crate::templates::hydrolysis::rendered_outputs_with_painters(
+                &ctx,
+                "waterui-test-hydrolysis",
+            )
+            .expect("hydrolysis outputs render");
             let cargo_toml = outputs
                 .iter()
                 .find(|(path, _)| path == Path::new("Cargo.toml"))

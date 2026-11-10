@@ -1073,7 +1073,7 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
         .assert_not_exists();
 }
 
-/// A `Canvas` composes to `SceneView`, whose accessibility metadata is a
+/// A `Canvas` composes to `CanvasView`, whose accessibility metadata is a
 /// product of the view tree — the IMAGE role and its label exist on the
 /// semantic pipeline with nothing rendered.
 #[test]

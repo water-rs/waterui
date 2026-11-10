@@ -175,6 +175,34 @@ impl Session<'_> {
     }
 }
 
+/// `drawing` recorded for the target `resources` belongs to, outside any
+/// canvas: its recorded form and the registrations it names, which the
+/// caller holds while the picture draws. Image statuses are published as
+/// they are for a canvas.
+///
+/// # Panics
+///
+/// When the target refuses a font of the drawing, or its render thread is
+/// gone.
+#[cfg(any(feature = "gpu", feature = "cpu"))]
+pub fn lower_drawing(
+    drawing: &Drawing,
+    resources: &SceneResources,
+) -> (draw::Picture, HeldResources) {
+    let drawings = RefCell::new(HashMap::new());
+    let session = Session {
+        resources,
+        shared: Weak::new(),
+        drawings: &drawings,
+        statuses: RefCell::default(),
+    };
+    let lowered = session
+        .drawing(drawing)
+        .expect("the engine rendering a drawing outlives its recording");
+    session.publish_statuses();
+    lowered
+}
+
 /// Registers `image` and names it in one recording; `None` when the target
 /// refused it, which its status reports.
 fn register_image(

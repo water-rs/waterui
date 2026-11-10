@@ -20,6 +20,7 @@ use crate::{
         cmake::Cmake,
         doctor::{CheckStatus, doctor, ids},
         dxc::Dxc,
+        linux::LinuxSystemToolchain,
         msvc::MsvcBuildTools,
         rust::SelectedToolchainTargets,
         web::web_toolchain,
@@ -298,11 +299,41 @@ pub async fn check_android_run(host: &Host) -> Result<KotlinToolchain> {
     Ok(kotlin)
 }
 
+/// Verify the Linux system packages and native modules the project at
+/// `project_root` builds against — the check `water doctor` runs. Always
+/// passes off Linux.
+///
+/// The project's dependency graph selects the optional native bindings, so it
+/// is resolved at `project_root`, never at the process's working directory.
+///
+/// # Errors
+/// Returns an error naming the missing packages and the command that installs
+/// them, or why the check could not run.
+pub async fn check_linux_system_packages(host: &Host, project_root: &Path) -> Result<()> {
+    let host = host.clone().with_cwd(project_root);
+    match LinuxSystemToolchain.check(&host).await {
+        Ok(()) => Ok(()),
+        Err(ToolchainError::Fixable(installation)) => bail!(
+            "Linux system packages toolchain check failed: missing packages for {}: {}. Install command: {}. `water doctor --fix` installs them.",
+            installation.package_manager_name(),
+            installation.missing_packages().join(", "),
+            installation.install_command_hint(),
+        ),
+        Err(error @ ToolchainError::Unfixable(_)) => {
+            bail!(
+                "{}",
+                toolchain_check_message("Linux system packages", &error)
+            )
+        }
+    }
+}
+
 /// Verify the GTK4 toolchain is installed.
 ///
 /// # Errors
 /// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
-pub async fn check_gtk4(host: &Host) -> Result<()> {
+pub async fn check_gtk4(host: &Host, project_root: &Path) -> Result<()> {
+    check_linux_system_packages(host, project_root).await?;
     let toolchain = Gtk4Toolchain;
     if let Err(e) = toolchain.check(host).await {
         bail!("{}", toolchain_check_message("GTK4", &e));
@@ -326,7 +357,8 @@ pub async fn check_winui(host: &Host) -> Result<()> {
 ///
 /// # Errors
 /// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
-pub async fn check_hydrolysis(host: &Host) -> Result<()> {
+pub async fn check_hydrolysis(host: &Host, project_root: &Path) -> Result<()> {
+    check_linux_system_packages(host, project_root).await?;
     let llvm = WindowsArm64LlvmToolchain;
     if let Err(e) = llvm.check(host).await {
         bail!(
@@ -382,6 +414,67 @@ mod tests {
         );
         machine.respond("RUSTUP_INSTALLED_TARGETS", &installed_targets.join("\n"));
         machine
+    }
+
+    /// An apt host with none of the Linux system packages installed.
+    #[cfg(target_os = "linux")]
+    fn bare_apt_machine() -> TestMachine {
+        let machine = TestMachine::new();
+        machine.install("apt-get");
+        machine.install("dpkg-query");
+        machine
+    }
+
+    /// The desktop Hydrolysis gate `build`, `run` and `package` share runs
+    /// the Linux system package check `water doctor` runs, and fails before
+    /// the build with the missing packages and the install command.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hydrolysis_gate_reports_missing_linux_system_packages() {
+        let machine = bare_apt_machine();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let error = smol::block_on(super::check_hydrolysis(&host, machine.root()))
+            .expect_err("missing system packages must fail the Hydrolysis gate");
+        let message = error.to_string();
+        assert!(message.contains("apt-get"), "{message}");
+        assert!(message.contains("libclang-dev"), "{message}");
+        assert!(message.contains("Install command"), "{message}");
+    }
+
+    /// The GTK4 gate runs the same package check before its own probe.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gtk4_gate_reports_missing_linux_system_packages() {
+        let machine = bare_apt_machine();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let error = smol::block_on(super::check_gtk4(&host, machine.root()))
+            .expect_err("missing system packages must fail the GTK4 gate");
+        assert!(error.to_string().contains("libclang-dev"), "{error}");
+    }
+
+    /// The dependency graph resolves at the project root the command was
+    /// given, not at the process's working directory: the host's directory
+    /// holds no project, while `project/` holds a `Water.toml` whose graph
+    /// cannot resolve on a host without `cargo`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_system_check_resolves_the_graph_at_the_project_root() {
+        let machine = bare_apt_machine();
+        machine.file("project/Water.toml", "");
+        let host = machine.host(Vec::<(String, String)>::new());
+
+        let outside = smol::block_on(super::check_linux_system_packages(&host, machine.root()))
+            .expect_err("the bare host lacks packages")
+            .to_string();
+        assert!(outside.contains("Install command"), "{outside}");
+
+        let project = smol::block_on(super::check_linux_system_packages(
+            &host,
+            &machine.root().join("project"),
+        ))
+        .expect_err("the project's graph cannot resolve without cargo")
+        .to_string();
+        assert!(project.contains("dependency graph"), "{project}");
     }
 
     /// `water preview --platform ios` builds for Mac Catalyst: a missing
