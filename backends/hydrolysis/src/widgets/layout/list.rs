@@ -22,7 +22,7 @@ use accesskit::{
 #[cfg(feature = "accessibility")]
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
 use waterui::component::list::{
-    ListConfig, ListItem, ListRowTags, ListSectionSpan, ListSelection, Move,
+    ListConfig, ListItem, ListRowTags, ListSectionSpan, ListSelection, ListTagId, Move,
 };
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
@@ -149,7 +149,7 @@ impl RowBinding {
 pub struct ListRowSelection {
     /// The erased selection `ListConfig` carries — keyed by the tags `tags`
     /// answers for the rows.
-    selection: ListSelection<RawId>,
+    selection: ListSelection<ListTagId>,
     /// The tag each row is selected by, keyed by the row ids the snapshot's
     /// `get_id` reports.
     tags: ListRowTags,

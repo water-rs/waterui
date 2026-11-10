@@ -23,8 +23,8 @@ use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
 use waterui::animation::{Animation, ChangeAnimation};
 use waterui::component::list::{
-    ListConfig, ListItem, ListRowTags, ListSection, ListSections, ListSelection, Move, OnDelete,
-    OnMove,
+    ListConfig, ListItem, ListRowTags, ListSection, ListSections, ListSelection, ListTagId, Move,
+    OnDelete, OnMove,
 };
 use waterui::id::Id as RawId;
 use waterui::layout::padding::EdgeInsets;
@@ -266,9 +266,9 @@ enum SelectionMode {
     None,
     /// A single selected tag; `None` inside the binding means nothing is
     /// selected.
-    Single(Binding<Option<RawId>>),
+    Single(Binding<Option<ListTagId>>),
     /// The set of selected tags.
-    Multiple(Binding<BTreeSet<RawId>>),
+    Multiple(Binding<BTreeSet<ListTagId>>),
 }
 
 impl fmt::Debug for SelectionMode {
@@ -291,7 +291,7 @@ impl SelectionMode {
 
     /// `SelectionController.selectedIds`: the binding's current selection,
     /// as tags.
-    fn selected_tags(&self) -> BTreeSet<RawId> {
+    fn selected_tags(&self) -> BTreeSet<ListTagId> {
         match self {
             Self::None => BTreeSet::new(),
             Self::Single(binding) => {
@@ -306,7 +306,7 @@ impl SelectionMode {
     }
 
     /// The table's selected rows' tags written back into the binding.
-    fn write(&self, tags: &BTreeSet<RawId>) {
+    fn write(&self, tags: &BTreeSet<ListTagId>) {
         match self {
             Self::None => {}
             Self::Single(binding) => binding.set(tags.iter().next().copied()),
@@ -648,7 +648,7 @@ impl Shared {
     }
 
     /// Whether `flat`'s row carries a tag in the binding's selection.
-    fn row_selected(&self, flat: usize, selected: &BTreeSet<RawId>) -> bool {
+    fn row_selected(&self, flat: usize, selected: &BTreeSet<ListTagId>) -> bool {
         self.tags
             .tag(self.item_ids[flat])
             .is_some_and(|tag| selected.contains(&tag))

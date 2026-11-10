@@ -16,7 +16,7 @@ use nami::watcher::Context;
 use nami::{Binding, Computed, signal::IntoComputed};
 
 use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views, ViewsExt};
-use waterui_core::id::{Id as RawId, Mapping};
+use waterui_core::id::Mapping;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, View,
@@ -42,7 +42,7 @@ pub use rows::{
 };
 pub use section::Section;
 use selection::RowTags;
-pub use selection::{ListRowTags, ListSelection, SelectableRows};
+pub use selection::{ListRowTags, ListSelection, ListTagId, SelectableRows};
 
 /// A list reorder operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -96,7 +96,7 @@ pub struct ListConfig {
     /// The list's selection bindings, keyed by the erased tags `tags`
     /// answers for the rows. `ListSelection::None` when the list is not
     /// selectable.
-    selection: ListSelection<RawId>,
+    selection: ListSelection<ListTagId>,
     /// The tag each row is selected by, keyed by the same row ids
     /// `contents.get_id` returns.
     tags: ListRowTags,
@@ -127,7 +127,7 @@ impl ListConfig {
     /// its tag is in the selection, and selecting it writes its tag.
     /// `ListSelection::None` when the list is not selectable.
     #[must_use]
-    pub const fn selection(&self) -> &ListSelection<RawId> {
+    pub const fn selection(&self) -> &ListSelection<ListTagId> {
         &self.selection
     }
 
@@ -555,8 +555,8 @@ where
 /// is left as it is.
 fn selection_themed(
     mut item: ListItem,
-    selection: &ListSelection<RawId>,
-    tag: Option<RawId>,
+    selection: &ListSelection<ListTagId>,
+    tag: Option<ListTagId>,
 ) -> ListItem {
     use crate::color::WorkingColor;
     use crate::theme::{color, install_color_signal};
@@ -630,7 +630,7 @@ pub struct ListBuilder<V: Views<View = ListItem>> {
     contents: V,
     /// The selection, already erased into tags through the value mapping
     /// `tags` erases the rows' values with.
-    selection: ListSelection<RawId>,
+    selection: ListSelection<ListTagId>,
     tags: RowTags<V::Id>,
     editing: Computed<bool>,
     on_delete: Option<OnDelete>,

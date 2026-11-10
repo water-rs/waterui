@@ -21,6 +21,25 @@ use crate::views::{ForEach, Views};
 
 use super::ListItem;
 
+/// A tag the app selects a row by, erased through the list's value
+/// [`Mapping`].
+///
+/// It is a different type from a row id: a backend cannot select a row by
+/// comparing a selection value with the row's id, and asks
+/// [`ListRowTags::tag`] for the tag a row carries instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ListTagId(RawId);
+
+impl ListTagId {
+    pub(crate) const fn new(id: RawId) -> Self {
+        Self(id)
+    }
+
+    pub(crate) const fn into_raw(self) -> RawId {
+        self.0
+    }
+}
+
 /// Selection a list binds to its rows' tags: no selection, a single row, or
 /// a set of rows — at most one mode per list.
 ///
@@ -49,14 +68,29 @@ impl<Id: 'static> fmt::Debug for ListSelection<Id> {
     }
 }
 
-impl ListSelection<RawId> {
+impl ListSelection<ListTagId> {
     /// A single selection over the app's `selection`, erased through
     /// `values`.
     pub(crate) fn single<T: 'static + Ord + Clone>(
         selection: &Binding<Option<T>>,
         values: &Mapping<T>,
     ) -> Self {
-        Self::Single(values.optional_binding(selection))
+        Self::Single(Binding::mapping(
+            selection,
+            {
+                let to = values.clone();
+                move |selected| selected.map(|value| ListTagId::new(to.to_id(value)))
+            },
+            {
+                let from = values.clone();
+                move |binding, erased: Option<ListTagId>| {
+                    binding.set(erased.map(|tag| {
+                        from.to_data(tag.into_raw())
+                            .expect("a list selection tag was not taken from the list's rows")
+                    }));
+                }
+            },
+        ))
     }
 
     /// A multiple selection over the app's `selection`, erased through
@@ -70,13 +104,18 @@ impl ListSelection<RawId> {
         let from = values.clone();
         Self::Multiple(Binding::mapping(
             selection,
-            move |selected| selected.into_iter().map(|value| to.to_id(value)).collect(),
-            move |binding, erased: BTreeSet<RawId>| {
+            move |selected| {
+                selected
+                    .into_iter()
+                    .map(|value| ListTagId::new(to.to_id(value)))
+                    .collect()
+            },
+            move |binding, erased: BTreeSet<ListTagId>| {
                 binding.set(
                     erased
                         .into_iter()
                         .map(|tag| {
-                            from.to_data(tag)
+                            from.to_data(tag.into_raw())
                                 .expect("a list selection tag was not taken from the list's rows")
                         })
                         .collect(),
@@ -117,7 +156,7 @@ where
 }
 
 /// A row's erased tag, looked up from its id.
-type TagOf<Id> = Rc<dyn Fn(&Id) -> Option<RawId>>;
+type TagOf<Id> = Rc<dyn Fn(&Id) -> Option<ListTagId>>;
 
 /// Every row's tag on the typed side of a list, already erased into the ids
 /// its selection holds; [`RowTags::erased`] keys it by erased row ids once
@@ -141,7 +180,7 @@ impl<Id: 'static + Ord + Clone> RowTags<Id> {
     ) -> Self {
         let values = values.clone();
         Self {
-            tag_of: Rc::new(move |id| tag_of(id).map(|value| values.to_id(value))),
+            tag_of: Rc::new(move |id| tag_of(id).map(|value| ListTagId::new(values.to_id(value)))),
         }
     }
 
@@ -177,7 +216,7 @@ impl RowTags<RawId> {
 /// Rows carrying the same value share one tag, so they are selected together.
 #[derive(Clone)]
 pub struct ListRowTags {
-    tag_of: Rc<dyn Fn(RawId) -> Option<RawId>>,
+    tag_of: Rc<dyn Fn(RawId) -> Option<ListTagId>>,
 }
 
 impl fmt::Debug for ListRowTags {
@@ -194,7 +233,7 @@ impl ListRowTags {
     ///
     /// Panics if `row` is not an id the list's contents reported.
     #[must_use]
-    pub fn tag(&self, row: RawId) -> Option<RawId> {
+    pub fn tag(&self, row: RawId) -> Option<ListTagId> {
         (self.tag_of)(row)
     }
 
