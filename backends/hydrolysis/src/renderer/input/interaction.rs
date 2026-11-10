@@ -292,6 +292,15 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
             .collect()
     }
 
+    /// Every bound control's live toggle.
+    #[cfg(test)]
+    pub(crate) fn live_toggles(&self) -> Vec<Rc<crate::renderer::live_toggle::LiveToggle>> {
+        self.states
+            .values()
+            .filter_map(|state| state.handles.as_ref()?.live_toggle())
+            .collect()
+    }
+
     pub(crate) fn handles_for_key(
         &self,
         key: &InteractionKey,

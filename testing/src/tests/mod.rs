@@ -300,14 +300,14 @@ mod token_probe {
         ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
         SliderValueIndicatorMetrics, StateLayer, StepperEnd, StepperMetrics, Surface,
         TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
-        TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
+        TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
+    use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
     use waterui::component::ControlSize;
     use waterui::component::text;
-    use waterui::component::toggle::ToggleStyle;
     use waterui::env::use_env;
     use waterui::form::picker::PickerStyle;
     use waterui::graphics::draw::{Paint, Recorder};
@@ -427,35 +427,15 @@ mod token_probe {
                 .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
-        fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
-            ToggleMetrics {
-                width: 10.0,
-                height: 20.0,
-                label_spacing: 3.0,
-            }
+        fn switch(&self, spec: &ToggleSpec, _env: &Environment) -> SwitchLook {
+            SwitchLook::new(
+                hydrolysis::testing::plain_toggle_control(),
+                SwitchDrag::new(6.0, spec.direction()),
+            )
         }
 
-        fn toggle_value_animation(&self) -> Animation {
-            Animation::linear(Duration::from_millis(100))
-        }
-
-        fn draw_toggle_switch(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _selected: bool,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_toggle_checkbox(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _state: WidgetInteractionState,
-        ) {
+        fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+            CheckboxLook::new(hydrolysis::testing::plain_toggle_control())
         }
 
         fn stepper_metrics(&self) -> StepperMetrics {

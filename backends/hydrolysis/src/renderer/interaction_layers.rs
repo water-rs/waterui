@@ -11,6 +11,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::chrome::LiveChrome;
+use crate::renderer::live_toggle::LiveToggle;
 use crate::theme::{InteractionMotion, MAX_PRESS_WAVES, PressWave, PressWaves};
 use waterui_core::interaction::InteractionState;
 
@@ -116,11 +117,54 @@ pub struct InteractionLayerHandles {
     /// Widget chrome (not just the state layer) samples interaction state, so
     /// hover/press changes must re-render the widget instead of replaying.
     chrome_state_dependent: Cell<bool>,
-    /// The widget's engine-realized chrome (water-rs/waterui#1433): hover,
-    /// press and focus changes steer its live operands directly, so they
-    /// need no re-render and no repaint of the widget.
-    live: RefCell<Option<Rc<LiveChrome>>>,
+    /// The widget's engine-realized chrome or toggle control
+    /// (water-rs/waterui#1433, #1434): hover, press and focus changes steer
+    /// its live operands directly, so they need no re-render and no repaint
+    /// of the widget.
+    live: RefCell<Option<Steered>>,
     motion: InteractionMotion,
+}
+
+/// What the interaction changes of one widget steer.
+#[derive(Debug)]
+enum Steered {
+    /// A button-like control's chrome.
+    Chrome(Rc<LiveChrome>),
+    /// A toggle's control.
+    Toggle(Rc<LiveToggle>),
+}
+
+impl Steered {
+    fn set_flag(&self, flag: InteractionState, on: bool) {
+        match self {
+            Self::Chrome(chrome) => chrome.set_flag(flag, on),
+            Self::Toggle(toggle) => toggle.set_flag(flag, on),
+        }
+    }
+
+    fn begin_press(&self, index: usize, origin: Option<kurbo::Point>) {
+        match self {
+            Self::Chrome(chrome) => chrome.begin_wave(index, origin),
+            Self::Toggle(toggle) => toggle.begin_wave(origin),
+        }
+        self.set_flag(InteractionState::PRESSED, true);
+    }
+
+    fn fade_wave(&self, index: usize) {
+        match self {
+            Self::Chrome(chrome) => chrome.fade_wave(index),
+            // A toggle's parts draw their own press feedback from the
+            // pressed flag.
+            Self::Toggle(_) => {}
+        }
+    }
+
+    fn clear_waves(&self) {
+        match self {
+            Self::Chrome(chrome) => chrome.clear_waves(),
+            Self::Toggle(_) => {}
+        }
+    }
 }
 
 impl InteractionLayerHandles {
@@ -154,7 +198,13 @@ impl InteractionLayerHandles {
 
     /// Steers `chrome` from this widget's interaction changes.
     pub(crate) fn attach_live(&self, chrome: Rc<LiveChrome>) {
-        *self.live.borrow_mut() = Some(chrome);
+        *self.live.borrow_mut() = Some(Steered::Chrome(chrome));
+    }
+
+    /// Steers the toggle control `toggle` from this widget's interaction
+    /// changes.
+    pub(crate) fn attach_live_toggle(&self, toggle: Rc<LiveToggle>) {
+        *self.live.borrow_mut() = Some(Steered::Toggle(toggle));
     }
 
     /// What an interaction change of this widget marks its owner with:
@@ -174,7 +224,19 @@ impl InteractionLayerHandles {
     /// The attached live chrome, if any.
     #[cfg(test)]
     pub(crate) fn live_chrome(&self) -> Option<Rc<LiveChrome>> {
-        self.live.borrow().clone()
+        match self.live.borrow().as_ref()? {
+            Steered::Chrome(chrome) => Some(Rc::clone(chrome)),
+            Steered::Toggle(_) => None,
+        }
+    }
+
+    /// The attached live toggle control, if any.
+    #[cfg(test)]
+    pub(crate) fn live_toggle(&self) -> Option<Rc<LiveToggle>> {
+        match self.live.borrow().as_ref()? {
+            Steered::Toggle(toggle) => Some(Rc::clone(toggle)),
+            Steered::Chrome(_) => None,
+        }
     }
 
     fn is_live(&self) -> bool {
@@ -201,15 +263,15 @@ impl InteractionLayerHandles {
             .min()
     }
 
-    fn with_live(&self, steer: impl FnOnce(&LiveChrome)) {
-        if let Some(chrome) = self.live.borrow().as_deref() {
-            steer(chrome);
+    fn with_live(&self, steer: impl FnOnce(&Steered)) {
+        if let Some(live) = self.live.borrow().as_ref() {
+            steer(live);
         }
     }
 
     /// Shows or hides keyboard focus on the engine-realized chrome.
     pub(crate) fn set_focus_visible(&self, visible: bool) {
-        self.with_live(|chrome| chrome.set_flag(InteractionState::FOCUSED, visible));
+        self.with_live(|live| live.set_flag(InteractionState::FOCUSED, visible));
     }
 
     pub(crate) const fn hovering(&self) -> bool {
@@ -272,7 +334,7 @@ impl InteractionLayerHandles {
         };
         self.hover_alpha
             .apply_target(target, self.scalar(&animation), now);
-        self.with_live(|chrome| chrome.set_flag(InteractionState::HOVERED, hovering));
+        self.with_live(|live| live.set_flag(InteractionState::HOVERED, hovering));
         true
     }
 
@@ -313,10 +375,7 @@ impl InteractionLayerHandles {
         // ripple's fade it is not gated by the minimum press duration.
         self.press_progress
             .apply_target(1.0, self.scalar(&self.motion.press_shape), now);
-        self.with_live(|chrome| {
-            chrome.begin_wave(index, local_origin);
-            chrome.set_flag(InteractionState::PRESSED, true);
-        });
+        self.with_live(|live| live.begin_press(index, local_origin));
     }
 
     /// The slot a new press claims: the first invisible wave, or the oldest
@@ -348,7 +407,7 @@ impl InteractionLayerHandles {
             // instant, not from the next bind.
             self.press_progress
                 .apply_target(0.0, self.scalar(&self.motion.press_shape), now);
-            self.with_live(|chrome| chrome.set_flag(InteractionState::PRESSED, false));
+            self.with_live(|live| live.set_flag(InteractionState::PRESSED, false));
             self.flush_release(now);
         }
         changed
@@ -380,7 +439,7 @@ impl InteractionLayerHandles {
                 wave.fading_until
                     .set(Some(now + self.motion.press_fade_out.duration()));
             }
-            self.with_live(|chrome| chrome.fade_wave(index));
+            self.with_live(|live| live.fade_wave(index));
         }
         pending
     }
@@ -391,7 +450,7 @@ impl InteractionLayerHandles {
         for wave in &self.waves {
             wave.clear();
         }
-        self.with_live(LiveChrome::clear_waves);
+        self.with_live(Steered::clear_waves);
     }
 
     /// Whether a released press is still waiting for its deferred fade-out

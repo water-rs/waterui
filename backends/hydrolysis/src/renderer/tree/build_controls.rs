@@ -174,7 +174,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Build a persistent toggle node: its main label is pre-built into a
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
     /// to build on); the cloneable config drives the control + accessibility, and its
-    /// `toggle` binding is read through `resolve_toggle_progress` which watches it.
+    /// `toggle` binding is watched by the toggle's live parts.
     ///
     /// The node's stretch is the resolved payload's own axis: a switch with a
     /// visible label claims the full row (`label … switch`), while a checkbox

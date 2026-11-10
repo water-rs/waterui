@@ -232,7 +232,11 @@ pub struct Driven<T, V = ()> {
     target: Target<T, V>,
     follows: Option<Follows>,
     motion: Option<Motion>,
+    value_motion: Option<ValueMotionOf<V>>,
 }
+
+/// The value motion of a change to a given value.
+type ValueMotionOf<V> = Rc<dyn Fn(&V) -> ValueMotion>;
 
 impl<T, V> Clone for Driven<T, V> {
     fn clone(&self) -> Self {
@@ -240,6 +244,7 @@ impl<T, V> Clone for Driven<T, V> {
             target: Rc::clone(&self.target),
             follows: self.follows.clone(),
             motion: self.motion.clone(),
+            value_motion: self.value_motion.clone(),
         }
     }
 }
@@ -249,6 +254,7 @@ impl<T, V> core::fmt::Debug for Driven<T, V> {
         f.debug_struct("Driven")
             .field("follows", &self.follows.is_some())
             .field("motion", &self.motion)
+            .field("value_motion", &self.value_motion.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -261,6 +267,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             target: Rc::new(target),
             follows: None,
             motion: None,
+            value_motion: None,
         }
     }
 
@@ -291,6 +298,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
                 }))
             })),
             motion: None,
+            value_motion: None,
         }
     }
 
@@ -299,6 +307,21 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     #[must_use]
     pub const fn motion(mut self, motion: Motion) -> Self {
         self.motion = Some(motion);
+        self
+    }
+
+    /// The motion of a change of the widget's value *to* the value `motion`
+    /// receives — the new value, not the old one — so a value moves one way
+    /// differently from the other. A switch's track fade is the reason: it
+    /// turns on by a slower spring than it turns off by.
+    ///
+    /// It replaces the `value` of the [`Motion`] this value otherwise runs
+    /// with ([`Self::motion`], else its part's) and leaves that motion's
+    /// interaction transitions as they are. A value with none runs every
+    /// value change with [`Motion::value`].
+    #[must_use]
+    pub fn value_motion(mut self, motion: impl Fn(&V) -> ValueMotion + 'static) -> Self {
+        self.value_motion = Some(Rc::new(motion));
         self
     }
 
@@ -312,6 +335,13 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     #[must_use]
     pub const fn get_motion(&self) -> Option<&Motion> {
         self.motion.as_ref()
+    }
+
+    /// The motion of a change to `value`, when the value declares one
+    /// ([`Self::value_motion`]).
+    #[must_use]
+    pub fn get_value_motion(&self, value: &V) -> Option<ValueMotion> {
+        self.value_motion.as_ref().map(|motion| motion(value))
     }
 
     /// Calls `notify` with each change's animation whenever a signal this
@@ -344,6 +374,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             target: Rc::new(move |inputs| f(target(inputs))),
             follows: self.follows.clone(),
             motion: self.motion.clone(),
+            value_motion: self.value_motion.clone(),
         }
     }
 }
@@ -402,7 +433,7 @@ mod realized {
     use std::any::Any;
     use std::rc::Rc;
 
-    use waterui_core::animation::Animation;
+    use waterui_core::animation::{Animation, ChangeAnimation};
 
     use super::{Inputs, Motion};
 
@@ -413,6 +444,12 @@ mod realized {
         /// value without motion of its own runs with `motion`.
         Interaction {
             old: waterui_core::interaction::InteractionState,
+            motion: &'a Motion,
+        },
+        /// The widget's value changed under `change`; a value without
+        /// motion of its own runs with `motion`'s value motion.
+        Value {
+            change: &'a ChangeAnimation,
             motion: &'a Motion,
         },
         /// A signal the value follows, the frame or the press point
@@ -489,6 +526,14 @@ impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V
                 .unwrap_or(motion)
                 .interaction(old, inputs.state)
                 .cloned(),
+            Change::Value { change, motion } => {
+                let motion = self.driven.get_motion().unwrap_or(motion);
+                self.driven
+                    .get_value_motion(inputs.value)
+                    .as_ref()
+                    .unwrap_or(&motion.value)
+                    .animation(change.clone())
+            }
             Change::Animated(animation) => animation.cloned(),
         };
         self.operand

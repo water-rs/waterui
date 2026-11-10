@@ -231,19 +231,26 @@ struct LiveContent {
 }
 
 /// Whether `driven` varies between renders over `state`'s disabled and
-/// selected bits: with a signal, or with hover, press or focus.
-fn varies_live<T: PartialEq + 'static>(
-    driven: &Driven<T>,
+/// selected bits: with a signal, with hover, press or focus, or with any of
+/// the widget's `values` (a value change is not a render).
+pub fn varies_live<T: PartialEq + 'static, V: 'static>(
+    driven: &Driven<T, V>,
     frame: Rect,
     state: InteractionState,
+    values: &[V],
 ) -> bool {
     let base = state.difference(LIVE_STATES);
-    let at = |live: InteractionState| driven.target(&Inputs::at_rest(frame, base.union(live), &()));
-    let rest = at(InteractionState::empty());
+    let at = |live: InteractionState, value: &V| {
+        driven.target(&Inputs::at_rest(frame, base.union(live), value))
+    };
+    let first = values.first().expect("a widget has at least one value");
+    let rest = at(InteractionState::empty(), first);
     driven.follows_signal()
-        || every_state()
-            .filter(|live| LIVE_STATES.contains(*live))
-            .any(|live| at(live) != rest)
+        || values.iter().any(|value| {
+            every_state()
+                .filter(|live| LIVE_STATES.contains(*live))
+                .any(|live| at(live, value) != rest)
+        })
 }
 
 impl LiveContent {
@@ -261,11 +268,11 @@ impl LiveContent {
         let group_opacity = content
             .group_opacity
             .as_ref()
-            .filter(|opacity| varies_live(*opacity, frame, state))
+            .filter(|opacity| varies_live(*opacity, frame, state, &[()]))
             .map(|opacity| Rc::new(LiveDriven::new(opacity.clone(), &inputs)));
         let label_color = resolved_color
             .as_ref()
-            .filter(|color| varies_live(*color, frame, state))
+            .filter(|color| varies_live(*color, frame, state, &[()]))
             .map(|color| Rc::new(LiveDriven::new(color.clone(), &inputs)));
         Self {
             source: content.clone(),
@@ -290,11 +297,11 @@ impl LiveContent {
             .source
             .group_opacity
             .as_ref()
-            .is_some_and(|opacity| varies_live(opacity, self.frame, state));
+            .is_some_and(|opacity| varies_live(opacity, self.frame, state, &[()]));
         let color_live = self
             .resolved_color
             .as_ref()
-            .is_some_and(|color| varies_live(color, self.frame, state));
+            .is_some_and(|color| varies_live(color, self.frame, state, &[()]));
         if opacity_live != self.group_opacity.is_some() || color_live != self.label_color.is_some()
         {
             return false;

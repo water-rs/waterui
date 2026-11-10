@@ -81,7 +81,7 @@ fn chrome() -> Chrome {
     )
 }
 
-fn runtime_with(view: impl View, theme: MinimalTestTheme) -> HeadlessRuntime {
+pub(super) fn runtime_with(view: impl View, theme: MinimalTestTheme) -> HeadlessRuntime {
     let view = RefCell::new(Some(AnyView::new(view)));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         view.borrow_mut()
@@ -92,13 +92,13 @@ fn runtime_with(view: impl View, theme: MinimalTestTheme) -> HeadlessRuntime {
 }
 
 /// Pumps rendering frames on a fixed 16 ms cadence.
-struct Frames {
-    start: Instant,
-    next: u64,
+pub(super) struct Frames {
+    pub(super) start: Instant,
+    pub(super) next: u64,
 }
 
 impl Frames {
-    fn pump(&mut self, runtime: &mut HeadlessRuntime) -> FrameCounters {
+    pub(super) fn pump(&mut self, runtime: &mut HeadlessRuntime) -> FrameCounters {
         self.pump_result(runtime).profile().counters()
     }
 
@@ -109,7 +109,7 @@ impl Frames {
     }
 
     /// The tree work `count` frames report together.
-    fn work(&mut self, runtime: &mut HeadlessRuntime, count: usize) -> [u64; 3] {
+    pub(super) fn work(&mut self, runtime: &mut HeadlessRuntime, count: usize) -> [u64; 3] {
         (0..count).fold([0; 3], |sum, _| {
             let frame = tree_work(self.pump(runtime).frame_work());
             [sum[0] + frame[0], sum[1] + frame[1], sum[2] + frame[2]]
@@ -117,7 +117,7 @@ impl Frames {
     }
 
     /// The next frame's pixels.
-    fn snapshot(&mut self, runtime: &mut HeadlessRuntime) -> HeadlessSnapshot {
+    pub(super) fn snapshot(&mut self, runtime: &mut HeadlessRuntime) -> HeadlessSnapshot {
         self.pump_result(runtime)
             .into_snapshot()
             .expect("a captured frame carries pixels")
@@ -134,7 +134,7 @@ fn the_chrome(runtime: &HeadlessRuntime) -> Rc<LiveChrome> {
 /// The tree work one frame reports for itself. The counters reset at every
 /// presented frame's boundary, so a steady frame's counts are its own —
 /// no baseline to subtract.
-fn tree_work(counters: FrameWorkCounters) -> [u64; 3] {
+pub(super) fn tree_work(counters: FrameWorkCounters) -> [u64; 3] {
     [
         counters.live_recordings,
         counters.recorded_view_contents,

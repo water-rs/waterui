@@ -23,9 +23,9 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAnimationContext, NSButton, NSControl, NSControlStateValueOff, NSControlStateValueOn,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutGuide, NSLayoutPriorityDefaultHigh,
-    NSLayoutPriorityRequired, NSSwitch, NSView,
+    NSAnimationContext, NSButton, NSControl, NSControlSize, NSControlStateValueOff,
+    NSControlStateValueOn, NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutGuide,
+    NSLayoutPriorityDefaultHigh, NSLayoutPriorityRequired, NSSwitch, NSView,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSObjectProtocol, ns_string};
@@ -35,6 +35,7 @@ use crate::action::ActionTarget;
 use crate::callback::guarded;
 use crate::geometry::{Rect, Size};
 use crate::response::{ReportsResponse, ResponseGeometry};
+use crate::slider::ControlSize;
 
 /// The gap between the control and its label, in points.
 pub const LABEL_SPACING: f64 = 8.0;
@@ -355,6 +356,22 @@ impl Toggle {
         let constraints: Vec<&NSLayoutConstraint> =
             centered.iter().chain(&placed).map(|c| &**c).collect();
         NSLayoutConstraint::activateConstraints(&NSArray::from_slice(&constraints));
+    }
+
+    /// How large the control is drawn: `NSControl.controlSize` on the switch
+    /// or the checkbox. The intrinsic size [`Self::control_size`] reports
+    /// follows it.
+    pub fn set_control_size(&self, size: ControlSize) {
+        let size = match size {
+            ControlSize::Mini => NSControlSize::Mini,
+            ControlSize::Small => NSControlSize::Small,
+            ControlSize::Regular => NSControlSize::Regular,
+            ControlSize::Large => NSControlSize::Large,
+        };
+        match &self.control {
+            Control::Switch(control) => control.setControlSize(size),
+            Control::Checkbox(control) => control.setControlSize(size),
+        }
     }
 
     /// The control's intrinsic size — the row's share of a measure.
