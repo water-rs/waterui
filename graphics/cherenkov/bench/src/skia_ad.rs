@@ -1028,6 +1028,10 @@ impl Engine for SkiaCpu {
         &self.info
     }
 
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        Some(crate::CPU_RASTERIZER)
+    }
+
     fn supported(&self) -> BTreeSet<Feature> {
         skia_features().into_iter().collect()
     }
@@ -1063,7 +1067,7 @@ impl Engine for SkiaCpu {
         replay_scrolled(
             prepared.surface.canvas(),
             &prepared.cmds,
-            input.scroll_transform(),
+            input.frame_transform(),
         );
         Ok(())
     }
@@ -1398,7 +1402,7 @@ impl Engine for SkiaVk {
         replay_scrolled(
             prepared.surface.canvas(),
             &prepared.cmds,
-            input.scroll_transform(),
+            input.frame_transform(),
         );
         Ok(())
     }
@@ -2074,7 +2078,7 @@ mod graphite_metal {
             replay_scrolled(
                 prepared.surface.canvas(),
                 &prepared.cmds,
-                input.scroll_transform(),
+                input.frame_transform(),
             );
             self.recording = Some(
                 self.recorder
@@ -2214,6 +2218,7 @@ mod tests {
             scene: &scene,
             blobs: &blobs,
             scroll_offset: None,
+            drift: None,
         };
         engine.prepare(&input).expect("native effects prepare");
         engine.encode(&input).expect("native effects encode");
@@ -2227,6 +2232,7 @@ mod tests {
                 scene: &scene,
                 blobs: &blobs,
                 scroll_offset: None,
+                drift: None,
             }),
             Err(BenchError::Unsupported { .. })
         ));

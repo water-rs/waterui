@@ -58,9 +58,9 @@ use crate::{
 use bitmap::BitmapKey;
 use cherenkov::{
     ContentOp, EngineError, FontData as EngineFontData, FontId, Frame, FrameId, FrameRedraw,
-    FrameStats, FrameTiming, ImageId, ImageUpload, LayerId, MemoryUsage, OffscreenFormat,
-    PassTiming, Pressure, ProducerId, Readback, RenderError, Renderer, ResourceError, ResourceId,
-    SurfaceError, SurfaceFrame, SurfaceId, SurfaceInfo, Visibility,
+    FrameStats, FrameTime, FrameTiming, ImageId, ImageUpload, LayerId, MemoryUsage,
+    OffscreenFormat, PassTiming, Pressure, ProducerId, Readback, RenderError, Renderer,
+    ResourceError, ResourceId, SurfaceError, SurfaceFrame, SurfaceId, SurfaceInfo, Visibility,
 };
 /// The export pool's platform type: the bounded dma-buf pool on Linux
 /// (#1687), an uninhabited stand-in elsewhere.
@@ -5080,7 +5080,8 @@ impl GpuRenderer {
         frame: &Frame<'_>,
         stats: &mut FrameStats,
     ) -> Result<(FrameRedraw, FrameCommits), RenderError> {
-        let origin = *self.origin.get_or_insert(frame.time.0);
+        let instant = frame.time.instant();
+        let origin = *self.origin.get_or_insert(instant);
         self.frame_count += 1;
         self.drain_timestamps();
         self.plane_only.clear();
@@ -5130,7 +5131,7 @@ impl GpuRenderer {
         // producer's new ring frame must be its current frame before
         // `ready_planes`/`lower_content` build this frame's plane
         // candidates, and one render serves every dirty surface.
-        self.render_producers(&dirty, frame.time.0).await?;
+        self.render_producers(&dirty, frame.time).await?;
         // Lower every dirty surface first: the GPU timestamp bracket must
         // start after CPU lowering (rasters, uploads) so it measures GPU
         // work only. Instances, stops and globals are appended frame-wide
@@ -5192,7 +5193,11 @@ impl GpuRenderer {
             for sf in &dirty {
                 self.render_shaders(
                     sf.id,
-                    frame.time.0.saturating_duration_since(origin).as_secs_f32(),
+                    frame
+                        .time
+                        .instant()
+                        .saturating_duration_since(origin)
+                        .as_secs_f32(),
                 )?;
                 self.prepare_filters(sf.id).await?;
                 // wasm cannot create pipelines inside encode — the
@@ -5254,7 +5259,8 @@ impl GpuRenderer {
         frame: &Frame<'_>,
         stats: &mut FrameStats,
     ) -> Result<(FrameRedraw, FrameCommits), RenderError> {
-        let origin = *self.origin.get_or_insert(frame.time.0);
+        let instant = frame.time.instant();
+        let origin = *self.origin.get_or_insert(instant);
         self.frame_count += 1;
         self.drain_timestamps();
         #[cfg(all(unix, not(target_vendor = "apple")))]
@@ -5306,7 +5312,7 @@ impl GpuRenderer {
         // producer's new ring frame must be its current frame before
         // `ready_planes`/`lower_content` build this frame's plane
         // candidates, and one render serves every dirty surface.
-        self.render_producers(&dirty, frame.time.0)?;
+        self.render_producers(&dirty, frame.time)?;
         // Lower every dirty surface first: the GPU timestamp bracket must
         // start after CPU lowering (rasters, uploads) so it measures GPU
         // work only. Instances, stops and globals are appended frame-wide
@@ -5366,7 +5372,11 @@ impl GpuRenderer {
             for sf in &dirty {
                 self.render_shaders(
                     sf.id,
-                    frame.time.0.saturating_duration_since(origin).as_secs_f32(),
+                    frame
+                        .time
+                        .instant()
+                        .saturating_duration_since(origin)
+                        .as_secs_f32(),
                 )?;
             }
             diag::set_phase("encode");
@@ -5413,13 +5423,13 @@ impl GpuRenderer {
 
     fn filter_timing(&mut self, frame: &Frame<'_>, origin: Instant) -> filtrate::EffectFrameTiming {
         let timing = filtrate::EffectFrameTiming::new(
-            frame.time.0.saturating_duration_since(origin),
+            frame.time.instant().saturating_duration_since(origin),
             self.last_frame.map_or(std::time::Duration::ZERO, |last| {
-                frame.time.0.saturating_duration_since(last)
+                frame.time.instant().saturating_duration_since(last)
             }),
             frame.id.get(),
         );
-        self.last_frame = Some(frame.time.0);
+        self.last_frame = Some(frame.time.instant());
         timing
     }
 
@@ -5792,7 +5802,7 @@ impl GpuRenderer {
     fn render_producers(
         &mut self,
         dirty: &[&SurfaceFrame<'_>],
-        time: Instant,
+        time: FrameTime,
     ) -> Result<(), RenderError> {
         let mut wanted: FxHashMap<ProducerId, ((u32, u32), f32)> = FxHashMap::default();
         for sf in dirty {
@@ -5835,7 +5845,7 @@ impl GpuRenderer {
     async fn render_producers(
         &mut self,
         dirty: &[&SurfaceFrame<'_>],
-        time: Instant,
+        time: FrameTime,
     ) -> Result<(), RenderError> {
         let mut wanted: FxHashMap<ProducerId, ((u32, u32), f32)> = FxHashMap::default();
         for sf in dirty {

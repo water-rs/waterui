@@ -299,7 +299,7 @@ fn full_rebuild_vs_retained_replay_cost() {
     // per sample asked this probe alone for close to three hundred devices, and
     // on a runner whose only adapter is a software rasterizer that exhausted
     // the machine's memory before the last row size was reached.
-    let gpu = OffscreenGpuContext::new_for_tests_blocking();
+    let gpu = OffscreenGpuContext::new_blocking();
 
     eprintln!(
         "\n=== Hydrolysis per-frame cost: full re-dispatch vs retained replay (120Hz budget = {BUDGET_120HZ:?}) ==="

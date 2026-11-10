@@ -1440,6 +1440,36 @@ fn wait_for_frames_observes_the_pump_that_settled_the_runtime() {
 }
 
 #[test]
+fn a_focus_only_update_keeps_the_tree() {
+    // An update without `tree` is incremental (water-rs/waterui#2940): a
+    // focus move carries no nodes, and the tree it lands on is unchanged.
+    let focus_move = AccessibilityTreeUpdate {
+        nodes: Vec::new(),
+        tree: None,
+        tree_id: AccessibilityTreeId::ROOT,
+        focus: AccessibilityNodeId(3),
+    };
+    let mut app = mounted_on(
+        EmitThenSettleDriver {
+            pumps: 0,
+            emit_at: 1,
+            update: focus_move,
+        },
+        tree(vec![
+            node(1, Role::LIST, Some("root"), None, true),
+            node(2, Role::BUTTON, Some("Save"), None, true),
+            node(3, Role::BUTTON, Some("Cancel"), None, true),
+        ]),
+    );
+
+    app.settle();
+
+    assert!(app.query().role(Role::BUTTON).label("Save").exists());
+    assert_eq!(app.tree.root, node_id(1));
+    assert_eq!(app.tree.focus, node_id(3));
+}
+
+#[test]
 fn query_exists_is_true_for_multiple_matches() {
     let mut app = mounted(tree(vec![
         node(1, Role::LIST, Some("root"), None, true),

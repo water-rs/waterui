@@ -264,6 +264,8 @@ windows-sys = { version = "0.61", optional = true, features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
@@ -440,9 +442,8 @@ accessibility = ["dep:accesskit"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
 # layer-content and compositor submits plus the CPU stage split the window
-# pump measures. The `testing` adapter selection is what lets the profiler
-# exercise a software adapter for bring-up on a host without a GPU.
-frame-profile = ["testing"]
+# pump measures.
+frame-profile = []
 # The Cherenkov GPU painter and its GPU-content surface: the `cherenkov`
 # engine crates, `wgpu`, the parley text engine, and the framework's GPU
 # component vocabulary (`GpuView`, `ExternalFrame`, `waterui_graphics::gpu`).

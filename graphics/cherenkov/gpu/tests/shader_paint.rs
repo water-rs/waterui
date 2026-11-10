@@ -50,10 +50,10 @@ fn shader_paint_uses_shape_coverage_and_presentation_time() -> Result<(), Box<dy
     });
     let start = Instant::now();
     assert!(matches!(
-        wait!(engine.render(FrameTime::at(start)))?,
+        wait!(engine.render(FrameTime::unpresented_at(start)))?,
         Next::At { .. }
     ));
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(500))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(500))))?;
     let pixels = wait!(surface.readback())?.pixels;
     assert!(
         (pixels[8 * 16 + 5][0] - 0.5).abs() < 0.001,
@@ -69,7 +69,7 @@ fn shader_paint_uses_shape_coverage_and_presentation_time() -> Result<(), Box<dy
     );
     drop(layer);
     assert_eq!(
-        wait!(engine.render(FrameTime::at(start + Duration::from_secs(1))))?,
+        wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_secs(1))))?,
         Next::Idle
     );
     Ok(())

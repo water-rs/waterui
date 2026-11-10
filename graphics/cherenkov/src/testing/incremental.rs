@@ -288,7 +288,7 @@ fn render<R: Renderer>(
         .render(
             &Frame {
                 id: frames.next(),
-                time: FrameTime::at(time),
+                time: FrameTime::unpresented_at(time),
                 surfaces: &[SurfaceFrame {
                     id,
                     size,
@@ -321,7 +321,7 @@ async fn render<R: Renderer>(
         .render(
             &Frame {
                 id: frames.next(),
-                time: FrameTime::at(time),
+                time: FrameTime::unpresented_at(time),
                 surfaces: &[SurfaceFrame {
                     id,
                     size,

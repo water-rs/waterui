@@ -43,7 +43,7 @@
 //!
 //! A rendered test names its style with `theme =`, and a whole [`App`]
 //! mounts through [`mount_app`] — or `ui().theme(style).mount_app(app)` when
-//! the session needs its own viewport, runtime flavor or scale factor:
+//! the session needs its own viewport or scale factor:
 //!
 //! ```ignore
 //! #[waterui::test(login_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
@@ -136,10 +136,7 @@ mod ts;
 pub(crate) mod wait;
 
 pub use accesskit::Role as AccessKitRole;
-pub use app::{
-    DragOptions, NoStyle, OffscreenApp, RuntimeFlavor, SemanticApp, Styled, UiBuilder, mount_app,
-    ui,
-};
+pub use app::{DragOptions, NoStyle, OffscreenApp, SemanticApp, Styled, UiBuilder, mount_app, ui};
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 pub use driver::{FrameTiming, RuntimeDriver, VIRTUAL_FRAME};
 pub use executor::drain_parked_local_work;
