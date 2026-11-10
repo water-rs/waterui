@@ -163,6 +163,117 @@ if ! compare_tool="$(command -v compare-screenshots)" || [[ ! -x "${compare_tool
   exit 1
 fi
 
+# The shard simulator's CoreSimulator state (Booted, Shutdown, ...).
+simulator_state() {
+  xcrun simctl list devices --json | python3 -c '
+import json, sys
+for group in json.load(sys.stdin)["devices"].values():
+    for device in group:
+        if device.get("udid") == sys.argv[1]:
+            print(device["state"])
+' "${SIMULATOR_UDID}"
+}
+
+# When a supervised iOS command is killed at its deadline the receipts say
+# WHICH command and how long it ran — they cannot say WHY the simulator
+# channel wedged. The runs behind #1539 showed the app's first paint, then
+# screenshot, terminate and uninstall all timing out: the evidence needed is
+# the app's own stack, the host simulator services' state, and the device's
+# recent log, collected while the wedge still stands rather than after a
+# clean retry. The samples self-limit at 3 s and both `log show` reads run
+# under DIAG_DEADLINE_S — a wedged channel must not stall the collection —
+# and the output lands in logs_dir, which the e2e-logs artifact bundle
+# already ships. It is defined ahead of the simulator setup because a failed
+# status-bar override calls it before any example is selected.
+collect_simulator_stall_diagnostics() {
+  local reason="$1"
+  local label="${example:-setup}"
+  local diag="${logs_dir}/${platform}-${label}-stall-diagnostics.log"
+  local diag_deadline_at
+  diag_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
+  {
+    echo "=== simulator stall diagnostics: ${reason} ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
+    echo "--- simulator runtime registry and device state ---"
+    # The iOS runtime image is mounted under cryptexd; a runtime that went
+    # unavailable under a booted device (#4101) shows here as a missing or
+    # malformed mount and an absent runtime entry.
+    echo "device ${SIMULATOR_UDID} state: $(simulator_state 2>&1 || true)"
+    "${command_deadline}" run --label "diag:simctl-runtime-list" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl runtime list 2>&1 | tail -40 || true
+    "${command_deadline}" run --label "diag:simctl-list-runtimes" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl list runtimes 2>&1 | tail -40 || true
+    # shellcheck disable=SC2012 # a human-read listing with modes and owners, not parsed
+    ls -la /private/var/run/com.apple.security.cryptexd/mnt/ 2>&1 | head -40 || true
+    echo "--- shard app process (pid ${app_pid:-unset}) ---"
+    # Every lookup and sample below tolerates its process being absent: a
+    # pgrep without a match exits 1, which under errexit and pipefail would
+    # end the shard mid-collection — and a missing process (a device that is
+    # no longer booted) is itself the finding.
+    if [[ -n "${app_pid:-}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
+      sample "${app_pid}" 3 1 2>&1 | head -60 || true
+    else
+      echo "app pid ${app_pid:-unset} is not running"
+    fi
+    echo "--- simulator render processes (sample 3s each) ---"
+    # What a slow screenshot waits on lives in the simulator's render path.
+    # backboardd runs inside the simulator as a child of this device's
+    # launchd_sim (whose command line names the UDID); SimRenderServer and
+    # SimMetalHost are host processes (parent launchd) that name no device,
+    # so they are matched by name — this shard boots the only simulator on
+    # the runner. Each sample is supervised under its own diagnostics deadline
+    # so it neither outlives the collection nor starves the log reads below,
+    # and keeps enough of its call graph to show every thread's wait.
+    local render_deadline_at launchd_sim_pid render_name render_pid render_pids
+    render_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
+    launchd_sim_pid="$(pgrep -f "launchd_sim .*/Devices/${SIMULATOR_UDID}/" 2>/dev/null | head -1)" || true
+    for render_name in backboardd SimRenderServer SimMetalHost; do
+      render_pids=""
+      if [[ "${render_name}" == "backboardd" ]]; then
+        if [[ -n "${launchd_sim_pid}" ]]; then
+          render_pids="$(pgrep -P "${launchd_sim_pid}" -x "${render_name}" 2>/dev/null)" || true
+        fi
+      else
+        render_pids="$(pgrep -x "${render_name}" 2>/dev/null)" || true
+      fi
+      if [[ -z "${render_pids}" ]]; then
+        echo "${render_name} not found for simulator ${SIMULATOR_UDID}"
+        continue
+      fi
+      for render_pid in ${render_pids}; do
+        echo "${render_name} (pid ${render_pid})"
+        "${command_deadline}" run --label "diag:sample-${render_name}-${render_pid}" \
+          --deadline-at "${render_deadline_at}" --receipt "${receipts_file}" \
+          -- sample "${render_pid}" 3 1 2>&1 | sed -n '1,200p' || true
+      done
+    done
+    echo "--- host simulator service state ---"
+    local svc_pids
+    svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')" || true
+    [[ -n "${svc_pids}" ]] && ps -o pid,stat,etime,command -p "${svc_pids}" || true
+    echo "--- host simulator service stacks (sample 3s each) ---"
+    local svc
+    for svc in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline" 2>/dev/null); do
+      sample "${svc}" 3 1 2>&1 | sed -n '1,40p' || true
+    done
+    echo "--- host log, simulator domain, last 5m ---"
+    # `log show` can take tens of seconds on a loaded host — supervised so
+    # the collection keeps its own bound even when the log is slow.
+    "${command_deadline}" run --label "diag:host-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- log show --last 5m --style compact \
+      --predicate 'process CONTAINS[c] "simulator" OR subsystem CONTAINS[c] "CoreSimulator"' \
+      2>/dev/null | tail -80 || true
+    echo "--- device log, last 3m ---"
+    "${command_deadline}" run --label "diag:simctl-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 3m --style compact \
+      2>/dev/null | tail -60 || true
+  } >> "${diag}" 2>&1
+  echo "::notice::${label}: simulator stall diagnostics written to ${diag} (uploaded with e2e-logs)."
+}
+
 if [[ "${platform}" == "ios" ]]; then
   # A `simctl launch` opens the app over whatever is currently frontmost, and
   # iOS answers with the status-bar "back to <app>" breadcrumb — pixels the
@@ -271,6 +382,7 @@ if [[ "${platform}" == "ios" ]]; then
     --cellularMode active --cellularBars 4 \
     --dataNetwork wifi; then
     echo "::error::Failed to set the status bar override on ${SIMULATOR_UDID}."
+    collect_simulator_stall_diagnostics "status bar override failed"
     exit 1
   fi
   trap 'xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
@@ -580,85 +692,6 @@ simctl_cleanup() {
   return 1
 }
 
-# When a supervised iOS command is killed at its deadline the receipts say
-# WHICH command and how long it ran — they cannot say WHY the simulator
-# channel wedged. The runs behind #1539 showed the app's first paint, then
-# screenshot, terminate and uninstall all timing out: the evidence needed is
-# the app's own stack, the host simulator services' state, and the device's
-# recent log, collected while the wedge still stands rather than after a
-# clean retry. The samples self-limit at 3 s and both `log show` reads run
-# under DIAG_DEADLINE_S — a wedged channel must not stall the collection —
-# and the output lands in logs_dir, which the e2e-logs artifact bundle
-# already ships.
-collect_simulator_stall_diagnostics() {
-  local reason="$1"
-  local diag="${logs_dir}/${platform}-${example}-stall-diagnostics.log"
-  local diag_deadline_at
-  diag_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
-  {
-    echo "=== simulator stall diagnostics: ${reason} ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
-    echo "--- shard app process (pid ${app_pid:-unset}) ---"
-    if [[ -n "${app_pid:-}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
-      sample "${app_pid}" 3 1 2>&1 | head -60
-    else
-      echo "app pid ${app_pid:-unset} is not running"
-    fi
-    echo "--- simulator render processes (sample 3s each) ---"
-    # What a slow screenshot waits on lives in the simulator's render path.
-    # backboardd runs inside the simulator as a child of this device's
-    # launchd_sim (whose command line names the UDID); SimRenderServer and
-    # SimMetalHost are host processes (parent launchd) that name no device,
-    # so they are matched by name — this shard boots the only simulator on
-    # the runner. Each sample is supervised under its own diagnostics deadline
-    # so it neither outlives the collection nor starves the log reads below,
-    # and keeps enough of its call graph to show every thread's wait.
-    local render_deadline_at launchd_sim_pid render_name render_pid render_pids
-    render_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
-    launchd_sim_pid="$(pgrep -f "launchd_sim .*/Devices/${SIMULATOR_UDID}/" 2>/dev/null | head -1)"
-    for render_name in backboardd SimRenderServer SimMetalHost; do
-      if [[ "${render_name}" == "backboardd" ]]; then
-        render_pids=""
-        [[ -n "${launchd_sim_pid}" ]] && render_pids="$(pgrep -P "${launchd_sim_pid}" -x "${render_name}" 2>/dev/null)"
-      else
-        render_pids="$(pgrep -x "${render_name}" 2>/dev/null)"
-      fi
-      if [[ -z "${render_pids}" ]]; then
-        echo "${render_name} not found for simulator ${SIMULATOR_UDID}"
-        continue
-      fi
-      for render_pid in ${render_pids}; do
-        echo "${render_name} (pid ${render_pid})"
-        "${command_deadline}" run --label "diag:sample-${render_name}-${render_pid}" \
-          --deadline-at "${render_deadline_at}" --receipt "${receipts_file}" \
-          -- sample "${render_pid}" 3 1 2>&1 | sed -n '1,200p' || true
-      done
-    done
-    echo "--- host simulator service state ---"
-    local svc_pids
-    svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
-    [[ -n "${svc_pids}" ]] && ps -o pid,stat,etime,command -p "${svc_pids}" || true
-    echo "--- host simulator service stacks (sample 3s each) ---"
-    local svc
-    for svc in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline" 2>/dev/null); do
-      sample "${svc}" 3 1 2>&1 | sed -n '1,40p'
-    done
-    echo "--- host log, simulator domain, last 5m ---"
-    # `log show` can take tens of seconds on a loaded host — supervised so
-    # the collection keeps its own bound even when the log is slow.
-    "${command_deadline}" run --label "diag:host-log-show" \
-      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
-      -- log show --last 5m --style compact \
-      --predicate 'process CONTAINS[c] "simulator" OR subsystem CONTAINS[c] "CoreSimulator"' \
-      2>/dev/null | tail -80 || true
-    echo "--- device log, last 3m ---"
-    "${command_deadline}" run --label "diag:simctl-log-show" \
-      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
-      -- xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 3m --style compact \
-      2>/dev/null | tail -60 || true
-  } >> "${diag}" 2>&1
-  echo "::notice::${example}: simulator stall diagnostics written to ${diag} (uploaded with e2e-logs)."
-}
-
 # A live simulator app that never reports `waterui_first_paint_ms` leaves no
 # evidence behind on its own — collect process state, crash reports and the
 # device log while the wedge still stands, the way the capture-stall
@@ -942,6 +975,8 @@ json.dump({key: comparison[key] for key in ("metric", "flip_mean", "flip_max", "
 find_packaged_app() {
   local log_file="$1" app_path
   app_path="$(sed -n 's/.*Packaged at //p' "${log_file}" | tail -1 | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')"
+  # An empty or missing path returns non-zero; callers decide what a package
+  # run that names no bundle means, so errexit never ends the shard here.
   [[ -n "${app_path}" && -d "${app_path}" ]] && echo "${app_path}"
 }
 
@@ -1024,7 +1059,9 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       done
 
       if (( built == 1 )); then
-        app_path="$(find_packaged_app "${run_log}")"
+        # No bundle named in the log leaves app_path empty: a package failure,
+        # classified below with the log tail.
+        app_path="$(find_packaged_app "${run_log}")" || true
       fi
     }
   fi
@@ -1122,7 +1159,10 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     fi
   else
     if ! xcrun simctl install "${SIMULATOR_UDID}" "${app_path}"; then
-      echo "::error::${example} packaged app failed to install in the simulator."
+      # A device that left the booted state is evidence of what stopped it;
+      # the host CoreSimulator log is read while that window is recent.
+      echo "::error::${example} packaged app failed to install in the simulator (device state: $(simulator_state))."
+      collect_simulator_stall_diagnostics "simctl install failed for ${example}"
       failures+=("${example}: install")
       report+=("| \`${example}\` | install failed | — | — | ${size_cell} | ${mem_cell} |")
       printf '  "%s": null,\n' "${example}" >> "${startup_entries}"
