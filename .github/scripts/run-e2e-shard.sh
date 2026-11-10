@@ -454,14 +454,16 @@ capture_frame() {
   local target="$1"
   local deadline_at="$2"
   local pid="${3:-${app_pid}}"
+  # The command writes a staging file that replaces the target only once it
+  # exited 0 and produced an image: a capture killed mid-way leaves the
+  # previous successful frame in place, and a command that exits 0 without
+  # writing cannot let a stale staging frame pass as this capture. Like the
+  # settle anchor it is a dotfile, so no shot glob ever reads it as a frame,
+  # and it keeps the .png extension — simctl picks the format from it.
+  local staging
+  staging="$(dirname "${target}")/.$(basename "${target%.png}").staging.png"
+  rm -f "${staging}"
   if [[ "${platform}" == "ios" ]]; then
-    # The command writes a staging file that replaces the target only once it
-    # exited 0 and produced an image: a capture killed mid-way leaves the
-    # previous successful frame in place, and a command that exits 0 without
-    # writing cannot let a stale staging frame pass as this capture. The
-    # staging name keeps the .png extension — simctl picks the format from it.
-    local staging="${target%.png}.staging.png"
-    rm -f "${staging}"
     local sampler_pid capture_rc
     sampler_pid="$(stall_sampler_start "${logs_dir}/${platform}-${example}-stall-sample.log")"
     "${command_deadline}" run --label "capture:simctl-io-screenshot" \
@@ -472,26 +474,21 @@ capture_frame() {
     # The supervisor's status (124 at a deadline kill) is what the settle
     # loop classifies, so it is returned as is.
     (( capture_rc == 0 )) || return "${capture_rc}"
-    if [[ ! -f "${staging}" ]]; then
-      echo "::error::${example}: the capture command exited 0 but produced no image at ${staging}."
-      return 1
-    fi
-    mv -f "${staging}" "${target}" || return
   else
     local window_id
     window_id="$("${command_deadline}" run --label "capture:window-id" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
       --max-seconds "${COMMAND_BOUND_S}" \
       -- "${swift_tools_dir}/window-id" "${pid}")" || return
-    rm -f "${target}"
     "${command_deadline}" run --label "capture:screencapture" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
-      -- screencapture -x -o "-l${window_id}" "${target}" || return
+      -- screencapture -x -o "-l${window_id}" "${staging}" || return
   fi
-  if [[ ! -f "${target}" ]]; then
-    echo "::error::${example}: the capture command exited 0 but produced no image at ${target}."
+  if [[ ! -f "${staging}" ]]; then
+    echo "::error::${example}: the capture command exited 0 but produced no image at ${staging}."
     return 1
   fi
+  mv -f "${staging}" "${target}" || return
 }
 
 # Captures until every frame across SETTLE_WINDOW_S seconds agrees with the
@@ -672,15 +669,14 @@ capture_settled() {
 # hiding.
 simctl_cleanup() {
   local what="$1" bundle="$2"
-  local deadline_at child_err rc=0
+  local child_err rc=0
   # The child's stderr goes to an owned per-invocation file — the helper's
   # command_started/receipt records stay on the inherited live stderr, so a
   # stuck cleanup is attributable in the step log instead of vanishing into
   # a captured variable nobody reads until the command settles.
   child_err="$(mktemp "${logs_dir}/.cleanup-${what}-stderr.XXXXXX")"
-  deadline_at="$("${command_deadline}" deadline --seconds "${CLEANUP_DEADLINE_S}")"
   "${command_deadline}" run --label "cleanup:simctl-${what}" \
-    --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+    --max-seconds "${CLEANUP_DEADLINE_S}" --receipt "${receipts_file}" \
     --child-stderr-file "${child_err}" \
     -- xcrun simctl "${what}" "${SIMULATOR_UDID}" "${bundle}" \
     >/dev/null || rc=$?
@@ -902,10 +898,9 @@ capture_reference() {
     # Launched through LaunchServices so the twin is activated — a direct exec
     # leaves its window non-key. Its stdout/stderr are gone with the direct
     # exec: the twin logs through Logger, which the stream above captures.
-    local launch_deadline_at ref_pid
-    launch_deadline_at="$("${command_deadline}" deadline --seconds "${LAUNCH_DEADLINE_S}")"
+    local ref_pid
     if ! ref_pid="$("${command_deadline}" run --label "launch:reference" \
-        --deadline-at "${launch_deadline_at}" --receipt "${receipts_file}" \
+        --max-seconds "${LAUNCH_DEADLINE_S}" --receipt "${receipts_file}" \
         -- "${swift_tools_dir}/launch-app" "${reference_app}" \
         -E2EExample "${example}" -E2ETitle "${title}" "${macos_capture_args[@]}")"; then
       kill "${ref_stream_pid}" 2>/dev/null || true
@@ -1152,9 +1147,8 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     sleep 1
     # The app must come up through LaunchServices: a direct exec leaves it
     # unactivated, so its window never becomes key (#2636).
-    launch_deadline_at="$("${command_deadline}" deadline --seconds "${LAUNCH_DEADLINE_S}")"
     if ! app_pid="$("${command_deadline}" run --label "launch:app" \
-        --deadline-at "${launch_deadline_at}" --receipt "${receipts_file}" \
+        --max-seconds "${LAUNCH_DEADLINE_S}" --receipt "${receipts_file}" \
         -- "${swift_tools_dir}/launch-app" "${app_path}" "${macos_capture_args[@]}")"; then
       kill "${stream_pid}" 2>/dev/null || true
       echo "::error::${example} packaged app failed to launch (${platform})."
