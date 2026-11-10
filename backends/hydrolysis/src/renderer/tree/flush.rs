@@ -171,6 +171,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     .geometry
                     .expect("hydrolysis text flushed before its layout");
                 let ctx = RenderContext::new(ctx.local(), kurbo_rect(geometry.response_rect));
+                // The answer's own f32 width breaks lines; the rectangle only
+                // positions the text.
+                let max_width = geometry.response_rect.width();
                 renderer.state.counters.recorded_view_contents += 1;
                 renderer.push_render_owner(&text.accessibility_identity);
                 // Read the content/alignment signals through `read_signal` so a change
@@ -196,10 +199,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 if styled.tap_spans().is_empty() {
                     // Content that lost its spans drops their retained targets.
                     text.tap_span_targets.borrow_mut().clear();
-                    renderer.render_styled_text_limited(ctx, styled, alignment, env, tail);
+                    renderer
+                        .render_styled_text_limited(ctx, max_width, styled, alignment, env, tail);
                 } else {
-                    let layout =
-                        renderer.render_styled_text_with_layout(ctx, &styled, alignment, env, tail);
+                    let layout = renderer.render_styled_text_with_layout(
+                        ctx, max_width, &styled, alignment, env, tail,
+                    );
                     // Span targets and `Link` children belong to this leaf:
                     // register them under its render owner so their ancestry
                     // matches the node that emitted them.

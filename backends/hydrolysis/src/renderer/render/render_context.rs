@@ -47,6 +47,14 @@ impl RenderContext {
     pub const fn bounds(&self) -> kurbo::Rect {
         self.bounds
     }
+
+    /// The bounds' width as the line-break width of text drawn in a rectangle
+    /// the caller allocated itself. A leaf with a layout answer passes that
+    /// answer's exact width instead.
+    #[must_use]
+    pub const fn bounds_width_f32(&self) -> f32 {
+        crate::num_cast::f64_as_f32(self.bounds.x1 - self.bounds.x0)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -324,6 +332,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         let renderer = self.renderer_mut();
         renderer.render_styled_text_limited(
             child_ctx,
+            child_ctx.bounds_width_f32(),
             styled,
             alignment,
             env,

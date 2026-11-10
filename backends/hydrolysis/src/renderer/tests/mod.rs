@@ -92,6 +92,7 @@ mod structural_transitions;
 mod tab_item_layout;
 mod teardown_order;
 mod text_ink;
+mod text_wrap_width;
 mod text_measure_direction;
 mod top_edge;
 mod touch_scroll;
