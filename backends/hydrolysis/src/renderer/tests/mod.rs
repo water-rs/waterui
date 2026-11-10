@@ -2845,6 +2845,8 @@ pub struct MinimalTestTheme {
     /// Whether the indeterminate progress looks move: a bar that travels, a
     /// tick that turns, a square that swells.
     moving_progress: bool,
+    /// Whether the moving tick turns with two nested rotation layers.
+    nested_progress: bool,
     /// Whether the indeterminate linear look is a bar whose colour keyframes
     /// are built from the colour scheme.
     scheme_progress: bool,
@@ -3300,7 +3302,7 @@ impl WidgetTheme for MinimalTestTheme {
     fn circular_progress(&self, spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
         self.progress_specs.borrow_mut().push(spec.clone());
         IndicatorLook::new(if self.moving_progress && !spec.determinate() {
-            progress_looks::spinner()
+            progress_looks::spinner(self.nested_progress)
         } else {
             ProgressControl::new(
                 Size::new(32.0, 32.0),

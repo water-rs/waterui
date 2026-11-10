@@ -94,24 +94,26 @@ pub(super) fn scheme_bar(env: &Environment) -> ProgressControl {
     ))
 }
 
-/// A tick at the top of the frame that turns once a cycle with its layer.
-pub(super) fn spinner() -> ProgressControl {
-    control(Size::new(32.0, 32.0)).part(
-        Custom::new(
-            (Driven::<Paint, f64>::constant(red()),),
-            |recorder, frame, (paint,)| {
-                let center = frame.center().x;
-                recorder.fill(
-                    Rect::new(center - 2.0, frame.y0, center + 2.0, frame.y0 + 10.0),
-                    paint,
-                );
-            },
-        )
-        .rotating(
-            Keyframes::new(CYCLE, 0.0).then(1.0, Curve::linear(CYCLE), TAU),
-            Repeat::Forever,
-        ),
-    )
+/// A tick at the top of the frame that turns once a cycle with its layer,
+/// or with two nested layers that turn half a cycle's turn each.
+pub(super) fn spinner(nested: bool) -> ProgressControl {
+    let turn = |angle: f64| Keyframes::new(CYCLE, 0.0).then(1.0, Curve::linear(CYCLE), angle);
+    let tick = Custom::new(
+        (Driven::<Paint, f64>::constant(red()),),
+        |recorder, frame, (paint,)| {
+            let center = frame.center().x;
+            recorder.fill(
+                Rect::new(center - 2.0, frame.y0, center + 2.0, frame.y0 + 10.0),
+                paint,
+            );
+        },
+    );
+    control(Size::new(32.0, 32.0)).part(if nested {
+        tick.rotating(turn(TAU / 2.0), Repeat::Forever)
+            .rotating(turn(TAU / 2.0), Repeat::Forever)
+    } else {
+        tick.rotating(turn(TAU), Repeat::Forever)
+    })
 }
 
 /// A square that swells and shrinks once a cycle.
@@ -249,6 +251,42 @@ fn indeterminate_circular_progress_runs_its_keyframes_without_frame_work() {
 #[test]
 fn loading_indicator_runs_its_keyframes_without_frame_work() {
     assert_runs_on_the_engine(waterui::component::progress::loading());
+}
+
+/// Rotation stages nest: a tick turned by two layers that each turn half a
+/// cycle's turn is where one layer turning a whole one puts it, and the
+/// nest does no frame work while it runs.
+#[test]
+fn nested_rotation_stages_sum() {
+    let frames_at = |nested: bool| {
+        let theme = MinimalTestTheme {
+            moving_progress: true,
+            nested_progress: nested,
+            ..Default::default()
+        };
+        let mut runtime = runtime_with(Progress::infinity().circular(), theme);
+        let mut frames = Frames::new();
+        for _ in 0..4 {
+            frames.pump(&mut runtime);
+        }
+        let work = frames.work(&mut runtime, 30);
+        assert_eq!(work, [0; 8], "a nest of rotation layers does no frame work");
+        let snapshot = frames.snapshot(&mut runtime);
+        (snapshot, work)
+    };
+    let (single, _) = frames_at(false);
+    let (nested, _) = frames_at(true);
+    let worst = single
+        .rgba8()
+        .iter()
+        .zip(nested.rgba8())
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .expect("a snapshot has pixels");
+    assert!(
+        worst <= 24,
+        "the nested tick is where the single one is: worst channel difference {worst}"
+    );
 }
 
 /// The colour of the fixture's solid bar: the one colour the window shows

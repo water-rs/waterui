@@ -160,9 +160,12 @@ impl LiveSource for PartSource {
         None
     }
 
-    fn rotation(&self) -> Option<(LayerRotation, Vec2)> {
-        let rotation = self.progress.parts[self.index].rotation()?;
-        Some((rotation.clone(), self.progress.frame.center().to_vec2()))
+    fn rotations(&self) -> Vec<LayerRotation> {
+        self.progress.parts[self.index].rotations().to_vec()
+    }
+
+    fn pivot(&self) -> Vec2 {
+        self.progress.frame.center().to_vec2()
     }
 }
 

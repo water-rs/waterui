@@ -730,9 +730,9 @@ type RecordCustom<L> = Rc<dyn Fn(&mut Recorder, Rect, L)>;
 pub struct Custom<V, D: DrivenSet<V>> {
     driven: D,
     record: RecordCustom<D::Live>,
-    rotation: Option<KeyframeAnimation>,
-    /// The rotation's first angle: the layer's rotation at rest.
-    rest: f64,
+    /// The rotation stages, innermost first: each track with its first
+    /// angle, the layer's rotation at rest.
+    rotations: Vec<(KeyframeAnimation, f64)>,
     value: PhantomData<fn(&V)>,
 }
 
@@ -740,7 +740,7 @@ impl<V, D: DrivenSet<V> + core::fmt::Debug> core::fmt::Debug for Custom<V, D> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Custom")
             .field("driven", &self.driven)
-            .field("rotating", &self.rotation.is_some())
+            .field("rotations", &self.rotations.len())
             .finish_non_exhaustive()
     }
 }
@@ -750,8 +750,7 @@ impl<V, D: DrivenSet<V> + Clone> Clone for Custom<V, D> {
         Self {
             driven: self.driven.clone(),
             record: Rc::clone(&self.record),
-            rotation: self.rotation.clone(),
-            rest: self.rest,
+            rotations: self.rotations.clone(),
             value: PhantomData,
         }
     }
@@ -764,8 +763,7 @@ impl<V, D: DrivenSet<V>> Custom<V, D> {
         Self {
             driven,
             record: Rc::new(record),
-            rotation: None,
-            rest: 0.0,
+            rotations: Vec::new(),
             value: PhantomData,
         }
     }
@@ -779,10 +777,15 @@ impl<V, D: DrivenSet<V>> Custom<V, D> {
     /// Hydrolysis work per frame. Use it for the motion of the part as a
     /// whole; a [`Driven::repeating`] value moves one operand of the
     /// recording.
+    ///
+    /// Calling it again adds a stage outside the ones before it: the part
+    /// turns about the same centre by the sum of its stages, each repeating
+    /// on its own period, as nested rotating layers do.
     #[must_use]
     pub fn rotating(mut self, keyframes: Keyframes<f64>, repeat: Repeat) -> Self {
-        self.rest = *keyframes.first();
-        self.rotation = Some(KeyframeAnimation::new(keyframes, repeat));
+        let rest = *keyframes.first();
+        self.rotations
+            .push((KeyframeAnimation::new(keyframes, repeat), rest));
         self
     }
 }
@@ -792,7 +795,7 @@ impl<V, D: DrivenSet<V>> Custom<V, D> {
 pub struct RealizedCustom<V> {
     record: RecordRealized,
     pub(crate) drivens: Vec<Rc<dyn Retarget<V>>>,
-    rotation: Option<LayerRotation>,
+    rotations: Vec<LayerRotation>,
 }
 
 #[cfg(hydrolysis_runtime)]
@@ -832,9 +835,10 @@ impl<V> RealizedCustom<V> {
         }
     }
 
-    /// The part's layer rotation, when it turns.
-    pub(crate) const fn rotation(&self) -> Option<&LayerRotation> {
-        self.rotation.as_ref()
+    /// The part's rotation stages, innermost first; none when it does not
+    /// turn.
+    pub(crate) fn rotations(&self) -> &[LayerRotation] {
+        &self.rotations
     }
 }
 
@@ -856,10 +860,14 @@ where
         RealizedCustom {
             record: Box::new(move |recorder, frame| record(recorder, frame, live())),
             drivens,
-            rotation: self.rotation.as_ref().map(|track| LayerRotation {
-                operand: Operand::new(self.rest),
-                track: track.clone(),
-            }),
+            rotations: self
+                .rotations
+                .iter()
+                .map(|(track, rest)| LayerRotation {
+                    operand: Operand::new(*rest),
+                    track: track.clone(),
+                })
+                .collect(),
         }
     }
 }

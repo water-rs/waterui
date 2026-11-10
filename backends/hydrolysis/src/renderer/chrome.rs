@@ -59,11 +59,16 @@ pub trait LiveSource {
         None
     }
 
-    /// The rotation the engine runs on the source's layer, and the point
-    /// the layer turns about, in the layer's own space. The mount binds it
-    /// to the layer's rotation property each time it records the source.
-    fn rotation(&self) -> Option<(LayerRotation, Vec2)> {
-        None
+    /// The rotations the engine runs on the source's layers, innermost
+    /// first, each nested in the next. The mount binds each to a layer's
+    /// rotation property each time it records the source.
+    fn rotations(&self) -> Vec<LayerRotation> {
+        Vec::new()
+    }
+
+    /// The point the rotation layers turn about, in the layer's own space.
+    fn pivot(&self) -> Vec2 {
+        Vec2::ZERO
     }
 }
 

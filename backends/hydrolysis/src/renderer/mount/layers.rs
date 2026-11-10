@@ -243,8 +243,17 @@ pub struct LiveLayer {
     source: Option<Rc<dyn LiveSource>>,
     held: Option<LoweredResources>,
     solid: Box<[SolidRect]>,
-    /// Whether the layer's rotation follows the source's operand.
-    rotating: bool,
+    /// The layers that turn the content layer, innermost first, each the
+    /// parent of the one before: the source's rotation stages beyond its
+    /// first, which the content layer itself runs.
+    outers: Vec<Layer>,
+}
+
+impl LiveLayer {
+    /// The layer the parent lists: the outermost of the nest.
+    fn attached(&self) -> &Layer {
+        self.outers.last().unwrap_or(&self.layer)
+    }
 }
 
 /// A node's retained layers.
@@ -540,6 +549,9 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> CommitCx<'_, '_, '_, T, E> {
 
     fn retire_live(&mut self, live: LiveLayer) {
         self.retire_layer(live.layer);
+        for outer in live.outers {
+            self.retire_layer(outer);
+        }
         self.graveyard.push(Box::new((live.source, live.held)));
     }
 
@@ -1791,7 +1803,7 @@ fn commit_list_slots<T: LayerTarget<E>, E: crate::text::TextEngine>(
                 }
             }
             Slot::Live(at) => {
-                let layer = &lives[*at].layer;
+                let layer = lives[*at].attached();
                 Want {
                     id: layer.id(),
                     token: own.clone(),
@@ -1870,23 +1882,36 @@ fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
     lives_old: &mut Vec<LiveLayer>,
     lives: &mut Vec<LiveLayer>,
 ) -> usize {
+    // A source that turns has one layer per rotation stage, each nested in
+    // the next; a source with a different number of stages gets a nest of
+    // its own, and the old one retires.
+    let stages = item.source.rotations().len();
     let mut live = lives_old
         .iter()
-        .position(|live| live.ordinal == item.ordinal)
+        .position(|live| live.ordinal == item.ordinal && live.outers.len() + 1 == stages.max(1))
         .map_or_else(
-            || LiveLayer {
-                ordinal: item.ordinal,
-                layer: cx.layer(),
-                transform: kurbo::Affine::IDENTITY,
-                source: None,
-                held: None,
-                solid: Box::default(),
-                rotating: false,
+            || {
+                let layer = cx.layer();
+                let mut outers: Vec<Layer> = Vec::new();
+                for _ in 1..stages {
+                    let outer = cx.layer();
+                    cx.tx[&outer].insert(0, outers.last().unwrap_or(&layer));
+                    outers.push(outer);
+                }
+                LiveLayer {
+                    ordinal: item.ordinal,
+                    layer,
+                    transform: kurbo::Affine::IDENTITY,
+                    source: None,
+                    held: None,
+                    solid: Box::default(),
+                    outers,
+                }
             },
             |at| lives_old.remove(at),
         );
     if live.transform != item.transform {
-        cx.tx[&live.layer].transform(item.transform);
+        cx.tx[live.attached()].transform(item.transform);
         live.transform = item.transform;
     }
     let recorded = live
@@ -1901,17 +1926,20 @@ fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
         let resources = T::resources(cx.host);
         let mut held = None;
         cx.tx[&live.layer].record(|recorder| held = item.source.record(recorder, resources));
-        // A source that turns its layer binds the rotation property to the
-        // source's operand and starts the engine's track along it: the
-        // layer then turns on the engine's clock, with no work here.
-        if let Some((rotation, pivot)) = item.source.rotation() {
-            cx.tx[&live.layer]
-                .pivot(Fixed(pivot))
-                .rotation(rotation.live());
+        // A source that turns binds each stage's layer rotation property
+        // to the stage's operand and starts the engine's track along it:
+        // the layers then turn on the engine's clock, with no work here.
+        // A stage layer a source without rotation leaves behind stops.
+        let rotations = item.source.rotations();
+        let pivot = item.source.pivot();
+        for (layer, rotation) in std::iter::once(&live.layer)
+            .chain(&live.outers)
+            .zip(&rotations)
+        {
+            cx.tx[layer].pivot(Fixed(pivot)).rotation(rotation.live());
             rotation.run();
-            live.rotating = true;
-        } else if std::mem::take(&mut live.rotating) {
-            // The layer's new source does not turn: end the old track.
+        }
+        if rotations.is_empty() {
             cx.tx[&live.layer].rotation(Fixed(0.0_f64));
         }
         if let Some(old) = std::mem::replace(&mut live.held, held) {
@@ -2221,7 +2249,7 @@ fn visit_list<E: crate::text::TextEngine>(
             .find(|run| run.layer.as_ref().is_some_and(|layer| layer.id() == *id))
         {
             visit_run(run, world, alphas, visitor);
-        } else if let Some(live) = lives.iter().find(|live| live.layer.id() == *id) {
+        } else if let Some(live) = lives.iter().find(|live| live.attached().id() == *id) {
             let world = world * live.transform;
             #[cfg(test)]
             if let Some(recording) = live.source.as_ref().and_then(|source| source.recording()) {
