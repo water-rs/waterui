@@ -25,6 +25,7 @@ default = [
     "badge",
     "button",
     "calendar",
+    "canvas",
     "clip_shape",
     "gpu_surface",
     "color_picker",
@@ -88,6 +89,8 @@ badge = []
 border = []
 button = []
 calendar = []
+# The Core Animation realization of `Canvas`.
+canvas = ["gpu_surface", "dep:skrifa"]
 clip_shape = []
 gpu_surface = ["dep:block2", "objc2-metal/block2"]
 color_picker = []
@@ -241,6 +244,10 @@ blocking = { workspace = true, optional = true }
 futures = { workspace = true }
 native-executor = { workspace = true }
 kurbo = { workspace = true }
+# Reads a variable font's `fvar` and `avar` so a glyph run's normalized
+# variation coordinates reach Core Text as the user-space values it takes.
+# Already linked through `waterui-graphics`, with the same features.
+skrifa = { workspace = true, optional = true }
 dispatch2 = "0.3"
 libc = "0.2"
 tracing = { workspace = true }

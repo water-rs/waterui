@@ -12649,6 +12649,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "pollster 1.0.1",
  "serde_json",
+ "skrifa 0.48.0",
  "thiserror 2.0.21",
  "tracing",
  "tracing-panic",

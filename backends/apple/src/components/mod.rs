@@ -19,6 +19,8 @@ pub mod border;
 pub mod button;
 #[cfg(any(feature = "calendar", feature = "multi_date_picker"))]
 pub mod calendar;
+#[cfg(feature = "canvas")]
+pub mod canvas;
 #[cfg(feature = "clip_shape")]
 pub mod clip_shape;
 #[cfg(feature = "color_picker")]
