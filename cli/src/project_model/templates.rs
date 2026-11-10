@@ -3337,6 +3337,51 @@ mod tests {
         assert_eq!(features(&partial)["gpu"].as_array().map(Vec::len), Some(1));
     }
 
+    /// The real resolution path reads the feature tables of the checkout's
+    /// own `waterui` and `hydrolysis` manifests. The generated manifest it
+    /// resolves from carries `[package.metadata.wasm-pack]`, which the
+    /// resolution must accept (a unit-metadata parse rejects it).
+    #[test]
+    fn resolved_painter_tables_accept_the_generated_package_metadata() {
+        let tempdir = tempdir().expect("temporary checkout dir");
+        let checkout = tempdir.path().join("waterui");
+        std::fs::create_dir_all(checkout.join("backends/hydrolysis")).expect("checkout dirs");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            format!(
+                "{}\n[package]\nname = \"waterui\"\nversion = \"0.0.0\"\n\n\
+                 [features]\ngpu = []\n",
+                include_str!("../../tests/fixtures/local_checkout_patches.toml"),
+            ),
+        )
+        .expect("checkout manifest");
+        std::fs::write(
+            checkout.join("backends/hydrolysis/Cargo.toml"),
+            "[package]\nname = \"hydrolysis\"\nversion = \"0.0.0\"\n\n\
+             [features]\ngpu = []\nhwui = []\n",
+        )
+        .expect("member manifest");
+        let ctx = ctx(
+            Some(checkout),
+            Some(PathBuf::from("managed_backends/hydrolysis")),
+            None,
+        );
+
+        let backend_dir = tempdir.path().join("backend");
+        let tables = smol::block_on(crate::templates::hydrolysis::resolved_painter_tables(
+            &crate::toolchain::Host::current(),
+            &backend_dir,
+            &ctx,
+            "waterui-test-hydrolysis",
+        ))
+        .expect("the generated manifest's package metadata must not fail the resolution");
+        assert_eq!(
+            tables["hydrolysis"],
+            ["gpu", "hwui"].map(ToString::to_string).into()
+        );
+        assert_eq!(tables["waterui"], ["gpu".to_string()].into());
+    }
+
     /// A local checkout answers the forward filter itself: the scaffolded
     /// manifest forwards only what the checkout's `backends/apple/Cargo.toml`
     /// declares — the shape an older framework resolves to, where an
@@ -6190,12 +6235,12 @@ pub mod hydrolysis {
             let ctx = TemplateContext::clone(ctx);
             smol::unblock(move || super::generated_crate_patches(&ctx)).await?
         };
-        let rendered = super::render_generated_cargo_toml(&generated_manifest(
-            ctx,
-            package_name,
-            patch,
-            &FeatureTables::new(),
-        )?)?;
+        let mut probe = generated_manifest(ctx, package_name, patch, &FeatureTables::new())?;
+        // The resolution reads dependencies, `[patch]` and `[features]`;
+        // `[package.metadata]` is wasm-pack tuning a unit-metadata manifest
+        // cannot hold.
+        probe.package.metadata = None;
+        let rendered = super::render_generated_cargo_toml(&probe)?;
         let manifest = toml::from_str::<cargo_toml::Manifest<()>>(&rendered)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         Box::pin(super::resolved_forward_tables(
