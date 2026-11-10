@@ -89,12 +89,14 @@ pub mod main_queue;
 pub mod map;
 pub mod material;
 pub mod menu;
+pub mod mesh;
 pub mod metal;
 pub mod metal_presenter;
 #[cfg(feature = "native-test")]
 #[doc(hidden)]
 pub mod native_test;
 pub mod notification;
+pub mod patch;
 pub mod path;
 pub mod picker;
 pub mod pointer;
@@ -151,6 +153,7 @@ pub use objc2_core_foundation;
 pub use objc2_core_graphics;
 #[cfg(feature = "avkit")]
 pub use objc2_core_media;
+pub use objc2_core_text;
 pub use objc2_foundation;
 pub use objc2_metal;
 pub use objc2_quartz_core;

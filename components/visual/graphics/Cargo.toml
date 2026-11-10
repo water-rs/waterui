@@ -108,6 +108,9 @@ wgpu = { workspace = true, optional = true, features = ["fragile-send-sync-non-a
 # Tests record against `cherenkov::testing::Null` engines.
 cherenkov = { workspace = true, features = ["testing"] }
 pollster.workspace = true
+# Rendered images are compared by FLIP, the engine suite's visual-equivalence
+# metric.
+cherenkov-oracle = { path = "../../../graphics/cherenkov/oracle" }
 # The glyph-run recording test maps a character to a glyph id in a real font.
 ttf-parser = "0.25"
 # No font bytes are committed: the recording tests resolve the `Roboto` face

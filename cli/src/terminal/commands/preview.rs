@@ -32,6 +32,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
     let target_platform = request::resolve_hydrolysis_test_platform(&manifest, platform)?;
     request::check_toolchain_for_backend(
         &host,
+        &project_path,
         ResolvedPreviewBackend::Hydrolysis(target_platform),
     )
     .await?;
@@ -276,7 +277,8 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     }
     header!(shell, "Preview: {}", request.target().display_name());
 
-    let kotlin_toolchain = request::check_toolchain_for_backend(&host, request.backend()).await?;
+    let kotlin_toolchain =
+        request::check_toolchain_for_backend(&host, &project_path, request.backend()).await?;
 
     // Detect sccache for compilation caching
     let sccache_path = super::detect_sccache_path(shell, &host).await;

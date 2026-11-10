@@ -7,7 +7,6 @@ use kurbo::{BezPath, Point, Rect};
 use nami::signal::IntoComputed;
 use waterui::navigation::tab::NativeTabStyle;
 use waterui_controls::ControlSize;
-use waterui_controls::toggle::ToggleStyle;
 use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
@@ -313,29 +312,6 @@ pub struct NavigationMotion {
     /// Progress at which the outgoing layer has faded out and the incoming
     /// layer begins fading in.
     pub fade_through_threshold: f32,
-}
-
-/// Toggle layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct ToggleMetrics {
-    /// Toggle control width.
-    pub width: f64,
-    /// Toggle control height.
-    pub height: f64,
-    /// Spacing between label and toggle control.
-    pub label_spacing: f64,
-}
-
-impl ToggleMetrics {
-    /// Create toggle layout metrics.
-    #[must_use]
-    pub const fn new(width: f64, height: f64, label_spacing: f64) -> Self {
-        Self {
-            width,
-            height,
-            label_spacing,
-        }
-    }
 }
 
 /// Which of a stepper's two buttons is being drawn.
@@ -1042,50 +1018,20 @@ pub trait WidgetTheme {
         0.38
     }
 
-    /// Return metrics for a toggle style.
-    fn toggle_metrics(&self, style: ToggleStyle) -> ToggleMetrics;
-    /// Return the default animation for toggle value changes.
-    fn toggle_value_animation(&self) -> Animation;
-    /// Draw switch-style toggle chrome. `progress` is the animated 0..=1
-    /// value and `selected` is the toggle's current target, so staged
-    /// choreography (e.g. a thumb icon that enters late and exits early) can
-    /// tell which direction the animation is heading.
-    fn draw_toggle_switch(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        progress: f32,
-        selected: bool,
-        state: WidgetInteractionState,
-    );
-    /// Draw switch-style toggle state layer.
-    fn draw_toggle_switch_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw checkbox-style toggle chrome. `state` carries the disabled flag
-    /// so themes can render the inactive container.
-    fn draw_toggle_checkbox(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        progress: f32,
-        state: WidgetInteractionState,
-    );
-    /// Draw checkbox-style toggle state layer.
-    fn draw_toggle_checkbox_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _state: WidgetInteractionState,
-    ) {
-    }
+    /// The look of a switch toggle.
+    ///
+    /// Hydrolysis measures, places, hit-tests, records and animates the
+    /// switch from the returned look, and requests it again only when `spec`
+    /// changes; everything else reaches the look through its
+    /// [`Driven`](super::Driven) values, which read the toggle's `bool`, so a
+    /// toggle, hover, press or drag moves live operands and records nothing.
+    /// The look's [`SwitchDrag`](super::SwitchDrag) maps a drag of the knob
+    /// to the value it settles on.
+    fn switch(&self, spec: &super::ToggleSpec, env: &Environment) -> super::SwitchLook;
+
+    /// The look of a checkbox toggle, requested and realized like
+    /// [`Self::switch`] but taking taps only.
+    fn checkbox(&self, spec: &super::ToggleSpec, env: &Environment) -> super::CheckboxLook;
 
     /// Return stepper metrics.
     fn stepper_metrics(&self) -> StepperMetrics;

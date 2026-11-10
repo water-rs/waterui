@@ -70,10 +70,15 @@ impl HydrolysisBackend {
     pub async fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
         let backend_dir = project.backend_path::<Self>();
         let ctx = Self::template_context(project, project.resolved_framework().await?).await?;
-        let outputs = templates::hydrolysis::rendered_outputs(
+        let package_name = project.hydrolysis_backend_crate_name();
+        let tables = templates::hydrolysis::resolved_painter_tables(
+            project.host(),
+            &backend_dir,
             &ctx,
-            &project.hydrolysis_backend_crate_name(),
-        )?;
+            &package_name,
+        )
+        .await?;
+        let outputs = templates::hydrolysis::rendered_outputs(&ctx, &package_name, &tables)?;
         for (relative, expected) in outputs {
             let path = backend_dir.join(&relative);
             // Preview binding files are rewritten with target-specific
@@ -209,6 +214,7 @@ impl Backend for HydrolysisBackend {
             .map_err(crate::backend::FailToInitBackend::Config)?;
 
         templates::hydrolysis::scaffold(
+            project.host(),
             &project.backend_path::<Self>(),
             &ctx,
             &project.hydrolysis_backend_crate_name(),

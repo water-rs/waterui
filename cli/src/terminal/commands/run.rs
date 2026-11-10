@@ -1,6 +1,6 @@
 //! `water run` command implementation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, ValueEnum};
 use eyre::{Context as _, Result, bail};
@@ -384,6 +384,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         let kotlin_toolchain = check_run_toolchain(
             shell,
             context.project.host(),
+            context.project.root(),
             context.platform,
             context.backend,
         )
@@ -582,11 +583,13 @@ fn print_run_header(shell: &Shell, context: &RunContext) {
 async fn check_run_toolchain(
     shell: &Shell,
     host: &waterui_cli::toolchain::Host,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
 ) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     let spinner = shell.spinner("Checking toolchain...");
-    let kotlin_toolchain = check_toolchain_for_backend(host, platform, backend).await?;
+    let kotlin_toolchain =
+        check_toolchain_for_backend(host, project_root, platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -1444,6 +1447,7 @@ async fn select_physical_ios(
 
 async fn check_toolchain_for_backend(
     host: &waterui_cli::toolchain::Host,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
 ) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
@@ -1465,7 +1469,7 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_gtk4(host).await?;
+            toolchain_checks::check_gtk4(host, project_root).await?;
         }
         TargetBackend::Hydrolysis => {
             if platform != TargetPlatform::Macos
@@ -1482,7 +1486,7 @@ async fn check_toolchain_for_backend(
             if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
             } else {
-                toolchain_checks::check_hydrolysis(host).await?;
+                toolchain_checks::check_hydrolysis(host, project_root).await?;
             }
         }
         TargetBackend::WinUi => {

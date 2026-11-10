@@ -25,7 +25,7 @@ use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, ns_string};
 use objc2_ui_kit::{
     NSLayoutConstraint, UIAccessibilityContentSizeCategoryImageAdjusting, UIButton, UIButtonType,
-    UIControl, UIControlState, UIFontTextStyleBody, UIImage, UIImageSymbolConfiguration,
+    UIColor, UIControl, UIControlState, UIFontTextStyleBody, UIImage, UIImageSymbolConfiguration,
     UILayoutGuide, UILayoutPriorityDefaultHigh, UILayoutPriorityRequired, UIResponder, UISwitch,
     UIView,
 };
@@ -35,6 +35,7 @@ use crate::callback::guarded;
 use crate::core_animation;
 use crate::geometry::{Rect, Size};
 use crate::response::{ReportsResponse, ResponseGeometry};
+use crate::slider::ControlSize;
 
 /// The gap between the label and the control, in points.
 pub const LABEL_SPACING: f64 = 8.0;
@@ -431,6 +432,27 @@ impl Toggle {
         match &self.control {
             Control::Switch(switch) => switch.isOn(),
             Control::Checkbox(button) => button.isSelected(),
+        }
+    }
+
+    /// How large the control is drawn.
+    ///
+    /// `UIKit` has no size classes for a switch or a checkbox: the platform
+    /// draws one size at every control size, so the value is ignored.
+    pub const fn set_control_size(&self, _size: ControlSize) {}
+
+    /// The colour the control draws its on state with: a switch's track
+    /// when it is on (`onTintColor`), a checkbox's glyph (`tintColor`).
+    ///
+    /// # Panics
+    ///
+    /// When not called on the main thread.
+    pub fn set_tint(&self, color: &UIColor) {
+        match &self.control {
+            Control::Switch(switch) => switch.setOnTintColor(Some(color)),
+            // SAFETY: `setTintColor:` is marked unsafe in the bindings; it is
+            // an ordinary main-thread `UIKit` setter.
+            Control::Checkbox(button) => unsafe { button.setTintColor(Some(color)) },
         }
     }
 
