@@ -16,11 +16,12 @@ use std::time::Instant;
 use accesskit::{NodeId, Role, TreeUpdate};
 use nami::Binding;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem, ListSection};
+use waterui::component::list::{List, ListItem, ListRowId, Section};
 use waterui::component::text;
 use waterui::{AnyView, Environment, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
+use waterui_core::views::ForEach;
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
@@ -97,22 +98,17 @@ fn click(runtime: &mut HeadlessRuntime, x: f64, y: f64) {
 /// the press slots `focus_node_for_key` resolves.
 fn sectioned_list(
     shown: Binding<bool>,
-    selection: Binding<Option<u64>>,
+    selection: Binding<Option<ListRowId>>,
 ) -> AnyViewBuilder<AnyView> {
     AnyViewBuilder::<AnyView>::new(move || {
         let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
         let shown = shown.clone();
         let selection = selection.clone();
         AnyView::new(
-            List::for_each(SignalCollection::new(rows), move |row| {
-                let index = row.into_inner();
-                let item = ListItem::new(text(format!("Row {index}")));
-                if index == 0 {
-                    item.section(ListSection::new("Section"))
-                } else {
-                    item
-                }
-            })
+            List::content(Section::new("Section").content(ForEach::new(
+                SignalCollection::new(rows),
+                |row: SelfId<u64>| ListItem::new(text(format!("Row {}", row.into_inner()))),
+            )))
             .selection(&selection)
             .visible(shown),
         )
@@ -127,7 +123,7 @@ fn hiding_a_mounted_list_section_emits_no_stale_parent() {
     let shown = Binding::bool(true);
     let mut runtime = runtime(
         test_environment(),
-        sectioned_list(shown.clone(), Binding::container(None::<u64>)),
+        sectioned_list(shown.clone(), Binding::container(None::<ListRowId>)),
     );
     let mut at = Instant::now();
 
@@ -165,7 +161,7 @@ fn hiding_a_mounted_list_section_emits_no_stale_parent() {
 #[test]
 fn a_focused_row_hidden_and_shown_again_refocuses() {
     let shown = Binding::bool(true);
-    let selection = Binding::container(None::<u64>);
+    let selection = Binding::container(None::<ListRowId>);
     let mut runtime = runtime(test_environment(), sectioned_list(shown.clone(), selection));
     let mut at = Instant::now();
 

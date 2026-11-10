@@ -23,7 +23,7 @@ use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
 use waterui::animation::{Animation, ChangeAnimation};
 use waterui::component::list::{
-    ListConfig, ListItem, ListSection, ListSelection, Move, OnDelete, OnMove,
+    ListConfig, ListItem, ListSection, ListSections, ListSelection, Move, OnDelete, OnMove,
 };
 use waterui::id::Id as RawId;
 use waterui::layout::padding::EdgeInsets;
@@ -81,12 +81,6 @@ fn row_height(content_height: f64, insets: KitInsets, minimum: f64) -> f64 {
     (content_height + insets.top + insets.bottom).max(minimum)
 }
 
-/// `peekListItemSection`: the `ListSection` marker `index` carries, when
-/// it starts a section.
-fn peek_section(snapshot: &AnyViewsSnapshot<ListItem>, index: usize) -> Option<ListSection> {
-    snapshot.get_view(index).and_then(ListItem::into_section)
-}
-
 /// A resolved section `Text` as its live styled-string signal.
 fn resolve_text(text: &Text, env: &Environment) -> Computed<StyledStr> {
     text.resolve(env).into_content()
@@ -105,66 +99,38 @@ struct SectionGroup {
     count: usize,
 }
 
-/// `computeListSectionGroups`: a section marker starts a group, items
-/// accumulate into the pending group, and the pending group flushes when
-/// the next marker — or the end — arrives.
+/// `computeListSectionGroups`: consecutive items of one section form a
+/// group carrying that section's chrome. The section comes from each item's
+/// id, so grouping materializes no row, and a section without items forms
+/// no group — it draws neither header nor footer.
 fn compute_section_groups(
-    snapshot: &AnyViewsSnapshot<ListItem>,
-    positions: &HashMap<ItemId, usize>,
+    sections: &ListSections,
     item_ids: &[ItemId],
     env: &Environment,
 ) -> Vec<SectionGroup> {
-    let mut groups = Vec::new();
-    let mut pending: Option<SectionGroup> = None;
+    let mut groups: Vec<SectionGroup> = Vec::new();
+    let mut current = None;
     for &id in item_ids {
-        let index = positions[&id];
-        if let Some(section) = peek_section(snapshot, index) {
-            if let Some(group) = pending.take() {
-                groups.push(group);
+        let section = sections.section_of(id);
+        if current == Some(section) {
+            if let Some(group) = groups.last_mut() {
+                group.count += 1;
             }
-            pending = Some(SectionGroup {
-                label: section.label().map(|text| resolve_text(text, env)),
-                footer: section.get_footer().map(|text| resolve_text(text, env)),
-                count: 0,
-            });
+            continue;
         }
-        match &mut pending {
-            Some(group) => group.count += 1,
-            None => {
-                pending = Some(SectionGroup {
-                    label: None,
-                    footer: None,
-                    count: 1,
-                });
-            }
-        }
-    }
-    if let Some(group) = pending.take() {
-        groups.push(group);
+        current = Some(section);
+        let chrome = sections.section(section);
+        groups.push(SectionGroup {
+            label: chrome
+                .and_then(ListSection::label)
+                .map(|text| resolve_text(text, env)),
+            footer: chrome
+                .and_then(ListSection::get_footer)
+                .map(|text| resolve_text(text, env)),
+            count: 1,
+        });
     }
     groups
-}
-
-/// `resolveListSectionGroups`: with `uses_sections` on, group by the
-/// items' markers; off, one unlabeled group covers everything.
-fn resolve_section_groups(
-    snapshot: &AnyViewsSnapshot<ListItem>,
-    positions: &HashMap<ItemId, usize>,
-    item_ids: &[ItemId],
-    uses_sections: bool,
-    env: &Environment,
-) -> Vec<SectionGroup> {
-    if uses_sections {
-        compute_section_groups(snapshot, positions, item_ids, env)
-    } else if item_ids.is_empty() {
-        Vec::new()
-    } else {
-        vec![SectionGroup {
-            label: None,
-            footer: None,
-            count: item_ids.len(),
-        }]
-    }
 }
 
 /// `isSinglePlainSection`: one group carrying no chrome is the shape batch
@@ -593,8 +559,8 @@ struct Shared {
     on_delete: Option<OnDelete>,
     /// Reorder callback.
     on_move: Option<OnMove>,
-    /// `uses_sections` — whether item markers group the list.
-    uses_sections: bool,
+    /// The sections the items group into, by item id.
+    sections: ListSections,
     /// The theme's row insets for `None` inputs.
     #[cfg(target_os = "macos")]
     theme_insets: KitInsets,
@@ -655,13 +621,7 @@ impl Shared {
     /// Regroups over the current `item_ids` — after a local delete or
     /// move mutates them.
     fn regroup(&mut self) {
-        self.groups = resolve_section_groups(
-            &self.snapshot,
-            &self.positions,
-            &self.item_ids,
-            self.uses_sections,
-            &self.env,
-        );
+        self.groups = compute_section_groups(&self.sections, &self.item_ids, &self.env);
     }
 
     /// Whether `flat`'s row resolved under `.disabled` on its last render
@@ -698,7 +658,7 @@ impl Shared {
             .snapshot
             .get_view(self.positions[&self.item_ids[flat]])
             .expect("list item index is in bounds");
-        let (content, deletable, _, insets) = item.into_parts();
+        let (content, deletable, insets) = item.into_parts();
         // The row's `Disabled` signal comes from the scope this render
         // resolves the content under — the same pass, not a second walk.
         let (leaf, resolved_env) = self.renderer.render_resolved(content);
@@ -2565,7 +2525,7 @@ fn render(mut config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         editing: config.editing().clone(),
         on_delete: config.take_on_delete(),
         on_move: config.take_on_move(),
-        uses_sections: config.uses_sections(),
+        sections: config.sections().clone(),
         #[cfg(target_os = "macos")]
         theme_insets,
         resolved_min_height: min_row_height(config.min_row_height(), stock_height),

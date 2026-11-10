@@ -1164,21 +1164,19 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     if editing && list.on_delete().is_some() {
         row_width += metrics.delete_control_width + metrics.trailing_control_spacing;
     }
-    // Section chrome is part of the list's own height. Walking every marker is
-    // bounded here because only static section content sets `uses_sections`; a
-    // virtualized `List::for_each` never does.
+    // Section chrome is part of the list's own height: each section holding
+    // rows draws its header and footer once. The sections come from row ids,
+    // so no row is materialized for them.
     let mut section_height = 0.0;
-    if list.uses_sections() {
-        for index in contents.range() {
-            let Some(section) = contents.get_view(index).and_then(ListItem::into_section) else {
-                continue;
-            };
-            if section.label().is_some() {
-                section_height += metrics.section_header_height;
-            }
-            if section.get_footer().is_some() {
-                section_height += metrics.section_footer_height;
-            }
+    for span in list.sections().spans(&contents) {
+        let Some(section) = span.section else {
+            continue;
+        };
+        if section.label().is_some() {
+            section_height += metrics.section_header_height;
+        }
+        if section.get_footer().is_some() {
+            section_height += metrics.section_footer_height;
         }
     }
 

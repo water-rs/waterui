@@ -1,17 +1,17 @@
 //! Structural section container for [`List::content`](super::List::content).
 //!
 //! [`Section<C>`] groups a sub-tree of [`super::ListContent`] under a header
-//! (and optional footer). It compiles down to the existing wire-format on
-//! [`super::ListItem`] (`section: Option<ListSection>`), tagging the first
-//! item produced by its inner content. Backends translate that marker into
-//! native chrome — iOS `UITableView` section header + footer, macOS
-//! `NSTableView` group rows, Material section dividers — without any extra
-//! FFI surface.
+//! (and optional footer). Its rows form one section of the list's
+//! [`super::ListSections`]; backends translate that into native chrome — iOS
+//! `UITableView` section header + footer, macOS `NSTableView` group rows,
+//! Material section dividers — attached to whichever rows the section holds
+//! at the moment.
 
 use waterui_text::{IntoText, Text};
 
 use super::ListSection;
-use super::content::{ListContent, ListItemSink};
+use super::content::{ListContent, ListScope, SectionScope};
+use super::rows::ListItemSink;
 
 /// Groups a sub-tree of [`ListContent`] under an optional header and footer.
 ///
@@ -19,6 +19,11 @@ use super::content::{ListContent, ListItemSink};
 /// shape of [`Vec<C>`] / `[C; N]` — there is no type erasure and no `Box<dyn>`
 /// at the call site. Compose sections with the existing tuple impls of
 /// [`ListContent`].
+///
+/// The content may be static rows, a `ForEach` over a reactive collection, or
+/// both. Rows of a reactive collection are inserted and removed as it
+/// changes; the header opens whichever row currently leads the section, and
+/// a section with no rows draws neither header nor footer until rows return.
 ///
 /// The header and footer are semantic text, so a string literal localizes and
 /// a signal-backed title updates in place: the backend repaints the chrome
@@ -83,7 +88,7 @@ impl<C> Section<C> {
     /// Returns a new `Section<NewC>` so the inner type is preserved without
     /// type erasure; the old content is dropped if it had not been used.
     #[must_use]
-    pub fn content<NewC: ListContent>(self, content: NewC) -> Section<NewC> {
+    pub fn content<NewC: ListContent<SectionScope>>(self, content: NewC) -> Section<NewC> {
         Section {
             label: self.label,
             footer: self.footer,
@@ -99,20 +104,13 @@ impl<C> Section<C> {
     }
 }
 
-impl<C: ListContent> ListContent for Section<C> {
+impl<C: ListContent<SectionScope>> ListContent<ListScope> for Section<C> {
     fn collect_items(self, sink: &mut ListItemSink) {
-        let start = sink.len();
+        let mut chrome = ListSection::default();
+        chrome.set_label(self.label);
+        chrome.set_footer(self.footer);
+        sink.begin_section(chrome);
         self.content.collect_items(sink);
-        // Tag the first item produced by the inner content. If the content
-        // produced no items, the section is silently dropped — this matches
-        // how SwiftUI renders an empty Section{}.
-        if sink.len() > start {
-            sink.set_section(start, {
-                let mut section = ListSection::default();
-                section.set_label(self.label);
-                section.set_footer(self.footer);
-                section
-            });
-        }
+        sink.end_section();
     }
 }

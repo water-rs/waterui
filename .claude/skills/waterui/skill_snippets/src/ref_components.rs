@@ -695,17 +695,36 @@ pub fn components_block_23() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
+// components.md § "## Lists and collections" (prose): a `ForEach` section.
+// Not counted as a rust block. Glue: `today` stands for the prose's reactive
+// collection.
+// ---------------------------------------------------------------------------
+pub fn components_reactive_section_prose(
+    today: waterui::reactive::collection::List<Record>,
+) -> impl View {
+    use waterui::views::ForEach;
+
+    List::content(
+        Section::new("Today").content(ForEach::new(today, |item: Record| {
+            ListItem::new(text(item.title))
+        })),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // components.md § "## Lists and collections" (prose): the `ListItem` modifiers.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_list_item_prose() {
+    use waterui::component::list::ListRowId;
+    use waterui::layout::padding::EdgeInsets;
+
     let signal = Binding::bool(true);
-    let section = ListSection::default();
-    let selection = Binding::container(None::<usize>);
-    let multi = Binding::container(alloc::collections::BTreeSet::<usize>::new());
+    let selection = Binding::container(None::<ListRowId>);
+    let multi = Binding::container(alloc::collections::BTreeSet::<ListRowId>::new());
 
     let _ = ListItem::new(text("a")).deletable(signal.clone());
-    let _ = ListItem::new(text("a")).section(section);
+    let _ = ListItem::new(text("a")).insets(EdgeInsets::all(4.0));
     let _ = List::content((row("a", text("1")),)).selection(&selection);
     let _ = List::content((row("a", text("1")),)).multi_selection(&multi);
     // A row under `.disabled(true)` is inert to selection; there is no

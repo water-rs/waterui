@@ -1,24 +1,25 @@
-//! Closed-collection trait and ergonomic row helpers for static list content.
+//! Closed-collection trait and ergonomic row helpers for list content.
 //!
 //! [`ListContent`] mirrors the closed-collection pattern used by `MenuView`
 //! (see `components/controls/src/menu.rs`): every value type the user can
 //! drop into [`crate::component::list::List::content`] explicitly opts in
 //! through this trait. Implementations exist for any `Fn() -> ListItem` row
-//! builder, the [`Row`] builder produced by [`row`] / [`detail_row`],
-//! [`super::Section`], tuples up to 15 elements, fixed-size arrays,
-//! [`Vec<T>`], and `Option<T>`.
+//! builder, the [`Row`] builder produced by [`row`] / [`detail_row`], a
+//! [`ForEach`] over a reactive collection, [`super::Section`], tuples up to
+//! 15 elements, fixed-size arrays, [`Vec<T>`], and `Option<T>`.
 //!
-//! Rows are *builders*, not finished [`super::ListItem`] values, because the
-//! list rematerializes a row every time it needs one — write
-//! `|| ListItem::new(…)`, not `ListItem::new(…)`.
+//! Static rows are *builders*, not finished [`super::ListItem`] values,
+//! because the list rematerializes a row every time it needs one — write
+//! `|| ListItem::new(…)`, not `ListItem::new(…)`. A [`ForEach`] keeps its
+//! collection's identity and follows it row by row.
 //!
-//! The accumulator design (`collect_items(self, sink)`) lets `Section<C>`
-//! attach its header / footer marker to whichever item the inner content
-//! produces first, without forcing each implementation to allocate an
-//! intermediate `Vec`.
+//! The scope parameter keeps sections flat: a [`super::Section`] is
+//! [`ListContent`] of the list ([`ListScope`]) but not of another section
+//! ([`SectionScope`]), so nesting one section in another does not compile.
 
 use alloc::vec::Vec;
 
+use nami::collection::Collection;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 
@@ -32,103 +33,56 @@ use waterui_text::{IntoText, Text};
 
 use crate::Color;
 use crate::view::ViewExt;
+use crate::views::ForEach;
 
-use super::{ListItem, ListSection};
+use super::ListItem;
+use super::rows::ListItemSink;
 
 // ============================================================================
-// ListContent trait + sink
+// ListContent trait
 // ============================================================================
 
-/// Converts semantic list content into a flat sequence of [`ListItem`]
-/// builders.
+/// Content of the list itself: rows and [`super::Section`]s.
+#[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a marker type that carries no data"
+)]
+pub struct ListScope;
+
+/// Content of a [`super::Section`]: rows, but no further sections.
+#[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a marker type that carries no data"
+)]
+pub struct SectionScope;
+
+/// Converts semantic list content into the rows and sections a list shows.
+///
+/// `Scope` is where the content may appear: [`ListScope`] (the default) for
+/// the content of [`List::content`](super::List::content), [`SectionScope`]
+/// for the content of a [`super::Section`]. Rows are content in both;
+/// a section only in the list's.
 ///
 /// Implementations are limited to building blocks the framework explicitly
 /// blesses (see the module docs). This keeps `List::content` a closed
 /// surface in the same spirit as the `MenuView` trait, so user code cannot
 /// leak arbitrary `View` types into list rows by accident.
-pub trait ListContent {
-    /// Pushes the items produced by this content into `sink`.
+pub trait ListContent<Scope = ListScope> {
+    /// Pushes the rows produced by this content into `sink`.
     fn collect_items(self, sink: &mut ListItemSink);
-}
-
-/// Accumulator handed to [`ListContent::collect_items`].
-///
-/// Stores [`ListItem`] *builders* (not finished items) so that the [`Views`]
-/// adapter behind `List::content` can reproduce a fresh [`ListItem`] every
-/// time the framework requests it. Each entry also carries an optional
-/// [`ListSection`] marker attached by [`super::Section`].
-///
-/// [`Views`]: crate::views::Views
-pub struct ListItemSink {
-    entries: Vec<(AnyViewBuilder<ListItem>, Option<ListSection>)>,
-}
-
-impl Default for ListItemSink {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl core::fmt::Debug for ListItemSink {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ListItemSink")
-            .field("len", &self.entries.len())
-            .finish()
-    }
-}
-
-impl ListItemSink {
-    /// Creates an empty sink.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
-
-    /// Returns the number of entries collected so far.
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Returns whether the sink has collected no entries yet.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Pushes one entry built from a cloneable builder.
-    pub fn push(&mut self, builder: AnyViewBuilder<ListItem>) {
-        self.entries.push((builder, None));
-    }
-
-    /// Attaches a section marker to the entry at `index`.
-    ///
-    /// Used by [`super::Section`] to tag the first item produced by its
-    /// inner content. Subsequent items without their own marker render
-    /// inside the same section.
-    pub(crate) fn set_section(&mut self, index: usize, section: ListSection) {
-        if let Some(entry) = self.entries.get_mut(index) {
-            entry.1 = Some(section);
-        }
-    }
-
-    /// Consumes the sink and returns the collected entries in order.
-    pub(crate) fn into_entries(self) -> Vec<(AnyViewBuilder<ListItem>, Option<ListSection>)> {
-        self.entries
-    }
 }
 
 // ----------------------------------------------------------------------------
 // Leaf impls
 // ----------------------------------------------------------------------------
 
-impl ListContent for () {
+impl<S> ListContent<S> for () {
     fn collect_items(self, _sink: &mut ListItemSink) {}
 }
 
-impl<T: ListContent> ListContent for Option<T> {
+impl<S, T: ListContent<S>> ListContent<S> for Option<T> {
     fn collect_items(self, sink: &mut ListItemSink) {
         if let Some(content) = self {
             content.collect_items(sink);
@@ -136,7 +90,7 @@ impl<T: ListContent> ListContent for Option<T> {
     }
 }
 
-impl<T: ListContent> ListContent for Vec<T> {
+impl<S, T: ListContent<S>> ListContent<S> for Vec<T> {
     fn collect_items(self, sink: &mut ListItemSink) {
         for item in self {
             item.collect_items(sink);
@@ -144,7 +98,7 @@ impl<T: ListContent> ListContent for Vec<T> {
     }
 }
 
-impl<T: ListContent, const N: usize> ListContent for [T; N] {
+impl<S, T: ListContent<S>, const N: usize> ListContent<S> for [T; N] {
     fn collect_items(self, sink: &mut ListItemSink) {
         for item in self {
             item.collect_items(sink);
@@ -157,12 +111,27 @@ impl<T: ListContent, const N: usize> ListContent for [T; N] {
 /// pre-built items from another module — without forcing them through
 /// [`Row`]. The closure is called by the framework whenever the row needs to
 /// be (re)materialized, so it must be `Fn`, not `FnOnce`.
-impl<F> ListContent for F
+impl<S, F> ListContent<S> for F
 where
     F: Fn() -> ListItem + 'static,
 {
     fn collect_items(self, sink: &mut ListItemSink) {
         sink.push(AnyViewBuilder::new(self));
+    }
+}
+
+/// A [`ForEach`] over a reactive collection contributes one row per item,
+/// keyed by the item's id. The rows follow the collection: items it inserts,
+/// removes or moves are inserted, removed or moved in place, and inside a
+/// [`super::Section`] the header opens whichever row currently leads it.
+impl<S, C, F> ListContent<S> for ForEach<C, F, ListItem>
+where
+    C: Collection + Clone + 'static,
+    C::Item: Clone,
+    F: Fn(C::Item) -> ListItem + 'static,
+{
+    fn collect_items(self, sink: &mut ListItemSink) {
+        sink.push_rows(self);
     }
 }
 
@@ -195,7 +164,7 @@ macro_rules! list_content_tuples {
 macro_rules! impl_tuple_list_content {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<$($T: ListContent),+> ListContent for ($($T,)+) {
+        impl<S, $($T: ListContent<S>),+> ListContent<S> for ($($T,)+) {
             fn collect_items(self, sink: &mut ListItemSink) {
                 let ($($T,)+) = self;
                 $(
@@ -308,7 +277,7 @@ impl Row {
     }
 }
 
-impl ListContent for Row {
+impl<S> ListContent<S> for Row {
     fn collect_items(self, sink: &mut ListItemSink) {
         let row = self;
         let deletable_override = row.deletable;

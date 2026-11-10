@@ -3,8 +3,8 @@
 //! This module provides the necessary components to build and configure lists
 //! in the `WaterUI` framework. It includes the `List` component for displaying
 //! collections of data, [`ListItem`] for configuring individual items, and
-//! the [`ListContent`] / [`Section`] / [`row`] surface for composing static
-//! heterogeneous lists with sections.
+//! the [`ListContent`] / [`Section`] / [`row`] surface for composing
+//! heterogeneous lists with sections, static or reactive.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
@@ -20,7 +20,7 @@ use waterui_core::id::{Id as RawId, Mapping};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, View,
-    handler::{AnyViewBuilder, Handler, shared_action},
+    handler::{Handler, shared_action},
     impl_extractor,
     layout::StretchAxis,
 };
@@ -29,9 +29,15 @@ use waterui_layout::scroll::ScrollController;
 use waterui_text::{IntoText, Text};
 
 mod content;
+mod rows;
 mod section;
 
-pub use content::{ListContent, ListItemSink, Row, RowLayout, detail_row, row};
+pub use content::{ListContent, ListScope, Row, RowLayout, SectionScope, detail_row, row};
+use rows::RowSections;
+pub use rows::{
+    ContentRows, ContentRowsGuard, ContentRowsSnapshot, ListItemSink, ListRowId, ListSectionSpan,
+    ListSections,
+};
 pub use section::Section;
 
 /// A list reorder operation.
@@ -171,8 +177,8 @@ pub struct ListConfig {
     on_move: Option<OnMove>,
     /// Optional programmatic item-index scroll controller.
     scroll_controller: Option<ScrollController<usize>>,
-    /// Whether rows carry semantic section markers.
-    uses_sections: bool,
+    /// The sections `contents` groups into, keyed by the same row ids.
+    sections: ListSections,
     /// The minimum height of a row, from [`ListMinRowHeight`] in the list's
     /// environment. `None` uses the theme's one-line row height.
     min_row_height: Option<f32>,
@@ -227,10 +233,12 @@ impl ListConfig {
         self.scroll_controller.as_ref()
     }
 
-    /// Whether rows carry semantic section markers.
+    /// The sections `contents` groups into, keyed by the same row ids
+    /// `contents.get_id` returns. A list built without sections is one
+    /// section without chrome.
     #[must_use]
-    pub const fn uses_sections(&self) -> bool {
-        self.uses_sections
+    pub const fn sections(&self) -> &ListSections {
+        &self.sections
     }
 
     /// The minimum height of a row, from [`ListMinRowHeight`] in the list's
@@ -279,18 +287,33 @@ impl NativeView for ListConfig {
 #[derive(Debug)]
 pub struct List<V: Views<View = ListItem> = AnyViews<ListItem>> {
     contents: V,
-    uses_sections: bool,
+    sections: RowSections<V::Id>,
 }
 
 impl<V> List<V>
 where
     V: Views<View = ListItem>,
 {
-    /// Creates a new list with the specified contents.
-    pub const fn new(contents: V) -> Self {
+    /// Creates a new list with the specified contents, all in one section
+    /// without chrome.
+    pub fn new(contents: V) -> Self {
         Self {
             contents,
-            uses_sections: true,
+            sections: RowSections::plain(),
+        }
+    }
+
+    /// The builder carrying this list's contents and sections, with every
+    /// option unset.
+    fn builder(self) -> ListBuilder<V> {
+        ListBuilder {
+            contents: self.contents,
+            selection: ListSelection::None,
+            editing: Computed::new(false),
+            on_delete: None,
+            on_move: None,
+            scroll_controller: None,
+            sections: self.sections,
         }
     }
 
@@ -299,15 +322,7 @@ where
     /// When edit mode is enabled, delete buttons and drag handles are shown.
     #[must_use]
     pub fn editing(self, editing: impl IntoComputed<bool>) -> ListBuilder<V> {
-        ListBuilder {
-            contents: self.contents,
-            editing: editing.into_computed(),
-            selection: ListSelection::None,
-            on_delete: None,
-            on_move: None,
-            scroll_controller: None,
-            uses_sections: self.uses_sections,
-        }
+        self.builder().editing(editing)
     }
 
     /// Sets the callback for when any item is deleted.
@@ -316,15 +331,7 @@ where
     where
         H: Handler<Args, ()>,
     {
-        ListBuilder {
-            contents: self.contents,
-            editing: Computed::new(false),
-            selection: ListSelection::None,
-            on_delete: Some(list_delete_action(on_delete)),
-            on_move: None,
-            scroll_controller: None,
-            uses_sections: self.uses_sections,
-        }
+        self.builder().on_delete(on_delete)
     }
 
     /// Sets the callback for when items are moved/reordered.
@@ -333,15 +340,7 @@ where
     where
         H: Handler<Args, ()>,
     {
-        ListBuilder {
-            contents: self.contents,
-            editing: Computed::new(false),
-            selection: ListSelection::None,
-            on_delete: None,
-            on_move: Some(list_move_action(on_move)),
-            scroll_controller: None,
-            uses_sections: self.uses_sections,
-        }
+        self.builder().on_move(on_move)
     }
 
     /// Connects a controller that scrolls the list to a requested item index.
@@ -351,15 +350,7 @@ where
     /// rows of the target first and animates only that final stretch.
     #[must_use]
     pub fn scroll_controller(self, controller: &ScrollController<usize>) -> ListBuilder<V> {
-        ListBuilder {
-            contents: self.contents,
-            selection: ListSelection::None,
-            editing: Computed::new(false),
-            on_delete: None,
-            on_move: None,
-            scroll_controller: Some(controller.clone()),
-            uses_sections: self.uses_sections,
-        }
+        self.builder().scroll_controller(controller)
     }
 
     /// Single selection keyed by row identity. The framework and backends
@@ -369,15 +360,7 @@ where
     /// input routes around it and the binding stays unchanged.
     #[must_use]
     pub fn selection(self, selection: &Binding<Option<V::Id>>) -> ListBuilder<V> {
-        ListBuilder {
-            contents: self.contents,
-            selection: ListSelection::Single(selection.clone()),
-            editing: Computed::new(false),
-            on_delete: None,
-            on_move: None,
-            scroll_controller: None,
-            uses_sections: self.uses_sections,
-        }
+        self.builder().selection(selection)
     }
 
     /// Multiple selection keyed by row identity.
@@ -386,15 +369,7 @@ where
     /// input routes around it and the binding stays unchanged.
     #[must_use]
     pub fn multi_selection(self, selection: &Binding<BTreeSet<V::Id>>) -> ListBuilder<V> {
-        ListBuilder {
-            contents: self.contents,
-            selection: ListSelection::Multiple(selection.clone()),
-            editing: Computed::new(false),
-            on_delete: None,
-            on_move: None,
-            scroll_controller: None,
-            uses_sections: self.uses_sections,
-        }
+        self.builder().multi_selection(selection)
     }
 }
 
@@ -410,128 +385,32 @@ where
     /// scroll through [`ScrollController`] therefore does not materialize the
     /// preceding rows it passes — an animated request realizes only the rows
     /// the moving viewport covers each frame.
-    /// Use [`List::content`] instead when rows carry semantic section markers.
+    /// Use [`List::content`] instead to group rows into sections.
     pub fn for_each(data: C, generator: F) -> Self {
-        Self {
-            contents: ForEach::new(data, generator),
-            uses_sections: false,
-        }
+        Self::new(ForEach::new(data, generator))
     }
 }
 
-impl List<BuiltViews> {
-    /// Creates a list from a static [`ListContent`] tree.
+impl List<ContentRows> {
+    /// Creates a list from a [`ListContent`] tree.
     ///
     /// `ListContent` accepts `|| ListItem::new(…)` row builders, [`Row`] (the
-    /// [`row`] / [`detail_row`] helpers produce one), [`Section<C>`], tuples,
-    /// arrays, vectors, and `Option<T>`, so heterogeneous content composes
-    /// structurally just like `SwiftUI`'s `Section { row; row }` form. A row is
-    /// a builder rather than a finished [`ListItem`] because the list rebuilds
-    /// it whenever the row is realized again. For dynamic identity-keyed data,
-    /// use [`List::for_each`] instead; for any pre-built [`Views`]
-    /// implementation, use [`List::new`].
+    /// [`row`] / [`detail_row`] helpers produce one), a [`ForEach`] over a
+    /// reactive collection, [`Section<C>`], tuples, arrays, vectors, and
+    /// `Option<T>`, so heterogeneous content composes structurally just like
+    /// `SwiftUI`'s `Section { row; ForEach(items) { … } }` form. A static row
+    /// is a builder rather than a finished [`ListItem`] because the list
+    /// rebuilds it whenever the row is realized again; a `ForEach` follows
+    /// its collection row by row. A row's id is a [`ListRowId`]. For one
+    /// identity-keyed collection without sections, [`List::for_each`] keeps
+    /// the collection's own ids; for any pre-built [`Views`] implementation,
+    /// use [`List::new`].
     #[must_use]
     pub fn content(content: impl ListContent) -> Self {
         let mut sink = ListItemSink::new();
         content.collect_items(&mut sink);
-        Self {
-            contents: BuiltViews::new(sink),
-            uses_sections: true,
-        }
-    }
-}
-
-/// `Views` adapter that materializes the entries collected by a
-/// [`ListContent`] tree on demand.
-///
-/// Each entry stores a cloneable builder that produces a fresh [`ListItem`]
-/// every time the snapshot's `get_view` is called, plus an optional
-/// [`ListSection`] marker attached by [`Section`].
-pub struct BuiltViews {
-    entries: alloc::vec::Vec<(AnyViewBuilder<ListItem>, Option<ListSection>)>,
-}
-
-impl BuiltViews {
-    pub(crate) fn new(sink: ListItemSink) -> Self {
-        Self {
-            entries: sink.into_entries(),
-        }
-    }
-}
-
-impl core::fmt::Debug for BuiltViews {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("BuiltViews")
-            .field("len", &self.entries.len())
-            .finish()
-    }
-}
-
-/// The immutable snapshot captured by [`BuiltViews`].
-///
-/// Shares the builder entries and their section markers. Each `get_view`
-/// produces a fresh [`ListItem`].
-pub struct BuiltViewsSnapshot {
-    entries: Rc<[(AnyViewBuilder<ListItem>, Option<ListSection>)]>,
-}
-
-impl Clone for BuiltViewsSnapshot {
-    fn clone(&self) -> Self {
-        Self {
-            entries: self.entries.clone(),
-        }
-    }
-}
-
-impl core::fmt::Debug for BuiltViewsSnapshot {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("BuiltViewsSnapshot")
-            .field("len", &self.entries.len())
-            .finish()
-    }
-}
-
-impl ViewSnapshot for BuiltViewsSnapshot {
-    type Id = usize;
-    type View = ListItem;
-
-    fn range(&self) -> Range<usize> {
-        0..self.entries.len()
-    }
-
-    fn get_id(&self, index: usize) -> Option<Self::Id> {
-        (index < self.entries.len()).then_some(index)
-    }
-
-    fn get_view(&self, index: usize) -> Option<Self::View> {
-        let (builder, section) = self.entries.get(index)?;
-        let mut item = builder.build();
-        item.section.clone_from(section);
-        Some(item)
-    }
-}
-
-impl Views for BuiltViews {
-    type Id = usize;
-    type Guard = ();
-    type View = ListItem;
-    type Snapshot = BuiltViewsSnapshot;
-
-    fn len(&self) -> Computed<usize> {
-        Computed::constant(self.entries.len())
-    }
-
-    fn snapshot(&self) -> Self::Snapshot {
-        BuiltViewsSnapshot {
-            entries: Rc::from(self.entries.as_slice()),
-        }
-    }
-
-    fn watch(
-        &self,
-        _range: impl RangeBounds<usize>,
-        _watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
-    ) -> Self::Guard {
+        let (contents, sections) = sink.finish();
+        Self { contents, sections }
     }
 }
 
@@ -542,16 +421,7 @@ where
     type Config = ListConfig;
 
     fn config(self) -> Self::Config {
-        ListConfig {
-            contents: SharedAnyViews::new(self.contents),
-            selection: ListSelection::None,
-            editing: Computed::new(false),
-            on_delete: None,
-            on_move: None,
-            scroll_controller: None,
-            uses_sections: self.uses_sections,
-            min_row_height: None,
-        }
+        self.builder().config()
     }
 }
 
@@ -561,7 +431,7 @@ impl ViewConfiguration for ListConfig {
     fn render(self) -> Self::View {
         List {
             contents: self.contents,
-            uses_sections: self.uses_sections,
+            sections: RowSections::from_erased(self.sections),
         }
     }
 }
@@ -573,28 +443,21 @@ impl From<ListConfig> for List<SharedAnyViews<ListItem>> {
 }
 
 fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
-    // Section headers and footers are semantic text: they localize, and they
-    // may be driven by a signal. Resolving them here is the one place the
-    // environment is in hand — rows are materialized lazily by the renderer,
-    // long after this body has run.
-    let section_env = env.clone();
     // Erasing the themed contents again re-keys every row id, so the erased
-    // selection travels through the same generator — a backend's `get_id`
-    // must return exactly the ids the selection is keyed by.
+    // selection and sections travel through the same generator — a
+    // backend's `get_id` must return exactly the ids both are keyed by.
     let selection = config.selection.clone();
     let theme_selection = selection.clone();
     let (contents, ids) = AnyViews::new_with_ids(WithId {
         contents: config.contents.clone(),
-        transform: Rc::new(move |id, item| {
-            selection_themed(
-                resolve_item_section(item, &section_env),
-                &theme_selection,
-                id,
-            )
-        }),
+        transform: Rc::new(move |id, item| selection_themed(item, &theme_selection, id)),
     });
     config.contents = SharedAnyViews::from(contents);
     config.selection = selection.erased(&ids);
+    // Section headers and footers are semantic text: they localize, and they
+    // may be driven by a signal. Resolving them here is the one place the
+    // environment is in hand.
+    config.sections = config.sections.clone().rekeyed(&ids).resolved(env);
     config.min_row_height = env.get::<ListMinRowHeight>().map(|height| height.0);
     if let Some(hook) = env.get::<Hook<ListConfig>>() {
         AnyView::new(hook.apply(env, config))
@@ -703,12 +566,6 @@ where
     }
 }
 
-/// Resolves the section marker a row carries against the list's environment.
-fn resolve_item_section(mut item: ListItem, env: &Environment) -> ListItem {
-    item.section = item.section.map(|section| section.resolved(env));
-    item
-}
-
 /// Re-themes a row's content while it is selected.
 ///
 /// A selected row is filled with the theme's `SelectionContainer`, so everything
@@ -792,7 +649,7 @@ pub struct ListBuilder<V: Views<View = ListItem>> {
     on_delete: Option<OnDelete>,
     on_move: Option<OnMove>,
     scroll_controller: Option<ScrollController<usize>>,
-    uses_sections: bool,
+    sections: RowSections<V::Id>,
 }
 
 impl<V: Views<View = ListItem>> core::fmt::Debug for ListBuilder<V> {
@@ -874,7 +731,7 @@ where
             on_delete: self.on_delete,
             on_move: self.on_move,
             scroll_controller: self.scroll_controller,
-            uses_sections: self.uses_sections,
+            sections: self.sections.erased(&ids),
             min_row_height: None,
         }
     }
@@ -913,11 +770,11 @@ where
 // ListItem - Individual item in a list
 // ============================================================================
 
-/// Semantic section break carried by a [`ListItem`].
+/// The chrome of one section of a list: its header and footer.
 ///
-/// When an item carries a `ListSection`, the renderer treats that item as the
-/// start of a new logical group within the same list. Subsequent items
-/// without their own `ListSection` belong to the most recently opened group.
+/// A [`Section`] in [`List::content`] produces one; a backend reads it from
+/// [`ListSections`] and draws it around the rows the section currently
+/// holds — the header above the first, the footer below the last.
 ///
 /// The visual is left to the backend: iOS renders this as a `UITableView`
 /// section header (and inset-grouped chrome around the section), macOS uses
@@ -1002,7 +859,7 @@ impl ListSection {
     /// `Computed` — or one that only changes when the locale does — keeps
     /// updating in place instead of being frozen at construction.
     #[must_use]
-    fn resolved(self, env: &Environment) -> Self {
+    pub(crate) fn resolved(self, env: &Environment) -> Self {
         Self {
             label: self.label.map(|label| Text::from(label.resolve(env))),
             footer: self.footer.map(|footer| Text::from(footer.resolve(env))),
@@ -1023,10 +880,6 @@ pub struct ListItem {
     content: AnyView,
     /// Read-only signal indicating whether this item can be deleted.
     deletable: Computed<bool>,
-    /// When `Some`, this item starts a new logical section. The backend uses
-    /// this marker to group subsequent items into native chrome (iOS inset
-    /// grouped sections, macOS group rows, Material section headers).
-    section: Option<ListSection>,
     /// The insets between the row's edges and its content. `None` uses the
     /// theme's row insets.
     insets: Option<EdgeInsets>,
@@ -1060,20 +913,6 @@ impl ListItem {
         &self.deletable
     }
 
-    /// When `Some`, this item starts a new logical section. The backend uses
-    /// this marker to group subsequent items into native chrome (iOS inset
-    /// grouped sections, macOS group rows, Material section headers).
-    #[must_use]
-    pub const fn get_section(&self) -> Option<&ListSection> {
-        self.section.as_ref()
-    }
-
-    /// Takes the `section` out of the value.
-    #[must_use]
-    pub fn into_section(self) -> Option<ListSection> {
-        self.section
-    }
-
     /// The insets between the row's edges and its content. `None` uses the
     /// theme's row insets.
     #[must_use]
@@ -1082,15 +921,8 @@ impl ListItem {
     }
 
     /// Takes the value apart into its fields, in declaration order.
-    pub fn into_parts(
-        self,
-    ) -> (
-        AnyView,
-        Computed<bool>,
-        Option<ListSection>,
-        Option<EdgeInsets>,
-    ) {
-        (self.content, self.deletable, self.section, self.insets)
+    pub fn into_parts(self) -> (AnyView, Computed<bool>, Option<EdgeInsets>) {
+        (self.content, self.deletable, self.insets)
     }
 }
 
@@ -1112,7 +944,6 @@ impl ListItem {
         Self {
             content: AnyView::new(content),
             deletable: Computed::new(true),
-            section: None,
             insets: None,
         }
     }
@@ -1134,16 +965,6 @@ impl ListItem {
     #[must_use]
     pub const fn insets(mut self, insets: EdgeInsets) -> Self {
         self.insets = Some(insets);
-        self
-    }
-
-    /// Marks this item as the first row of a new section with the given header.
-    ///
-    /// All later items without their own [`ListItem::section`] marker render
-    /// inside the same section until another marker is encountered.
-    #[must_use]
-    pub fn section(mut self, section: ListSection) -> Self {
-        self.section = Some(section);
         self
     }
 }
@@ -1190,7 +1011,7 @@ mod tests {
             .list_min_row_height(0.0),
         );
         let list = *content
-            .downcast::<List<BuiltViews>>()
+            .downcast::<List<ContentRows>>()
             .unwrap_or_else(|_| panic!("the metadata did not wrap the list"));
         let with_floor = render_config(ConfigurableView::config(list), &env);
         assert_eq!(with_floor.min_row_height, Some(0.0));
@@ -1209,7 +1030,7 @@ mod tests {
     /// selection transforms `render_list_config` wraps every item in.
     #[test]
     fn row_insets_survive_the_section_and_selection_transform() {
-        let selection = nami::Binding::container(Option::<usize>::None);
+        let selection = nami::Binding::container(Option::<ListRowId>::None);
         let config = render_config(
             ConfigurableView::config(
                 List::content((

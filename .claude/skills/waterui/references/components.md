@@ -496,10 +496,17 @@ List::content((
 ))
 ```
 
-`ListItem` modifiers: `.deletable(signal)`, `.section(section)`. Selection lives on the
+A section's content may also be a `ForEach` over a reactive collection, next to or instead
+of static rows — `Section::new("Today").content(ForEach::new(today, |item| ListItem::new(text(item.title))))`.
+Its rows are inserted and removed in place as the collection changes, the header sits on
+whichever row currently opens the section, and a section with no rows draws neither header
+nor footer until rows come back. A grouped, filtered list is therefore one `List::content`
+with a `Section` per group, each over its own `SignalCollection`; sections do not nest.
+
+`ListItem` modifiers: `.deletable(signal)`, `.insets(insets)`. Selection lives on the
 list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
 `.multi_selection(&Binding<BTreeSet<V::Id>>)` on both `List` and `ListBuilder`; for
-`List::content` rows `V::Id` is the row index (`usize`), for `List::for_each` it is the
+`List::content` rows `V::Id` is the opaque `ListRowId`, for `List::for_each` it is the
 collection's id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`, the index for an
 array or static slice. At most one mode per list: a later call replaces an earlier one.
 `List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
