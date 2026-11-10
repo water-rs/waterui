@@ -2230,6 +2230,13 @@ impl Atlas {
                 }
                 LiveKind::Path => {
                     if let Some(emit) = self.paths.remove(&hk) {
+                        // A path's cells can span shelves: its key leaves
+                        // every other shelf's index too, or evicting one of
+                        // those later would drop a re-admission of the key.
+                        for cell in &emit.cells {
+                            self.slot_keys[usize::try_from(cell.slot).expect("shelf index")]
+                                .remove(&hk);
+                        }
                         self.slot_dead.push(emit.slots.clone());
                         bytes += path_entry_bytes(&emit);
                     }
@@ -3696,6 +3703,66 @@ mod tests {
             atlas.shelf_epoch(slot_a),
             epoch_a,
             "a surviving band keeps its epoch"
+        );
+    }
+
+    /// A path whose cells span two shelves leaves both shelves' indexes
+    /// when one of them is evicted: re-admitted elsewhere, it survives
+    /// the later eviction of the other shelf, which once dropped the
+    /// fresh admission through the stale index entry and failed the
+    /// commit's `just stored` lookup.
+    #[test]
+    fn a_split_path_survives_its_old_shelf_eviction() {
+        // A class-16 cell and a class-24 cell, each too wide to share its
+        // shelf with a second one.
+        const W: u32 = 100;
+        const SHORT: usize = W as usize * 10;
+        let Some((device, _queue)) = device_and_queue() else {
+            return;
+        };
+        let mut atlas = Atlas::new(&device, u64::MAX);
+        atlas.size = 128;
+        let mut writes = CellWrites::default();
+        let arena = writes.push_arena(vec![0x80; W as usize * 30]);
+        let mut place = |atlas: &mut Atlas| {
+            let emit = PathEmit {
+                cells: vec![
+                    PathCell {
+                        rect: [0.0; 4],
+                        x: 0,
+                        y: 0,
+                        slot: 0,
+                        interior: 0,
+                    };
+                    2
+                ],
+                ..PathEmit::default()
+            };
+            let cells = vec![(W, 10, 0..SHORT), (W, 20, SHORT..SHORT * 3)];
+            atlas
+                .place_path(1, emit, cells, arena, &mut writes)
+                .expect("the path places");
+            atlas.path(1).expect("just stored").cells.clone()
+        };
+        atlas.begin_commit(&[]);
+        let first = place(&mut atlas);
+        let old_tall = first[1].slot;
+        assert_ne!(first[0].slot, old_tall, "the cells take two shelves");
+        // Only the short shelf is cold: evicting it drops the path.
+        atlas.begin_commit(&[old_tall]);
+        assert!(atlas.evict_one());
+        assert!(atlas.path(1).is_none(), "the evicted path is gone");
+        // Re-admitted, the tall cell cannot share the full old shelf.
+        atlas.begin_commit(&[]);
+        let again = place(&mut atlas);
+        assert!(again.iter().all(|cell| cell.slot != old_tall));
+        // The next commit draws the path; only its old tall shelf is cold.
+        let touches: Vec<u32> = again.iter().map(|cell| cell.slot).collect();
+        atlas.begin_commit(&touches);
+        assert!(atlas.evict_one());
+        assert!(
+            atlas.path(1).is_some(),
+            "evicting a shelf the path left keeps its admission"
         );
     }
 
