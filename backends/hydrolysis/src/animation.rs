@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use crate::theme::{RadioIndicatorState, RadioSelectionMotion};
 use nami::watcher::Context;
-use waterui_core::animation::{Animation, AnimationTrack};
+use waterui_core::animation::{Animation, AnimationTrack, ChangeAnimation};
 
 use crate::time::Instant;
 
@@ -536,11 +536,11 @@ impl AnimatedScalarHandle {
     }
 
     /// Applies a signal watcher update: the new value becomes the target and
-    /// the `Animation` carried in the update's metadata (if any) drives the
-    /// transition.
+    /// the `Animation` the update names (if any) drives the transition. An
+    /// update that names none or disables animation snaps.
     pub fn apply_update_from_context(&self, update: Context<f32>, now: Instant) {
-        let metadata = update.metadata().try_get::<Animation>();
-        self.apply_target(update.into_value(), metadata, now);
+        let animation = ChangeAnimation::of(update.metadata()).animation();
+        self.apply_target(update.into_value(), animation, now);
     }
 
     /// Steers the slot toward `target`, animating with `animation` or

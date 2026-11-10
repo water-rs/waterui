@@ -9,7 +9,7 @@
 //! the control; the payload's stretch axis picks how the row fills its
 //! offer (`docs/layout-spec.md` §3, §6).
 
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
 use waterui::component::toggle::{ToggleConfig, ToggleStyle};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
@@ -48,12 +48,12 @@ const fn kind(style: ToggleStyle) -> Kind {
 }
 
 /// The `StateChange` the metadata asks for, `withCrossDissolveAnimation`'s
-/// table: an absent animation writes directly, and any present animation
-/// plays — a switch slides, a checkbox cross-fades for the seconds the
-/// table gives.
+/// table: a change that names no animation or disables it writes directly,
+/// and any named animation plays — a switch slides, a checkbox cross-fades
+/// for the seconds the table gives.
 #[cfg(target_os = "ios")]
 fn state_change(metadata: &Metadata) -> StateChange {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata).animation() {
         None => StateChange::Immediate,
         Some(Animation::Default) => StateChange::Dissolve { seconds: 0.25 },
         Some(Animation::Bezier { duration, .. }) => StateChange::Dissolve {
@@ -68,7 +68,7 @@ fn state_change(metadata: &Metadata) -> StateChange {
 /// group under its clamped estimate.
 #[cfg(target_os = "macos")]
 fn state_change(metadata: &Metadata) -> StateChange {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata).animation() {
         None => StateChange::Immediate,
         Some(Animation::Default) => StateChange::Implicit {
             seconds: 0.25,
@@ -231,6 +231,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 mod tests {
     use core::time::Duration;
 
+    use waterui::animation::NoAnimation;
+
     use super::*;
 
     #[test]
@@ -256,6 +258,16 @@ mod tests {
     #[should_panic(expected = "unresolved Automatic style")]
     fn kind_rejects_an_unresolved_automatic_style() {
         let _ = kind(ToggleStyle::Automatic);
+    }
+
+    /// A change that disables animation writes directly, even when an
+    /// animation is attached too.
+    #[test]
+    fn state_change_snaps_when_animation_is_disabled() {
+        let disabled = Metadata::new().with(Animation::Default).with(NoAnimation);
+        let StateChange::Immediate = state_change(&disabled) else {
+            panic!("a change that disables animation must write immediately");
+        };
     }
 
     #[cfg(target_os = "ios")]

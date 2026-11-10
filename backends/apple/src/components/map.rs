@@ -16,7 +16,7 @@ use core::cell::RefCell;
 
 use cocoa_ui::map::{AnnotationMarker, LoadStatus, MapView, Style as KitStyle, SuppliedLocation};
 use waterui::Str;
-use waterui::animation::Animation;
+use waterui::animation::ChangeAnimation;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui_core::layout::{
@@ -27,10 +27,10 @@ use waterui_map::{Annotation, Coordinate, MapConfig, MapStatus, MapStyle, Region
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
 
-/// Whether this watcher callback animates: the metadata carries an
+/// Whether this watcher callback animates: the change names an
 /// `Animation`, the same check `metadata.animation != nil` performed.
 fn animated(metadata: &Metadata) -> bool {
-    metadata.try_get::<Animation>().is_some()
+    ChangeAnimation::of(metadata).animation().is_some()
 }
 
 /// A `waterui_map::Coordinate` as the kit's degree-pair.

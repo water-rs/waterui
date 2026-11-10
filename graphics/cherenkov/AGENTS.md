@@ -2,8 +2,9 @@
 
 Cherenkov is the 2D engine under Hydrolysis and WaterUI's self-drawn
 components. It has a GPU backend (`gpu/`, on wgpu) and a CPU backend
-(`cpu/`, including the microcontroller design point), selected at build time
-and never as a runtime fallback. The rules below are the engine's standing
+(`cpu/`, including the microcontroller design point). A build selects GPU,
+CPU, or both; with both, the CPU backend renders when the host has no
+usable GPU. The rules below are the engine's standing
 contract.
 
 The engine moved into water-rs/waterui under `graphics/` (#1449): bare `#N`

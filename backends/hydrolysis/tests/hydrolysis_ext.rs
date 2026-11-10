@@ -300,7 +300,7 @@ fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     let fonts = hydrolysis::native_collection(&env);
     fonts.clone().install(&mut env);
 
-    let gpu = OffscreenGpuContext::new_for_tests_blocking();
+    let gpu = OffscreenGpuContext::new_blocking();
     let mut platform =
         OffscreenWindow::on_context(gpu.clone(), width, height, wgpu::TextureFormat::Rgba8Unorm);
     let mut renderer =
@@ -460,8 +460,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
 fn offscreen_window_scale_factor_scales_the_surface_only() {
     use hydrolysis::PlatformWindow as _;
 
-    let window =
-        hydrolysis::OffscreenWindow::new_for_tests(320, 200, wgpu::TextureFormat::Rgba8Unorm);
+    let window = hydrolysis::OffscreenWindow::new(320, 200, wgpu::TextureFormat::Rgba8Unorm);
     assert_eq!(window.surface_ref().size(), (320, 200));
     assert!((window.scale_factor() - 1.0).abs() < f64::EPSILON);
 

@@ -320,11 +320,17 @@ macos_capture_args=(
 # shared deadline ($2): a hung simctl/screenshot/screencapture used to block
 # the settle loop unbounded between deadline checks — measured at 451 s for a
 # single screenshot in the Actions run behind #1539 — and a failed command
-# used to be silently retried or replaced by an earlier frame. Each command
-# also carries COMMAND_BOUND_S of its own: a healthy capture answers in
-# seconds, so a command still running at the bound is hung — killed there,
-# while shared budget remains, which is what separates a hung command from
-# ordinary settle-budget exhaustion in capture_settled below.
+# used to be silently retried or replaced by an earlier frame. The other
+# capture commands (the window-id lookup, the settle compare) also carry
+# COMMAND_BOUND_S of their own: a healthy one answers in seconds, so one still
+# running at the bound is hung — killed there, while shared budget remains,
+# which is what separates a hung command from ordinary settle-budget
+# exhaustion in capture_settled below. The screenshot commands (simctl io
+# screenshot, screencapture) carry no bound of their own: a shard's first
+# screenshots after the simulator reboot measured 27.6–35.7 s while the
+# simulator finishes its post-boot work (#4083), so a fixed per-command bound
+# killed healthy captures. A hung screenshot is still killed at the shared
+# deadline and fails the example there.
 COMMAND_BOUND_S=30
 capture_frame() {
   local target="$1"
@@ -338,7 +344,6 @@ capture_frame() {
     sampler_pid="$(stall_sampler_start "${logs_dir}/${platform}-${example}-stall-sample.log")"
     "${command_deadline}" run --label "capture:simctl-io-screenshot" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
-      --max-seconds "${COMMAND_BOUND_S}" \
       -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null
     capture_rc=$?
     stall_sampler_stop "${sampler_pid}" "${logs_dir}/${platform}-${example}-stall-sample.log"
@@ -352,7 +357,6 @@ capture_frame() {
     rm -f "${target}"
     "${command_deadline}" run --label "capture:screencapture" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
-      --max-seconds "${COMMAND_BOUND_S}" \
       -- screencapture -x -o "-l${window_id}" "${target}" || return
   fi
   if [[ ! -f "${target}" ]]; then
@@ -485,8 +489,10 @@ capture_settled() {
       # retrying it or falling back to an earlier frame would substitute a
       # state the harness never verified (#1539). The same two 124 cases
       # as the compare apply — a kill at the scoped bound while budget
-      # remains is a hung command; a kill at the shared deadline is the
-      # loop's ordinary exhaustion, settled below.
+      # remains is a hung command (only the window-id lookup carries one
+      # here); a kill at the shared deadline, which is the only way a
+      # screenshot is killed, is the loop's ordinary exhaustion, settled
+      # below.
       frame_rc=$?
       if (( frame_rc == 124 )) && \
          ! "${command_deadline}" remaining --deadline-at "${deadline_at}" >/dev/null; then
@@ -494,7 +500,7 @@ capture_settled() {
       fi
       rm -f "${anchor}"
       if (( frame_rc == 124 )); then
-        echo "::error::${example}: a capture command exceeded its ${COMMAND_BOUND_S}s command bound with shared budget remaining — a hung command, not settle progress; last receipt in ${receipts_file}."
+        echo "::error::${example}: the window-id lookup exceeded its ${COMMAND_BOUND_S}s command bound with shared budget remaining — a hung command, not settle progress; last receipt in ${receipts_file}."
       else
         echo "::error::${example}: a capture command failed (exit ${frame_rc}); last receipt in ${receipts_file}."
       fi
@@ -511,6 +517,10 @@ capture_settled() {
   done
   rm -f "${anchor}"
   if [[ ! -f "${target}" ]]; then
+    # capture_frame removes the target before each capture, so this is a
+    # capture killed at the shared deadline (a screenshot has no bound of
+    # its own) or a budget spent before any frame landed.
+    echo "::error::${example}: no frame was captured within the shared settle budget (a capture command killed at the shared deadline, or the budget spent before one started); last receipt in ${receipts_file}."
     return 1
   fi
   echo "::warning::${example} never settled to a stable frame; using the last capture. A first screen that cannot be made deterministic declares a .skip marker."
@@ -593,6 +603,36 @@ collect_simulator_stall_diagnostics() {
     else
       echo "app pid ${app_pid:-unset} is not running"
     fi
+    echo "--- simulator render processes (sample 3s each) ---"
+    # What a slow screenshot waits on lives in the simulator's render path.
+    # backboardd runs inside the simulator as a child of this device's
+    # launchd_sim (whose command line names the UDID); SimRenderServer and
+    # SimMetalHost are host processes (parent launchd) that name no device,
+    # so they are matched by name — this shard boots the only simulator on
+    # the runner. Each sample is supervised under its own diagnostics deadline
+    # so it neither outlives the collection nor starves the log reads below,
+    # and keeps enough of its call graph to show every thread's wait.
+    local render_deadline_at launchd_sim_pid render_name render_pid render_pids
+    render_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
+    launchd_sim_pid="$(pgrep -f "launchd_sim .*/Devices/${SIMULATOR_UDID}/" 2>/dev/null | head -1)"
+    for render_name in backboardd SimRenderServer SimMetalHost; do
+      if [[ "${render_name}" == "backboardd" ]]; then
+        render_pids=""
+        [[ -n "${launchd_sim_pid}" ]] && render_pids="$(pgrep -P "${launchd_sim_pid}" -x "${render_name}" 2>/dev/null)"
+      else
+        render_pids="$(pgrep -x "${render_name}" 2>/dev/null)"
+      fi
+      if [[ -z "${render_pids}" ]]; then
+        echo "${render_name} not found for simulator ${SIMULATOR_UDID}"
+        continue
+      fi
+      for render_pid in ${render_pids}; do
+        echo "${render_name} (pid ${render_pid})"
+        "${command_deadline}" run --label "diag:sample-${render_name}-${render_pid}" \
+          --deadline-at "${render_deadline_at}" --receipt "${receipts_file}" \
+          -- sample "${render_pid}" 3 1 2>&1 | sed -n '1,200p' || true
+      done
+    done
     echo "--- host simulator service state ---"
     local svc_pids
     svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
@@ -731,10 +771,22 @@ build_reference_host() {
 # the launch-failure bug #147 fixed above, one step later in the sequence.
 # Waiting on the host's own signal removes the race rather than widening the
 # constant.
+#
+# A marker counts only from the process this launch started. The stream and
+# the replay below read the whole `dev.waterui` subsystem, and the replay's
+# window holds the previous example's and twin's markers too: an app that
+# never painted used to inherit the previous app's marker and be captured as
+# if it had (stress reported reminders' 8554 ms in nightly 42694488366, then
+# captured a black screen). Compact style tags each line `Process[PID:TID]`.
+marker_value() {
+  local log="$1" key="$2" pid="$3"
+  sed -n "s/.*\[${pid}:[0-9a-f]*\] .*${key}=\([0-9][0-9]*\).*/\1/p" "${log}" 2>/dev/null | head -1
+}
+
 wait_for_reference_first_paint() {
-  local marker_log="$1"
+  local marker_log="$1" pid="$2"
   for _ in $(seq 1 60); do
-    if grep -q "waterui_reference_first_paint_ms=" "${marker_log}" 2>/dev/null; then
+    if [[ -n "$(marker_value "${marker_log}" waterui_reference_first_paint_ms "${pid}")" ]]; then
       return 0
     fi
     sleep 1
@@ -749,7 +801,7 @@ wait_for_reference_first_paint() {
     log show --last 2m --predicate 'subsystem == "dev.waterui"' \
       --style compact >> "${marker_log}" 2>/dev/null || true
   fi
-  grep -q "waterui_reference_first_paint_ms=" "${marker_log}" 2>/dev/null
+  [[ -n "$(marker_value "${marker_log}" waterui_reference_first_paint_ms "${pid}")" ]]
 }
 
 # Launches the reference host for `example`, waits for its first paint,
@@ -770,13 +822,15 @@ capture_reference() {
       > "${ref_marker_log}" 2>/dev/null &
     local ref_stream_pid=$!
     sleep 1
-    xcrun simctl launch "${SIMULATOR_UDID}" dev.waterui.E2EReference \
-      -E2EExample "${example}" -E2ETitle "${title}" >/dev/null || {
+    local ref_pid
+    ref_pid="$(xcrun simctl launch "${SIMULATOR_UDID}" dev.waterui.E2EReference \
+      -E2EExample "${example}" -E2ETitle "${title}" | awk -F': ' '{print $2}')"
+    if [[ -z "${ref_pid}" ]]; then
       kill "${ref_stream_pid}" 2>/dev/null || true
       return 1
-    }
+    fi
     local rc=0
-    if wait_for_reference_first_paint "${ref_marker_log}"; then
+    if wait_for_reference_first_paint "${ref_marker_log}" "${ref_pid}"; then
       capture_settled "${target}"
       rc=$?
     else
@@ -804,7 +858,7 @@ capture_reference() {
       return 1
     fi
     local rc=0
-    if wait_for_reference_first_paint "${ref_marker_log}"; then
+    if wait_for_reference_first_paint "${ref_marker_log}" "${ref_pid}"; then
       capture_settled "${target}" "${ref_pid}"
       rc=$?
     else
@@ -1097,7 +1151,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   startup_ms=""
   no_first_paint=0
   for _ in $(seq 1 30); do
-    startup_ms="$(sed -n 's/.*waterui_first_paint_ms=\([0-9][0-9]*\).*/\1/p' "${marker_log}" | head -1)"
+    startup_ms="$(marker_value "${marker_log}" waterui_first_paint_ms "${app_pid}")"
     [[ -n "${startup_ms}" ]] && break
     sleep 1
   done
@@ -1113,7 +1167,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       log show --last 2m --predicate 'subsystem == "dev.waterui"' \
         --style compact >> "${marker_log}" 2>/dev/null || true
     fi
-    startup_ms="$(sed -n 's/.*waterui_first_paint_ms=\([0-9][0-9]*\).*/\1/p' "${marker_log}" | head -1)"
+    startup_ms="$(marker_value "${marker_log}" waterui_first_paint_ms "${app_pid}")"
   fi
   if [[ -n "${startup_ms}" ]]; then
     echo "::notice::${example} first paint in ${startup_ms} ms (${platform}, release)"

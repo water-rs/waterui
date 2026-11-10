@@ -426,7 +426,7 @@ impl Engine for VelloHybrid {
             &mut ctx,
             lowered,
             &mut self.counters,
-            input.scroll_transform(),
+            input.frame_transform(),
         );
         // `bytes_uploaded` counts the decoded texels uploaded to the
         // atlas in `prepare` — the same quantity vello-classic reports
