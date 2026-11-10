@@ -151,9 +151,9 @@ pub use objc2_av_foundation;
 pub use objc2_av_kit;
 pub use objc2_core_foundation;
 pub use objc2_core_graphics;
-pub use objc2_core_text;
 #[cfg(feature = "avkit")]
 pub use objc2_core_media;
+pub use objc2_core_text;
 pub use objc2_foundation;
 pub use objc2_metal;
 pub use objc2_quartz_core;
