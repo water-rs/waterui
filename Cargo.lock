@@ -13019,6 +13019,7 @@ dependencies = [
  "smallvec",
  "suiteki",
  "thiserror 2.0.21",
+ "tracing",
  "waterui-macros",
 ]
 

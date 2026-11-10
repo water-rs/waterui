@@ -240,7 +240,7 @@ impl InsertionRun {
         // ended at once at identity.
         #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
         if state.captures_content() {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: a pixel transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"
             );
@@ -401,7 +401,7 @@ impl InsertionRun {
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
     fn update_blur(&self, sample: &TransitionProperties) {
         if sample.blur() > 0.0 && !self.blur_warned.replace(true) {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: a blur transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"
             );
