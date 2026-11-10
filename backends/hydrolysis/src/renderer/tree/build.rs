@@ -1192,6 +1192,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             content: Rc::new(RefCell::new(content)),
             invalidator,
             association: Rc::new(RefCell::new(None)),
+            resize: Rc::new(RefCell::new(crate::renderer::ResizeTracker::new())),
             measured: Cell::new(None),
         }))
     }

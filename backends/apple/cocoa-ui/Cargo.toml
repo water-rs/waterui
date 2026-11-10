@@ -270,6 +270,15 @@ tracing = "0.1"
 [dev-dependencies]
 libtest-mimic = "0.8"
 
+# The scroll-phase cases synthesize a wheel event with gesture and momentum
+# phases through `CGEventCreateScrollWheelEvent2` → `+[NSEvent eventWithCGEvent:]`.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "CGEvent",
+    "CGEventTypes",
+] }
+
 # The `native` suite (tests/native/main.rs) holds the cases that touch real
 # `AppKit`/`UIKit` objects. `harness = false` makes `main` the process's real
 # main thread — `MainThreadMarker::new()` is a genuine check there, with no
@@ -604,6 +613,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UIKey",
     "UITouch",
     "UITextInput",
+    "UIPasteboard",
     "objc2-quartz-core",
     "objc2-core-graphics",
     "block2",

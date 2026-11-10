@@ -667,15 +667,15 @@ use cherenkov::Instant;
 
     let start = Instant::now();
     translate.set(Affine::translate((1.2, 0.0)));
-    wait!(engine.render(FrameTime::at(start)))?;
+    wait!(engine.render(FrameTime::unpresented_at(start)))?;
     let at_start = wait!(surface.readback())?.pixels;
     assert!(matches!(
-        wait!(engine.render(FrameTime::at(start + Duration::from_millis(250))))?,
+        wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(250))))?,
         cherenkov::Next::At { .. }
     ));
     let quarter = wait!(surface.readback())?.pixels;
     assert_eq!(
-        wait!(engine.render(FrameTime::at(start + Duration::from_secs(2))))?,
+        wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_secs(2))))?,
         cherenkov::Next::Idle
     );
     let settled = wait!(surface.readback())?.pixels;

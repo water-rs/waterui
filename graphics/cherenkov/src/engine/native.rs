@@ -1118,7 +1118,7 @@ mod tests {
         // overwrites the stale `At`; the still-running peer is
         // unaffected.
         let _ = engine
-            .render(FrameTime::at(
+            .render(FrameTime::unpresented_at(
                 crate::Instant::now() + std::time::Duration::from_secs(120),
             ))
             .unwrap();

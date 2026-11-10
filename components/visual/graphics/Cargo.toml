@@ -70,6 +70,10 @@ pastey.workspace = true
 wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1", optional = true, features = ["derive"] }
 keyboard-types.workspace = true
+# An image's status watchers are UI-thread closures kept inside the `Send`
+# image they observe; each is only ever called and dropped on the thread
+# that registered it.
+send_wrapper = { version = "0.6", default-features = false }
 thiserror.workspace = true
 # `avif` is `image`'s AVIF *encoder* (ravif -> rav1e), not its decoder
 # (`avif-native`). `image_decode` only decodes, and its HEIF retry hands the

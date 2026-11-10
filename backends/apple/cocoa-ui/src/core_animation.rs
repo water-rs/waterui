@@ -42,7 +42,8 @@ pub fn without_animation(body: impl FnOnce()) {
 
 /// The order of Core Animation's own commit observer on the main run loop
 /// (`CA::Transaction::observer_callback`, on `BeforeWaiting | Exit`).
-/// [`on_commit`]'s observer sits right after it.
+/// [`on_commit`]'s observer sits right after it, [`before_commit`]'s right
+/// before it.
 const CORE_ANIMATION_COMMIT_ORDER: CFIndex = 2_000_000;
 
 /// Runs `body` once, after the main run loop's current turn commits its
@@ -69,37 +70,55 @@ const CORE_ANIMATION_COMMIT_ORDER: CFIndex = 2_000_000;
 ///
 /// If Core Foundation hands back no main run loop or no observer — both
 /// exist for every process with a main thread.
-pub fn on_commit(_mtm: MainThreadMarker, body: impl FnOnce() + 'static) {
+pub fn on_commit(mtm: MainThreadMarker, body: impl FnOnce() + 'static) {
+    let run_loop = CFRunLoop::main().expect("the main thread has a run loop");
+    observe_turn_once(mtm, CORE_ANIMATION_COMMIT_ORDER + 1, move || {
+        body();
+        // Layer changes `body` made join a transaction opened after this
+        // turn's commit; wake the loop so the next turn commits them
+        // instead of leaving them until some other event arrives.
+        run_loop.wake_up();
+    });
+}
+
+/// Runs `body` once, just before the main run loop's current turn commits
+/// its Core Animation transaction.
+///
+/// The observer is ordered right before Core Animation's commit observer:
+/// it runs after the turn's sources, timers and display-link callbacks,
+/// and layer changes `body` makes ride that same commit.
+///
+/// Registration follows [`on_commit`]'s rules: bodies registered in one
+/// turn run in registration order, and one registered while that turn's
+/// observers are already being called — from another `before_commit`
+/// body — runs before the next turn's commit.
+///
+/// # Panics
+///
+/// If Core Foundation hands back no main run loop or no observer — both
+/// exist for every process with a main thread.
+pub fn before_commit(mtm: MainThreadMarker, body: impl FnOnce() + 'static) {
+    observe_turn_once(mtm, CORE_ANIMATION_COMMIT_ORDER - 1, body);
+}
+
+/// Runs `body` once from a one-shot main run-loop observer at `order` on
+/// `BeforeWaiting | Exit`, in the common modes.
+fn observe_turn_once(_mtm: MainThreadMarker, order: CFIndex, body: impl FnOnce() + 'static) {
     let run_loop = CFRunLoop::main().expect("the main thread has a run loop");
     // The handler is `Fn`; the run loop calls a non-repeating observer
     // once and then invalidates it, releasing the handler and `body`.
     let body = Cell::new(Some(body));
-    let handler = RcBlock::new({
-        let run_loop = run_loop.clone();
-        move |_: *mut CFRunLoopObserver, _: CFRunLoopActivity| {
-            if let Some(body) = body.take() {
-                body();
-                // Layer changes `body` made join a transaction opened after
-                // this turn's commit; wake the loop so the next turn
-                // commits them instead of leaving them until some other
-                // event arrives.
-                run_loop.wake_up();
-            }
+    let handler = RcBlock::new(move |_: *mut CFRunLoopObserver, _: CFRunLoopActivity| {
+        if let Some(body) = body.take() {
+            body();
         }
     });
     let activities: CFOptionFlags = (CFRunLoopActivity::BeforeWaiting | CFRunLoopActivity::Exit).0;
     // SAFETY: the default allocator, a valid activity mask and a live
     // handler block, which the observer copies.
-    let observer = unsafe {
-        CFRunLoopObserver::with_handler(
-            None,
-            activities,
-            false,
-            CORE_ANIMATION_COMMIT_ORDER + 1,
-            Some(&handler),
-        )
-    }
-    .expect("CFRunLoopObserverCreateWithHandler answers an observer");
+    let observer =
+        unsafe { CFRunLoopObserver::with_handler(None, activities, false, order, Some(&handler)) }
+            .expect("CFRunLoopObserverCreateWithHandler answers an observer");
     // SAFETY: `kCFRunLoopCommonModes` is a Core Foundation constant.
     run_loop.add_observer(Some(&observer), unsafe { kCFRunLoopCommonModes });
     // A registration made while the run loop is already calling this

@@ -1700,7 +1700,11 @@ impl CapturableSurface for NativeFilterCapturable {
         );
         let input = Retained::clone(&work.get(mtm).prepared.input);
         let generation = work.get(mtm).prepared.context.generation();
-        owner.capture.capture(&input, generation, move |captured| {
+        // A parent's frame drives this render: the capture joins the
+        // turn's shared pass, one transaction commit for every
+        // display-driven capture of the turn (#4074).
+        let captures = crate::gpu_runtime::capture_pass(&owner.env);
+        captures.capture(&owner.capture, &input, generation, move |captured| {
             let work = Arc::clone(&work);
             cocoa_ui::main_queue::enqueue(move |mtm| {
                 finish_capture(&work, captured.is_ok(), mtm);

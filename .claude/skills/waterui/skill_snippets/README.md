@@ -134,7 +134,7 @@ Some snippets resolve real paths, so the crate carries the files they name:
 ## Dependencies
 
 Beyond `waterui` with every feature the skill documents, the crate depends on exactly the
-crates the skill's snippets name by path (`waterui-barcode`, `waterui-canvas`,
+crates the skill's snippets name by path (`waterui-barcode`,
 `waterui-chart`, `waterui-locale`, `waterui-map`, `waterui-map-gpu`, `waterui-particle`,
 `waterui-url`, `waterkit-permission`, `jiff`, the two icon sets).
 `serde` is glue for media.md's `#[js_api]` payload type.

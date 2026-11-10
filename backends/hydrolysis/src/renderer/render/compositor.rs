@@ -212,7 +212,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let _frame = self.commit_window_frame(&mut window, &target, headroom);
 
         self.applied_filter_metrics.reset();
-        let rendered = crate::engine::engine_await!(window.surface.render());
+        let rendered = crate::engine::engine_await!(window.surface.render(self.frame_time()));
         self.take_applied_filter_metrics();
         self.cherenkov_window = Some(window);
         self.engine_next = Some(rendered?.into());
@@ -281,8 +281,9 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             window.surface.display_moved();
         }
 
+        let at = self.frame_time();
         let rendered = self.render_presented_window(&mut window, target, |surface| {
-            surface.render(target.display_scale)
+            surface.render(at, target.display_scale)
         });
         *window_slot = Some(window);
         rendered
@@ -334,11 +335,8 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         // existing display range; native buffers retain source HDR metadata.
         let _frame =
             self.commit_window_frame(window, target, cherenkov::Display::default().headroom);
-        self.render_presented_window(
-            window,
-            target,
-            crate::engine::AndroidCherenkovSurface::render,
-        )
+        let time = self.frame_time();
+        self.render_presented_window(window, target, |surface| surface.render(time))
     }
 
     /// The common completion path for engine-presented native windows.
@@ -426,7 +424,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let _frame = self.commit_window_frame(&mut window, target, 1.0);
 
         self.applied_filter_metrics.reset();
-        let rendered = window.surface.render().await;
+        let rendered = window.surface.render(self.frame_time()).await;
         self.take_applied_filter_metrics();
         *window_slot = Some(window);
         self.engine_next = Some(rendered?.into());

@@ -4674,7 +4674,6 @@ dependencies = [
  "waterui",
  "waterui-assets",
  "waterui-backend-core",
- "waterui-canvas",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
@@ -10263,7 +10262,6 @@ dependencies = [
  "waterkit-permission",
  "waterui",
  "waterui-barcode",
- "waterui-canvas",
  "waterui-chart",
  "waterui-icons-lucide",
  "waterui-icons-material-icon",
@@ -12762,7 +12760,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#cbc29527d8a74b123bd3588a271e927dc9730937"
+source = "git+https://github.com/water-rs/browsers?branch=dev#a30f6b41512cf19f21b655f4ba46ec1c1199fc8e"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12802,7 +12800,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#cbc29527d8a74b123bd3588a271e927dc9730937"
+source = "git+https://github.com/water-rs/browsers?branch=dev#a30f6b41512cf19f21b655f4ba46ec1c1199fc8e"
 dependencies = [
  "cookie",
  "executor-core",
@@ -13067,6 +13065,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "pastey 0.2.3",
  "pollster 1.0.1",
+ "send_wrapper",
  "shaderloom",
  "thiserror 2.0.21",
  "tracing",
@@ -13235,7 +13234,6 @@ dependencies = [
  "waterui-assets-macros",
  "waterui-assets-planner",
  "waterui-barcode",
- "waterui-canvas",
  "waterui-chart",
  "waterui-controls",
  "waterui-core",
@@ -13336,7 +13334,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=dev#fd5acea509585af344636b885108202d4740d647"
+source = "git+https://github.com/water-rs/map-gpu?branch=dev#34d4f6606a7dd143083e87a397df6d3584750a21"
 dependencies = [
  "blocking",
  "executor-core",
@@ -13474,7 +13472,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?branch=dev#7fd718f5caf158bb8050df045cf0fbd3c6091c6a"
+source = "git+https://github.com/water-rs/particle?branch=dev#1aa8a4d33121810613ac3c66e2304ed15c315b46"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13545,7 +13543,6 @@ dependencies = [
  "sysinfo",
  "waterui",
  "waterui-assets-planner",
- "waterui-canvas",
  "waterui-core",
  "waterui-preview-protocol",
  "wgpu",
@@ -13680,7 +13677,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=dev#cf8aaf52cb9c939104bd35da91fb72fe7e0d72e3"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#4eeb3349544e9ec801a7ece5fcd296540d600c07"
 dependencies = [
  "async-channel",
  "executor-core",

@@ -762,7 +762,11 @@ class ShadowNativeBridge {
 
         @JvmStatic
         @Implementation
-        fun nativeOnFrame(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") vsyncNanos: Long): Long {
+        fun nativeOnFrame(
+            sessionPtr: Long,
+            @Suppress("UNUSED_PARAMETER") hasPresentation: Boolean,
+            @Suppress("UNUSED_PARAMETER") presentationNanos: Long,
+        ): Long {
             assertLive(sessionPtr)
             frames += 1
             return onFrame()

@@ -68,9 +68,12 @@ object NativeBridge {
      * [nativeBandAttached] / [nativeBandDetached] carry each band View's
      * `ImageReader` surface, and `onNativeBandLatch` shows a band's newest
      * image (water-rs/waterui#2225). 26 = the HWUI `DefineEffect` wire
-     * carries the overscroll stretch stage kind.
+     * carries the overscroll stretch stage kind. 27 = [nativeSetMetrics]
+     * carries the `ViewConfiguration` double-tap timeout and slop, and
+     * [nativeOnFrame] carries the vsync callback's expected presentation
+     * time in place of the advisory vsync timestamp.
      */
-    private const val SCHEMA: Int = 26
+    private const val SCHEMA: Int = 27
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -202,14 +205,24 @@ object NativeBridge {
         minFlingVelocityPx: Float,
         maxFlingVelocityPx: Float,
         scrollFriction: Float,
+        doubleTapTimeoutMs: Int,
+        doubleTapSlopPx: Float,
     )
 
     /**
      * The frame transaction. Returns a bitmask: 1 = wants another vsync frame,
      * 2 = window requested close, 4 = a fallback deadline is available through
-     * [nativeFrameDeadlineInNanos].
+     * [nativeFrameDeadlineInNanos]. `hasPresentation` is set for a frame a
+     * vsync callback started, and `presentationNanos` is then its expected
+     * presentation time on the `System.nanoTime` clock; a delayed deadline
+     * frame has none.
      */
-    @JvmStatic external fun nativeOnFrame(sessionPtr: Long, vsyncNanos: Long): Long
+    @JvmStatic
+    external fun nativeOnFrame(
+        sessionPtr: Long,
+        hasPresentation: Boolean,
+        presentationNanos: Long,
+    ): Long
 
     @JvmStatic external fun nativeFrameDeadlineInNanos(sessionPtr: Long): Long
 

@@ -75,7 +75,7 @@ impl<'e, B: Backend + ProjectiveLayers> Scene<'e, B> {
 
     fn render(&mut self) -> Result<Vec<[f32; 4]>, RenderError> {
         self.frame += 1;
-        self.engine.render(FrameTime::at(
+        self.engine.render(FrameTime::unpresented_at(
             self.start + Duration::from_millis(self.frame * 8),
         ))?;
         Ok(self.surface.readback().expect("readback").pixels)

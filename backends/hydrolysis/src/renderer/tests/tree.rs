@@ -621,10 +621,10 @@ fn render_tree_scene_view_switch_snapshot() {
     use std::time::Instant;
     use waterui::ViewExt as _;
     use waterui::reactive::binding;
-    use waterui_canvas::Canvas;
     use waterui_core::dynamic::watch;
     use waterui_core::handler::AnyViewBuilder;
     use waterui_core::layout::{Point, Rect, Size as LayoutSize};
+    use waterui_graphics::canvas::Canvas;
     use waterui_graphics::color::Srgb;
 
     fn write_png(path: &std::path::Path, width: u32, height: u32, rgba: Vec<u8>) {
@@ -635,9 +635,11 @@ fn render_tree_scene_view_switch_snapshot() {
 
     fn canvas_box(r: u8, g: u8, b: u8) -> AnyView {
         AnyView::new(
-            Canvas::new(move |ctx| {
-                ctx.set_fill_style(Srgb::new_u8(r, g, b));
-                ctx.fill_rect(Rect::new(Point::zero(), LayoutSize::new(150.0, 150.0)));
+            Canvas::new(move |cx| {
+                cx.fill(
+                    Rect::new(Point::zero(), LayoutSize::new(150.0, 150.0)),
+                    Srgb::new_u8(r, g, b).resolve(),
+                );
             })
             .size(150.0, 150.0),
         )

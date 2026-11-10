@@ -179,7 +179,12 @@ pub struct SceneContentSource {
     pub content: Rc<RefCell<Box<dyn waterui_graphics::SceneContent>>>,
     pub invalidator: waterui_graphics::SceneInvalidator,
     pub association: Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
+    /// The size and scale the content's input handler was last told about,
+    /// shared with the node so it survives each flush's fresh source.
+    pub resize: Rc<RefCell<crate::renderer::ResizeTracker>>,
     pub bounds: kurbo::Rect,
+    /// The instant of the frame the commit presents.
+    pub time: crate::time::Instant,
 }
 
 /// A material wrapper's backdrop request: the member's backdrop-group
