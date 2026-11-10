@@ -30,10 +30,9 @@ fn drawing() -> Drawing {
     })
 }
 
+/// Where the rendered images are written for review.
 fn out_dir() -> PathBuf {
-    let dir = PathBuf::from(
-        "/private/tmp/claude-501/-Users-lexoliu-Coding-waterui/161051f2-1da9-410b-8d87-b5d503d54de0/scratchpad/4113",
-    );
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("render_drawing");
     std::fs::create_dir_all(&dir).expect("output directory");
     dir
 }
