@@ -487,7 +487,7 @@ fn scope_program_builder(
 #[test]
 fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
     use crate::renderer::mount::program::Item;
-    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeProps};
+    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeLive, ScopeProps};
 
     let clock = PlacementClock::new();
     let mut builder = scope_program_builder(&clock);
@@ -500,6 +500,7 @@ fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
             transform: Affine::translate((30.0, 40.0)),
             clip: None,
             alpha: 1.0,
+            live: ScopeLive::NONE,
         },
         Placement::new(&clock),
     );
@@ -532,7 +533,7 @@ fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
 #[test]
 fn a_nested_scope_mounts_with_each_transform_applied_once() {
     use crate::renderer::mount::program::Item;
-    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeProps};
+    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeLive, ScopeProps};
 
     let outer = Affine::translate((30.0, 40.0));
     let inner = Affine::translate((5.0, 6.0));
@@ -552,6 +553,7 @@ fn a_nested_scope_mounts_with_each_transform_applied_once() {
             transform: outer,
             clip: None,
             alpha: 1.0,
+            live: ScopeLive::NONE,
         },
         Placement::new(&clock),
     );
@@ -564,6 +566,7 @@ fn a_nested_scope_mounts_with_each_transform_applied_once() {
             transform: inner,
             clip: Some(clip.clone()),
             alpha: 1.0,
+            live: ScopeLive::NONE,
         },
         Placement::new(&clock),
     );

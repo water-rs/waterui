@@ -553,6 +553,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let parts = crate::renderer::chrome::LiveChromeParts::ensure(
                 &mut effect.chrome.borrow_mut(),
                 &chrome,
+                &crate::renderer::chrome::ChromeContent::default(),
                 bounds,
                 state,
                 env,

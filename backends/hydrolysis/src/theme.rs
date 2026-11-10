@@ -60,7 +60,7 @@ pub use look::{
     ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion,
     Transition, ValueMotion,
 };
-pub(crate) use look::{Change, RealizedCustom};
+pub(crate) use look::{Change, LiveDriven, RealizedCustom, Retarget};
 pub use widget::{
     BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
     ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,

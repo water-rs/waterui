@@ -33,8 +33,9 @@ use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
 use crate::theme::{
     Change, Chrome, Corners, Driven, Elevation, Fill, FocusIndicator, Inputs, InteractionMotion,
-    MAX_PRESS_WAVES, Motion, RealizedCustom, Ripple,
+    LiveDriven, MAX_PRESS_WAVES, Motion, RealizedCustom, Retarget, Ripple,
 };
+use waterui_graphics::color::Color;
 
 /// Content a node's program lists as a live item: recorded once into its
 /// own engine layer and kept while the program lists the same source.
@@ -177,6 +178,9 @@ pub struct LiveChrome {
     /// it.
     content_scale: Operand<Affine>,
     customs: Vec<RealizedCustom<()>>,
+    /// The content styling realized live: the group opacity and the label
+    /// colour when they vary.
+    content: LiveContent,
     /// The subscriptions to the signals the chrome's values follow.
     guards: RefCell<Vec<Box<dyn Any>>>,
     /// How many times the mount recorded any of its live sources.
@@ -196,6 +200,126 @@ impl std::fmt::Debug for LiveChrome {
 /// Every interaction state, for resolving which values a surface can take.
 fn every_state() -> impl Iterator<Item = InteractionState> {
     (0..=InteractionState::all().bits()).map(InteractionState::from_bits_truncate)
+}
+
+/// What a look styles in the content its chrome wraps: the group opacity
+/// the whole widget draws at and the colour its label takes.
+#[derive(Clone, Default)]
+pub struct ChromeContent {
+    pub group_opacity: Option<Driven<f32>>,
+    pub label_color: Option<Driven<Color>>,
+}
+
+/// The states that change between renders: a content value varying with
+/// them is realized live.
+const LIVE_STATES: InteractionState = InteractionState::HOVERED
+    .union(InteractionState::PRESSED)
+    .union(InteractionState::FOCUSED);
+
+/// The [`ChromeContent`] values that vary between renders — with hover,
+/// press or focus over the widget's disabled and selected state, or with a
+/// signal — realized as operands. A value that does not stays with the
+/// widget's render.
+struct LiveContent {
+    /// The look's values this realizes.
+    source: ChromeContent,
+    /// The label colour in the chrome's colour space.
+    resolved_color: Option<Driven<WorkingColor>>,
+    frame: Rect,
+    group_opacity: Option<Rc<LiveDriven<f32, ()>>>,
+    label_color: Option<Rc<LiveDriven<WorkingColor, ()>>>,
+}
+
+/// Whether `driven` varies between renders over `state`'s disabled and
+/// selected bits: with a signal, or with hover, press or focus.
+fn varies_live<T: PartialEq + 'static>(
+    driven: &Driven<T>,
+    frame: Rect,
+    state: InteractionState,
+) -> bool {
+    let base = state.difference(LIVE_STATES);
+    let at = |live: InteractionState| driven.target(&Inputs::at_rest(frame, base.union(live), &()));
+    let rest = at(InteractionState::empty());
+    driven.follows_signal()
+        || every_state()
+            .filter(|live| LIVE_STATES.contains(*live))
+            .any(|live| at(live) != rest)
+}
+
+impl LiveContent {
+    fn new(
+        content: &ChromeContent,
+        frame: Rect,
+        state: InteractionState,
+        env: &Environment,
+    ) -> Self {
+        let inputs = Inputs::at_rest(frame, state, &());
+        let resolved_color = content.label_color.as_ref().map(|color| {
+            let env = env.clone();
+            color.map(move |color| color.resolve(&env).snapshot())
+        });
+        let group_opacity = content
+            .group_opacity
+            .as_ref()
+            .filter(|opacity| varies_live(*opacity, frame, state))
+            .map(|opacity| Rc::new(LiveDriven::new(opacity.clone(), &inputs)));
+        let label_color = resolved_color
+            .as_ref()
+            .filter(|color| varies_live(*color, frame, state))
+            .map(|color| Rc::new(LiveDriven::new(color.clone(), &inputs)));
+        Self {
+            source: content.clone(),
+            resolved_color,
+            frame,
+            group_opacity,
+            label_color,
+        }
+    }
+
+    /// Whether this realizes `content`'s values in `state`: the same look
+    /// values, live where they vary over `state`.
+    fn realizes(&self, content: &ChromeContent, state: InteractionState) -> bool {
+        fn same<T: 'static>(a: Option<&Driven<T>>, b: Option<&Driven<T>>) -> bool {
+            match (a, b) {
+                (Some(a), Some(b)) => a.same(b),
+                (None, None) => true,
+                _ => false,
+            }
+        }
+        let opacity_live = self
+            .source
+            .group_opacity
+            .as_ref()
+            .is_some_and(|opacity| varies_live(opacity, self.frame, state));
+        let color_live = self
+            .resolved_color
+            .as_ref()
+            .is_some_and(|color| varies_live(color, self.frame, state));
+        if opacity_live != self.group_opacity.is_some() || color_live != self.label_color.is_some()
+        {
+            return false;
+        }
+        same(
+            self.source.group_opacity.as_ref(),
+            content.group_opacity.as_ref(),
+        ) && same(
+            self.source.label_color.as_ref(),
+            content.label_color.as_ref(),
+        )
+    }
+
+    /// The operands' retargeting handles.
+    fn drivens(&self) -> impl Iterator<Item = Rc<dyn Retarget<()>>> {
+        let opacity = self
+            .group_opacity
+            .clone()
+            .map(|live| live as Rc<dyn Retarget<()>>);
+        let color = self
+            .label_color
+            .clone()
+            .map(|live| live as Rc<dyn Retarget<()>>);
+        opacity.into_iter().chain(color)
+    }
 }
 
 fn with_alpha(color: WorkingColor, opacity: f32) -> Paint {
@@ -224,12 +348,14 @@ impl LiveChrome {
     /// widget's reported-state binding.
     fn new(
         spec: Chrome,
+        content: &ChromeContent,
         bounds: Rect,
         state: InteractionState,
         env: &Environment,
         report: nami::Binding<InteractionState>,
     ) -> Self {
         let frame = spec.frame(bounds);
+        let content = LiveContent::new(content, frame, state, env);
         let inputs = Inputs::at_rest(frame, state, &());
         let surface = spec.surface();
         let (silhouette, corners) = Self::silhouette_of(&spec, &inputs);
@@ -314,6 +440,7 @@ impl LiveChrome {
             ring,
             content_scale: Operand::new(Self::scale_about(frame, Self::scale_of(&spec, state))),
             customs,
+            content,
             layer_color,
             guards: RefCell::new(Vec::new()),
             state: Cell::new(state),
@@ -365,19 +492,17 @@ impl LiveChrome {
         if let Some(wash) = &this.wash {
             guards.push(watch_color(&wash.color));
         }
-        for custom in &this.customs {
-            for driven in &custom.drivens {
-                let weak: Weak<Self> = Rc::downgrade(this);
-                let target = Rc::downgrade(driven);
-                let notify: Rc<dyn Fn(Option<Animation>)> =
-                    Rc::new(move |animation: Option<Animation>| {
-                        if let (Some(chrome), Some(target)) = (weak.upgrade(), target.upgrade()) {
-                            target.retarget(&chrome.inputs(), Change::Animated(animation.as_ref()));
-                        }
-                    });
-                if let Some(guard) = driven.subscribe(notify) {
-                    guards.push(guard);
-                }
+        for driven in this.drivens() {
+            let weak: Weak<Self> = Rc::downgrade(this);
+            let target = Rc::downgrade(&driven);
+            let notify: Rc<dyn Fn(Option<Animation>)> =
+                Rc::new(move |animation: Option<Animation>| {
+                    if let (Some(chrome), Some(target)) = (weak.upgrade(), target.upgrade()) {
+                        target.retarget(&chrome.inputs(), Change::Animated(animation.as_ref()));
+                    }
+                });
+            if let Some(guard) = driven.subscribe(notify) {
+                guards.push(guard);
             }
         }
         *this.guards.borrow_mut() = guards;
@@ -457,8 +582,14 @@ impl LiveChrome {
     }
 
     /// Whether this chrome realizes `spec` on `bounds`.
-    fn realizes(&self, spec: &Chrome, bounds: Rect) -> bool {
-        self.spec.same(spec) && self.bounds == bounds
+    fn realizes(
+        &self,
+        spec: &Chrome,
+        content: &ChromeContent,
+        bounds: Rect,
+        state: InteractionState,
+    ) -> bool {
+        self.spec.same(spec) && self.content.realizes(content, state) && self.bounds == bounds
     }
 
     /// The animation `driven` retargets with under `retargeting`.
@@ -540,11 +671,46 @@ impl LiveChrome {
             },
             Retargeting::Animated(animation) => Change::Animated(animation),
         };
-        for custom in &self.customs {
-            for driven in &custom.drivens {
-                driven.retarget(&inputs, change);
-            }
+        for driven in self.drivens() {
+            driven.retarget(&inputs, change);
         }
+    }
+
+    /// Every look value the chrome realizes as an operand beyond its own:
+    /// the custom parts' and the content's.
+    fn drivens(&self) -> impl Iterator<Item = Rc<dyn Retarget<()>>> + '_ {
+        self.customs
+            .iter()
+            .flat_map(|custom| custom.drivens.iter().cloned())
+            .chain(self.content.drivens())
+    }
+
+    /// The group opacity operand, when the look's group opacity varies.
+    pub(crate) fn group_opacity(&self) -> Option<Operand<f32>> {
+        self.content
+            .group_opacity
+            .as_ref()
+            .map(|live| live.operand().clone())
+    }
+
+    /// The label's paint, following the chrome's label colour operand, when
+    /// the look's label colour varies between renders.
+    pub(crate) fn label_paint(&self) -> Option<Computed<Paint>> {
+        self.content
+            .label_color
+            .as_ref()
+            .map(|live| Computed::new(nami::SignalExt::map(live.operand(), Paint::from)))
+    }
+
+    /// The press scale about the frame's centre, in the widget's record
+    /// space.
+    pub(crate) fn content_scale_operand(&self) -> Operand<Affine> {
+        self.content_scale.clone()
+    }
+
+    /// Whether a press scales the chrome and the content that follows it.
+    pub(crate) fn scales_content(&self) -> bool {
+        self.spec.press().get_scale().is_some()
     }
 
     /// Moves the interaction layers over the content — the tint, the press
@@ -896,24 +1062,26 @@ impl LiveChromeParts {
         }
     }
 
-    /// The chrome `spec` on `bounds`: the parts in `slot` when they already
-    /// realize it — moved to `state` — otherwise fresh parts recorded at
-    /// `state`, replacing them.
+    /// The chrome `spec` wrapping `content` on `bounds`: the parts in
+    /// `slot` when they already realize it — moved to `state` — otherwise
+    /// fresh parts recorded at `state`, replacing them.
     pub(crate) fn ensure<'a>(
         slot: &'a mut Option<Self>,
         spec: &Chrome,
+        content: &ChromeContent,
         bounds: Rect,
         state: InteractionState,
         env: &Environment,
         report: &nami::Binding<InteractionState>,
     ) -> &'a Self {
         match slot {
-            Some(parts) if parts.chrome.realizes(spec, bounds) => {
+            Some(parts) if parts.chrome.realizes(spec, content, bounds, state) => {
                 parts.chrome.sync(state);
             }
             _ => {
                 *slot = Some(Self::new(LiveChrome::new(
                     spec.clone(),
+                    content,
                     bounds,
                     state,
                     env,

@@ -49,6 +49,11 @@ impl<T: Clone + PartialEq + 'static> Operand<T> {
     pub(crate) fn live(&self) -> Live<T> {
         Live::from(self.clone())
     }
+
+    /// Whether `other` is this operand: the same cell, whatever its value.
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl<T: Clone + PartialEq + 'static> Signal for Operand<T> {

@@ -1,6 +1,6 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
-use crate::renderer::chrome::LiveChromeParts;
+use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, measure_label_intrinsic, measure_view_intrinsic, popup_menu_nodes,
@@ -238,48 +238,6 @@ fn look_color(look: &ButtonLook, state: InteractionState, frame: Rect) -> Option
     look.label()
         .get_color()
         .map(|color| color.target(&Inputs::at_rest(frame, state, &())))
-}
-
-/// Whether the content `look` styles — the label colour, the group
-/// opacity — differs between the live states over `state`'s disabled and
-/// selected bits. Such content re-renders on a live change; everything
-/// else follows it through operands.
-fn content_varies_live(
-    look: &ButtonLook,
-    state: InteractionState,
-    frame: Rect,
-    env: &Environment,
-) -> bool {
-    let base = state.difference(LIVE_STATES);
-    let at = |bits: u8| {
-        let mut state = base;
-        state.set(InteractionState::HOVERED, bits & 1 != 0);
-        state.set(InteractionState::PRESSED, bits & 2 != 0);
-        state.set(InteractionState::FOCUSED, bits & 4 != 0);
-        state
-    };
-    let opacity = look.get_group_opacity();
-    let opacity_at = |bits| {
-        opacity
-            .target(&Inputs::at_rest(frame, at(bits), &()))
-            .to_bits()
-    };
-    let rest_opacity = opacity_at(0);
-    if (1..8).any(|bits| opacity_at(bits) != rest_opacity) {
-        return true;
-    }
-    look.label().get_color().is_some_and(|color| {
-        let color_at = |bits| {
-            color
-                .target(&Inputs::at_rest(frame, at(bits), &()))
-                .resolve(env)
-                .snapshot()
-                .components
-                .map(f32::to_bits)
-        };
-        let rest = color_at(0);
-        (1..8).any(|bits| color_at(bits) != rest)
-    })
 }
 
 /// The retained label's colour: the look's, following the reported state
@@ -829,13 +787,16 @@ struct RenderedChrome {
 
 /// Binds a button-like control's interaction target, realizes its look's
 /// chrome and reports its state: everything a render needs before the
-/// chrome's layers and the label are listed.
+/// chrome's layers and the label are listed. A `title` label takes its
+/// colour from the chrome's live operand; a label laid out from a view
+/// follows the reported state through its own colour signal.
 fn bind_button_chrome<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     chrome_state: &mut ButtonChromeState,
     key: crate::renderer::InteractionKey,
     spec: ButtonSpec,
     disabled: bool,
+    title: bool,
     env: &Environment,
 ) -> RenderedChrome {
     let theme = ctx.theme();
@@ -855,9 +816,16 @@ fn bind_button_chrome<E: crate::text::TextEngine>(
     if chrome_state.label_state.snapshot() != flags {
         chrome_state.label_state.set(flags);
     }
+    let content = ChromeContent {
+        group_opacity: Some(look.get_group_opacity().clone()),
+        label_color: (title && env.get::<ListRowChrome>().is_none())
+            .then(|| look.label().get_color().cloned())
+            .flatten(),
+    };
     let parts = LiveChromeParts::ensure(
         &mut chrome_state.parts,
         &chrome,
+        &content,
         bounds,
         flags,
         env,
@@ -865,9 +833,6 @@ fn bind_button_chrome<E: crate::text::TextEngine>(
     )
     .clone();
     handles.attach_live(Rc::clone(parts.chrome()));
-    if content_varies_live(&look, flags, frame, env) {
-        handles.mark_chrome_state_dependent();
-    }
     let padding = look.get_padding();
     let label_bounds = inset_rect(bounds, padding.x, padding.y);
     // A degenerate padded rect (a button smaller than its padding) falls back to the
@@ -896,27 +861,34 @@ fn record_button_chrome<E: crate::text::TextEngine>(
     render_label: impl FnOnce(&mut WidgetRenderContext<'_, E>),
 ) {
     let frame = rendered.parts.chrome().visual_bounds().union(ctx.bounds);
+    let key = crate::renderer::mount::ScopeKey {
+        role: "button-group",
+        item: 0,
+    };
+    let body = |ctx: &mut WidgetRenderContext<'_, E>| {
+        let render_ctx = ctx.render_context();
+        rendered.parts.push_below(ctx.renderer_mut(), render_ctx);
+        render_label(ctx);
+        let render_ctx = ctx.render_context();
+        rendered.parts.push_above(ctx.renderer_mut(), render_ctx);
+    };
+    // An opacity that varies between renders draws the button as one
+    // group following the chrome's operand; a fixed one groups it only
+    // when it fades.
+    if let Some(opacity) = rendered.parts.chrome().group_opacity() {
+        let operands = crate::renderer::ScopeOperands {
+            opacity: Some(opacity),
+            transform: None,
+        };
+        ctx.with_live_scope(key, operands, frame, body);
+        return;
+    }
     let opacity = rendered.look.get_group_opacity().target(&Inputs::at_rest(
         rendered.look.chrome().frame(ctx.bounds),
         rendered.flags,
         &(),
     ));
-    ctx.with_scope_if(
-        opacity < 1.0,
-        crate::renderer::mount::ScopeKey {
-            role: "button-group",
-            item: 0,
-        },
-        opacity,
-        frame,
-        |ctx| {
-            let render_ctx = ctx.render_context();
-            rendered.parts.push_below(ctx.renderer_mut(), render_ctx);
-            render_label(ctx);
-            let render_ctx = ctx.render_context();
-            rendered.parts.push_above(ctx.renderer_mut(), render_ctx);
-        },
-    );
+    ctx.with_scope_if(opacity < 1.0, key, opacity, frame, body);
 }
 
 /// Places a retained label sub-view centred in `label_target`. Its
@@ -924,33 +896,66 @@ fn record_button_chrome<E: crate::text::TextEngine>(
 /// visual-only.
 fn place_label_view<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
+    rendered: &RenderedChrome,
     subview: &mut RetainedSubview<E>,
-    label_target: Rect,
     env: &Environment,
 ) {
+    let label_target = rendered.label_target;
     let proposal = ProposalSize::new(
         Some(crate::num_cast::f64_as_f32(label_target.width())),
         Some(crate::num_cast::f64_as_f32(label_target.height())),
     );
     let (label_size, _) = subview.patch_and_measure(ctx.renderer_mut(), env, proposal);
     let label_target = centered_label_rect(label_target, label_size);
-    let render_ctx = ctx.render_context();
-    let label_area = ctx.safe_area_for(label_target);
-    ctx.renderer_mut()
-        .with_suppressed_accessibility(|renderer| {
-            subview.place(
-                renderer,
-                render_ctx,
-                env,
-                ProposalSize::UNSPECIFIED,
-                label_target,
-                label_area,
+    let mut place = |ctx: &mut WidgetRenderContext<'_, E>| {
+        let render_ctx = ctx.render_context();
+        let label_area = ctx.safe_area_for(label_target);
+        ctx.renderer_mut()
+            .with_suppressed_accessibility(|renderer| {
+                subview.place(
+                    renderer,
+                    render_ctx,
+                    env,
+                    ProposalSize::UNSPECIFIED,
+                    label_target,
+                    label_area,
+                );
+            });
+    };
+    // A label that follows the press scale is placed at rest inside a
+    // layer whose transform follows the chrome's scale operand.
+    match label_scale(rendered) {
+        Some(scale) => {
+            let operands = crate::renderer::ScopeOperands {
+                opacity: None,
+                transform: Some(scale),
+            };
+            let clip = rendered.parts.chrome().visual_bounds().union(ctx.bounds);
+            ctx.with_live_scope(
+                crate::renderer::mount::ScopeKey {
+                    role: "button-label",
+                    item: 0,
+                },
+                operands,
+                clip,
+                place,
             );
-        });
+        }
+        None => place(ctx),
+    }
+}
+
+/// The chrome's press scale when the look's label follows it and the
+/// chrome scales on press.
+fn label_scale(rendered: &RenderedChrome) -> Option<crate::theme::live::Operand<kurbo::Affine>> {
+    let chrome = rendered.parts.chrome();
+    (rendered.look.label().get_follows_press_scale() && chrome.scales_content())
+        .then(|| chrome.content_scale_operand())
 }
 
 /// Renders a title label: centred styled text in the look's font, over the
-/// look's colour for the reported state.
+/// look's colour for the reported state — live, following the chrome's
+/// label colour operand, when that colour varies between renders.
 fn render_title<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     rendered: &RenderedChrome,
@@ -964,23 +969,24 @@ fn render_title<E: crate::text::TextEngine>(
     let frame = rendered.look.chrome().frame(ctx.bounds);
     let font = look_font(&rendered.look, rendered.flags, frame);
     let mut styled = styled_button_title(ctx.state_mut(), font, label, env);
-    let color = if env.get::<ListRowChrome>().is_some() {
-        Some(Color::new(waterui::theme::color::Foreground))
-    } else {
-        look_color(&rendered.look, rendered.flags, frame)
-    };
-    if let Some(color) = color {
-        styled = styled_with_default_foreground(styled, color);
+    let paint = rendered.parts.chrome().label_paint();
+    if paint.is_none() {
+        let color = if env.get::<ListRowChrome>().is_some() {
+            Some(Color::new(waterui::theme::color::Foreground))
+        } else {
+            look_color(&rendered.look, rendered.flags, frame)
+        };
+        if let Some(color) = color {
+            styled = styled_with_default_foreground(styled, color);
+        }
     }
-    // A label that follows the press scale grows with the chrome; a label
-    // laid out from a view keeps its size (its nodes take no live
-    // transform).
+    // A label that follows the press scale grows with the chrome.
     let scale = rendered
         .look
         .label()
         .get_follows_press_scale()
         .then(|| rendered.parts.chrome());
-    ctx.render_styled_text_single_line_scaled(styled, env, target, scale);
+    ctx.render_styled_text_single_line_scaled(styled, env, target, scale, paint.as_ref());
 }
 
 pub fn render_button_parts<E: crate::text::TextEngine>(
@@ -1005,13 +1011,14 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
     let rendered = {
         let mut state_mut = state.borrow_mut();
         let spec = state_mut.spec(env);
-        bind_button_chrome(ctx, &mut state_mut.chrome, key, spec, disabled, env)
+        let title = state_mut.label_view.is_none();
+        bind_button_chrome(ctx, &mut state_mut.chrome, key, spec, disabled, title, env)
     };
     record_button_chrome(ctx, &rendered, |ctx| {
         let mut state_mut = state.borrow_mut();
         let state_mut = &mut *state_mut;
         if let Some(subview) = &mut state_mut.label_view {
-            place_label_view(ctx, subview, rendered.label_target, env);
+            place_label_view(ctx, &rendered, subview, env);
         } else {
             render_title(ctx, &rendered, state_mut.config.label(), env);
         }
@@ -1050,7 +1057,8 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
     let rendered = {
         let mut state_mut = state.borrow_mut();
         let spec = state_mut.spec(env);
-        bind_button_chrome(ctx, &mut state_mut.chrome, key, spec, false, env)
+        let title = matches!(state_mut.label, MenuLabel::Title(_));
+        bind_button_chrome(ctx, &mut state_mut.chrome, key, spec, false, title, env)
     };
     record_button_chrome(ctx, &rendered, |ctx| {
         let mut state_mut = state.borrow_mut();
@@ -1059,7 +1067,7 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
                 render_title(ctx, &rendered, label, env);
             }
             MenuLabel::View(subview) => {
-                place_label_view(ctx, subview, rendered.label_target, env);
+                place_label_view(ctx, &rendered, subview, env);
             }
         }
     });

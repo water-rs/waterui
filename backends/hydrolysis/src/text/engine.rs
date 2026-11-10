@@ -13,6 +13,9 @@
 
 use core::num::NonZeroUsize;
 
+use cherenkov_record::Paint;
+use nami::Computed;
+
 use crate::renderer::{FrameWorkCounters, Recording};
 
 use super::input::ResolvedTextLayoutInput;
@@ -81,12 +84,16 @@ pub trait TextEngine: Send + Sync + 'static {
     fn ink_extent(&self, layout: &Self::Layout, max_lines: Option<usize>) -> Option<(f32, f32)>;
 
     /// Records `layout` at the local origin, shifted right by `x_shift`, into
-    /// the node's recording.
+    /// the node's recording. With `paint`, the runs in the layout's default
+    /// colour draw with that live paint instead, so a colour change reaches
+    /// the engine without a recording; runs the text styled with their own
+    /// colour keep it.
     fn record(
         &self,
         layout: &Self::Layout,
         max_lines: Option<usize>,
         x_shift: f32,
+        paint: Option<&Computed<Paint>>,
         scene: &mut Recording,
         counters: &mut FrameWorkCounters,
     );

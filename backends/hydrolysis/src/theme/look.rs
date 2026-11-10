@@ -322,6 +322,23 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     pub(crate) const fn follows_signal(&self) -> bool {
         self.follows.is_some()
     }
+
+    /// Whether `other` is this value: the same derivation, not an equal
+    /// one.
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.target, &other.target)
+    }
+
+    /// This value passed through `f`, following the same signals with the
+    /// same motion.
+    pub(crate) fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> Driven<U, V> {
+        let target = Rc::clone(&self.target);
+        Driven {
+            target: Rc::new(move |inputs| f(target(inputs))),
+            follows: self.follows.clone(),
+            motion: self.motion.clone(),
+        }
+    }
 }
 
 /// A [`StateValue`] is a [`Driven`] over the interaction state alone.
@@ -438,6 +455,11 @@ impl<T: Clone + PartialEq + 'static, V: 'static> LiveDriven<T, V> {
 
     pub(crate) fn live(&self) -> Live<T> {
         self.operand.live()
+    }
+
+    /// The operand the value drives.
+    pub(crate) const fn operand(&self) -> &Operand<T> {
+        &self.operand
     }
 }
 

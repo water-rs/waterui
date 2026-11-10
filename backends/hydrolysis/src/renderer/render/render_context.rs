@@ -258,6 +258,28 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         self.close_scope();
     }
 
+    /// Runs `f` inside the named scope `key`, clipped to `clip`, whose
+    /// layer follows `operands` between renders: a group that fades or a
+    /// content scale that moves without a render. The transform operand is
+    /// given in this context's space.
+    pub(crate) fn with_live_scope(
+        &mut self,
+        key: crate::renderer::mount::ScopeKey,
+        operands: crate::renderer::frame::ScopeOperands,
+        clip: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.renderer.open_live_scope(
+            key,
+            operands,
+            self.local,
+            &crate::renderer::frame::ScopeClip::Rect(clip),
+            crate::renderer::ScopeDelta::RECORD_SPACE,
+        );
+        f(self);
+        self.close_scope();
+    }
+
     /// [`Self::with_scope`] when the scope only exists conditionally (a
     /// disabled-control alpha group): pairing stays lexical either way.
     pub(crate) fn with_scope_if(
@@ -311,13 +333,15 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 
     /// A single line of `styled` centred in `bounds`, growing with
     /// `scale`'s press scale when given — a label that follows its
-    /// chrome.
+    /// chrome — and its default-coloured runs drawn in `paint`, live,
+    /// when given.
     pub(crate) fn render_styled_text_single_line_scaled(
         &mut self,
         styled: StyledStr,
         env: &Environment,
         bounds: kurbo::Rect,
         scale: Option<&std::rc::Rc<crate::renderer::chrome::LiveChrome>>,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
         let widget = self.render_context().local();
         let child_ctx = self.child(
@@ -330,6 +354,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
             styled,
             env,
             scale.map(|chrome| (chrome, widget)),
+            paint,
         );
     }
 }

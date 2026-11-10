@@ -672,6 +672,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         styled: StyledStr,
         env: &Environment,
         scale: Option<(&Rc<crate::renderer::chrome::LiveChrome>, kurbo::Affine)>,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
         let state = &mut self.state;
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
@@ -689,13 +690,22 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds().width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds().height() - height) * 0.5).max(0.0);
-        let fragment = state.text.record(
-            &input,
-            None,
-            TailMark::Clip(1),
-            &mut state.counters,
-            &mut state.text_scenes,
-        );
+        let fragment = match paint {
+            Some(paint) => state.text.record_painted(
+                &input,
+                None,
+                TailMark::Clip(1),
+                paint,
+                &mut state.counters,
+            ),
+            None => state.text.record(
+                &input,
+                None,
+                TailMark::Clip(1),
+                &mut state.counters,
+                &mut state.text_scenes,
+            ),
+        };
         let mut literal = ctx;
         literal.set_local(ctx.local() * kurbo::Affine::translate((x, y)));
         let source: Rc<dyn crate::renderer::chrome::LiveSource> = match scale {

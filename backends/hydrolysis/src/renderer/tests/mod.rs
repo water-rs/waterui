@@ -2842,6 +2842,11 @@ pub struct MinimalTestTheme {
     /// The chrome the button look carries; `None` answers
     /// [`invisible_chrome`].
     button_chrome: Option<Chrome>,
+    /// The label styling the button look carries; `None` keeps the
+    /// label's own.
+    button_label: Option<Label>,
+    /// The button look's group opacity; `None` draws it opaque.
+    button_group_opacity: Option<crate::theme::Driven<f32>>,
 }
 
 /// A chrome that draws nothing at rest and tints nothing on interaction —
@@ -2874,6 +2879,20 @@ impl MinimalTestTheme {
     #[must_use]
     pub fn with_button_chrome(mut self, chrome: Chrome) -> Self {
         self.button_chrome = Some(chrome);
+        self
+    }
+
+    /// Styles the button look's label with `label`.
+    #[must_use]
+    pub fn with_button_label(mut self, label: Label) -> Self {
+        self.button_label = Some(label);
+        self
+    }
+
+    /// Draws the button look as one group at `opacity`.
+    #[must_use]
+    pub fn with_button_group_opacity(mut self, opacity: crate::theme::Driven<f32>) -> Self {
+        self.button_group_opacity = Some(opacity);
         self
     }
 }
@@ -2989,7 +3008,10 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn button(&self, spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
         let chrome = self.button_chrome.clone().unwrap_or_else(invisible_chrome);
-        let look = ButtonLook::new(chrome, Label::new());
+        let mut look = ButtonLook::new(chrome, self.button_label.clone().unwrap_or_default());
+        if let Some(opacity) = &self.button_group_opacity {
+            look = look.group_opacity(opacity.clone());
+        }
         if spec.icon_only() {
             look.minimum_size(Size::new(41.0, 43.0))
         } else {

@@ -133,7 +133,7 @@ fn recorded_glyph_positions_preserve_parley_mark_offsets_and_fragment_shift() {
             .collect();
         let mut scene = Recording::new();
         let mut counters = FrameWorkCounters::default();
-        encode_text_layout(&mut scene, &mut counters, &layout, None, x_shift);
+        encode_text_layout(&mut scene, &mut counters, &layout, None, x_shift, None);
         let recorded: Vec<_> = scene
             .glyph_runs()
             .flat_map(|(_, glyphs)| glyphs)
@@ -179,7 +179,7 @@ fn logical_text_alignment_follows_environment_direction() {
 
 /// The logically-last cluster's character on a line — where the marker
 /// sits after tail truncation.
-fn last_cluster_char(line: &parley::Line<'_, [u8; 4]>, text: &str) -> Option<char> {
+fn last_cluster_char(line: &parley::Line<'_, super::RunBrush>, text: &str) -> Option<char> {
     let mut tail = None;
     for run in line.runs() {
         for cluster in run.clusters() {

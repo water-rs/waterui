@@ -132,6 +132,10 @@ open class LoggingSink : CommandSink {
     override fun text(layout: Int, matrix: FloatArray) =
         start(Protocol.TEXT).u("layout", layout).fs("matrix", Protocol.MATRIX_WORDS, matrix).end()
 
+    override fun paintedText(layout: Int, matrix: FloatArray, color: Long) =
+        start(Protocol.PAINTED_TEXT).u("layout", layout).fs("matrix", Protocol.MATRIX_WORDS, matrix)
+            .c("color", color).end()
+
     override fun image(bitmap: Int, left: Float, top: Float, right: Float, bottom: Float, sampling: Int) =
         start(Protocol.IMAGE).u("bitmap", bitmap).f("left", left).f("top", top).f("right", right).f("bottom", bottom).u("sampling", sampling).end()
 

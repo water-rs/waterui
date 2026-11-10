@@ -11,6 +11,8 @@ use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::rc::Rc;
 
+use cherenkov_record::Live;
+use nami::Signal as _;
 use rustc_hash::FxHashSet;
 use waterui_graphics::draw::ShapeData;
 
@@ -18,6 +20,7 @@ use super::cell::NodeCell;
 use super::placement::Placement;
 use crate::renderer::chrome::LiveSource;
 use crate::renderer::recording::Recording;
+use crate::theme::live::Operand;
 
 /// A widget-internal scope's identity: a literal role and an item (a row
 /// id, a page identity, or `0`). Within one record a key is unique.
@@ -62,11 +65,110 @@ pub enum RunKey<E: crate::text::TextEngine> {
 /// state lives on its placement instead — `open_scope_with` gates the
 /// registrations inside through [`crate::renderer::mount::HitGate`],
 /// never here.
+///
+/// `transform` and `alpha` are the scope's values at rest — what layout,
+/// hit testing and the scope's children are placed under. A [`ScopeLive`]
+/// property follows a live operand on the layer instead, so the engine
+/// moves it between renders.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScopeProps {
     pub transform: kurbo::Affine,
     pub clip: Option<ShapeData>,
     pub alpha: f32,
+    pub live: ScopeLive,
+}
+
+/// A scope layer's properties that follow live operands. Two are the same
+/// when they follow the same operands the same way, whatever value the
+/// operands hold.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScopeLive {
+    /// The group opacity.
+    pub opacity: Option<LiveOpacity>,
+    /// The layer transform over its at-rest one.
+    pub transform: Option<LiveTransform>,
+}
+
+impl ScopeLive {
+    /// No live property: the scope's at-rest values are its layer's.
+    pub const NONE: Self = Self {
+        opacity: None,
+        transform: None,
+    };
+}
+
+/// A layer opacity following an operand.
+#[derive(Clone)]
+pub struct LiveOpacity(Operand<f32>);
+
+impl LiveOpacity {
+    pub(crate) const fn new(operand: Operand<f32>) -> Self {
+        Self(operand)
+    }
+
+    /// The opacity, live.
+    pub(crate) fn live(&self) -> Live<f32> {
+        self.0.live()
+    }
+
+    /// The opacity the operand holds now.
+    pub(crate) fn now(&self) -> f32 {
+        self.0.snapshot()
+    }
+}
+
+impl PartialEq for LiveOpacity {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.same(&other.0)
+    }
+}
+
+impl core::fmt::Debug for LiveOpacity {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("LiveOpacity").field(&self.now()).finish()
+    }
+}
+
+/// A layer transform following an operand given in another space: the
+/// layer's transform is `placement * value * placement⁻¹`, `placement`
+/// mapping the operand's space into the layer's parent space.
+#[derive(Clone)]
+pub struct LiveTransform {
+    operand: Operand<kurbo::Affine>,
+    placement: kurbo::Affine,
+}
+
+impl LiveTransform {
+    /// `operand`, in the space `placement` maps into the layer's parent.
+    pub(crate) const fn new(operand: Operand<kurbo::Affine>, placement: kurbo::Affine) -> Self {
+        Self { operand, placement }
+    }
+
+    /// The transform, live.
+    pub(crate) fn live(&self) -> Live<kurbo::Affine> {
+        let placement = self.placement;
+        let into_operand = placement.inverse();
+        self.operand
+            .live()
+            .map(move |value| placement * value * into_operand)
+    }
+
+    /// The transform the operand holds now.
+    pub(crate) fn now(&self) -> kurbo::Affine {
+        self.placement * self.operand.snapshot() * self.placement.inverse()
+    }
+}
+
+impl PartialEq for LiveTransform {
+    fn eq(&self, other: &Self) -> bool {
+        self.operand.same(&other.operand) && self.placement == other.placement
+    }
+}
+
+impl core::fmt::Debug for LiveTransform {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("LiveTransform").field(&self.now()).finish()
+    }
 }
 
 /// A `ChromeMaterial` render layer (water-rs/waterui#1788): one backdrop

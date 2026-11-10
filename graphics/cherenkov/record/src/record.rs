@@ -80,6 +80,16 @@ pub trait Draw {
     /// `transform`. The layout carries its own colours and spans.
     fn text(&mut self, layout: TextLayoutId, transform: impl Into<Self::Value<Affine>>);
 
+    /// [`Self::text`], its default-coloured runs drawn with `paint` in
+    /// place of the colour the layout was laid out with. Runs the text
+    /// styled with their own colour keep it.
+    fn painted_text<P: Into<Paint> + 'static>(
+        &mut self,
+        layout: TextLayoutId,
+        transform: impl Into<Self::Value<Affine>>,
+        paint: impl Into<Self::Value<P>>,
+    );
+
     /// Runs `body` clipped to a shape.
     fn clip<S: Shape>(&mut self, shape: impl Into<Self::Value<S>>, body: impl FnOnce(&mut Self));
 
@@ -188,6 +198,20 @@ impl Draw for StaticRecorder {
         self.list.push(Command::Text {
             layout,
             transform: transform.into().0,
+            paint: None,
+        });
+    }
+
+    fn painted_text<P: Into<Paint> + 'static>(
+        &mut self,
+        layout: TextLayoutId,
+        transform: impl Into<Fixed<Affine>>,
+        paint: impl Into<Fixed<P>>,
+    ) {
+        self.list.push(Command::Text {
+            layout,
+            transform: transform.into().0,
+            paint: Some(paint.into().0.into()),
         });
     }
 
@@ -1231,8 +1255,26 @@ impl Draw for Recorder {
         let command = self.list.push(Command::Text {
             layout,
             transform: transform.value,
+            paint: None,
         });
         self.subscribe(transform.subscription, command, Operand::Transform);
+    }
+
+    fn painted_text<P: Into<Paint> + 'static>(
+        &mut self,
+        layout: TextLayoutId,
+        transform: impl Into<Live<Affine>>,
+        paint: impl Into<Live<P>>,
+    ) {
+        let transform = transform.into();
+        let paint = paint.into();
+        let command = self.list.push(Command::Text {
+            layout,
+            transform: transform.value,
+            paint: Some(paint.value.into()),
+        });
+        self.subscribe(transform.subscription, command, Operand::Transform);
+        self.subscribe(paint.subscription, command, paint_operand::<P>);
     }
 
     fn clip<S: Shape>(&mut self, shape: impl Into<Live<S>>, body: impl FnOnce(&mut Self)) {
@@ -1831,6 +1873,7 @@ mod tests {
             Command::Text {
                 layout,
                 transform: Affine::translate((4., 12.)),
+                paint: None,
             }
         );
         let fixed = Picture::record(|c| c.text(layout, Affine::IDENTITY));

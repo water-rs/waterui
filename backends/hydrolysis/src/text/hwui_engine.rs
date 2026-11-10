@@ -19,6 +19,8 @@ use crate::hwui::text::{
     HwuiTextLayout, PlatformText, ShapeRequest, TextAlignment, TextLayoutIds, TextRun,
 };
 use crate::renderer::{FrameWorkCounters, Recording};
+use cherenkov_record::Paint;
+use nami::Computed;
 
 use super::engine::{FontFamilyResolution, TextEngine};
 use super::input::{ResolvedFontSpec, ResolvedTextLayoutInput};
@@ -162,6 +164,7 @@ impl<P: PlatformText> TextEngine for HwuiTextEngine<P> {
         layout: &Self::Layout,
         max_lines: Option<usize>,
         x_shift: f32,
+        paint: Option<&Computed<Paint>>,
         scene: &mut Recording,
         _counters: &mut FrameWorkCounters,
     ) {
@@ -183,7 +186,12 @@ impl<P: PlatformText> TextEngine for HwuiTextEngine<P> {
                     .sum::<f64>();
                 Rect::new(bounds.x0, bounds.y0, bounds.x1, bottom)
             });
-        scene.draw_platform_text(resource, Affine::translate((f64::from(x_shift), 0.0)), clip);
+        scene.draw_platform_text(
+            resource,
+            Affine::translate((f64::from(x_shift), 0.0)),
+            clip,
+            paint,
+        );
     }
 
     /// The engine holds no shape or ink caches of its own — [`TextService`]
