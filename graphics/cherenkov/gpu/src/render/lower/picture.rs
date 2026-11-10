@@ -16,6 +16,9 @@ pub(super) struct PreparedDomain {
     source_bytes: u64,
     visible: bool,
     domain: Option<crate::render::planes::static_layer::Domain>,
+    /// What the driver commits for the domain's image with its mip chain,
+    /// by the `(format, base size)` it was asked for.
+    committed: Option<(LocalFormat, (u32, u32), u64)>,
 }
 
 impl PreparedDomain {
@@ -26,12 +29,36 @@ impl PreparedDomain {
     pub(super) const fn source_bytes(&self) -> u64 {
         self.source_bytes
     }
+
+    /// The bytes the driver commits for this domain's image in `format`
+    /// with every mip level, asked once per format and size.
+    fn committed(
+        &mut self,
+        device: &wgpu::Device,
+        format: LocalFormat,
+        size: (u32, u32),
+    ) -> Result<u64, RenderError> {
+        if let Some((f, s, bytes)) = self.committed
+            && (f, s) == (format, size)
+        {
+            return Ok(bytes);
+        }
+        let bytes = crate::render::resident::texture_bytes(
+            device,
+            &crate::render::projective::descriptor(&mip_levels(size), format),
+        )?;
+        self.committed = Some((format, size, bytes));
+        Ok(bytes)
+    }
 }
 
 impl<'a> super::PictureInputs<'a> {
     pub fn new(
-        retained: &'a super::FxHashMap<LayerId, Vec<crate::render::projective::Entry>>,
-        inputs: &'a crate::render::projective::Inputs,
+        (retained, inputs, device): (
+            &'a super::FxHashMap<LayerId, Vec<crate::render::projective::Entry>>,
+            &'a crate::render::projective::Inputs,
+            &'a wgpu::Device,
+        ),
         available: u64,
         layers: &super::FxHashMap<LayerId, super::ContentData>,
     ) -> Self {
@@ -51,23 +78,20 @@ impl<'a> super::PictureInputs<'a> {
                 let Some(domain) = prepared.domain else {
                     continue;
                 };
+                // A visible domain was sized when it was planned; one whose
+                // format or size moved since is planned again before it ranks.
+                let Some((format, size, bytes)) = prepared.committed else {
+                    continue;
+                };
+                if (format, size) != (prepared.format, domain.size) {
+                    continue;
+                }
                 let key = LocalKey {
                     layer,
                     picture: Some(PictureId::of(&prepared.source)),
                     bucket: prepared.bucket,
-                    format: prepared.format,
+                    format,
                 };
-                let mut size = domain.size;
-                let mut bytes = 0;
-                loop {
-                    bytes += crate::render::texel_bytes(key.format.texture())
-                        * u64::from(size.0)
-                        * u64::from(size.1);
-                    if size == (1, 1) {
-                        break;
-                    }
-                    size = ((size.0 / 2).max(1), (size.1 / 2).max(1));
-                }
                 candidates.push((key, prepared.source_bytes(), bytes));
             }
         }
@@ -91,6 +115,7 @@ impl<'a> super::PictureInputs<'a> {
         Self {
             retained,
             inputs,
+            device,
             available,
             selected,
             realize: Vec::new(),
@@ -106,6 +131,8 @@ struct PicturePlan {
     current: bool,
     interop: u64,
     domain: crate::render::planes::static_layer::Domain,
+    /// The bytes the driver commits for the image, which admission counted.
+    bytes: u64,
 }
 
 impl Lowering<'_> {
@@ -231,6 +258,7 @@ impl Lowering<'_> {
                             .heap_bytes(cherenkov::lowering::memory::command_bytes),
                         visible: true,
                         domain,
+                        committed: None,
                     },
                 );
                 domain
@@ -266,6 +294,7 @@ impl Lowering<'_> {
                 .heap_bytes(cherenkov::lowering::memory::command_bytes),
             visible: true,
             domain: Some(domain),
+            committed: None,
         });
         prepared.bucket = key.bucket;
         prepared.format = format;
@@ -275,6 +304,8 @@ impl Lowering<'_> {
         if !prepared.visible {
             return Ok(None);
         }
+        // Sized before selection, so a picture ranks once it is planned.
+        let committed = prepared.committed(context.device, format, domain.size)?;
         let mut image = LocalImage {
             density,
             local_to_texel: raster.inverse(),
@@ -313,7 +344,7 @@ impl Lowering<'_> {
             )
         } else {
             image.levels = mip_levels(image.size);
-            crate::render::projective::mip_bytes(format.texture(), &image.levels)
+            committed
         };
         if !already_composed && bytes > context.available {
             return Ok(None);
@@ -331,6 +362,7 @@ impl Lowering<'_> {
             current,
             interop,
             domain,
+            bytes,
         }))
     }
 
@@ -398,6 +430,7 @@ impl Lowering<'_> {
             current,
             interop,
             domain,
+            bytes,
         }) = self.plan_picture(
             picture,
             local,
@@ -458,6 +491,7 @@ impl Lowering<'_> {
                 .push(Realize {
                     key,
                     cache,
+                    bytes,
                     levels: image.levels,
                     picture: Some(PictureImage {
                         source: picture.clone(),

@@ -33,6 +33,7 @@ mod programs;
 mod projective;
 mod raster;
 mod reduce;
+mod resident;
 mod resolve;
 pub mod shaders;
 mod shadow;
@@ -1497,6 +1498,9 @@ struct GlyphResources<'a> {
     /// one its producer holds. The producers themselves stay on the
     /// render thread: a rendered producer's content is `!Sync`.
     producers: &'a FxHashMap<ProducerId, &'a external::Slot>,
+    /// The engine's device, asked what a picture image will commit before
+    /// the picture share admits it.
+    device: &'a wgpu::Device,
 }
 
 /// Cell origins and raster resolutions produced by one deferred raster.
@@ -6323,6 +6327,23 @@ impl GpuRenderer {
             .sum()
     }
 
+    /// Bytes of the retained picture images the latest frames of the
+    /// registered surfaces composed, which [`Self::evict_projective`] never
+    /// evicts. Surfaces being lowered are out of the map.
+    fn composed_picture_bytes(&self) -> u64 {
+        self.surfaces
+            .values()
+            .flat_map(|surf| {
+                surf.projective.iter().flat_map(move |(layer, entries)| {
+                    entries.iter().filter(move |entry| {
+                        entry.picture.is_some() && surf.composed.contains(&entry.local_key(*layer))
+                    })
+                })
+            })
+            .map(projective::Entry::bytes)
+            .sum()
+    }
+
     /// Every resident GPU byte except the local images, which are
     /// evictable and give way to everything else.
     fn resident_bytes(&self) -> u64 {
@@ -6457,7 +6478,19 @@ impl GpuRenderer {
                 r.key.bucket,
                 &r.levels,
                 r.key.format,
+                r.bytes(),
             );
+            if r.picture.is_some() {
+                // The share admitted what the driver said it would commit;
+                // a texture committing more would overrun it unseen.
+                let committed = resident::committed_bytes(&self.device, &entry.texture);
+                assert!(
+                    committed <= r.bytes(),
+                    "picture image {:?} committed {committed} bytes; its admission counted {}",
+                    r.levels[0],
+                    r.bytes()
+                );
+            }
             entry.picture.clone_from(&r.picture);
             let bytes = entry.bytes();
             if let Some(i) = slot {
@@ -6850,7 +6883,12 @@ impl GpuRenderer {
                     .map(|surf| surf.gpu_bytes() - surf.projective_bytes())
                     .sum::<u64>();
             let available = self.config.budget.gpu.0.saturating_sub(resident);
-            let mut excess = required.saturating_sub(available);
+            // The picture share is engine-wide: every surface's composed
+            // pictures, those of surfaces outside this batch included, are
+            // never evicted, so together they must fit it.
+            let picture_excess = (pictures.iter().sum::<u64>() + self.composed_picture_bytes())
+                .saturating_sub(self.config.budget.gpu.0 / gpu_cov::BUDGET_SHARE);
+            let mut excess = required.saturating_sub(available).max(picture_excess);
             if excess == 0 {
                 break;
             }
@@ -6919,7 +6957,8 @@ impl GpuRenderer {
             .collect();
         let producers = &currents;
         let mut results: Vec<Result<Lowered, RenderError>> = if pending.len() > 1 {
-            let (atlas, images, bitmaps) = (&self.atlas, &self.images, &self.bitmaps);
+            let (atlas, images, bitmaps, device) =
+                (&self.atlas, &self.images, &self.bitmaps, &self.device);
             // `FontData`'s COLR cache is a `RefCell` — !Sync — so
             // each worker moves in its own snapshot built here.
             let snapshots: Vec<FxHashMap<u64, FontData>> = pending
@@ -6951,6 +6990,7 @@ impl GpuRenderer {
                                     images,
                                     bitmaps,
                                     producers,
+                                    device,
                                 },
                                 groups,
                                 inputs,
@@ -6993,6 +7033,7 @@ impl GpuRenderer {
                             images: &self.images,
                             bitmaps: &self.bitmaps,
                             producers,
+                            device: &self.device,
                         },
                         groups,
                         inputs,
@@ -7052,6 +7093,7 @@ impl GpuRenderer {
                         images: &self.images,
                         bitmaps: &self.bitmaps,
                         producers,
+                        device: &self.device,
                     },
                     groups,
                     inputs,
@@ -7496,7 +7538,7 @@ impl GpuRenderer {
                         &mut lowering,
                         frame,
                         &mut layers,
-                        (&glyphs, groups),
+                        (&glyphs, groups, resources.device),
                         (&surf.projective, inputs, &surf.plan),
                         placed,
                         lowered,
@@ -7541,7 +7583,11 @@ impl GpuRenderer {
         lowering: &mut Lowering<'a>,
         frame: &SurfaceFrame<'_>,
         layers: &mut FxHashMap<LayerId, ContentData>,
-        (glyphs, groups): (&GlyphContext<'_>, &FxHashMap<u64, BackdropGroupInfo>),
+        (glyphs, groups, device): (
+            &GlyphContext<'_>,
+            &FxHashMap<u64, BackdropGroupInfo>,
+            &'a wgpu::Device,
+        ),
         (retained, inputs, plan): (
             &'a FxHashMap<LayerId, Vec<projective::Entry>>,
             &'a projective::Inputs,
@@ -7561,8 +7607,7 @@ impl GpuRenderer {
             })
             .sum();
         lowering.pictures = Some(lower::PictureInputs::new(
-            retained,
-            inputs,
+            (retained, inputs, device),
             inputs
                 .picture_bytes
                 .min(inputs.limits.max_bytes.saturating_sub(projective_bytes)),
@@ -7645,6 +7690,7 @@ impl GpuRenderer {
                     picture: None,
                     key,
                     cache,
+                    bytes: projective::mip_bytes(key.format.texture(), &image.levels),
                     levels: image.levels.clone(),
                     deps,
                 });

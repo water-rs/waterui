@@ -1780,6 +1780,8 @@ mod picture;
 pub struct PictureInputs<'a> {
     pub retained: &'a FxHashMap<LayerId, Vec<super::projective::Entry>>,
     pub inputs: &'a super::projective::Inputs,
+    /// Asked what a picture image will commit before it is admitted.
+    device: &'a wgpu::Device,
     pub available: u64,
     selected: Option<FxHashSet<LocalKey>>,
     /// Picture images this walk realizes, in realization order.

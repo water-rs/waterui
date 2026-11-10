@@ -234,9 +234,13 @@ pub struct Realize {
     pub levels: Vec<(u32, u32)>,
     /// What its rendering read.
     pub deps: Deps,
+    /// The bytes its texture holds: what the driver commits for a picture
+    /// image, which the picture share admits, and texel storage for a
+    /// projective layer, which the core planner admits.
+    pub bytes: u64,
 }
 
-/// Storage for an image's complete mip chain.
+/// Texel storage for an image's complete mip chain.
 pub fn mip_bytes(format: wgpu::TextureFormat, levels: &[(u32, u32)]) -> u64 {
     levels
         .iter()
@@ -244,9 +248,37 @@ pub fn mip_bytes(format: wgpu::TextureFormat, levels: &[(u32, u32)]) -> u64 {
         .sum()
 }
 
+/// The texture a local image with mip `levels` in `format` is created as.
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a mip chain has at most 32 levels"
+)]
+pub fn descriptor(levels: &[(u32, u32)], format: LocalFormat) -> wgpu::TextureDescriptor<'static> {
+    let (width, height) = levels[0];
+    wgpu::TextureDescriptor {
+        label: Some("projective image"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: levels.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: format.texture(),
+        // A capture inside the local image copies out of it; a
+        // blended composite inside it copies it aside.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    }
+}
+
 impl Realize {
-    pub fn bytes(&self) -> u64 {
-        mip_bytes(self.key.format.texture(), &self.levels)
+    pub const fn bytes(&self) -> u64 {
+        self.bytes
     }
 }
 
@@ -307,6 +339,8 @@ pub struct Entry {
     pub binds_stamp: (u64, u64),
     /// The renderer frame count that last composed it.
     pub last_used: u64,
+    /// The bytes its texture holds, as its [`Realize::bytes`] admitted.
+    bytes: u64,
 }
 
 impl Entry {
@@ -342,24 +376,16 @@ impl Entry {
             })
     }
 
-    /// Storage bytes of every mip level.
+    /// The bytes its texture holds, every mip level included.
     #[must_use]
-    pub fn bytes(&self) -> u64 {
-        let size = self.texture.size();
-        let (mut w, mut h) = (size.width, size.height);
-        let mut bytes = 0;
-        for _ in 0..self.texture.mip_level_count() {
-            bytes += super::texel_bytes(self.texture.format()) * u64::from(w) * u64::from(h);
-            w = (w / 2).max(1);
-            h = (h / 2).max(1);
-        }
-        bytes
+    pub const fn bytes(&self) -> u64 {
+        self.bytes
     }
 }
 
 impl Entry {
     /// A cleared entry for bucket `bucket` holding a new `levels`-level
-    /// texture in `format`, its views and its mip bind groups.
+    /// texture in `format` of `bytes`, its views and its mip bind groups.
     #[must_use]
     #[expect(
         clippy::cast_possible_truncation,
@@ -371,26 +397,9 @@ impl Entry {
         bucket: i32,
         levels: &[(u32, u32)],
         format: LocalFormat,
+        bytes: u64,
     ) -> Self {
-        let (w, h) = levels[0];
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("projective image"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: levels.len() as u32,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: format.texture(),
-            // A capture inside the local image copies out of it; a
-            // blended composite inside it copies it aside.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let texture = device.create_texture(&descriptor(levels, format));
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let views: Vec<wgpu::TextureView> = (0..levels.len() as u32)
             .map(|level| {
@@ -428,6 +437,7 @@ impl Entry {
             binds: FxHashMap::default(),
             binds_stamp: (u64::MAX, u64::MAX),
             last_used: 0,
+            bytes,
         }
     }
 
