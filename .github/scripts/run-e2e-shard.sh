@@ -216,10 +216,26 @@ collect_simulator_stall_diagnostics() {
     else
       echo "app pid ${app_pid:-unset} is not running"
     fi
-    # The render path (backboardd, SimRenderServer, SimMetalHost), the host
-    # load and the simulator services are sampled by the in-flight stall
-    # sampler while a screenshot is stuck; idle samples taken here after the
-    # kill would show nothing.
+    # A stuck screenshot's render path is also sampled in flight by the stall
+    # sampler; the other callers (a failed install, a failed status-bar
+    # override, a command killed at the cleanup deadline) have only this
+    # collection, so it records host load, the render path and the simulator
+    # services itself.
+    echo "--- host load ---"
+    ps -Axo pid,pcpu,stat,etime,command | sort -k2 -rn | sed -n '1,12p' || true
+    echo "--- host memory pressure level ---"
+    sysctl kern.memorystatus_vm_pressure_level || true
+    echo "--- simulator render processes (sample 3s each) ---"
+    sample_render_processes
+    echo "--- host simulator service state ---"
+    local svc_pids
+    svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')" || true
+    [[ -n "${svc_pids}" ]] && ps -o pid,stat,etime,command -p "${svc_pids}" || true
+    echo "--- host simulator service stacks (sample 3s each) ---"
+    local svc
+    for svc in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline" 2>/dev/null); do
+      sample "${svc}" 3 1 2>&1 | sed -n '1,40p' || true
+    done
     echo "--- host log, simulator domain, last 5m ---"
     # `log show` can take tens of seconds on a loaded host — supervised so
     # the collection keeps its own bound even when the log is slow.
