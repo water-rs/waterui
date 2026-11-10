@@ -192,6 +192,7 @@ waterui-core = { workspace = true }
 thiserror.workspace = true
 waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",
+    "log",
 ] }
 waterui-locale = { workspace = true }
 # Sets the user's first-weekday preference as a Unicode locale keyword on

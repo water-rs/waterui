@@ -12737,6 +12737,7 @@ dependencies = [
  "nami",
  "num-traits",
  "tracing",
+ "tracing-subscriber",
  "waterui",
  "waterui-core",
  "waterui-layout",
