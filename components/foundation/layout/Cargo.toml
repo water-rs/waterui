@@ -15,7 +15,7 @@ categories = ["gui"]
 waterui-core.workspace = true
 nami.workspace = true
 smallvec.workspace = true
-waterui-graphics.workspace = true
+waterui-color.workspace = true
 num-traits = { version = "0.2", default-features = false }
 
 [dev-dependencies]
