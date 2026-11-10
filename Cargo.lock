@@ -2158,7 +2158,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -8741,7 +8741,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -12760,7 +12760,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=feat%2Fsurface-input-break#0a7f7b461884f2314c279ed5a818554eb09ee936"
+source = "git+https://github.com/water-rs/browsers?branch=dev#a30f6b41512cf19f21b655f4ba46ec1c1199fc8e"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12800,7 +12800,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=feat%2Fsurface-input-break#0a7f7b461884f2314c279ed5a818554eb09ee936"
+source = "git+https://github.com/water-rs/browsers?branch=dev#a30f6b41512cf19f21b655f4ba46ec1c1199fc8e"
 dependencies = [
  "cookie",
  "executor-core",
@@ -13334,7 +13334,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=feat%2Fsurface-input-break#487681cc945a99aaf6d4c23d4652b499967b781a"
+source = "git+https://github.com/water-rs/map-gpu?branch=dev#34d4f6606a7dd143083e87a397df6d3584750a21"
 dependencies = [
  "blocking",
  "executor-core",
@@ -13472,7 +13472,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?branch=feat%2Fsurface-input-break#b3c0ac3d6d2b16b795553363f7088887f3ab8fab"
+source = "git+https://github.com/water-rs/particle?branch=dev#1aa8a4d33121810613ac3c66e2304ed15c315b46"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13677,7 +13677,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=feat%2Fsurface-input-break#a2cdf8cf3258637a34ad48bb13b4ac82b0504ae3"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#4eeb3349544e9ec801a7ece5fcd296540d600c07"
 dependencies = [
  "async-channel",
  "executor-core",
