@@ -496,12 +496,24 @@ List::content((
 ))
 ```
 
-`ListItem` modifiers: `.deletable(signal)`, `.section(section)`. Selection lives on the
-list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
-`.multi_selection(&Binding<BTreeSet<V::Id>>)` on both `List` and `ListBuilder`; for
-`List::content` rows `V::Id` is the row index (`usize`), for `List::for_each` it is the
-collection's id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`, the index for an
-array or static slice. At most one mode per list: a later call replaces an earlier one.
+A section's content may also be a `ForEach` over a reactive collection, next to or instead
+of static rows — `Section::new("Today").content(ForEach::new(today, |item| ListItem::new(text(item.title))))`.
+Its rows are inserted and removed in place as the collection changes, the header sits on
+whichever row currently opens the section, and a section with no rows draws neither header
+nor footer until rows come back. A grouped, filtered list is therefore one `List::content`
+with a `Section` per group, each over its own `SignalCollection`; sections do not nest.
+
+`ListItem` modifiers: `.deletable(signal)`, `.insets(insets)`. Selection lives on the
+list itself and holds the app's own values — `.selection(&Binding<Option<T>>)` or
+`.multi_selection(&Binding<BTreeSet<T>>)` on both `List` and `ListBuilder`, `T: Ord + Clone`.
+A `ForEach` row — every row of `List::for_each`, or a `ForEach` inside `List::content` —
+is selected by its collection id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`,
+the index for an array or static slice. A static row of `List::content` is selected by the
+value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox)`
+or `row("Archive", "12").tag(Mailbox::Archive)` — and an untagged static row is not
+selectable. Every selectable row of one list is selected by the same type; a selection
+of another type does not compile. Rows carrying the same value are selected together.
+At most one mode per list: a later call replaces an earlier one.
 `List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
 structural tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.

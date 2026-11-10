@@ -16,6 +16,7 @@ use waterui::graphics::canvas::{
     RoundedRect, Sampling, Shadow, StrokeStyle,
 };
 use waterui::graphics::color::WorkingColor;
+use waterui::graphics::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
 use waterui::reactive::Signal as _;
 use waterui::reactive::binding;
 use waterui_core::layout::{Affine2, Point, Rect, Size};
@@ -353,4 +354,29 @@ fn canvas_scope_records_its_region_again() {
     app.snapshot()
         .save_png(output("scope_after.png"))
         .expect("the scope snapshot is writable");
+}
+
+#[test]
+fn animated_mesh_gradient_flows_with_the_canvas_clock() {
+    let mut app = ui()
+        .viewport(360, 240)
+        .theme(Material3::defaults())
+        .mount_offscreen(|| {
+            AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom().speed(1.0))
+                .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+                .a11y_label("Animated mesh")
+        });
+    app.query()
+        .role(Role::IMAGE)
+        .label("Animated mesh")
+        .assert_exists();
+    let _ = app.snapshot();
+    app.pump_for(Duration::from_millis(500));
+    app.snapshot()
+        .save_png(output("animated_mesh_early.png"))
+        .expect("the early snapshot is writable");
+    app.pump_for(Duration::from_secs(20));
+    app.snapshot()
+        .save_png(output("animated_mesh_late.png"))
+        .expect("the late snapshot is writable");
 }

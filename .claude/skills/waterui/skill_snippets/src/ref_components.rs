@@ -695,19 +695,61 @@ pub fn components_block_23() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
+// components.md § "## Lists and collections" (prose): a `ForEach` section.
+// Not counted as a rust block. Glue: `today` stands for the prose's reactive
+// collection.
+// ---------------------------------------------------------------------------
+pub fn components_reactive_section_prose(
+    today: waterui::reactive::collection::List<Record>,
+) -> impl View {
+    use waterui::views::ForEach;
+
+    List::content(
+        Section::new("Today").content(ForEach::new(today, |item: Record| {
+            ListItem::new(text(item.title))
+        })),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // components.md § "## Lists and collections" (prose): the `ListItem` modifiers.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn components_list_item_prose() {
+pub fn components_list_item_prose(records: waterui::reactive::collection::List<Record>) {
+    use waterui::layout::padding::EdgeInsets;
+    use waterui::views::ForEach;
+
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Mailbox {
+        Inbox,
+        Archive,
+    }
+
     let signal = Binding::bool(true);
-    let section = ListSection::default();
-    let selection = Binding::container(None::<usize>);
-    let multi = Binding::container(alloc::collections::BTreeSet::<usize>::new());
+    let selection = Binding::container(None::<Mailbox>);
+    let multi = Binding::container(alloc::collections::BTreeSet::<Mailbox>::new());
+    let record_selection = Binding::container(None::<u64>);
 
     let _ = ListItem::new(text("a")).deletable(signal.clone());
-    let _ = ListItem::new(text("a")).section(section);
-    let _ = List::content((row("a", text("1")),)).selection(&selection);
-    let _ = List::content((row("a", text("1")),)).multi_selection(&multi);
+    let _ = ListItem::new(text("a")).insets(EdgeInsets::all(4.0));
+    let _ = List::for_each(records.clone(), |r: Record| ListItem::new(text(r.title)))
+        .selection(&record_selection);
+    let _ = List::content((
+        (|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox),
+        row("Archive", "12").tag(Mailbox::Archive),
+    ))
+    .selection(&selection);
+    let _ = List::content((
+        row("Archive", "12").tag(Mailbox::Archive),
+        row("Storage", "3 GB"), // untagged: not selectable
+    ))
+    .multi_selection(&multi);
+    let _ = List::content(
+        Section::new("Records").content(ForEach::new(records, |r: Record| {
+            ListItem::new(text(r.title))
+        })),
+    )
+    .selection(&record_selection);
     // A row under `.disabled(true)` is inert to selection; there is no
     // per-item selectable flag — selection follows the content's disabled state.
     let _ = ListItem::new(text("a").disabled(true));

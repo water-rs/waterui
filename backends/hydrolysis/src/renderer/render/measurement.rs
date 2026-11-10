@@ -1175,21 +1175,19 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     if editing && list.on_delete().is_some() {
         row_width += metrics.delete_control_width + metrics.trailing_control_spacing;
     }
-    // Section chrome is part of the list's own height. Walking every marker is
-    // bounded here because only static section content sets `uses_sections`; a
-    // virtualized `List::for_each` never does.
+    // Section chrome is part of the list's own height: each section holding
+    // rows draws its header and footer once. The sections come from row ids,
+    // so no row is materialized for them.
     let mut section_height = 0.0;
-    if list.uses_sections() {
-        for index in contents.range() {
-            let Some(section) = contents.get_view(index).and_then(ListItem::into_section) else {
-                continue;
-            };
-            if section.label().is_some() {
-                section_height += metrics.section_header_height;
-            }
-            if section.get_footer().is_some() {
-                section_height += metrics.section_footer_height;
-            }
+    for span in list.sections().spans(&contents) {
+        let Some(section) = span.section else {
+            continue;
+        };
+        if section.label().is_some() {
+            section_height += metrics.section_header_height;
+        }
+        if section.get_footer().is_some() {
+            section_height += metrics.section_footer_height;
         }
     }
 
@@ -1536,42 +1534,6 @@ pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
             }
         }
     }
-}
-
-pub fn measure_slider_intrinsic<E: crate::text::TextEngine>(
-    slider: &SliderConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    let metrics = theme.slider_metrics(slider.size());
-    let label_size = measure_label_intrinsic(slider.label(), state, env, theme);
-    let min_label_size = measure_view_intrinsic(slider.min_value_label(), state, env, theme);
-    let max_label_size = measure_view_intrinsic(slider.max_value_label(), state, env, theme);
-
-    let control_row_height = metrics
-        .handle_height
-        .max(f64::from(min_label_size.height))
-        .max(f64::from(max_label_size.height));
-    let label_height = f64::from(label_size.height);
-    let intrinsic_height = if label_height > 0.0 {
-        label_height + metrics.vertical_spacing + control_row_height
-    } else {
-        control_row_height
-    };
-
-    let min_width = f64::from(label_size.width).max(metrics.horizontal_inset.mul_add(
-        2.0,
-        f64::from(min_label_size.width)
-            + metrics.horizontal_spacing
-            + metrics.min_track_width
-            + metrics.horizontal_spacing
-            + f64::from(max_label_size.width),
-    ));
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(min_width),
-        crate::num_cast::f64_as_f32(intrinsic_height),
-    )
 }
 
 fn resolved_text_styled<E: crate::text::TextEngine>(

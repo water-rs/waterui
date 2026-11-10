@@ -531,6 +531,82 @@ pub struct GpuPath {
     /// Where `bound`'s bins and fragments lie along the device rows of
     /// the encoding frame, for [`GpuPath::row_slice`].
     profile: Arc<RowProfile>,
+    /// A stroke's subpaths as [`InputUnit`]s in the encoding frame, in
+    /// record order; empty for a fill, whose units are its elements.
+    subpaths: Arc<[InputUnit]>,
+}
+
+/// What a path's compute inputs, or a subset of them, add to a batch:
+/// the counts [`GpuBound::segments`] and the dash table's
+/// `stage_total`, `dashes` and `fragments` hold for the whole path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputCounts {
+    /// Curve elements the flatten kernel reads.
+    pub elements: usize,
+    /// Stroke records the compute stroker reads.
+    pub records: usize,
+    /// Segments the inputs flatten or stroke to.
+    pub segments: usize,
+    /// A dashed stroke's staging entries.
+    pub stage: usize,
+    /// A dashed stroke's dashes.
+    pub dashes: usize,
+}
+
+impl InputCounts {
+    pub const fn add(&mut self, other: &Self) {
+        self.elements += other.elements;
+        self.records += other.records;
+        self.segments += other.segments;
+        self.stage += other.stage;
+        self.dashes += other.dashes;
+    }
+
+    /// These counts less `other`, a subset of them.
+    #[must_use]
+    pub const fn less(mut self, other: &Self) -> Self {
+        self.elements -= other.elements;
+        self.records -= other.records;
+        self.segments -= other.segments;
+        self.stage -= other.stage;
+        self.dashes -= other.dashes;
+        self
+    }
+}
+
+impl std::iter::Sum for InputCounts {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), |mut sum, counts| {
+            sum.add(&counts);
+            sum
+        })
+    }
+}
+
+impl InputCounts {
+    /// A dashed stroke's bound on its dash fragments, `F` of
+    /// [`DashTable::fragments`].
+    pub const fn dash_fragments(&self) -> usize {
+        self.dashes.saturating_add(self.records)
+    }
+}
+
+/// The smallest part of a path's compute input a row slice takes whole
+/// or leaves out (water-rs/waterui#4131): a fill element, which the
+/// flatten kernel reads alone, or a stroke subpath, whose records'
+/// vertex links, joins, closing join and dash scan stay within it. The
+/// geometry it produces reaches only the device rows `[top, bottom]`,
+/// so a row window it does not reach is generated exactly without it.
+#[derive(Clone, Copy, Debug)]
+pub struct InputUnit {
+    /// The first device row its geometry reaches.
+    pub top: f64,
+    /// The last device row its geometry reaches.
+    pub bottom: f64,
+    /// Its elements or stroke records, `[first, end)`.
+    pub inputs: [u32; 2],
+    /// What it adds to its path's counts.
+    pub counts: InputCounts,
 }
 
 /// One contribution to a path's bin and fragment bound, and the
@@ -1068,6 +1144,7 @@ pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> 
         hull,
         origin,
         profile: Arc::new(RowProfile::new(state.charges.iter(), None)),
+        subpaths: Arc::from([]),
     }
     .placed(origin, surface)
 }
@@ -1140,10 +1217,62 @@ impl GpuPath {
         slice
     }
 
+    /// The whole path's [`InputCounts`].
+    pub fn inputs(&self) -> InputCounts {
+        InputCounts {
+            elements: self.elements.len(),
+            records: self.strokes.len(),
+            segments: self.bound.segments,
+            stage: self.dash.as_deref().map_or(0, |dash| dash.stage_total),
+            dashes: self.dash.as_deref().map_or(0, |dash| dash.dashes),
+        }
+    }
+
+    /// The path's [`InputUnit`]s in input order, their rows in a
+    /// generation frame whose raster is `raster`: each fill element's
+    /// control hull, which holds its flattened chords, or each stroke
+    /// subpath's rows, which the encoder charged its outline to
+    /// ([`GpuPath::row_slice`] reads the same rows). The generation
+    /// raster shares the encoding raster's 2x2.
+    pub fn input_units(&self, raster: Affine) -> impl Iterator<Item = InputUnit> + '_ {
+        let [_, yx, _, yy, _, ty] = raster.as_coeffs();
+        let shift = ty - self.origin.y;
+        let fills = self
+            .elements
+            .iter()
+            .zip(0u32..)
+            .map(move |(element, index)| {
+                // A line's control points are its start and a quad's second
+                // one is its first ([`GpuEncode::push`]), so all four points
+                // span every element's hull.
+                let [x0, y0, ax, ay] = element.lo.map(f64::from);
+                let [bx, by, x1, y1] = element.hi.map(f64::from);
+                let rows = [(x0, y0), (ax, ay), (bx, by), (x1, y1)]
+                    .map(|(x, y)| yx.mul_add(x, yy.mul_add(y, ty)));
+                InputUnit {
+                    top: rows.into_iter().fold(f64::INFINITY, f64::min),
+                    bottom: rows.into_iter().fold(f64::NEG_INFINITY, f64::max),
+                    inputs: [index, index + 1],
+                    counts: InputCounts {
+                        elements: 1,
+                        segments: element.head[1] as usize,
+                        ..InputCounts::default()
+                    },
+                }
+            });
+        let strokes = self.subpaths.iter().map(move |&unit| InputUnit {
+            top: unit.top + shift,
+            bottom: unit.bottom + shift,
+            ..unit
+        });
+        fills.chain(strokes)
+    }
+
     /// Heap bytes these records and their row profile hold.
     pub fn heap_bytes(&self) -> usize {
         self.elements.len() * std::mem::size_of::<GpuElement>()
             + self.strokes.len() * std::mem::size_of::<GpuStrokeRecord>()
+            + self.subpaths.len() * std::mem::size_of::<InputUnit>()
             + self.profile.heap_bytes()
     }
 }

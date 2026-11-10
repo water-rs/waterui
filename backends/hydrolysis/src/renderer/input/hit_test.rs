@@ -124,13 +124,35 @@ pub struct PointerTarget<E: crate::text::TextEngine> {
     /// press feedback animates without a structural rebuild.
     pub(crate) interaction: Option<Rc<InteractionLayerHandles>>,
     pub(crate) action: PointerAction<E>,
+    /// The control's own handling of a press on this target, when it tracks
+    /// the press instead of acting on release ([`Track`]). The action still
+    /// answers keyboard activation.
+    pub(crate) track: Option<TrackAction>,
     pub(crate) keyboard_step: Option<KeyboardStepAction>,
+    /// Whether a press at a window point inside `bounds` is this target's,
+    /// asked as the press lands. A press it declines is not a hit: it
+    /// reaches the next target beneath, as if `bounds` did not cover it.
+    pub(crate) press_filter: Option<PressFilter>,
     pub(crate) keyboard_focusable: bool,
     pub(crate) modal: bool,
     /// The `OnKeyPress` scopes enclosing the view this target was registered
     /// from, innermost first — the chain an unconsumed key bubbles through
     /// while this target holds keyboard focus.
     pub(crate) key_handlers: Option<Rc<KeyHandlerNode>>,
+}
+
+/// Answers whether a press at a window point belongs to a target.
+pub type PressFilter = Rc<dyn Fn(kurbo::Point) -> bool>;
+
+impl<E: crate::text::TextEngine> PointerTarget<E> {
+    /// Whether a press at `point` lands on this target.
+    fn takes_press_at(&self, point: kurbo::Point) -> bool {
+        self.bounds.contains(point)
+            && self
+                .press_filter
+                .as_ref()
+                .is_none_or(|filter| filter(point))
+    }
 }
 
 /// An in-flight scrollbar-thumb drag: which scroll slot owns it (the handle's
@@ -270,6 +292,33 @@ pub struct HoverSync {
 
 pub type PointerAction<E> =
     Rc<RefCell<dyn FnMut(&mut SemanticCore<E>, kurbo::Point, &Environment) -> bool>>;
+/// One step of a press a control tracks itself, in the target's local space.
+///
+/// A control that tracks its press — a switch whose knob follows the
+/// pointer — registers a [`TrackAction`] with its pointer target. It sees
+/// the press begin, every move, and how the press ends, in place of the
+/// target's action running on release: the control decides whether the
+/// press was a tap or a drag. The target's action still answers keyboard
+/// activation.
+#[derive(Debug, Clone, Copy)]
+pub enum Track {
+    /// The press landed at this point.
+    Begin(kurbo::Point),
+    /// The pointer moved to this point.
+    Move(kurbo::Point),
+    /// The pointer lifted at `point`; `within_reach` says whether that is
+    /// within the press slot's cancel distance of the target.
+    Release {
+        point: kurbo::Point,
+        within_reach: bool,
+    },
+    /// Something took the press away: a scroll claimed it, or the pointer
+    /// stream was cancelled.
+    Cancel,
+}
+
+/// A control's handler for [`Track`] steps.
+pub type TrackAction = Rc<RefCell<dyn FnMut(Track)>>;
 pub type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
 pub type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
 /// A hover-move handler; the point is in the registration's local space
@@ -1904,7 +1953,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .pointer_targets
             .iter()
             .enumerate()
-            .filter(|(_, target)| target.bounds.contains(point))
+            .filter(|(_, target)| target.takes_press_at(point))
             .map(|(index, _)| index)
             .collect();
         pointer_indices.sort_unstable_by(|left, right| {
@@ -2312,6 +2361,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 // Material controls commit on release, not on pointer-down. Keep
                 // the topmost opaque target captured so a release inside its
                 // bounds activates it exactly once; a release outside cancels.
+                if let Some(track) = target.track.as_ref() {
+                    (track.borrow_mut())(Track::Begin(target.to_local * point));
+                }
                 self.hit_test.active_pointer_target = Some(target);
                 return refresh_requested || visual_changed;
             }
@@ -2436,23 +2488,27 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 changed = true;
             }
         }
-        if let Some(target) = self.hit_test.active_pointer_target.take()
-            && {
-                // A release within the slot's cancel distance of the target
-                // still activates it.
-                let reach = target
-                    .press_slot
-                    .as_ref()
-                    .map_or(0.0, |slot| slot.cancel_distance);
-                target.bounds.inflate(reach, reach).contains(point)
+        if let Some(target) = self.hit_test.active_pointer_target.take() {
+            // A release within the slot's cancel distance of the target
+            // still activates it.
+            let reach = target
+                .press_slot
+                .as_ref()
+                .map_or(0.0, |slot| slot.cancel_distance);
+            let within_reach = target.bounds.inflate(reach, reach).contains(point);
+            if let Some(track) = target.track.as_ref() {
+                (track.borrow_mut())(Track::Release {
+                    point: target.to_local * point,
+                    within_reach,
+                });
+            } else if within_reach {
+                // The action's verdict is "the tap landed", not a layout
+                // input: whatever it writes marks its own readers through
+                // the signal guards, so an ordinary activation marks
+                // nothing and counts nothing toward this release's
+                // `changed` (water-rs/waterui#2941).
+                let _ = (target.action.borrow_mut())(self, point, env);
             }
-        {
-            // The action's verdict is "the tap landed", not a layout
-            // input: whatever it writes marks its own readers through the
-            // signal guards, so an ordinary activation marks nothing and
-            // counts nothing toward this release's `changed`
-            // (water-rs/waterui#2941).
-            let _ = (target.action.borrow_mut())(self, point, env);
         }
         let drop_changed = self.finish_active_drag(point, env);
         changed |= drop_changed;
@@ -2515,7 +2571,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // A waiting touch press survives a move within its slot's slop of
         // where it landed; a farther move cancels it, so a scroll that
         // starts under the finger never shows or activates it.
+        // A tracked press owns its movement, so a drag never cancels it.
         if pointer_kind != PointerKind::Mouse
+            && self
+                .hit_test
+                .active_pointer_target
+                .as_ref()
+                .is_none_or(|target| target.track.is_none())
             && self
                 .hit_test
                 .pending_pointer_press
@@ -2575,6 +2637,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let text_drag_changed = self.update_text_selection_drag(index, point);
             drag_changed |= text_drag_changed;
             refresh_requested |= text_drag_changed;
+        }
+        if let Some(target) = self.hit_test.active_pointer_target.as_ref()
+            && let Some(track) = target.track.clone()
+        {
+            (track.borrow_mut())(Track::Move(target.to_local * point));
         }
         if let Some(action) = self.hit_test.active_pointer_drag_target.clone() {
             let pointer_drag_changed = (action.borrow_mut())(self, point, env);
@@ -3744,6 +3811,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         true
     }
 
+    /// Tells the active press's control, when it tracks its press, that the
+    /// press was taken away.
+    fn cancel_tracked_press(&self) {
+        if let Some(track) = self
+            .hit_test
+            .active_pointer_target
+            .as_ref()
+            .and_then(|target| target.track.clone())
+        {
+            (track.borrow_mut())(Track::Cancel);
+        }
+    }
+
     /// Consumes the press the active pointer sequence carries: the
     /// content's press is cancelled — never completed — pending recognizers
     /// are failed, and the press's visual state releases. The shared
@@ -3751,6 +3831,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// steals the sequence through.
     fn consume_active_press(&mut self, at: Instant, env: &Environment) {
         self.hit_test.pending_pointer_press = None;
+        self.cancel_tracked_press();
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
@@ -3857,6 +3938,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.hit_test.active_pointer_drag_owner = Weak::new();
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
+        self.cancel_tracked_press();
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_embedded_target = None;
         self.hit_test.active_pointer = None;
@@ -4447,7 +4529,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction,
                 action,
+                track: None,
                 keyboard_step: None,
+                press_filter: None,
                 keyboard_focusable: false,
                 modal,
                 key_handlers,
@@ -4499,7 +4583,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 action: Rc::new(RefCell::new(
                     |_: &mut Self, _: kurbo::Point, _: &Environment| true,
                 )),
+                track: None,
                 keyboard_step: None,
+                press_filter: None,
                 keyboard_focusable: false,
                 modal: false,
                 key_handlers,
@@ -4606,7 +4692,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction: None,
                 action: Rc::new(RefCell::new(action)),
+                track: None,
                 keyboard_step: None,
+                press_filter: None,
                 keyboard_focusable: false,
                 modal: false,
                 key_handlers,
@@ -4745,10 +4833,46 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         Rc<InteractionLayerHandles>,
     ) {
         let motion = crate::renderer::chrome::LiveChrome::handle_motion(chrome);
+        self.bind_live_target(key, target, env, disabled, motion, chrome.get_hit())
+    }
+
+    /// Binds the interaction target of a toggle whose parts are
+    /// engine-realized ([`LiveToggle`](crate::renderer::live_toggle::LiveToggle))
+    /// from `control`, on its touch `target`: the same live binding
+    /// [`Self::bind_live_chrome_target`] makes.
+    pub(crate) fn bind_live_toggle_target(
+        &mut self,
+        key: InteractionKey,
+        target: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+        control: &crate::theme::ToggleControl,
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
+        let motion = crate::renderer::live_toggle::LiveToggle::handle_motion(control);
+        self.bind_live_target(key, target, env, disabled, motion, control.get_hit())
+    }
+
+    fn bind_live_target(
+        &mut self,
+        key: InteractionKey,
+        target: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+        motion: InteractionMotion,
+        hit: &crate::theme::HitRegion,
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
         let (state, mut slot, handles) =
             self.bind_interaction_target_with_focus(key, target, env, None, disabled, Some(motion));
-        slot.slop = chrome.get_hit().get_slop();
-        slot.cancel_distance = chrome.get_hit().get_cancel_distance();
+        slot.slop = hit.get_slop();
+        slot.cancel_distance = hit.get_cancel_distance();
         (state, slot, handles)
     }
 
@@ -4997,6 +5121,33 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
+        self.register_press_target(bounds, press_slot, keyboard_focusable, action, None);
+    }
+
+    /// Registers a keyboard-focusable press target whose control tracks its
+    /// press itself ([`Track`]); `action` answers keyboard activation.
+    pub(crate) fn register_tracked_pointer_target<F>(
+        &mut self,
+        bounds: kurbo::Rect,
+        press_slot: PressSlot,
+        track: TrackAction,
+        action: F,
+    ) where
+        F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
+    {
+        self.register_press_target(bounds, press_slot, true, action, Some(track));
+    }
+
+    fn register_press_target<F>(
+        &mut self,
+        bounds: kurbo::Rect,
+        press_slot: PressSlot,
+        keyboard_focusable: bool,
+        action: F,
+        track: Option<TrackAction>,
+    ) where
+        F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
+    {
         let interaction = self.hit_test.interaction.handles_for(&press_slot);
         let modal = press_slot.modal;
         let key_handlers = self.snapshot_key_handlers();
@@ -5012,7 +5163,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction,
                 action: Rc::new(RefCell::new(action)),
+                track,
                 keyboard_step: None,
+                press_filter: None,
                 keyboard_focusable,
                 modal,
                 key_handlers,
@@ -5026,6 +5179,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self,
         bounds: kurbo::Rect,
         press_slot: PressSlot,
+        press_filter: Option<PressFilter>,
         action: F,
         keyboard_step: K,
     ) where
@@ -5047,7 +5201,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction,
                 action: Rc::new(RefCell::new(action)),
+                track: None,
                 keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
+                press_filter,
                 keyboard_focusable: true,
                 modal,
                 key_handlers,
@@ -5466,7 +5622,9 @@ impl<E: crate::text::TextEngine> Clone for PointerTarget<E> {
             owner: self.owner.clone(),
             interaction: self.interaction.clone(),
             action: self.action.clone(),
+            track: self.track.clone(),
             keyboard_step: self.keyboard_step.clone(),
+            press_filter: self.press_filter.clone(),
             keyboard_focusable: self.keyboard_focusable,
             modal: self.modal,
             key_handlers: self.key_handlers.clone(),

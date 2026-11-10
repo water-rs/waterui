@@ -2,8 +2,8 @@
 // smart-list destinations as a 2-column grid of colored tiles (white icon
 // top-left, bold white count top-right, bold white name bottom-left), followed
 // by a "My Lists" section of colored-badge rows. The detail shows a large bold
-// accent-colored leading title, a divider, and "Today"/"Upcoming" reminder
-// sections under small bold leading headers. Initial state: Today selected,
+// accent-colored leading title, a divider, and one list of reminders in a
+// "Today" and an "Upcoming" section. Initial state: Today selected,
 // empty search, all rows visible. At compact width the split opens on the
 // detail column, matching WaterUI's compact rule since #1844: the detail is
 // presented while the selection is non-empty and the sidebar while it is
@@ -215,8 +215,14 @@ struct RemindersTwin: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(EdgeInsets(top: 14, leading: 18, bottom: 12, trailing: 18))
         wuiDivider()
-        reminderSection("Today", rows: todayRows)
-        reminderSection("Upcoming", rows: upcomingRows)
+        List {
+          Section("Today") {
+            ForEach(todayRows) { reminderRow($0) }
+          }
+          Section("Upcoming") {
+            ForEach(upcomingRows) { reminderRow($0) }
+          }
+        }
       }
       .background(.regularMaterial, ignoresSafeAreaEdges: [])
       .navigationTitle((selection ?? .today).title)
@@ -232,35 +238,25 @@ struct RemindersTwin: View {
     }
   }
 
-  private func reminderSection(_ title: String, rows: [ReminderRow]) -> some View {
-    VStack(spacing: 10) {
-      Text(title)
-        .font(.caption)
-        .bold()
+  private func reminderRow(_ row: ReminderRow) -> some View {
+    HStack(spacing: 10) {
+      MaterialIcon.circleOutline.view(size: 16)
         .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(EdgeInsets(top: 8, leading: 18, bottom: 0, trailing: 18))
-      List(rows) { row in
-        HStack(spacing: 10) {
-          MaterialIcon.circleOutline.view(size: 16)
-            .foregroundStyle(.secondary)
-          VStack(alignment: .leading, spacing: 2) {
-            Text(row.title).font(.body).foregroundStyle(.primary)
-            if let subtitle = row.subtitle {
-              Text(subtitle).font(.caption).foregroundStyle(.secondary)
-            }
-          }
-          Spacer(minLength: 0)
-          if row.flagged {
-            MaterialIcon.flag.view(size: 12)
-              .foregroundStyle(srgbHex(0xF28A34))
-          } else {
-            Spacer(minLength: 0).frame(width: 12)
-          }
+      VStack(alignment: .leading, spacing: 2) {
+        Text(row.title).font(.body).foregroundStyle(.primary)
+        if let subtitle = row.subtitle {
+          Text(subtitle).font(.caption).foregroundStyle(.secondary)
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 18)
+      }
+      Spacer(minLength: 0)
+      if row.flagged {
+        MaterialIcon.flag.view(size: 12)
+          .foregroundStyle(srgbHex(0xF28A34))
+      } else {
+        Spacer(minLength: 0).frame(width: 12)
       }
     }
+    .padding(.vertical, 10)
+    .padding(.horizontal, 18)
   }
 }

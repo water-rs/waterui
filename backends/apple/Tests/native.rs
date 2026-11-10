@@ -2922,6 +2922,7 @@ mod split {
     use cocoa_ui::appkit::ListTableView;
     use cocoa_ui::objc2_app_kit::NSTableViewStyle;
     use cocoa_ui::{PlatformView, view};
+    use waterui::ViewExt as _;
     use waterui::component::list::{List, ListItem};
     use waterui::navigation::{NavigationSplitView, NavigationView};
     use waterui::prelude::text;
@@ -2948,7 +2949,8 @@ mod split {
         let leaf = resolve::render(NavigationSplitView::new(
             &selection,
             move || {
-                List::content((|| ListItem::new(text("row")),)).selection(&binding(Some(0_usize)))
+                List::content(((|| ListItem::new(text("row"))).tag(0_usize),))
+                    .selection(&binding(Some(0_usize)))
             },
             |_id: i32| NavigationView::new("Detail", text("detail")),
         ));
@@ -2967,8 +2969,9 @@ mod split {
     /// The same list outside a split keeps the regular table chrome.
     pub fn a_plain_list_keeps_the_regular_chrome() {
         let selection = binding(Some(0_usize));
-        let leaf =
-            resolve::render(List::content((|| ListItem::new(text("row")),)).selection(&selection));
+        let leaf = resolve::render(
+            List::content(((|| ListItem::new(text("row"))).tag(0_usize),)).selection(&selection),
+        );
         let table = sidebar_table(leaf.view()).expect("the list mounts a table");
         assert!(
             !table.is_sidebar(),
@@ -10518,7 +10521,7 @@ mod list_ax {
     use objc2_foundation::{NSArray, NSIndexSet};
     use waterui::component::list::ListItem;
     use waterui::layout::scroll::ScrollController;
-    use waterui_apple::native_test_support::{row_item, row_list};
+    use waterui_apple::native_test_support::{row_item, row_list, sectioned_row_list};
 
     use super::{AttachedWindow, Retained, leaf, mtm, trial_each};
 
@@ -10654,9 +10657,40 @@ mod list_ax {
         );
     }
 
+    /// A sectioned list's accessibility rows are its section bands and
+    /// content rows: the spacer row that carries the list's top gap below
+    /// a leading header reserves space and is no element.
+    fn a_sectioned_list_exposes_no_spacer_row() {
+        let (leaf, surface) = sectioned_row_list();
+        let _window = leaf::attach(mtm(), leaf.view());
+        leaf.view().setNeedsLayout(true);
+        leaf.view().layoutSubtreeIfNeeded();
+        let table = surface.table_view();
+        // Header, spacer, two rows, header, one row.
+        assert_eq!(table.numberOfRows(), 6);
+        assert_eq!(
+            realized_rows(&table),
+            6,
+            "a six-row list realizes every row"
+        );
+        assert_eq!(
+            ax_rows(&table).count(),
+            5,
+            "accessibilityRows must hold the two bands and three rows, not the spacer"
+        );
+        assert!(
+            ax_children(&table).count() <= 5 + NON_ROW_CHILDREN,
+            "accessibilityChildren must not gain the spacer row"
+        );
+    }
+
     /// The `list_ax::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
         trial_each(vec![
+            (
+                "list_ax::a_sectioned_list_exposes_no_spacer_row".to_owned(),
+                Box::new(a_sectioned_list_exposes_no_spacer_row),
+            ),
             (
                 "list_ax::a_large_list_walk_materializes_no_rows".to_owned(),
                 Box::new(a_large_list_walk_materializes_no_rows),

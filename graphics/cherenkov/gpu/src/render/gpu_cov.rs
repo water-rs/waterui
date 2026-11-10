@@ -16,6 +16,7 @@
 
 use cherenkov::RenderError;
 use rustc_hash::FxHashMap;
+use std::ops::Range;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -23,7 +24,9 @@ use crate::render::bindings;
 use crate::render::glyph::GpuDraw;
 use crate::render::instance::Instance;
 use crate::render::path::stroke::{DashTable, GpuStrokeRecord};
-use crate::render::path::{CoverageKey, GpuBound, GpuElement, GpuPath, STRIP_H};
+use crate::render::path::{
+    CoverageKey, GpuBound, GpuElement, GpuPath, InputCounts, InputUnit, STRIP_H,
+};
 use crate::render::stroke_abi::{
     LIST_WORDS, RECORD_WORDS, SCAN_BLOCK, SLOT_WORDS, SLOTS, STAGE_WORDS,
 };
@@ -297,6 +300,12 @@ pub struct GpuCoverage {
     stroke_sources: Vec<Arc<[GpuStrokeRecord]>>,
     /// Each path's dash table, in apply order.
     dash_sources: Vec<Option<Arc<DashTable>>>,
+    /// Each record's range of `input_runs`: the runs of its source's
+    /// elements, or of its stroke records, that it reads
+    /// (water-rs/waterui#4131).
+    record_runs: Vec<Range<usize>>,
+    /// The records' input runs, `[first, end)` into their sources.
+    input_runs: Vec<[u32; 2]>,
     /// The dash tables' words behind the stroke records.
     dashes: Vec<u32>,
     /// `(path, strip)` items uploaded after atomic counters and row windings.
@@ -321,12 +330,30 @@ pub struct GpuCoverage {
     generation_bytes: u64,
 }
 
-/// One generation record of a miss: the bound of the rows it generates
-/// and the generation-frame clip narrowed to them
-/// ([`GpuCoverage::slices`]).
+/// One generation record of a miss: the bound of the rows it generates,
+/// the generation-frame clip narrowed to them, and the inputs that reach
+/// them ([`GpuCoverage::slices`]). `bound.segments` is the inputs'.
 struct Slice {
     bound: GpuBound,
     clip: [f32; 4],
+    inputs: InputCounts,
+    /// Runs `[first, end)` of the path's elements, or of its stroke
+    /// records, each a whole number of [`InputUnit`]s.
+    runs: Vec<[u32; 2]>,
+}
+
+impl Slice {
+    /// The whole of `path` at `bound`, clipped to `clip`.
+    fn whole(path: &GpuPath, bound: GpuBound, clip: [f32; 4]) -> Self {
+        let inputs = path.inputs();
+        let count = u32::try_from(inputs.elements.max(inputs.records)).expect("inputs fit u32");
+        Self {
+            bound,
+            clip,
+            inputs,
+            runs: (count > 0).then_some([0, count]).into_iter().collect(),
+        }
+    }
 }
 
 /// A contiguous range of misses sharing one temporary buffer allocation.
@@ -454,6 +481,8 @@ impl GpuCoverage {
             strokes: Vec::new(),
             stroke_sources: Vec::new(),
             dash_sources: Vec::new(),
+            record_runs: Vec::new(),
+            input_runs: Vec::new(),
             dashes: Vec::new(),
             work: Vec::new(),
             draws: Vec::new(),
@@ -487,6 +516,8 @@ impl GpuCoverage {
         self.strokes.clear();
         self.stroke_sources.clear();
         self.dash_sources.clear();
+        self.record_runs.clear();
+        self.input_runs.clear();
         self.dashes.clear();
         self.work.clear();
         self.draws.clear();
@@ -610,6 +641,8 @@ impl GpuCoverage {
             + self.strokes.capacity() * std::mem::size_of::<GpuStrokeRecord>()
             + self.stroke_sources.capacity() * std::mem::size_of::<Arc<[GpuStrokeRecord]>>()
             + self.dash_sources.capacity() * std::mem::size_of::<Option<Arc<DashTable>>>()
+            + self.record_runs.capacity() * std::mem::size_of::<Range<usize>>()
+            + self.input_runs.capacity() * std::mem::size_of::<[u32; 2]>()
             + self.dashes.capacity() * std::mem::size_of::<u32>()
             + self.work.capacity() * std::mem::size_of::<[u32; 2]>()
             + self.draws.capacity() * std::mem::size_of::<Draw>()
@@ -692,10 +725,10 @@ impl GpuCoverage {
         let &GpuDraw {
             key,
             shift,
-            rule,
             raster,
             clip,
             path: ref prepared,
+            ..
         } = draw;
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.retained |= retain;
@@ -706,8 +739,27 @@ impl GpuCoverage {
             self.draws.push(Draw { key, shift });
             return Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"));
         }
-        let [.., ty] = raster.as_coeffs();
-        let slices = self.slices(prepared, ty, clip)?;
+        let slices = self.slices(prepared, raster, clip)?;
+        self.generate(draw, &slices, retain)
+    }
+
+    /// Allocate `draw`'s entry, `retain`ed across settles when asked,
+    /// and push the generation records of `slices`, which cover its rows
+    /// top to bottom, as its draw index.
+    fn generate(
+        &mut self,
+        draw: &GpuDraw,
+        slices: &[Slice],
+        retain: bool,
+    ) -> Result<u32, RenderError> {
+        let &GpuDraw {
+            key,
+            shift,
+            rule,
+            raster,
+            path: ref prepared,
+            ..
+        } = draw;
         // One block holds every slice's output, each slice's capacity
         // after the previous one's.
         let geometry_slots: usize = slices.iter().map(|slice| slice.bound.instance_cap).sum();
@@ -749,64 +801,123 @@ impl GpuCoverage {
     }
 
     /// The row slices that generate `prepared`, placed at its bound in a
-    /// generation frame whose raster translates by `ty` vertically and
-    /// clips to `clip`: the whole path when its rows fit an empty batch
+    /// generation frame whose raster is `raster` and clip `clip`: the
+    /// whole path when its rows fit an empty batch
     /// ([`BufferBounds::fits`]), otherwise the fewest consecutive windows
     /// of whole strips, top to bottom, each the largest that fits on its
     /// own (water-rs/waterui#4108). The kernels compute winding along rows
-    /// only, so each window is the whole path's record with its clip
-    /// narrowed to the window's rows: it flattens and strokes the whole
-    /// path, whose bbox, columns and left-of-grid row seeds are the whole
-    /// path's, and bins only the segments reaching its rows.
+    /// only, so a window is generated exactly by the path's record with
+    /// its clip narrowed to the window's rows and its inputs narrowed to
+    /// the [`InputUnit`]s reaching them (water-rs/waterui#4131): it
+    /// flattens and strokes only those, and bins only the segments
+    /// reaching its rows. Its grid is the bbox of those units' segments
+    /// within the window, a part of the whole path's.
     ///
-    /// Only the bins, fragments and their sort shrink with the rows; the
-    /// path's elements, stroke records, segments and stroker scratch are
-    /// every slice's. A path one of whose strips does not fit an empty
-    /// batch stays whole; slices whose blocks together pass the binding
-    /// limit refuse the draw before anything is appended.
+    /// A unit is read by every window its rows, widened by a row on each
+    /// side for the kernels' f32 evaluation as the row profile's charges
+    /// are, reach; the slices together read the path's inputs about once,
+    /// a unit across a slice boundary once per slice it reaches. A path
+    /// one of whose strips does not fit an empty batch stays whole; slices
+    /// whose blocks together pass the binding limit refuse the draw before
+    /// anything is appended.
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "the placed bound's rows are integers"
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "the placed bound's rows are integers, and strip indices are clamped to them"
     )]
     fn slices(
         &self,
         prepared: &GpuPath,
-        ty: f64,
+        raster: Affine,
         clip: [f32; 4],
     ) -> Result<Vec<Slice>, RenderError> {
         let bound = prepared.bound;
-        if path_rows(prepared, &bound, FrameTotals::default())
+        if path_rows(prepared, &prepared.inputs(), &bound, FrameTotals::default())
             .is_ok_and(|(rows, _)| rows.fits(self.limit))
         {
-            return Ok(vec![Slice { bound, clip }]);
+            return Ok(vec![Slice::whole(prepared, bound, clip)]);
         }
-        let window = |top: i32, bottom: i32| -> Result<Option<(GpuBound, u64)>, RenderError> {
-            let slice = prepared.row_slice(&bound, ty, top..bottom);
-            let (rows, _) = path_rows(prepared, &slice, FrameTotals::default())?;
-            Ok(rows.fits(self.limit).then_some((slice, rows.arena)))
-        };
+        let [.., ty] = raster.as_coeffs();
         let strip = i32::try_from(STRIP_H).expect("strip height fits i32");
         let [top, bottom] = [bound.rect[1], bound.rect[3]].map(|row| row as i32);
+        let strips = usize::try_from(bottom - top)
+            .expect("the bound's rows")
+            .div_ceil(STRIP_H);
+        // The units reaching the bound's rows, each with the strips
+        // `[first, last]` it reaches.
+        let strip_of = |row: f64| ((row - f64::from(top)) / STRIP_H as f64).floor();
+        let units = move || {
+            prepared
+                .input_units(raster)
+                .filter_map(move |unit: InputUnit| {
+                    let (first, last) = (strip_of(unit.top - 1.0), strip_of(unit.bottom + 1.0));
+                    (last >= 0.0 && first < strips as f64).then(|| {
+                        (
+                            first.max(0.0) as usize,
+                            (last as usize).min(strips - 1),
+                            unit,
+                        )
+                    })
+                })
+        };
+        // `starts[s]` and `ends[s]` sum the units whose first and last
+        // strips lie below `s`: the strips `[from, to)` read
+        // `starts[to] - ends[from]`.
+        let mut starts = vec![InputCounts::default(); strips + 1];
+        let mut ends = starts.clone();
+        for (first, last, unit) in units() {
+            starts[first + 1].add(&unit.counts);
+            ends[last + 1].add(&unit.counts);
+        }
+        for sums in [&mut starts, &mut ends] {
+            for i in 1..sums.len() {
+                let previous = sums[i - 1];
+                sums[i].add(&previous);
+            }
+        }
+        let window = |from: usize, to: usize| -> Result<Option<(Slice, u64)>, RenderError> {
+            let inputs = starts[to].less(&ends[from]);
+            let row = |index: usize| top + i32::try_from(index).expect("strips fit i32") * strip;
+            let rows = row(from)..row(to).min(bottom);
+            let mut slice = prepared.row_slice(&bound, ty, rows);
+            slice.segments = inputs.segments;
+            let (rows, _) = path_rows(prepared, &inputs, &slice, FrameTotals::default())?;
+            let [_, rows_top, _, rows_bottom] = slice.rect;
+            Ok(rows.fits(self.limit).then(|| {
+                let slice = Slice {
+                    bound: slice,
+                    clip: [
+                        clip[0],
+                        clip[1].max(rows_top),
+                        clip[2],
+                        clip[3].min(rows_bottom),
+                    ],
+                    inputs,
+                    runs: Vec::new(),
+                };
+                (slice, rows.arena)
+            }))
+        };
         let mut slices = Vec::new();
+        // The slice each strip falls in.
+        let mut slice_of = vec![0; strips];
         let mut arena = 0;
-        let mut from = top;
-        while from < bottom {
-            let mut to = (from + strip).min(bottom);
+        let mut from = 0;
+        while from < strips {
+            let mut to = from + 1;
             let Some(mut fitting) = window(from, to)? else {
-                // The parts that do not shrink with rows (elements, stroke
-                // records, segments, stroker scratch) already pass the
-                // block, so every slice would too: slicing would repeat
-                // the expansion without sparing a dedicated allocation.
-                // The path, admitted under the binding limit, is drawn
-                // whole in a batch of its own.
-                return Ok(vec![Slice { bound, clip }]);
+                // A single strip's inputs and scratch already pass the
+                // block, so every window would too. The path, admitted
+                // under the binding limit, is drawn whole in a batch of
+                // its own.
+                return Ok(vec![Slice::whole(prepared, bound, clip)]);
             };
-            while to < bottom {
-                let next = (to + strip).min(bottom);
-                let Some(larger) = window(from, next)? else {
+            while to < strips {
+                let Some(larger) = window(from, to + 1)? else {
                     break;
                 };
-                (fitting, to) = (larger, next);
+                (fitting, to) = (larger, to + 1);
             }
             arena += fitting.1;
             if arena > self.limit.bytes {
@@ -814,19 +925,62 @@ impl GpuCoverage {
                     "GPU coverage output exceeds device buffer limit",
                 ));
             }
-            let [_, rows_top, _, rows_bottom] = fitting.0.rect;
-            slices.push(Slice {
-                bound: fitting.0,
-                clip: [
-                    clip[0],
-                    clip[1].max(rows_top),
-                    clip[2],
-                    clip[3].min(rows_bottom),
-                ],
-            });
+            slice_of[from..to].fill(slices.len());
+            slices.push(fitting.0);
             from = to;
         }
+        // Each unit, in input order, joins the runs of the slices it
+        // reaches.
+        for (first, last, unit) in units() {
+            for slice in &mut slices[slice_of[first]..=slice_of[last]] {
+                match slice.runs.last_mut() {
+                    Some(run) if run[1] == unit.inputs[0] => run[1] = unit.inputs[1],
+                    _ => slice.runs.push(unit.inputs),
+                }
+            }
+        }
         Ok(slices)
+    }
+
+    /// Make the current batch the one a slice reading `inputs` at `bound`
+    /// joins — a fresh one when it `continues` a path or does not fit the
+    /// current one — add its rows to the batch's bound, and return the
+    /// batch's totals with it.
+    fn place(
+        &mut self,
+        prepared: &GpuPath,
+        inputs: &InputCounts,
+        bound: &GpuBound,
+        continues: bool,
+    ) -> FrameTotals {
+        let empty = |paths: usize| Batch {
+            start: paths,
+            end: paths,
+            ..Batch::default()
+        };
+        if continues {
+            let next = empty(self.paths.len());
+            self.batches.push(std::mem::replace(&mut self.batch, next));
+        }
+        let append = |batch: &Batch, limit: CoverageLimit| {
+            let (rows, totals) = path_rows(prepared, inputs, bound, batch.totals).ok()?;
+            let mut next = batch.bound;
+            next.add(&rows);
+            next.fits(limit).then_some((next, totals))
+        };
+        let (next, totals) = append(&self.batch, self.limit).unwrap_or_else(|| {
+            let fresh = empty(self.paths.len());
+            // A path whose single strip passes the scratch bound is one
+            // whole slice (`slices`): its batch is bounded by the binding
+            // limit, and no later draw fits beside it under the bound.
+            let fits = append(&fresh, self.limit)
+                .or_else(|| append(&fresh, self.limit.binding()))
+                .expect("a slice fits an empty batch under the binding limit");
+            self.batches.push(std::mem::replace(&mut self.batch, fresh));
+            fits
+        });
+        self.batch.bound = next;
+        totals
     }
 
     /// Append one slice's generation record to the frame's batches. A
@@ -854,34 +1008,13 @@ impl GpuCoverage {
             dash,
             ..
         } = prepared;
-        let Slice { ref bound, clip } = *slice;
-        let empty = |paths: usize| Batch {
-            start: paths,
-            end: paths,
-            ..Batch::default()
-        };
-        if continues {
-            let next = empty(self.paths.len());
-            self.batches.push(std::mem::replace(&mut self.batch, next));
-        }
-        let append = |batch: &Batch, limit: CoverageLimit| {
-            let (rows, totals) = path_rows(prepared, bound, batch.totals).ok()?;
-            let mut next = batch.bound;
-            next.add(&rows);
-            next.fits(limit).then_some((next, totals))
-        };
-        let (next, totals) = append(&self.batch, self.limit).unwrap_or_else(|| {
-            let fresh = empty(self.paths.len());
-            // A path whose single strip passes the scratch bound is one
-            // whole slice (`slices`): its batch is bounded by the binding
-            // limit, and no later draw fits beside it under the bound.
-            let fits = append(&fresh, self.limit)
-                .or_else(|| append(&fresh, self.limit.binding()))
-                .expect("a slice fits an empty batch under the binding limit");
-            self.batches.push(std::mem::replace(&mut self.batch, fresh));
-            fits
-        });
-        self.batch.bound = next;
+        let Slice {
+            ref bound,
+            clip,
+            ref inputs,
+            ref runs,
+        } = *slice;
+        let totals = self.place(prepared, inputs, bound, continues);
         let elem_base = self.batch.element_total;
         let grid_base = self.batch.totals.columns;
         let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
@@ -894,7 +1027,7 @@ impl GpuCoverage {
         words[2] = 0x007f_ffff;
         words[3] = 0x007f_ffff;
         words[8] = elem_base;
-        words[9] = u32::try_from(elements.len()).expect("elements fit u32");
+        words[9] = u32::try_from(inputs.elements).expect("elements fit u32");
         words[10] = self.batch.seg_total;
         words[11] = u32::try_from(bound.segments).expect("segments fit u32");
         words[12] = grid_base;
@@ -936,20 +1069,24 @@ impl GpuCoverage {
 
         self.paths.push(words);
         self.batch.end = self.paths.len();
-        self.batch.element_total += u32::try_from(elements.len()).expect("elements fit u32");
+        self.batch.element_total += u32::try_from(inputs.elements).expect("elements fit u32");
         self.element_sources.push(Arc::clone(elements));
-        let records = u32::try_from(strokes.len()).expect("stroke records fit u32");
+        let records = u32::try_from(inputs.records).expect("stroke records fit u32");
         // The R2 cap above bounds the records far below `u32::MAX`.
         self.batch.stroke_total += records;
         self.stroke_sources.push(Arc::clone(strokes));
         if let Some(dash) = dash {
             self.batch.dash_total += records;
-            self.batch.stage_total += u32::try_from(dash.stage_total).expect("staging fits u32");
-            self.batch.list_total += u32::try_from(dash.fragments).expect("fragments fit u32");
+            self.batch.stage_total += u32::try_from(inputs.stage).expect("staging fits u32");
+            self.batch.list_total +=
+                u32::try_from(inputs.dash_fragments()).expect("fragments fit u32");
             self.batch.dash_table_words +=
                 u32::try_from(dash.cum.len() * 2).expect("dash table fits u32");
         }
         self.dash_sources.push(dash.clone());
+        let first_run = self.input_runs.len();
+        self.input_runs.extend_from_slice(runs);
+        self.record_runs.push(first_run..self.input_runs.len());
         self.batch.seg_total += u32::try_from(bound.segments).expect("segments");
         self.batch.bin_total += u32::try_from(bound.bins).expect("bins");
         self.batch.totals = totals;
@@ -1494,38 +1631,68 @@ impl GpuCoverage {
                 bytemuck::cast_slice(&block),
             );
         }
-        for (index, source) in self.element_sources[batch.start..batch.end]
-            .iter()
-            .enumerate()
-        {
+        // Each record reads the runs of its source's inputs that reach its
+        // rows, renumbered as one range (water-rs/waterui#4131): a slot or
+        // staging base (`head.w`) counts on from the inputs before it by
+        // their counts (`head.y`), as the encoders assigned them over the
+        // whole path, and a stroke record's vertex links and subpath
+        // bounds move with its subpath, which a run holds whole.
+        for (index, runs) in self.record_runs[batch.start..batch.end].iter().enumerate() {
+            let source = &self.element_sources[batch.start + index];
+            if source.is_empty() {
+                continue;
+            }
             let path_i = u32::try_from(index).expect("path index");
-            self.elements
-                .extend(source.iter().copied().map(|mut element| {
-                    element.head[2] = path_i;
-                    element
-                }));
+            let mut slot = 0;
+            for &[first, end] in &self.input_runs[runs.clone()] {
+                self.elements
+                    .extend(source[first as usize..end as usize].iter().map(|&element| {
+                        let mut element = element;
+                        element.head[2] = path_i;
+                        element.head[3] = slot;
+                        slot += element.head[1];
+                        element
+                    }));
+            }
         }
         upload.write_buffer(&buffers.elements, 0, bytemuck::cast_slice(&self.elements));
         // Undashed paths' records first, dashed ones after (7.4); the dash
         // tables follow in apply order, where `draw` assigned their offsets.
         for dashed in [false, true] {
-            for (index, source) in self.stroke_sources[batch.start..batch.end]
-                .iter()
-                .enumerate()
-            {
-                if self.dash_sources[batch.start + index].is_some() != dashed {
+            for (index, runs) in self.record_runs[batch.start..batch.end].iter().enumerate() {
+                let source = &self.stroke_sources[batch.start + index];
+                if source.is_empty() || self.dash_sources[batch.start + index].is_some() != dashed {
                     continue;
                 }
                 let path_i = u32::try_from(index).expect("path index");
-                if !source.is_empty() {
-                    self.paths[batch.start + index][36] =
-                        u32::try_from(self.strokes.len()).expect("stroke records fit u32");
+                let path_first = self.strokes.len();
+                self.paths[batch.start + index][36] =
+                    u32::try_from(path_first).expect("stroke records fit u32");
+                let mut slot = 0;
+                for &[first, end] in &self.input_runs[runs.clone()] {
+                    let at = u32::try_from(self.strokes.len() - path_first)
+                        .expect("stroke records fit u32");
+                    let relink = |link: u32| {
+                        if link == u32::MAX {
+                            link
+                        } else {
+                            link - first * SLOTS + at * SLOTS
+                        }
+                    };
+                    self.strokes
+                        .extend(source[first as usize..end as usize].iter().map(|&record| {
+                            let mut record = record;
+                            record.head[2] = path_i;
+                            record.head[3] = slot;
+                            slot += record.head[1];
+                            record.link = record.link.map(relink);
+                            if dashed {
+                                record.aux[2] = record.aux[2] - first + at;
+                                record.aux[3] = record.aux[3] - first + at;
+                            }
+                            record
+                        }));
                 }
-                self.strokes
-                    .extend(source.iter().copied().map(|mut record| {
-                        record.head[2] = path_i;
-                        record
-                    }));
             }
         }
         for dash in self.dash_sources[batch.start..batch.end].iter().flatten() {
@@ -2101,7 +2268,7 @@ impl CoverageLimit {
     /// takes no part: a path whose scratch passes it is generated in row
     /// slices that each fit it (water-rs/waterui#4108).
     pub fn admits(self, path: &GpuPath, bound: &GpuBound) -> bool {
-        path_rows(path, bound, FrameTotals::default()).is_ok_and(|(rows, _)| {
+        path_rows(path, &path.inputs(), bound, FrameTotals::default()).is_ok_and(|(rows, _)| {
             rows.largest() <= self.bytes && rows.total() + FRAME_FIXED_BYTES <= GPU_COV_MAX_BYTES
         })
     }
@@ -2130,13 +2297,16 @@ impl FrameTotals {
     }
 }
 
-/// The rows the draw of `path` at `bound` adds to decision R2's bound of
-/// a frame whose earlier misses reached `before`, by buffer, and the
-/// totals after it. [`GpuCoverage::draw`] and [`CoverageLimit::admits`]
-/// both size a path from here, so the route predicate and the frame's
-/// check cannot disagree on what one path costs.
+/// The rows the draw of `path` at `bound`, reading `inputs` of it, adds
+/// to decision R2's bound of a frame whose earlier misses reached
+/// `before`, by buffer, and the totals after it. [`GpuCoverage::draw`]
+/// and [`CoverageLimit::admits`] both size a path from here, so the route
+/// predicate and the frame's check cannot disagree on what one path
+/// costs; a row slice reads its own inputs, whose segments are
+/// `bound.segments`.
 fn path_rows(
     path: &GpuPath,
+    inputs: &InputCounts,
     bound: &GpuBound,
     before: FrameTotals,
 ) -> Result<(BufferBounds, FrameTotals), RenderError> {
@@ -2163,7 +2333,7 @@ fn path_rows(
         tiles: before.tiles + u32::try_from(tiles).map_err(|_| key_range())?,
     };
     let mut bounds = BufferBounds {
-        elements: to64(path.elements.len()) * (std::mem::size_of::<GpuElement>() as u64),
+        elements: to64(inputs.elements) * (std::mem::size_of::<GpuElement>() as u64),
         segments: to64(bound.segments) * 16,
         scratch: to64(bound.bins) * 12
             + to64(bound.fragments) * 40
@@ -2175,17 +2345,18 @@ fn path_rows(
         unbound: 16 + u64::from(ARGS_WORDS) * 4,
         ..BufferBounds::default()
     };
-    bounds.add(&stroke_bounds(path.strokes.len(), path.dash.as_deref()));
+    bounds.add(&stroke_bounds(inputs, path.dash.as_deref()));
     Ok((bounds, after))
 }
 
-/// The bytes a stroke path's records bound (design section 8), by buffer:
-/// the records, and for a dashed path its cumulative-length table, in the
-/// strokes buffer; the vertex scratch, and for a dashed path the per-record
-/// dash words, the staging and list entries and the scan blocks, in the
-/// coverage scratch.
-fn stroke_bounds(records: usize, dash: Option<&DashTable>) -> BufferBounds {
+/// The bytes the stroke records of `inputs` bound (design section 8), by
+/// buffer: the records, and for a dashed path its cumulative-length table,
+/// in the strokes buffer; the vertex scratch, and for a dashed path the
+/// per-record dash words, the staging and list entries and the scan
+/// blocks, in the coverage scratch.
+fn stroke_bounds(inputs: &InputCounts, dash: Option<&DashTable>) -> BufferBounds {
     let to64 = |n: usize| u64::try_from(n).expect("bound fits u64");
+    let records = inputs.records;
     let mut bounds = BufferBounds {
         strokes: to64(records) * std::mem::size_of::<GpuStrokeRecord>() as u64,
         scratch: to64(records) * u64::from(SLOTS * SLOT_WORDS) * 4,
@@ -2194,8 +2365,8 @@ fn stroke_bounds(records: usize, dash: Option<&DashTable>) -> BufferBounds {
     if let Some(dash) = dash {
         bounds.strokes += to64(dash.cum.len()) * 8;
         bounds.scratch += to64(records) * u64::from(DASH_RECORD_WORDS) * 4
-            + to64(dash.stage_total) * u64::from(STAGE_WORDS) * 4
-            + to64(dash.fragments) * u64::from(LIST_WORDS) * 4
+            + to64(inputs.stage) * u64::from(STAGE_WORDS) * 4
+            + to64(inputs.dash_fragments()) * u64::from(LIST_WORDS) * 4
             + to64(records.div_ceil(SCAN_BLOCK as usize)) * u64::from(SCAN_BLOCK_WORDS) * 4;
     }
     bounds
@@ -2516,7 +2687,7 @@ mod tests {
     #[test]
     #[expect(
         clippy::too_many_lines,
-        reason = "one scene setup, GPU readback and commit lifecycle check"
+        reason = "one scenario: both roads' frame, its batches, the replay read back and the commit lifecycle"
     )]
     fn road_paths_share_bounded_scratch() {
         let Some((device, queue, delivery)) = delivery_device() else {
@@ -2537,10 +2708,15 @@ mod tests {
             .iter()
             .map(|draw| {
                 assert!(frame.limit.admits(&draw.path, &draw.path.bound));
-                path_rows(&draw.path, &draw.path.bound, FrameTotals::default())
-                    .expect("path rows")
-                    .0
-                    .arena
+                path_rows(
+                    &draw.path,
+                    &draw.path.inputs(),
+                    &draw.path.bound,
+                    FrameTotals::default(),
+                )
+                .expect("path rows")
+                .0
+                .arena
             })
             .sum();
         assert!(
@@ -2680,6 +2856,10 @@ mod tests {
     /// block; the slices compose into the one entry the draw replays, and
     /// its coverage matches the unsliced coverage of an uncapped device.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario: every bound the sliced frame holds, then its coverage against the unsliced frame"
+    )]
     fn generation_scratch_stays_within_the_allocator_block() {
         // The per-batch sizes below are the evidence for the slicing; they
         // must be visible on a plain `--no-capture` run.
@@ -2712,7 +2892,7 @@ mod tests {
         }
         assert!(
             paths.iter().any(|path| {
-                path_rows(path, &path.bound, FrameTotals::default())
+                path_rows(path, &path.inputs(), &path.bound, FrameTotals::default())
                     .expect("road rows")
                     .0
                     .largest_scratch()
@@ -2753,31 +2933,66 @@ mod tests {
             "road slices"
         );
         for draw in &draws[..paths.len()] {
-            let [.., ty] = draw.raster.as_coeffs();
             for slice in frame
-                .slices(&draw.path, ty, draw.clip)
+                .slices(&draw.path, draw.raster, draw.clip)
                 .expect("road slices")
             {
                 assert_slice_fits_its_bound(draw, &slice, (&device, &queue, delivery));
             }
         }
-        let in_slices = coverage_blocks(&mut frame, (&device, &queue, delivery), &draws, block);
+        let (in_slices, staged) =
+            coverage_blocks(&mut frame, (&device, &queue, delivery), &draws, block);
+        // Each slice stages only the inputs reaching its rows, so the frame
+        // stages every road's inputs about once — a subpath across a slice
+        // boundary once per slice it reaches — beside each batch's own
+        // parameters, path records, work items and dash tables, never
+        // once per slice (water-rs/waterui#4131).
+        let inputs: u64 = draws
+            .iter()
+            .map(|draw| {
+                let path = &draw.path;
+                (path.elements.len() * std::mem::size_of::<GpuElement>()
+                    + path.strokes.len() * std::mem::size_of::<GpuStrokeRecord>()
+                    + path.dash.as_deref().map_or(0, |dash| dash.cum.len() * 8))
+                    as u64
+            })
+            .sum();
+        let per_batch: u64 = frame
+            .batches
+            .iter()
+            .chain([&frame.batch])
+            .map(|&batch| {
+                let BatchPlan { sizes, .. } = BatchPlan::new(batch);
+                PARAMS_BLOCKS * u64::from(PARAMS_STRIDE)
+                    + sizes[3]
+                    + sizes[6]
+                    + u64::from(batch.dash_table_words) * 4
+            })
+            .sum();
+        tracing::debug!(staged, inputs, per_batch, "sliced frame upload");
+        assert!(
+            staged <= inputs + inputs / 4 + per_batch,
+            "a sliced frame staged {staged} bytes for {inputs} bytes of inputs and \
+             {per_batch} of per-batch data"
+        );
         let mut whole = uncapped(&device);
         whole.begin_frame();
         for draw in &draws {
             whole.draw(draw, true).expect("road fits uncapped");
             assert_eq!(whole.entries[&draw.key].slices, 1, "uncapped is unsliced");
         }
-        let at_once = coverage_blocks(&mut whole, (&device, &queue, delivery), &draws, u64::MAX);
+        let (at_once, _) =
+            coverage_blocks(&mut whole, (&device, &queue, delivery), &draws, u64::MAX);
         for (sliced, unsliced) in in_slices.iter().zip(&at_once) {
             cherenkov_oracle::metrics::assert_images_match(unsliced, sliced);
         }
     }
 
-    /// A path whose rows-independent part alone passes the scratch bound
-    /// cannot be sliced under it: it is drawn whole in a batch of its own
-    /// under the binding limit and covers exactly as without the bound
-    /// (water-rs/waterui#4108).
+    /// A path one of whose strips alone passes the scratch bound cannot
+    /// be sliced under it: it is drawn whole in a batch of its own under
+    /// the binding limit and covers exactly as without the bound
+    /// (water-rs/waterui#4108). The bound here is one stroke record, less
+    /// than any strip's path record alone.
     #[test]
     fn a_path_that_cannot_slice_under_the_bound_draws_whole() {
         let Some((device, queue, delivery)) = delivery_device() else {
@@ -2798,19 +3013,21 @@ mod tests {
             })
             .collect();
         let mut frame = uncapped(&device);
-        frame.limit.scratch = 1 << 20;
+        frame.limit.scratch = std::mem::size_of::<GpuStrokeRecord>() as u64;
         frame.begin_frame();
         for draw in &draws {
             frame.draw(draw, true).expect("an unsliceable road draws");
             assert_eq!(frame.entries[&draw.key].slices, 1, "drawn whole");
         }
-        let bounded = coverage_blocks(&mut frame, (&device, &queue, delivery), &draws, u64::MAX);
+        let (bounded, _) =
+            coverage_blocks(&mut frame, (&device, &queue, delivery), &draws, u64::MAX);
         let mut whole = uncapped(&device);
         whole.begin_frame();
         for draw in &draws {
             whole.draw(draw, true).expect("road fits uncapped");
         }
-        let unbounded = coverage_blocks(&mut whole, (&device, &queue, delivery), &draws, u64::MAX);
+        let (unbounded, _) =
+            coverage_blocks(&mut whole, (&device, &queue, delivery), &draws, u64::MAX);
         for (with, without) in bounded.iter().zip(&unbounded) {
             cherenkov_oracle::metrics::assert_images_match(without, with);
         }
@@ -2829,15 +3046,9 @@ mod tests {
     ) {
         let mut probe = uncapped(device);
         probe.begin_frame();
-        let alone = GpuDraw {
-            key: draw.key,
-            shift: draw.shift,
-            rule: draw.rule,
-            raster: draw.raster,
-            clip: slice.clip,
-            path: draw.path.clone().with_bound(slice.bound),
-        };
-        probe.draw(&alone, true).expect("a slice draws alone");
+        probe
+            .generate(draw, std::slice::from_ref(slice), true)
+            .expect("a slice draws alone");
         probe.ensure(device).expect("slice buffers fit");
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         probe.record_prologue(device, queue, &mut encoder, delivery, None);
@@ -2858,7 +3069,7 @@ mod tests {
     /// buffer and upload staging chunk against `scratch`, and returns each
     /// draw's coverage on its 1024 × 768 target, decoded from the block
     /// the draw replays the way the cell-buffer vertex and fragment
-    /// stages read it.
+    /// stages read it, and the bytes the batches' ordered uploads staged.
     fn coverage_blocks(
         frame: &mut GpuCoverage,
         (device, queue, delivery): (
@@ -2868,7 +3079,7 @@ mod tests {
         ),
         draws: &[GpuDraw],
         scratch: u64,
-    ) -> Vec<cherenkov_oracle::image::F32Image> {
+    ) -> (Vec<cherenkov_oracle::image::F32Image>, u64) {
         frame.ensure(device).expect("coverage buffers fit");
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let timing = device
@@ -2918,6 +3129,7 @@ mod tests {
                 upload.size()
             );
         }
+        let staged = frame.uploads.iter().map(wgpu::Buffer::size).sum();
         let arena = frame.arena().expect("retained arena");
         let copies: Vec<_> = draws
             .iter()
@@ -2942,7 +3154,7 @@ mod tests {
             frame.buffers.is_none(),
             "submit releases generation scratch"
         );
-        images
+        (images, staged)
     }
 
     /// The coverage one arena block holds — its count word, geometry

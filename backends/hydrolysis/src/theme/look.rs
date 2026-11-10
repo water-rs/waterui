@@ -18,6 +18,7 @@
 //! colour, radii.
 
 use core::marker::PhantomData;
+use core::ops::RangeInclusive;
 use core::time::Duration;
 use std::any::Any;
 use std::rc::Rc;
@@ -37,9 +38,9 @@ use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 
-use super::Chrome;
 #[cfg(hydrolysis_runtime)]
 use super::live::Operand;
+use super::{Chrome, CornerShape, FocusIndicator, PressFeedback, StateLayer, Surface};
 
 /// The animations a change runs with as a condition sets in and as it
 /// clears.
@@ -232,7 +233,11 @@ pub struct Driven<T, V = ()> {
     target: Target<T, V>,
     follows: Option<Follows>,
     motion: Option<Motion>,
+    value_motion: Option<ValueMotionOf<V>>,
 }
+
+/// The value motion of a change to a given value.
+type ValueMotionOf<V> = Rc<dyn Fn(&V) -> ValueMotion>;
 
 impl<T, V> Clone for Driven<T, V> {
     fn clone(&self) -> Self {
@@ -240,6 +245,7 @@ impl<T, V> Clone for Driven<T, V> {
             target: Rc::clone(&self.target),
             follows: self.follows.clone(),
             motion: self.motion.clone(),
+            value_motion: self.value_motion.clone(),
         }
     }
 }
@@ -249,6 +255,7 @@ impl<T, V> core::fmt::Debug for Driven<T, V> {
         f.debug_struct("Driven")
             .field("follows", &self.follows.is_some())
             .field("motion", &self.motion)
+            .field("value_motion", &self.value_motion.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -261,6 +268,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             target: Rc::new(target),
             follows: None,
             motion: None,
+            value_motion: None,
         }
     }
 
@@ -291,6 +299,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
                 }))
             })),
             motion: None,
+            value_motion: None,
         }
     }
 
@@ -299,6 +308,21 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     #[must_use]
     pub const fn motion(mut self, motion: Motion) -> Self {
         self.motion = Some(motion);
+        self
+    }
+
+    /// The motion of a change of the widget's value *to* the value `motion`
+    /// receives — the new value, not the old one — so a value moves one way
+    /// differently from the other. A switch's track fade is the reason: it
+    /// turns on by a slower spring than it turns off by.
+    ///
+    /// It replaces the `value` of the [`Motion`] this value otherwise runs
+    /// with ([`Self::motion`], else its part's) and leaves that motion's
+    /// interaction transitions as they are. A value with none runs every
+    /// value change with [`Motion::value`].
+    #[must_use]
+    pub fn value_motion(mut self, motion: impl Fn(&V) -> ValueMotion + 'static) -> Self {
+        self.value_motion = Some(Rc::new(motion));
         self
     }
 
@@ -312,6 +336,13 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     #[must_use]
     pub const fn get_motion(&self) -> Option<&Motion> {
         self.motion.as_ref()
+    }
+
+    /// The motion of a change to `value`, when the value declares one
+    /// ([`Self::value_motion`]).
+    #[must_use]
+    pub fn get_value_motion(&self, value: &V) -> Option<ValueMotion> {
+        self.value_motion.as_ref().map(|motion| motion(value))
     }
 
     /// Calls `notify` with each change's animation whenever a signal this
@@ -344,6 +375,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             target: Rc::new(move |inputs| f(target(inputs))),
             follows: self.follows.clone(),
             motion: self.motion.clone(),
+            value_motion: self.value_motion.clone(),
         }
     }
 }
@@ -402,7 +434,7 @@ mod realized {
     use std::any::Any;
     use std::rc::Rc;
 
-    use waterui_core::animation::Animation;
+    use waterui_core::animation::{Animation, ChangeAnimation};
 
     use super::{Inputs, Motion};
 
@@ -413,6 +445,12 @@ mod realized {
         /// value without motion of its own runs with `motion`.
         Interaction {
             old: waterui_core::interaction::InteractionState,
+            motion: &'a Motion,
+        },
+        /// The widget's value changed under `change`; a value without
+        /// motion of its own runs with `motion`'s value motion.
+        Value {
+            change: &'a ChangeAnimation,
             motion: &'a Motion,
         },
         /// A signal the value follows, the frame or the press point
@@ -489,6 +527,14 @@ impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V
                 .unwrap_or(motion)
                 .interaction(old, inputs.state)
                 .cloned(),
+            Change::Value { change, motion } => {
+                let motion = self.driven.get_motion().unwrap_or(motion);
+                self.driven
+                    .get_value_motion(inputs.value)
+                    .as_ref()
+                    .unwrap_or(&motion.value)
+                    .animation(change.clone())
+            }
             Change::Animated(animation) => animation.cloned(),
         };
         self.operand
@@ -1010,5 +1056,446 @@ impl ButtonLook {
     pub fn with_label(mut self, label: Label) -> Self {
         self.label = label;
         self
+    }
+}
+
+/// What Hydrolysis asks a theme's [`slider`](super::WidgetTheme::slider)
+/// look for: everything structural about one slider.
+///
+/// A spec change requests the look again; everything else reaches the look
+/// through its [`Driven`] values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SliderSpec {
+    size: ControlSize,
+    range: RangeInclusive<f64>,
+    step: Option<f64>,
+    direction: LayoutDirection,
+    tint: SpecTint,
+    label: bool,
+    value_labels: bool,
+    value_indicator: bool,
+}
+
+impl SliderSpec {
+    /// The spec of a `size` slider over `range` moving in `step`s, laid out
+    /// `direction` and drawn with `tint`.
+    ///
+    /// `label` says whether the slider has a visible label, `value_labels`
+    /// whether it has a label beside either end of its track, and
+    /// `value_indicator` whether it shows its value above the knob while it
+    /// is held.
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the spec is the slider's structural inputs, each independent of the others"
+    )]
+    pub const fn new(
+        size: ControlSize,
+        range: RangeInclusive<f64>,
+        step: Option<f64>,
+        direction: LayoutDirection,
+        tint: SpecTint,
+        label: bool,
+        value_labels: bool,
+        value_indicator: bool,
+    ) -> Self {
+        Self {
+            size,
+            range,
+            step,
+            direction,
+            tint,
+            label,
+            value_labels,
+            value_indicator,
+        }
+    }
+
+    /// The slider's control size.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
+    /// The range of values the slider takes.
+    #[must_use]
+    pub const fn range(&self) -> &RangeInclusive<f64> {
+        &self.range
+    }
+
+    /// The increment the value moves in, anchored at the start of the range;
+    /// `None` moves it continuously.
+    #[must_use]
+    pub const fn step(&self) -> Option<f64> {
+        self.step
+    }
+
+    /// The layout direction the slider is laid out in.
+    #[must_use]
+    pub const fn direction(&self) -> LayoutDirection {
+        self.direction
+    }
+
+    /// The slider's tint: its subtree's nearest `.tint(...)`, else the
+    /// theme's `Accent` token. The colour is live: a tint signal's change
+    /// reaches the look's drawing without requesting the look again.
+    #[must_use]
+    pub fn tint(&self) -> Color {
+        self.tint.color()
+    }
+
+    /// Whether the slider has a visible label.
+    #[must_use]
+    pub const fn has_label(&self) -> bool {
+        self.label
+    }
+
+    /// Whether the slider has a label beside either end of its track.
+    #[must_use]
+    pub const fn has_value_labels(&self) -> bool {
+        self.value_labels
+    }
+
+    /// Whether the slider shows its value above the knob while it is held.
+    #[must_use]
+    pub const fn has_value_indicator(&self) -> bool {
+        self.value_indicator
+    }
+}
+
+/// The horizontal and vertical measures a slider is laid out by. Hydrolysis
+/// measures and places the slider from these alone, so its size and its
+/// drawing cannot diverge.
+///
+/// The slider is a label band above a control row. The row holds the track
+/// between its two ends, each end optionally taking a label beside it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SliderLayout {
+    /// The control row's height: the room the knob travels in.
+    pub row_height: f64,
+    /// The distance from the slider's edge to an end of the track with no
+    /// label beside it: the room the knob needs beyond the track's end.
+    pub track_inset: f64,
+    /// The distance from the slider's edge to an end label.
+    pub label_inset: f64,
+    /// The gap between an end label and the track.
+    pub label_gap: f64,
+    /// The shortest the track is laid out.
+    pub minimum_track: f64,
+    /// The space between a label above the row and the row. `None` when the
+    /// look draws no label: nothing is reserved for it.
+    pub label_spacing: Option<f64>,
+}
+
+/// The knob of a slider: the extent its parts draw it in, and where it takes
+/// touches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Knob {
+    /// The knob's resting extent, centred on the value's position on the
+    /// track. A knob that changes size draws within its own parts.
+    pub size: Size,
+    /// The touch target about the knob, its minimum size centred on
+    /// [`Self::size`]. A touch press holds back for no delay: a slider takes
+    /// its press at once.
+    pub hit: HitRegion,
+}
+
+impl Knob {
+    /// The knob's touch target when centred on `center`.
+    #[must_use]
+    pub fn target(&self, center: Point) -> Rect {
+        let minimum = self.hit.get_minimum();
+        Rect::from_center_size(
+            center,
+            Size::new(
+                self.size.width.max(minimum.width),
+                self.size.height.max(minimum.height),
+            ),
+        )
+    }
+}
+
+/// How a drag on a slider maps to its value. The renderer executes it,
+/// rounding the value to the spec's step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a drag sets the value from the pointer's position or from its movement"
+)]
+pub enum DragMapping {
+    /// The value is the pointer's position along the track, so a press
+    /// anywhere on the slider moves it there.
+    Absolute,
+    /// The value moves with the pointer's movement from where it was when
+    /// the press landed, so a press moves nothing by itself. With
+    /// `knob_only`, a press outside the knob's touch target does nothing at
+    /// all.
+    Relative {
+        /// Whether only a press on the knob drags.
+        knob_only: bool,
+    },
+}
+
+/// The value a slider shows above its knob while it is held: the bubble's
+/// container, and the style of the formatted value laid out in it.
+///
+/// The bubble sits centred above the knob, `gap` clear of the knob's top, and
+/// follows it along the track; it is as wide as the widest formatted value
+/// needs, no narrower than `minimum`.
+#[derive(Clone)]
+pub struct ValueIndicator {
+    font: Font,
+    color: Color,
+    padding: Vec2,
+    minimum: Size,
+    gap: f64,
+    #[cfg_attr(
+        not(hydrolysis_runtime),
+        expect(
+            dead_code,
+            reason = "only the renderer records the bubble's container; a build without a painter compiles the theme contract alone"
+        )
+    )]
+    container: Rc<dyn CustomPart<f64>>,
+}
+
+impl core::fmt::Debug for ValueIndicator {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ValueIndicator")
+            .field("font", &self.font)
+            .field("color", &self.color)
+            .field("padding", &self.padding)
+            .field("minimum", &self.minimum)
+            .field("gap", &self.gap)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ValueIndicator {
+    /// An indicator whose text takes `font` and `color`, in a bubble that
+    /// `container` records on the bubble's frame.
+    #[must_use]
+    pub fn new<D: DrivenSet<f64> + 'static>(
+        font: Font,
+        color: Color,
+        container: Custom<f64, D>,
+    ) -> Self
+    where
+        D::Live: 'static,
+    {
+        Self {
+            font,
+            color,
+            padding: Vec2::ZERO,
+            minimum: Size::ZERO,
+            gap: 0.0,
+            container: Rc::new(container),
+        }
+    }
+
+    /// Pads the text by `horizontal` on each side and `vertical` above and
+    /// below.
+    #[must_use]
+    pub const fn padding(mut self, horizontal: f64, vertical: f64) -> Self {
+        self.padding = Vec2::new(horizontal, vertical);
+        self
+    }
+
+    /// Makes the bubble at least `minimum`.
+    #[must_use]
+    pub const fn minimum_size(mut self, minimum: Size) -> Self {
+        self.minimum = minimum;
+        self
+    }
+
+    /// Clears the knob's top by `gap`.
+    #[must_use]
+    pub const fn gap(mut self, gap: f64) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    /// The text's font.
+    #[must_use]
+    pub const fn get_font(&self) -> &Font {
+        &self.font
+    }
+
+    /// The text's colour.
+    #[must_use]
+    pub const fn get_color(&self) -> &Color {
+        &self.color
+    }
+
+    /// The padding around the text: horizontal per side, vertical above and
+    /// below.
+    #[must_use]
+    pub const fn get_padding(&self) -> Vec2 {
+        self.padding
+    }
+
+    /// The bubble's minimum size.
+    #[must_use]
+    pub const fn get_minimum_size(&self) -> Size {
+        self.minimum
+    }
+
+    /// The gap between the knob's top and the bubble's bottom.
+    #[must_use]
+    pub const fn get_gap(&self) -> f64 {
+        self.gap
+    }
+
+    /// The bubble's container part.
+    #[cfg(hydrolysis_runtime)]
+    pub(crate) fn container(&self) -> &Rc<dyn CustomPart<f64>> {
+        &self.container
+    }
+}
+
+/// How a slider looks and responds: its parts over the normalized value,
+/// the knob, the drag, the value indicator and the measures it is laid out
+/// by.
+///
+/// Hydrolysis measures, places, hit-tests, records and animates the slider
+/// from this one value. Its track, fill, knob and shadows are the [`Custom`]
+/// parts the look is built from, in paint order, each a function of the
+/// slider's [`Inputs`]: the frame is the row between the two ends of the
+/// track, and the value is the position normalized to the range, `0` at the
+/// start and `1` at the end. The look draws left to right; Hydrolysis
+/// mirrors its parts in a right-to-left layout. A value change, a press, a
+/// drag and a change of hover or focus move the parts' operands under the
+/// look's [`Motion`] and record nothing.
+#[derive(Clone)]
+pub struct SliderLook {
+    chrome: Chrome,
+    layout: SliderLayout,
+    knob: Knob,
+    drag: DragMapping,
+    parts: Vec<Rc<dyn CustomPart<f64>>>,
+    indicator: Option<ValueIndicator>,
+    group_opacity: Driven<f32>,
+}
+
+impl core::fmt::Debug for SliderLook {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SliderLook")
+            .field("layout", &self.layout)
+            .field("knob", &self.knob)
+            .field("drag", &self.drag)
+            .field("parts", &self.parts.len())
+            .field("indicator", &self.indicator)
+            .field("group_opacity", &self.group_opacity)
+            .field("motion", self.chrome.motion())
+            .finish()
+    }
+}
+
+impl SliderLook {
+    /// A slider laid out by `layout` around `knob`, its values running with
+    /// `motion` and dragged by `drag`; it draws nothing until parts are
+    /// added.
+    #[must_use]
+    pub fn new(layout: SliderLayout, knob: Knob, drag: DragMapping, motion: Motion) -> Self {
+        // The chrome carries what Hydrolysis binds interaction with — the
+        // motion and the touch region — and draws nothing of its own: a
+        // slider's parts depend on its value.
+        let chrome = Chrome::new(
+            Surface::clear(CornerShape::radius(0.0)),
+            StateLayer::new(Color::new(waterui::theme::color::Foreground)),
+            PressFeedback::new(),
+            FocusIndicator::Tint,
+            motion,
+        )
+        .hit(knob.hit.press_delay(Duration::ZERO));
+        Self {
+            chrome,
+            layout,
+            knob,
+            drag,
+            parts: Vec::new(),
+            indicator: None,
+            group_opacity: Driven::constant(1.0),
+        }
+    }
+
+    /// Draws `part` over the parts already added.
+    #[must_use]
+    pub fn part<D: DrivenSet<f64> + 'static>(mut self, part: Custom<f64, D>) -> Self
+    where
+        D::Live: 'static,
+    {
+        self.parts.push(Rc::new(part));
+        self
+    }
+
+    /// Shows the value above the knob while the slider is held, when the
+    /// slider has a value indicator.
+    #[must_use]
+    pub fn value_indicator(mut self, indicator: ValueIndicator) -> Self {
+        self.indicator = Some(indicator);
+        self
+    }
+
+    /// Draws the whole slider as one group at `opacity` — a disabled slider
+    /// that fades as a whole.
+    #[must_use]
+    pub fn group_opacity(mut self, opacity: impl Into<Driven<f32>>) -> Self {
+        self.group_opacity = opacity.into();
+        self
+    }
+
+    /// The measures the slider is laid out by.
+    #[must_use]
+    pub const fn layout(&self) -> &SliderLayout {
+        &self.layout
+    }
+
+    /// The knob.
+    #[must_use]
+    pub const fn knob(&self) -> &Knob {
+        &self.knob
+    }
+
+    /// How a drag maps to the value.
+    #[must_use]
+    pub const fn get_drag(&self) -> DragMapping {
+        self.drag
+    }
+
+    /// The motion the look's values run with.
+    #[must_use]
+    pub fn motion(&self) -> &Motion {
+        self.chrome.motion()
+    }
+
+    /// The value indicator.
+    #[must_use]
+    pub const fn get_value_indicator(&self) -> Option<&ValueIndicator> {
+        self.indicator.as_ref()
+    }
+
+    /// The group opacity.
+    #[must_use]
+    pub const fn get_group_opacity(&self) -> &Driven<f32> {
+        &self.group_opacity
+    }
+
+    /// The number of parts the look draws.
+    #[must_use]
+    pub fn part_count(&self) -> usize {
+        self.parts.len()
+    }
+
+    /// The chrome Hydrolysis binds the slider's interaction with.
+    #[cfg(hydrolysis_runtime)]
+    pub(crate) const fn chrome(&self) -> &Chrome {
+        &self.chrome
+    }
+
+    /// The parts, in paint order.
+    #[cfg(hydrolysis_runtime)]
+    pub(crate) fn parts(&self) -> &[Rc<dyn CustomPart<f64>>] {
+        &self.parts
     }
 }
