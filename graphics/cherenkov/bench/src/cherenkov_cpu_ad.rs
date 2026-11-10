@@ -388,6 +388,20 @@ fn record_ops_static(c: &mut cherenkov::Recorder, ops: &[Op], live: &[LiveRun]) 
     }
 }
 
+/// Records [`record_ops_static`]'s content under the frame's drift, when it
+/// has one.
+fn record_ops_drifted(
+    c: &mut cherenkov::Recorder,
+    ops: &[Op],
+    live: &[LiveRun],
+    drift: Option<kurbo::Affine>,
+) {
+    match drift {
+        Some(drift) => c.transform(Fixed(drift), |c| record_ops_static(c, ops, live)),
+        None => record_ops_static(c, ops, live),
+    }
+}
+
 /// Records `ops` with `live` slot bindings and `motions` animated paint
 /// bindings, reached only on scenes that carry motions.
 #[expect(
@@ -1396,6 +1410,10 @@ impl Engine for Cherenkov {
         &self.info
     }
 
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        Some(crate::CPU_RASTERIZER)
+    }
+
     fn supported(&self) -> BTreeSet<Feature> {
         cherenkov_features().into_iter().collect()
     }
@@ -1514,7 +1532,7 @@ impl Engine for Cherenkov {
         }
         // Motion and live scenes record their content once: later encodes
         // only set live bindings and advance the clock. Static scenes keep
-        // re-recording each frame so their numbers stay comparable.
+        // re-recording each frame, drifted so no frame repeats the last.
         if first_frame || !(self.has_motion || self.has_live || input.scroll_offset.is_some()) {
             surface.update(|tx| {
                 if self.has_motion {
@@ -1526,7 +1544,8 @@ impl Engine for Cherenkov {
                     for cl in &self.content_layers {
                         // A motionless scene's record keeps the dev shape:
                         // no motions reach it at all.
-                        tx[cl.handle(surface)].record(|c| record_ops_static(c, &cl.ops, &cl.live));
+                        tx[cl.handle(surface)]
+                            .record(|c| record_ops_drifted(c, &cl.ops, &cl.live, input.drift));
                     }
                 }
             });
