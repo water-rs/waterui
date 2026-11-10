@@ -1484,12 +1484,11 @@ fn a_keyframed_operand_renders_the_sampled_frames() {
                     );
                 }
 
-                // Removing the keyframed layer retires its content: the
-                // window idles.
+                // Removing the keyframed layer stops sampling its content
+                // while its handle lives: the window idles.
                 surface.update(|tx| {
                     tx[surface.root()].remove(&animated);
                 });
-                drop(animated);
                 let mut t = start + TICK * 141;
                 let mut idle = false;
                 for _ in 0..4 {
@@ -1499,7 +1498,33 @@ fn a_keyframed_operand_renders_the_sampled_frames() {
                     }
                     t += TICK;
                 }
-                assert!(idle, "a removed track leaves nothing to sample");
+                assert!(idle, "a detached track leaves nothing to sample");
+
+                // Re-attached, the track shows where its clock is, not
+                // where it stopped.
+                let t = start + TICK * 173;
+                let expected = keyframes
+                    .sample(t - start, Repeat::Forever)
+                    .expect("a forever track runs");
+                let fixed = surface.record(|c| {
+                    c.fill(Rect::new(64.0, 8.0, 80.0, 56.0), expected.clone());
+                });
+                surface.update(|tx| {
+                    tx[surface.root()].push(&animated);
+                    tx[&reference].content(fixed);
+                });
+                let next = $crate::__engine_wait!(render_at(&engine, t));
+                assert!(
+                    matches!(next, Next::At { .. }),
+                    "a re-attached forever track wakes the frame loop: {next:?}"
+                );
+                let rb = $crate::__engine_wait!(surface.readback()).expect("readback");
+                let got = rb.pixels[(16 * rb.width + 16) as usize];
+                let want = rb.pixels[(16 * rb.width + 72) as usize];
+                assert!(
+                    got.iter().zip(want).all(|(got, want)| (got - want).abs() < 0.01),
+                    "re-attached: the engine drew {got:?}, the clock's sample {want:?}"
+                );
             }
             }
 
@@ -1581,11 +1606,11 @@ fn keyframed_layer_properties_render_the_sampled_frames() {
                     );
                 }
 
-                // Retiring the keyframed layer lets the window idle.
+                // Detaching the keyframed layer lets the window idle while
+                // its handle lives.
                 surface.update(|tx| {
                     tx[surface.root()].remove(&animated);
                 });
-                drop(animated);
                 let mut t = start + TICK * 151;
                 let mut idle = false;
                 for _ in 0..4 {
@@ -1595,7 +1620,42 @@ fn keyframed_layer_properties_render_the_sampled_frames() {
                     }
                     t += TICK;
                 }
-                assert!(idle, "a removed track leaves nothing to sample");
+                assert!(idle, "a detached track leaves nothing to sample");
+
+                // Re-attached, the tracks show where their clock is, not
+                // where they stopped.
+                let t = start + TICK * 187;
+                let angle = spin.sample(t - start, Repeat::Forever).expect("forever");
+                let alpha = fade.sample(t - start, Repeat::Forever).expect("forever");
+                surface.update(|tx| {
+                    tx[surface.root()].push(&animated);
+                    tx[&reference].rotation(angle).opacity(alpha);
+                });
+                let next = $crate::__engine_wait!(render_at(&engine, t));
+                assert!(
+                    matches!(next, Next::At { .. }),
+                    "re-attached forever tracks wake the frame loop: {next:?}"
+                );
+                let rb = $crate::__engine_wait!(surface.readback()).expect("readback");
+                assert!(
+                    (alpha_at(&rb, 32, 32) - f64::from(alpha)).abs() < 0.02,
+                    "re-attached: opacity {alpha}, drawn {}",
+                    alpha_at(&rb, 32, 32)
+                );
+                let mut worst = 0.0_f32;
+                for y in 0..64 {
+                    for x in 0..64 {
+                        let got = rb.pixels[(y * rb.width + x) as usize];
+                        let want = rb.pixels[(y * rb.width + x + 128) as usize];
+                        for (got, want) in got.iter().zip(want) {
+                            worst = worst.max((got - want).abs());
+                        }
+                    }
+                }
+                assert!(
+                    worst < 0.02,
+                    "re-attached: the keyframed layer differs from the clock's sample by {worst}"
+                );
             }
             }
 
