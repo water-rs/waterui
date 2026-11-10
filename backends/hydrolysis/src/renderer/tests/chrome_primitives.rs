@@ -23,7 +23,7 @@ use crate::renderer::recording::Recording;
 use crate::runner::FrameCounters;
 use crate::theme::{
     Chrome, CornerShape, Corners, Elevation, FocusIndicator, Label as LookLabel, Motion,
-    PressFeedback, Ripple, StateLayer, Surface,
+    PressFeedback, Ripple, StateLayer, Surface, Transition,
 };
 use crate::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
 use waterui::ViewExt as _;
@@ -656,13 +656,8 @@ fn group_opacity_change_records_nothing_and_blends_once() {
 /// on a pinned clock shows its end state.
 #[test]
 fn live_operands_sample_the_pumped_frame_instant() {
-    use crate::theme::WidgetTheme as _;
-
-    let theme = MinimalTestTheme::default();
-    let motion = crate::theme::InteractionMotion {
-        hover_enter: waterui::animation::Animation::linear(Duration::from_secs(10)),
-        ..theme.interaction_motion()
-    };
+    let mut motion = Motion::uniform(Animation::linear(Duration::from_millis(15)));
+    motion.hover = Transition::symmetric(Animation::linear(Duration::from_secs(10)));
     // Red at rest, blue hovered, and nothing else drawn over the fill.
     let chrome = Chrome::new(
         Surface::new(
@@ -670,12 +665,12 @@ fn live_operands_sample_the_pumped_frame_instant() {
             StateValue::new(Paint::from(color(1.0, 0.0, 0.0)))
                 .when(InteractionState::HOVERED, Paint::from(color(0.0, 0.0, 1.0))),
         ),
-        StateLayer::new(color(1.0, 1.0, 1.0)).opacities(0.0, 0.0, 0.0, 0.0),
-        PressFeedback::Tint,
+        StateLayer::new(waterui::Color::srgb_f32(1.0, 1.0, 1.0)).opacities(0.0, 0.0, 0.0, 0.0),
+        PressFeedback::new().tint(),
         FocusIndicator::Tint,
-    )
-    .motion(motion);
-    let theme = theme.with_button_chrome(chrome);
+        motion,
+    );
+    let theme = MinimalTestTheme::default().with_button_chrome(chrome);
     let mut runtime = runtime_with(button("Chrome").action(|| {}), theme);
     let mut frames = Frames {
         start: Instant::now(),
