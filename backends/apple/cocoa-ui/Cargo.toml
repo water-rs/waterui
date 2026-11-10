@@ -93,6 +93,7 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = [
 objc2-core-text = { version = "0.3", default-features = false, features = [
     "std",
     "CTFont",
+    "CTFontDescriptor",
     "CTFontManager",
     "objc2-core-graphics",
 ] }
