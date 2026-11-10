@@ -10,10 +10,12 @@ use mdi::plus;
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::background::Material;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::{List, ListItem, ListSection};
 use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
+use waterui::reactive::collection::SignalCollection;
 use waterui::shape::{Circle, RoundedRectangle};
+use waterui::views::ForEach;
 use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
 use waterui_icons_material_icon::Svg;
@@ -76,7 +78,7 @@ impl SidebarDestination {
     }
 }
 
-#[derive(Clone, Identifiable)]
+#[derive(Clone, PartialEq, Identifiable)]
 struct ReminderRow {
     #[id]
     id: u64,
@@ -362,8 +364,7 @@ fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView
     vstack((
         content_header(dest),
         Divider,
-        reminder_section("Today", today_rows, search.clone()),
-        reminder_section("Upcoming", upcoming_rows, search.clone()),
+        reminder_list(today_rows, upcoming_rows, &search),
     ))
     .background(Material::Regular)
     .title(dest.title())
@@ -398,71 +399,86 @@ fn content_header(dest: SidebarDestination) -> impl View {
         .padding_with([14.0, 18.0, 12.0, 18.0])
 }
 
-fn reminder_visible(search: Binding<Str>, row: ReminderRow) -> Computed<bool> {
-    search
-        .map(move |query| {
-            normalized_search_query(&query)
-                .as_deref()
-                .is_none_or(|query| reminder_matches_query(&row, query))
-        })
-        .computed()
+/// One visible row of the detail list. `header` names the section the row
+/// opens; the id also encodes it, so a row that becomes (or stops being) the
+/// first of its section is rebuilt with the right marker.
+#[derive(Clone, PartialEq, Identifiable)]
+struct Entry {
+    #[id]
+    id: u64,
+    row: ReminderRow,
+    header: Option<&'static str>,
 }
 
-fn section_visible(search: Binding<Str>, rows: &'static [ReminderRow]) -> Computed<bool> {
-    search
-        .map(move |query| {
-            let normalized_query = normalized_search_query(&query);
-            match normalized_query.as_deref() {
-                Some(query) => rows
-                    .iter()
-                    .any(|reminder| reminder_matches_query(reminder, query)),
-                None => !rows.is_empty(),
-            }
+/// The rows matching the search, flattened in section order with the first row
+/// of each non-empty section carrying that section's title.
+fn visible_entries(
+    sections: [(&'static str, &'static [ReminderRow]); 2],
+    query: &Str,
+) -> Vec<Entry> {
+    let query = normalized_search_query(query);
+    sections
+        .into_iter()
+        .flat_map(|(title, rows)| {
+            rows.iter()
+                .filter(|row| {
+                    query
+                        .as_deref()
+                        .is_none_or(|query| reminder_matches_query(row, query))
+                })
+                .enumerate()
+                .map(move |(index, row)| {
+                    let header = (index == 0).then_some(title);
+                    Entry {
+                        id: row.id * 2 + u64::from(header.is_some()),
+                        row: row.clone(),
+                        header,
+                    }
+                })
         })
-        .computed()
+        .collect()
 }
 
 // `row.flagged` is immutable fixture data: the `&'static [ReminderRow]` rows
 // never change, so reading the field in the row builder cannot go stale.
 #[allow(unknown_lints, collection_item_snapshot)]
-fn reminder_section(
-    title: &'static str,
-    rows: &'static [ReminderRow],
-    search: Binding<Str>,
+fn reminder_list(
+    today_rows: &'static [ReminderRow],
+    upcoming_rows: &'static [ReminderRow],
+    search: &Binding<Str>,
 ) -> impl View {
-    let visible = section_visible(search.clone(), rows);
-    vstack((
-        text(title)
-            .caption()
-            .bold()
-            .muted()
-            .max_width(f32::INFINITY)
-            .leading()
-            .padding_with([8.0, 18.0, 0.0, 18.0]),
-        List::for_each(rows, move |row| {
-            let visible = reminder_visible(search.clone(), row.clone());
-            ListItem::new(
-                hstack((
-                    circle_outline().size(16.0, 16.0).muted(),
-                    vstack((
-                        text(row.title).body().foreground(Foreground),
-                        row.subtitle
-                            .map(|subtitle| text(subtitle).caption().muted()),
-                    ))
-                    .spacing(2.0)
-                    .leading(),
-                    spacer(),
-                    when(row.flagged, || {
-                        flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
-                    })
-                    .otherwise(|| spacer().width(12.0)),
+    let entries = SignalCollection::new(
+        search
+            .clone()
+            .map(move |query| {
+                visible_entries([("Today", today_rows), ("Upcoming", upcoming_rows)], &query)
+            })
+            .computed(),
+    );
+    List::new(ForEach::new(entries, |Entry { row, header, .. }| {
+        let item = ListItem::new(
+            hstack((
+                circle_outline().size(16.0, 16.0).muted(),
+                vstack((
+                    text(row.title).body().foreground(Foreground),
+                    row.subtitle
+                        .map(|subtitle| text(subtitle).caption().muted()),
                 ))
-                .padding_with((10.0, 18.0))
-                .visible(visible),
-            )
-        }),
-    ))
-    .visible(visible)
+                .spacing(2.0)
+                .leading(),
+                spacer(),
+                when(row.flagged, || {
+                    flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
+                })
+                .otherwise(|| spacer().width(12.0)),
+            ))
+            .padding_with((10.0, 18.0)),
+        );
+        match header {
+            Some(title) => item.section(ListSection::new(title)),
+            None => item,
+        }
+    }))
 }
 
 pub fn app(env: Environment) -> App {
