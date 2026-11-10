@@ -611,7 +611,7 @@ fn render_tree_chart_switch_snapshot() {
     eprintln!("wrote /tmp/waterui_tree_switch_before.png and /tmp/waterui_tree_switch_after.png");
 }
 
-/// The exact chart case: a `watch`-driven swap between two `Canvas` (`SceneView`)
+/// The exact chart case: a `watch`-driven swap between two `Canvas`
 /// charts — the effect-slot path where a swap could render the previous scene. On the render-tree path the
 /// switch must visibly take effect (red -> blue scene), proving the `SceneView`
 /// `SceneView` fixed (the patched node is re-dispatched in isolation).

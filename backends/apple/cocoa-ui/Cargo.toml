@@ -73,6 +73,8 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
     "CFLocale",
     "CFRunLoop",
     "CFURL",
+    "CFDictionary",
+    "CFNumber",
     "block2",
 ] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
@@ -86,11 +88,14 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "CGContext",
     "CGDataProvider",
     "CGImage",
+    "block2",
 ] }
 objc2-core-text = { version = "0.3", default-features = false, features = [
     "std",
     "CTFont",
+    "CTFontDescriptor",
     "CTFontManager",
+    "objc2-core-graphics",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
@@ -164,6 +169,13 @@ objc2-web-kit = { version = "0.3", default-features = false, features = [
     "WKWebsiteDataStore",
     "WKWindowFeatures",
 ], optional = true }
+# The canvas mesh gradient pass paints into IOSurfaces that layers show as
+# their contents.
+objc2-io-surface = { version = "0.3", default-features = false, features = [
+    "std",
+    "IOSurfaceRef",
+    "objc2-core-foundation",
+] }
 objc2-metal = { version = "0.3", default-features = false, features = [
     "std",
     "MTLCommandBuffer",

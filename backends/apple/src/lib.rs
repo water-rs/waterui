@@ -46,6 +46,7 @@ mod inspector;
 mod invalidation;
 pub(crate) mod locale;
 #[cfg(any(
+    feature = "canvas",
     feature = "gpu_surface",
     feature = "applied_filter",
     feature = "view_effect",
