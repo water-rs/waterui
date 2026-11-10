@@ -34,6 +34,7 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
+pub mod live_progress;
 pub mod material;
 mod metadata;
 pub mod mount;
@@ -94,9 +95,9 @@ pub use render::HydrolysisRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
 pub use render::{
-    anchor_point, circle_arc_path, estimate_layout_intrinsic, gesture_group_identity,
-    normalize_layout_view, normalize_view_for_render, path_commands_to_path,
-    resolved_morph_shape_to_path, resolved_shape_to_path, transformed_rect,
+    anchor_point, estimate_layout_intrinsic, gesture_group_identity, normalize_layout_view,
+    normalize_view_for_render, path_commands_to_path, resolved_morph_shape_to_path,
+    resolved_shape_to_path, transformed_rect,
 };
 use rustc_hash::FxHashSet;
 use signals::LayoutDependencies;
@@ -132,7 +133,7 @@ use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
 use waterui::component::list::{ListConfig, ListItem};
-use waterui::component::progress::{ProgressConfig, ProgressStyle};
+use waterui::component::progress::ProgressConfig;
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{Draggable, DropDestination};

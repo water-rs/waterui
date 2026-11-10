@@ -22,7 +22,7 @@ use cherenkov_record::{
     ColorStop, Draw as _, Fixed, MaterialEffect, Paint, RadialGradient, Recorder, Shadow,
     ShapeData, Stroke, WorkingColor,
 };
-use kurbo::{Affine, Point, Rect};
+use kurbo::{Affine, Point, Rect, Vec2};
 use nami::{Computed, Signal};
 use waterui_core::Environment;
 use waterui_core::animation::{Animation, ChangeAnimation};
@@ -33,7 +33,7 @@ use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
 use crate::theme::{
     Change, Chrome, Corners, Driven, Elevation, Fill, FocusIndicator, Inputs, InteractionMotion,
-    LiveDriven, MAX_PRESS_WAVES, Motion, RealizedCustom, Retarget, Ripple,
+    LayerRotation, LiveDriven, MAX_PRESS_WAVES, Motion, RealizedCustom, Retarget, Ripple,
 };
 use waterui_graphics::color::Color;
 
@@ -56,6 +56,13 @@ pub trait LiveSource {
 
     /// Fixed content available to scene inspection, when this source owns a recording.
     fn recording(&self) -> Option<&crate::renderer::recording::Recording> {
+        None
+    }
+
+    /// The rotation the engine runs on the source's layer, and the point
+    /// the layer turns about, in the layer's own space. The mount binds it
+    /// to the layer's rotation property each time it records the source.
+    fn rotation(&self) -> Option<(LayerRotation, Vec2)> {
         None
     }
 }

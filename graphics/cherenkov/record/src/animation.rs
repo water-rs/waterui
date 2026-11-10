@@ -768,6 +768,12 @@ impl<T> Keyframes<T> {
     pub const fn duration(&self) -> Duration {
         self.duration
     }
+
+    /// The value the cycle starts at.
+    #[must_use]
+    pub const fn first(&self) -> &T {
+        &self.first
+    }
 }
 
 impl<T: AnimLanes + Clone> Keyframes<T> {

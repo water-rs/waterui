@@ -625,19 +625,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .bind_radio_indicator(key, selected, motion, self.frame_instant)
     }
 
-    /// Samples the free-running repeating phase (an indeterminate progress
-    /// indicator) of the view retained as `owner`, so the phase survives
-    /// frames and structural changes around it.
-    pub(crate) fn sample_repeating_motion<T: 'static>(
-        &mut self,
-        cycle: Duration,
-        owner: &Rc<T>,
-    ) -> Duration {
-        let key = AnimationKey::renderer_local_repeating(self.animation_owner_pins.pin(owner));
-        self.animation_controller
-            .bind_repeating_phase(key, cycle, self.frame_instant)
-    }
-
     fn navigation_animating(&self, now: Instant) -> bool {
         self.navigation.slots.values().any(|slot| {
             slot.transition

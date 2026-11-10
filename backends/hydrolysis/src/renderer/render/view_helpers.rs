@@ -1006,30 +1006,3 @@ pub fn transformed_rect(transform: kurbo::Affine, rect: kurbo::Rect) -> kurbo::R
         .fold(f64::NEG_INFINITY, |acc, point| acc.max(point.y));
     kurbo::Rect::new(min_x, min_y, max_x, max_y)
 }
-
-pub fn circle_arc_path(
-    center: kurbo::Point,
-    radius: f64,
-    start_angle: f64,
-    sweep: f64,
-) -> kurbo::BezPath {
-    let mut path = kurbo::BezPath::new();
-    if sweep == 0.0 {
-        return path;
-    }
-    let segments = 64usize;
-    let step = sweep / crate::num_cast::usize_as_f64(segments);
-    let mut angle = start_angle;
-    path.move_to(kurbo::Point::new(
-        radius.mul_add(angle.cos(), center.x),
-        radius.mul_add(angle.sin(), center.y),
-    ));
-    for _ in 0..segments {
-        angle += step;
-        path.line_to(kurbo::Point::new(
-            radius.mul_add(angle.cos(), center.x),
-            radius.mul_add(angle.sin(), center.y),
-        ));
-    }
-    path
-}

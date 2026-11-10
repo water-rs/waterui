@@ -15,7 +15,7 @@ use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cherenkov_record::{FilterId, Layer, LayerId, ShapeData, Shared, Transaction};
+use cherenkov_record::{FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction};
 
 use waterui_graphics::HeldResources;
 
@@ -243,6 +243,8 @@ pub struct LiveLayer {
     source: Option<Rc<dyn LiveSource>>,
     held: Option<LoweredResources>,
     solid: Box<[SolidRect]>,
+    /// Whether the layer's rotation follows the source's operand.
+    rotating: bool,
 }
 
 /// A node's retained layers.
@@ -1879,6 +1881,7 @@ fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
                 source: None,
                 held: None,
                 solid: Box::default(),
+                rotating: false,
             },
             |at| lives_old.remove(at),
         );
@@ -1898,6 +1901,19 @@ fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
         let resources = T::resources(cx.host);
         let mut held = None;
         cx.tx[&live.layer].record(|recorder| held = item.source.record(recorder, resources));
+        // A source that turns its layer binds the rotation property to the
+        // source's operand and starts the engine's track along it: the
+        // layer then turns on the engine's clock, with no work here.
+        if let Some((rotation, pivot)) = item.source.rotation() {
+            cx.tx[&live.layer]
+                .pivot(Fixed(pivot))
+                .rotation(rotation.live());
+            rotation.run();
+            live.rotating = true;
+        } else if std::mem::take(&mut live.rotating) {
+            // The layer's new source does not turn: end the old track.
+            cx.tx[&live.layer].rotation(Fixed(0.0_f64));
+        }
         if let Some(old) = std::mem::replace(&mut live.held, held) {
             cx.graveyard.push(Box::new(old));
         }

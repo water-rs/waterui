@@ -160,8 +160,7 @@ impl AnimationKey {
     }
 
     /// Returns a repeating-phase-slot key for a renderer-owned free-running
-    /// timeline (e.g. an indeterminate progress indicator). Only valid with
-    /// [`bind_repeating_phase`](AnimationController::bind_repeating_phase) /
+    /// timeline. Only valid with
     /// [`bind_timeline_phase`](AnimationController::bind_timeline_phase).
     #[must_use]
     pub const fn renderer_local_repeating(identity: usize) -> Self {
@@ -406,19 +405,6 @@ impl AnimationController {
             .iter()
             .filter_map(|(key, slot)| slot.state.borrow().is_active().then_some(*key))
             .collect()
-    }
-
-    /// Binds the repeating slot for `key` and returns the phase within the
-    /// current cycle (`elapsed % cycle`), for free-running looping motion
-    /// such as indeterminate progress indicators.
-    pub fn bind_repeating_phase(
-        &mut self,
-        key: AnimationKey,
-        cycle: Duration,
-        now: Instant,
-    ) -> Duration {
-        let elapsed = self.bind_timeline_phase(key, cycle, true, now);
-        Duration::from_secs_f64(elapsed.as_secs_f64() % cycle.as_secs_f64())
     }
 
     /// Binds the timeline slot for `key` and returns the elapsed time since

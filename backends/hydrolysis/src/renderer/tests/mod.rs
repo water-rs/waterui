@@ -73,6 +73,7 @@ mod perf_scroll;
 mod popup_frame;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod popup_windows;
+mod progress_looks;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod registrations;
 mod render_identity;
@@ -104,7 +105,7 @@ mod when_payload;
 mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_mount;
-use kurbo::{Affine, BezPath, Point, Rect, Size};
+use kurbo::{Affine, Point, Rect, Size};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
@@ -130,13 +131,14 @@ use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
-    BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DividerMetrics,
-    FocusIndicator, HitRegion, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
-    Label, ListMetrics, ModalInteraction, Motion, NavigationMetrics, NavigationMotion,
-    PickerMetrics, PressFeedback, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion,
-    RadioIndicatorState, RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics,
-    StateLayer, StepperEnd, StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
-    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
+    BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DividerMetrics, Driven,
+    FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionFocusBinding,
+    InteractionMotion, Label, LinearProgressLook, ListMetrics, ModalInteraction, Motion,
+    NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback, ProgressControl,
+    ProgressSpec, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
+    SliderValueIndicatorMetrics, StateLayer, StepperEnd, StepperMetrics, Surface, TabItemGeometry,
+    TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
+    ToggleMetrics, WidgetInteractionState,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -2793,8 +2795,8 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 
 /// A recorded `draw_toggle_switch` call: `(bounds, progress, selected)`.
 type ToggleSwitchDraw = (Rect, f32, bool);
-/// A recorded `draw_progress_linear_track` call: `(bounds, active_end)`.
-type ProgressTrackDraw = (Rect, Option<f64>);
+/// A linear progress bar the theme realized: `(frame, value)`.
+type ProgressBarRealization = (Rect, f64);
 /// A recorded `draw_radio_indicator` call: `(center, state)`.
 type RadioIndicatorDraw = (Point, RadioIndicatorState);
 
@@ -2833,8 +2835,16 @@ pub struct MinimalTestTheme {
     chrome: ChromePlan,
     /// Every `draw_toggle_switch` call.
     toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
-    /// Every `draw_progress_linear_track` call.
-    progress_linear_track_draws: Rc<RefCell<Vec<ProgressTrackDraw>>>,
+    /// Every linear progress bar the theme's look realized, with the value
+    /// its part read.
+    progress_bar_realizations: Rc<RefCell<Vec<ProgressBarRealization>>>,
+    /// How many times a linear progress bar's part was recorded.
+    progress_bar_recordings: Rc<std::cell::Cell<u32>>,
+    /// Every spec the theme was asked for a progress look.
+    progress_specs: Rc<RefCell<Vec<ProgressSpec>>>,
+    /// Whether the indeterminate progress looks move: a bar that travels, a
+    /// tick that turns, a square that swells.
+    moving_progress: bool,
     /// Every `draw_radio_indicator` call.
     radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
     /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
@@ -2977,16 +2987,6 @@ impl WidgetTheme for MinimalTestTheme {
             press_shape: Animation::linear(Duration::from_millis(15)),
             minimum_press_duration: Duration::from_millis(225),
             touch_delay: Duration::from_millis(150),
-        }
-    }
-
-    fn progress_motion(&self) -> ProgressMotion {
-        ProgressMotion {
-            linear_determinate: Animation::bezier(Duration::from_millis(250), 0.4, 0.0, 0.6, 1.0),
-            circular_determinate: Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0),
-            linear_indeterminate_cycle: Duration::from_millis(2_000),
-            loading_cycle: Duration::from_millis(4_666),
-            circular_indeterminate_cycle: Duration::from_millis(5_332),
         }
     }
 
@@ -3266,81 +3266,54 @@ impl WidgetTheme for MinimalTestTheme {
         self.slider_value_indicator_draws.borrow_mut().push(bounds);
     }
 
-    fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
-        match style {
-            ProgressIndicatorStyle::Loading => ProgressMetrics::loading(48.0, 38.0),
-            ProgressIndicatorStyle::Linear => ProgressMetrics {
-                label_height: 18.0,
-                bar_top_offset: 10.0,
-                bar_height: 8.0,
-                bar_horizontal_inset: 8.0,
-                value_label_top_spacing: 6.0,
-                min_track_width: 72.0,
-                circular_diameter: 0.0,
-                circular_stroke_width: 0.0,
-                loading_indicator_size: 0.0,
-            },
-            ProgressIndicatorStyle::Circular => ProgressMetrics {
-                label_height: 0.0,
-                bar_top_offset: 0.0,
-                bar_height: 0.0,
-                bar_horizontal_inset: 0.0,
-                value_label_top_spacing: 0.0,
-                min_track_width: 0.0,
-                circular_diameter: 32.0,
-                circular_stroke_width: 5.0,
-                loading_indicator_size: 0.0,
-            },
-        }
+    fn linear_progress(&self, spec: &ProgressSpec, _env: &Environment) -> LinearProgressLook {
+        self.progress_specs.borrow_mut().push(spec.clone());
+        let control = if self.moving_progress && !spec.determinate() {
+            progress_looks::moving_bar()
+        } else {
+            let realizations = Rc::clone(&self.progress_bar_realizations);
+            let recordings = Rc::clone(&self.progress_bar_recordings);
+            ProgressControl::new(
+                Size::new(72.0, 8.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+            .part(Custom::new(
+                (Driven::<f64, f64>::new(move |inputs| {
+                    realizations
+                        .borrow_mut()
+                        .push((inputs.frame, *inputs.value));
+                    *inputs.value
+                }),),
+                move |_recorder, _frame, (_fill,)| recordings.set(recordings.get() + 1),
+            ))
+        };
+        LinearProgressLook::new(control, 8.0)
+            .label_band(18.0, 10.0)
+            .value_label_band(6.0)
     }
 
-    fn draw_progress_linear_track(
-        &self,
-        _draw: &mut Recorder,
-        bounds: Rect,
-        active_end: Option<f64>,
-    ) {
-        self.progress_linear_track_draws
-            .borrow_mut()
-            .push((bounds, active_end));
-    }
-    fn draw_progress_linear_fill(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn draw_progress_linear_indeterminate(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _elapsed: Duration,
-        _four_color: bool,
-    ) {
-    }
-    fn draw_progress_circular_track(
-        &self,
-        _draw: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _width: f64,
-        _active_turns: Option<f64>,
-    ) {
-    }
-    fn draw_progress_circular_fill(&self, _draw: &mut Recorder, _path: &BezPath, _width: f64) {}
-    fn draw_progress_loading(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _elapsed: Duration,
-        _four_color: bool,
-    ) {
+    fn circular_progress(&self, spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+        self.progress_specs.borrow_mut().push(spec.clone());
+        IndicatorLook::new(if self.moving_progress && !spec.determinate() {
+            progress_looks::spinner()
+        } else {
+            ProgressControl::new(
+                Size::new(32.0, 32.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+        })
     }
 
-    fn draw_progress_circular_indeterminate(
-        &self,
-        _draw: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _width: f64,
-        _elapsed: Duration,
-        _four_color: bool,
-    ) {
+    fn loading_indicator(&self, spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+        self.progress_specs.borrow_mut().push(spec.clone());
+        IndicatorLook::new(if self.moving_progress {
+            progress_looks::morphing()
+        } else {
+            ProgressControl::new(
+                Size::new(48.0, 48.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+        })
     }
 
     fn navigation_metrics(&self) -> NavigationMetrics {

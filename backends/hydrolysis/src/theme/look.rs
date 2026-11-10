@@ -22,7 +22,7 @@ use core::time::Duration;
 use std::any::Any;
 use std::rc::Rc;
 
-use cherenkov_record::{Live, Paint, Recorder};
+use cherenkov_record::{KeyframeAnimation, Keyframes, Live, Paint, Recorder, Repeat};
 use kurbo::{Point, Rect, Size, Vec2};
 use nami::Signal;
 use nami::signal::IntoComputed;
@@ -232,7 +232,15 @@ pub struct Driven<T, V = ()> {
     target: Target<T, V>,
     follows: Option<Follows>,
     motion: Option<Motion>,
+    value_motion: Option<ValueMotionOf<V>>,
+    repeating: Option<Repeating>,
 }
+
+/// The track a repeating value runs, built for the frame it records on.
+type Repeating = Rc<dyn Fn(Rect) -> KeyframeAnimation>;
+
+/// The value motion of a change to a given value.
+type ValueMotionOf<V> = Rc<dyn Fn(&V) -> ValueMotion>;
 
 impl<T, V> Clone for Driven<T, V> {
     fn clone(&self) -> Self {
@@ -240,6 +248,8 @@ impl<T, V> Clone for Driven<T, V> {
             target: Rc::clone(&self.target),
             follows: self.follows.clone(),
             motion: self.motion.clone(),
+            value_motion: self.value_motion.clone(),
+            repeating: self.repeating.clone(),
         }
     }
 }
@@ -249,6 +259,8 @@ impl<T, V> core::fmt::Debug for Driven<T, V> {
         f.debug_struct("Driven")
             .field("follows", &self.follows.is_some())
             .field("motion", &self.motion)
+            .field("value_motion", &self.value_motion.is_some())
+            .field("repeating", &self.repeating.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -261,6 +273,37 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             target: Rc::new(target),
             follows: None,
             motion: None,
+            value_motion: None,
+            repeating: None,
+        }
+    }
+
+    /// A value that runs the `keyframes` of the frame its part records on,
+    /// under `repeat`, once the part is recorded, whatever the other inputs.
+    ///
+    /// The engine samples the track on its own clock: a running indicator
+    /// records nothing, walks no tree and does no Hydrolysis work per frame,
+    /// until its part records again. The value at rest is the track's first
+    /// one. The track's values must share one lane layout, and be of the
+    /// type the operand records: a [`ShapeData`](cherenkov_record::ShapeData)
+    /// for a shape, a [`Paint`], a [`Stroke`](cherenkov_record::Stroke).
+    #[must_use]
+    pub fn repeating(keyframes: impl Fn(Rect) -> Keyframes<T> + 'static, repeat: Repeat) -> Self
+    where
+        T: Clone,
+    {
+        let keyframes = Rc::new(keyframes);
+        Self {
+            target: Rc::new({
+                let keyframes = Rc::clone(&keyframes);
+                move |inputs| keyframes(inputs.frame).first().clone()
+            }),
+            follows: None,
+            motion: None,
+            value_motion: None,
+            repeating: Some(Rc::new(move |frame| {
+                KeyframeAnimation::new(keyframes(frame), repeat)
+            })),
         }
     }
 
@@ -291,6 +334,8 @@ impl<T: 'static, V: 'static> Driven<T, V> {
                 }))
             })),
             motion: None,
+            value_motion: None,
+            repeating: None,
         }
     }
 
@@ -299,6 +344,21 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     #[must_use]
     pub const fn motion(mut self, motion: Motion) -> Self {
         self.motion = Some(motion);
+        self
+    }
+
+    /// The motion of a change of the widget's value *to* the value `motion`
+    /// receives — the new value, not the old one — so a value moves one way
+    /// differently from the other. A switch's track fade is the reason: it
+    /// turns on by a slower spring than it turns off by.
+    ///
+    /// It replaces the `value` of the [`Motion`] this value otherwise runs
+    /// with ([`Self::motion`], else its part's) and leaves that motion's
+    /// interaction transitions as they are. A value with none runs every
+    /// value change with [`Motion::value`].
+    #[must_use]
+    pub fn value_motion(mut self, motion: impl Fn(&V) -> ValueMotion + 'static) -> Self {
+        self.value_motion = Some(Rc::new(motion));
         self
     }
 
@@ -312,6 +372,20 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     #[must_use]
     pub const fn get_motion(&self) -> Option<&Motion> {
         self.motion.as_ref()
+    }
+
+    /// The motion of a change to `value`, when the value declares one
+    /// ([`Self::value_motion`]).
+    #[must_use]
+    pub fn get_value_motion(&self, value: &V) -> Option<ValueMotion> {
+        self.value_motion.as_ref().map(|motion| motion(value))
+    }
+
+    /// The track the engine runs this value along once its part records on
+    /// `frame`, when it is [`repeating`](Self::repeating).
+    #[cfg(hydrolysis_runtime)]
+    pub(crate) fn get_repeating(&self, frame: Rect) -> Option<KeyframeAnimation> {
+        self.repeating.as_ref().map(|track| track(frame))
     }
 
     /// Calls `notify` with each change's animation whenever a signal this
@@ -338,12 +412,23 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     /// This value passed through `f`, following the same signals with the
     /// same motion.
     #[cfg(hydrolysis_runtime)]
+    ///
+    /// # Panics
+    ///
+    /// Panics on a [repeating](Self::repeating) value: its track holds
+    /// values of the source type.
     pub(crate) fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> Driven<U, V> {
+        assert!(
+            self.repeating.is_none(),
+            "a repeating value cannot be mapped: its keyframes hold the source type"
+        );
         let target = Rc::clone(&self.target);
         Driven {
             target: Rc::new(move |inputs| f(target(inputs))),
             follows: self.follows.clone(),
             motion: self.motion.clone(),
+            value_motion: self.value_motion.clone(),
+            repeating: None,
         }
     }
 }
@@ -402,7 +487,7 @@ mod realized {
     use std::any::Any;
     use std::rc::Rc;
 
-    use waterui_core::animation::Animation;
+    use waterui_core::animation::{Animation, ChangeAnimation};
 
     use super::{Inputs, Motion};
 
@@ -415,6 +500,12 @@ mod realized {
             old: waterui_core::interaction::InteractionState,
             motion: &'a Motion,
         },
+        /// The widget's value changed under `change`; a value without
+        /// motion of its own runs with `motion`'s value motion.
+        Value {
+            change: &'a ChangeAnimation,
+            motion: &'a Motion,
+        },
         /// A signal the value follows, the frame or the press point
         /// changed, under this animation (`None` snaps).
         Animated(Option<&'a Animation>),
@@ -425,6 +516,10 @@ mod realized {
     pub trait Retarget<V> {
         fn retarget(&self, inputs: &Inputs<'_, V>, change: Change<'_>);
         fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>>;
+
+        /// Starts the track a repeating value runs once its part has
+        /// recorded on `frame`; every other value has none.
+        fn run(&self, _frame: kurbo::Rect) {}
     }
 
     /// A realized set: a factory for the tuple of [`Live`](cherenkov_record::Live)
@@ -489,6 +584,14 @@ impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V
                 .unwrap_or(motion)
                 .interaction(old, inputs.state)
                 .cloned(),
+            Change::Value { change, motion } => {
+                let motion = self.driven.get_motion().unwrap_or(motion);
+                self.driven
+                    .get_value_motion(inputs.value)
+                    .as_ref()
+                    .unwrap_or(&motion.value)
+                    .animation(change.clone())
+            }
             Change::Animated(animation) => animation.cloned(),
         };
         self.operand
@@ -497,6 +600,12 @@ impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V
 
     fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>> {
         self.driven.subscribe(notify)
+    }
+
+    fn run(&self, frame: Rect) {
+        if let Some(track) = self.driven.get_repeating(frame) {
+            self.operand.run(&track);
+        }
     }
 }
 
@@ -578,6 +687,9 @@ type RecordCustom<L> = Rc<dyn Fn(&mut Recorder, Rect, L)>;
 pub struct Custom<V, D: DrivenSet<V>> {
     driven: D,
     record: RecordCustom<D::Live>,
+    rotation: Option<KeyframeAnimation>,
+    /// The rotation's first angle: the layer's rotation at rest.
+    rest: f64,
     value: PhantomData<fn(&V)>,
 }
 
@@ -585,6 +697,7 @@ impl<V, D: DrivenSet<V> + core::fmt::Debug> core::fmt::Debug for Custom<V, D> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Custom")
             .field("driven", &self.driven)
+            .field("rotating", &self.rotation.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -594,6 +707,8 @@ impl<V, D: DrivenSet<V> + Clone> Clone for Custom<V, D> {
         Self {
             driven: self.driven.clone(),
             record: Rc::clone(&self.record),
+            rotation: self.rotation.clone(),
+            rest: self.rest,
             value: PhantomData,
         }
     }
@@ -606,8 +721,26 @@ impl<V, D: DrivenSet<V>> Custom<V, D> {
         Self {
             driven,
             record: Rc::new(record),
+            rotation: None,
+            rest: 0.0,
             value: PhantomData,
         }
+    }
+
+    /// Turns the part's whole layer about the centre of its frame, along
+    /// `keyframes` — the unwrapped angle in radians, clockwise — under
+    /// `repeat`.
+    ///
+    /// The engine runs the track on the layer's rotation property: the part
+    /// records once, and a spinning part records nothing and does no
+    /// Hydrolysis work per frame. Use it for the motion of the part as a
+    /// whole; a [`Driven::repeating`] value moves one operand of the
+    /// recording.
+    #[must_use]
+    pub fn rotating(mut self, keyframes: Keyframes<f64>, repeat: Repeat) -> Self {
+        self.rest = *keyframes.first();
+        self.rotation = Some(KeyframeAnimation::new(keyframes, repeat));
+        self
     }
 }
 
@@ -616,16 +749,49 @@ impl<V, D: DrivenSet<V>> Custom<V, D> {
 pub struct RealizedCustom<V> {
     record: RecordRealized,
     pub(crate) drivens: Vec<Rc<dyn Retarget<V>>>,
+    rotation: Option<LayerRotation>,
 }
 
 #[cfg(hydrolysis_runtime)]
 type RecordRealized = Box<dyn Fn(&mut Recorder, Rect)>;
 
+/// The rotation a part's layer runs: its operand, the track and where the
+/// layer turns about.
+#[cfg(hydrolysis_runtime)]
+#[derive(Clone)]
+pub struct LayerRotation {
+    operand: Operand<f64>,
+    track: KeyframeAnimation,
+}
+
+#[cfg(hydrolysis_runtime)]
+impl LayerRotation {
+    /// The rotation property's live angle.
+    pub(crate) fn live(&self) -> Live<f64> {
+        self.operand.live()
+    }
+
+    /// Starts the track along the layer's property, which must be bound to
+    /// [`Self::live`] already.
+    pub(crate) fn run(&self) {
+        self.operand.run(&self.track);
+    }
+}
+
 #[cfg(hydrolysis_runtime)]
 impl<V> RealizedCustom<V> {
-    /// Records the part on `frame`.
+    /// Records the part on `frame`, then starts the tracks of its repeating
+    /// values: the recording has subscribed to every operand by then.
     pub(crate) fn record(&self, recorder: &mut Recorder, frame: Rect) {
         (self.record)(recorder, frame);
+        for driven in &self.drivens {
+            driven.run(frame);
+        }
+    }
+
+    /// The part's layer rotation, when it turns.
+    pub(crate) const fn rotation(&self) -> Option<&LayerRotation> {
+        self.rotation.as_ref()
     }
 }
 
@@ -647,6 +813,10 @@ where
         RealizedCustom {
             record: Box::new(move |recorder, frame| record(recorder, frame, live())),
             drivens,
+            rotation: self.rotation.as_ref().map(|track| LayerRotation {
+                operand: Operand::new(self.rest),
+                track: track.clone(),
+            }),
         }
     }
 }
