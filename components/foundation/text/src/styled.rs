@@ -15,6 +15,7 @@ use waterui_core::{
     Environment, Str, View,
     handler::{EventHandler, SharedAction},
 };
+use waterui_graphics::canvas::CanvasText;
 use waterui_graphics::color::{Color, SurfaceVariantColor};
 
 /// A set of text attributes for rich text formatting.
@@ -797,6 +798,14 @@ impl From<&'static str> for StyledStr {
 impl From<String> for StyledStr {
     fn from(value: String) -> Self {
         Self::plain(value)
+    }
+}
+
+impl From<StyledStr> for CanvasText {
+    /// The text a canvas draws with [`Cx::text`](waterui_graphics::canvas::Cx::text);
+    /// the render target lays it out with the same text stack as a `Text`.
+    fn from(value: StyledStr) -> Self {
+        Self::new(value)
     }
 }
 

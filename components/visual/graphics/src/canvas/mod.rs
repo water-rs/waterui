@@ -1,7 +1,8 @@
 //! Canvas: target-neutral vector drawing.
 //!
 //! A [`Canvas`] is a view whose content is drawn by commands — fills,
-//! strokes, shadows, images, glyph runs and reusable [`Drawing`]s, under
+//! strokes, shadows, images, glyph runs, styled [text](Cx::text) and
+//! reusable [`Drawing`]s, under
 //! clips, transforms and compositing layers. Whichever renderer draws the
 //! screen around it draws it, in the same retained recording.
 //!
@@ -48,6 +49,10 @@
 //! use, holds it while the canvas draws it, and registers it again after
 //! its engine is replaced. What it made of an image is the image's
 //! [`status`](ImageSource::status).
+//!
+//! Text ([`Cx::text`]) is semantic too: the canvas names styled text and a
+//! [`TextPlacement`], and the target lays it out with the text stack every
+//! other `Text` on the screen uses. The canvas never measures it.
 
 mod cell;
 mod cx;
@@ -58,6 +63,7 @@ mod operand;
 mod paint;
 mod resource;
 mod scene;
+mod text;
 mod view;
 
 use alloc::boxed::Box;
@@ -85,6 +91,7 @@ pub use resource::{
     PixelFormat,
 };
 
+pub use text::{CanvasText, TextPlacement};
 pub use view::CanvasView;
 
 /// A view drawn by vector commands.

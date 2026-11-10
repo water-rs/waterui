@@ -12,7 +12,7 @@ use core::time::Duration;
 use std::collections::HashMap;
 
 use nami::watcher::{BoxWatcherGuard, Context, Metadata};
-use nami::{Computed, Signal};
+use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::animation::Animation;
 use waterui_core::layout::{Affine2, Size};
 use waterui_core::{Environment, Str};
@@ -25,10 +25,11 @@ use crate::canvas::geometry::lower_rect;
 use crate::canvas::names::Names;
 use crate::canvas::paint::{Paint, affine};
 use crate::canvas::resource::{Font, ImageSource, ImageStatus, Pixels};
+use crate::canvas::text::{CanvasText, TextPlacement};
 use crate::draw::{
     self, Draw as _, FontId, ImageId, Instant, Recorder, ResourceError, ShapeData, kurbo,
 };
-use crate::scene::resources::{HeldResources, RecordingResources, SceneResources};
+use crate::scene::resources::{HeldResources, RecordingResources, RegisteredText, SceneResources};
 use crate::scene_view::{SceneContent, SceneFrame, SceneInvalidator, SceneUpdate};
 
 /// A change's metadata as the recorder reads it: an app animation the
@@ -307,6 +308,75 @@ impl Replay<'_, '_> {
         Some(self.gate(paint, Paint::lower))
     }
 
+    /// A watcher that records this part again when `changed` holds for a
+    /// new value of the operand.
+    fn restale_if<T: 'static>(
+        &self,
+        changed: impl Fn(&T) -> bool + 'static,
+    ) -> impl Fn(Context<T>) + 'static {
+        let shared = Weak::clone(&self.session.shared);
+        let part = Weak::clone(&self.part);
+        move |change| {
+            if changed(change.value())
+                && let Some(shared) = shared.upgrade()
+            {
+                shared.mark(Stale::Part(Weak::clone(&part)));
+            }
+        }
+    }
+
+    /// `text` laid out in `placement` by the target and registered, in the
+    /// canvas's environment; `None` when the render thread is gone.
+    ///
+    /// # Panics
+    ///
+    /// When the target cannot lay the text out: it has no text stack, or a
+    /// font of the text is refused.
+    fn text(&self, text: CanvasText, placement: TextPlacement) -> Option<RegisteredText> {
+        let env = self.session.shared.upgrade()?.env.clone();
+        match self.resources.text(text, placement, env) {
+            Ok(registered) => Some(registered),
+            Err(ResourceError::Lost) => None,
+            Err(error) => panic!("canvas text was refused: {error}"),
+        }
+    }
+
+    /// Records a text command: the target's layout of the current text,
+    /// placed by a live transform.
+    ///
+    /// A new text or a new way to lay it out is a new registration, so the
+    /// part records again rather than update a slot. The watches live as
+    /// long as this recording of the part; a moved origin alone follows the
+    /// transform.
+    fn record_text(
+        &mut self,
+        recorder: &mut Recorder,
+        text: &Computed<CanvasText>,
+        placement: &Computed<TextPlacement>,
+    ) {
+        let current = text.snapshot();
+        let laid_out = placement.snapshot();
+        let swapped = current.clone();
+        let text_guard: BoxWatcherGuard = text.watch(self.restale_if(move |text| *text != swapped));
+        let placement_guard: BoxWatcherGuard = placement.watch(
+            self.restale_if(move |placement: &TextPlacement| !placement.same_layout(&laid_out)),
+        );
+        recorder.keep(text_guard);
+        recorder.keep(placement_guard);
+        let Some(registered) = self.text(current, laid_out) else {
+            return;
+        };
+        let width = registered.size().width;
+        let corner = placement
+            .map(move |placement: TextPlacement| {
+                let corner = placement.corner(width);
+                Affine2::translate(corner.x, corner.y)
+            })
+            .computed();
+        let layout = self.resources.name(registered.layout());
+        recorder.text(layout, self.transform(&corner));
+    }
+
     fn drawing(&mut self, drawing: &Drawing) -> Option<draw::Picture> {
         let (picture, held) = self.session.drawing(drawing)?;
         self.resources.hold(&held);
@@ -373,6 +443,7 @@ fn replay(recording: &Recording, recorder: &mut Recorder, cx: &mut Replay<'_, '_
                 });
                 recorder.glyphs(run, paint);
             }
+            Node::Text { text, placement } => cx.record_text(recorder, text, placement),
             Node::Draw { drawing, transform } => {
                 if let Some(picture) = cx.drawing(drawing) {
                     recorder.picture(&picture, cx.transform(transform));
