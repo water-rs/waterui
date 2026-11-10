@@ -18,7 +18,7 @@ use core::cell::RefCell;
 use cocoa_ui::slider::ValueAnimation;
 use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::animation::{Animation, ChangeAnimation};
-use waterui::component::slider::SliderConfig;
+use waterui::component::slider::{SliderConfig, snap};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui_core::interaction::Disabled;
@@ -335,6 +335,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
             waterui::component::ControlSize::ExtraSmall,
         ));
         slider.set_range(*config.range().start(), *config.range().end());
+        // AppKit holds the thumb to tick marks, one per step.
+        #[cfg(target_os = "macos")]
+        slider.set_step(config.step());
         slider.set_value(
             clamped(
                 config.value().snapshot(),
@@ -346,9 +349,19 @@ pub fn install(dispatcher: &mut Dispatcher) {
         host.add_subview(as_view(&slider));
 
         let range = config.range().clone();
+        let step = config.step();
         let action = slider.install_action({
             let binding = config.value().clone();
-            move |value| binding.set(value)
+            let slider = slider.clone();
+            let range = range.clone();
+            move |value| {
+                // UIKit has no step: the thumb moves freely, so the value is
+                // snapped here and the thumb follows it, whether or not the
+                // binding changes.
+                let snapped = snap(value, &range, step);
+                slider.set_value(snapped, None);
+                binding.set(snapped);
+            }
         });
 
         // The label's semantic text is announced on the control itself; the
@@ -437,6 +450,16 @@ mod tests {
     use waterui::animation::NoAnimation;
 
     use super::*;
+
+    #[test]
+    fn a_value_the_platform_leaves_unstepped_snaps_from_the_range_start() {
+        // UIKit reports whatever the thumb is at; the value the binding gets
+        // is the nearest multiple of the step counted from the range's start.
+        let range = 1.0..=10.0;
+        assert_eq!(snap(4.4, &range, Some(2.0)).to_bits(), 5.0_f64.to_bits());
+        assert_eq!(snap(9.9, &range, Some(2.0)).to_bits(), 9.0_f64.to_bits());
+        assert_eq!(snap(4.4, &range, None).to_bits(), 4.4_f64.to_bits());
+    }
 
     #[test]
     fn spacing_collapses_beside_an_empty_label() {

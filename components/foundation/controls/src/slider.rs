@@ -39,6 +39,21 @@ pub struct SliderConfig {
     step: Option<f64>,
 }
 
+/// `value` held in `range` and, given a `step`, rounded to the nearest
+/// multiple of it counted from the range's start: the one rounding every
+/// backend applies to a value the user moves.
+#[must_use]
+pub fn snap(value: f64, range: &RangeInclusive<f64>, step: Option<f64>) -> f64 {
+    let (start, end) = (*range.start(), *range.end());
+    let value = value.clamp(start, end);
+    step.map_or(value, |step| {
+        ((value - start) / step)
+            .round()
+            .mul_add(step, start)
+            .clamp(start, end)
+    })
+}
+
 impl SliderConfig {
     /// Takes the value apart into its fields, in declaration order.
     #[expect(
@@ -95,6 +110,13 @@ impl SliderConfig {
             value_indicator,
             step,
         }
+    }
+
+    /// `value` held in the range and, when the slider has a step, rounded to
+    /// the nearest multiple of it counted from the range's start.
+    #[must_use]
+    pub fn snap(&self, value: f64) -> f64 {
+        snap(value, &self.range, self.step)
     }
 
     /// The label displayed for the slider.
@@ -330,4 +352,19 @@ impl_label_style_methods!(Slider);
 #[must_use]
 pub fn slider(label: impl IntoLabel, value: &Binding<f64>) -> Slider {
     Slider::new(label.into_label(), value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snap;
+
+    #[test]
+    fn snap_rounds_from_the_range_start_and_stays_in_range() {
+        let range = 1.0..=10.0;
+        assert_eq!(snap(4.4, &range, Some(2.0)).to_bits(), 5.0_f64.to_bits());
+        assert_eq!(snap(4.4, &range, None).to_bits(), 4.4_f64.to_bits());
+        // A step that overshoots the end is held to it.
+        assert_eq!(snap(10.0, &range, Some(2.0)).to_bits(), 10.0_f64.to_bits());
+        assert_eq!(snap(-3.0, &range, Some(2.0)).to_bits(), 1.0_f64.to_bits());
+    }
 }

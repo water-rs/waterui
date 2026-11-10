@@ -23,7 +23,7 @@ use std::rc::Rc;
 use waterui::ViewExt as _;
 use waterui_controls::ControlSize;
 use waterui_controls::label::{Label, LabelDisplayMode};
-use waterui_controls::slider::{SliderConfig, ValueFormatter};
+use waterui_controls::slider::{SliderConfig, ValueFormatter, snap};
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
@@ -82,8 +82,7 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
         let end = *range.end();
         assert!(start < end, "hydrolysis slider requires range start < end");
         let normalized = Computed::new(
-            value
-                .map(move |value: f64| (value.clamp(start, end) - start) / (end - start)),
+            value.map(move |value: f64| (value.clamp(start, end) - start) / (end - start)),
         );
         Self {
             label_view: RetainedSubview::new(AnyView::new(label.clone())),
@@ -495,18 +494,6 @@ pub fn render_slider_node<E: crate::text::TextEngine>(
     render_slider_parts(ctx, state, env);
 }
 
-/// `value` rounded to the nearest multiple of `step` from `start`, held in
-/// the range.
-fn snap(value: f64, start: f64, end: f64, step: Option<f64>) -> f64 {
-    let value = value.clamp(start, end);
-    step.map_or(value, |step| {
-        ((value - start) / step)
-            .round()
-            .mul_add(step, start)
-            .clamp(start, end)
-    })
-}
-
 /// The knob's centre for the normalized `value` on `track`.
 fn knob_center(track: Rect, value: f64, direction: LayoutDirection) -> Point {
     let along = value * track.width();
@@ -906,6 +893,8 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
                 .contains(local)
         }) as PressFilter
     });
+    let drag_range = state.range.clone();
+    let keyboard_range = state.range.clone();
     let keyboard_value = value_binding;
     let keyboard_step = step.unwrap_or(span / 100.0);
     ctx.renderer_mut().register_interactive_pointer_drag_target(
@@ -920,12 +909,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
             let Some(along) = dragged_value(mapping, track, direction, local, press) else {
                 return false;
             };
-            let next = snap(
-                span.mul_add(along, range_start),
-                range_start,
-                range_end,
-                step,
-            );
+            let next = snap(span.mul_add(along, range_start), &drag_range, step);
             if let Some((press, _)) = press {
                 drag_chrome.set_drag(Some(local - press));
             }
@@ -946,7 +930,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
             } else {
                 -keyboard_step
             };
-            let next = snap(current + delta, range_start, range_end, step);
+            let next = snap(current + delta, &keyboard_range, step);
             if (current - next).abs() > f64::EPSILON {
                 keyboard_value.set(next);
             }
