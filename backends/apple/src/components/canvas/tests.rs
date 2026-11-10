@@ -56,10 +56,6 @@ fn record(body: impl FnOnce(&mut Recorder)) -> Content {
     Content::record(&LayoutSize::new(), body)
 }
 
-fn outline_of_list(list: &waterui_graphics::draw::DisplayList) -> Vec<Outline> {
-    plan::outline(list)
-}
-
 fn outline_of(body: impl FnOnce(&mut Recorder)) -> Vec<Outline> {
     let mut content = record(body);
     plan::outline(&first_list(&mut content))
@@ -1848,7 +1844,7 @@ mod render {
         });
         let _held = names.finish();
         assert_eq!(
-            outline_of_list(&first_list(&mut content)),
+            plan::outline(&first_list(&mut content)),
             vec![leaf(LayerKind::Shape), leaf(LayerKind::Picture)],
             "a text is a picture layer beside the fill"
         );

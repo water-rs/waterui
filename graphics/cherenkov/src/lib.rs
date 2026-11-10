@@ -121,7 +121,6 @@ pub use cherenkov_record::{
     LayerNode, LayerOwner, LevelRamp, LevelRampError, Projective, ProjectiveError,
     ProjectiveLayers, Prop, Queue, Realize, RecordingScale, RecordingScaleError, Refraction,
     RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, TextLayoutId,
-    Transaction,
-    snap_animating,
+    Transaction, snap_animating,
 };
 pub use kurbo::Stroke;

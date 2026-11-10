@@ -71,9 +71,8 @@ pub use scene::picture::{Picture, PictureRecording, PictureSource};
 #[cfg(feature = "cherenkov")]
 pub use scene::resources::SceneCaps;
 pub use scene::resources::{
-    Handle, HeldResources, PlainId, RecordingResources, Registered, RegisteredText,
-    ResourceHandle, SceneBackend, SceneResources, ShaderBackend, TextBackend, TextRegistration,
-    TextRequest,
+    Handle, HeldResources, PlainId, RecordingResources, Registered, RegisteredText, ResourceHandle,
+    SceneBackend, SceneResources, ShaderBackend, TextBackend, TextRegistration, TextRequest,
 };
 pub use scene::scene_view::{
     SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, SceneView, SceneViewMergeToParent,

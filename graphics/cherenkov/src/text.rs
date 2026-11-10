@@ -184,7 +184,7 @@ impl TextLayout {
 
     /// A layout of `commands` drawing with `fonts`, for engine tests that
     /// have no shaped paragraph.
-    #[cfg(test)]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) const fn from_commands(commands: Vec<TextCommand>, fonts: Vec<Font>) -> Self {
         Self {
             commands,

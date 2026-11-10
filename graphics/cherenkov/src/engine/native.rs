@@ -29,10 +29,10 @@ use crate::resource::{
     Filter, Font, FontSource, FrameSink, GpuProducer, Image, ImageBudget, ReplaceImage, Shader,
     TextLayoutHandle,
 };
-use crate::text::{TextLayout, TextLayoutData};
-use cherenkov_record::TextLayoutId;
 use crate::style::FilterId;
 use crate::surface::Surface;
+use crate::text::{TextLayout, TextLayoutData};
+use cherenkov_record::TextLayoutId;
 
 /// The engine: owns the device and the render thread. `!Send`, lives on
 /// the UI thread.
