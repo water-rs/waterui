@@ -100,7 +100,7 @@ pub use crate::record::{
 };
 pub use crate::resource::{
     BackdropGroup, BackdropShader, Filter, Font, FontSource, FrameSink, GpuProducer, Hosted, Image,
-    Shader,
+    Shader, TextLayoutHandle,
 };
 pub use crate::shape::{
     ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,
@@ -108,7 +108,7 @@ pub use crate::shape::{
 pub use crate::size::LayoutSize;
 pub use crate::style::{BlendMode, BlendSpace, FilterId, Group, Shadow};
 pub use crate::surface::{EngineQueue, Surface};
-pub use crate::text::{TextLayout, draw_text};
+pub use crate::text::{TextLayout, TextLayoutData, TextLayouts, draw_text};
 pub use cherenkov_record::Region;
 // The moved layer-tree types: re-exported at the root exactly like the
 // rest of `cherenkov-record`.
@@ -120,7 +120,8 @@ pub use cherenkov_record::{
     KeyframeProp, Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerKeyframes,
     LayerNode, LayerOwner, LevelRamp, LevelRampError, Projective, ProjectiveError,
     ProjectiveLayers, Prop, Queue, Realize, RecordingScale, RecordingScaleError, Refraction,
-    RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction,
+    RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, TextLayoutId,
+    Transaction,
     snap_animating,
 };
 pub use kurbo::Stroke;

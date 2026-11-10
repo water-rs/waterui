@@ -1396,6 +1396,8 @@ pub struct GpuRenderer {
     /// add to this thread. The add skips a `ProducerId` found here.
     pending_retire: FxHashSet<ProducerId>,
     fonts: FxHashMap<u64, FontData>,
+    /// Registered text layouts, expanded to glyph runs in lowering.
+    text_layouts: cherenkov::TextLayouts,
     /// Registered images.
     images: FxHashMap<u64, GpuImage>,
     bitmaps: FxHashMap<BitmapKey, GpuBitmap>,
@@ -1483,6 +1485,8 @@ impl std::fmt::Debug for GpuRenderer {
 struct GlyphResources<'a> {
     atlas: &'a Atlas,
     fonts: &'a FxHashMap<u64, FontData>,
+    /// The registered text layouts a `Command::Text` expands to.
+    text: &'a cherenkov::TextLayouts,
     images: &'a FxHashMap<u64, GpuImage>,
     bitmaps: &'a FxHashMap<BitmapKey, GpuBitmap>,
     /// The producers' current frames by id — every binding samples the
@@ -3119,6 +3123,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             producers: FxHashMap::default(),
             pending_retire: FxHashSet::default(),
             fonts: FxHashMap::default(),
+            text_layouts: cherenkov::TextLayouts::default(),
             images: FxHashMap::default(),
             bitmaps: FxHashMap::default(),
             images_gen: 0,
@@ -3471,6 +3476,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         producers: FxHashMap::default(),
         pending_retire: FxHashSet::default(),
         fonts: FxHashMap::default(),
+        text_layouts: cherenkov::TextLayouts::default(),
         images: FxHashMap::default(),
         bitmaps: FxHashMap::default(),
         images_gen: 0,
@@ -4090,6 +4096,14 @@ impl Renderer for GpuRenderer {
         self.fonts.insert(id.raw(), font.into());
     }
 
+    fn add_text_layout(&mut self, id: cherenkov::TextLayoutId, layout: cherenkov::TextLayoutData) {
+        self.text_layouts.add(id, layout);
+    }
+
+    fn remove_text_layout(&mut self, id: cherenkov::TextLayoutId) {
+        self.text_layouts.remove(id);
+    }
+
     fn remove_font(&mut self, id: FontId) {
         self.fonts.remove(&id.raw());
         self.bitmaps.retain(|key, _| key.font != id.raw());
@@ -4218,7 +4232,7 @@ impl Renderer for GpuRenderer {
             state
                 .layers
                 .values()
-                .any(|content| content.references(resource))
+                .any(|content| content.references(resource, &self.text_layouts))
         })
     }
 
@@ -6809,6 +6823,10 @@ impl GpuRenderer {
         clippy::cast_possible_truncation,
         reason = "validated display scale fits f32"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the threaded and single-surface branches build the same resource view side by side"
+    )]
     fn lower_all(
         &mut self,
         pending: &mut [SurfaceState],
@@ -6837,6 +6855,7 @@ impl GpuRenderer {
         let producers = &currents;
         let mut results: Vec<Result<Lowered, RenderError>> = if pending.len() > 1 {
             let (atlas, images, bitmaps) = (&self.atlas, &self.images, &self.bitmaps);
+            let text = &self.text_layouts;
             // `FontData`'s COLR cache is a `RefCell` — !Sync — so
             // each worker moves in its own snapshot built here.
             let snapshots: Vec<FxHashMap<u64, FontData>> = pending
@@ -6865,6 +6884,7 @@ impl GpuRenderer {
                                 GlyphResources {
                                     atlas,
                                     fonts: &fonts,
+                                    text,
                                     images,
                                     bitmaps,
                                     producers,
@@ -6906,6 +6926,7 @@ impl GpuRenderer {
                         GlyphResources {
                             atlas: &self.atlas,
                             fonts: &self.fonts,
+                            text: &self.text_layouts,
                             images: &self.images,
                             bitmaps: &self.bitmaps,
                             producers,
@@ -6963,6 +6984,7 @@ impl GpuRenderer {
                     GlyphResources {
                         atlas: &self.atlas,
                         fonts: &self.fonts,
+                        text: &self.text_layouts,
                         images: &self.images,
                         bitmaps: &self.bitmaps,
                         producers,
@@ -7020,11 +7042,14 @@ impl GpuRenderer {
             }
             let mut lowered = Lowered::default();
             for content in surf.layers.values_mut() {
-                lowered.commands += content.retained.prepare(&mut prepared::Lowerer {
-                    fonts: &self.fonts,
-                    images: &self.images,
-                    pending: &mut lowered.pending,
-                })?;
+                lowered.commands += content.retained.prepare(
+                    &mut prepared::Lowerer {
+                        fonts: &self.fonts,
+                        images: &self.images,
+                        pending: &mut lowered.pending,
+                    },
+                    &self.text_layouts,
+                )?;
             }
             if lowered.commands != 0 {
                 prepared.insert(sf.id, lowered);
@@ -7312,6 +7337,10 @@ impl GpuRenderer {
         clippy::too_many_arguments,
         reason = "one surface's prepared inputs and lowering resources"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one surface's lowering, from preparation through the per-layer commands"
+    )]
     fn lower_content(
         #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
         preparation: &rayon::ThreadPool,
@@ -7377,39 +7406,41 @@ impl GpuRenderer {
             let _ = lowering.preparation.insert(preparation);
             lowering.coverage_route = coverage_options.1;
             lowering.pending = std::mem::take(&mut lowered.pending);
-            let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
-                for placement in &surf.plan.planes {
-                    if let Some(entry) = surf.static_layers.get(&placement.layer)
-                        && entry.capture.as_ref().is_none_or(|capture| capture.dirty)
-                    {
-                        lowering.run_plane(
-                            frame.tree,
-                            &mut layers,
-                            &glyphs,
-                            groups,
-                            placement.layer,
-                            entry.domain.expect("a static candidate has a domain"),
-                        )?;
+            let result = lowering
+                .prepare(&mut layers, &glyphs, resources.text)
+                .and_then(|()| {
+                    for placement in &surf.plan.planes {
+                        if let Some(entry) = surf.static_layers.get(&placement.layer)
+                            && entry.capture.as_ref().is_none_or(|capture| capture.dirty)
+                        {
+                            lowering.run_plane(
+                                frame.tree,
+                                &mut layers,
+                                &glyphs,
+                                groups,
+                                placement.layer,
+                                entry.domain.expect("a static candidate has a domain"),
+                            )?;
+                        }
                     }
-                }
-                let placed = Self::lower_projective(
-                    &mut lowering,
-                    frame,
-                    &mut layers,
-                    (&glyphs, groups),
-                    (&surf.projective, inputs, surf.size),
-                    &mut lowered,
-                )?;
-                lowering.run(
-                    frame.tree,
-                    &mut layers,
-                    frame.clear,
-                    &glyphs,
-                    groups,
-                    placed,
-                    &surf.plan,
-                )
-            });
+                    let placed = Self::lower_projective(
+                        &mut lowering,
+                        frame,
+                        &mut layers,
+                        (&glyphs, groups),
+                        (&surf.projective, inputs, surf.size),
+                        &mut lowered,
+                    )?;
+                    lowering.run(
+                        frame.tree,
+                        &mut layers,
+                        frame.clear,
+                        &glyphs,
+                        groups,
+                        placed,
+                        &surf.plan,
+                    )
+                });
             lowered.commands += lowering.commands_lowered;
             lowered.layers = lowering.layers_composed;
             lowered.glyphs = lowering.glyphs_rasterized();

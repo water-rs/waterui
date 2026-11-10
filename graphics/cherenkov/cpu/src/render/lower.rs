@@ -1394,6 +1394,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         tree: &SurfaceTree,
         caches: &mut FxHashMap<LayerId, ContentData>,
         images: &FxHashMap<u64, Arc<super::image::CpuImage>>,
+        text: &cherenkov::TextLayouts,
     ) -> Result<(), RenderError> {
         let mut lowerer = super::prepared::Lowerer {
             images,
@@ -1401,7 +1402,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             bitmap_fonts: self.bitmap_fonts,
         };
         for content in caches.values_mut() {
-            self.commands_lowered += content.prepare(&mut lowerer)?;
+            self.commands_lowered += content.prepare(&mut lowerer, text)?;
         }
         // The registry borrow must leave `self` for the planning walk.
         let mut filters = self.filters.take();

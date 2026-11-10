@@ -769,8 +769,12 @@ impl ContentData {
     }
 
     /// Whether the content samples `resource`.
-    pub fn references(&self, resource: cherenkov::ResourceId) -> bool {
-        self.retained.references(resource)
+    pub fn references(
+        &self,
+        resource: cherenkov::ResourceId,
+        text: &cherenkov::TextLayouts,
+    ) -> bool {
+        self.retained.references(resource, text)
     }
 
     /// Discards the lowering of content that samples image `id`, whose
@@ -2315,13 +2319,17 @@ impl<'a> Lowering<'a> {
         &mut self,
         caches: &mut FxHashMap<LayerId, ContentData>,
         glyphs: &GlyphContext<'_>,
+        text: &cherenkov::TextLayouts,
     ) -> Result<(), RenderError> {
         for content in caches.values_mut() {
-            let changed = content.retained.prepare(&mut super::prepared::Lowerer {
-                fonts: glyphs.fonts,
-                images: glyphs.images,
-                pending: &mut self.pending,
-            })?;
+            let changed = content.retained.prepare(
+                &mut super::prepared::Lowerer {
+                    fonts: glyphs.fonts,
+                    images: glyphs.images,
+                    pending: &mut self.pending,
+                },
+                text,
+            )?;
             self.commands_lowered += changed;
         }
         Ok(())
@@ -7049,7 +7057,9 @@ mod tests {
                 &mut rasters,
                 Some(test_limit()),
             );
-            lowering.prepare(caches, &glyphs).expect("prepare content");
+            lowering
+                .prepare(caches, &glyphs, &cherenkov::TextLayouts::default())
+                .expect("prepare content");
             lowering
                 .run(
                     &tree,
@@ -8217,7 +8227,9 @@ mod tests {
                 &mut raster_scratch,
                 Some(test_limit()),
             );
-            lowering.prepare(&mut caches, &glyphs).expect("prepared");
+            lowering
+                .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+                .expect("prepared");
             lowering
                 .run(
                     &tree,
@@ -8352,7 +8364,9 @@ mod tests {
                 &mut raster_scratch,
                 Some(test_limit()),
             );
-            lowering.prepare(&mut caches, &glyphs).expect("prepared");
+            lowering
+                .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+                .expect("prepared");
             lowering
                 .run(
                     &tree,
@@ -8412,7 +8426,9 @@ mod tests {
             &mut raster_scratch,
             Some(test_limit()),
         );
-        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+            .expect("prepared");
         lowering
             .run(
                 tree,
@@ -8673,7 +8689,9 @@ mod tests {
             &mut raster_scratch,
             Some(test_limit()),
         );
-        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+            .expect("prepared");
         lowering
             .run(
                 &tree,

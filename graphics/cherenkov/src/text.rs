@@ -17,7 +17,8 @@ use crate::error::ResourceError;
 use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 use crate::paint::Paint;
 use crate::resource::{Font, FontSource};
-use crate::{Draw, Fixed, Group};
+use crate::{DisplayList, Draw, Fixed, Group, Picture, ResourceId, TextLayoutId};
+use rustc_hash::FxHashMap;
 
 /// A shaped parley layout, ready to record with [`draw_text`].
 ///
@@ -43,10 +44,11 @@ use crate::{Draw, Fixed, Group};
 /// the host.
 #[derive(Debug)]
 pub struct TextLayout {
-    layout: Layout<Paint>,
     commands: Vec<TextCommand>,
+    /// The colour of the paragraph's unstyled runs: what a
+    /// [`Command::Text`](crate::Command::Text) paint replaces.
+    default: Option<Paint>,
     /// Keeps every font the commands name registered.
-    #[expect(dead_code, reason = "the handles exist to keep the fonts registered")]
     fonts: Vec<Font>,
 }
 
@@ -88,7 +90,8 @@ impl Stripe {
 }
 
 impl TextLayout {
-    /// Lowers `layout`, resolving each font it shaped with through `font`.
+    /// Lowers `layout`, whose styles' brushes `brush` turns into engine
+    /// paints, resolving each font it shaped with through `font`.
     ///
     /// `font` is called once per distinct font data (blob and collection
     /// index) in the layout. It should hand out the same engine [`Font`]
@@ -98,8 +101,9 @@ impl TextLayout {
     ///
     /// # Errors
     /// Any error `font` returns.
-    pub fn new(
-        layout: Layout<Paint>,
+    pub fn new<B: parley::Brush>(
+        layout: &Layout<B>,
+        brush: impl Fn(&B) -> Paint,
         mut font: impl FnMut(&parley::FontData) -> Result<Font, ResourceError>,
     ) -> Result<Self, ResourceError> {
         let mut fonts: Vec<(u64, u32, Font)> = Vec::new();
@@ -124,12 +128,13 @@ impl TextLayout {
                     fonts.push((key.0, key.1, registered));
                     id
                 };
-                glyphs.push(lower_run(&run, id));
+                glyphs.push(lower_run(&run, id, brush(&run.style().brush)));
                 let metrics = run.run().font_metrics();
                 if let Some(underline) = &run.style().underline {
                     stripe(
                         &mut underlines,
                         &run,
+                        brush(&underline.brush),
                         underline,
                         metrics.underline_offset,
                         metrics.underline_size,
@@ -139,6 +144,7 @@ impl TextLayout {
                     stripe(
                         &mut strikethroughs,
                         &run,
+                        brush(&strikethrough.brush),
                         strikethrough,
                         metrics.strikethrough_offset,
                         metrics.strikethrough_size,
@@ -150,16 +156,36 @@ impl TextLayout {
             commands.extend(strikethroughs.into_iter().map(Stripe::into_command));
         }
         Ok(Self {
-            layout,
             commands,
+            default: None,
             fonts: fonts.into_iter().map(|(_, _, font)| font).collect(),
         })
     }
 
-    /// The parley layout, for metrics and hit testing.
+    /// Names the colour of the paragraph's unstyled runs: the colour a
+    /// [`Command::Text`](crate::Command::Text) paint replaces. Runs the
+    /// text styled with another colour keep theirs.
     #[must_use]
-    pub const fn layout(&self) -> &Layout<Paint> {
-        &self.layout
+    pub fn with_default_paint(mut self, paint: Paint) -> Self {
+        self.default = Some(paint);
+        self
+    }
+
+    /// A layout of `commands` drawing with `fonts`, for engine tests that
+    /// have no shaped paragraph.
+    #[cfg(test)]
+    pub(crate) const fn from_commands(commands: Vec<TextCommand>, fonts: Vec<Font>) -> Self {
+        Self {
+            commands,
+            default: None,
+            fonts,
+        }
+    }
+
+    /// The registered fonts the commands draw with, held for as long as
+    /// the layout lives.
+    pub(crate) fn into_parts(self) -> (Vec<TextCommand>, Option<Paint>, Vec<Font>) {
+        (self.commands, self.default, self.fonts)
     }
 
     /// The lowered primitives in layout coordinates, in draw order.
@@ -179,7 +205,7 @@ fn embolden_width(size: f32) -> f64 {
 
 /// `run`'s glyphs in layout coordinates, drawn with font `font` and the
 /// run's brush.
-fn lower_run(run: &ParleyRun<'_, Paint>, font: FontId) -> TextCommand {
+fn lower_run<B: parley::Brush>(run: &ParleyRun<'_, B>, font: FontId, paint: Paint) -> TextCommand {
     let shaped = run.run();
     let synthesis = shaped.synthesis();
     // A synthetic oblique leans the glyph's top forward: `x' = x − y·tan θ`
@@ -206,7 +232,6 @@ fn lower_run(run: &ParleyRun<'_, Paint>, font: FontId) -> TextCommand {
             .collect(),
         style: GlyphStyle::Fill,
     };
-    let paint = run.style().brush.clone();
     if synthesis.embolden() {
         let stroke = Stroke::new(embolden_width(shaped.font_size()))
             .with_join(Join::Miter)
@@ -222,10 +247,11 @@ fn lower_run(run: &ParleyRun<'_, Paint>, font: FontId) -> TextCommand {
 /// geometry. `offset` and `size` are the run's metrics, used where the
 /// decoration leaves them unset; `offset` is the top edge's distance above
 /// the baseline.
-fn stripe(
+fn stripe<B: parley::Brush>(
     stripes: &mut Vec<Stripe>,
-    run: &ParleyRun<'_, Paint>,
-    decoration: &Decoration<Paint>,
+    run: &ParleyRun<'_, B>,
+    paint: Paint,
+    decoration: &Decoration<B>,
     offset: f32,
     size: f32,
 ) {
@@ -235,7 +261,7 @@ fn stripe(
     let end = start + run.advance();
     if let Some(last) = stripes.last_mut()
         && contiguous(last, start, top, size)
-        && last.paint == decoration.brush
+        && last.paint == paint
     {
         last.end = end;
         return;
@@ -245,7 +271,7 @@ fn stripe(
         end,
         top,
         size,
-        paint: decoration.brush.clone(),
+        paint,
     });
 }
 
@@ -270,6 +296,23 @@ fn contiguous(last: &Stripe, start: f32, top: f32, size: f32) -> bool {
 pub fn draw_text<D>(draw: &mut D, layout: &TextLayout, origin: Point)
 where
     D: Draw,
+    D::Value<GlyphRun>: From<Fixed<GlyphRun>>,
+    D::Value<Paint>: From<Fixed<Paint>>,
+    D::Value<Rect>: From<Fixed<Rect>>,
+    D::Value<Group>: From<Fixed<Group>>,
+{
+    draw_commands(draw, layout.commands(), origin, None);
+}
+
+/// Records lowered text `commands` at `origin`. With `replace`, a command
+/// painted with the first paint is painted with the second instead.
+fn draw_commands<D>(
+    draw: &mut D,
+    commands: &[TextCommand],
+    origin: Point,
+    replace: Option<(&Paint, &Paint)>,
+) where
+    D: Draw,
     // The lowered primitives are constants: `Fixed` moves them into the
     // commands without a signal snapshot.
     D::Value<GlyphRun>: From<Fixed<GlyphRun>>,
@@ -277,12 +320,18 @@ where
     D::Value<Rect>: From<Fixed<Rect>>,
     D::Value<Group>: From<Fixed<Group>>,
 {
-    for command in layout.commands() {
+    let painted = |paint: &Paint| match replace {
+        Some((default, with)) if paint == default => with.clone(),
+        _ => paint.clone(),
+    };
+    for command in commands {
         match command {
             TextCommand::Glyphs(run, paint) => {
+                let paint = &painted(paint);
                 draw.glyphs(Fixed(place_run(run, origin)), Fixed(paint.clone()));
             }
             TextCommand::Bold(run, stroke, paint) => {
+                let paint = &painted(paint);
                 let fill = place_run(run, origin);
                 let outline = GlyphRun {
                     style: GlyphStyle::Stroke(stroke.clone()),
@@ -302,7 +351,7 @@ where
                 }
             }
             TextCommand::Fill(rect, paint) => {
-                draw.fill(Fixed(*rect + origin.to_vec2()), Fixed(paint.clone()));
+                draw.fill(Fixed(*rect + origin.to_vec2()), Fixed(painted(paint)));
             }
         }
     }
@@ -333,6 +382,111 @@ pub fn place_run(run: &GlyphRun, origin: Point) -> GlyphRun {
     }
 }
 
+/// One registered text layout on the render side.
+#[derive(Debug)]
+struct TextEntry {
+    commands: Arc<[TextCommand]>,
+    default: Option<Paint>,
+    fonts: Box<[FontId]>,
+    /// The layout recorded as drawn, for a `Command::Text` that keeps its
+    /// colours.
+    plain: Picture,
+}
+
+/// The text layouts a renderer holds, by the id their registration was
+/// given. Lowering expands a [`Command::Text`](crate::Command::Text) into
+/// the layout's glyph-run commands the way it expands a
+/// [`Command::Picture`](crate::Command::Picture).
+#[derive(Debug, Default)]
+pub struct TextLayouts {
+    entries: FxHashMap<TextLayoutId, TextEntry>,
+}
+
+/// What registering a text layout sends the render thread.
+#[derive(Debug)]
+pub struct TextLayoutData {
+    commands: Arc<[TextCommand]>,
+    default: Option<Paint>,
+    fonts: Box<[FontId]>,
+}
+
+impl TextLayoutData {
+    pub(crate) fn new(commands: Vec<TextCommand>, default: Option<Paint>, fonts: &[Font]) -> Self {
+        Self {
+            commands: commands.into(),
+            default,
+            fonts: fonts.iter().map(Font::id).collect(),
+        }
+    }
+}
+
+impl TextLayouts {
+    /// Registers `data` as layout `id`.
+    pub fn add(&mut self, id: TextLayoutId, data: TextLayoutData) {
+        let TextLayoutData {
+            commands,
+            default,
+            fonts,
+        } = data;
+        let plain = Picture::record(|c| draw_commands(c, &commands, Point::ZERO, None));
+        self.entries.insert(
+            id,
+            TextEntry {
+                commands,
+                default,
+                fonts,
+                plain,
+            },
+        );
+    }
+
+    /// Unregisters layout `id`.
+    ///
+    /// # Panics
+    /// When `id` is not registered.
+    pub fn remove(&mut self, id: TextLayoutId) {
+        assert!(
+            self.entries.remove(&id).is_some(),
+            "removal of unregistered text layout {}",
+            id.raw()
+        );
+    }
+
+    /// The glyph-run expansion of layout `id`, in layout coordinates. With
+    /// `paint`, the runs drawn in the layout's default colour draw with it.
+    ///
+    /// # Panics
+    /// When `id` is not registered: content names only layouts it holds.
+    #[must_use]
+    pub fn expand(&self, id: TextLayoutId, paint: Option<&Paint>) -> Picture {
+        let entry = self.entries.get(&id).unwrap_or_else(|| {
+            panic!(
+                "text layout {} is drawn but not registered: a recording names only what it holds",
+                id.raw()
+            )
+        });
+        match (paint, &entry.default) {
+            (Some(with), Some(default)) => Picture::record(|c| {
+                draw_commands(c, &entry.commands, Point::ZERO, Some((default, with)));
+            }),
+            _ => entry.plain.clone(),
+        }
+    }
+
+    /// Whether `list` samples `resource`, looking through its text commands
+    /// to the fonts their layouts draw with.
+    #[must_use]
+    pub fn samples(&self, list: &DisplayList, resource: ResourceId) -> bool {
+        list.references(resource)
+            || match resource {
+                ResourceId::Font(font) => self.entries.iter().any(|(id, entry)| {
+                    entry.fonts.contains(&font) && list.references(ResourceId::TextLayout(*id))
+                }),
+                _ => false,
+            }
+    }
+}
+
 impl From<&parley::FontData> for FontSource {
     /// The font a parley run shaped with. The bytes are copied once into
     /// the source, as [`FontSource::mapped`] reads them.
@@ -355,13 +509,14 @@ mod tests {
         PositionedLayoutItem, StyleProperty,
     };
 
-    use super::{TextCommand, TextLayout, draw_text};
+    use super::{TextCommand, TextLayout, TextLayouts, draw_text};
     use crate::display_list::Command;
     use crate::error::ResourceError;
     use crate::glyph::{FontId, GlyphStyle};
     use crate::paint::Paint;
     use crate::resource::Font;
     use crate::shape::ShapeData;
+    use crate::{Draw, Fixed, ResourceId, TextLayoutId};
     use crate::{Group, Picture, WorkingColor};
 
     const INK: Paint = Paint::Solid(WorkingColor::new([0.1, 0.2, 0.3, 1.0]));
@@ -433,8 +588,8 @@ mod tests {
     }
 
     /// Lowers `layout`, counting font resolutions.
-    fn lower(layout: Layout<Paint>, calls: &Cell<usize>) -> Result<TextLayout, ResourceError> {
-        TextLayout::new(layout, |_| {
+    fn lower(layout: &Layout<Paint>, calls: &Cell<usize>) -> Result<TextLayout, ResourceError> {
+        TextLayout::new(layout, Paint::clone, |_| {
             calls.set(calls.get() + 1);
             Ok(Font::new(FontId::new(7), || {}))
         })
@@ -473,7 +628,7 @@ mod tests {
             expected.push((glyphs, run.style().brush.clone()));
         }
         let calls = Cell::new(0);
-        let lowered = lower(parley, &calls).expect("lowers");
+        let lowered = lower(&parley, &calls).expect("lowers");
         assert_eq!(calls.get(), 1, "one font, resolved once");
 
         let commands = lowered.commands();
@@ -529,7 +684,7 @@ mod tests {
     fn a_decoration_continuing_across_runs_is_one_rectangle() {
         let text = "abcdef";
         let merged = lower(
-            layout(
+            &layout(
                 "NotoSans.ttf",
                 text,
                 &[
@@ -550,7 +705,7 @@ mod tests {
         assert_eq!(fills(&merged).len(), 1, "the shared underline does not");
 
         let split = lower(
-            layout(
+            &layout(
                 "NotoSans.ttf",
                 text,
                 &[
@@ -576,7 +731,7 @@ mod tests {
     #[test]
     fn a_synthetic_oblique_leans_each_glyph_about_its_origin() {
         let lowered = lower(
-            layout("NotoSans.ttf", "lean", &[(0..4, Style::Italic)]),
+            &layout("NotoSans.ttf", "lean", &[(0..4, Style::Italic)]),
             &Cell::new(0),
         )
         .expect("lowers");
@@ -595,8 +750,11 @@ mod tests {
         let styles = [(0..10, Style::Bold), (5..10, Style::Brush(GLASS))];
 
         // A weight axis carries the bold itself.
-        let axis =
-            lower(layout("NotoSans.ttf", "bold glass", &styles), &Cell::new(0)).expect("lowers");
+        let axis = lower(
+            &layout("NotoSans.ttf", "bold glass", &styles),
+            &Cell::new(0),
+        )
+        .expect("lowers");
         assert!(
             axis.commands()
                 .iter()
@@ -606,7 +764,7 @@ mod tests {
 
         // A single regular face has nothing heavier, so fontique emboldens.
         let lowered = lower(
-            layout("CherenkovStaticSans.ttf", "bold glass", &styles),
+            &layout("CherenkovStaticSans.ttf", "bold glass", &styles),
             &Cell::new(0),
         )
         .expect("lowers");
@@ -653,7 +811,7 @@ mod tests {
     #[test]
     fn text_records_its_primitives_at_the_origin() {
         let lowered = lower(
-            layout(
+            &layout(
                 "NotoSans.ttf",
                 "Shift me",
                 &[(0..5, Style::Underline(None))],
@@ -692,5 +850,72 @@ mod tests {
                 other => panic!("mismatched command {other:?}"),
             }
         }
+    }
+
+    /// Registers a layout of `text` whose unstyled runs draw in `INK`,
+    /// returning its data.
+    fn registered(text: &str, styles: &[(Range<usize>, Style)]) -> super::TextLayoutData {
+        let (commands, default, fonts) =
+            lower(&layout("NotoSans.ttf", text, styles), &Cell::new(0))
+                .expect("lowers")
+                .with_default_paint(INK)
+                .into_parts();
+        super::TextLayoutData::new(commands, default, &fonts)
+    }
+
+    fn run_paints(picture: &Picture) -> Vec<Paint> {
+        picture
+            .display_list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                Command::Glyphs { paint, .. } => Some(paint.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_registered_layout_expands_to_its_runs_and_a_paint_replaces_the_default() {
+        let id = TextLayoutId::new(3);
+        let mut layouts = TextLayouts::default();
+        layouts.add(id, registered("Red Blue", &[(4..8, Style::Brush(BLUE))]));
+
+        let plain = layouts.expand(id, None);
+        assert_eq!(run_paints(&plain), [INK, BLUE]);
+
+        // The unstyled run takes the override; the run styled with its own
+        // colour keeps it.
+        let replaced = layouts.expand(id, Some(&RED));
+        assert_eq!(run_paints(&replaced), [RED, BLUE]);
+
+        layouts.remove(id);
+    }
+
+    #[test]
+    fn a_layout_keeps_its_fonts_sampled_while_content_names_it() {
+        let id = TextLayoutId::new(1);
+        let mut layouts = TextLayouts::default();
+        layouts.add(id, registered("Font", &[]));
+        let font = ResourceId::Font(FontId::new(7));
+
+        let naming = Picture::record(|c| c.text(id, Fixed(Affine::IDENTITY)));
+        let unrelated = Picture::record(|c| c.text(TextLayoutId::new(2), Fixed(Affine::IDENTITY)));
+        assert!(layouts.samples(naming.display_list(), font));
+        assert!(layouts.samples(naming.display_list(), ResourceId::TextLayout(id)));
+        assert!(!layouts.samples(unrelated.display_list(), font));
+        assert!(!layouts.samples(Picture::record(|_| {}).display_list(), font));
+    }
+
+    #[test]
+    #[should_panic(expected = "not registered")]
+    fn expanding_an_unregistered_layout_panics() {
+        let _ = TextLayouts::default().expand(TextLayoutId::new(9), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "unregistered text layout")]
+    fn removing_an_unregistered_layout_panics() {
+        TextLayouts::default().remove(TextLayoutId::new(9));
     }
 }

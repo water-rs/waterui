@@ -1535,7 +1535,7 @@ mod front {
                     ))
                 })
         };
-        let layout = cherenkov::TextLayout::new(layout, fonts_of)
+        let layout = cherenkov::TextLayout::new(&layout, cherenkov::Paint::clone, fonts_of)
             .map_err(|e| BenchError::Engine(format!("{}: text layout: {e}", front.engine)))?;
         Ok(Op::Text {
             layout,

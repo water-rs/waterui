@@ -27,7 +27,10 @@ use cherenkov_record::ResourceId;
 
 use crate::resource::{
     Filter, Font, FontSource, FrameSink, GpuProducer, Image, ImageBudget, ReplaceImage, Shader,
+    TextLayoutHandle,
 };
+use crate::text::{TextLayout, TextLayoutData};
+use cherenkov_record::TextLayoutId;
 use crate::style::FilterId;
 use crate::surface::Surface;
 
@@ -69,6 +72,7 @@ pub struct Engine<B: Backend> {
     surfaces: RefCell<super::Surfaces<B>>,
     next_surface: Cell<u64>,
     next_font: Cell<u64>,
+    next_text: Cell<u64>,
     next_image: Cell<u64>,
     next_shader: Cell<u64>,
     next_filter: Cell<u64>,
@@ -134,6 +138,7 @@ impl<B: Backend> Engine<B> {
             surfaces: RefCell::new(Vec::new()),
             next_surface: Cell::new(0),
             next_font: Cell::new(1),
+            next_text: Cell::new(1),
             next_image: Cell::new(1),
             next_shader: Cell::new(1),
             next_filter: Cell::new(1),
@@ -257,6 +262,29 @@ impl<B: Backend> Engine<B> {
         Ok(Font::new(
             id,
             self.on_release(ResourceId::Font(id), move |r| r.remove_font(id)),
+        ))
+    }
+
+    /// Registers a laid-out text. The layout's fonts, registered when it
+    /// was lowered, stay registered as long as the handle lives.
+    ///
+    /// # Errors
+    /// [`ResourceError::Lost`] when the render thread is gone.
+    pub fn text_layout(&self, layout: TextLayout) -> Result<TextLayoutHandle, ResourceError> {
+        let (commands, default, fonts) = layout.into_parts();
+        let data = TextLayoutData::new(commands, default, &fonts);
+        let id = TextLayoutId::new(Self::alloc(&self.next_text));
+        self.tx
+            .send(Message::Resource(Box::new(move |r: &mut B::Renderer| {
+                r.add_text_layout(id, data);
+            })))
+            .map_err(|_| ResourceError::Lost)?;
+        Ok(TextLayoutHandle::new(
+            id,
+            fonts,
+            self.on_release(ResourceId::TextLayout(id), move |r| {
+                r.remove_text_layout(id);
+            }),
         ))
     }
 

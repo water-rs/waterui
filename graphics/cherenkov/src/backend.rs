@@ -30,7 +30,8 @@ use crate::glyph::FontId;
 use crate::image::ImageUpload;
 use crate::message::FontData;
 use crate::paint::ImageId;
-use cherenkov_record::{ContentOp, LayerId, SurfaceId};
+use crate::text::TextLayoutData;
+use cherenkov_record::{ContentOp, LayerId, SurfaceId, TextLayoutId};
 use cherenkov_record::{ResourceId, SurfaceTree};
 
 /// The render-thread contract, a zero-sized marker type (`Gpu`, `Raster`).
@@ -165,6 +166,15 @@ pub trait Renderer: 'static {
 
     /// Unregisters a font no installed content draws any more.
     fn remove_font(&mut self, id: FontId);
+
+    /// Registers a laid-out text. Content that draws it as a
+    /// `Command::Text` is expanded through the renderer's
+    /// [`TextLayouts`](crate::TextLayouts), and the fonts its runs name are
+    /// registered before this runs.
+    fn add_text_layout(&mut self, id: TextLayoutId, layout: TextLayoutData);
+
+    /// Unregisters a text layout no installed content draws any more.
+    fn remove_text_layout(&mut self, id: TextLayoutId);
 
     /// The images this renderer admits: the largest image in each
     /// dimension (the device's texture limit), and the image budget, the
