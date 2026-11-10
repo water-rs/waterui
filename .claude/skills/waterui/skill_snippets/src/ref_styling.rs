@@ -19,6 +19,7 @@ pub fn styling_block_01() {
     let _ = { text("Caption").caption().muted() };
     let card = Divider;
     let _ = { card.background(Surface) };
+    let _ = { button("Delete").action(|| {}).tint(Color::red()) };
 }
 
 // ---------------------------------------------------------------------------

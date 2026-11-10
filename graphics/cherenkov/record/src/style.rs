@@ -243,7 +243,9 @@ impl crate::animation::AnimLanes for Shadow {
     )]
     fn with_lanes(&self, lanes: &[f64]) -> Self {
         Self {
-            sigma: lanes[0],
+            // A spring that overshoots its target passes below a zero blur,
+            // which the engine rejects: a blur has no negative extent.
+            sigma: lanes[0].max(0.0),
             offset: Vec2::new(lanes[1], lanes[2]),
             spread: lanes[3],
             color: WorkingColor::new([
@@ -277,3 +279,21 @@ impl crate::animation::AnimLanes for Group {
 }
 
 nami_core::impl_constant!(Shadow, Group);
+
+#[cfg(test)]
+mod tests {
+    use super::Shadow;
+    use crate::animation::AnimLanes as _;
+    use crate::color::WorkingColor;
+
+    /// A spring overshooting a shadow's blur past zero leaves it at zero.
+    #[test]
+    fn an_overshooting_blur_stops_at_zero() {
+        let shadow = Shadow::new(2.0, WorkingColor::new([0.0, 0.0, 0.0, 0.3]));
+        let mut lanes = shadow
+            .anim_lanes(&shadow)
+            .expect("a shadow animates by lanes");
+        lanes[0] = -0.4;
+        assert!(shadow.with_lanes(&lanes).sigma.abs() < f64::EPSILON);
+    }
+}

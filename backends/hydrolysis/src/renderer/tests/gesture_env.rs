@@ -30,7 +30,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::theme::{ButtonMetrics, InteractionStyle};
 use accesskit::{Action, ActionRequest, NodeId, Role, TreeId, TreeUpdate};
 use waterui::accessibility::AccessibilityRole;
 use waterui::gesture::{DragEvent, DragGesture, GesturePoint, TapEvent, TapGesture};
@@ -285,17 +284,13 @@ fn on_tap_extracts_state_installed_between_view_and_handler() {
     assert_all_extracted(&fired, "on_tap, state-then-handler order");
 }
 
-/// Press/keyboard: with an `InteractionStyle` installed, a tap activates
+/// Press/keyboard: with a `Chrome` installed, a tap activates
 /// through `register_interactive_pointer_target_with_keyboard` rather than the
 /// recognizer — still `captured_env.layered_on(runtime_env)` (metadata.rs).
 #[test]
 fn press_activation_extracts_state_installed_on_an_ancestor() {
     let mut env = test_environment();
-    env.install(InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        0.0_f64,
-    ));
+    env.install(super::invisible_chrome());
     let fired = fired_sink();
     let (sizes, grab) = state_bindings();
     let view = handle()
@@ -314,11 +309,7 @@ fn press_activation_extracts_state_installed_on_an_ancestor() {
 #[test]
 fn press_activation_extracts_state_installed_between_view_and_gesture() {
     let mut env = test_environment();
-    env.install(InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        0.0_f64,
-    ));
+    env.install(super::invisible_chrome());
     let fired = fired_sink();
     let (sizes, grab) = state_bindings();
     let view = handle()
@@ -337,11 +328,7 @@ fn press_activation_extracts_state_installed_between_view_and_gesture() {
 #[test]
 fn keyboard_activation_extracts_state_installed_on_an_ancestor() {
     let mut env = test_environment();
-    env.install(InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        0.0_f64,
-    ));
+    env.install(super::invisible_chrome());
     let fired = fired_sink();
     let (sizes, grab) = state_bindings();
     let view = handle()

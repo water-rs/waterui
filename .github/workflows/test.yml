@@ -68,6 +68,12 @@ env:
   # rust-cache and the install-tool binary caches are the only cache
   # layers (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
+  # Same policy as apple.yml (#328): the test runs pay for no debug info
+  # they never read. The dev profile's line tables, linked into every test
+  # binary, filled the Linux runner's disk (#4109); panic locations come
+  # from `Location`, not from debug info.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
   # The nextest `test-fonts` setup script fetches its pinned GitHub-hosted
   # sources as authenticated traffic with the job token (#3942).

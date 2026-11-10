@@ -13,7 +13,7 @@ use std::fmt;
 use objc2::rc::{Retained, Weak};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAnimatablePropertyContainer, NSControl, NSControlSize, NSSlider,
+    NSAccessibility, NSAnimatablePropertyContainer, NSColor, NSControl, NSControlSize, NSSlider,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSObjectProtocol, NSString};
@@ -95,6 +95,11 @@ impl Slider {
     /// Whether the slider responds to input.
     pub fn set_enabled(&self, enabled: bool) {
         self.setEnabled(enabled);
+    }
+
+    /// The colour the filled part of the track draws with.
+    pub fn set_track_tint(&self, color: &NSColor) {
+        self.setTrackFillColor(Some(color));
     }
 
     /// How large the control is drawn.

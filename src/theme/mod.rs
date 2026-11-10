@@ -104,13 +104,14 @@
 //! 2. Create `Computed<WorkingColor>` signals that react to color scheme changes
 //! 3. Install via `Theme::new().color_scheme(binding).colors(ColorSettings::new()...)`
 
+use alloc::rc::Rc;
 use core::{any::TypeId, marker::PhantomData};
 
 use nami::{Computed, SignalExt, signal::IntoSignal};
 use waterui_core::{Environment, env::Store, plugin::Plugin};
 
 use crate::{
-    color::WorkingColor,
+    color::{Color, WorkingColor},
     text::font::{Body, Caption, FontSlot, Footnote, Headline, ResolvedFont, Subheadline, Title},
 };
 
@@ -852,8 +853,6 @@ pub fn install_color_scheme(env: &mut Environment, signal: Computed<ColorScheme>
 // ForegroundOverride - Plugin for .foreground() view modifier
 // ============================================================================
 
-use waterui_graphics::color::Color;
-
 /// A plugin that overrides the foreground color for a view subtree.
 ///
 /// This is used by the `.foreground()` view modifier to inject a custom
@@ -879,15 +878,102 @@ impl Plugin for ForegroundOverride {
     }
 }
 
+/// The tint the controls of a subtree draw with, set by
+/// [`ViewExt::tint`](crate::ViewExt::tint).
+///
+/// A control's tint is the nearest enclosing `Tint`, and the
+/// [`Accent`](color::Accent) token when none is set; [`resolve_tint`]
+/// resolves it. The colour may be a signal: a change of the signal updates
+/// the controls in place, without rebuilding them.
+///
+/// Two tints are equal when they are the same installed tint, so a backend
+/// asks "did the subtree's tint change" without comparing colours.
+#[derive(Debug, Clone)]
+pub struct Tint(Rc<Color>);
+
+impl Tint {
+    /// A tint of `color`.
+    pub fn new(color: impl Into<Color>) -> Self {
+        Self(Rc::new(color.into()))
+    }
+
+    /// The tint colour.
+    #[must_use]
+    pub fn color(&self) -> &Color {
+        &self.0
+    }
+
+    /// The tint installed for the subtree `env` belongs to, if any.
+    #[must_use]
+    pub fn inherited(env: &Environment) -> Option<&Self> {
+        env.get::<Self>()
+    }
+
+    /// The colour of `tint`, or the [`Accent`](color::Accent) token when
+    /// there is none.
+    #[must_use]
+    pub fn color_or_accent(tint: Option<&Self>) -> Color {
+        tint.map_or_else(|| Color::new(color::Accent), |tint| tint.color().clone())
+    }
+}
+
+impl PartialEq for Tint {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Tint {}
+
+/// The tint of the controls in `env`: the nearest [`Tint`], else the
+/// [`Accent`](color::Accent) token.
+#[must_use]
+pub fn resolve_tint(env: &Environment) -> Color {
+    Tint::color_or_accent(Tint::inherited(env))
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::rc::Rc;
     use core::cell::Cell;
     use nami::{Binding, Signal, SignalExt};
     use waterui_core::resolve::Resolvable;
-    use waterui_graphics::color::{AccentColor, Color};
+    use waterui_graphics::color::{AccentColor, Color, Working};
 
     use super::*;
+
+    #[test]
+    fn tint_resolves_to_the_nearest_tint_else_the_accent() {
+        let accent = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+        let outer = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+        let inner = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
+        let mut env = Environment::new();
+        install_color_signal::<color::Accent>(&mut env, nami::constant(accent).computed());
+        let channels = |env: &Environment| resolve_tint(env).resolve(env).snapshot().components;
+
+        assert_eq!(channels(&env), accent.components);
+        let outer_env = env.extending(Tint::new(Color::new(Working(outer))));
+        assert_eq!(channels(&outer_env), outer.components);
+        let inner_env = outer_env.extending(Tint::new(Color::new(Working(inner))));
+        assert_eq!(channels(&inner_env), inner.components);
+        assert_eq!(channels(&outer_env), outer.components);
+    }
+
+    #[test]
+    fn tint_signal_updates_in_place() {
+        let source = Binding::container(WorkingColor::BLACK);
+        let tint = Tint::new(crate::color::signal_color(
+            source.map(|color| Color::new(Working(color))),
+        ));
+        let env = Environment::new().extending(tint.clone());
+        let resolved = resolve_tint(&env).resolve(&env);
+        assert!(resolved.snapshot().components[0].abs() < f32::EPSILON);
+
+        source.set(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
+
+        assert!((resolved.snapshot().components[0] - 1.0).abs() < f32::EPSILON);
+        assert_eq!(Tint::inherited(&env), Some(&tint), "the tint is unchanged");
+    }
 
     #[test]
     fn tier_tokens_install_and_mirror_into_graphics_keys() {

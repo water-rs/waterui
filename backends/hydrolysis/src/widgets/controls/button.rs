@@ -1,18 +1,21 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
-use crate::renderer::chrome::LiveChromeParts;
+use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, interaction_focus_ring, local_interaction_state, measure_label_intrinsic,
-    measure_view_intrinsic, popup_menu_nodes,
+    WidgetRenderContext, measure_label_intrinsic, measure_view_intrinsic, popup_menu_nodes,
 };
-use crate::theme::{ButtonMetrics, ButtonSpec, InteractionStyle};
+use crate::theme::{
+    ButtonLook, ButtonSpec, Chrome, CornerShape, Corners, Inputs, Label as LookLabel, SpecTint,
+    StateLayer, Surface, WidgetTheme,
+};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use kurbo::Rect;
 use nami::{Signal, SignalExt};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::ViewExt as _;
 use waterui::floating::FloatingScope;
@@ -26,30 +29,255 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_graphics::color::Color;
-use waterui_graphics::draw::Draw as _;
+use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
 
 use crate::widgets::util::{centered_label_rect, inset_rect, widget_disabled};
 
+/// The interaction states that change without a render: their changes move
+/// live operands.
+const LIVE_STATES: InteractionState = InteractionState::HOVERED
+    .union(InteractionState::PRESSED)
+    .union(InteractionState::FOCUSED)
+    .union(InteractionState::DRAGGED);
+
+/// What a button-like control keeps across renders to realize its look:
+/// the look for the spec it was requested for, the live chrome, the
+/// reported-state binding the label's colour follows, and the chrome frame
+/// the label's [`Inputs`] see.
+struct ButtonChromeState {
+    look: Option<(ButtonSpec, ButtonLook)>,
+    parts: Option<LiveChromeParts>,
+    /// The last [`InteractionState`] the control reported, feeding the
+    /// retained label's reactive colour.
+    label_state: nami::Binding<InteractionState>,
+    frame: Rc<Cell<Rect>>,
+}
+
+impl ButtonChromeState {
+    fn new() -> Self {
+        Self {
+            look: None,
+            parts: None,
+            label_state: nami::Binding::container(InteractionState::empty()),
+            frame: Rc::new(Cell::new(Rect::ZERO)),
+        }
+    }
+
+    /// The look for `spec` in `env`: the one already held when the spec and
+    /// the environment's presentation are unchanged, otherwise requested
+    /// again.
+    fn look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: &ButtonSpec,
+        env: &Environment,
+    ) -> &ButtonLook {
+        if self.held(spec, env).is_none() {
+            self.look = Some((spec.clone(), resolve_look(theme, spec, env)));
+        }
+        &self.look.as_ref().expect("the look was just ensured").1
+    }
+
+    /// The held look when it is the one `spec` in `env` takes.
+    fn held(&self, spec: &ButtonSpec, env: &Environment) -> Option<&ButtonLook> {
+        let plugin = env.get::<Chrome>();
+        self.look
+            .as_ref()
+            .filter(|(held, look)| {
+                held == spec && plugin.is_none_or(|plugin| plugin.same(look.chrome()))
+            })
+            .map(|(_, look)| look)
+    }
+
+    /// The look for `spec` in `env` without holding it: the held one, or a
+    /// fresh one for a measurement ahead of the render that holds it.
+    fn peek(
+        &self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: &ButtonSpec,
+        env: &Environment,
+    ) -> ButtonLook {
+        self.held(spec, env)
+            .cloned()
+            .unwrap_or_else(|| resolve_look(theme, spec, env))
+    }
+}
+
+/// The look a button of `spec` takes in `env`: a composed control's
+/// [`Chrome`] plugin with no padding, minimum or label styling; otherwise
+/// the theme's look, lowered onto the enclosing floating surface's style
+/// when there is one.
+fn resolve_look(theme: &Rc<dyn WidgetTheme>, spec: &ButtonSpec, env: &Environment) -> ButtonLook {
+    if let Some(chrome) = env.get::<Chrome>() {
+        // The composed control's content draws its own container; a text
+        // label keeps the theme's button font.
+        let mut label = LookLabel::new();
+        if let Some(font) = theme.button(spec, env).label().get_font() {
+            label = label.font(font.clone());
+        }
+        return ButtonLook::new(chrome.clone(), label);
+    }
+    let look = theme.button(spec, env);
+    if env.get::<MenuRowChrome>().is_some() {
+        return lower_menu_row(&look, theme.text_context_menu_metrics().horizontal_padding);
+    }
+    match env.get::<FloatingScope>() {
+        Some(FloatingScope(style)) => lower_floating(&look, style),
+        None => look,
+    }
+}
+
+/// Marks the rows of a popup menu: each is a button the renderer draws as a
+/// menu item rather than a button.
+#[derive(Debug, Clone, Copy)]
+pub struct MenuRowChrome;
+
+/// A popup menu row: the theme look's state-layer tokens, press feedback,
+/// motion, hit region and font over a square, containerless surface whose
+/// state layer is the foreground colour, inset by the theme's menu-item
+/// inset. A row shows keyboard focus through its state layer alone.
+fn lower_menu_row(look: &ButtonLook, horizontal_inset: f64) -> ButtonLook {
+    let theme_chrome = look.chrome();
+    let layer = theme_chrome.state_layer();
+    let chrome = Chrome::new(
+        Surface::clear(CornerShape::radius(0.0)),
+        StateLayer::new(Color::new(waterui::theme::color::Foreground)).opacities(
+            layer.hover,
+            layer.focus,
+            layer.pressed,
+            layer.dragged,
+        ),
+        theme_chrome.press().clone(),
+        crate::theme::FocusIndicator::Tint,
+        theme_chrome.motion().clone(),
+    )
+    .hit(*theme_chrome.get_hit());
+    let mut label = LookLabel::new();
+    if let Some(font) = look.label().get_font() {
+        label = label.font(font.clone());
+    }
+    ButtonLook::new(chrome, label).padding(horizontal_inset, 0.0)
+}
+
+/// The font a popup menu row's label takes in `env`: the borderless button
+/// look's.
+pub fn menu_row_font(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> Option<Font> {
+    let spec = button_spec(ButtonStyle::Borderless, ControlSize::Small, false, env);
+    look_font(
+        &theme.button(&spec, env),
+        InteractionState::empty(),
+        Rect::ZERO,
+    )
+}
+
+/// A button on a floating surface: the surface draws its own container and
+/// shadows, so the button keeps the theme look's state-layer tokens, press
+/// feedback, focus indicator, motion and hit region, and takes the floating
+/// style's silhouette, state-layer colour, content colour and metrics.
+fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
+    let theme_chrome = look.chrome();
+    let layer = theme_chrome.state_layer();
+    let chrome = Chrome::new(
+        Surface::clear(CornerShape::new(Corners::Fraction(f64::from(
+            style.clip_radius,
+        )))),
+        StateLayer::new(style.state_layer_color.clone()).opacities(
+            layer.hover,
+            layer.focus,
+            layer.pressed,
+            layer.dragged,
+        ),
+        theme_chrome.press().clone(),
+        theme_chrome.focus().clone(),
+        theme_chrome.motion().clone(),
+    )
+    .hit(*theme_chrome.get_hit());
+    let content = style.content_color.clone();
+    let disabled = style
+        .content_color
+        .clone()
+        .with_opacity(style.disabled_content_opacity);
+    let mut label = LookLabel::new().color(crate::theme::Driven::new(move |inputs| {
+        if inputs.state.contains(InteractionState::DISABLED) {
+            disabled.clone()
+        } else {
+            content.clone()
+        }
+    }));
+    if let Some(font) = look.label().get_font() {
+        label = label.font(font.clone());
+    }
+    let group_opacity = look.get_group_opacity().clone();
+    ButtonLook::new(chrome, label)
+        .padding(style.content_inset_x, style.content_inset_y)
+        .minimum_size(kurbo::Size::new(style.minimum_width, style.minimum_height))
+        .group_opacity(group_opacity)
+}
+
+/// The spec of a `style` button of `size` in `env`.
+fn button_spec(
+    style: ButtonStyle,
+    size: ControlSize,
+    icon_only: bool,
+    env: &Environment,
+) -> ButtonSpec {
+    ButtonSpec::new(
+        style,
+        size,
+        icon_only,
+        waterui_core::layout::layout_direction(env).snapshot(),
+        SpecTint::resolve(env),
+    )
+}
+
+/// The label font of `look`. A font is laid out, so it follows the spec
+/// and the disabled and selected states, never the live states.
+fn look_font(look: &ButtonLook, state: InteractionState, frame: Rect) -> Option<Font> {
+    look.label()
+        .get_font()
+        .map(|font| font.target(&Inputs::at_rest(frame, state.difference(LIVE_STATES), &())))
+}
+
+/// The label colour of `look` in `state`.
+fn look_color(look: &ButtonLook, state: InteractionState, frame: Rect) -> Option<Color> {
+    look.label()
+        .get_color()
+        .map(|color| color.target(&Inputs::at_rest(frame, state, &())))
+}
+
+/// The retained label's colour: the look's, following the reported state
+/// reactively so the retained sub-view recolours without a rebuild.
+fn retained_label_color(
+    look: &ButtonLook,
+    chrome: &ButtonChromeState,
+    env: &Environment,
+) -> Option<Color> {
+    if env.get::<ListRowChrome>().is_some() {
+        return Some(Color::new(waterui::theme::color::Foreground));
+    }
+    let color = look.label().get_color()?.clone();
+    let frame = Rc::clone(&chrome.frame);
+    Some(waterui_graphics::color::signal_color(
+        chrome
+            .label_state
+            .clone()
+            .map(move |state| color.target(&Inputs::at_rest(frame.get(), state, &()))),
+    ))
+}
+
 /// The retained render state of a button. A `TitleOnly` label is rendered as
 /// centered styled text fresh each frame (so its reactive title stays live); any
 /// other label is a move-only composite, so it is held as a [`RetainedSubview`]
-/// built once (with the theme's button styling + label color applied) and
-/// re-flushed each frame. The `config` is kept for the value/style/action and for
+/// built once (with the look's label styling applied) and re-flushed each
+/// frame. The `config` is kept for the value/style/action and for
 /// accessibility resolution.
 pub struct ButtonRenderState<E: crate::text::TextEngine> {
     config: ButtonConfig,
     /// `Some` for a non-title (general) label held as a retained sub-view; `None`
     /// for a `TitleOnly` label rendered as styled text from `config.label`.
     label_view: Option<RetainedSubview<E>>,
-    /// The last [`InteractionState`] the render pass reported for this control,
-    /// feeding the retained label's reactive colour resolution.
-    label_state: nami::Binding<InteractionState>,
-    /// The engine-realized chrome, while the theme supplies one through
-    /// [`WidgetTheme::button_chrome`](crate::theme::WidgetTheme::button_chrome):
-    /// kept across renders while its chrome, frame and motion stay the
-    /// same, so interaction changes reach it as live operands only.
-    chrome: Option<LiveChromeParts>,
+    chrome: ButtonChromeState,
 }
 
 impl<E: crate::text::TextEngine> ButtonRenderState<E> {
@@ -57,8 +285,7 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
         Self {
             config,
             label_view: None,
-            label_state: nami::Binding::container(InteractionState::empty()),
-            chrome: None,
+            chrome: ButtonChromeState::new(),
         }
     }
 
@@ -73,8 +300,8 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
 
     /// Create the general (non-title) label sub-view at tree-build time. A plain
     /// `TitleOnly` label stays `None` and is rendered as styled text each frame.
-    /// The sub-view is created unbuilt and unpainted: the theme supplies the
-    /// label font and foreground — paint — so styling is applied in
+    /// The sub-view is created unbuilt and unpainted: the look supplies the
+    /// label font and foreground, so styling is applied in
     /// [`Self::ensure_label_built`] during the layout-time prepare pass, the
     /// first point a theme exists.
     ///
@@ -91,7 +318,16 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
         )));
     }
 
-    /// Apply the theme's label styling and build the label sub-view. Called from
+    fn spec(&self, env: &Environment) -> ButtonSpec {
+        button_spec(
+            self.config.style(),
+            self.config.size(),
+            label_resolves_icon_only(self.config.label(), env),
+            env,
+        )
+    }
+
+    /// Apply the look's label styling and build the label sub-view. Called from
     /// the layout-time prepare pass (`WidgetBehavior::prepare`) — the measure
     /// path has no renderer, so the sub-view must be built before then. A
     /// semantic runtime never prepares, so the label view is never styled or
@@ -101,30 +337,28 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
         renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
     ) {
-        let Some(subview) = &mut self.label_view else {
-            return;
-        };
-        if subview.is_built() {
+        if self
+            .label_view
+            .as_ref()
+            .is_none_or(RetainedSubview::is_built)
+        {
             return;
         }
         let theme = renderer.theme();
-        let style = self.config.style();
-        let interaction_style = env.get::<InteractionStyle>();
-        let floating_style = env.get::<FloatingScope>().map(|scope| &scope.0);
-        let color = if env.get::<ListRowChrome>().is_some() {
-            Some(Color::new(waterui::theme::color::Foreground))
-        } else {
-            state_aware_label_color(
-                &theme,
-                style,
-                &self.label_state,
-                interaction_style,
-                floating_style,
-            )
-        };
-        let styled = styled_button_label(&theme, style, self.config.label().clone());
-        let icon_only = label_resolves_icon_only(self.config.label(), env);
-        subview.map_source(|_| button_label_view(color, AnyView::new(styled), icon_only));
+        let spec = self.spec(env);
+        let look = self.chrome.look(&theme, &spec, env).clone();
+        let color = retained_label_color(&look, &self.chrome, env);
+        let font = look_font(
+            &look,
+            self.chrome.label_state.snapshot(),
+            self.chrome.frame.get(),
+        );
+        let styled = styled_button_label(font, self.config.label().clone());
+        let subview = self
+            .label_view
+            .as_mut()
+            .expect("the label sub-view was checked above");
+        subview.map_source(|_| button_label_view(color, AnyView::new(styled)));
         subview.ensure_built(renderer, env);
     }
 }
@@ -227,24 +461,22 @@ pub fn button_activation<E: crate::text::TextEngine>(
     ))
 }
 
-/// Resolves button-chrome size from the label size and theme metrics. The
-/// metric minimums are floors for unconstrained layout; a tighter explicit
-/// proposal caps them, so a fixed-size parent (e.g. a 40pt calendar day cell)
-/// receives the size it proposed instead of chrome and hit bounds overflowing
-/// the assigned slot. Padded label content keeps its intrinsic footprint — the
+/// Resolves a button's size from the label size and the look's metrics. The
+/// minimum is a floor for unconstrained layout; a tighter explicit proposal
+/// caps it, so a fixed-size parent (e.g. a 40pt calendar day cell) receives
+/// the size it proposed instead of chrome and hit bounds overflowing the
+/// assigned slot. Padded label content keeps its intrinsic footprint — the
 /// parent decides how any remaining overflow is aligned.
-fn button_chrome_size(
-    label_size: LayoutSize,
-    metrics: &ButtonMetrics,
-    proposal: ProposalSize,
-) -> LayoutSize {
-    let content_width = metrics.padding_x.mul_add(2.0, f64::from(label_size.width));
-    let content_height = metrics.padding_y.mul_add(2.0, f64::from(label_size.height));
-    let min_width = proposal.width.map_or(metrics.min_width, |width| {
-        metrics.min_width.min(f64::from(width))
-    });
-    let min_height = proposal.height.map_or(metrics.min_height, |height| {
-        metrics.min_height.min(f64::from(height))
+fn button_size(label_size: LayoutSize, look: &ButtonLook, proposal: ProposalSize) -> LayoutSize {
+    let padding = look.get_padding();
+    let minimum = look.get_minimum_size();
+    let content_width = padding.x.mul_add(2.0, f64::from(label_size.width));
+    let content_height = padding.y.mul_add(2.0, f64::from(label_size.height));
+    let min_width = proposal
+        .width
+        .map_or(minimum.width, |width| minimum.width.min(f64::from(width)));
+    let min_height = proposal.height.map_or(minimum.height, |height| {
+        minimum.height.min(f64::from(height))
     });
     LayoutSize::new(
         crate::num_cast::f64_as_f32(content_width.max(min_width)),
@@ -262,27 +494,20 @@ pub fn measure_button_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let metrics = button_metrics(
-        theme,
-        render_state.config.style(),
-        render_state.config.size(),
-        label_resolves_icon_only(render_state.config.label(), env),
-        env.get::<InteractionStyle>(),
-        env.get::<FloatingScope>().map(|scope| &scope.0),
-    );
+    let spec = render_state.spec(env);
+    let look = render_state.chrome.peek(theme, &spec, env);
     let label_size = if let Some(subview) = &render_state.label_view {
         subview.measure_built(state, env, theme)
     } else {
-        let styled = styled_button_title(
-            state,
-            theme,
-            render_state.config.style(),
-            render_state.config.label(),
-            env,
+        let font = look_font(
+            &look,
+            render_state.chrome.label_state.snapshot(),
+            render_state.chrome.frame.get(),
         );
+        let styled = styled_button_title(state, font, render_state.config.label(), env);
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
     };
-    ViewDimensions::new(button_chrome_size(label_size, &metrics, proposal))
+    ViewDimensions::new(button_size(label_size, &look, proposal))
 }
 
 /// Renders a retained button leaf every flush: emits a11y (unless hidden) then the
@@ -308,18 +533,20 @@ pub fn render_button_node<E: crate::text::TextEngine>(
 /// `Label`/`TitleOnly`, which is rendered as styled text fresh each frame like a
 /// button); the `items`/`accessibility_label` signals are kept and read through
 /// `read_signal`.
-const MENU_TRIGGER_STYLE: ButtonStyle = ButtonStyle::Automatic;
-
 pub struct MenuRenderState<E: crate::text::TextEngine> {
     /// The build-time decision of how to render the label.
     label: MenuLabel<E>,
     /// Whether the label resolves to an icon-only presentation — decided
     /// once at build from the label's own display-mode resolution, so the
-    /// trigger sizes under the icon-button contract like a button.
+    /// trigger takes the icon-button look like a button.
     icon_only: bool,
+    /// The trigger button's style and size, from the menu.
+    style: ButtonStyle,
+    size: ControlSize,
     items: nami::Computed<Vec<waterui_controls::menu::ResolvedMenuItem>>,
     #[cfg(feature = "accessibility")]
     accessibility_label: nami::Computed<StyledStr>,
+    chrome: ButtonChromeState,
 }
 
 /// How a menu trigger renders its label, decided once at build time from the
@@ -341,6 +568,8 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
             accessibility_label,
             #[cfg(not(feature = "accessibility"))]
                 accessibility_label: _,
+            style,
+            size,
         } = menu;
         let icon_only = label
             .downcast_ref::<Label>()
@@ -353,32 +582,41 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
         Self {
             label,
             icon_only,
+            style,
+            size,
             items,
             #[cfg(feature = "accessibility")]
             accessibility_label,
+            chrome: ButtonChromeState::new(),
         }
     }
 
-    /// Apply the theme's default label foreground and build the label sub-view
-    /// (mirroring the dispatch path's `button_label_view`). Called from the
-    /// layout-time prepare pass (`WidgetBehavior::prepare`) — the measure path
-    /// has no renderer, so the sub-view must be built before then; a semantic
-    /// runtime never prepares and never needs the painted label.
+    fn spec(&self, env: &Environment) -> ButtonSpec {
+        button_spec(self.style, self.size, self.icon_only, env)
+    }
+
+    /// Apply the look's label styling and build the label sub-view. Called
+    /// from the layout-time prepare pass (`WidgetBehavior::prepare`) — the
+    /// measure path has no renderer, so the sub-view must be built before
+    /// then; a semantic runtime never prepares and never needs the painted
+    /// label.
     pub(crate) fn ensure_label_built(
         &mut self,
         renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
     ) {
         let theme = renderer.theme();
-        if let MenuLabel::View(subview) = &mut self.label {
-            if subview.is_built() {
-                return;
-            }
-            let color = theme.button_label_color(MENU_TRIGGER_STYLE, false);
-            let icon_only = self.icon_only;
-            subview.map_source(|view| button_label_view(color, view, icon_only));
-            subview.ensure_built(renderer, env);
+        let spec = self.spec(env);
+        let MenuLabel::View(subview) = &mut self.label else {
+            return;
+        };
+        if subview.is_built() {
+            return;
         }
+        let look = self.chrome.look(&theme, &spec, env).clone();
+        let color = retained_label_color(&look, &self.chrome, env);
+        subview.map_source(|view| button_label_view(color, view));
+        subview.ensure_built(renderer, env);
     }
 
     /// Consume the label sub-view's layout-dirty marks: its measured size
@@ -500,22 +738,21 @@ pub fn measure_menu_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let metrics = button_metrics(
-        theme,
-        MENU_TRIGGER_STYLE,
-        ControlSize::Small,
-        state.icon_only,
-        env.get::<InteractionStyle>(),
-        env.get::<FloatingScope>().map(|scope| &scope.0),
-    );
+    let spec = state.spec(env);
+    let look = state.chrome.peek(theme, &spec, env);
     let label_size = match &state.label {
         MenuLabel::Title(label) => {
-            let styled = styled_button_title(hydro, theme, MENU_TRIGGER_STYLE, label, env);
+            let font = look_font(
+                &look,
+                state.chrome.label_state.snapshot(),
+                state.chrome.frame.get(),
+            );
+            let styled = styled_button_title(hydro, font, label, env);
             HydrolysisRenderer::measure_text_intrinsic_size(hydro, styled, env)
         }
         MenuLabel::View(subview) => subview.measure_built(hydro, env, theme),
     };
-    ViewDimensions::new(button_chrome_size(label_size, &metrics, proposal))
+    ViewDimensions::new(button_size(label_size, &look, proposal))
 }
 
 /// Renders a retained menu leaf every flush: emits a11y (unless hidden) then the
@@ -542,20 +779,227 @@ pub fn render_menu_node<E: crate::text::TextEngine>(
     render_menu_parts(ctx, state, env);
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-)]
+/// What one render of a button-like control resolved: the look, the live
+/// chrome parts, the reported state, the touch target and where the label
+/// goes.
+struct RenderedChrome {
+    look: ButtonLook,
+    parts: LiveChromeParts,
+    flags: InteractionState,
+    target: Rect,
+    press_slot: crate::renderer::PressSlot,
+    label_target: Rect,
+}
+
+/// Binds a button-like control's interaction target, realizes its look's
+/// chrome and reports its state: everything a render needs before the
+/// chrome's layers and the label are listed. A `title` label takes its
+/// colour from the chrome's live operand; a label laid out from a view
+/// follows the reported state through its own colour signal.
+fn bind_button_chrome<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    chrome_state: &mut ButtonChromeState,
+    key: crate::renderer::InteractionKey,
+    spec: &ButtonSpec,
+    disabled: bool,
+    title: bool,
+    env: &Environment,
+) -> RenderedChrome {
+    let theme = ctx.theme();
+    let look = chrome_state.look(&theme, spec, env).clone();
+    let bounds = ctx.bounds;
+    let chrome = look.chrome().clone();
+    let frame = chrome.frame(bounds);
+    chrome_state.frame.set(frame);
+    let target = chrome.target(bounds);
+    let report_key = key.clone();
+    let (_, press_slot, handles) = ctx
+        .renderer_mut()
+        .bind_live_chrome_target(key, target, env, disabled, &chrome);
+    let flags = ctx.renderer_mut().reported_interaction_state(&report_key);
+    // Feed the reported state to the retained label's colour signal so it
+    // resolves the current colour without a rebuild.
+    if chrome_state.label_state.snapshot() != flags {
+        chrome_state.label_state.set(flags);
+    }
+    let content = ChromeContent {
+        group_opacity: Some(look.get_group_opacity().clone()),
+        label_color: (title && env.get::<ListRowChrome>().is_none())
+            .then(|| look.label().get_color().cloned())
+            .flatten(),
+    };
+    let parts = LiveChromeParts::ensure(
+        &mut chrome_state.parts,
+        &chrome,
+        &content,
+        bounds,
+        flags,
+        env,
+        &chrome_state.label_state,
+    )
+    .clone();
+    handles.attach_live(Rc::clone(parts.chrome()));
+    let padding = look.get_padding();
+    let label_bounds = inset_rect(bounds, padding.x, padding.y);
+    // A degenerate padded rect (a button smaller than its padding) falls back to the
+    // full bounds so the label still shows.
+    let label_target = if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
+        label_bounds
+    } else {
+        bounds
+    };
+    RenderedChrome {
+        look,
+        parts,
+        flags,
+        target,
+        press_slot,
+        label_target,
+    }
+}
+
+/// Lists a button-like control's chrome around its label: the group scope
+/// at the look's group opacity, the surface below, the label `render_label`
+/// records, the interaction layers above.
+fn record_button_chrome<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    rendered: &RenderedChrome,
+    render_label: impl FnOnce(&mut WidgetRenderContext<'_, E>),
+) {
+    let frame = rendered.parts.chrome().visual_bounds().union(ctx.bounds);
+    let key = crate::renderer::mount::ScopeKey {
+        role: "button-group",
+        item: 0,
+    };
+    let body = |ctx: &mut WidgetRenderContext<'_, E>| {
+        let render_ctx = ctx.render_context();
+        rendered.parts.push_below(ctx.renderer_mut(), render_ctx);
+        render_label(ctx);
+        let render_ctx = ctx.render_context();
+        rendered.parts.push_above(ctx.renderer_mut(), render_ctx);
+    };
+    // An opacity that varies between renders draws the button as one
+    // group following the chrome's operand; a fixed one groups it only
+    // when it fades.
+    if let Some(opacity) = rendered.parts.chrome().group_opacity() {
+        let operands = crate::renderer::ScopeOperands {
+            opacity: Some(opacity),
+            transform: None,
+        };
+        ctx.with_live_scope(key, operands, frame, body);
+        return;
+    }
+    let opacity = rendered.look.get_group_opacity().target(&Inputs::at_rest(
+        rendered.look.chrome().frame(ctx.bounds),
+        rendered.flags,
+        &(),
+    ));
+    ctx.with_scope_if(opacity < 1.0, key, opacity, frame, body);
+}
+
+/// Places a retained label sub-view centred in `label_target`. Its
+/// semantics are merged into the control's own node, so it flushes
+/// visual-only.
+fn place_label_view<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    rendered: &RenderedChrome,
+    subview: &mut RetainedSubview<E>,
+    env: &Environment,
+) {
+    let label_target = rendered.label_target;
+    let proposal = ProposalSize::new(
+        Some(crate::num_cast::f64_as_f32(label_target.width())),
+        Some(crate::num_cast::f64_as_f32(label_target.height())),
+    );
+    let (label_size, _) = subview.patch_and_measure(ctx.renderer_mut(), env, proposal);
+    let label_target = centered_label_rect(label_target, label_size);
+    let mut place = |ctx: &mut WidgetRenderContext<'_, E>| {
+        let render_ctx = ctx.render_context();
+        let label_area = ctx.safe_area_for(label_target);
+        ctx.renderer_mut()
+            .with_suppressed_accessibility(|renderer| {
+                subview.place(
+                    renderer,
+                    render_ctx,
+                    env,
+                    ProposalSize::UNSPECIFIED,
+                    label_target,
+                    label_area,
+                );
+            });
+    };
+    // A label that follows the press scale is placed at rest inside a
+    // layer whose transform follows the chrome's scale operand.
+    match label_scale(rendered) {
+        Some(scale) => {
+            let operands = crate::renderer::ScopeOperands {
+                opacity: None,
+                transform: Some(scale),
+            };
+            let clip = rendered.parts.chrome().visual_bounds().union(ctx.bounds);
+            ctx.with_live_scope(
+                crate::renderer::mount::ScopeKey {
+                    role: "button-label",
+                    item: 0,
+                },
+                operands,
+                clip,
+                place,
+            );
+        }
+        None => place(ctx),
+    }
+}
+
+/// The chrome's press scale when the look's label follows it and the
+/// chrome scales on press.
+fn label_scale(rendered: &RenderedChrome) -> Option<crate::theme::live::Operand<kurbo::Affine>> {
+    let chrome = rendered.parts.chrome();
+    (rendered.look.label().get_follows_press_scale() && chrome.scales_content())
+        .then(|| chrome.content_scale_operand())
+}
+
+/// Renders a title label: centred styled text in the look's font, over the
+/// look's colour for the reported state — live, following the chrome's
+/// label colour operand, when that colour varies between renders.
+fn render_title<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    rendered: &RenderedChrome,
+    label: &Label,
+    env: &Environment,
+) {
+    let target = rendered.label_target;
+    if target.width() <= 0.0 || target.height() <= 0.0 {
+        return;
+    }
+    let frame = rendered.look.chrome().frame(ctx.bounds);
+    let font = look_font(&rendered.look, rendered.flags, frame);
+    let mut styled = styled_button_title(ctx.state_mut(), font, label, env);
+    let paint = rendered.parts.chrome().label_paint();
+    if paint.is_none() {
+        let color = if env.get::<ListRowChrome>().is_some() {
+            Some(Color::new(waterui::theme::color::Foreground))
+        } else {
+            look_color(&rendered.look, rendered.flags, frame)
+        };
+        if let Some(color) = color {
+            styled = styled_with_default_foreground(styled, color);
+        }
+    }
+    // A label that follows the press scale grows with the chrome.
+    let scale = rendered
+        .look
+        .label()
+        .get_follows_press_scale()
+        .then(|| rendered.parts.chrome());
+    ctx.render_styled_text_single_line_scaled(styled, env, target, scale, paint.as_ref());
+}
+
 pub fn render_button_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<ButtonRenderState<E>>>,
     env: &Environment,
 ) {
-    let theme = ctx.theme();
-    let style = state.borrow().config.style();
-    let size = state.borrow().config.size();
-    let interaction_style = env.get::<InteractionStyle>().cloned();
-    let floating_style = env.get::<FloatingScope>().map(|scope| scope.0.clone());
     // Subscribe to the (possibly reactive) title so a label change schedules a frame
     // and this persistent node re-renders the new text.
     {
@@ -569,204 +1013,22 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
         let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
-    // The label's own resolved display mode selects the presentation: an
-    // icon-only button lays out at the theme's icon-button touch target and
-    // its bounds are the hit area — the theme draws the smaller icon-button
-    // container centred inside them.
-    let icon_only = label_resolves_icon_only(state.borrow().config.label(), env);
-    let metrics = button_metrics(
-        &theme,
-        style,
-        size,
-        icon_only,
-        interaction_style.as_ref(),
-        floating_style.as_ref(),
-    );
-    let bounds = ctx.bounds;
-    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
-    // The theme's engine-provided chrome, on the theme-drawn path only: an
-    // `InteractionStyle` or floating scope keeps its own presentation.
-    let live_chrome = (interaction_style.is_none() && floating_style.is_none())
-        .then(|| theme.button_chrome(ButtonSpec::new(style, size, icon_only)))
-        .flatten()
-        .map(|chrome| {
-            let motion = chrome
-                .get_motion()
-                .cloned()
-                .unwrap_or_else(|| theme.interaction_motion());
-            (chrome, motion)
-        });
-    let (interaction, press_slot, handles) = match &live_chrome {
-        Some((_, motion)) => ctx.renderer_mut().bind_live_chrome_target(
-            interaction_key.clone(),
-            bounds,
-            env,
-            disabled,
-            motion.clone(),
-        ),
-        None => ctx.renderer_mut().bind_control_interaction_target(
-            interaction_key.clone(),
-            bounds,
-            env,
-            disabled,
-        ),
+    let key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let rendered = {
+        let mut state_mut = state.borrow_mut();
+        let spec = state_mut.spec(env);
+        let title = state_mut.label_view.is_none();
+        bind_button_chrome(ctx, &mut state_mut.chrome, key, &spec, disabled, title, env)
     };
-    let interaction_flags = ctx
-        .renderer_mut()
-        .reported_interaction_state(&interaction_key);
-    // Feed the reported state to the retained label's colour signal so its
-    // `StateValue<Color>` resolves the current override without a rebuild.
-    {
-        let label_state = &state.borrow_mut().label_state;
-        if label_state.snapshot() != interaction_flags {
-            label_state.set(interaction_flags);
-        }
-    }
-    let live_sources = live_chrome.map(|(chrome, motion)| {
+    record_button_chrome(ctx, &rendered, |ctx| {
         let mut state_mut = state.borrow_mut();
         let state_mut = &mut *state_mut;
-        let parts = LiveChromeParts::ensure(
-            &mut state_mut.chrome,
-            chrome,
-            bounds,
-            motion,
-            interaction_flags,
-            &state_mut.label_state,
-        );
-        handles.attach_live(Rc::clone(parts.chrome()));
-        (Rc::clone(parts.below()), Rc::clone(parts.above()))
-    });
-    if live_sources.is_none() {
-        state.borrow_mut().chrome = None;
-    }
-    if let Some((below, _)) = &live_sources {
-        ctx.push_live(below);
-    } else if interaction_style.is_none() && floating_style.is_none() {
-        ctx.draw_context(|draw| {
-            theme.draw_button_chrome(&mut *draw, bounds, style, icon_only, interaction);
-        });
-    }
-
-    let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
-    // A degenerate padded rect (a button smaller than its padding) falls back to the
-    // full bounds so the label still shows — matching the old dispatch fallback.
-    let label_target = if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
-        label_bounds
-    } else {
-        bounds
-    };
-    {
-        let mut state_mut = state.borrow_mut();
         if let Some(subview) = &mut state_mut.label_view {
-            // General label: a retained node sub-view re-flushed at its rect (reactive
-            // content stays live through the node's own re-flush). Its semantics are
-            // merged into the button's own node by `button_accessibility`, so the
-            // sub-view flushes visual-only. The label is placed centred in the
-            // content rect, so a label smaller than the chrome sits in the middle.
-            let proposal = ProposalSize::new(
-                Some(crate::num_cast::f64_as_f32(label_target.width())),
-                Some(crate::num_cast::f64_as_f32(label_target.height())),
-            );
-            let (label_size, _) = subview.patch_and_measure(ctx.renderer_mut(), env, proposal);
-            let label_target = centered_label_rect(label_target, label_size);
-            let render_ctx = ctx.render_context();
-            let label_area = ctx.safe_area_for(label_target);
-            ctx.renderer_mut()
-                .with_suppressed_accessibility(|renderer| {
-                    subview.place(
-                        renderer,
-                        render_ctx,
-                        env,
-                        ProposalSize::UNSPECIFIED,
-                        label_target,
-                        label_area,
-                    );
-                });
-        } else if label_target.width() > 0.0 && label_target.height() > 0.0 {
-            // Title label: centered styled text rendered fresh each frame,
-            // picking the enabled or disabled label color for this frame.
-            let mut styled = styled_button_title(
-                ctx.state_mut(),
-                &theme,
-                style,
-                state_mut.config.label(),
-                env,
-            );
-            let title_color = if env.get::<ListRowChrome>().is_some() {
-                Some(Color::new(waterui::theme::color::Foreground))
-            } else {
-                button_label_color(
-                    &theme,
-                    style,
-                    interaction_flags,
-                    interaction_style.as_ref(),
-                    floating_style.as_ref(),
-                )
-            };
-            if let Some(color) = title_color {
-                styled = styled_with_default_foreground(styled, color);
-            }
-            ctx.render_styled_text_single_line_centered(styled, env, label_target);
-        }
-    }
-    {
-        // Hover/focus/press state layers, drawn fresh each flush from the sampled
-        // interaction state (the press/hover animations keep frames pumping).
-        let interaction =
-            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
-        if let Some(interaction_style) = interaction_style {
-            let color_signal = interaction_style.state_layer_color.resolve(env);
-            let color = ctx.renderer_mut().read_signal(&color_signal);
-            let layer_bounds = interaction_style.state_layer_bounds(bounds);
-            let radii = *interaction_style
-                .state_layer_radii
-                .resolve(interaction_flags);
-            let ring = interaction_focus_ring(
-                ctx.renderer_mut(),
-                env,
-                layer_bounds,
-                radii,
-                &interaction_style,
-                interaction_flags,
-            );
-            ctx.draw_context(|draw| {
-                theme.draw_interaction_state_layer(
-                    &mut *draw,
-                    layer_bounds,
-                    radii,
-                    color,
-                    interaction,
-                );
-                if let Some((ring_bounds, ring_radii, color, width)) = ring {
-                    draw.stroke(
-                        kurbo::RoundedRect::from_rect(ring_bounds, ring_radii),
-                        kurbo::Stroke::new(width),
-                        color,
-                    );
-                }
-            });
-        } else if let Some(floating_style) = floating_style {
-            let color_signal = floating_style.state_layer_color.resolve(env);
-            let color = ctx.renderer_mut().read_signal(&color_signal);
-            let corner_radius =
-                bounds.width().min(bounds.height()) * f64::from(floating_style.clip_radius);
-            ctx.draw_context(|draw| {
-                theme.draw_interaction_state_layer(
-                    &mut *draw,
-                    bounds,
-                    corner_radius.into(),
-                    color,
-                    interaction,
-                );
-            });
-        } else if let Some((_, above)) = &live_sources {
-            ctx.push_live(above);
+            place_label_view(ctx, &rendered, subview, env);
         } else {
-            ctx.draw_context(|draw| {
-                theme.draw_button_state_layer(&mut *draw, bounds, style, icon_only, interaction);
-            });
+            render_title(ctx, &rendered, state_mut.config.label(), env);
         }
-    }
+    });
 
     // A disabled button registers no tap target: the pointer neither presses
     // it nor invokes its action. Targets are re-registered every flush, so
@@ -778,14 +1040,17 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
     // dispatch path register equivalent tap targets without moving the action out.
     let state = Rc::clone(state);
     let action_env = env.clone();
-    ctx.renderer_mut().register_interactive_pointer_target(
-        bounds,
-        press_slot,
-        move |_renderer, _point, _env| {
-            (state.borrow_mut().config.action_mut())(&action_env);
-            true
-        },
-    );
+    let keyboard_focusable = rendered.look.chrome().keyboard_focusable();
+    ctx.renderer_mut()
+        .register_interactive_pointer_target_with_keyboard(
+            rendered.target,
+            rendered.press_slot,
+            keyboard_focusable,
+            move |_renderer, _point, _env| {
+                (state.borrow_mut().config.action_mut())(&action_env);
+                true
+            },
+        );
 }
 
 pub fn render_menu_parts<E: crate::text::TextEngine>(
@@ -794,75 +1059,24 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     let theme = ctx.theme();
-    let style = MENU_TRIGGER_STYLE;
-    let bounds = ctx.bounds;
-    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
-    let (interaction, press_slot, _) =
-        ctx.renderer_mut()
-            .bind_interaction_target(interaction_key, bounds, env);
-    let icon_only = state.borrow().icon_only;
-    {
-        ctx.draw_context(|draw| {
-            theme.draw_button_chrome(&mut *draw, bounds, style, icon_only, interaction);
-        });
-    }
-
-    let metrics = button_metrics(
-        &theme,
-        style,
-        ControlSize::Small,
-        icon_only,
-        env.get::<InteractionStyle>(),
-        env.get::<FloatingScope>().map(|scope| &scope.0),
-    );
-    let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
-    {
-        let mut state = state.borrow_mut();
-        match &mut state.label {
-            MenuLabel::Title(label)
-                if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 =>
-            {
-                let mut styled = styled_button_title(ctx.state_mut(), &theme, style, label, env);
-                if let Some(color) = theme.button_label_color(style, false) {
-                    styled = styled_with_default_foreground(styled, color);
-                }
-                ctx.render_styled_text_single_line_centered(styled, env, label_bounds);
+    let key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let rendered = {
+        let mut state_mut = state.borrow_mut();
+        let spec = state_mut.spec(env);
+        let title = matches!(state_mut.label, MenuLabel::Title(_));
+        bind_button_chrome(ctx, &mut state_mut.chrome, key, &spec, false, title, env)
+    };
+    record_button_chrome(ctx, &rendered, |ctx| {
+        let mut state_mut = state.borrow_mut();
+        match &mut state_mut.label {
+            MenuLabel::Title(label) => {
+                render_title(ctx, &rendered, label, env);
             }
-            MenuLabel::Title(_) => {}
             MenuLabel::View(subview) => {
-                // The trigger's semantics are merged into the menu's own node by
-                // `menu_accessibility`, so the label sub-view flushes visual-only.
-                // Like a button's label, it sits centred in the content rect.
-                let proposal = ProposalSize::new(
-                    Some(crate::num_cast::f64_as_f32(label_bounds.width())),
-                    Some(crate::num_cast::f64_as_f32(label_bounds.height())),
-                );
-                let (label_size, _) = subview.patch_and_measure(ctx.renderer_mut(), env, proposal);
-                let label_bounds = centered_label_rect(label_bounds, label_size);
-                let render_ctx = ctx.render_context();
-                let label_area = ctx.safe_area_for(label_bounds);
-                ctx.renderer_mut()
-                    .with_suppressed_accessibility(|renderer| {
-                        subview.place(
-                            renderer,
-                            render_ctx,
-                            env,
-                            ProposalSize::UNSPECIFIED,
-                            label_bounds,
-                            label_area,
-                        );
-                    });
+                place_label_view(ctx, &rendered, subview, env);
             }
         }
-    }
-    {
-        // Hover/focus/press state layers over the menu trigger chrome.
-        let interaction =
-            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
-        ctx.draw_context(|draw| {
-            theme.draw_button_state_layer(&mut *draw, bounds, style, icon_only, interaction);
-        });
-    }
+    });
 
     let items = state.borrow().items.clone();
     // Watch the items so a change schedules a frame (the popup re-reads live items
@@ -874,45 +1088,71 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
     ctx.renderer_mut()
         .register_menu_shortcuts(Rc::downgrade(state), items.clone(), env.clone());
     // The popup anchors in window space at the trigger's bottom edge.
+    let bounds = ctx.bounds;
     let anchor = crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(bounds));
     let menu_metrics = theme.text_context_menu_metrics();
     let menu_theme = theme.clone();
     // The popup opens in the trigger node's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let menu_env = env.clone();
-    ctx.renderer_mut().register_interactive_pointer_target(
-        bounds,
-        press_slot,
-        move |renderer, _point, env| {
-            let env = menu_env.layered_on(env);
-            renderer.show_popup_menu_nodes(
-                popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable()),
-                anchor,
-                menu_metrics,
-                &env,
-                &menu_theme,
-            )
-        },
-    );
+    let keyboard_focusable = rendered.look.chrome().keyboard_focusable();
+    ctx.renderer_mut()
+        .register_interactive_pointer_target_with_keyboard(
+            rendered.target,
+            rendered.press_slot,
+            keyboard_focusable,
+            move |renderer, _point, env| {
+                let env = menu_env.layered_on(env);
+                renderer.show_popup_menu_nodes(
+                    popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable()),
+                    anchor,
+                    menu_metrics,
+                    &env,
+                    &menu_theme,
+                )
+            },
+        );
 }
 
+/// The intrinsic size of a button from its look, measured without a
+/// retained node.
 pub fn measure_button_intrinsic<E: crate::text::TextEngine>(
     button: &ButtonConfig,
     state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = button_metrics(
-        theme,
+    measure_button_look_intrinsic(
         button.style(),
         button.size(),
-        label_resolves_icon_only(button.label(), env),
-        env.get::<InteractionStyle>(),
-        env.get::<FloatingScope>().map(|scope| &scope.0),
-    );
-    let label_size =
-        measure_button_label_intrinsic(theme, button.style(), button.label(), state, env);
-    button_chrome_size(label_size, &metrics, ProposalSize::UNSPECIFIED)
+        button.label(),
+        state,
+        env,
+        theme,
+    )
+}
+
+/// The intrinsic size of a `style` button of `size` showing `label`, from
+/// its look — shared by the configured and the generic `Button` paths.
+pub fn measure_button_look_intrinsic<E: crate::text::TextEngine>(
+    style: ButtonStyle,
+    size: ControlSize,
+    label: &Label,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
+) -> LayoutSize {
+    let spec = button_spec(style, size, label_resolves_icon_only(label, env), env);
+    let look = resolve_look(theme, &spec, env);
+    let font = look_font(&look, InteractionState::empty(), Rect::ZERO);
+    let label_size = if renders_as_plain_title(label) {
+        let styled = styled_button_title(state, font, label, env);
+        HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
+    } else {
+        let label = styled_button_label(font, label.clone());
+        measure_label_intrinsic(&label, state, env, theme)
+    };
+    button_size(label_size, &look, ProposalSize::UNSPECIFIED)
 }
 
 pub fn measure_menu_intrinsic<E: crate::text::TextEngine>(
@@ -925,45 +1165,27 @@ pub fn measure_menu_intrinsic<E: crate::text::TextEngine>(
         .label
         .downcast_ref::<Label>()
         .is_some_and(|label| label_resolves_icon_only(label, env));
-    let metrics = button_metrics(
-        theme,
-        MENU_TRIGGER_STYLE,
-        ControlSize::Small,
-        icon_only,
-        env.get::<InteractionStyle>(),
-        env.get::<FloatingScope>().map(|scope| &scope.0),
-    );
+    let spec = button_spec(menu.style, menu.size, icon_only, env);
+    let look = resolve_look(theme, &spec, env);
     let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
         && renders_as_plain_title(label)
     {
-        let styled = styled_button_title(state, theme, MENU_TRIGGER_STYLE, label, env);
+        let font = look_font(&look, InteractionState::empty(), Rect::ZERO);
+        let styled = styled_button_title(state, font, label, env);
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
     } else {
         measure_view_intrinsic(&menu.label, state, env, theme)
     };
-    button_chrome_size(label_size, &metrics, ProposalSize::UNSPECIFIED)
+    button_size(label_size, &look, ProposalSize::UNSPECIFIED)
 }
 
-fn button_label_view(color: Option<Color>, label: AnyView, icon_only: bool) -> AnyView {
-    // `.foreground` resolves its colour eagerly while installing, so the
-    // icon-only marker must wrap it: a theme's resolvable
-    // `WidgetTheme::button_label_color` then sees the marker and paints the
-    // standard icon button's content colour rather than the filled text
-    // button's.
-    let label = match color {
+fn button_label_view(color: Option<Color>, label: AnyView) -> AnyView {
+    match color {
         Some(color) => AnyView::new(label.foreground(color)),
         None => label,
-    };
-    if icon_only {
-        AnyView::new(label.install(crate::theme::IconOnlyButtonLabel))
-    } else {
-        label
     }
 }
 
-/// The theme label color for a general (retained) button label, switching
-/// reactively between the enabled and disabled label colors so the retained
-/// sub-view recolors without being rebuilt.
 /// Marks the subtree of a list row.
 ///
 /// A row's content is body text that happens to be tappable, so it keeps the
@@ -972,125 +1194,6 @@ fn button_label_view(color: Option<Color>, label: AnyView, icon_only: bool) -> A
 /// every row of a list.
 #[derive(Debug, Clone, Copy)]
 pub struct ListRowChrome;
-
-/// The retained label is built once, so its colour follows the control's
-/// reported [`InteractionState`] reactively: the render pass writes `state`
-/// each frame and the theme's `label_color` [`StateValue`] resolves the
-/// matching override through [`StateValue::resolve`].
-pub fn state_aware_label_color(
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-    style: ButtonStyle,
-    state: &nami::Binding<InteractionState>,
-    interaction_style: Option<&InteractionStyle>,
-    floating_style: Option<&FloatingStyle>,
-) -> Option<Color> {
-    // `StateValue::resolve` needs a concrete flag set, so sample every flag
-    // combination: if no state yields a colour the label stays unstyled.
-    let colorable = (0..=InteractionState::all().bits()).any(|bits| {
-        button_label_color(
-            theme,
-            style,
-            InteractionState::from_bits_truncate(bits),
-            interaction_style,
-            floating_style,
-        )
-        .is_some()
-    });
-    if !colorable {
-        return None;
-    }
-    let theme = theme.clone();
-    let interaction_style = interaction_style.cloned();
-    let floating_style = floating_style.cloned();
-    Some(waterui_graphics::color::signal_color(state.clone().map(
-        move |state| {
-            button_label_color(
-                &theme,
-                style,
-                state,
-                interaction_style.as_ref(),
-                floating_style.as_ref(),
-            )
-            .unwrap_or_else(|| Color::new(waterui::theme::color::Foreground))
-        },
-    )))
-}
-
-fn button_metrics(
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-    style: ButtonStyle,
-    size: ControlSize,
-    icon_only: bool,
-    interaction_style: Option<&InteractionStyle>,
-    floating_style: Option<&FloatingStyle>,
-) -> ButtonMetrics {
-    interaction_style.map_or_else(
-        || {
-            floating_style.map_or_else(
-                || {
-                    if icon_only {
-                        theme.icon_button_metrics(style, size)
-                    } else {
-                        theme.button_metrics(style, size)
-                    }
-                },
-                |style| {
-                    ButtonMetrics::new(
-                        style.content_inset_x,
-                        style.content_inset_y,
-                        style.minimum_width,
-                        style.minimum_height,
-                    )
-                },
-            )
-        },
-        |style| style.metrics,
-    )
-}
-
-pub fn button_label_color(
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-    style: ButtonStyle,
-    state: waterui_core::interaction::InteractionState,
-    interaction_style: Option<&InteractionStyle>,
-    floating_style: Option<&FloatingStyle>,
-) -> Option<Color> {
-    let disabled = state.contains(waterui_core::interaction::InteractionState::DISABLED);
-    interaction_style.map_or_else(
-        || {
-            floating_style.map_or_else(
-                || theme.button_label_color(style, disabled),
-                |style| {
-                    Some(if disabled {
-                        style
-                            .content_color
-                            .clone()
-                            .with_opacity(style.disabled_content_opacity)
-                    } else {
-                        style.content_color.clone()
-                    })
-                },
-            )
-        },
-        |style| style.resolved_label_color(state),
-    )
-}
-
-fn measure_button_label_intrinsic<E: crate::text::TextEngine>(
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-    style: ButtonStyle,
-    label: &Label,
-    state: &mut HydroState<E>,
-    env: &Environment,
-) -> LayoutSize {
-    if renders_as_plain_title(label) {
-        let styled = styled_button_title(state, theme, style, label, env);
-        HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
-    } else {
-        let label = styled_button_label(theme, style, label.clone());
-        measure_label_intrinsic(&label, state, env, theme)
-    }
-}
 
 /// Whether a label is nothing but its own title, and can therefore take the
 /// cheap path that draws styled text instead of retaining a sub-view.
@@ -1118,13 +1221,12 @@ pub fn label_resolves_icon_only(label: &Label, env: &Environment) -> bool {
 
 fn styled_button_title<E: crate::text::TextEngine>(
     state: &mut HydroState<E>,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-    style: ButtonStyle,
+    font: Option<Font>,
     label: &Label,
     env: &Environment,
 ) -> StyledStr {
     let title = label.semantic_text().clone();
-    let title = if let Some(font) = theme.button_label_font(style) {
+    let title = if let Some(font) = font {
         title.font(font)
     } else {
         title
@@ -1144,8 +1246,8 @@ fn watch_button_title<E: crate::text::TextEngine>(
     let _ = renderer.read_signal(label.semantic_text().resolve(env).content());
 }
 
-/// Fills `color` into chunks that have no explicit foreground: the theme's
-/// button label color is a default, never an override of caller styling.
+/// Fills `color` into chunks that have no explicit foreground: the look's
+/// label colour is a default, never an override of caller styling.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
@@ -1162,18 +1264,14 @@ fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr 
     out
 }
 
-/// Applies the theme's button label font to a label that owns its text. A
-/// label built from caller-supplied views carries its own typography, and
+/// Applies the look's label font to a label that owns its text. A label
+/// built from caller-supplied views carries its own typography, and
 /// `Label::font` rejects it outright.
-fn styled_button_label(
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-    style: ButtonStyle,
-    label: Label,
-) -> Label {
+fn styled_button_label(font: Option<Font>, label: Label) -> Label {
     if label.has_custom_content() {
         return label;
     }
-    if let Some(font) = theme.button_label_font(style) {
+    if let Some(font) = font {
         label.font(font)
     } else {
         label
@@ -1206,28 +1304,198 @@ pub fn emit_menu_accessibility<E: crate::text::TextEngine>(
 
 #[cfg(test)]
 mod tests {
-    use super::{MENU_TRIGGER_STYLE, button_chrome_size};
-    use crate::theme::ButtonMetrics;
+    use super::{
+        ButtonChromeState, MenuRenderState, button_size, look_color, retained_label_color,
+    };
+    use crate::theme::{
+        ButtonLook, Chrome, CornerShape, FocusIndicator, Label, Motion, PressFeedback, StateLayer,
+        Surface,
+    };
+    use cherenkov_record::WorkingColor;
+    use kurbo::Rect;
+    use nami::{Signal as _, SignalExt as _};
+    use waterui::Color;
+    use waterui::{AnyView, View};
+    use waterui_controls::ControlSize;
     use waterui_controls::button::ButtonStyle;
+    use waterui_controls::menu::{Menu, ResolvedMenu};
+    use waterui_core::Environment;
+    use waterui_core::animation::Animation;
+    use waterui_core::interaction::{InteractionState, StateValue};
     use waterui_core::layout::{ProposalSize, Size};
 
-    #[test]
-    fn menu_trigger_uses_material_default_button_style() {
-        assert_eq!(MENU_TRIGGER_STYLE, ButtonStyle::Automatic);
+    /// The trigger spec of `menu` resolved in `env`.
+    fn trigger_spec(menu: Menu, env: &Environment) -> crate::theme::ButtonSpec {
+        let resolved = AnyView::new(View::body(menu, env))
+            .downcast::<ResolvedMenu>()
+            .expect("a menu resolves to its native config");
+        MenuRenderState::<crate::text::ParleyEngine>::from_resolved(*resolved, env).spec(env)
     }
 
     #[test]
-    fn button_chrome_measurement_uses_metrics_and_proposal() {
+    fn menu_trigger_takes_the_menus_style_and_size() {
+        let env = Environment::new();
+        let plain = trigger_spec(Menu::new("Sort", ()), &env);
+        assert_eq!(
+            (plain.style(), plain.size()),
+            (ButtonStyle::Automatic, ControlSize::Small),
+            "a menu defaults to the default button"
+        );
+
+        let styled = trigger_spec(
+            Menu::new("Sort", ())
+                .style(ButtonStyle::BorderedProminent)
+                .size(ControlSize::Large),
+            &env,
+        );
+        assert_eq!(
+            (styled.style(), styled.size()),
+            (ButtonStyle::BorderedProminent, ControlSize::Large)
+        );
+
+        let mut ambient = Environment::new();
+        ambient.install(ButtonStyle::Bordered);
+        assert_eq!(
+            trigger_spec(Menu::new("Sort", ()), &ambient).style(),
+            ButtonStyle::Bordered,
+            "an automatic trigger takes the ambient button style"
+        );
+    }
+
+    fn tint_of(spec: &crate::theme::ButtonSpec, env: &Environment) -> [f32; 4] {
+        spec.tint().resolve(env).snapshot().components
+    }
+
+    #[test]
+    fn a_tinted_subtree_carries_its_tint_and_an_untinted_one_the_accent() {
+        let accent = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+        let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+        let mut env = Environment::new();
+        waterui::theme::install_color_signal::<waterui::theme::color::Accent>(
+            &mut env,
+            nami::constant(accent).computed(),
+        );
+        let spec = |env: &Environment| {
+            super::button_spec(ButtonStyle::Automatic, ControlSize::Small, false, env)
+        };
+        assert_eq!(tint_of(&spec(&env), &env), accent.components);
+
+        let tinted = env.extending(waterui::theme::Tint::new(Color::new(
+            waterui_graphics::color::Working(red),
+        )));
+        assert_eq!(tint_of(&spec(&tinted), &tinted), red.components);
+        assert_ne!(
+            spec(&tinted),
+            spec(&env),
+            "a re-tint requests the look again"
+        );
+        assert_eq!(
+            spec(&tinted),
+            spec(&tinted),
+            "the same tint is the same spec"
+        );
+    }
+
+    #[test]
+    fn a_tint_signal_change_reaches_the_look_without_requesting_it_again() {
+        let source = nami::Binding::container(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
+        let tint = waterui::theme::Tint::new(waterui_graphics::color::signal_color(
+            source.map(|color| Color::new(waterui_graphics::color::Working(color))),
+        ));
+        let env = Environment::new().extending(tint);
+        let spec = super::button_spec(ButtonStyle::Automatic, ControlSize::Small, false, &env);
+        let color = spec.tint().resolve(&env);
+        assert_eq!(color.snapshot().components, [1.0, 0.0, 0.0, 1.0]);
+
+        source.set(WorkingColor::new([0.0, 1.0, 0.0, 1.0]));
+
+        assert_eq!(color.snapshot().components, [0.0, 1.0, 0.0, 1.0]);
+        let again = super::button_spec(ButtonStyle::Automatic, ControlSize::Small, false, &env);
+        assert_eq!(again, spec, "the held look stays: no rebuild");
+    }
+
+    #[test]
+    fn button_measurement_uses_the_look_and_the_proposal() {
         let label = Size::new(11.0, 13.0);
-        let metrics = ButtonMetrics::new(3.0, 5.0, 37.0, 41.0);
+        let chrome = Chrome::new(
+            Surface::clear(CornerShape::radius(0.0)),
+            StateLayer::new(Color::srgb(0, 0, 0)),
+            PressFeedback::new(),
+            FocusIndicator::Tint,
+            Motion::uniform(Animation::linear(core::time::Duration::ZERO)),
+        );
+        let look = ButtonLook::new(chrome, Label::new())
+            .padding(3.0, 5.0)
+            .minimum_size(kurbo::Size::new(37.0, 41.0));
 
         assert_eq!(
-            button_chrome_size(label, &metrics, ProposalSize::UNSPECIFIED),
+            button_size(label, &look, ProposalSize::UNSPECIFIED),
             Size::new(37.0, 41.0)
         );
         assert_eq!(
-            button_chrome_size(label, &metrics, ProposalSize::new(Some(31.0), Some(29.0))),
+            button_size(label, &look, ProposalSize::new(Some(31.0), Some(29.0))),
             Size::new(31.0, 29.0)
         );
+    }
+
+    fn rgb(color: WorkingColor) -> (u8, u8, u8) {
+        let srgb = waterui_graphics::color::working::to_srgb(color);
+        let channel = |v: f32| crate::num_cast::f32_as_u8((v * 255.0).round());
+        (channel(srgb.red), channel(srgb.green), channel(srgb.blue))
+    }
+
+    fn coloured_look() -> ButtonLook {
+        let chrome = Chrome::new(
+            Surface::clear(CornerShape::radius(0.0)),
+            StateLayer::new(Color::srgb(0, 0, 0)),
+            PressFeedback::new(),
+            FocusIndicator::Tint,
+            Motion::uniform(Animation::linear(core::time::Duration::ZERO)),
+        );
+        ButtonLook::new(
+            chrome,
+            Label::new().color(
+                StateValue::new(Color::srgb(0, 0, 255))
+                    .when(InteractionState::DISABLED, Color::srgb(128, 128, 128))
+                    .when(InteractionState::HOVERED, Color::srgb(255, 0, 0)),
+            ),
+        )
+    }
+
+    /// The look's label colour resolves against the state: a disabled
+    /// label takes the disabled value, an enabled one the resting value.
+    #[test]
+    fn look_label_colour_resolves_disabled() {
+        let env = crate::renderer::tests::pumped_test_environment();
+        let look = coloured_look();
+        let resolve = |state| {
+            rgb(look_color(&look, state, Rect::ZERO)
+                .expect("the look styles the label colour")
+                .resolve(&env)
+                .snapshot())
+        };
+        assert_eq!(resolve(InteractionState::empty()), (0, 0, 255), "enabled");
+        assert_eq!(
+            resolve(InteractionState::DISABLED),
+            (128, 128, 128),
+            "disabled"
+        );
+    }
+
+    /// The retained label's colour follows the reported state reactively,
+    /// not just DISABLED: writing HOVERED recolours it with no rebuild.
+    #[test]
+    fn retained_label_colour_follows_hover() {
+        let env = crate::renderer::tests::pumped_test_environment();
+        let chrome = ButtonChromeState::new();
+        let resolved = retained_label_color(&coloured_look(), &chrome, &env)
+            .expect("the look styles the label colour")
+            .resolve(&env);
+
+        assert_eq!(rgb(resolved.snapshot()), (0, 0, 255), "resting");
+        chrome.label_state.set(InteractionState::HOVERED);
+        assert_eq!(rgb(resolved.snapshot()), (255, 0, 0), "hovered");
+        chrome.label_state.set(InteractionState::empty());
+        assert_eq!(rgb(resolved.snapshot()), (0, 0, 255), "back to resting");
     }
 }

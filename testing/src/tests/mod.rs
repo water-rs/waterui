@@ -294,19 +294,20 @@ mod token_probe {
     use std::time::Duration;
 
     use hydrolysis::theme::{
-        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
-        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
+        BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, FocusIndicator,
+        HitRegion, InputFieldMetrics, InteractionMotion, Label, ListMetrics, Motion,
+        NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback, ProgressIndicatorStyle,
         ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
-        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
+        SliderValueIndicatorMetrics, StateLayer, StepperEnd, StepperMetrics, Surface,
+        TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
+        TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
     };
     use kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
+    use waterui::component::ControlSize;
     use waterui::component::text;
     use waterui::component::toggle::ToggleStyle;
-    use waterui::component::{ControlSize, button::ButtonStyle};
     use waterui::env::use_env;
     use waterui::form::picker::PickerStyle;
     use waterui::graphics::draw::{Paint, Recorder};
@@ -411,23 +412,19 @@ mod token_probe {
             }
         }
 
-        fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-            ButtonMetrics {
-                padding_x: 1.0,
-                padding_y: 2.0,
-                min_width: 123.0,
-                min_height: 45.0,
-            }
-        }
-
-        fn draw_button_chrome(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _style: ButtonStyle,
-            _icon_only: bool,
-            _state: WidgetInteractionState,
-        ) {
+        fn button(&self, _spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
+            let chrome = Chrome::new(
+                Surface::clear(CornerShape::radius(0.0)),
+                StateLayer::new(Color::new(theme_color::Foreground)),
+                PressFeedback::new(),
+                FocusIndicator::Tint,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+            // The theme's `touch_delay`.
+            .hit(HitRegion::NONE.press_delay(Duration::from_millis(150)));
+            ButtonLook::new(chrome, Label::new())
+                .padding(1.0, 2.0)
+                .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
         fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {

@@ -1170,6 +1170,12 @@ pub struct GestureObserverEffect {
     /// `ListRenderState::row_gestures` performs per row; the node's identity is
     /// the key, so the recognizer dies with the view rather than leaking.
     pub(crate) gesture_target: Cell<Option<crate::gesture::GestureTarget>>,
+    /// A tap under a composed control's [`Chrome`](crate::theme::Chrome)
+    /// plugin: its live chrome, kept across flushes while the chrome and the
+    /// bounds stay the same.
+    pub(crate) chrome: RefCell<Option<crate::renderer::chrome::LiveChromeParts>>,
+    /// The state the tap's live chrome reports between flushes.
+    pub(crate) chrome_state: nami::Binding<waterui_core::interaction::InteractionState>,
 }
 
 pub struct ColorNode<E: crate::text::TextEngine> {

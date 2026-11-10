@@ -136,14 +136,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         #[cfg(target_os = "ios")]
         {
-            use waterui::reactive::SignalExt;
-            use waterui::resolve::Resolvable;
-            use waterui::theme::color::Accent;
-
             // `WuiComputedObservation(themeColor: Accent, env: newEnv)`: the
-            // wrapper's tint follows the overlaid environment's accent.
+            // wrapper's tint follows the overlaid environment's tint — its
+            // nearest `.tint(...)`, else the accent — and the native
+            // controls below inherit it.
             let tint_view = view::retain_base(host_view);
-            leaf.bind(&Accent.resolve(&env).computed(), move |color| {
+            leaf.bind(&super::button_chrome::tint_signal(&env), move |color| {
                 let accent = {
                     let [red, green, blue, alpha] = color.components;
                     cocoa_ui::uikit::colors::extended_linear_display_p3(

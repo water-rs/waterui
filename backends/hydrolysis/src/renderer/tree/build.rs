@@ -593,6 +593,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     default_a11y_label: renderer.accessibility_label_from_view(&content, env),
                     gesture_group_identity: gesture_group_identity(&content),
                     gesture_target: Cell::new(None),
+                    chrome: RefCell::new(None),
+                    chrome_state: nami::Binding::container(
+                        waterui_core::interaction::InteractionState::empty(),
+                    ),
                 };
                 return Self::build_wrapper(
                     WrapperEffect::GestureObserver(effect),
