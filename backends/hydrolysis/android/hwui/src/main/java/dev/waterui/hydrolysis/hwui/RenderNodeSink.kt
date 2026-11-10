@@ -496,6 +496,12 @@ class RenderNodeSink(private val text: TextLayouts) : CommandSink {
         target.withMatrix(this.matrix) { drawRenderNode(text.node(layout)) }
     }
 
+    override fun paintedText(layout: Int, matrix: FloatArray, color: Long) {
+        this.matrix.setValues(matrix)
+        val target = canvas()
+        target.withMatrix(this.matrix) { text.draw(layout, this, color) }
+    }
+
     override fun image(bitmap: Int, left: Float, top: Float, right: Float, bottom: Float, sampling: Int) {
         resetPaint()
         paint.isFilterBitmap = sampling == SamplingKind.LINEAR

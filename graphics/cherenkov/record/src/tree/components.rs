@@ -1,6 +1,9 @@
 //! Optional component tracks. Layers using only Affine allocate none of these.
 
-use super::{Affine, Animation, Instant, LayerNode, Prop, Track, Vec2, set_prop};
+use super::{
+    Affine, Animation, Instant, KeyframeProp, LayerKeyframes, LayerNode, Prop, Track, Vec2,
+    set_prop,
+};
 use crate::animation::Animatable;
 
 pub(super) struct Components {
@@ -148,12 +151,40 @@ impl Components {
     }
 }
 
+/// A component's keyframe setter: the track replaces the component's
+/// running one; sampling moves the value.
+macro_rules! keyframes {
+    ($method:ident, $track:ident, $ty:ty) => {
+        pub(super) fn $method(&mut self, prop: &KeyframeProp<$ty>) {
+            let component = self
+                .components
+                .get_or_insert_with(|| Box::new(Components::new(self.transform)));
+            component.$track = Some(Track::from_prop(prop));
+        }
+    };
+}
+
 impl LayerNode {
     property!(set_translation, translation, translation_track, Vec2);
     property!(set_rotation, rotation, rotation_track, f64);
     property!(set_scale, scale, scale_track, Vec2);
     property!(set_skew, skew, skew_track, Vec2);
     property!(set_pivot, pivot, pivot_track, Vec2);
+    keyframes!(translation_keyframes, translation_track, Vec2);
+    keyframes!(rotation_keyframes, rotation_track, f64);
+    keyframes!(scale_keyframes, scale_track, Vec2);
+
+    /// Runs a keyframe track on the property it names, replacing that
+    /// property's track.
+    pub(super) fn set_keyframes(&mut self, keyframes: &LayerKeyframes) {
+        match keyframes {
+            LayerKeyframes::Transform(prop) => self.transform_track = Some(Track::from_prop(prop)),
+            LayerKeyframes::Translation(prop) => self.translation_keyframes(prop),
+            LayerKeyframes::Rotation(prop) => self.rotation_keyframes(prop),
+            LayerKeyframes::Scale(prop) => self.scale_keyframes(prop),
+            LayerKeyframes::Opacity(prop) => self.opacity_track = Some(Track::from_prop(prop)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -288,6 +319,94 @@ mod tests {
             start: None,
         });
         assert!(node.components.as_ref().unwrap().rotation_track.is_some());
+    }
+
+    /// One second turning a full circle, eased in on the first half.
+    fn spin() -> crate::Keyframes<f64> {
+        let unit = Duration::from_secs(1);
+        crate::Keyframes::new(unit, 0.)
+            .then(0.5, Curve::ease_in(unit), PI)
+            .then(1., Curve::linear(unit), TAU)
+    }
+
+    #[test]
+    fn a_keyframed_rotation_is_a_true_rotation_that_repeats() {
+        let mut tree = SurfaceTree::new();
+        let root = tree.root();
+        tree.apply(LayerOp::Keyframes(
+            root,
+            crate::LayerKeyframes::Rotation(crate::KeyframeProp {
+                target: 0.,
+                keyframes: spin(),
+                repeat: crate::Repeat::Forever,
+            }),
+        ));
+        let start = Instant::now();
+        for frame in 0..360u32 {
+            let elapsed = Duration::from_secs(frame.into()) / 120;
+            let sampling = tree.sample(start + elapsed, 1.0);
+            assert!(sampling.stepped);
+            assert_eq!(sampling.rate, Some(super::super::RATE_FAST));
+            let angle = spin()
+                .sample(elapsed, crate::Repeat::Forever)
+                .expect("forever runs");
+            let node = tree.layer(root);
+            assert!((node.transform.determinant() - 1.).abs() < 1e-12, "{frame}");
+            for (got, want) in node
+                .transform
+                .as_coeffs()
+                .into_iter()
+                .zip(Affine::rotate(angle).as_coeffs())
+            {
+                assert!((got - want).abs() < 1e-12, "{frame}: {got} vs {want}");
+            }
+            assert!(
+                node.animations().is_none(),
+                "only the engine samples a keyframe track"
+            );
+        }
+
+        // A curve retargets from the sampled angle and settles.
+        let at = start + Duration::from_millis(3010);
+        let _ = tree.sample(at, 1.0);
+        let sampled = tree.layer(root).components.as_ref().unwrap().rotation;
+        rotation(&mut tree, 0.);
+        let _ = tree.sample(at, 1.0);
+        let continued = tree.layer(root).components.as_ref().unwrap().rotation;
+        assert!(
+            sampled > 0. && (continued - sampled).abs() < 1e-12,
+            "{sampled} -> {continued}"
+        );
+        let settled = tree.sample(at + Duration::from_secs(2), 1.0);
+        assert!(settled.rate.is_none(), "the curve settled");
+        assert!(tree.layer(root).components.as_ref().unwrap().rotation.abs() < 1e-12);
+        assert!(
+            !tree.sample(at + Duration::from_secs(3), 1.0).stepped,
+            "nothing is left to sample"
+        );
+    }
+
+    #[test]
+    fn a_finite_opacity_track_ends_on_its_target() {
+        let mut tree = SurfaceTree::new();
+        let root = tree.root();
+        let unit = Duration::from_millis(200);
+        tree.apply(LayerOp::Keyframes(
+            root,
+            crate::LayerKeyframes::Opacity(crate::KeyframeProp {
+                target: 0.25,
+                keyframes: crate::Keyframes::new(unit, 0.0_f32).then(1., Curve::linear(unit), 1.0),
+                repeat: crate::Repeat::ONCE,
+            }),
+        ));
+        let start = Instant::now();
+        let _ = tree.sample(start, 1.0);
+        let _ = tree.sample(start + Duration::from_millis(100), 1.0);
+        assert!((tree.layer(root).opacity - 0.5).abs() < 1e-6);
+        let sampling = tree.sample(start + Duration::from_millis(200), 1.0);
+        assert!(sampling.stepped && sampling.rate.is_none());
+        assert!((tree.layer(root).opacity - 0.25).abs() < f32::EPSILON);
+        assert!(!tree.sample(start + Duration::from_millis(300), 1.0).stepped);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use cocoa_ui::PlatformView;
 use cocoa_ui::Retained;
-use cocoa_ui::capture::{CapturableSurface, CaptureError, SurfaceCaptureCompletion};
+use cocoa_ui::capture::{CapturableSurface, CaptureError, CapturePass, SurfaceCaptureCompletion};
 use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
 use executor_core::spawn_local;
 use futures::FutureExt;
@@ -163,6 +163,10 @@ pub struct FilteredState {
     runtime: GpuRuntime,
     /// The pipeline caches every filtered view's effects share, per device.
     pipelines: Rc<crate::gpu_runtime::FilterPipelines>,
+    /// The shared pass this view's frame and external-render captures
+    /// queue into — one transaction commit per run-loop turn for every
+    /// filtered view, never one per view.
+    captures: CapturePass,
     /// The host-owned effect clock — `frame_clock` on the ffi state. It
     /// measures effect time only; it does not drive presentation.
     frame_clock: RefCell<EffectFrameClock>,
@@ -858,7 +862,13 @@ fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
     let weak = Sendable(Rc::downgrade(state));
     // The capture completion is `Fn` — the work crosses it inside a slot.
     let work = std::sync::Mutex::new(Some(Sendable(work)));
-    capture.capture(&capture_input, generation, move |outcome| {
+    // Queued, not prepared here: every filtered view's link fires in the
+    // same display update, and the pass prepares all of their captures
+    // under one transaction commit before the turn's own (#4074). The
+    // frame stays in flight — its lease held, the link paused — until the
+    // completion settles it.
+    let captures = &state.captures;
+    captures.capture(capture, &capture_input, generation, move |outcome| {
         if let Some(state) = weak.get().upgrade() {
             let work = work.lock().expect("capture fires once").take();
             if let Some(work) = work {
@@ -1408,13 +1418,19 @@ fn finish_presented_frame(
     // The live GPU context already checked above; the remaining gates are
     // the presenter's own — generation and drawable size — plus the
     // visibility contract: attached, windowed, unsuppressed, not
-    // externally captured and not parked on a publication.
+    // externally captured, not parked on a publication, and the same
+    // render gate the link issued the frame under. A participant's owed
+    // first frame presents while occluded — a filter below the fold of
+    // its scroll viewport — as the GPU surface's does: refusing it here
+    // while `can_render_frame` keeps issuing it re-renders the frame on
+    // every display update, never reveals, and the first-paint wait
+    // never ends.
     let presentable = state.attached.get()
         && !state.park.is_held()
         && cocoa_ui::view::window(&state.view).is_some()
         && state.capture_suppression.get() == 0
         && state.external_count.get() == 0
-        && !presentation_occluded(&state.view);
+        && can_render_frame(state);
     // `present` consumes the frame's lease; `None` — stale generation or
     // size — settles it without presenting.
     let presented = if presentable {
@@ -1744,8 +1760,14 @@ fn request_ready_frame(state: &Rc<FilteredState>, waker: std::task::Waker) {
     cocoa_ui::view::layout_immediately(&state.view);
     initialize_gpu(state);
     request_render(state);
+    // The waiter queues whether or not the leaf attached: an attach this
+    // pass deferred — a parked publication, an inactive scene — is
+    // retaken by the publication or visibility wake, whose attach owes
+    // the first paint and whose presented frame drains the queue.
+    // Dropping the waker instead would leave the first-paint wait with
+    // nothing to wake it once that frame lands.
+    state.ready_waiters.borrow_mut().push(waker);
     if !state.attached.get() {
-        complete_ready(state);
         return;
     }
     // The waiter is a first-paint participant — owe the reveal frame so
@@ -1753,7 +1775,6 @@ fn request_ready_frame(state: &Rc<FilteredState>, waker: std::task::Waker) {
     state
         .first_paint_owed
         .set(participates_in_first_paint_ready(state));
-    state.ready_waiters.borrow_mut().push(waker);
     update_link_demand(state);
 }
 
@@ -2050,7 +2071,10 @@ impl CapturableSurface for FilteredCapturable {
         let FilteredInput::Captured { capture, .. } = &state.input else {
             unreachable!("the frozen input returns above")
         };
-        capture.capture(&input_native, context.generation(), move |outcome| {
+        // A parent's frame drives this render: the child's capture joins
+        // the turn's shared pass like an on-screen frame's.
+        let (captures, generation) = (&state.captures, context.generation());
+        captures.capture(capture, &input_native, generation, move |outcome| {
             let completion = completion.lock().expect("capture completion lock").take();
             let Some(completion) = completion else {
                 return;
@@ -2333,7 +2357,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         {
             return crate::components::native_filter::mount(mtm, ctx, content, chained, &plan);
         }
-        let runtime = crate::gpu_runtime::runtime(ctx.env());
+        let services = services(ctx.env());
         let (sources, guard_list): (Vec<AnyEffect>, Vec<ParamGuards>) = chained.into_iter().unzip();
         // The chain presents outermost-last: effects render content-adjacent
         // first, so reverse the collection order.
@@ -2348,10 +2372,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let child_view = cocoa_ui::view::retain_base(mounted.view());
         build_filtered_parts(
             mtm,
-            GpuServices {
-                runtime,
-                pipelines: crate::gpu_runtime::filter_pipelines(ctx.env()),
-            },
+            services,
             &view,
             &child_view,
             Some(mounted),
@@ -2369,6 +2390,8 @@ struct GpuServices {
     runtime: GpuRuntime,
     /// The pipeline caches the environment's filtered views share.
     pipelines: Rc<crate::gpu_runtime::FilterPipelines>,
+    /// The pass every filtered view's per-frame captures queue into.
+    captures: CapturePass,
 }
 
 /// The built filtered leaf and the owned pieces its settlement paths keep —
@@ -2486,7 +2509,11 @@ fn wire_filtered_state(
     effects: Vec<Box<dyn ErasedEffect>>,
     env: &waterui_backend_core::Environment,
 ) -> (Rc<FilteredState>, FilteredGuard, Rc<dyn CapturableSurface>) {
-    let GpuServices { runtime, pipelines } = services;
+    let GpuServices {
+        runtime,
+        pipelines,
+        captures,
+    } = services;
 
     // `setupOutputView`: a layer-backed sibling drawn last. Its
     // presentation is the `CAMetalLayer` sublayer the
@@ -2565,6 +2592,7 @@ fn wire_filtered_state(
             effects: Rc::new(RefCell::new(None)),
             runtime,
             pipelines,
+            captures,
             frame_clock: RefCell::new(EffectFrameClock::new()),
             timeline_parked: Cell::new(true),
             setup_generation: Rc::new(Cell::new(None)),
@@ -2684,12 +2712,13 @@ fn wire_filtered_state(
     (state, guard, capturable)
 }
 
-/// The runtime and pipeline caches `env`'s GPU installation hands
-/// every filtered realization — the same values `install` reads.
+/// The runtime, pipeline caches and capture pass `env`'s GPU installation
+/// hands every filtered realization.
 fn services(env: &waterui_backend_core::Environment) -> GpuServices {
     GpuServices {
         runtime: crate::gpu_runtime::runtime(env),
         pipelines: crate::gpu_runtime::filter_pipelines(env),
+        captures: crate::gpu_runtime::capture_pass(env),
     }
 }
 
@@ -3049,10 +3078,10 @@ pub mod native_test {
     };
 
     use super::{
-        CAMetalLayer, CapturableSurface, CaptureError, DrawableFrame, ErasedEffect, FilteredParts,
-        FilteredState, GpuRuntime, GpuServices, HostView, MetalPresenter, MetalTexture, Mounted,
-        PlatformView, Rc, RefCell, Retained, Weak, build_filtered_parts, fmt, output_pixel_format,
-        render_frame, settle_capture_failure, wgpu,
+        CAMetalLayer, CapturableSurface, CaptureError, CapturePass, DrawableFrame, ErasedEffect,
+        FilteredParts, FilteredState, GpuRuntime, GpuServices, HostView, MetalPresenter,
+        MetalTexture, Mounted, PlatformView, Rc, RefCell, Retained, Weak, build_filtered_parts,
+        fmt, output_pixel_format, render_frame, settle_capture_failure, wgpu,
     };
     use crate::components::gpu_surface::native_test::{MountedSceneSurface, fixture_env};
     use cocoa_ui::MainThreadMarker;
@@ -3254,6 +3283,7 @@ pub mod native_test {
             GpuServices {
                 runtime: runtime.clone(),
                 pipelines: Rc::new(crate::gpu_runtime::FilterPipelines::new()),
+                captures: CapturePass::new(mtm),
             },
             &view,
             child_view,

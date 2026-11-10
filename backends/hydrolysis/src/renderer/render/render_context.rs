@@ -47,6 +47,14 @@ impl RenderContext {
     pub const fn bounds(&self) -> kurbo::Rect {
         self.bounds
     }
+
+    /// The bounds' width as the line-break width of text drawn in a rectangle
+    /// the caller allocated itself. A leaf with a layout answer passes that
+    /// answer's exact width instead.
+    #[must_use]
+    pub const fn bounds_width_f32(&self) -> f32 {
+        crate::num_cast::f64_as_f32(self.bounds.x1 - self.bounds.x0)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -220,16 +228,6 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         self.renderer.draw_context(ctx, body);
     }
 
-    /// Lists `source` as a live item at this point of the widget's record
-    /// ([`HydrolysisRenderer::push_live`]).
-    pub(crate) fn push_live(
-        &mut self,
-        source: &std::rc::Rc<dyn crate::renderer::chrome::LiveSource>,
-    ) {
-        let ctx = self.render_context();
-        self.renderer.push_live(ctx, source);
-    }
-
     pub(crate) fn state_mut(&mut self) -> &mut HydroState<E> {
         &mut self.renderer.state
     }
@@ -264,6 +262,28 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         f: impl FnOnce(&mut Self),
     ) {
         self.open_scope(key, alpha, clip);
+        f(self);
+        self.close_scope();
+    }
+
+    /// Runs `f` inside the named scope `key`, clipped to `clip`, whose
+    /// layer follows `operands` between renders: a group that fades or a
+    /// content scale that moves without a render. The transform operand is
+    /// given in this context's space.
+    pub(crate) fn with_live_scope(
+        &mut self,
+        key: crate::renderer::mount::ScopeKey,
+        operands: crate::renderer::frame::ScopeOperands,
+        clip: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.renderer.open_live_scope(
+            key,
+            operands,
+            self.local,
+            &crate::renderer::frame::ScopeClip::Rect(clip),
+            crate::renderer::ScopeDelta::RECORD_SPACE,
+        );
         f(self);
         self.close_scope();
     }
@@ -312,6 +332,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         let renderer = self.renderer_mut();
         renderer.render_styled_text_limited(
             child_ctx,
+            child_ctx.bounds_width_f32(),
             styled,
             alignment,
             env,
@@ -319,18 +340,31 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         );
     }
 
-    pub(crate) fn render_styled_text_single_line_centered(
+    /// A single line of `styled` centred in `bounds`, growing with
+    /// `scale`'s press scale when given — a label that follows its
+    /// chrome — and its default-coloured runs drawn in `paint`, live,
+    /// when given.
+    pub(crate) fn render_styled_text_single_line_scaled(
         &mut self,
         styled: StyledStr,
         env: &Environment,
         bounds: kurbo::Rect,
+        scale: Option<&std::rc::Rc<crate::renderer::chrome::LiveChrome>>,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
+        let widget = self.render_context().local();
         let child_ctx = self.child(
             kurbo::Affine::translate((bounds.x0, bounds.y0)),
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        renderer.render_styled_text_single_line_centered(child_ctx, styled, env);
+        renderer.render_styled_text_single_line_centered(
+            child_ctx,
+            styled,
+            env,
+            scale.map(|chrome| (chrome, widget)),
+            paint,
+        );
     }
 }
 

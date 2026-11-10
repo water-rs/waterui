@@ -21,7 +21,7 @@ use crate::engine::{CompletionWaker, SurfaceWaker};
 use crate::error::{EngineError, ResourceError, SurfaceError, SurfaceRejection};
 use cherenkov_record::RefreshRange;
 
-use crate::frame::{FrameId, FrameStats, Next};
+use crate::frame::{FrameId, FrameStats, FrameTime, Next};
 use crate::image::ImageUpload;
 use cherenkov_record::ResourceId;
 use cherenkov_record::{BackdropShaderId, ChangeSet, LayerId, SurfaceId, SurfaceTree};
@@ -456,7 +456,7 @@ fn apply_message<B: Backend>(
         } => {
             let id = FrameId(*next_frame);
             *next_frame += 1;
-            let result = render::<B>(renderer, surfaces, resources, id, time.0, &mut commits);
+            let result = render::<B>(renderer, surfaces, resources, id, time, &mut commits);
             // This frame's queued retirements belong to its batch.
             drain_retire::<B>(retire_rx, renderer);
             let sender = reply.clone();
@@ -996,23 +996,24 @@ fn render<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     resources: &mut Resources<B>,
     id: FrameId,
-    time: crate::Instant,
+    time: FrameTime,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
 ) -> RenderOutcome<B> {
-    sample_owned::<B>(renderer, surfaces, time);
+    let instant = time.instant();
+    sample_owned::<B>(renderer, surfaces, instant);
     let rejected = apply_commits(renderer, surfaces, resources, commits);
-    let frames = sample_frames(surfaces, time, &rejected);
+    let frames = sample_frames(surfaces, instant, &rejected);
     let mut stats = FrameStats::default();
     let (redraw, commit) = renderer.render(
         &Frame {
             id,
-            time: crate::frame::FrameTime(time),
+            time,
             surfaces: &frames,
         },
         &mut stats,
     )?;
     drop(frames);
-    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw, &rejected);
+    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, instant, &redraw, &rejected);
     Ok(RenderedFrame {
         next,
         surface_next,
@@ -1032,25 +1033,26 @@ async fn render_local<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     resources: &mut Resources<B>,
     id: FrameId,
-    time: crate::Instant,
+    time: FrameTime,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
 ) -> RenderOutcome<B> {
-    sample_owned::<B>(renderer, surfaces, time);
+    let instant = time.instant();
+    sample_owned::<B>(renderer, surfaces, instant);
     let rejected = apply_commits(renderer, surfaces, resources, commits);
-    let frames = sample_frames(surfaces, time, &rejected);
+    let frames = sample_frames(surfaces, instant, &rejected);
     let mut stats = FrameStats::default();
     let (redraw, commit) = renderer
         .render(
             &Frame {
                 id,
-                time: crate::frame::FrameTime(time),
+                time,
                 surfaces: &frames,
             },
             &mut stats,
         )
         .await?;
     drop(frames);
-    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw, &rejected);
+    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, instant, &redraw, &rejected);
     Ok(RenderedFrame {
         next,
         surface_next,
@@ -1288,8 +1290,7 @@ impl<B: Backend> LocalState<B> {
                 let id = FrameId(*next_frame);
                 *next_frame += 1;
                 let result =
-                    render_local::<B>(renderer, surfaces, resources, id, time.0, &mut commits)
-                        .await;
+                    render_local::<B>(renderer, surfaces, resources, id, time, &mut commits).await;
                 let _ = reply.send(crate::message::RenderReply { result, commits });
             }
             Message::FinishTimings { reply } => {

@@ -128,7 +128,7 @@ fn multi_surface_frame_grows_instances_once() -> Result<(), Box<dyn std::error::
     }
     let _ = sink.take();
     let start = Instant::now();
-    wait!(engine.render(FrameTime::at(start)))?;
+    wait!(engine.render(FrameTime::unpresented_at(start)))?;
     let grown = grows(&sink.take(), "instances");
     assert_eq!(
         grown.len(),
@@ -138,7 +138,7 @@ fn multi_surface_frame_grows_instances_once() -> Result<(), Box<dyn std::error::
     );
     // The same frame re-rendered keeps the grown buffer: no regrow.
     let _ = sink.take();
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(16))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(16))))?;
     assert_eq!(
         grows(&sink.take(), "instances").len(),
         0,
@@ -415,11 +415,11 @@ fn stale_bind_groups_retire_at_capture_regen() -> Result<(), Box<dyn std::error:
             .backdrop(group.sample());
     });
     let start = Instant::now();
-    wait!(engine.render(FrameTime::at(start)))?;
+    wait!(engine.render(FrameTime::unpresented_at(start)))?;
     surface.update(|tx| {
         tx[&glass].clip(Rect::new(0.0, 0.0, 64.0, 64.0));
     });
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(16))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(16))))?;
     let drops = bind_drops(&sink.take());
     assert!(
         drops
@@ -437,7 +437,7 @@ fn stale_bind_groups_retire_at_capture_regen() -> Result<(), Box<dyn std::error:
     surface.update(|tx| {
         tx[&glass].clip(Rect::new(0.0, 0.0, 16.0, 16.0));
     });
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(32))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(32))))?;
     assert_eq!(
         wait!(engine.memory())?.backdrop_captures,
         Bytes(64 * 64 * 8),
@@ -477,7 +477,7 @@ fn small_big_small_with_work_in_flight() -> Result<(), Box<dyn std::error::Error
             }
         });
         was_big = big;
-        engine.render(FrameTime::at(start + Duration::from_millis(16 * frame)))
+        engine.render(FrameTime::unpresented_at(start + Duration::from_millis(16 * frame)))
     };
     // No readback or poll between renders — submissions stay in flight.
     wait!(render(false, 0))?;

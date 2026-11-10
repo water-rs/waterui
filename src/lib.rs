@@ -91,7 +91,7 @@ pub mod prelude {
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
     pub use super::theme::{
-        self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color,
+        self, ColorScheme, ColorSettings, FontSettings, Theme, Tint, color as theme_color,
     };
 
     pub use super::text::{TextConfig, font, highlight, styled};
@@ -153,11 +153,11 @@ pub use view::FilterViewExt;
 pub use view::ViewExt;
 #[cfg(feature = "barcode")]
 pub use waterui_barcode as barcode;
-#[cfg(feature = "canvas")]
-pub use waterui_canvas as canvas;
 #[cfg(feature = "chart")]
 pub use waterui_chart as chart;
 pub use waterui_form as form;
+#[cfg(feature = "canvas")]
+pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
 #[cfg(feature = "gpu")]

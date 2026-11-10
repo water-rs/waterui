@@ -126,7 +126,7 @@ use waterui::accessibility::{
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
     AccessibilityValue,
 };
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
 use waterui::background::{Background, MaterialBackground, MaterialGroup};
 use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
@@ -180,6 +180,7 @@ use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
+use waterui_graphics::canvas::CanvasView;
 use waterui_graphics::color::Color;
 use waterui_graphics::draw::{Paint, WorkingColor};
 #[cfg(hydrolysis_gpu)]
@@ -519,6 +520,12 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// slot in `animation_controller`; begins and retires with it.
     animation_owner_pins: AnimationOwnerPins,
     frame_instant: Instant,
+    /// When the platform reports the frame being rendered will reach the
+    /// display — Android's Choreographer expected presentation time. `None`
+    /// on a platform that reports none: the frame is then rendered at the
+    /// instant it starts.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    presentation_target: Option<Instant>,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState<E>,
     #[cfg(feature = "accessibility")]
@@ -758,8 +765,9 @@ impl<E: crate::text::TextEngine> core::ops::DerefMut for HydrolysisRenderer<E> {
 
 pub const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
-const TEXT_SELECTION_MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
-const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
+/// The click count at which text selection stops growing: a double click
+/// selects a word, a triple click a line.
+const MAX_TEXT_SELECTION_CLICKS: u32 = 3;
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
@@ -885,6 +893,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             animation_controller: AnimationController::default(),
             animation_owner_pins: AnimationOwnerPins::default(),
             frame_instant,
+            #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+            presentation_target: None,
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             #[cfg(feature = "accessibility")]

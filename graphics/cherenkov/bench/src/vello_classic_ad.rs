@@ -379,7 +379,7 @@ impl Engine for VelloClassic {
             ),
         );
         self.counters.draw_commands += 1;
-        let scroll = input.scroll_transform();
+        let scroll = input.frame_transform();
         for op in &lowered.ops {
             replay_op(&mut scene, op, &mut self.counters, scroll);
         }

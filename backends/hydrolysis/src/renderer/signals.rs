@@ -487,6 +487,27 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.signals.set_frame_clock(at);
     }
 
+    /// Records when the frame about to render will be presented, as the
+    /// platform reported it, or clears it for a platform that reports none.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    pub(crate) const fn set_presentation_target(&mut self, target: Option<Instant>) {
+        self.presentation_target = target;
+    }
+
+    /// The time the engine renders the next frame against: the platform's
+    /// reported presentation time, else the frame's own instant — the clock
+    /// every animation Hydrolysis samples reads, so an operand animated
+    /// inside the engine advances with the presented frames rather than
+    /// with the wall clock.
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) const fn frame_time(&self) -> cherenkov::FrameTime {
+        #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+        if let Some(target) = self.presentation_target {
+            return cherenkov::FrameTime::presented_at(target);
+        }
+        cherenkov::FrameTime::unpresented_at(self.frame_instant)
+    }
+
     pub(crate) const fn frame_instant(&self) -> Instant {
         self.frame_instant
     }
@@ -524,11 +545,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let armed_for_watch = Rc::clone(&armed);
         let guard = subscription.activate(move |update| {
             let target = if *update.value() { 1.0 } else { 0.0 };
-            let animation = update
-                .metadata()
-                .try_get::<Animation>()
-                .unwrap_or_else(|| default_animation.clone());
-            watcher_handle.apply_target(target, Some(animation), clock.frame_clock());
+            let animation = ChangeAnimation::of(update.metadata()).or(default_animation.clone());
+            watcher_handle.apply_target(target, animation, clock.frame_clock());
             if armed_for_watch.get()
                 && let Some(cell) = owner.upgrade()
             {

@@ -1,3 +1,4 @@
+mod canvas;
 mod harness;
 mod transitions;
 
@@ -18,13 +19,13 @@ use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
+use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
 use waterui::graphics::draw::{self, Draw as _, Recorder, kurbo};
 use waterui::graphics::scene_view::SceneViewMergeToParent;
 use waterui::graphics::{RecordingResources, SceneContent, SceneView, WorkingColor};
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
-use waterui_canvas::Canvas;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, ContentLedger, Native, Signal, View};
 
@@ -293,19 +294,20 @@ mod token_probe {
     use std::time::Duration;
 
     use hydrolysis::theme::{
-        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
-        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
+        BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, FocusIndicator,
+        HitRegion, InputFieldMetrics, InteractionMotion, Label, ListMetrics, Motion,
+        NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback, ProgressIndicatorStyle,
         ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
-        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
+        SliderValueIndicatorMetrics, StateLayer, StepperEnd, StepperMetrics, Surface,
+        TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
+        TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
     };
     use kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
+    use waterui::component::ControlSize;
     use waterui::component::text;
     use waterui::component::toggle::ToggleStyle;
-    use waterui::component::{ControlSize, button::ButtonStyle};
     use waterui::env::use_env;
     use waterui::form::picker::PickerStyle;
     use waterui::graphics::draw::{Paint, Recorder};
@@ -410,23 +412,19 @@ mod token_probe {
             }
         }
 
-        fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-            ButtonMetrics {
-                padding_x: 1.0,
-                padding_y: 2.0,
-                min_width: 123.0,
-                min_height: 45.0,
-            }
-        }
-
-        fn draw_button_chrome(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _style: ButtonStyle,
-            _icon_only: bool,
-            _state: WidgetInteractionState,
-        ) {
+        fn button(&self, _spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
+            let chrome = Chrome::new(
+                Surface::clear(CornerShape::radius(0.0)),
+                StateLayer::new(Color::new(theme_color::Foreground)),
+                PressFeedback::new(),
+                FocusIndicator::Tint,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+            // The theme's `touch_delay`.
+            .hit(HitRegion::NONE.press_delay(Duration::from_millis(150)));
+            ButtonLook::new(chrome, Label::new())
+                .padding(1.0, 2.0)
+                .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
         fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
@@ -1095,16 +1093,18 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
         .assert_not_exists();
 }
 
-/// A `Canvas` composes to `SceneView`, whose accessibility metadata is a
+/// A `Canvas` composes to `CanvasView`, whose accessibility metadata is a
 /// product of the view tree — the IMAGE role and its label exist on the
 /// semantic pipeline with nothing rendered.
 #[test]
 fn canvas_and_text_expose_accessibility_nodes_semantically() {
     let mut app = ui().viewport(320, 320).mount(|| {
         vstack((
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+            Canvas::new(|cx| {
+                cx.fill(
+                    Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)),
+                    Srgb::new(0.0, 0.85, 0.65).resolve(),
+                );
             })
             .size(240.0, 180.0)
             .a11y_role(waterui::accessibility::AccessibilityRole::Image)
@@ -1437,6 +1437,36 @@ fn wait_for_frames_observes_the_pump_that_settled_the_runtime() {
 
     let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(app.wait_for_frames(&[motion], 60), WaitResult::Completed);
+}
+
+#[test]
+fn a_focus_only_update_keeps_the_tree() {
+    // An update without `tree` is incremental (water-rs/waterui#2940): a
+    // focus move carries no nodes, and the tree it lands on is unchanged.
+    let focus_move = AccessibilityTreeUpdate {
+        nodes: Vec::new(),
+        tree: None,
+        tree_id: AccessibilityTreeId::ROOT,
+        focus: AccessibilityNodeId(3),
+    };
+    let mut app = mounted_on(
+        EmitThenSettleDriver {
+            pumps: 0,
+            emit_at: 1,
+            update: focus_move,
+        },
+        tree(vec![
+            node(1, Role::LIST, Some("root"), None, true),
+            node(2, Role::BUTTON, Some("Save"), None, true),
+            node(3, Role::BUTTON, Some("Cancel"), None, true),
+        ]),
+    );
+
+    app.settle();
+
+    assert!(app.query().role(Role::BUTTON).label("Save").exists());
+    assert_eq!(app.tree.root, node_id(1));
+    assert_eq!(app.tree.focus, node_id(3));
 }
 
 #[test]

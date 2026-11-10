@@ -350,6 +350,27 @@ pub trait ViewExt: View + Sized {
         self.foreground(theme::color::MutedForeground)
     }
 
+    /// Sets the tint the controls in this view's subtree draw with.
+    ///
+    /// A control's tint is the nearest enclosing `tint`, and the theme's
+    /// `Accent` token when none is set. Buttons, switches, sliders and other
+    /// controls draw their emphasis with it. The colour may be a signal; a
+    /// change updates the controls in place.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// vstack((
+    ///     button("Delete").action(|| {}).tint(Color::red()),
+    ///     button("Save").action(|| {}),
+    /// ));
+    /// ```
+    fn tint(self, color: impl Into<Color>) -> impl View {
+        self.with(theme::Tint::new(color))
+    }
+
     /// Adds an overlay to this view.
     ///
     /// Unlike `ZStack`, `Overlay` will not affect the size of the base view.

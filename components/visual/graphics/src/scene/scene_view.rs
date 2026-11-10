@@ -10,8 +10,9 @@ use nami::watcher::BoxWatcherGuard;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
+use crate::draw::Instant;
 use crate::input::SurfaceInputEvent;
-use crate::scene::resources::RecordingResources;
+use crate::scene::resources::{RecordingResources, SceneResources};
 
 /// Environment marker: render `SceneView` directly in the backend scene.
 #[derive(Debug, Clone, Copy, Default)]
@@ -36,7 +37,51 @@ pub fn invalidate_on_change<S: Signal>(
     Box::new(signal.watch(move |_| invalidator()))
 }
 
+/// The frame a host presents scene content in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneFrame {
+    /// The width of the box the content draws into, in logical points.
+    pub width: f32,
+    /// The height of that box, in logical points.
+    pub height: f32,
+    /// The instant of the presented frame, on the host's frame clock — the
+    /// clock every animation of the host samples, which a test harness
+    /// advances by pumped frames.
+    pub time: Instant,
+}
+
+/// What [`SceneContent::update_scene`] did with the content's installed
+/// recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every scene host handles both answers; a new answer must fail their build instead of falling into a wildcard arm"
+)]
+pub enum SceneUpdate {
+    /// The content keeps no recording it can update: the host records it
+    /// with [`SceneContent::build_scene`] and installs the result.
+    Record,
+    /// The installed recording was brought up to date in place, and stays
+    /// installed. `again` asks for another frame.
+    Retained {
+        /// Whether the content requires another frame to be presented.
+        again: bool,
+    },
+}
+
 /// Object-safe scene producer for `SceneView`.
+///
+/// # Recording and updating
+///
+/// A host that keeps a content's recording installed between frames calls
+/// [`update_scene`](Self::update_scene) for every frame it presents the
+/// content in — after mounting, after an invalidation, and for each frame
+/// the content asked for — and records the content with
+/// [`build_scene`](Self::build_scene) only when that call answers
+/// [`SceneUpdate::Record`]. Content that records itself once and then edits
+/// its installed recording in place answers
+/// [`SceneUpdate::Retained`]; content that draws from scratch keeps the
+/// default, and is recorded again for every frame.
 pub trait SceneContent: 'static {
     /// Records this content's drawing into `recorder`, registering and naming
     /// through `resources` whatever engine resource the drawing uses.
@@ -119,6 +164,27 @@ pub trait SceneContent: 'static {
     /// generation-bound value must preserve its semantic inputs while
     /// rebuilding that value.
     fn rebuild_for_engine(&mut self);
+
+    /// Brings the recording this content installed up to date for `frame`,
+    /// in place.
+    ///
+    /// The content follows `frame`'s box and clock, and applies what changed
+    /// since the last call to the recording it last made with
+    /// [`build_scene`](Self::build_scene), registering through `resources`
+    /// whatever the change draws. Every registration such an edit names is
+    /// held by the edited part of the recording itself, which releases it
+    /// once the edit that replaced it has reached the target, so the host
+    /// keeps holding only what the installed recording's
+    /// [`build_scene`](Self::build_scene) named.
+    ///
+    /// Answers [`SceneUpdate::Record`] when there is no installed recording
+    /// to update — before the first record, after the host retired it, after
+    /// [`rebuild_for_engine`](Self::rebuild_for_engine) — and the host then
+    /// records the content. The default answers it always.
+    fn update_scene(&mut self, resources: &SceneResources, frame: SceneFrame) -> SceneUpdate {
+        let _ = (resources, frame);
+        SceneUpdate::Record
+    }
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
     ///

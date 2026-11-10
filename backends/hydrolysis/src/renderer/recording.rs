@@ -123,6 +123,8 @@ enum Op {
         brush_alpha: f32,
         style: peniko::Style,
         glyphs: Arc<[Glyph]>,
+        /// A live paint drawn in place of `brush`.
+        paint: Option<Computed<Paint>>,
     },
     BlurredRoundedRect {
         transform: Affine,
@@ -157,6 +159,8 @@ enum Op {
         resource: Arc<crate::hwui::text::TextLayoutResource>,
         transform: Affine,
         clip: Option<Rect>,
+        /// A live paint the layout's default-coloured runs draw with.
+        paint: Option<Computed<Paint>>,
     },
     PopLayer,
 }
@@ -654,6 +658,18 @@ impl Recording {
     /// Draws a run of shaped glyphs.
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn glyphs(&mut self, run: &GlyphRun<'_>) {
+        self.push_glyphs(run, None);
+    }
+
+    /// Draws a run of shaped glyphs with `paint`, live, in place of the
+    /// run's brush.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    pub(crate) fn painted_glyphs(&mut self, run: &GlyphRun<'_>, paint: &Computed<Paint>) {
+        self.push_glyphs(run, Some(paint.clone()));
+    }
+
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    fn push_glyphs(&mut self, run: &GlyphRun<'_>, paint: Option<Computed<Paint>>) {
         if run.glyphs.is_empty() {
             return;
         }
@@ -666,6 +682,7 @@ impl Recording {
             brush_alpha: run.brush_alpha,
             style: run.style.to_owned(),
             glyphs: Arc::from(run.glyphs),
+            paint,
         });
     }
 
@@ -699,17 +716,20 @@ impl Recording {
 
     /// Draws the platform text layout `resource` leases, under `transform`
     /// and clipped to `clip` in layout-local coordinates.
+    /// Its default-coloured runs draw with `paint`, live, when given.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) fn draw_platform_text(
         &mut self,
         resource: Arc<crate::hwui::text::TextLayoutResource>,
         transform: Affine,
         clip: Option<Rect>,
+        paint: Option<&Computed<Paint>>,
     ) {
         self.ops.push(Op::Text {
             resource,
             transform,
             clip,
+            paint: paint.cloned(),
         });
     }
 
@@ -854,6 +874,20 @@ impl Recording {
             } => Some((*transform, glyphs.as_ref())),
             _ => None,
         })
+    }
+
+    /// The current value of each glyph run's live paint, in op order; a run
+    /// drawn in its fixed brush reads `None`. For tests asserting that a
+    /// label colour follows its operand without a new recording.
+    #[cfg(test)]
+    pub(crate) fn glyph_paints(&self) -> Vec<Option<Paint>> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Glyphs { paint, .. } => Some(paint.as_ref().map(nami::Signal::snapshot)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The premultiplied sRGB colours of every solid fill or stroke op, for
@@ -1103,14 +1137,9 @@ fn lower(
                 brush_alpha,
                 style,
                 glyphs,
+                paint: live,
             } => {
                 let font = resources.font(names, font);
-                let Some(mut paint) = drawable(resources.paint(names, brush)) else {
-                    continue;
-                };
-                if *brush_alpha < 1.0 {
-                    paint = alpha_scaled_paint(paint, *brush_alpha);
-                }
                 let style = match style {
                     peniko::Style::Fill(_) => GlyphStyle::Fill,
                     peniko::Style::Stroke(stroke) => GlyphStyle::Stroke(stroke.clone()),
@@ -1130,7 +1159,24 @@ fn lower(
                         .collect(),
                     style,
                 };
-                recorder.transform(*transform, |r| r.glyphs(run, paint));
+                let alpha = *brush_alpha;
+                let scaled = move |paint| {
+                    if alpha < 1.0 {
+                        alpha_scaled_paint(paint, alpha)
+                    } else {
+                        paint
+                    }
+                };
+                if let Some(live) = live {
+                    let paint = nami::SignalExt::map(live, scaled);
+                    recorder.transform(*transform, |r| r.glyphs(run, paint));
+                } else {
+                    let Some(paint) = drawable(resources.paint(names, brush)) else {
+                        continue;
+                    };
+                    let paint = scaled(paint);
+                    recorder.transform(*transform, |r| r.glyphs(run, paint));
+                }
             }
             Op::BlurredRoundedRect {
                 transform,
@@ -1200,18 +1246,23 @@ fn lower(
                 resource,
                 transform,
                 clip,
+                paint,
             } => {
                 let id = resource.id();
                 names
                     .text_layouts
                     .entry(id)
                     .or_insert_with(|| Arc::clone(resource));
+                let draw = |r: &mut Recorder, transform: Affine| match paint {
+                    Some(paint) => r.painted_text(id, transform, paint.clone()),
+                    None => r.text(id, transform),
+                };
                 if let Some(clip) = clip {
                     recorder.transform(*transform, |r| {
-                        r.clip(*clip, |r| r.text(id, Affine::IDENTITY));
+                        r.clip(*clip, |r| draw(r, Affine::IDENTITY));
                     });
                 } else {
-                    recorder.text(id, *transform);
+                    draw(recorder, *transform);
                 }
             }
             Op::PopLayer => return,
@@ -1565,6 +1616,7 @@ mod tests {
             Arc::clone(&resource),
             Affine::translate((3.0, 4.0)),
             Some(Rect::new(0.0, 0.0, 30.0, 20.0)),
+            None,
         );
 
         // The resource also survives a clone through `append` into a placed

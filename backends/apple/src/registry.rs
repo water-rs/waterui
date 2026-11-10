@@ -171,6 +171,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
     // resolves mounted surfaces through its registry.
     #[cfg(feature = "gpu_surface")]
     crate::components::gpu_surface::install(dispatcher);
+    #[cfg(feature = "canvas")]
+    crate::components::canvas::install(dispatcher);
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     crate::components::filtered::install(dispatcher);
     #[cfg(feature = "picture")]

@@ -34,6 +34,10 @@ pub(super) struct HeadlessPlatformWindow {
     /// through [`HeadlessRuntime::set_touch_scroll_config`], like a real
     /// touch platform pushing its `ViewConfiguration` values.
     touch_scroll_config: Cell<Option<crate::platform::TouchScrollConfig>>,
+    /// The input conventions a test pins through
+    /// [`HeadlessRuntime::set_input_conventions`]; without one the host
+    /// reports the offscreen window's data defaults.
+    input_conventions: Cell<Option<crate::platform::InputConventions>>,
     /// The last blur-behind request `set_blur_behind` delivered — the
     /// headless stand-in for the compositor protocol a real host dispatches
     /// to, read by the runner's background tests.
@@ -42,16 +46,6 @@ pub(super) struct HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HeadlessPlatformWindow {
-    #[cfg(test)]
-    pub(super) fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
-        Self::on_context(
-            OffscreenGpuContext::new_for_tests_blocking(),
-            width,
-            height,
-            format,
-        )
-    }
-
     pub(super) fn on_context(
         gpu: OffscreenGpuContext,
         width: u32,
@@ -69,6 +63,7 @@ impl HeadlessPlatformWindow {
             occluded: Cell::new(false),
             pointer_position: None,
             touch_scroll_config: Cell::new(None),
+            input_conventions: Cell::new(None),
             blur_behind: Cell::new(None),
         }
     }
@@ -78,6 +73,12 @@ impl HeadlessPlatformWindow {
     #[cfg(any(test, feature = "testing"))]
     pub(super) fn set_touch_scroll_config(&self, config: crate::platform::TouchScrollConfig) {
         self.touch_scroll_config.set(Some(config));
+    }
+
+    /// The conventions [`PlatformWindow::input_conventions`] reports.
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) fn set_input_conventions(&self, conventions: crate::platform::InputConventions) {
+        self.input_conventions.set(Some(conventions));
     }
 
     pub(super) fn set_scale_factor(&mut self, scale_factor: f64) {
@@ -132,6 +133,12 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
     fn touch_scroll_config(&self) -> Option<crate::platform::TouchScrollConfig> {
         self.touch_scroll_config.get()
+    }
+
+    fn input_conventions(&self) -> crate::platform::InputConventions {
+        self.input_conventions
+            .get()
+            .unwrap_or_else(|| self.inner.input_conventions())
     }
 
     fn request_redraw(&self) {
@@ -482,9 +489,8 @@ impl HeadlessRuntime {
 
     /// Creates a headless runtime for `WaterUI` test hosts.
     ///
-    /// This constructor allows software adapters for CI-only
-    /// semantic testing while keeping [`Self::new`] on production adapter
-    /// selection, and resolves font families strictly
+    /// It selects its adapter exactly as [`Self::new`] does; what differs is
+    /// that it resolves font families strictly
     /// ([`FontFamilyResolution::Strict`]): a named family the collection
     /// cannot resolve fails the shape naming it, so a style package's missing
     /// fonts fail the test instead of silently substituting a face.
@@ -498,7 +504,7 @@ impl HeadlessRuntime {
         style: impl crate::Style,
     ) -> Self {
         Self::on_gpu_context(
-            OffscreenGpuContext::new_for_tests_blocking(),
+            OffscreenGpuContext::new_blocking(),
             env,
             default_window(content),
             width,
@@ -521,7 +527,7 @@ impl HeadlessRuntime {
         style: impl crate::Style,
     ) -> Self {
         Self::on_gpu_context(
-            OffscreenGpuContext::new_for_tests_blocking(),
+            OffscreenGpuContext::new_blocking(),
             env,
             window,
             width,
@@ -618,9 +624,10 @@ impl HeadlessRuntime {
         ));
 
         // Headless binaries (preview, tests) have no platform runner to install
-        // a tracing subscriber; honor `RUST_LOG` here so they stay debuggable.
+        // a tracing subscriber; honor `RUST_LOG` and `WATERUI_LOG` here so they
+        // stay debuggable.
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_env_filter(waterui_backend_core::log::env_filter())
             .with_writer(std::io::stderr)
             .try_init();
         let local_executor = HeadlessMainThreadExecutor::thread_shared();
@@ -1055,6 +1062,17 @@ impl HeadlessRuntime {
         self.runtime.platform.set_touch_scroll_config(config);
         for popup in &mut self.popup_windows {
             popup.platform.set_touch_scroll_config(config);
+        }
+    }
+
+    /// The input conventions this runtime's host reports — a test's stand-in
+    /// for the platform's double-click and paste-shortcut settings, applied by
+    /// the next input dispatch.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_input_conventions(&mut self, conventions: crate::platform::InputConventions) {
+        self.runtime.platform.set_input_conventions(conventions);
+        for popup in &mut self.popup_windows {
+            popup.platform.set_input_conventions(conventions);
         }
     }
 
@@ -1629,7 +1647,7 @@ mod generation_tests {
         let rebuilds = Rc::new(Cell::new(0_u32));
         let installs = Rc::new(Cell::new(0_u32));
         let latest = Rc::new(RefCell::new(None));
-        let gpu_a = OffscreenGpuContext::new_for_tests_blocking();
+        let gpu_a = OffscreenGpuContext::new_blocking();
         let mut runtime = HeadlessRuntime::new_for_tests_on_context(
             gpu_a,
             test_environment(),
@@ -1678,7 +1696,7 @@ mod generation_tests {
             "device.destroy() delivered no device-lost callback within 10s of device polls"
         );
 
-        let gpu_b = OffscreenGpuContext::new_for_tests_blocking();
+        let gpu_b = OffscreenGpuContext::new_blocking();
         let _replaced = replace_gpu_context(&mut runtime, gpu_b);
 
         let mut second = runtime.pump_at(true, t0 + Duration::from_millis(16));

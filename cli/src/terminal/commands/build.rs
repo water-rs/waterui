@@ -1,6 +1,6 @@
 //! `water build` command implementation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, ValueEnum};
 use eyre::{Result, bail};
@@ -148,8 +148,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         return Box::pin(run_embedded_build(shell, &args, &context)).await;
     }
 
-    let kotlin_toolchain =
-        check_build_toolchain(shell, args.platform, context.backend, args.arch).await?;
+    let kotlin_toolchain = check_build_toolchain(
+        shell,
+        context.project.root(),
+        args.platform,
+        context.backend,
+        args.arch,
+    )
+    .await?;
     let result = Box::pin(execute_build(
         shell,
         &args,
@@ -404,6 +410,7 @@ fn print_build_header(
 
 async fn check_build_toolchain(
     shell: &Shell,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: Option<TargetArch>,
@@ -411,6 +418,7 @@ async fn check_build_toolchain(
     let spinner = shell.spinner("Checking toolchain...");
     let kotlin_toolchain = check_toolchain_for_backend(
         &waterui_cli::toolchain::Host::current(),
+        project_root,
         platform,
         backend,
         arch,
@@ -539,6 +547,7 @@ fn validate_output_dir_args(
 
 async fn check_toolchain_for_backend(
     host: &waterui_cli::toolchain::Host,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: Option<TargetArch>,
@@ -559,7 +568,7 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_gtk4(host).await?;
+            toolchain_checks::check_gtk4(host, project_root).await?;
         }
         TargetBackend::Hydrolysis => {
             if platform == TargetPlatform::Android {
@@ -577,6 +586,7 @@ async fn check_toolchain_for_backend(
             {
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
+            toolchain_checks::check_hydrolysis(host, project_root).await?;
         }
         TargetBackend::WinUi => {
             if platform != TargetPlatform::Windows {

@@ -391,16 +391,21 @@ impl ButtonConfig {
     #[must_use]
     fn resolve(mut self, env: &Environment) -> Self {
         self.label = self.label.resolve(env);
-        // `Automatic` means "whatever this context calls for". A surrounding
-        // scope can say what that is — a list row wants row-style buttons, not
-        // the filled containers a screen's primary action gets — while an
-        // explicit style on the button still wins.
-        if matches!(self.style, ButtonStyle::Automatic)
-            && let Some(ambient) = env.get::<ButtonStyle>()
-        {
-            self.style = *ambient;
-        }
+        self.style = self.style.resolve(env);
         self
+    }
+}
+
+impl ButtonStyle {
+    /// This style in `env`. `Automatic` means "whatever this context calls
+    /// for", and a surrounding scope can say what that is — a list row wants
+    /// row-style buttons, not the filled containers a screen's primary
+    /// action gets — while an explicit style still wins.
+    pub(crate) fn resolve(self, env: &Environment) -> Self {
+        match (self, env.get::<Self>()) {
+            (Self::Automatic, Some(ambient)) => *ambient,
+            (style, _) => style,
+        }
     }
 }
 

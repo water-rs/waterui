@@ -16,9 +16,13 @@ pub mod wgpu {
     pub use ::wgpu::*;
     use std::time::Duration;
 
+    use cherenkov::Instant;
+
     /// Persistent device resources supplied once before rendering content.
     #[derive(Debug)]
     pub struct Context<'a> {
+        /// Instance that created the adapter.
+        pub instance: &'a Instance,
         /// Adapter that owns the engine's device.
         pub adapter: &'a Adapter,
         /// Engine-owned device.
@@ -54,6 +58,9 @@ pub mod wgpu {
         pub elapsed: Duration,
         /// Time since the previous presentation of this content.
         pub delta: Duration,
+        /// The platform's target presentation time for this frame, when its
+        /// frame clock reports one.
+        pub presentation_time: Option<Instant>,
         pub(crate) redraw: bool,
     }
 
@@ -271,6 +278,23 @@ pub const fn memory_hints(backend: wgpu::Backend) -> wgpu::MemoryHints {
         | wgpu::Backend::Dx12
         | wgpu::Backend::Gl
         | wgpu::Backend::BrowserWebGpu => wgpu::MemoryHints::Performance,
+    }
+}
+
+/// The largest buffer, in bytes, the allocator [`memory_hints`] selects
+/// suballocates from its device-memory blocks, or `None` where the
+/// backend's allocator takes no hint.
+///
+/// A buffer past it is a dedicated driver allocation, whose release the
+/// driver may keep charged to the process (water-rs/waterui#4108); the
+/// per-frame scratch is sized within it.
+#[must_use]
+pub const fn suballocation_limit(backend: wgpu::Backend) -> Option<u64> {
+    match memory_hints(backend) {
+        wgpu::MemoryHints::Manual {
+            suballocated_device_memory_block_size,
+        } => Some(suballocated_device_memory_block_size.end),
+        _ => None,
     }
 }
 

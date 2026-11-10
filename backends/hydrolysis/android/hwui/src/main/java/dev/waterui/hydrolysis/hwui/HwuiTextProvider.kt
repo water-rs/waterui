@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis.hwui
 
 import androidx.core.graphics.toColorInt
+import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
@@ -29,6 +30,10 @@ import dev.waterui.hydrolysis.CalledFromNative
 interface TextLayouts {
     /** Layout `id`'s node, recorded once with `Layout.draw`. */
     fun node(id: Int): RenderNode
+
+    /** Draws layout `id` into `canvas`, its default-coloured runs in
+     * `color` — runs the text styled with their own colour keep it. */
+    fun draw(id: Int, canvas: Canvas, color: Long)
 
     /** Drops layout `id`, on the frame's `ReleaseTextLayout`. */
     fun release(id: Int)
@@ -173,6 +178,21 @@ class HwuiTextProvider : TextLayouts {
         val node = nodes[id]
         if (!node.hasDisplayList()) record(layouts[id], node)
         node
+    }
+
+    // The base paint carries the paragraph's default colour; a run with its
+    // own foreground overrides it in its span, so swapping the base colour
+    // for the draw recolours exactly the default runs.
+    override fun draw(id: Int, canvas: Canvas, color: Long) = synchronized(lock) {
+        val layout = layouts[id]
+        val paint = layout.paint
+        val laidOut = paint.colorLong
+        paint.setColor(color)
+        try {
+            layout.draw(canvas)
+        } finally {
+            paint.setColor(laidOut)
+        }
     }
 
     /** Final teardown for a destroyed painter: every retained layout, node

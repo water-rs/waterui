@@ -23,19 +23,20 @@ use core::cell::RefCell;
 #[cfg(target_os = "ios")]
 use cocoa_ui::Retained;
 use cocoa_ui::{PlatformView, Rect};
-use waterui::animation::Animation;
+use waterui::animation::ChangeAnimation;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::watcher::Metadata;
 use waterui::reactive::{Signal, SignalExt};
 use waterui::resolve::Resolvable;
-use waterui::theme::color::{Accent, AccentContainer, Border, Tertiary, TertiaryContainer};
+use waterui::theme::color::{AccentContainer, Border, Tertiary, TertiaryContainer};
 use waterui_backend_core::Environment;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
 
+use crate::components::button_chrome;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
@@ -330,7 +331,7 @@ fn as_view(progress: &Progress) -> &PlatformView {
 /// Whether `metadata` asks for an animated fill — `WuiProgress` passed the
 /// flag through `UIProgressView.setProgress(_:animated:)`.
 fn should_animate(metadata: &Metadata) -> bool {
-    metadata.try_get::<Animation>().is_some()
+    ChangeAnimation::of(metadata).animation().is_some()
 }
 
 /// A `WorkingColor` as the platform's extended linear Display-P3 color object — the
@@ -588,12 +589,12 @@ fn install_tint(
     env: &Environment,
     four_color: bool,
 ) {
-    let accent = Accent.resolve(env);
+    let tint = button_chrome::tint_signal(env);
     {
         let mut state_mut = state.borrow_mut();
-        state_mut.palette = Vec::from([accent.snapshot()]);
+        state_mut.palette = Vec::from([tint.snapshot()]);
     }
-    leaf.bind(&accent, {
+    leaf.bind(&tint, {
         let state = Rc::clone(state);
         move |color| {
             let mut state_mut = state.borrow_mut();
@@ -641,6 +642,8 @@ fn install_tint(
 
 #[cfg(test)]
 mod tests {
+    use waterui::animation::{Animation, NoAnimation};
+
     use super::*;
 
     #[test]
@@ -713,5 +716,8 @@ mod tests {
     fn should_animate_only_with_animation_metadata() {
         assert!(!should_animate(&Metadata::new()));
         assert!(should_animate(&Metadata::new().with(Animation::Default)));
+        assert!(!should_animate(
+            &Metadata::new().with(Animation::Default).with(NoAnimation)
+        ));
     }
 }

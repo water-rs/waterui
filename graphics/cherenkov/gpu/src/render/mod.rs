@@ -59,9 +59,9 @@ use crate::{
 use bitmap::BitmapKey;
 use cherenkov::{
     ContentOp, EngineError, FontData as EngineFontData, FontId, Frame, FrameId, FrameRedraw,
-    FrameStats, FrameTiming, ImageId, ImageUpload, LayerId, MemoryUsage, OffscreenFormat,
-    PassTiming, Pressure, ProducerId, Readback, RenderError, Renderer, ResourceError, ResourceId,
-    SurfaceError, SurfaceFrame, SurfaceId, SurfaceInfo, Visibility,
+    FrameStats, FrameTime, FrameTiming, ImageId, ImageUpload, LayerId, MemoryUsage,
+    OffscreenFormat, PassTiming, Pressure, ProducerId, Readback, RenderError, Renderer,
+    ResourceError, ResourceId, SurfaceError, SurfaceFrame, SurfaceId, SurfaceInfo, Visibility,
 };
 /// The export pool's platform type: the bounded dma-buf pool on Linux
 /// (#1687), an uninhabited stand-in elsewhere.
@@ -1307,7 +1307,7 @@ pub struct GpuRenderer {
     /// encode loop, so the module materializes in
     /// `prepare_lazy_pipelines`).
     #[cfg(target_arch = "wasm32")]
-    lazy_modules: FxHashMap<usize, shaders::EnginePrograms>,
+    lazy_modules: FxHashMap<(usize, usize), shaders::EnginePrograms>,
     /// The configured isolation texture format.
     scratch_format: wgpu::TextureFormat,
     layout0: wgpu::BindGroupLayout,
@@ -1645,6 +1645,15 @@ fn create_device(
     config: &GpuConfig,
 ) -> Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue), EngineError> {
     if let Some(shared) = &config.device {
+        if !shared
+            .device
+            .features()
+            .contains(wgpu::Features::SHADER_F16)
+        {
+            return Err(EngineError::Backend(
+                "the shared device lacks SHADER_F16".into(),
+            ));
+        }
         return Ok((
             shared.instance.clone(),
             shared.adapter.clone(),
@@ -1684,11 +1693,11 @@ fn create_device(
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
     // The float32 features are what an `Rgba32Float` offscreen surface
     // needs; a device without them rejects that surface by name.
-    let mut required = supported
-        & (image_storage::COMPRESSION_FEATURES
-            | wgpu::Features::INDIRECT_FIRST_INSTANCE
-            | wgpu::Features::SHADER_F16
-            | float32_target_features());
+    let mut required = wgpu::Features::SHADER_F16
+        | supported
+            & (image_storage::COMPRESSION_FEATURES
+                | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                | float32_target_features());
     // The fixed engine shaders are precompiled (#57, #2726): Vulkan loads
     // SPIR-V, Metal a metallib and DX12 DXIL through the passthrough API;
     // wgpu-hal advertises the feature unconditionally on all three.
@@ -1906,6 +1915,15 @@ async fn create_device(
     config: &GpuConfig,
 ) -> Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue), EngineError> {
     if let Some(shared) = &config.device {
+        if !shared
+            .device
+            .features()
+            .contains(wgpu::Features::SHADER_F16)
+        {
+            return Err(EngineError::Backend(
+                "the shared device lacks SHADER_F16".into(),
+            ));
+        }
         return Ok((
             shared.instance.clone(),
             shared.adapter.clone(),
@@ -1954,11 +1972,11 @@ async fn create_device(
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
     // The float32 features are what an `Rgba32Float` offscreen surface
     // needs; a device without them rejects that surface by name.
-    let mut required = supported
-        & (image_storage::COMPRESSION_FEATURES
-            | wgpu::Features::INDIRECT_FIRST_INSTANCE
-            | wgpu::Features::SHADER_F16
-            | float32_target_features());
+    let mut required = wgpu::Features::SHADER_F16
+        | supported
+            & (image_storage::COMPRESSION_FEATURES
+                | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                | float32_target_features());
     // Pass-boundary timestamps are all Metal is asked for: Apple GPUs
     // advertise `TIMESTAMP_QUERY_INSIDE_ENCODERS` but sample only at
     // stage boundaries, so an encoder-level `write_timestamp` goes through
@@ -2521,7 +2539,7 @@ impl PipelineFactory<'_> {
     ) -> Result<wgpu::RenderPipeline, RenderError> {
         let module = self
             .delivery
-            .engine_programs(self.device, variant_index(variant));
+            .engine_programs(self.device, variant_index(variant), format);
         create_pipeline(
             self.device,
             self.config,
@@ -2762,8 +2780,9 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 "vulkan on-chip composition"
             );
         }
-        let modules = core_pipelines_eager()
-            .then(|| EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v)));
+        let modules = core_pipelines_eager().then(|| {
+            EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v, WORKING_FORMAT))
+        });
         fire_probe(
             &config,
             CreationPhase::ShaderModules,
@@ -3014,6 +3033,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         };
         let gpu_cov = gpu_cov::GpuCoverage::new(
             &device,
+            adapter.get_info().backend,
             config.budget.gpu.0 / gpu_cov::BUDGET_SHARE,
             PipelineCache::new(pipeline_cache.as_ref(), &config),
         );
@@ -3187,7 +3207,8 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     // the union module is not in this eager set. WebGPU keeps WGSL (#57).
     let shader_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let shader_delivery = shaders::delivery(info.backend, &device)?;
-    let modules = EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v));
+    let modules =
+        EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v, WORKING_FORMAT));
     if let Some(error) = shader_scope.pop().await {
         return Err(EngineError::Backend(error.to_string()));
     }
@@ -3386,6 +3407,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     )?;
     let gpu_cov = gpu_cov::GpuCoverage::new(
         &device,
+        adapter.get_info().backend,
         config.budget.gpu.0 / gpu_cov::BUDGET_SHARE,
         PipelineCache::new(pipeline_cache.as_ref(), &config),
     );
@@ -4129,6 +4151,14 @@ impl Renderer for GpuRenderer {
                     .get_mut(&layer)
                     .expect("slot update targets a layer without content")
                     .update(updates);
+                None
+            }
+            Some(ContentOp::Edit(edit)) => {
+                state
+                    .layers
+                    .get_mut(&layer)
+                    .expect("a structural edit targets a layer without content")
+                    .edit(*edit);
                 None
             }
             Some(ContentOp::Picture(picture)) => state
@@ -5009,7 +5039,8 @@ impl GpuRenderer {
         frame: &Frame<'_>,
         stats: &mut FrameStats,
     ) -> Result<(FrameRedraw, FrameCommits), RenderError> {
-        let origin = *self.origin.get_or_insert(frame.time.0);
+        let instant = frame.time.instant();
+        let origin = *self.origin.get_or_insert(instant);
         self.frame_count += 1;
         self.drain_timestamps();
         self.plane_only.clear();
@@ -5059,7 +5090,7 @@ impl GpuRenderer {
         // producer's new ring frame must be its current frame before
         // `ready_planes`/`lower_content` build this frame's plane
         // candidates, and one render serves every dirty surface.
-        self.render_producers(&dirty, frame.time.0).await?;
+        self.render_producers(&dirty, frame.time).await?;
         // Lower every dirty surface first: the GPU timestamp bracket must
         // start after CPU lowering (rasters, uploads) so it measures GPU
         // work only. Instances, stops and globals are appended frame-wide
@@ -5121,7 +5152,11 @@ impl GpuRenderer {
             for sf in &dirty {
                 self.render_shaders(
                     sf.id,
-                    frame.time.0.saturating_duration_since(origin).as_secs_f32(),
+                    frame
+                        .time
+                        .instant()
+                        .saturating_duration_since(origin)
+                        .as_secs_f32(),
                 )?;
                 self.prepare_filters(sf.id).await?;
                 // wasm cannot create pipelines inside encode — the
@@ -5186,7 +5221,8 @@ impl GpuRenderer {
         frame: &Frame<'_>,
         stats: &mut FrameStats,
     ) -> Result<(FrameRedraw, FrameCommits), RenderError> {
-        let origin = *self.origin.get_or_insert(frame.time.0);
+        let instant = frame.time.instant();
+        let origin = *self.origin.get_or_insert(instant);
         self.frame_count += 1;
         self.drain_timestamps();
         #[cfg(all(unix, not(target_vendor = "apple")))]
@@ -5238,7 +5274,7 @@ impl GpuRenderer {
         // producer's new ring frame must be its current frame before
         // `ready_planes`/`lower_content` build this frame's plane
         // candidates, and one render serves every dirty surface.
-        self.render_producers(&dirty, frame.time.0)?;
+        self.render_producers(&dirty, frame.time)?;
         // Lower every dirty surface first: the GPU timestamp bracket must
         // start after CPU lowering (rasters, uploads) so it measures GPU
         // work only. Instances, stops and globals are appended frame-wide
@@ -5298,7 +5334,11 @@ impl GpuRenderer {
             for sf in &dirty {
                 self.render_shaders(
                     sf.id,
-                    frame.time.0.saturating_duration_since(origin).as_secs_f32(),
+                    frame
+                        .time
+                        .instant()
+                        .saturating_duration_since(origin)
+                        .as_secs_f32(),
                 )?;
             }
             diag::set_phase("encode");
@@ -5348,13 +5388,13 @@ impl GpuRenderer {
 
     fn filter_timing(&mut self, frame: &Frame<'_>, origin: Instant) -> filtrate::EffectFrameTiming {
         let timing = filtrate::EffectFrameTiming::new(
-            frame.time.0.saturating_duration_since(origin),
+            frame.time.instant().saturating_duration_since(origin),
             self.last_frame.map_or(std::time::Duration::ZERO, |last| {
-                frame.time.0.saturating_duration_since(last)
+                frame.time.instant().saturating_duration_since(last)
             }),
             frame.id.get(),
         );
-        self.last_frame = Some(frame.time.0);
+        self.last_frame = Some(frame.time.instant());
         timing
     }
 
@@ -5727,7 +5767,7 @@ impl GpuRenderer {
     fn render_producers(
         &mut self,
         dirty: &[&SurfaceFrame<'_>],
-        time: Instant,
+        time: FrameTime,
     ) -> Result<(), RenderError> {
         let mut wanted: FxHashMap<ProducerId, ((u32, u32), f32)> = FxHashMap::default();
         for sf in dirty {
@@ -5751,7 +5791,14 @@ impl GpuRenderer {
             self.producers
                 .get_mut(&id)
                 .expect("composed GPU producer")
-                .render(&self.adapter, &self.device, &self.queue, time, size, scale)?;
+                .render(
+                    &self.instance,
+                    &self.adapter,
+                    &self.device,
+                    &self.queue,
+                    time,
+                    (size, scale),
+                )?;
         }
         Ok(())
     }
@@ -5770,7 +5817,7 @@ impl GpuRenderer {
     async fn render_producers(
         &mut self,
         dirty: &[&SurfaceFrame<'_>],
-        time: Instant,
+        time: FrameTime,
     ) -> Result<(), RenderError> {
         let mut wanted: FxHashMap<ProducerId, ((u32, u32), f32)> = FxHashMap::default();
         for sf in dirty {
@@ -5794,7 +5841,14 @@ impl GpuRenderer {
             self.producers
                 .get_mut(&id)
                 .expect("composed GPU producer")
-                .render(&self.adapter, &self.device, &self.queue, time, size, scale)
+                .render(
+                    &self.instance,
+                    &self.adapter,
+                    &self.device,
+                    &self.queue,
+                    time,
+                    (size, scale),
+                )
                 .await?;
         }
         Ok(())
@@ -6839,7 +6893,9 @@ impl GpuRenderer {
 
     /// The device's coverage binding limit, when it computes.
     fn coverage_limit(&self, has_compute: bool) -> Option<gpu_cov::CoverageLimit> {
-        has_compute.then(|| gpu_cov::CoverageLimit::new(&self.device.limits()))
+        has_compute.then(|| {
+            gpu_cov::CoverageLimit::new(&self.device.limits(), self.adapter.get_info().backend)
+        })
     }
 
     /// Commit raster storage before accepting optional picture images. Every
@@ -12124,8 +12180,14 @@ impl GpuRenderer {
         }
         let module = self
             .lazy_modules
-            .entry(variant)
-            .or_insert_with(|| self.shader_delivery.engine_programs(&self.device, variant));
+            .entry((variant, format_i))
+            .or_insert_with(|| {
+                self.shader_delivery.engine_programs(
+                    &self.device,
+                    variant,
+                    RENDER_FORMATS[format_i],
+                )
+            });
         *cell = Some(
             create_pipeline(
                 &self.device,
@@ -12166,8 +12228,14 @@ impl GpuRenderer {
         });
         let module = self
             .lazy_modules
-            .entry(variant)
-            .or_insert_with(|| self.shader_delivery.engine_programs(&self.device, variant));
+            .entry((variant, format_i))
+            .or_insert_with(|| {
+                self.shader_delivery.engine_programs(
+                    &self.device,
+                    variant,
+                    RENDER_FORMATS[format_i],
+                )
+            });
         for phase in [CoveragePhase::Opaque, CoveragePhase::Partial] {
             self.coverage_pipelines[format_i][usize::from(gpu)][phase as usize] = Some(
                 create_pipeline(

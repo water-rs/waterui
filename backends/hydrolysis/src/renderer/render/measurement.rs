@@ -589,7 +589,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         alignment: HorizontalAlignment,
         env: &Environment,
     ) {
-        self.render_styled_text_limited(ctx, styled, alignment, env, TailMark::None);
+        self.render_styled_text_limited(
+            ctx,
+            ctx.bounds_width_f32(),
+            styled,
+            alignment,
+            env,
+            TailMark::None,
+        );
     }
 
     #[expect(
@@ -599,13 +606,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn render_styled_text_limited(
         &mut self,
         ctx: RenderContext,
+        max_width: f32,
         styled: StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
         tail: TailMark,
     ) {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        self.record_text_input(ctx, &input, tail);
+        self.record_text_input(ctx, max_width, &input, tail);
     }
 
     /// [`Self::render_styled_text_limited`], also returning the layout the
@@ -616,31 +624,35 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn render_styled_text_with_layout(
         &mut self,
         ctx: RenderContext,
+        max_width: f32,
         styled: &StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
         tail: TailMark,
     ) -> E::Layout {
         let input = resolve_text_layout_input(styled, alignment, env);
-        let max_width = self.record_text_input(ctx, &input, tail);
+        self.record_text_input(ctx, max_width, &input, tail);
         let (max_lines, tail_ellipsis) = tail.parts();
         if tail_ellipsis {
-            self.state.text.shape_limited(&input, max_width, max_lines)
+            self.state
+                .text
+                .shape_limited(&input, Some(max_width), max_lines)
         } else {
-            self.state.text.shape(&input, max_width)
+            self.state.text.shape(&input, Some(max_width))
         }
     }
 
-    /// Records `input` at `ctx`'s width and pushes the recording as a live
-    /// source; returns the width it was laid out at.
+    /// Records `input` broken at `max_width` and positioned at `ctx`'s
+    /// origin, and pushes the recording as a live source.
     fn record_text_input(
         &mut self,
         ctx: RenderContext,
+        max_width: f32,
         input: &crate::text::ResolvedTextLayoutInput,
         tail: TailMark,
-    ) -> Option<f32> {
+    ) {
         let state = &mut self.state;
-        let max_width = Some(crate::num_cast::f64_as_f32(ctx.bounds().width()));
+        let max_width = Some(max_width);
         let fragment = state.text.record(
             input,
             max_width,
@@ -659,7 +671,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             },
             &source,
         );
-        max_width
     }
 
     #[expect(
@@ -671,6 +682,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         ctx: RenderContext,
         styled: StyledStr,
         env: &Environment,
+        scale: Option<(&Rc<crate::renderer::chrome::LiveChrome>, kurbo::Affine)>,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
         let state = &mut self.state;
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
@@ -688,22 +701,33 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds().width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds().height() - height) * 0.5).max(0.0);
-        let fragment = state.text.record(
-            &input,
-            None,
-            TailMark::Clip(1),
-            &mut state.counters,
-            &mut state.text_scenes,
-        );
-        let source: Rc<dyn crate::renderer::chrome::LiveSource> = fragment;
-        self.push_live(
-            {
-                let mut literal = ctx;
-                literal.set_local(ctx.local() * kurbo::Affine::translate((x, y)));
-                literal
-            },
-            &source,
-        );
+        let fragment = match paint {
+            Some(paint) => state.text.record_painted(
+                &input,
+                None,
+                TailMark::Clip(1),
+                paint,
+                &mut state.counters,
+            ),
+            None => state.text.record(
+                &input,
+                None,
+                TailMark::Clip(1),
+                &mut state.counters,
+                &mut state.text_scenes,
+            ),
+        };
+        let mut literal = ctx;
+        literal.set_local(ctx.local() * kurbo::Affine::translate((x, y)));
+        let source: Rc<dyn crate::renderer::chrome::LiveSource> = match scale {
+            Some((chrome, widget)) => Rc::new(crate::renderer::chrome::ScaledContent::new(
+                fragment,
+                Rc::clone(chrome),
+                widget.inverse() * literal.local(),
+            )),
+            None => fragment,
+        };
+        self.push_live(literal, &source);
     }
 
     #[expect(
@@ -1616,18 +1640,13 @@ pub fn measure_button_view_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = if crate::widgets::controls::button::label_resolves_icon_only(button.label(), env)
-    {
-        theme.icon_button_metrics(button.button_style(), button.button_size())
-    } else {
-        theme.button_metrics(button.button_style(), button.button_size())
-    };
-    let label_size = measure_label_intrinsic(button.label(), state, env, theme);
-    let content_width = f64::mul_add(metrics.padding_x, 2.0, f64::from(label_size.width));
-    let content_height = f64::mul_add(metrics.padding_y, 2.0, f64::from(label_size.height));
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(content_width.max(metrics.min_width)),
-        crate::num_cast::f64_as_f32(content_height.max(metrics.min_height)),
+    crate::widgets::controls::button::measure_button_look_intrinsic(
+        button.button_style(),
+        button.button_size(),
+        button.label(),
+        state,
+        env,
+        theme,
     )
 }
 

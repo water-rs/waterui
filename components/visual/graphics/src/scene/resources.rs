@@ -1187,7 +1187,7 @@ pub(crate) mod tests {
     use super::{
         Content, HeldResources, RecordingResources, Registered, SceneResources, SourceBytes,
     };
-    use crate::scene_view::SceneContent;
+    use crate::scene_view::{SceneContent, SceneFrame, SceneUpdate};
 
     fn null_engine() -> (Rc<Engine<Null>>, Receiver<Event>) {
         let (events, probe) = channel();
@@ -1362,9 +1362,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// What one frame did: the image ids the installed recording draws, and
-    /// the render-thread events from recording it through rendering it.
+    /// What one frame did: whether the content kept its installed recording,
+    /// the image ids a new recording draws (none when it was kept), and the
+    /// render-thread events from updating or recording it through rendering
+    /// it.
     pub struct FrameReport {
+        pub retained: bool,
         pub drawn: Vec<ImageId>,
         pub events: Vec<Event>,
     }
@@ -1422,18 +1425,41 @@ pub(crate) mod tests {
         /// Renders one frame and returns every render-thread event since the
         /// last render.
         pub fn render(&self) -> Vec<Event> {
-            self.engine.render(FrameTime::now()).expect("render");
+            self.render_at(FrameTime::now())
+        }
+
+        fn render_at(&self, time: FrameTime) -> Vec<Event> {
+            self.engine.render(time).expect("render");
             self.probe.try_iter().collect()
         }
 
-        /// One host frame: record, install the recording, render.
+        /// One host frame, as a host keeping recordings installed presents
+        /// it: the content follows the frame, and is recorded and installed
+        /// only when it keeps no recording it can update; then render.
         pub fn frame(&self, content: &mut dyn SceneContent) -> FrameReport {
+            let time = FrameTime::now();
+            let update = content.update_scene(
+                &self.resources,
+                SceneFrame {
+                    width: 8.0,
+                    height: 8.0,
+                    time: time.instant(),
+                },
+            );
+            if let SceneUpdate::Retained { .. } = update {
+                return FrameReport {
+                    retained: true,
+                    drawn: Vec::new(),
+                    events: self.render_at(time),
+                };
+            }
             let recorded = self.record(content);
             let drawn = recorded.drawn.clone();
             self.install(recorded);
             FrameReport {
+                retained: false,
                 drawn,
-                events: self.render(),
+                events: self.render_at(time),
             }
         }
     }
@@ -1602,6 +1628,7 @@ pub(crate) mod tests {
         let events = mount.render();
         assert_released_then_replaced(
             &FrameReport {
+                retained: false,
                 drawn: Vec::new(),
                 events,
             },

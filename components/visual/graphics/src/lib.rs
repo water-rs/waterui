@@ -4,6 +4,7 @@ extern crate alloc;
 
 /// The bridge from the framework's animations to the engine's.
 pub mod animation;
+pub mod canvas;
 /// Color types and conversion utilities.
 pub mod color;
 #[cfg(feature = "effects")]
@@ -65,7 +66,8 @@ pub use gradient::{Gradient, GradientType, MeshGradient};
 #[cfg(feature = "gpu")]
 pub use image::image_decode;
 pub use input::{
-    Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
+    Code, GesturePhase, Key, Modifiers, NamedKey, ScrollPhase, ScrollUnit, SurfaceInputEvent,
+    SurfacePointerButton,
 };
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use offscreen::{OffscreenError, OffscreenImage, OffscreenRenderer, OffscreenSize};
@@ -77,8 +79,8 @@ pub use scene::resources::{
     SceneResources, ShaderBackend,
 };
 pub use scene::scene_view::{
-    SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
-    resolve_scene_proposal, scene_stretch_axis,
+    SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, SceneView, SceneViewMergeToParent,
+    invalidate_on_change, resolve_scene_proposal, scene_stretch_axis,
 };
 pub use scene::source::{
     FontSource, Format, ImageColorSpace, ImageData, ImageFormat, ResourceError, Rgba8, Rgba16F,

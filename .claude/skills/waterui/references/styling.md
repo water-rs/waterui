@@ -36,7 +36,13 @@ use waterui::prelude::theme_color::{Accent, Foreground, Surface};
 text("Title").foreground(Foreground)
 text("Caption").caption().muted()   // `.muted()` is `.foreground(MutedForeground)`
 card.background(Surface)
+button("Delete").action(|| {}).tint(Color::red())   // this subtree's controls draw with red
 ```
+
+`.tint(color)` sets the tint the controls in a subtree draw with — buttons, sliders,
+progress indicators — instead of the theme's `Accent`. The nearest `.tint` wins, and a
+subtree with none uses `Accent`. The color may be a signal, and a change updates the
+controls in place.
 
 The complete set:
 

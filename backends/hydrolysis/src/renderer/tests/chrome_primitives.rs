@@ -15,15 +15,22 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::interaction::{InteractionState, StateValue};
 
 use super::{MinimalTestTheme, pumped_test_environment};
-use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, KeyCode, KeyState, Modifiers, PointerButton, PointerKind};
 use crate::renderer::FrameWorkCounters;
 use crate::renderer::chrome::LiveChrome;
+use crate::renderer::mount::layers::{LayerVisitor, visit};
+use crate::renderer::recording::Recording;
 use crate::runner::FrameCounters;
 use crate::theme::{
-    Chrome, CornerShape, Corners, Elevation, FocusIndicator, PressFeedback, Ripple, StateLayer,
-    Surface,
+    Chrome, CornerShape, Corners, Elevation, FocusIndicator, Label as LookLabel, Motion,
+    PressFeedback, Ripple, StateLayer, Surface, Transition,
 };
+use crate::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
+use waterui::ViewExt as _;
+use waterui::animation::Animation;
+use waterui::component::text;
+use waterui_controls::button::Button;
+use waterui_controls::label::Label;
 
 const WINDOW: u32 = 320;
 /// The window's centre, where the button lies.
@@ -55,17 +62,22 @@ fn chrome() -> Chrome {
             StateValue::new(Elevation::NONE)
                 .when(InteractionState::HOVERED, Elevation::new(raised, raised)),
         ),
-        StateLayer::new(color(1.0, 1.0, 1.0)).opacities(0.08, 0.1, 0.1, 0.16),
-        PressFeedback::Ripple(Ripple {
+        StateLayer::new(waterui::Color::srgb_f32(1.0, 1.0, 1.0)).opacities(0.08, 0.1, 0.1, 0.16),
+        PressFeedback::new().ripple(Ripple {
             min_diameter: 48.0,
             initial_scale: 0.4,
             drift: 1.0,
+            grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+            fade_in: Animation::linear(Duration::from_millis(105)),
+            fade_out: Animation::linear(Duration::from_millis(375)),
+            minimum_duration: Duration::from_millis(225),
         }),
         FocusIndicator::Ring {
             width: 3.0,
             offset: 2.0,
-            color: color(0.1, 0.1, 0.9),
+            color: waterui::Color::srgb_f32(0.1, 0.1, 0.9),
         },
+        Motion::uniform(Animation::linear(Duration::from_millis(15))),
     )
 }
 
@@ -87,9 +99,28 @@ struct Frames {
 
 impl Frames {
     fn pump(&mut self, runtime: &mut HeadlessRuntime) -> FrameCounters {
+        self.pump_result(runtime).profile().counters()
+    }
+
+    fn pump_result(&mut self, runtime: &mut HeadlessRuntime) -> HeadlessPumpResult {
         let at = self.start + Duration::from_millis(self.next * 16);
         self.next += 1;
-        runtime.pump_at(true, at).profile().counters()
+        runtime.pump_at(true, at)
+    }
+
+    /// The tree work `count` frames report together.
+    fn work(&mut self, runtime: &mut HeadlessRuntime, count: usize) -> [u64; 3] {
+        (0..count).fold([0; 3], |sum, _| {
+            let frame = tree_work(self.pump(runtime).frame_work());
+            [sum[0] + frame[0], sum[1] + frame[1], sum[2] + frame[2]]
+        })
+    }
+
+    /// The next frame's pixels.
+    fn snapshot(&mut self, runtime: &mut HeadlessRuntime) -> HeadlessSnapshot {
+        self.pump_result(runtime)
+            .into_snapshot()
+            .expect("a captured frame carries pixels")
     }
 }
 
@@ -114,7 +145,6 @@ fn tree_work(counters: FrameWorkCounters) -> [u64; 3] {
 #[test]
 fn interaction_cycle_records_chrome_once() {
     let theme = MinimalTestTheme::default().with_button_chrome(chrome());
-    let draws = theme.button_chrome_draws();
     let mut runtime = runtime_with(button("Chrome").action(|| {}), theme);
     let mut frames = Frames {
         start: Instant::now(),
@@ -178,7 +208,6 @@ fn interaction_cycle_records_chrome_once() {
         "the cycle keeps the mounted chrome"
     );
     assert_eq!(chrome.recordings(), 2, "press and release record no chrome");
-    assert_eq!(draws.get(), 0, "the theme never draws the button's chrome");
 }
 /// water-rs/waterui#2940: a pointer press that moves keyboard focus onto a
 /// live-chrome control is pure bookkeeping — the focus indicator rides the
@@ -194,7 +223,7 @@ fn press_focus_move_needs_no_tree_pass() {
     // no animation frames, so every mark this test may produce is the
     // focus move's — anything beyond the operands is the bug.
     let mut focus_chrome = chrome();
-    focus_chrome.set_press(PressFeedback::Tint);
+    focus_chrome.set_press(PressFeedback::new().tint());
     let theme = MinimalTestTheme::default().with_button_chrome(focus_chrome);
     let mut runtime = runtime_with(button("Chrome").action(|| {}), theme);
     let mut frames = Frames {
@@ -265,7 +294,7 @@ fn tap_release_needs_no_tree_pass() {
     // animation frames, so every mark this test may produce is the
     // activation's — anything beyond the live operands is the bug.
     let mut tap_chrome = chrome();
-    tap_chrome.set_press(PressFeedback::Tint);
+    tap_chrome.set_press(PressFeedback::new().tint());
     let theme = MinimalTestTheme::default().with_button_chrome(tap_chrome);
     let activations = Rc::new(Cell::new(0));
     let tapped = Rc::clone(&activations);
@@ -346,7 +375,7 @@ fn keyboard_activation_needs_no_tree_pass() {
     // The same static-tint fixture as the tap's: no animation frames, so
     // every mark is the activation's.
     let mut tap_chrome = chrome();
-    tap_chrome.set_press(PressFeedback::Tint);
+    tap_chrome.set_press(PressFeedback::new().tint());
     let theme = MinimalTestTheme::default().with_button_chrome(tap_chrome);
     let activations = Rc::new(Cell::new(0));
     let tapped = Rc::clone(&activations);
@@ -414,5 +443,264 @@ fn keyboard_activation_needs_no_tree_pass() {
     assert_eq!(
         released.semantic_builds, 0,
         "keyboard activation builds nothing"
+    );
+}
+
+/// Each recorded run that draws glyphs, with the world transform of its
+/// first glyph run and the current value of its glyph runs' live paints.
+#[derive(Default)]
+struct GlyphRuns(Vec<(kurbo::Affine, Vec<Option<Paint>>)>);
+
+impl<E: crate::text::TextEngine> LayerVisitor<E> for GlyphRuns {
+    fn run(&mut self, world: kurbo::Affine, recording: &Recording) {
+        if let Some((transform, _)) = recording.glyph_runs().next() {
+            self.0.push((world * transform, recording.glyph_paints()));
+        }
+    }
+}
+
+/// The one glyph-drawing run the runtime's windows mount: the label's.
+fn the_label_run(runtime: &HeadlessRuntime) -> (kurbo::Affine, Vec<Option<Paint>>) {
+    let mut runs = GlyphRuns::default();
+    visit(&runtime.renderer().mount_roots(), &mut runs);
+    let [run] = <[_; 1]>::try_from(runs.0).expect("exactly one run draws the label's glyphs");
+    run
+}
+
+/// Moves the mouse to `(at, at)`: the button at the window's centre, the
+/// window's corner outside it.
+fn hover(runtime: &mut HeadlessRuntime, at: f32) {
+    runtime.push_input_event(InputEvent::PointerMove {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x: at,
+        y: at,
+    });
+}
+
+/// A press grows a view label that follows the press scale with the
+/// chrome — through the live transform of the label's scope, so the press
+/// records nothing and lays nothing out.
+#[test]
+fn press_scales_a_view_label_without_recording() {
+    const GROWTH: f64 = 0.1;
+    let mut scaling = chrome();
+    scaling.set_press(PressFeedback::new().tint().scale(GROWTH));
+    let theme = MinimalTestTheme::default()
+        .with_button_chrome(scaling)
+        .with_button_label(LookLabel::new().follows_press_scale());
+    let mut runtime = runtime_with(
+        Button::new(Label::new("Scaled", || text("Scaled"))).action(|| {}),
+        theme,
+    );
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+    let chrome = the_chrome(&runtime);
+    let recordings = chrome.recordings();
+    let (rest, _) = the_label_run(&runtime);
+
+    runtime.push_input_event(InputEvent::PointerDown {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x: CENTER,
+        y: CENTER,
+        button: PointerButton::Primary,
+    });
+    // The press and the chrome's 15 ms press motion.
+    let pressed = frames.work(&mut runtime, 5);
+
+    assert!(chrome.state().contains(InteractionState::PRESSED));
+    assert_eq!(
+        pressed,
+        [0, 0, 0],
+        "the press records nothing and lays nothing out"
+    );
+    assert_eq!(
+        chrome.recordings(),
+        recordings,
+        "the press records no chrome"
+    );
+    let (grown, _) = the_label_run(&runtime);
+    let [rest_x, _, _, rest_y, _, _] = rest.as_coeffs();
+    let [grown_x, _, _, grown_y, _, _] = grown.as_coeffs();
+    for (axis, rest, grown) in [("x", rest_x, grown_x), ("y", rest_y, grown_y)] {
+        assert!(
+            (grown / rest - (1.0 + GROWTH)).abs() < 1e-6,
+            "the label grows by the press scale along {axis}: {rest} to {grown}"
+        );
+    }
+}
+
+/// A title label whose look colour changes on hover follows the chrome's
+/// label colour operand: its glyphs take the new colour without a new
+/// recording or a layout pass.
+#[test]
+fn label_colour_change_records_nothing() {
+    let theme = MinimalTestTheme::default()
+        .with_button_chrome(chrome())
+        .with_button_label(LookLabel::new().color(
+            StateValue::new(waterui::Color::srgb_f32(0.1, 0.1, 0.1)).when(
+                InteractionState::HOVERED,
+                waterui::Color::srgb_f32(0.9, 0.2, 0.1),
+            ),
+        ));
+    let mut runtime = runtime_with(button("Tinted").action(|| {}), theme);
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+    let chrome = the_chrome(&runtime);
+    let recordings = chrome.recordings();
+    let (_, rest) = the_label_run(&runtime);
+    let [Some(rest)] = <[_; 1]>::try_from(rest).expect("the title draws one glyph run") else {
+        panic!("the title's glyphs follow the live label paint");
+    };
+
+    hover(&mut runtime, CENTER);
+    let hovered = frames.work(&mut runtime, 8);
+    assert_eq!(chrome.state(), InteractionState::HOVERED);
+    assert_eq!(
+        hovered,
+        [0, 0, 0],
+        "a label colour change records nothing and lays nothing out"
+    );
+    assert_eq!(chrome.recordings(), recordings, "nor records chrome");
+    let (_, lit) = the_label_run(&runtime);
+    assert!(
+        lit.len() == 1 && lit[0].as_ref().is_some_and(|paint| *paint != rest),
+        "the hovered glyphs take the hovered colour: {lit:?} after {rest:?}"
+    );
+}
+
+/// A look whose group opacity changes on hover fades the whole widget —
+/// chrome and label — through its group scope's live opacity: the change
+/// records nothing, and the widget composites once, so the label's glyphs
+/// cover the surface beneath them instead of letting it show through.
+/// The reference is the same hovered button under a constant
+/// `.opacity(0.5)`, which the framework composites as one group
+/// (water-rs/waterui#2002).
+#[test]
+fn group_opacity_change_records_nothing_and_blends_once() {
+    let mut runtime = runtime_with(
+        button("Faded").action(|| {}),
+        MinimalTestTheme::default()
+            .with_button_chrome(chrome())
+            .with_button_group_opacity(
+                StateValue::new(1.0_f32)
+                    .when(InteractionState::HOVERED, 0.5)
+                    .into(),
+            ),
+    );
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+    let chrome = the_chrome(&runtime);
+    let recordings = chrome.recordings();
+
+    hover(&mut runtime, CENTER);
+    let hovered = frames.work(&mut runtime, 8);
+    assert_eq!(chrome.state(), InteractionState::HOVERED);
+    assert_eq!(
+        hovered,
+        [0, 0, 0],
+        "a group opacity change records nothing and lays nothing out"
+    );
+    assert_eq!(chrome.recordings(), recordings, "nor records chrome");
+    let faded = frames.snapshot(&mut runtime);
+
+    let mut reference = runtime_with(
+        button("Faded").action(|| {}).opacity(0.5),
+        MinimalTestTheme::default().with_button_chrome(self::chrome()),
+    );
+    let mut reference_frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    for _ in 0..4 {
+        reference_frames.pump(&mut reference);
+    }
+    hover(&mut reference, CENTER);
+    for _ in 0..8 {
+        reference_frames.pump(&mut reference);
+    }
+    let want = reference_frames.snapshot(&mut reference);
+
+    assert_eq!(faded.width(), want.width());
+    let worst = faded
+        .rgba8()
+        .iter()
+        .zip(want.rgba8())
+        .map(|(got, want)| got.abs_diff(*want))
+        .max()
+        .expect("the frames carry pixels");
+    assert!(
+        worst <= 3,
+        "the group fades as one composite: a channel differs by {worst} from the reference"
+    );
+}
+
+/// The engine samples live operands at the frame instant the renderer was
+/// pumped at, not at the wall clock: a hover transition pumped past its end
+/// on a pinned clock shows its end state.
+#[test]
+fn live_operands_sample_the_pumped_frame_instant() {
+    let mut motion = Motion::uniform(Animation::linear(Duration::from_millis(15)));
+    motion.hover = Transition::symmetric(Animation::linear(Duration::from_secs(10)));
+    // Red at rest, blue hovered, and nothing else drawn over the fill.
+    let chrome = Chrome::new(
+        Surface::new(
+            CornerShape::new(Corners::from(0.0)),
+            StateValue::new(Paint::from(color(1.0, 0.0, 0.0)))
+                .when(InteractionState::HOVERED, Paint::from(color(0.0, 0.0, 1.0))),
+        ),
+        StateLayer::new(waterui::Color::srgb_f32(1.0, 1.0, 1.0)).opacities(0.0, 0.0, 0.0, 0.0),
+        PressFeedback::new().tint(),
+        FocusIndicator::Tint,
+        motion,
+    );
+    let theme = MinimalTestTheme::default().with_button_chrome(chrome);
+    let mut runtime = runtime_with(button("Chrome").action(|| {}), theme);
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+
+    runtime.push_input_event(InputEvent::PointerMove {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x: CENTER,
+        y: CENTER,
+    });
+    frames.pump(&mut runtime);
+    assert_eq!(the_chrome(&runtime).state(), InteractionState::HOVERED);
+
+    let past_the_transition = frames.start + Duration::from_secs(20);
+    let snapshot = runtime
+        .pump_at(true, past_the_transition)
+        .into_snapshot()
+        .expect("the pump captured a snapshot");
+    let pixels = snapshot.rgba8();
+    let pixels = pixels.as_chunks::<4>().0;
+    let red = pixels.iter().filter(|px| px[0] > 200 && px[2] < 60).count();
+    let blue = pixels.iter().filter(|px| px[2] > 200 && px[0] < 60).count();
+    assert_eq!(
+        (red > 0, blue > 0),
+        (false, true),
+        "the fill shows the hovered end state: {red} red and {blue} blue pixels"
     );
 }

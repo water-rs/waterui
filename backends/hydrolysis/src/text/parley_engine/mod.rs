@@ -28,6 +28,9 @@ use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::FontCollection;
 
+use cherenkov_record::Paint;
+use nami::Computed;
+
 use crate::renderer::{FrameWorkCounters, Glyph, GlyphRun, Recording, rgba8_to_peniko};
 
 use super::engine::{
@@ -79,7 +82,34 @@ const GLYPH_INK_BOUNDS_CACHE_CAPACITY: usize = 16384;
 /// Owned, mutable shaping scratch for one in-flight shape call.
 struct TextShapingScratch {
     font_cx: parley::FontContext,
-    layout_cx: parley::LayoutContext<[u8; 4]>,
+    layout_cx: parley::LayoutContext<RunBrush>,
+}
+
+/// A glyph run's brush: its colour, and whether that is the paragraph's
+/// default colour rather than one the text styled the run with — the runs
+/// a recording's live paint replaces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunBrush {
+    rgba: [u8; 4],
+    default: bool,
+}
+
+impl RunBrush {
+    /// The paragraph's default colour.
+    const fn paragraph(rgba: [u8; 4]) -> Self {
+        Self {
+            rgba,
+            default: true,
+        }
+    }
+
+    /// A colour the text styled a run with.
+    const fn styled(rgba: [u8; 4]) -> Self {
+        Self {
+            rgba,
+            default: false,
+        }
+    }
 }
 
 /// The laid-out text this engine hands around: a shared parley layout, the
@@ -91,7 +121,7 @@ struct TextShapingScratch {
 pub struct ParleyLayout(Arc<ParleyLayoutData>);
 
 struct ParleyLayoutData {
-    layout: parley::Layout<[u8; 4]>,
+    layout: parley::Layout<RunBrush>,
     /// The shaped text. Parley's clusters follow the shaper's segmentation, so
     /// a combining mark can be a cluster of its own; caret positions are
     /// extended grapheme boundaries (UAX #29) of this text instead.
@@ -245,10 +275,11 @@ impl TextEngine for ParleyEngine {
         layout: &Self::Layout,
         max_lines: Option<usize>,
         x_shift: f32,
+        paint: Option<&Computed<Paint>>,
         scene: &mut Recording,
         counters: &mut FrameWorkCounters,
     ) {
-        encode_text_layout(scene, counters, layout, max_lines, x_shift);
+        encode_text_layout(scene, counters, layout, max_lines, x_shift, paint);
     }
 }
 
@@ -330,7 +361,7 @@ const TAIL_ELLIPSIS: char = '\u{2026}';
 /// the truncation cut can reserve room for it.
 fn ellipsis_advance(
     input: &ResolvedTextLayoutInput,
-    layout: &parley::Layout<[u8; 4]>,
+    layout: &parley::Layout<RunBrush>,
     limit: usize,
     shape: &mut impl FnMut(&ResolvedTextLayoutInput, Option<f32>) -> ParleyLayout,
 ) -> f32 {
@@ -358,7 +389,7 @@ fn ellipsis_advance(
 /// how a single unbreakable cluster presents. Lines a plain wrap produced
 /// stay inside the bound, so a small epsilon keeps benign rounding from
 /// declaring a truncation.
-fn needs_tail_truncation(layout: &parley::Layout<[u8; 4]>, limit: usize) -> bool {
+fn needs_tail_truncation(layout: &parley::Layout<RunBrush>, limit: usize) -> bool {
     if layout.is_empty() {
         return false;
     }
@@ -378,7 +409,7 @@ type RespelledTail = (String, Vec<(Range<usize>, ResolvedTextStyleSpec)>);
 /// already exactly that, which is how the re-shape loop knows it cannot
 /// shorten further.
 fn truncate_layout_tail(
-    layout: &parley::Layout<[u8; 4]>,
+    layout: &parley::Layout<RunBrush>,
     text: &str,
     spans: &[(Range<usize>, ResolvedTextStyleSpec)],
     limit: usize,
@@ -471,7 +502,7 @@ fn build_parley_layout(
     input: &ResolvedTextLayoutInput,
     max_width: Option<f32>,
     family_resolution: FontFamilyResolution,
-) -> parley::Layout<[u8; 4]> {
+) -> parley::Layout<RunBrush> {
     if family_resolution.is_strict() {
         let collection = &mut scratch.font_cx.collection;
         assert_family_list_installed(collection, input.default_font.family.as_deref());
@@ -483,7 +514,9 @@ fn build_parley_layout(
         scratch
             .layout_cx
             .ranged_builder(&mut scratch.font_cx, &input.plain, 1.0, true);
-    builder.push_default(parley::StyleProperty::Brush(input.default_brush));
+    builder.push_default(parley::StyleProperty::Brush(RunBrush::paragraph(
+        input.default_brush,
+    )));
     builder.push_default(parley::StyleProperty::FontSize(input.default_font.size));
     builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
         input.default_font.weight,
@@ -545,7 +578,7 @@ fn build_parley_layout(
 }
 
 fn push_text_style(
-    builder: &mut parley::RangedBuilder<'_, [u8; 4]>,
+    builder: &mut parley::RangedBuilder<'_, RunBrush>,
     style: &ResolvedTextStyleSpec,
     range: Range<usize>,
 ) {
@@ -600,7 +633,7 @@ fn push_text_style(
         range.clone(),
     );
     if let Some(color) = style.foreground {
-        builder.push(parley::StyleProperty::Brush(color), range);
+        builder.push(parley::StyleProperty::Brush(RunBrush::styled(color)), range);
     }
 }
 
@@ -704,13 +737,15 @@ fn is_emoji_cluster(
 /// Encode `layout`'s glyph runs into `scene` at the local origin, shifted
 /// right by `x_shift`. The caller positions the result by appending it under
 /// a transform, which is what makes the encoded fragment reusable across
-/// frames.
+/// frames. With `paint`, the runs in the paragraph's default colour draw
+/// with it, live.
 fn encode_text_layout(
     scene: &mut Recording,
     counters: &mut FrameWorkCounters,
     layout: &ParleyLayout,
     max_lines: Option<usize>,
     x_shift: f32,
+    paint: Option<&Computed<Paint>>,
 ) {
     let paint_backgrounds = !layout.0.backgrounds.is_empty();
     for (index, line) in layout.0.layout.lines().enumerate() {
@@ -724,7 +759,8 @@ fn encode_text_layout(
             if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
                 let run = glyph_run.run();
                 let style = glyph_run.style();
-                let brush = rgba8_to_peniko(style.brush);
+                let brush = rgba8_to_peniko(style.brush.rgba);
+                let live = paint.filter(|_| style.brush.default);
                 let normalized_coords: Vec<i16> = run
                     .normalized_coords()
                     .iter()
@@ -744,7 +780,7 @@ fn encode_text_layout(
                     .collect();
 
                 counters.font_registrations += 1;
-                scene.glyphs(&GlyphRun {
+                let run = GlyphRun {
                     font: run.font(),
                     font_size: run.font_size(),
                     normalized_coords: &normalized_coords,
@@ -753,7 +789,11 @@ fn encode_text_layout(
                     brush_alpha: 1.0,
                     style: peniko::StyleRef::Fill(peniko::Fill::NonZero),
                     glyphs: &glyphs,
-                });
+                };
+                match live {
+                    Some(paint) => scene.painted_glyphs(&run, paint),
+                    None => scene.glyphs(&run),
+                }
             }
         }
     }
@@ -769,7 +809,7 @@ fn encode_text_layout(
 /// the whole item sequence.
 fn encode_line_backgrounds(
     scene: &mut Recording,
-    line: &parley::Line<'_, [u8; 4]>,
+    line: &parley::Line<'_, RunBrush>,
     layout: &ParleyLayout,
     x_shift: f32,
 ) {

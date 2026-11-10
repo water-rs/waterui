@@ -485,6 +485,34 @@ impl TreeSnapshot {
         }
     }
 
+    /// This snapshot with `update` applied. An update carrying `tree`
+    /// describes the whole tree and replaces it; one without is incremental
+    /// — a focus move, say (water-rs/waterui#2940) — and moves the focus and
+    /// replaces only the nodes it carries.
+    pub(crate) fn apply(
+        &self,
+        revision: u64,
+        update: AccessibilityTreeUpdate,
+        content_types: &AccessibilityContentTypes,
+    ) -> Self {
+        if update.tree.is_some() {
+            return Self::from_update(revision, update, content_types);
+        }
+        let mut nodes = self.nodes.clone();
+        for (id, node) in update.nodes {
+            nodes.insert(
+                NodeId::from(id),
+                NodeSnapshot::from_accesskit(id, &node, content_types.get(&id).copied()),
+            );
+        }
+        Self {
+            revision,
+            root: self.root,
+            focus: NodeId::from(update.focus),
+            nodes,
+        }
+    }
+
     pub(crate) fn from_update(
         revision: u64,
         update: AccessibilityTreeUpdate,

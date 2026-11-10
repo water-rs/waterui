@@ -17,6 +17,10 @@
 //!   operand instead.
 //! - A target drains [`Content::take_change`] for the [`ContentChange`] to
 //!   apply: first the whole [`Picture`], then the changed slots.
+//! - [`Recorder::region`] marks a part of a live recording that later
+//!   records again, leaves or moves in place ([`Region`]); the target
+//!   receives the changed commands as an [`Edit`], and every other slot
+//!   keeps its subscription and any animation running on it.
 //! - [`Content::record_layered`] opens a recording that may declare
 //!   backdrop materials ([`material`]), which never enter a display list:
 //!   the recording comes back split at each one for its host to realize.
@@ -38,6 +42,7 @@ pub mod ops;
 pub mod paint;
 pub mod projective;
 pub mod record;
+pub mod region;
 pub mod resource;
 pub mod shape;
 pub mod size;
@@ -53,8 +58,8 @@ pub use kurbo;
 pub use web_time::Instant;
 
 pub use crate::animation::{
-    Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
-    settled, spring_step,
+    Animatable, Animation, AnimationTrack, Curve, Decay, Easing, KeyframeAnimation, Keyframes,
+    Lanes, Repeat, Spring, curve_value, decay_step, settled, spring_step,
 };
 pub use crate::backdrop::{
     BackdropEffect, BackdropOuter, BackdropOuterError, BackdropSample, BackdropShaderEffect,
@@ -67,8 +72,8 @@ pub use crate::color::{
     WorkingColor,
 };
 pub use crate::display_list::{
-    Command, Dirty, DisplayList, DisplayListView, Operand, OperandKind, OperandRef, Operands,
-    Picture, ScopeError, Slot, SlotUpdate, blends_within, translucent_within,
+    Command, Dirty, DisplayList, DisplayListView, Edit, Operand, OperandKind, OperandRef, Operands,
+    Picture, ScopeError, Slot, SlotUpdate, Splice, blends_within, translucent_within,
 };
 pub use crate::error::ResourceError;
 pub use crate::frame::RefreshRange;
@@ -83,8 +88,8 @@ pub use crate::material::{
     OuterExtentError, UnionSmoothing, UnionSmoothingError,
 };
 pub use crate::ops::{
-    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop,
-    SurfaceId,
+    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId,
+    LayerKeyframes, LayerOp, Op, Prop, SurfaceId,
 };
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,
@@ -96,6 +101,7 @@ pub use crate::record::{
     Animating, Binding, Content, ContentChange, ContentSpare, Draw, Fixed, Live, LiveOwner,
     Recorder, SampleFlag, SharedLive, StaticRecorder,
 };
+pub use crate::region::Region;
 pub use crate::resource::{BackdropShaderId, ImageLimits, ImageStorage, ResourceId};
 pub use crate::shape::{
     ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,

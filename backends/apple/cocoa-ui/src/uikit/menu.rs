@@ -30,7 +30,7 @@ use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, Message};
 use objc2_foundation::{NSArray, NSString};
 use objc2_ui_kit::{
-    UIAction, UIColor, UIImage, UIKeyCommand, UIMenu, UIMenuElement, UIMenuElementAttributes,
+    UIAction, UIImage, UIKeyCommand, UIMenu, UIMenuElement, UIMenuElementAttributes,
     UIMenuElementState, UIMenuOptions, UIView,
 };
 
@@ -408,9 +408,10 @@ impl MenuButton {
         self.button.end_open_menu();
     }
 
-    /// The color the button's chrome derives from.
-    pub fn set_tint_color(&self, color: &UIColor) {
-        self.button.set_tint_color(color);
+    /// The trigger as the [`Button`] it is, for its chrome and tint.
+    #[must_use]
+    pub const fn button(&self) -> &Button {
+        &self.button
     }
 
     /// The button, for adding to a view hierarchy and framing.

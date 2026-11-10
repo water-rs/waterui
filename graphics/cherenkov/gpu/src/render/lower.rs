@@ -697,9 +697,21 @@ impl ContentData {
 
     pub fn replace(&mut self, list: cherenkov::Picture) -> cherenkov::Picture {
         let (previous, changed) = self.retained.replace(list);
-        if !changed {
-            return previous;
+        if changed {
+            self.reset_storage();
         }
+        previous
+    }
+
+    /// Applies a structural edit: the content is lowered again, so its
+    /// emitted storage goes as after a replacement.
+    pub fn edit(&mut self, edit: cherenkov::Edit) {
+        self.retained.edit(edit);
+        self.reset_storage();
+    }
+
+    /// Drops the device storage emitted for the previous lowering.
+    fn reset_storage(&mut self) {
         self.range = None;
         self.storage.instances.clear();
         self.storage.stops.clear();
@@ -710,7 +722,6 @@ impl ContentData {
         // check (#119).
         self.storage.refs.clear();
         self.storage.geometry.flag_reconcile();
-        previous
     }
 
     pub fn gpu_input_bytes(&self) -> u64 {
@@ -726,7 +737,7 @@ impl ContentData {
                 .storage
                 .gpu_paths
                 .values()
-                .map(|entry| entry.path.elements.len() * std::mem::size_of::<path::GpuElement>())
+                .map(|entry| entry.path.heap_bytes())
                 .sum::<usize>()) as u64
             + self.storage.geometry.heap_bytes()
             + self
@@ -7164,7 +7175,7 @@ mod tests {
     /// The default device's coverage binding limit, which every engine
     /// device requests (`render/mod.rs`).
     fn test_limit() -> CoverageLimit {
-        CoverageLimit::new(&wgpu::Limits::default())
+        CoverageLimit::new(&wgpu::Limits::default(), wgpu::Backend::Noop)
     }
 
     /// A retained leaf's stored route decisions agree with the predicate
@@ -7202,11 +7213,14 @@ mod tests {
         // The smallest binding limit that admits the anchor grid refuses
         // the larger grids around it, so the window holds both decisions.
         let limit = |bytes| {
-            CoverageLimit::new(&wgpu::Limits {
-                max_storage_buffer_binding_size: bytes,
-                max_buffer_size: bytes,
-                ..wgpu::Limits::default()
-            })
+            CoverageLimit::new(
+                &wgpu::Limits {
+                    max_storage_buffer_binding_size: bytes,
+                    max_buffer_size: bytes,
+                    ..wgpu::Limits::default()
+                },
+                wgpu::Backend::Noop,
+            )
         };
         let (mut refused, mut fits) = (0, wgpu::Limits::default().max_buffer_size);
         assert!(lowering.automatic_gpu(&path, &path.bound));

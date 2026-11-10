@@ -410,6 +410,20 @@ fn record_ops_static(c: &mut cherenkov::Recorder, ops: &[Op], live: &[LiveRun]) 
     }
 }
 
+/// Records [`record_ops_static`]'s content under the frame's drift, when it
+/// has one.
+fn record_ops_drifted(
+    c: &mut cherenkov::Recorder,
+    ops: &[Op],
+    live: &[LiveRun],
+    drift: Option<kurbo::Affine>,
+) {
+    match drift {
+        Some(drift) => c.transform(Fixed(drift), |c| record_ops_static(c, ops, live)),
+        None => record_ops_static(c, ops, live),
+    }
+}
+
 /// Records `ops` with `live` slot bindings and `motions` animated paint
 /// bindings, reached only on scenes that carry motions.
 #[expect(
@@ -1791,6 +1805,17 @@ impl Engine for Cherenkov {
         &self.info
     }
 
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        // `GpuConfig::timestamps` enables the queries exactly when the
+        // adapter supports them.
+        (!self
+            .shared_device
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY))
+        .then_some("the device does not support GPU timestamp queries")
+    }
+
     fn supported(&self) -> BTreeSet<Feature> {
         cherenkov_features().into_iter().collect()
     }
@@ -1936,21 +1961,28 @@ impl Engine for Cherenkov {
             }
             self.motion_committed = true;
         }
-        // Motion and live scenes record their content once: later encodes
-        // only set live bindings and advance the clock. Static scenes keep
-        // re-recording each frame so their numbers stay comparable.
-        if first_frame || !(self.has_motion || self.has_live || input.scroll_offset.is_some()) {
+        // Content is recorded on the first frame and again on every frame
+        // the bench drifts — each frame of a static scene, and a motion
+        // scene's frames once its motion has come to rest — so no frame
+        // repeats the last. Otherwise encodes only set live bindings and
+        // advance the clock.
+        if first_frame || input.drift.is_some() {
             surface.update(|tx| {
                 if self.has_motion {
                     for cl in &self.content_layers {
-                        tx[cl.handle(surface)]
-                            .record(|c| record_ops(c, &cl.ops, &cl.live, &cl.motions));
+                        tx[cl.handle(surface)].record(|c| match input.drift {
+                            Some(drift) => c.transform(Fixed(drift), |c| {
+                                record_ops(c, &cl.ops, &cl.live, &cl.motions);
+                            }),
+                            None => record_ops(c, &cl.ops, &cl.live, &cl.motions),
+                        });
                     }
                 } else {
                     for cl in &self.content_layers {
                         // A motionless scene's record keeps the dev shape:
                         // no motions reach it at all.
-                        tx[cl.handle(surface)].record(|c| record_ops_static(c, &cl.ops, &cl.live));
+                        tx[cl.handle(surface)]
+                            .record(|c| record_ops_drifted(c, &cl.ops, &cl.live, input.drift));
                     }
                 }
             });
@@ -2025,6 +2057,21 @@ impl Engine for Cherenkov {
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn animating(&self) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| matches!(surface.next_frame(), cherenkov::Next::At { .. }))
+    }
+
+    fn drew_nothing(&self) -> bool {
+        // A surface marked changed whose content leaves the frame empty
+        // (a pixel-snapped scroll offset that did not move the content) is
+        // reported as rendered but records no pass, so it submits no GPU
+        // work and has no timestamps.
+        let stats = self.engine.stats();
+        stats.frame.is_none() || stats.passes == 0
     }
 
     fn completion_signal(&self) -> crate::CompletionSignal {
