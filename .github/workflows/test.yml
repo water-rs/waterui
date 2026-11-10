@@ -590,8 +590,10 @@ jobs:
       # by package and exact test: hydrolysis's other ignored test is a
       # report-only perf probe that stays out of CI (#4012). Same
       # `--workspace`/`--exclude` set as the pass above, so features unify and
-      # nothing recompiles (#4070).
-      - run: cargo nextest run --timings --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --profile ci --run-ignored ignored-only -E 'package(waterui-cli) | (package(hydrolysis) & test(=widgets::platform::webview::android_protocol::tests::the_composed_async_call_survives_a_real_js_round_trip))'
+      # nothing recompiles (#4070). A failing test in that pass must not hide
+      # this suite's result, so it runs unless the job was cancelled.
+      - if: ${{ !cancelled() }}
+        run: cargo nextest run --timings --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --profile ci --run-ignored ignored-only -E 'package(waterui-cli) | (package(hydrolysis) & test(=widgets::platform::webview::android_protocol::tests::the_composed_async_call_survives_a_real_js_round_trip))'
         env:
           MACOSX_DEPLOYMENT_TARGET: "27.0"
       # nextest cannot run doctests, and this workspace has plenty of them.
