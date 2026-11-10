@@ -7,8 +7,8 @@
 //   Glass::clear()                            -> .glassEffect(.clear)
 //   .interactive(true)                        -> .interactive()
 //   .tint(color)                              -> .tint(color)
-//   .shape(RoundedRectangle::new(0.2))        -> in: .rect(cornerRadius:) resolved
-//                                                against the card's shorter side
+//   .shape(RoundedRectangle::new(0.2))        -> in: .rect(cornerRadius:) at 0.2 of
+//                                                the card's laid-out shorter side
 //   Circle.fill(c).size(n, n).offset(x, y)    -> Circle().fill(c).frame(n).offset(x, y)
 //   .bottom_accessory(view)                   -> .tabViewBottomAccessory { view }
 
@@ -21,6 +21,9 @@ private enum Pane: Hashable {
 struct LiquidGlassTwin: View {
   @State private var pane = Pane.surfaces
   @State private var query = ""
+  /// The card's shorter side as laid out, which its normalized corner radius
+  /// resolves against — see `card`.
+  @State private var cardShorterSide: CGFloat = 0
   /// First-paint signal the host injects — see `body`.
   @EnvironmentObject private var presentation: WuiReferencePresentation
 
@@ -71,7 +74,7 @@ struct LiquidGlassTwin: View {
     HStack(spacing: 12) {
       Label("Play", systemImage: "play.fill")
       VStack(spacing: 1) {
-        Text("Now Playing").fontWeight(.bold).font(.system(size: 15))
+        Text("Now Playing").font(.system(size: 15)).bold()
         Text("Liquid Glass — Surfaces").font(.system(size: 12))
       }
     }
@@ -98,9 +101,9 @@ struct LiquidGlassTwin: View {
             caption("The outline belongs to the glass, not to an outer clip.")
             card
             caption("The capsule follows the size of what it wraps.")
-            Text("Small").fontWeight(.bold).font(.system(size: 13)).padding(8).glassEffect()
+            Text("Small").font(.system(size: 13)).bold().padding(8).glassEffect()
             pill("Medium").glassEffect()
-            Text("Large").fontWeight(.bold).font(.system(size: 24)).padding(20).glassEffect()
+            Text("Large").font(.system(size: 24)).bold().padding(20).glassEffect()
           }
           .padding(14)
         }
@@ -168,18 +171,22 @@ struct LiquidGlassTwin: View {
   }
 
   private func pill(_ title: String) -> some View {
-    Text(title).fontWeight(.bold).padding(14)
+    Text(title).bold().padding(14)
   }
 
   private var card: some View {
     VStack(spacing: 6) {
-      Text("Rounded card").fontWeight(.bold)
+      Text("Rounded card").bold()
       Text("Text inside glass keeps its full contrast; the glass adapts to what is behind it.")
     }
     .padding(14)
-    // RoundedRectangle::new(0.2) is a fifth of the shorter side; the card is
-    // two text lines plus padding, so the radius resolves to about 14 points.
-    .glassEffect(in: .rect(cornerRadius: 14))
+    // RoundedRectangle::new(0.2) is a fifth of the shorter side, which the
+    // Apple backend resolves against the glass's bounds on every layout; the
+    // card's height depends on how its text wraps, so it is read back here.
+    .onGeometryChange(for: CGFloat.self) { min($0.size.width, $0.size.height) } action: {
+      cardShorterSide = $0
+    }
+    .glassEffect(in: .rect(cornerRadius: 0.2 * cardShorterSide))
   }
 
   /// Large colored discs, so the lensing at each glass edge has edges to bend.

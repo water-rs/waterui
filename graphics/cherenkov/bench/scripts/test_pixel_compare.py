@@ -95,7 +95,9 @@ def collection(out, scenes, rounds=4, frames=40, cycles=None, cpu=None):
                 run_id = f'{name}-p{pair}-{side}'
                 report = out / f'{run_id}.json'
                 if cpu is None:
-                    samples = [{'gpu_seconds': milliseconds * rng.uniform(0.99, 1.01) / 1000}
+                    # `None` is an invocation whose frames carry no GPU time.
+                    samples = [{'gpu_seconds': None if milliseconds is None else
+                                milliseconds * rng.uniform(0.99, 1.01) / 1000}
                                for _ in range(frames)]
                 else:
                     samples = [cpu_sample(milliseconds * rng.uniform(0.99, 1.01),
@@ -167,6 +169,28 @@ class Analyze(unittest.TestCase):
         self.assertAlmostEqual(judged['change_percent'], 5.0, delta=0.5)
         self.assertEqual(entry['verdict'], 'fail')
         self.assertEqual(self.analyze(time)['tiny']['verdict'], 'pass')
+
+    def test_frames_without_gpu_time_make_the_scene_invalid(self):
+        # Every measured frame of a static scene the engine retained: no
+        # GPU work, so no GPU time, in a collection `run` recorded as valid.
+        entry = self.analyze({'chart': [(None, None)] * 4})['chart']
+        self.assertEqual(entry['verdict'], 'invalid')
+        self.assertNotIn('metrics', entry)
+        self.assertEqual(len(entry['untimed_runs']), 8)
+        self.assertEqual(entry['untimed_runs']['chart-p0-base'],
+                         ['40 of 40 measured frames carry no GPU time'])
+
+    def test_one_untimed_arm_makes_the_scene_invalid(self):
+        entry = self.analyze({'chart': [(4.0, None)] + [(4.0, 4.0)] * 3})['chart']
+        self.assertEqual(entry['verdict'], 'invalid')
+        self.assertEqual(list(entry['untimed_runs']), ['chart-p0-head'])
+
+    def test_frames_without_shader_core_cycles_make_a_counter_scene_invalid(self):
+        entry = self.analyze({'tiny': [(0.1, 0.1)] * 4},
+                             cycles={'tiny': [(140_000, 0)] + [(140_000, 140_000)] * 3})['tiny']
+        self.assertEqual(entry['verdict'], 'invalid')
+        self.assertEqual(entry['untimed_runs'],
+                         {'tiny-p0-head': ['40 of 40 measured frames carry no shader-core cycles']})
 
     def test_a_cpu_collection_reports_frame_and_shade_without_a_verdict(self):
         # Shade grows from 50% to 55% of a frame that grows 5%: shade +15.5%.

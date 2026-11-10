@@ -9,7 +9,7 @@ use kurbo::{Affine, Vec2};
 use crate::Instant;
 use crate::Target;
 use crate::WorkingColor;
-use crate::animation::Animation;
+use crate::animation::{Animation, Keyframes, Repeat};
 use crate::backdrop::BackdropSample;
 use crate::display_list::{Picture, SlotUpdate};
 use crate::projective::Projective;
@@ -87,6 +87,33 @@ pub struct Prop<T> {
     pub start: Option<Instant>,
 }
 
+/// A property's keyframe track: the value the property holds once a finite
+/// repeat ends, and the track it runs until then.
+#[derive(Clone, Debug)]
+pub struct KeyframeProp<T> {
+    /// The value the property holds after the last cycle.
+    pub target: T,
+    /// The track, starting at the first frame that samples it.
+    pub keyframes: Keyframes<T>,
+    /// How many cycles it runs.
+    pub repeat: Repeat,
+}
+
+/// A keyframe track on one of the layer properties that take one.
+#[derive(Clone, Debug)]
+pub enum LayerKeyframes {
+    /// The local transform, interpolated coefficient-wise.
+    Transform(KeyframeProp<Affine>),
+    /// The translation component.
+    Translation(KeyframeProp<Vec2>),
+    /// The unwrapped rotation angle in radians.
+    Rotation(KeyframeProp<f64>),
+    /// The x/y scale factors.
+    Scale(KeyframeProp<Vec2>),
+    /// The opacity.
+    Opacity(KeyframeProp<f32>),
+}
+
 /// The instant a bound change's [`Animation`] starts at.
 ///
 /// Carried in the change's `Context` metadata next to that animation when
@@ -140,6 +167,8 @@ pub enum LayerOp {
     Opacity(LayerId, Prop<f32>),
     /// Set the scroll offset.
     ScrollOffset(LayerId, Prop<Vec2>),
+    /// Run a keyframe track on a property, replacing its track.
+    Keyframes(LayerId, LayerKeyframes),
     /// Set or clear the clip shape.
     Clip(LayerId, Option<ShapeData>),
     /// Set the blend mode.
@@ -202,6 +231,7 @@ impl LayerOp {
             | Self::ClearProjection(id)
             | Self::Opacity(id, _)
             | Self::ScrollOffset(id, _)
+            | Self::Keyframes(id, _)
             | Self::Clip(id, _)
             | Self::Blend(id, _)
             | Self::Filter(id, _)

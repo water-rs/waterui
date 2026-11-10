@@ -1373,6 +1373,8 @@ pub struct SceneViewNode<E: crate::text::TextEngine> {
     /// sees the same recorded identity.
     pub(super) association:
         Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
+    /// The size and scale `content`'s input handler was last told about.
+    pub(super) resize: Rc<RefCell<crate::renderer::ResizeTracker>>,
     /// The `(proposal, answer)` this leaf last measured at — the mark
     /// [`RenderNode::take_layout_dirty`] reads through
     /// [`Self::size_drifted`]: a scene whose natural size changes after

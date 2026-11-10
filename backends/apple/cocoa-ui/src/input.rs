@@ -13,6 +13,8 @@
 
 pub use keyboard_types::{Code, Key, Location, Modifiers, NamedKey};
 
+use core::num::NonZeroU32;
+
 use kurbo::Point;
 
 /// A pointer button, in the W3C UI Events button vocabulary.
@@ -43,6 +45,19 @@ pub enum ScrollUnit {
     Pixel,
 }
 
+/// Which part of a scroll gesture a [`SurfaceEvent::Scroll`] delta belongs
+/// to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScrollPhase {
+    /// A delta complete on its own: a wheel notch, or a device that reports
+    /// no gesture around its deltas.
+    Discrete,
+    /// The user is touching the input device — fingers on a trackpad.
+    Contact(GesturePhase),
+    /// Inertia the platform generates after the fingers lift.
+    Momentum(GesturePhase),
+}
+
 /// One input event delivered to a view that asked for input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceEvent {
@@ -69,6 +84,11 @@ pub enum SurfaceEvent {
         button: PointerButton,
         /// Where the pointer was when it changed.
         position: Point,
+        /// Which click of a multi-click run this is — 1 for a single click,
+        /// 2 for a double click, counted by the platform with its own
+        /// interval and distance. A release carries the count of the press
+        /// it ends.
+        click_count: NonZeroU32,
     },
     /// A scroll gesture over the surface.
     Scroll {
@@ -80,10 +100,8 @@ pub enum SurfaceEvent {
         delta_y: f64,
         /// What one unit of the deltas means.
         unit: ScrollUnit,
-        /// `true` on the event that ends a continuous gesture, so a view can
-        /// settle momentum or release a scroll-driven state. Discrete wheel
-        /// notches carry `true` because each notch is complete on its own.
-        finished: bool,
+        /// Which part of a scroll gesture this delta belongs to.
+        phase: ScrollPhase,
     },
     /// A key went down (`pressed`) or up while this surface had focus.
     ///
@@ -110,6 +128,13 @@ pub enum SurfaceEvent {
     /// character the logical key implies. It may also arrive standalone, for
     /// text no key produced (an injected insertion).
     TextInput(String),
+    /// The platform's paste command targeted this focused surface, carrying
+    /// the pasteboard's text.
+    ///
+    /// The shortcut's own key press and release are not also delivered as
+    /// [`SurfaceEvent::Key`]. A paste with no text on the pasteboard is not
+    /// delivered.
+    Paste(String),
     /// An input-method composition session began.
     CompositionStart,
     /// The in-progress (pre-edit) composition text changed.
@@ -204,4 +229,66 @@ pub enum PointerInteraction {
     },
     /// A double-tap gesture fired.
     DoubleTap,
+}
+
+/// A platform's click count as the neutral, non-zero count.
+///
+/// `NSEvent.clickCount` and `UITouch.tapCount` count the press itself, so a
+/// real press is at least 1. A count of 0 comes from an event synthesized
+/// without click state; it is still a press, so it reads as the first
+/// click.
+#[must_use]
+pub fn click_count(platform_count: usize) -> NonZeroU32 {
+    NonZeroU32::new(u32::try_from(platform_count).unwrap_or(u32::MAX)).unwrap_or(NonZeroU32::MIN)
+}
+
+/// Whether a key press with `modifiers` that types `key` is the platform's
+/// paste shortcut: Command with the letter V and no other chord modifier.
+///
+/// The logical key decides, as the platform's own menu shortcuts do, so a
+/// layout that types V elsewhere still pastes on that key. Lock state does
+/// not make a chord a different chord.
+#[must_use]
+pub fn is_paste_shortcut(modifiers: Modifiers, key: &Key) -> bool {
+    modifiers.difference(Modifiers::CAPS_LOCK | Modifiers::NUM_LOCK) == Modifiers::META
+        && matches!(key, Key::Character(text) if text.eq_ignore_ascii_case("v"))
+}
+
+#[cfg(test)]
+mod tests {
+    use keyboard_types::{Key, Modifiers, NamedKey};
+
+    use super::{click_count, is_paste_shortcut};
+
+    #[test]
+    fn only_command_v_is_the_paste_shortcut() {
+        let v = Key::Character("v".into());
+        assert!(is_paste_shortcut(Modifiers::META, &v));
+        assert!(is_paste_shortcut(
+            Modifiers::META | Modifiers::CAPS_LOCK,
+            &Key::Character("V".into())
+        ));
+        assert!(!is_paste_shortcut(Modifiers::empty(), &v));
+        assert!(!is_paste_shortcut(Modifiers::META | Modifiers::SHIFT, &v));
+        assert!(!is_paste_shortcut(Modifiers::META | Modifiers::ALT, &v));
+        assert!(!is_paste_shortcut(Modifiers::CONTROL, &v));
+        assert!(!is_paste_shortcut(
+            Modifiers::META,
+            &Key::Character("c".into())
+        ));
+        assert!(!is_paste_shortcut(
+            Modifiers::META,
+            &Key::Named(NamedKey::Enter)
+        ));
+    }
+
+    #[test]
+    fn a_platform_click_count_is_at_least_the_first_click() {
+        assert_eq!(click_count(0).get(), 1);
+        assert_eq!(click_count(1).get(), 1);
+        assert_eq!(click_count(2).get(), 2);
+        assert_eq!(click_count(3).get(), 3);
+        assert_eq!(click_count(40).get(), 40, "a run is not capped");
+        assert_eq!(click_count(usize::MAX).get(), u32::MAX);
+    }
 }

@@ -378,7 +378,7 @@ fn planes_are_sampled_in_place() {
 
     let first = host_target(device, (64, 32));
     renderer
-        .present(&first, SDR, FrameTime(std::time::Instant::now()))
+        .present(&first, SDR, FrameTime::now())
         .expect("the frame presents");
     let shown = read(device, queue, &first).pixel(32, 16);
     assert!(
@@ -390,7 +390,7 @@ fn planes_are_sampled_in_place() {
     // A resize forces the next pass to draw; nothing new was published.
     let second = host_target(device, (96, 48));
     renderer
-        .present(&second, SDR, FrameTime(std::time::Instant::now()))
+        .present(&second, SDR, FrameTime::now())
         .expect("the frame presents");
     let shown = read(device, queue, &second).pixel(48, 24);
     assert!(
@@ -433,7 +433,7 @@ fn frames_add_no_textures_beyond_their_planes() {
     // The first frame builds the engine's external-frame pipeline state.
     publish(RED);
     renderer
-        .present(&target, SDR, FrameTime(std::time::Instant::now()))
+        .present(&target, SDR, FrameTime::now())
         .expect("the frame presents");
     device
         .poll(wgpu::PollType::wait_indefinitely())
@@ -443,7 +443,7 @@ fn frames_add_no_textures_beyond_their_planes() {
     for code in [BLUE, RED, BLUE] {
         publish(code);
         renderer
-            .present(&target, SDR, FrameTime(std::time::Instant::now()))
+            .present(&target, SDR, FrameTime::now())
             .expect("the frame presents");
         device
             .poll(wgpu::PollType::wait_indefinitely())
@@ -496,7 +496,7 @@ fn frames_are_released_once_the_host_is_done_with_them() {
     let output = outputs.borrow()[0].clone();
     let pass = |renderer: &mut ExternalFrameRenderer| {
         renderer
-            .present(&target, SDR, FrameTime(std::time::Instant::now()))
+            .present(&target, SDR, FrameTime::now())
             .expect("the frame presents");
     };
 
@@ -568,7 +568,7 @@ fn the_source_sees_the_presented_size_and_can_request_a_pass() {
     for (width, height) in [(96, 48), (64, 32)] {
         let target = host_target(&device, (width, height));
         renderer
-            .present(&target, retina, FrameTime(std::time::Instant::now()))
+            .present(&target, retina, FrameTime::now())
             .expect("the pass runs without a frame");
         assert_eq!(
             output.presented_size(),
@@ -710,7 +710,7 @@ fn an_idle_device_loss_recovers_through_context_publication() {
         .expect("the restarted source's output is live");
     let target = host_target(&device, dimensions);
     second
-        .present(&target, SDR, FrameTime(std::time::Instant::now()))
+        .present(&target, SDR, FrameTime::now())
         .expect("the frame presents");
     let shown = read(&device, fresh.queue(), &target).pixel(32, 16);
     assert!(
@@ -887,7 +887,7 @@ fn gpu_export_external_frame_images() {
             .expect("the output is live");
         let target = host_target(device, FRAME);
         renderer
-            .present(&target, SDR, FrameTime(std::time::Instant::now()))
+            .present(&target, SDR, FrameTime::now())
             .expect("the frame presents");
         read(device, queue, &target)
             .save_png(directory.join(name))

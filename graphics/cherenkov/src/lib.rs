@@ -55,8 +55,8 @@ pub use parley;
 pub use web_time::Instant;
 
 pub use crate::animation::{
-    Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
-    settled, spring_step,
+    Animatable, Animation, AnimationTrack, Curve, Decay, Easing, KeyframeAnimation, Keyframes,
+    Lanes, Repeat, Spring, curve_value, decay_step, settled, spring_step,
 };
 
 pub use crate::backend::{
@@ -116,9 +116,10 @@ pub use cherenkov_record::{
     BackdropSampling, BackdropShaderEffect, BackdropShaderId, BackdropShaderSource, BackdropSpec,
     BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError, CaptureScale,
     CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, ImageStorage, Install,
-    Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
-    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
-    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared,
-    SurfaceId, SurfaceTree, Target, Transaction, snap_animating,
+    KeyframeProp, Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerKeyframes,
+    LayerNode, LayerOwner, LevelRamp, LevelRampError, Projective, ProjectiveError,
+    ProjectiveLayers, Prop, Queue, Realize, RecordingScale, RecordingScaleError, Refraction,
+    RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction,
+    snap_animating,
 };
 pub use kurbo::Stroke;

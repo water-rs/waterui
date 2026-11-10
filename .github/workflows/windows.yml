@@ -102,6 +102,9 @@ jobs:
       # the installed test-font families through system font discovery.
       - uses: astral-sh/setup-uv@v6
       - uses: ./.github/actions/test-fonts-cache
+      # The cli's `create --template web` ignored tests scaffold and build a
+      # Vite frontend, and hydrolysis's ignored JS round trip runs on it.
+      - uses: oven-sh/setup-bun@v2
       # Same for the Cherenkov test targets the workspace pass below
       # compiles and runs: their fonts and corpus scenes are generated,
       # not committed. The all-features pass also runs the bench tests
@@ -137,6 +140,14 @@ jobs:
       #
       # One full-workspace pass under default features.
       - run: cargo nextest run --timings --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example' --profile ci
+      # The cli's `#[ignore]`d suite (#1446) and hydrolysis's named JS round
+      # trip (its other ignored test is a report-only perf probe, #4012), on
+      # the build above: same `--workspace`/`--exclude` set, so nothing
+      # recompiles (#4070). A failing test in that pass must not hide this
+      # suite's result, so it runs unless the job was cancelled.
+      - name: Test (ignored cli and hydrolysis tests)
+        if: ${{ !cancelled() }}
+        run: cargo nextest run --timings --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example' --profile ci --run-ignored ignored-only -E 'package(waterui-cli) | (package(hydrolysis) & test(=widgets::platform::webview::android_protocol::tests::the_composed_async_call_survives_a_real_js_round_trip))'
       - name: Test (examples that carry tests)
         run: cargo nextest run --timings --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
       # nextest cannot run doctests, and this workspace has plenty of them.

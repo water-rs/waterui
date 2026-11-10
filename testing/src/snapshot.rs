@@ -128,7 +128,7 @@ impl TestHost {
         fonts.clone().install(&mut env);
         Self {
             env,
-            gpu: OffscreenGpuContext::new_for_tests_blocking(),
+            gpu: OffscreenGpuContext::new_blocking(),
             width,
             height,
             theme: Rc::new(style),

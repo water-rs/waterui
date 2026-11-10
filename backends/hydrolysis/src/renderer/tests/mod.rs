@@ -4394,7 +4394,7 @@ fn diagnostic_gpu() -> (
     cherenkov_gpu::composition::Sink,
     Rc<crate::engine::SharedEngineState>,
 ) {
-    let gpu = crate::platform::OffscreenGpuContext::new_for_tests_blocking();
+    let gpu = crate::platform::OffscreenGpuContext::new_blocking();
     let probe = crate::platform::OffscreenSurface::on_context(
         gpu.clone(),
         1,

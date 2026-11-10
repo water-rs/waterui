@@ -547,6 +547,9 @@ jobs:
       # they serve run on both OSes.
       - uses: astral-sh/setup-uv@v6
       - uses: ./.github/actions/test-fonts-cache
+      # The cli's `create --template web` ignored tests scaffold and build a
+      # Vite frontend, and hydrolysis's ignored JS round trip runs on it.
+      - uses: oven-sh/setup-bun@v2
       # Cherenkov's test targets both embed (`include_bytes!`) and read
       # the generated scene fonts, and the corpus tests read scenes/corpus
       # at runtime; the tree is generated, not committed.
@@ -576,6 +579,21 @@ jobs:
       # is OS 27, so these two steps build at that deployment target; apple.yml
       # keeps building the Apple backends at the framework's 26 floor.
       - run: cargo nextest run --timings --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --profile ci
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "27.0"
+      # The cli's `#[ignore]`d suite (#1446): the tests that build real
+      # framework source or hit the network — the workspace-resolved example
+      # graphs, the inspector app layout, the Xcode drives on macOS. The
+      # checkout they resolve is this tree itself, so the signal is "the cli
+      # matches the framework it ships with". Plus the Android WebView
+      # bridge's composed-script round trip through a real JS engine, named
+      # by package and exact test: hydrolysis's other ignored test is a
+      # report-only perf probe that stays out of CI (#4012). Same
+      # `--workspace`/`--exclude` set as the pass above, so features unify and
+      # nothing recompiles (#4070). A failing test in that pass must not hide
+      # this suite's result, so it runs unless the job was cancelled.
+      - if: ${{ !cancelled() }}
+        run: cargo nextest run --timings --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --profile ci --run-ignored ignored-only -E 'package(waterui-cli) | (package(hydrolysis) & test(=widgets::platform::webview::android_protocol::tests::the_composed_async_call_survives_a_real_js_round_trip))'
         env:
           MACOSX_DEPLOYMENT_TARGET: "27.0"
       # nextest cannot run doctests, and this workspace has plenty of them.
@@ -1317,7 +1335,6 @@ jobs:
         with:
           name: cherenkov-bench-aarch64-apple-darwin-cherenkov
           path: target/release/cherenkov-bench
-          retention-days: 14
           if-no-files-found: ignore
       # Many timed frames of the map scene on a Metal device: the workload
       # that used to hang the render thread on Apple GPUs.
@@ -1422,7 +1439,6 @@ jobs:
         with:
           name: cherenkov-bench-aarch64-linux-android
           path: target/aarch64-linux-android/release/cherenkov-bench
-          retention-days: 14
           if-no-files-found: ignore
       # The Vulkan external-frame device test (#166) runs on a Pixel 9
       # Pro over adb; CI builds and archives the prebuilt binary.

@@ -15,19 +15,19 @@ use web_sys::{
 };
 
 use super::{
-    CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
-    PointerButton, PointerKind, PresentationSurface as _, ScrollPlatform, TextInputPurpose,
-    TextInputState, TouchScrollConfig, WindowState, WuiWindow,
+    CursorStyle, GpuSurfaceWindow, InputConventions, InputEvent, KeyCode, KeyState, Modifiers,
+    PlatformWindow, PointerButton, PointerKind, PresentationSurface as _, ScrollPlatform,
+    TextInputPurpose, TextInputState, TouchScrollConfig, WindowState, WuiWindow,
 };
 
-/// The touch-scroll physics of the system `window`'s browser runs on, as
-/// its `navigator.userAgent` names it.
-fn touch_scroll_config_for(window: &BrowserHostWindow) -> TouchScrollConfig {
+/// The system `window`'s browser runs on, as its `navigator.userAgent`
+/// names it.
+fn scroll_platform_for(window: &BrowserHostWindow) -> ScrollPlatform {
     let user_agent = window
         .navigator()
         .user_agent()
         .expect("hydrolysis web platform: navigator.userAgent unavailable");
-    TouchScrollConfig::for_platform(ScrollPlatform::from_user_agent(&user_agent))
+    ScrollPlatform::from_user_agent(&user_agent)
 }
 
 #[derive(Clone, Copy)]
@@ -285,6 +285,12 @@ pub struct BrowserWindow {
     /// The touch-scroll physics of the system the browser runs on, read
     /// once from `navigator.userAgent`.
     touch_scroll_config: TouchScrollConfig,
+    /// The input conventions of the same system. The browser publishes no
+    /// double-click interval or distance, and `pointerdown` — the event the
+    /// window listens to, whose compatibility `mousedown` its
+    /// `preventDefault` suppresses — carries no click count, so presses are
+    /// counted with the family's data defaults.
+    input_conventions: InputConventions,
     /// The page background last matched to the app's top edge.
     top_edge_color: Option<waterui_graphics::draw::WorkingColor>,
     /// Held for its lifetime: the observer keeps reporting only while
@@ -342,7 +348,7 @@ impl BrowserWindow {
         let redraw_requested = Rc::new(Cell::new(false));
         let scale_factor = Rc::new(Cell::new(browser_window.device_pixel_ratio()));
         let pending_resize = Rc::new(Cell::new(None));
-        let touch_scroll_config = touch_scroll_config_for(&browser_window);
+        let system = scroll_platform_for(&browser_window);
 
         let initial_resize = measure_root(&browser_window, &root);
         pending_resize.set(Some(initial_resize));
@@ -435,7 +441,8 @@ impl BrowserWindow {
             safe_area,
             schedule_frame,
             current_cursor_style: CursorStyle::Arrow,
-            touch_scroll_config,
+            touch_scroll_config: TouchScrollConfig::for_platform(system),
+            input_conventions: InputConventions::for_platform(system),
             top_edge_color: None,
             _intersection_observer: intersection_observer,
             _listeners: listeners,
@@ -557,6 +564,10 @@ impl PlatformWindow for BrowserWindow {
     /// elsewhere.
     fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
         Some(self.touch_scroll_config)
+    }
+
+    fn input_conventions(&self) -> InputConventions {
+        self.input_conventions
     }
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {

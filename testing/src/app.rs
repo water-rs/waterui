@@ -60,8 +60,8 @@ pub fn ui() -> UiBuilder {
 /// session, taking `style` the way `hydrolysis::run(app, env, style)` does.
 ///
 /// The session mounts at the window's declared frame on the default builder
-/// configuration — [`RuntimeFlavor::Test`] and scale factor 1. When the
-/// session needs its own viewport, runtime flavor or scale factor, mount
+/// configuration — scale factor 1. When the
+/// session needs its own viewport or scale factor, mount
 /// through the styled builder instead:
 /// `ui().theme(style).viewport(w, h).mount_app(app)`.
 ///
@@ -99,19 +99,6 @@ fn frame_points_as_u32(points: f32) -> u32 {
     u32::try_from(points.max(1.0).round() as i32).expect("clamped frame size is positive")
 }
 
-/// Which Hydrolysis headless runtime backs a session.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RuntimeFlavor {
-    /// Software adapters permitted (the default for tests). Fonts resolve the
-    /// application's way on every flavor — the system collection plus the
-    /// staged fonts directory.
-    #[default]
-    Test,
-    /// Production adapter selection — what `water run` shows.
-    Application,
-}
-
 /// Runtime test host and configuration.
 ///
 /// `S` is the builder's style state: [`NoStyle`] for the semantic builder
@@ -131,7 +118,6 @@ pub struct UiBuilder<S = NoStyle> {
     height: u32,
     style: S,
     perf_config: PerfConfig,
-    flavor: RuntimeFlavor,
     scale_factor: f64,
 }
 
@@ -141,7 +127,6 @@ impl<S> core::fmt::Debug for UiBuilder<S> {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("perf_config", &self.perf_config)
-            .field("flavor", &self.flavor)
             .field("scale_factor", &self.scale_factor)
             .finish_non_exhaustive()
     }
@@ -163,7 +148,6 @@ impl UiBuilder<NoStyle> {
             height: 844,
             style: NoStyle,
             perf_config: PerfConfig::default(),
-            flavor: RuntimeFlavor::Test,
             scale_factor: 1.0,
         }
     }
@@ -183,7 +167,6 @@ impl UiBuilder<NoStyle> {
             height: self.height,
             style: Styled { style },
             perf_config: self.perf_config,
-            flavor: self.flavor,
             scale_factor: self.scale_factor,
         }
     }
@@ -241,18 +224,6 @@ impl<S> UiBuilder<S> {
     #[must_use]
     pub const fn perf_config(mut self, config: PerfConfig) -> Self {
         self.perf_config = config;
-        self
-    }
-
-    /// Selects which Hydrolysis headless runtime backs the session.
-    ///
-    /// [`RuntimeFlavor::Test`] (the default) permits software adapters;
-    /// [`RuntimeFlavor::Application`] selects adapters the way `water run`
-    /// does. Fonts resolve the application's way on both — a styled session
-    /// resolves the families its style package names strictly.
-    #[must_use]
-    pub const fn runtime(mut self, flavor: RuntimeFlavor) -> Self {
-        self.flavor = flavor;
         self
     }
 
@@ -357,7 +328,6 @@ impl<S: Style> UiBuilder<Styled<S>> {
             height,
             style: Styled { style },
             perf_config,
-            flavor,
             scale_factor,
         } = self;
         (
@@ -367,7 +337,6 @@ impl<S: Style> UiBuilder<Styled<S>> {
                 height,
                 style: NoStyle,
                 perf_config,
-                flavor,
                 scale_factor,
             },
             style,
@@ -491,25 +460,19 @@ impl<S: Style> UiBuilder<Styled<S>> {
             width,
             height,
             style,
-            flavor,
             scale_factor,
             ..
         } = self;
         let ledger = ContentLedger::new();
         env.insert(ledger.clone());
-        let runtime = match flavor {
-            RuntimeFlavor::Test => {
-                HeadlessRuntime::new_for_tests(env, content, width, height, style.style)
-            }
-            RuntimeFlavor::Application => HeadlessRuntime::new(
-                env,
-                content,
-                width,
-                height,
-                style.style,
-                FontFamilyResolution::Strict,
-            ),
-        };
+        let runtime = HeadlessRuntime::new(
+            env,
+            content,
+            width,
+            height,
+            style.style,
+            FontFamilyResolution::Strict,
+        );
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
@@ -525,25 +488,19 @@ impl<S: Style> UiBuilder<Styled<S>> {
             width,
             height,
             style,
-            flavor,
             scale_factor,
             ..
         } = self;
         let ledger = ContentLedger::new();
         env.insert(ledger.clone());
-        let runtime = match flavor {
-            RuntimeFlavor::Test => {
-                HeadlessRuntime::new_for_tests_with_window(env, window, width, height, style.style)
-            }
-            RuntimeFlavor::Application => HeadlessRuntime::new_with_window(
-                env,
-                window,
-                width,
-                height,
-                style.style,
-                FontFamilyResolution::Strict,
-            ),
-        };
+        let runtime = HeadlessRuntime::new_with_window(
+            env,
+            window,
+            width,
+            height,
+            style.style,
+            FontFamilyResolution::Strict,
+        );
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 

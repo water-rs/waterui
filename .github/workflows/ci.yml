@@ -456,13 +456,11 @@ jobs:
         with:
           name: android-package-apk-debug
           path: ${{ runner.temp }}/apk-debug
-          retention-days: 14
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: android-package-apk-release
           path: ${{ runner.temp }}/apk-release
-          retention-days: 14
           if-no-files-found: error
       - uses: ./.github/actions/upload-cargo-timings
         if: always()

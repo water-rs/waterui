@@ -1337,6 +1337,22 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
     None
 }
 
+/// Tells an input-receiving surface its laid-out size and display scale
+/// when either differs from what it was last told, ahead of the frame the
+/// commit is about to start — the surface's first, and the first at every new
+/// size. `deliver` hands the event to the surface's handler.
+fn announce_surface_size(
+    tracker: &mut crate::renderer::ResizeTracker,
+    bounds: kurbo::Rect,
+    display_scale: f64,
+    deliver: impl FnOnce(&waterui_graphics::input::SurfaceInputEvent),
+) {
+    if let Some(event) = tracker.changed(bounds.size(), crate::num_cast::f64_as_f32(display_scale))
+    {
+        deliver(&event);
+    }
+}
+
 /// Records a scene view's content into its frame against the target's
 /// resource table, rebuilding it when the table changed since its last
 /// record.
@@ -1364,6 +1380,14 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
     )]
     let (width, height) = (source.bounds.width() as f32, source.bounds.height() as f32);
     let content = Rc::clone(&source.content);
+    if content.borrow().wants_input_events() {
+        announce_surface_size(
+            &mut source.resize.borrow_mut(),
+            source.bounds,
+            cx.display_scale,
+            |event| content.borrow_mut().input(event),
+        );
+    }
     let owner = Rc::clone(cell);
     cx.tx[frame].record(|recorder| {
         if content
@@ -1437,6 +1461,12 @@ fn mount_gpu<T: LayerTarget<E>, E: crate::text::TextEngine>(
     if fresh {
         runtime.binding = None;
     }
+    if runtime.view.wants_input_events() {
+        let runtime = &mut *runtime;
+        announce_surface_size(&mut runtime.resize, bounds, cx.display_scale, |event| {
+            runtime.view.input(event);
+        });
+    }
     if visible {
         if runtime.producer.is_none() {
             cx.stats.installs += 1;
@@ -1470,6 +1500,12 @@ fn mount_external<T: LayerTarget<E>, E: crate::text::TextEngine>(
     let mut runtime = runtime.borrow_mut();
     if fresh {
         runtime.binding = None;
+    }
+    if runtime.view.wants_input_events() {
+        let runtime = &mut *runtime;
+        announce_surface_size(&mut runtime.resize, bounds, cx.display_scale, |event| {
+            runtime.view.input(event);
+        });
     }
     if !visible {
         return;

@@ -11,7 +11,7 @@ use kurbo::{Affine, Rect, Stroke};
 use nami_core::Signal;
 
 use crate::Instant;
-use crate::animation::{AnimLanes, Animation, OperandTrack};
+use crate::animation::{AnimLanes, Animation, KeyframeAnimation, Motion, OperandTrack};
 use crate::display_list::{
     Command, DisplayList, DisplayListView, Operand, Picture, Slot, SlotUpdate,
 };
@@ -271,7 +271,9 @@ impl<T> Watch<T> {
             destination: Destination::Binding(Box::new(callback)),
         }
     }
+}
 
+impl<T: 'static> Watch<T> {
     fn notify(&self, context: nami_core::watcher::Context<T>) {
         match &self.destination {
             Destination::Slot {
@@ -282,11 +284,27 @@ impl<T> Watch<T> {
                 if let Some(state) = state.upgrade() {
                     // The `Context` metadata carries the animation a bound
                     // signal was set under, exactly like a layer property's
-                    // binding op does.
-                    let animation = context.metadata().try_get::<Animation>();
+                    // binding op does, or a keyframe track.
+                    let metadata = context.metadata();
+                    let motion = if metadata.is_empty() {
+                        None
+                    } else {
+                        let animation = metadata.try_get::<Animation>();
+                        metadata.try_get::<KeyframeAnimation>().map_or_else(
+                            || animation.map(Motion::Animation),
+                            |keyframes| {
+                                assert!(
+                                    animation.is_none(),
+                                    "a change carries an `Animation` or a `KeyframeAnimation`, \
+                                     never both"
+                                );
+                                Some(Motion::Keyframes(Box::new(keyframes.operands(*convert))))
+                            },
+                        )
+                    };
                     let value = convert(context.into_value());
-                    match animation {
-                        Some(animation) => state.animate(*command, value, animation),
+                    match motion {
+                        Some(motion) => state.animate(*command, value, motion),
                         None => state.snap(SlotUpdate {
                             command: *command,
                             value,
@@ -800,9 +818,9 @@ pub trait LiveOwner {
     fn changed(&self);
 }
 
-/// A change carrying an `Animation`, queued until the next
-/// [`LiveState::sample`] resolves the operand it animates from.
-type Animate = (u32, Operand, Animation);
+/// A change carrying an `Animation` or a keyframe track, queued until the
+/// next [`LiveState::sample`] resolves the operand it animates from.
+type Animate = (u32, Operand, Motion);
 
 /// The animated-operand machinery of a [`LiveState`], present only
 /// while a change is queued or a track runs.
@@ -833,20 +851,20 @@ impl LiveState {
         }
     }
 
-    /// A change whose `Context` carried an `Animation`: queued for the
-    /// next [`Content::sample`], which starts or retargets the slot's
-    /// track from the operand's then-current value.
+    /// A change whose `Context` carried an `Animation` or a keyframe
+    /// track: queued for the next [`Content::sample`], which starts or
+    /// retargets the slot's track from the operand's then-current value.
     ///
     /// # Panics
     /// Panics on a `Decay` animation, the same invariant `scroll_offset`'s
     /// siblings hold.
-    fn animate(&self, command: u32, target: Operand, animation: Animation) {
+    fn animate(&self, command: u32, target: Operand, motion: Motion) {
         assert!(
-            !matches!(animation, Animation::Decay(_)),
+            !matches!(motion, Motion::Animation(Animation::Decay(_))),
             "Decay is only legal on scroll_offset"
         );
         let mut anim = self.anim.take().unwrap_or_default();
-        anim.animates.push((command, target, animation));
+        anim.animates.push((command, target, motion));
         self.anim.set(Some(anim));
         self.needs_sample.set(true);
         if let Some(flag) = self.surface_animated.borrow().as_ref() {
@@ -890,10 +908,20 @@ impl LiveState {
         let animates = std::mem::take(&mut anim.animates);
         if !animates.is_empty() {
             let mut pending = self.pending.borrow_mut();
-            for (command, target, animation) in animates {
+            for (command, target, motion) in animates {
                 let slot = Slot {
                     command,
                     operand: target.kind(),
+                };
+                let animation = match motion {
+                    Motion::Animation(animation) => animation,
+                    // A keyframe track carries its own values: it replaces
+                    // whatever ran on the slot.
+                    Motion::Keyframes(keyframes) => {
+                        anim.tracks
+                            .insert(slot, OperandTrack::keyframes(target, keyframes));
+                        continue;
+                    }
                 };
                 // A running track retargets, keeping the last sampled
                 // position and velocity when the new target keeps the lane
@@ -1673,7 +1701,7 @@ mod tests {
     use super::*;
     use crate::color::{Color, Srgb};
     use crate::shape::ShapeData;
-    use crate::{Curve, WorkingColor};
+    use crate::{Curve, Keyframes, Repeat, WorkingColor};
 
     fn red() -> Color<Srgb> {
         Color::new([1., 0., 0., 1.])
@@ -2094,6 +2122,205 @@ mod tests {
         assert!(
             !content.sample(Instant::now()).is_animating(),
             "a snapped change starts no track"
+        );
+    }
+
+    fn solid(r: f32, g: f32, b: f32) -> Paint {
+        Paint::Solid(WorkingColor::new([r, g, b, 1.]))
+    }
+
+    /// A 300 ms cycle through red, green and blue.
+    fn paint_cycle() -> Keyframes<Paint> {
+        let unit = std::time::Duration::from_millis(300);
+        Keyframes::new(unit, solid(1., 0., 0.))
+            .then(0.5, Curve::linear(unit), solid(0., 1., 0.))
+            .then(1., Curve::ease_in_out(unit), solid(0., 0., 1.))
+    }
+
+    /// A paint signal whose every change carries the metadata it was set
+    /// with, as a backend's live operand does.
+    #[derive(Clone)]
+    struct Driven(Rc<(RefCell<Paint>, nami_core::watcher::WatcherManager<Paint>)>);
+
+    impl Driven {
+        fn new(paint: Paint) -> Self {
+            Self(Rc::new((
+                RefCell::new(paint),
+                nami_core::watcher::WatcherManager::new(),
+            )))
+        }
+
+        fn set(&self, paint: Paint, metadata: nami_core::watcher::Metadata) {
+            *self.0.0.borrow_mut() = paint.clone();
+            self.0
+                .1
+                .notify_owned(nami_core::watcher::Context::new(paint, metadata));
+        }
+
+        fn keyframes(&self, paint: Paint, keyframes: Keyframes<Paint>, repeat: Repeat) {
+            self.set(
+                paint,
+                nami_core::watcher::Metadata::new().with(KeyframeAnimation::new(keyframes, repeat)),
+            );
+        }
+    }
+
+    impl Signal for Driven {
+        type Output = Paint;
+        type Guard = nami_core::watcher::WatcherManagerGuard<Paint>;
+
+        fn snapshot(&self) -> Paint {
+            self.0.0.borrow().clone()
+        }
+
+        fn watch(
+            &self,
+            watcher: impl Fn(nami_core::watcher::Context<Paint>) + 'static,
+        ) -> Self::Guard {
+            self.0.1.register_as_guard(watcher)
+        }
+    }
+
+    /// A content filling with `paint`, and how often its body recorded.
+    fn counted(paint: &Driven) -> (Content, Rc<Cell<u32>>) {
+        let recordings = Rc::new(Cell::new(0));
+        let content = Content::record(&LayoutSize::new(), {
+            let recordings = Rc::clone(&recordings);
+            let paint = paint.clone();
+            move |c| {
+                recordings.set(recordings.get() + 1);
+                c.fill(Rect::new(0., 0., 10., 10.), paint);
+            }
+        });
+        (content, recordings)
+    }
+
+    /// The single update a sample queued.
+    fn sampled(content: &mut Content) -> Operand {
+        let Some(ContentChange::Update(updates)) = content.take_change() else {
+            panic!("the sample sends an update");
+        };
+        assert_eq!(updates.len(), 1);
+        updates[0].value.clone()
+    }
+
+    #[test]
+    fn a_keyframed_operand_repeats_without_recording() {
+        let paint = Driven::new(solid(0., 0., 0.));
+        let (mut content, recordings) = counted(&paint);
+        let _ = content.take_change();
+        let keyframes = paint_cycle();
+        paint.keyframes(solid(1., 1., 1.), keyframes.clone(), Repeat::Forever);
+        let start = Instant::now();
+        // Four cycles at 120 Hz: every frame samples the engine-side track,
+        // which matches the host-side sampler, and keeps running.
+        for frame in 0..144u32 {
+            let elapsed = std::time::Duration::from_secs(frame.into()) / 120;
+            assert_eq!(
+                content.sample(start + elapsed),
+                Animating::RUNNING,
+                "a forever track never settles"
+            );
+            let expected = keyframes
+                .sample(elapsed, Repeat::Forever)
+                .expect("forever runs");
+            assert_eq!(sampled(&mut content), Operand::Paint(expected), "{frame}");
+        }
+        assert_eq!(recordings.get(), 1, "running keyframes record nothing");
+
+        // A plain change removes the track: the content idles.
+        paint.set(solid(1., 1., 0.), nami_core::watcher::Metadata::new());
+        assert!(!content.needs_sample(), "no track is left to sample");
+        assert_eq!(
+            content.sample(start + std::time::Duration::from_secs(2)),
+            Animating::IDLE
+        );
+        assert_eq!(sampled(&mut content), Operand::Paint(solid(1., 1., 0.)));
+        assert_eq!(
+            content.take_change(),
+            None,
+            "an idle content queues nothing"
+        );
+        assert_eq!(recordings.get(), 1);
+    }
+
+    #[test]
+    fn a_finite_keyframe_track_ends_on_its_change_value() {
+        let paint = Driven::new(solid(0., 0., 0.));
+        let (mut content, _) = counted(&paint);
+        let _ = content.take_change();
+        paint.keyframes(
+            solid(1., 1., 1.),
+            paint_cycle(),
+            Repeat::Count(std::num::NonZeroU32::new(2).expect("two")),
+        );
+        let start = Instant::now();
+        assert!(content.sample(start).is_animating());
+        assert_eq!(sampled(&mut content), Operand::Paint(solid(1., 0., 0.)));
+        assert!(
+            content
+                .sample(start + std::time::Duration::from_millis(599))
+                .is_animating(),
+            "the second cycle still runs"
+        );
+        let _ = sampled(&mut content);
+        assert_eq!(
+            content.sample(start + std::time::Duration::from_millis(600)),
+            Animating::IDLE
+        );
+        assert_eq!(sampled(&mut content), Operand::Paint(solid(1., 1., 1.)));
+        assert!(!content.needs_sample());
+    }
+
+    #[test]
+    fn a_keyframed_operand_retargets_from_its_sampled_value() {
+        let paint = Driven::new(solid(0., 0., 0.));
+        let (mut content, _) = counted(&paint);
+        let _ = content.take_change();
+        paint.keyframes(solid(1., 1., 1.), paint_cycle(), Repeat::Forever);
+        let start = Instant::now();
+        let _ = content.sample(start);
+        let _ = sampled(&mut content);
+        let _ = content.sample(start + std::time::Duration::from_millis(75));
+        let mid = sampled(&mut content);
+
+        // A curve replaces the track, starting where the keyframes were.
+        let curve = Animation::from(Curve::linear(std::time::Duration::from_millis(100)));
+        paint.set(
+            solid(0., 0., 0.5),
+            nami_core::watcher::Metadata::new().with(curve),
+        );
+        let _ = content.sample(start + std::time::Duration::from_millis(80));
+        assert_eq!(
+            sampled(&mut content),
+            mid,
+            "the curve starts at the keyframes' sampled value"
+        );
+        let mut t = start + std::time::Duration::from_millis(80);
+        while content.sample(t).is_animating() {
+            t += std::time::Duration::from_millis(8);
+        }
+        assert_eq!(sampled(&mut content), Operand::Paint(solid(0., 0., 0.5)));
+        assert!(!content.needs_sample(), "the replaced track left nothing");
+    }
+
+    #[test]
+    #[should_panic(expected = "attach the track to the operand's or property's own signal")]
+    fn a_keyframe_track_of_another_type_panics() {
+        let paint = Driven::new(solid(0., 0., 0.));
+        let _content = Content::record(&LayoutSize::new(), |c| {
+            c.fill(Rect::new(0., 0., 10., 10.), paint.clone());
+        });
+        // The slot converts `Paint`s: a track of `WorkingColor`s is not its.
+        let unit = std::time::Duration::from_millis(100);
+        let colours = Keyframes::new(unit, WorkingColor::new([0., 0., 0., 1.])).then(
+            1.,
+            Curve::linear(unit),
+            WorkingColor::new([1., 1., 1., 1.]),
+        );
+        paint.set(
+            solid(1., 1., 1.),
+            nami_core::watcher::Metadata::new().with(KeyframeAnimation::new(colours, Repeat::ONCE)),
         );
     }
 

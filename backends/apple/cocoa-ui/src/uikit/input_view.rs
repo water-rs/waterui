@@ -28,14 +28,17 @@ use objc2_foundation::{
 };
 use objc2_ui_kit::{
     UIEvent, UIGestureRecognizer, UIGestureRecognizerState, UIKeyInput, UIPanGestureRecognizer,
-    UIPress, UIPressesEvent, UIScrollTypeMask, UITextInput, UITextInputDelegate,
+    UIPasteboard, UIPress, UIPressesEvent, UIScrollTypeMask, UITextInput, UITextInputDelegate,
     UITextInputStringTokenizer, UITextInputTokenizer, UITextInputTraits, UITextLayoutDirection,
     UITextPosition, UITextRange, UITextSelectionRect, UITextStorageDirection, UITouch, UIView,
 };
 
 use crate::callback::guarded;
 use crate::geometry::Rect;
-use crate::input::{PointerButton, ScrollUnit, SurfaceEvent};
+use crate::input::{
+    GesturePhase, PointerButton, ScrollPhase, ScrollUnit, SurfaceEvent, click_count,
+    is_paste_shortcut,
+};
 use crate::keys;
 
 /// Delivers one surface event to the content.
@@ -59,6 +62,9 @@ pub struct InputViewIvars {
     /// discrete (wheel) so each callback knows its gesture's source and
     /// completion behavior. Both report logical points.
     scroll_recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
+    /// The physical key of a Command-V press `UIKit` delivers as `paste:`,
+    /// until its release goes by.
+    paste_shortcut_key: std::cell::Cell<Option<keyboard_types::Code>>,
 }
 
 impl fmt::Debug for InputViewIvars {
@@ -214,13 +220,7 @@ define_class!(
         fn scroll_continuous(&self, gesture: &UIPanGestureRecognizer) {
             guarded("CocoaUiInputScrollTarget scrollContinuous:", || {
                 if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
-                    let finished = matches!(
-                        gesture.state(),
-                        UIGestureRecognizerState::Ended
-                            | UIGestureRecognizerState::Cancelled
-                            | UIGestureRecognizerState::Failed
-                    );
-                    view.handle_scroll(gesture, finished);
+                    view.handle_scroll(gesture, ScrollPhase::Contact(contact_phase(gesture.state())));
                 }
             });
         }
@@ -232,7 +232,7 @@ define_class!(
             guarded("CocoaUiInputScrollTarget scrollDiscrete:", || {
                 if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
                     // A wheel notch is a complete scroll on its own.
-                    view.handle_scroll(gesture, true);
+                    view.handle_scroll(gesture, ScrollPhase::Discrete);
                 }
             });
         }
@@ -697,6 +697,34 @@ define_class!(
             resigned
         }
 
+        // SAFETY: `paste:` is the `UIResponder` standard edit action `UIKit`
+        // sends the first responder for the edit menu's Paste and a hardware
+        // keyboard's Command-V; `sender` is unused.
+        #[unsafe(method(paste:))]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            let _ = sender;
+            guarded("InputView paste:", || {
+                if let Some(text) = pasteboard_text() {
+                    self.emit(SurfaceEvent::Paste(text));
+                }
+            });
+        }
+
+        // SAFETY: `canPerformAction:withSender:` is the `UIResponder` query
+        // that enables or disables a standard edit action; every action but
+        // Paste forwards to `UIResponder`'s answer.
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform_action(&self, action: objc2::runtime::Sel, sender: Option<&AnyObject>) -> bool {
+            if action == sel!(paste:) {
+                // SAFETY: `hasStrings` is a plain pasteboard query on the
+                // main thread; unlike `string` it raises no paste prompt.
+                unsafe { UIPasteboard::generalPasteboard().hasStrings() }
+            } else {
+                // SAFETY: forwards the query to `UIResponder`.
+                unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] }
+            }
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(touchesBegan:withEvent:))]
         fn touches_began(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
@@ -761,6 +789,33 @@ define_class!(
         }
     }
 );
+
+/// The text on the general pasteboard, if it holds any.
+fn pasteboard_text() -> Option<String> {
+    // SAFETY: `string` is a plain pasteboard read on the main thread, made
+    // for the paste command the user just issued.
+    unsafe { UIPasteboard::generalPasteboard().string() }.map(|text| text.to_string())
+}
+
+/// The gesture phase a continuous indirect-scroll recognizer's state is.
+///
+/// A failed recognizer abandoned the gesture, which is a cancellation.
+///
+/// # Panics
+///
+/// When a recognizer calls its action in the `Possible` state, which `UIKit`
+/// never does.
+fn contact_phase(state: UIGestureRecognizerState) -> GesturePhase {
+    match state {
+        UIGestureRecognizerState::Began => GesturePhase::Began,
+        UIGestureRecognizerState::Changed => GesturePhase::Changed,
+        UIGestureRecognizerState::Ended => GesturePhase::Ended,
+        UIGestureRecognizerState::Cancelled | UIGestureRecognizerState::Failed => {
+            GesturePhase::Cancelled
+        }
+        other => panic!("UIKit called a scroll recognizer's action in state {other:?}"),
+    }
+}
 
 /// A `UITextPosition` subclass's offset, if `position` is one this view
 /// created.
@@ -977,10 +1032,10 @@ impl InputView {
     /// left and up). `translationInView:` is always a view-coordinate
     /// displacement in logical points — `Pixel` — for both scroll type
     /// masks; the masks select the gesture's source and completion
-    /// behavior, never a unit. `finished` says whether this callback ends
-    /// the scroll: a wheel notch is complete on its own; a trackpad glide
-    /// finishes when the gesture ends or is cancelled.
-    fn handle_scroll(&self, gesture: &UIPanGestureRecognizer, finished: bool) {
+    /// behavior, never a unit. `phase` says which part of a scroll this
+    /// callback is: a wheel notch is complete on its own; a trackpad glide
+    /// follows its recognizer's state.
+    fn handle_scroll(&self, gesture: &UIPanGestureRecognizer, phase: ScrollPhase) {
         let this: &UIView = self;
         let point = gesture.locationInView(Some(this));
         let translation = gesture.translationInView(Some(this));
@@ -990,11 +1045,13 @@ impl InputView {
             delta_x: -translation.x,
             delta_y: -translation.y,
             unit: ScrollUnit::Pixel,
-            finished,
+            phase,
         });
     }
 
     /// `UIKit`'s first touch as a pointer event: every touch is primary.
+    /// `UITouch.tapCount` is the tap's place in a run of rapid taps, and is
+    /// the same on the touch's release.
     fn send_pointer(&self, touches: &NSSet<UITouch>, pressed: Option<bool>) {
         let Some(touch) = touches.into_iter().next() else {
             return;
@@ -1008,6 +1065,7 @@ impl InputView {
                     pressed,
                     button: PointerButton::Primary,
                     position,
+                    click_count: click_count(touch.tapCount()),
                 }
             }),
         );
@@ -1015,6 +1073,10 @@ impl InputView {
 
     /// A press batch as `Modifiers` + `Key` events, one pair per key;
     /// whether every press delivered an event.
+    ///
+    /// The paste shortcut is the paste command: `UIKit` delivers it as
+    /// `paste:`, so its press and the release that follows are consumed here
+    /// without being key events too.
     fn send_presses(&self, press_set: &NSSet<UIPress>, pressed: bool) -> bool {
         let mut delivered = false;
         for press_item in press_set {
@@ -1022,8 +1084,20 @@ impl InputView {
                 continue;
             };
             let modifiers = keys::surface_modifiers(key.modifierFlags());
-            self.emit(SurfaceEvent::Modifiers(modifiers));
             let code = keys::surface_code(&key);
+            let shortcut = &self.ivars().paste_shortcut_key;
+            if pressed {
+                if is_paste_shortcut(modifiers, &keys::surface_key(&key)) {
+                    shortcut.set(Some(code));
+                    delivered = true;
+                    continue;
+                }
+            } else if shortcut.get() == Some(code) {
+                shortcut.set(None);
+                delivered = true;
+                continue;
+            }
+            self.emit(SurfaceEvent::Modifiers(modifiers));
             self.emit(SurfaceEvent::Key {
                 pressed,
                 key: keys::surface_key(&key),

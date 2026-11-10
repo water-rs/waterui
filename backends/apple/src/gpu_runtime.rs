@@ -54,18 +54,33 @@ pub unsafe fn prepare(env: *mut Environment, then: impl FnOnce() + 'static) {
         let env = unsafe { &mut *env };
         env.insert(runtime);
         #[cfg(feature = "gpu_surface")]
-        {
-            // The shared presentation anchor and the per-generation scene
-            // engine sit beside the runtime: every presenter maps the same
-            // media timestamp to the same instant, and every mounted
-            // `SceneView` shares one engine per context generation.
-            crate::presentation_time::PresentationTime::install(env);
-            env.insert(Rc::new(SceneEngine::new()));
-            env.insert(Rc::new(FilterPipelines::new()));
-        }
+        install_owners(
+            env,
+            objc2::MainThreadMarker::new().expect("the GPU services install on the main executor"),
+        );
         then();
     })
     .detach();
+}
+
+/// Installs the shared owners that sit beside the runtime in `env`.
+///
+/// Every presenter maps the same media timestamp to the same instant
+/// through one presentation anchor, every mounted `SceneView` shares one
+/// engine per context generation, every filtered view one pipeline cache
+/// per device, and every display-driven capture of a run-loop turn one
+/// [`CapturePass`](cocoa_ui::capture::CapturePass) and its single
+/// transaction commit (#4074).
+///
+/// # Panics
+///
+/// When a presentation anchor was already installed on `env`.
+#[cfg(feature = "gpu_surface")]
+pub fn install_owners(env: &mut Environment, mtm: objc2::MainThreadMarker) {
+    crate::presentation_time::PresentationTime::install(env);
+    env.insert(Rc::new(SceneEngine::new()));
+    env.insert(Rc::new(FilterPipelines::new()));
+    env.insert(cocoa_ui::capture::CapturePass::new(mtm));
 }
 
 /// The environment's GPU runtime.
@@ -563,10 +578,25 @@ pub fn filter_pipelines(env: &Environment) -> Rc<FilterPipelines> {
         .clone()
 }
 
+/// The capture pass every display-driven view capture under `env` queues
+/// into, so one run-loop turn's captures commit once.
+///
+/// # Panics
+///
+/// When no pass was installed — [`prepare`] installs it beside the
+/// runtime before any effect view can render.
+#[cfg(feature = "gpu_surface")]
+#[must_use]
+pub fn capture_pass(env: &Environment) -> cocoa_ui::capture::CapturePass {
+    env.get::<cocoa_ui::capture::CapturePass>()
+        .expect("the capture pass is not installed in the WaterUI environment")
+        .clone()
+}
+
 #[cfg(all(test, target_os = "macos", feature = "gpu_surface"))]
 mod tests {
     use super::*;
-    use waterui_graphics::cherenkov::{Instant, Surface};
+    use waterui_graphics::cherenkov::Surface;
     use waterui_graphics::cherenkov_gpu::interop::TextureTarget;
 
     /// A mounted scene's contract reduced to observation: whether `prepare`
@@ -662,7 +692,7 @@ mod tests {
             .expect("the generation settles");
         let first_part = Probe::mount(&generation);
         let second_part = Probe::mount(&generation);
-        let time = FrameTime(Instant::now());
+        let time = FrameTime::now();
 
         let requester: Rc<dyn SceneParticipant> = first_part.clone();
         generation
@@ -684,7 +714,7 @@ mod tests {
             !second_part.produced_at(time),
             "late dirt stays unproduced at this timestamp"
         );
-        let later = FrameTime(Instant::now());
+        let later = FrameTime::now();
         generation
             .produce(later, &requester_b)
             .expect("the owed frame produces at its own timestamp");
@@ -708,7 +738,7 @@ mod tests {
         ));
         let failing = Probe::mount_failing(&generation, prepare_error.clone());
         let healthy = Probe::mount(&generation);
-        let time = FrameTime(Instant::now());
+        let time = FrameTime::now();
 
         // The healthy requester produces the batch: the failing
         // participant's contract was rejected, routed and left behind —

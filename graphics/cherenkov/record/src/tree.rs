@@ -13,12 +13,13 @@ use rustc_hash::FxHashMap;
 use kurbo::{Affine, Vec2};
 
 use crate::animation::{
-    Animatable, Animation, AnimationTrack, Lanes, clamp_to_rect, eval_lanes, rubber_band_spring,
+    AnimLanes, Animatable, Animation, AnimationTrack, Lanes, Motion, clamp_to_rect, eval_lanes,
+    rubber_band_spring,
 };
 use crate::backdrop::BackdropSample;
 use crate::display_list::{Operand, SlotUpdate, blends_within, translucent_within};
 use crate::frame::RefreshRange;
-use crate::ops::{ContentOp, Install, LayerId, LayerOp, Op, Prop};
+use crate::ops::{ContentOp, Install, KeyframeProp, LayerId, LayerKeyframes, LayerOp, Op, Prop};
 use crate::projective::{Projective, ProjectiveError};
 use crate::shape::ShapeData;
 use crate::style::{BlendMode, FilterId};
@@ -130,6 +131,10 @@ pub struct LayerNode {
     /// window.
     host_window: Option<u64>,
     parent: Option<LayerId>,
+    /// The parent chain reaches the root, so the layer is drawn and its
+    /// tracks are sampled. Every layer of a subtree shares its top's
+    /// state.
+    attached: bool,
     transform_track: Option<Track<Affine>>,
     components: Option<Box<components::Components>>,
     opacity_track: Option<Track<f32>>,
@@ -248,6 +253,7 @@ impl LayerNode {
             has_content: false,
             host_window: None,
             parent: None,
+            attached: false,
             transform_track: None,
             components: None,
             opacity_track: None,
@@ -359,10 +365,11 @@ struct Track<T: Animatable> {
     from: T::Lanes,
     /// The velocity the track started with.
     velocity: T::Lanes,
-    /// The value the track moves toward.
+    /// The value the track moves toward; a keyframe track holds it once it
+    /// ends.
     target: T,
-    /// The animation driving the track.
-    animation: Animation,
+    /// The animation or keyframe track driving the track.
+    motion: Motion<T>,
     /// The time the track started. `Some` when the prop gave a start on
     /// the host's clock; `None` until first sampled, so a track committed
     /// between frames starts at the next presentation time.
@@ -375,21 +382,68 @@ struct Track<T: Animatable> {
 impl<T: Animatable> std::fmt::Debug for Track<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Track")
-            .field("animation", &self.animation)
+            .field("animation", &self.motion.animation())
             .field("start", &self.start)
             .finish_non_exhaustive()
     }
 }
 
 impl<T: Animatable> Track<T> {
+    /// The track as a compositor can take it over; `None` for a keyframe
+    /// track, which only the engine samples.
     fn description(&self) -> Option<AnimationTrack<T>> {
         Some(AnimationTrack {
             from: T::from_lanes(self.from),
             velocity: self.velocity,
             target: self.target,
-            animation: self.animation,
+            animation: *self.motion.animation()?,
             start: self.start?,
         })
+    }
+
+    /// A track running `prop`'s keyframes, holding its target once a
+    /// finite repeat ends. It replaces whatever ran on the property and
+    /// starts at the first frame that samples it.
+    ///
+    /// # Panics
+    /// Panics when the keyframes' lanes are not `T`'s.
+    fn from_prop(prop: &KeyframeProp<T>) -> Self
+    where
+        T: AnimLanes,
+    {
+        let lanes = prop.keyframes.lanes(prop.repeat);
+        assert_eq!(
+            lanes.width(),
+            T::Lanes::N,
+            "a layer property's keyframes interpolate in its own lanes"
+        );
+        let mut from = T::Lanes::zero();
+        for (lane, &value) in lanes.value(0).iter().enumerate() {
+            from.set(lane, value);
+        }
+        Self {
+            from,
+            velocity: T::Lanes::zero(),
+            target: prop.target,
+            motion: Motion::Keyframes(Box::new(lanes)),
+            start: None,
+            last: None,
+        }
+    }
+
+    /// The evaluation `dt` seconds into the track:
+    /// `(position, velocity, done)`.
+    fn eval(&self, dt: f64) -> (T::Lanes, T::Lanes, bool) {
+        match &self.motion {
+            Motion::Animation(animation) => eval_lanes(
+                self.from,
+                self.velocity,
+                self.target.into_lanes(),
+                animation,
+                dt,
+            ),
+            Motion::Keyframes(keyframes) => keyframes.eval_lanes(dt, self.target.into_lanes()),
+        }
     }
 
     fn new(
@@ -407,7 +461,7 @@ impl<T: Animatable> Track<T> {
             from,
             velocity,
             target,
-            animation,
+            motion: Motion::Animation(animation),
             start,
             last: None,
         }
@@ -417,14 +471,7 @@ impl<T: Animatable> Track<T> {
     /// in lane space. A settled spring reports its target exactly.
     fn sample(&mut self, t: Instant) -> (T::Lanes, T::Lanes, bool) {
         let start = *self.start.get_or_insert(t);
-        let dt = t.duration_since(start).as_secs_f64();
-        let (pos, vel, done) = eval_lanes(
-            self.from,
-            self.velocity,
-            self.target.into_lanes(),
-            &self.animation,
-            dt,
-        );
+        let (pos, vel, done) = self.eval(t.duration_since(start).as_secs_f64());
         self.last = Some((t, pos, vel));
         (pos, vel, done)
     }
@@ -437,13 +484,7 @@ impl<T: Animatable> Track<T> {
         let dt = self
             .start
             .map_or(0.0, |start| t.duration_since(start).as_secs_f64());
-        let (pos, vel, _) = eval_lanes(
-            self.from,
-            self.velocity,
-            self.target.into_lanes(),
-            &self.animation,
-            dt,
-        );
+        let (pos, vel, _) = self.eval(dt);
         (pos, vel)
     }
 
@@ -451,11 +492,12 @@ impl<T: Animatable> Track<T> {
     /// needs only the slow class once it runs slower than one device pixel
     /// per frame at 60 Hz (`scale * 60` logical pixels per second).
     fn is_fast(&self, scale: f64) -> bool {
-        match self.animation {
-            Animation::Decay(_) => {
+        match self.motion {
+            Motion::Animation(Animation::Decay(_)) => {
                 self.last.map_or(self.velocity, |(_, _, vel)| vel).max_abs() >= scale * 60.0
             }
-            Animation::Spring(_) | Animation::Curve(_) => true,
+            Motion::Animation(Animation::Spring(_) | Animation::Curve(_))
+            | Motion::Keyframes(_) => true,
         }
     }
 }
@@ -524,7 +566,9 @@ impl SurfaceTree {
     #[must_use]
     pub fn new() -> Self {
         let mut nodes = FxHashMap::default();
-        nodes.insert(0, LayerNode::new());
+        let mut root = LayerNode::new();
+        root.attached = true;
+        nodes.insert(0, root);
         Self {
             nodes,
             root: LayerId::new(0),
@@ -653,19 +697,22 @@ impl SurfaceTree {
         }
     }
 
-    /// Steps every projective layer's tilt and depth tracks and
+    /// Steps every attached projective layer's tilt and depth tracks and
     /// recomposes its pose from the freshly sampled affine components.
     /// Returns `(stepped, still running)`.
     fn sample_projective(&mut self, time: Instant) -> (bool, bool) {
         let (mut stepped, mut running) = (false, false);
         for (id, state) in &mut self.projective {
-            let (step, run) = state.sample(time);
-            stepped |= step;
-            running |= run;
             let node = self
                 .nodes
                 .get_mut(id)
                 .expect("projective state belongs to a layer in the tree");
+            if !node.attached {
+                continue;
+            }
+            let (step, run) = state.sample(time);
+            stepped |= step;
+            running |= run;
             if step {
                 self.clock += 1;
                 node.outer_stamp = self.clock;
@@ -778,6 +825,7 @@ impl SurfaceTree {
         let node = self.nodes.remove(&id.raw()).expect("checked above");
         for child in node.children {
             self.node_mut(child).parent = None;
+            self.set_attached(child, false);
         }
         self.projective.remove(&id.raw());
     }
@@ -804,6 +852,7 @@ impl SurfaceTree {
             | LayerOp::Depth(id, _)
             | LayerOp::ClearProjection(id)
             | LayerOp::Opacity(id, _)
+            | LayerOp::Keyframes(id, _)
             | LayerOp::Blend(id, _) => Some((*id, false)),
             LayerOp::ScrollOffset(id, _)
             | LayerOp::Clip(id, _)
@@ -889,6 +938,7 @@ impl SurfaceTree {
                 let node = self.node_mut(id);
                 set_prop(&mut node.scroll_track, &mut node.scroll_offset, &prop);
             }
+            LayerOp::Keyframes(id, keyframes) => self.node_mut(id).set_keyframes(&keyframes),
             LayerOp::Clip(id, clip) => self.node_mut(id).clip = clip,
             LayerOp::Blend(id, blend) => self.set_blend(id, blend),
             LayerOp::Filter(id, filter) => self.node_mut(id).filter = filter,
@@ -919,6 +969,8 @@ impl SurfaceTree {
                 let parent_node = self.node_mut(parent);
                 parent_node.children.push(child);
                 parent_node.blending_children += u32::from(blends);
+                let attached = parent_node.attached;
+                self.set_attached(child, attached);
             }
             LayerOp::Insert {
                 parent,
@@ -938,6 +990,8 @@ impl SurfaceTree {
                 let index = index.min(node.children.len());
                 node.children.insert(index, child);
                 node.blending_children += u32::from(blends);
+                let attached = node.attached;
+                self.set_attached(child, attached);
             }
             LayerOp::Detach { parent, child } => {
                 assert_eq!(
@@ -946,6 +1000,25 @@ impl SurfaceTree {
                     "detaching from the wrong parent"
                 );
                 self.detach(child);
+                self.set_attached(child, false);
+            }
+        }
+    }
+
+    /// Marks `id`'s subtree as reaching the root or not. A subtree
+    /// already in that state is left alone: its layers share its top's.
+    fn set_attached(&mut self, id: LayerId, attached: bool) {
+        let node = self.node_mut(id);
+        if node.attached == attached {
+            return;
+        }
+        node.attached = attached;
+        let mut pending = node.children.clone();
+        while let Some(id) = pending.pop() {
+            let node = self.node_mut(id);
+            if node.attached != attached {
+                node.attached = attached;
+                pending.extend_from_slice(&node.children);
             }
         }
     }
@@ -975,14 +1048,25 @@ impl SurfaceTree {
             .unwrap_or_else(|| panic!("layer {} is not in the tree", id.raw()))
     }
 
-    /// Samples every animation track at `time`, updating the layers'
-    /// sampled properties. `scale` snaps the scroll offset to the
-    /// device-pixel grid and classifies slow decays.
+    /// Samples the animation tracks of every layer whose parent chain
+    /// reaches the root at `time`, updating their sampled properties.
+    /// `scale` snaps the scroll offset to the device-pixel grid and
+    /// classifies slow decays.
+    ///
+    /// A detached layer is not drawn, so its tracks are not sampled and
+    /// ask for no frame. They stay on the host's clock: re-attached, a
+    /// track shows the value its clock gives at that frame — the target,
+    /// when it ended meanwhile — as though it had run out of view. See
+    /// [`Layer`](crate::surface::Layer).
     pub fn sample(&mut self, time: Instant, scale: f64) -> Sampling {
         let mut stepped = false;
         let mut fast = false;
         let mut slow = false;
         for node in self.nodes.values_mut() {
+            if !node.attached {
+                node.animation_rate = None;
+                continue;
+            }
             let mut node_fast = false;
             // Opacity is outer and scroll inner: any running track steps.
             let mut outer_changed = node.opacity_track.is_some();
@@ -1032,7 +1116,7 @@ impl SurfaceTree {
                 // bounds, the remaining motion becomes a critically damped
                 // spring back to the nearest point of the bounds, so the
                 // overshoot and the return are one continuous motion.
-                if let Animation::Decay(decay) = track.animation
+                if let Motion::Animation(Animation::Decay(decay)) = track.motion
                     && let Some(bounds) = decay.rubber_band
                 {
                     let offset = Vec2::from_lanes(pos);
@@ -1046,7 +1130,7 @@ impl SurfaceTree {
                             from: pos,
                             velocity: vel,
                             target: clamped,
-                            animation: Animation::Spring(rubber_band_spring()),
+                            motion: Motion::Animation(Animation::Spring(rubber_band_spring())),
                             start: Some(time),
                             last: track.last,
                         };

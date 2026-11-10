@@ -37,6 +37,8 @@ use alloc::sync::Arc;
 use core::fmt;
 use core::time::Duration;
 
+use cherenkov::Instant;
+
 use std::sync::Mutex;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
@@ -175,6 +177,11 @@ pub struct Frame<'a> {
     pub elapsed: Duration,
     /// Time since the previous frame.
     pub delta: Duration,
+    /// When the platform will present this frame, where it reports a target
+    /// presentation time: a display link's target timestamp, a frame
+    /// scheduler's expected presentation time. `None` on platforms that
+    /// report none.
+    pub presentation_time: Option<Instant>,
     redraw: bool,
 }
 
@@ -191,6 +198,7 @@ impl<'a> Frame<'a> {
         (width, height): (u32, u32),
         scale: f32,
         (elapsed, delta): (Duration, Duration),
+        presentation_time: Option<Instant>,
     ) -> Self {
         Self {
             device,
@@ -203,6 +211,7 @@ impl<'a> Frame<'a> {
             scale,
             elapsed,
             delta,
+            presentation_time,
             redraw: false,
         }
     }
@@ -665,6 +674,7 @@ impl cherenkov_gpu::interop::GpuContent for GpuContentHandle {
             (gpu.width, gpu.height),
             gpu.scale,
             (gpu.elapsed, gpu.delta),
+            gpu.presentation_time,
         );
         self.lock().render(&mut frame);
         if frame.redraw_requested() {

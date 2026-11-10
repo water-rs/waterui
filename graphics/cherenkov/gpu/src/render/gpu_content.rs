@@ -15,7 +15,7 @@ use crate::interop::{
     ExternalFrame, FrameColor, FramePlanes, GpuContentBox, RgbAlpha,
     wgpu::{Context, Frame},
 };
-use cherenkov::{CompletionWaker, Instant, ProducerId, RenderError};
+use cherenkov::{CompletionWaker, FrameTime, Instant, ProducerId, RenderError};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -267,7 +267,7 @@ impl Producer {
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        time: Instant,
+        frame_time: FrameTime,
         size: (u32, u32),
         scale: f32,
     ) -> Result<(), RenderError> {
@@ -324,6 +324,7 @@ impl Producer {
             self.again = true;
             return Ok(());
         };
+        let time = frame_time.instant();
         let mut frame = Frame {
             device,
             queue,
@@ -337,6 +338,7 @@ impl Producer {
             delta: self
                 .last_frame
                 .map_or(Duration::ZERO, |last| time.saturating_duration_since(last)),
+            presentation_time: frame_time.presentation_time(),
             redraw: false,
         };
         self.content
@@ -364,7 +366,7 @@ impl Producer {
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        time: Instant,
+        frame_time: FrameTime,
         size: (u32, u32),
         scale: f32,
     ) -> Result<(), RenderError> {
@@ -415,6 +417,7 @@ impl Producer {
             self.again = true;
             return Ok(());
         };
+        let time = frame_time.instant();
         let mut frame = Frame {
             device,
             queue,
@@ -428,6 +431,7 @@ impl Producer {
             delta: self
                 .last_frame
                 .map_or(Duration::ZERO, |last| time.saturating_duration_since(last)),
+            presentation_time: frame_time.presentation_time(),
             redraw: false,
         };
         self.content

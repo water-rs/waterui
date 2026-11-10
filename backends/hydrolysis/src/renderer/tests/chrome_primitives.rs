@@ -650,3 +650,62 @@ fn group_opacity_change_records_nothing_and_blends_once() {
         "the group fades as one composite: a channel differs by {worst} from the reference"
     );
 }
+
+/// The engine samples live operands at the frame instant the renderer was
+/// pumped at, not at the wall clock: a hover transition pumped past its end
+/// on a pinned clock shows its end state.
+#[test]
+fn live_operands_sample_the_pumped_frame_instant() {
+    use crate::theme::WidgetTheme as _;
+
+    let theme = MinimalTestTheme::default();
+    let motion = crate::theme::InteractionMotion {
+        hover_enter: waterui::animation::Animation::linear(Duration::from_secs(10)),
+        ..theme.interaction_motion()
+    };
+    // Red at rest, blue hovered, and nothing else drawn over the fill.
+    let chrome = Chrome::new(
+        Surface::new(
+            CornerShape::new(Corners::from(0.0)),
+            StateValue::new(Paint::from(color(1.0, 0.0, 0.0)))
+                .when(InteractionState::HOVERED, Paint::from(color(0.0, 0.0, 1.0))),
+        ),
+        StateLayer::new(color(1.0, 1.0, 1.0)).opacities(0.0, 0.0, 0.0, 0.0),
+        PressFeedback::Tint,
+        FocusIndicator::Tint,
+    )
+    .motion(motion);
+    let theme = theme.with_button_chrome(chrome);
+    let mut runtime = runtime_with(button("Chrome").action(|| {}), theme);
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+
+    runtime.push_input_event(InputEvent::PointerMove {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x: CENTER,
+        y: CENTER,
+    });
+    frames.pump(&mut runtime);
+    assert_eq!(the_chrome(&runtime).state(), InteractionState::HOVERED);
+
+    let past_the_transition = frames.start + Duration::from_secs(20);
+    let snapshot = runtime
+        .pump_at(true, past_the_transition)
+        .into_snapshot()
+        .expect("the pump captured a snapshot");
+    let pixels = snapshot.rgba8();
+    let pixels = pixels.as_chunks::<4>().0;
+    let red = pixels.iter().filter(|px| px[0] > 200 && px[2] < 60).count();
+    let blue = pixels.iter().filter(|px| px[2] > 200 && px[0] < 60).count();
+    assert_eq!(
+        (red > 0, blue > 0),
+        (false, true),
+        "the fill shows the hovered end state: {red} red and {blue} blue pixels"
+    );
+}

@@ -64,13 +64,17 @@ Controls, checked for every invocation and recorded with it:
 - before: screen off, physical sensors below their limits, and the requested
   device settings applied with readback evidence;
 - during: physical temperature supervision, GPU clock residency, the GPU
-  engine's measuring-thread placement, and a CPU engine's worker count;
+  engine's measuring-thread placement, GPU work in every one of its measured
+  frames (GPU time, and with `--gpu-counters` shader-core cycles), and a CPU
+  engine's worker count;
 - after: pinned policy ranges and CPU frequency residency over the workload,
   followed by restoration of every original property and sysfs value.
 
 A failed control marks the invocation invalid and stops the collection:
 `analyze` reports a scene with an invalid invocation as `invalid`, never as
-a pass, and the raw report stays on disk.
+a pass, and the raw report stays on disk. `analyze` checks the GPU work of
+every measured frame itself too, so a collection made before `run` checked
+it reports its untimed invocations as `invalid` rather than judging them.
 
 `analyze` reads a collection and, per scene and per metric of the plan, takes
 each invocation's p50 of the metric over its measured frames, the median of
@@ -159,6 +163,20 @@ METRICS = {
 }
 # The CPU backend's phases, in render order; they run inside `submit`.
 CPU_PHASES = ("lower", "glyph", "shade")
+
+
+def missing_gpu_work(report: dict[str, Any], counters: bool) -> list[str]:
+    """What the GPU engine's measured frames lack: GPU time, and with
+    `counters` any shader-core cycles. Such a frame submitted no GPU work,
+    so its invocation measured none of the scene's cost."""
+    samples = report["samples"]
+    failures = []
+    if untimed := sum(1 for s in samples if s["gpu_seconds"] is None):
+        failures.append(f"{untimed} of {len(samples)} measured frames carry no GPU time")
+    if counters and (idle := sum(1 for s in samples if not (s.get("gpu_counters") or {})
+                                 .get("shader_core_active_cycles"))):
+        failures.append(f"{idle} of {len(samples)} measured frames carry no shader-core cycles")
+    return failures
 
 
 class CpuEngine(typing.NamedTuple):
@@ -545,6 +563,7 @@ class Session:
         if self.args.gpu_counters and (report.get("gpu_counters") is None or any(
                 s.get("gpu_counters") is None for s in report["samples"])):
             failures.append("report carries no per-frame GPU counters")
+        failures += missing_gpu_work(report, self.args.gpu_counters)
         residency = report["gpu_clock"]
         if residency is None:
             failures.append("report carries no GPU clock residency")
@@ -700,6 +719,7 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
             result["scenes"][name] = entry
             continue
         reports: dict[str, list[dict[str, Any]]] = {"base": [], "head": []}
+        untimed: dict[str, list[str]] = {}
         for row in sorted(rows, key=lambda r: r["pair"]):
             path = out / f"{row['run_id']}.json"
             if sha256(path) != row["report_sha256"]:
@@ -707,7 +727,17 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
             report = json.loads(path.read_text())
             if len(report["samples"]) != plan["frames"] or report["warmup_frames"] != plan["warmup"]:
                 raise SystemExit(f"{row['run_id']}: frame counts differ from the plan")
+            # A collection made before `run` checked this carries such
+            # invocations as valid.
+            if not cpu_engine and (missing := missing_gpu_work(
+                    report, "shader-core-cycles" in plan["metrics"])):
+                untimed[row["run_id"]] = missing
             reports[row["side"]].append(report)
+        if untimed:
+            entry["verdict"] = "invalid"
+            entry["untimed_runs"] = untimed
+            result["scenes"][name] = entry
+            continue
         entry["metrics"] = {}
         for metric in plan["metrics"]:
             unit, value = METRICS[metric]
@@ -808,6 +838,8 @@ def main() -> None:
         for name, entry in result["scenes"].items():
             if "metrics" not in entry:
                 print(f"{name}: {entry['verdict']}")
+                for run_id, missing in entry.get("untimed_runs", {}).items():
+                    print(f"{name} {run_id}: {'; '.join(missing)}")
                 continue
             for metric, judged in entry["metrics"].items():
                 if cpu_engine:

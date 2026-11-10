@@ -1293,22 +1293,25 @@ pub fn capture_template_image(
 
 /// Installs the GPU owners onto an existing environment.
 ///
-/// Runtime, scene engine, filter-pipeline cache and the
-/// `PresentationTime` anchor — the set a `captures_content` transition
-/// and the filtered handler resolve. `gpu_runtime::prepare` installs
-/// the same beside the runtime in production; trials that render
-/// `FilteredView` through the dispatcher need it on the env they hand
-/// `dispatch::render`.
+/// The runtime plus the owners `gpu_runtime::install_owners` puts beside
+/// it — the set a `captures_content` transition and the filtered handler
+/// resolve, exactly as `gpu_runtime::prepare` installs it in production;
+/// trials that render `FilteredView` through the dispatcher need it on
+/// the env they hand `dispatch::render`.
+///
+/// # Panics
+///
+/// Off the main thread.
 #[cfg(feature = "gpu_surface")]
 pub fn install_gpu(
     env: &mut waterui_backend_core::Environment,
     runtime: waterui_graphics::gpu::GpuRuntime,
 ) {
-    use std::rc::Rc;
     env.insert(runtime);
-    env.insert(Rc::new(crate::gpu_runtime::SceneEngine::new()));
-    env.insert(Rc::new(crate::gpu_runtime::FilterPipelines::new()));
-    crate::presentation_time::PresentationTime::install(env);
+    crate::gpu_runtime::install_owners(
+        env,
+        objc2::MainThreadMarker::new().expect("GPU owners install on the main thread"),
+    );
     crate::components::view_renderer::install_service(env);
     // The dispatcher captures the environment at install time — re-run
     // the install so its root env sees the GPU services just inserted

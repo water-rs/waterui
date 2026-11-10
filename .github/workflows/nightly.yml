@@ -239,64 +239,6 @@ jobs:
         with:
           name: nightly-feature-checks
 
-  # The cli's `#[ignore]`d suite (water-rs/cli's nightly `ignored` job,
-  # #1446): the tests that build real framework source or hit the network —
-  # the workspace-resolved example graphs,
-  # the inspector app layout, the Xcode drives on macOS. The checkout the
-  # tests resolve is this tree itself, so the signal is "the cli matches the
-  # framework it ships with".
-  cli-ignored:
-    name: CLI ignored / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, xcode-27, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-rust
-        with:
-          # The cli's `artifact_symbols` suite builds a wasm rlib fixture.
-          targets: wasm32-unknown-unknown
-          cache: "false"
-      # The ignored tests compile workspace crates — the scaffolded web app
-      # links the GTK/VA-API/PipeWire stack — so they need the framework's
-      # own native dependency set.
-      - uses: ./.github/actions/setup-linux-deps
-        if: runner.os == 'Linux'
-      # `filtrate`'s `shaderloom` build script needs `dxc` to compile WGSL to
-      # DXIL; the Windows image does not ship it.
-      - uses: ./.github/actions/install-dxc
-        if: runner.os == 'Windows'
-      # #3093: the ignored hydrolysis suite's test binaries create wgpu
-      # devices; stage the pinned WARP before nextest builds them.
-      - uses: ./.github/actions/install-warp
-        if: runner.os == 'Windows'
-        with:
-          into: |
-            target/debug/deps
-            target/debug
-      - uses: ./.github/actions/install-tool
-        with:
-          tool: cargo-nextest@0.9.145
-          path: ~/.cargo/bin/cargo-nextest*
-      # The nextest runs' `cli-roboto` and `test-fonts` setup scripts invoke
-      # `uv run`; the hydrolysis step's fonts come from the shared cache.
-      - uses: astral-sh/setup-uv@v6
-      - uses: ./.github/actions/test-fonts-cache
-      # The `create --template web` tests scaffold and build a Vite frontend.
-      - uses: oven-sh/setup-bun@v2
-      - run: cargo nextest run --timings --locked --profile ci -p waterui-cli --run-ignored ignored-only
-      # The Android WebView bridge's composed-script round trip through a
-      # real JS engine. `bun` is on PATH from the step above. Named, not
-      # `ignored-only`: hydrolysis's other ignored test is a report-only
-      # perf probe that stays out of CI (#4012).
-      - run: cargo nextest run --timings --locked --profile ci -p hydrolysis --run-ignored ignored-only -E 'test(=widgets::platform::webview::android_protocol::tests::the_composed_async_call_survives_a_real_js_round_trip)'
-      - uses: ./.github/actions/upload-cargo-timings
-        if: always()
-        with:
-          name: nightly-cli-ignored-${{ strategy.job-index }}
-
   # The release `water` CLI of this revision, built once per platform: the
   # `cli-e2e` legs and `apple-e2e` install it instead of compiling their own
   # (#4048), and it is the one downloadable CLI of a nightly. The build stays
@@ -347,7 +289,6 @@ jobs:
         with:
           name: water-cli-${{ runner.os }}-${{ runner.arch }}
           path: ${{ runner.temp }}/water-cli/bin
-          retention-days: 14
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
@@ -949,12 +890,6 @@ jobs:
           Collect-Timings package
 
           Phase "water run e2eapp"
-          # windows-latest has no GPU: the only surface-compatible adapter is
-          # the D3D12 WARP software device, which Hydrolysis refuses in
-          # production selection unless the diagnostic switch is set. WARP
-          # still runs the full compute pipeline, so the launch is the real
-          # one; the switch only widens adapter selection.
-          $env:WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER = "1"
           $p = Start-Process -FilePath water -ArgumentList "run --platform $env:E2E_PLATFORM --backend $env:E2E_BACKEND" -PassThru `
             -WorkingDirectory "$env:USERPROFILE\e2eapp" `
             -RedirectStandardOutput "$logs\run-play.out" -RedirectStandardError "$logs\run-play.err"
@@ -1284,16 +1219,14 @@ jobs:
             --out "$logs/timings.json"
           cp "$logs/timings.json" "$RUNNER_TEMP/e2e-record/$E2E_PLATFORM.json"
 
-      # The packages `water package` produced, kept for 14 days. Gated on the
-      # collect steps seeing them, so a failed packaging step adds no second
-      # failure here.
+      # The packages `water package` produced. Gated on the collect steps
+      # seeing them, so a failed packaging step adds no second failure here.
       - name: Upload the package
         if: ${{ !cancelled() && matrix.platform != 'android' && (steps.collect_unix.outputs.packaged == 'true' || steps.collect_windows.outputs.packaged == 'true') }}
         uses: actions/upload-artifact@v4
         with:
           name: cli-e2e-${{ matrix.platform }}-package
           path: ${{ runner.temp }}/e2e-packages/package
-          retention-days: 14
           if-no-files-found: error
 
       - name: Upload the debug APK
@@ -1302,7 +1235,6 @@ jobs:
         with:
           name: cli-e2e-android-apk-debug
           path: ${{ runner.temp }}/e2e-packages/apk-debug
-          retention-days: 14
           if-no-files-found: error
 
       - name: Upload the unsigned release APK
@@ -1311,7 +1243,6 @@ jobs:
         with:
           name: cli-e2e-android-apk-release
           path: ${{ runner.temp }}/e2e-packages/apk-release
-          retention-days: 14
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
@@ -1462,7 +1393,6 @@ jobs:
         with:
           name: cherenkov-bench-linux-vello-cpu-skia
           path: target/release/cherenkov-bench
-          retention-days: 14
           if-no-files-found: ignore
       # The oracle reference depends only on the scene; build it once for
       # both passes below (#218).
@@ -1528,7 +1458,6 @@ jobs:
         with:
           name: cherenkov-bench-macos-skia-metal-vello-classic-vello-hybrid
           path: target/release/cherenkov-bench
-          retention-days: 14
           if-no-files-found: ignore
       # The oracle reference depends only on the scene; build it once for
       # the three passes below (#218).
@@ -1588,7 +1517,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1632,7 +1561,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-e2e]
     if: failure() && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -354,12 +354,11 @@ impl AndroidCherenkovSurface {
         self.core.engine.set_band(&self.core.surface, view, target)
     }
 
-    /// Renders the frame at `at`, the frame instant the pump runs.
     pub(crate) fn render(
-        &mut self,
-        at: cherenkov::FrameTime,
+        &self,
+        time: cherenkov::FrameTime,
     ) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        self.core.own(self.core.engine.render(at))
+        self.core.own(self.core.engine.render(time))
     }
 }
 
