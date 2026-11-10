@@ -243,13 +243,22 @@ pub mod media_block_07 {
 // Listing: independent graphics constructors, interleaved with imports.
 // ---------------------------------------------------------------------------
 pub fn media_block_08() {
+    use waterui::layout::{Point, Rect};
     let source = Str::from("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>");
+    let radius = Binding::f32(20.0);
+    let accent = Color::srgb(0, 122, 255);
 
-    use waterui_canvas::{Canvas, DrawingContext}; // its own crate — add waterui-canvas to Cargo.toml
+    use waterui::canvas::{Canvas, Circle, StrokeStyle}; // facade feature `canvas`
 
     let _ = {
-        Canvas::new(|ctx: &mut DrawingContext| {
-            let _ = ctx; // [ellipsis filled]
+        Canvas::new(move |cx| {
+            // runs once per mount; signals stay bound
+            cx.fill(cx.size().map(Rect::from_size), Color::srgb(240, 240, 240));
+            cx.stroke(
+                radius.map(|r| Circle::new(Point::new(40.0, 40.0), r)),
+                StrokeStyle::new(2.0),
+                accent,
+            );
         })
     };
 
@@ -259,6 +268,67 @@ pub fn media_block_08() {
 
     use waterui::svg::Svg;
     let _ = { Svg::new(source) };
+}
+
+// ---------------------------------------------------------------------------
+// media.md § "## Graphics and codes" (prose): the canvas model — `cx.each`,
+// `cx.scope`, `cx.size()`, `cx.time()`, the scoped `clip`/`transform`/`layer`,
+// `Drawing::record` with `cx.draw` and `Canvas::from`, `ImageSource::status`,
+// `.intrinsic_size(..)` and `.offered_label(..)`. Not counted as a rust block.
+// ---------------------------------------------------------------------------
+pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
+    use waterui::canvas::{Canvas, Circle, Drawing, Layer, Sampling};
+    use waterui::layout::{Affine2, Point, Rect, Size};
+
+    #[derive(Clone, PartialEq)]
+    struct Dot {
+        id: u32,
+        at: Point,
+    }
+    let dots: Binding<Vec<Dot>> = Binding::container(Vec::new());
+    let detail = Binding::u32(1);
+    let drawing = Drawing::record(Size::new(24.0, 24.0), |cx| {
+        cx.fill(
+            Circle::new(Point::new(12.0, 12.0), 12.0),
+            waterui::graphics::WorkingColor::WHITE,
+        );
+    });
+    let _status: Computed<waterui::canvas::ImageStatus> = image.status();
+    let _icon = Canvas::from(drawing.clone());
+
+    Canvas::new(move |cx| {
+        let _size: Computed<Size> = cx.size();
+        let _time: Computed<core::time::Duration> = cx.time();
+        cx.each(
+            dots,
+            |dot: &Dot| dot.id,
+            |cx, dot| {
+                cx.fill(
+                    dot.map(|dot| Circle::new(dot.at, 3.0)),
+                    Color::srgb(0, 0, 0),
+                )
+            },
+        );
+        cx.scope(detail, |cx, detail: &u32| {
+            for _ in 0..*detail {
+                cx.fill(Rect::from_size(Size::new(4.0, 4.0)), Color::srgb(0, 0, 0));
+            }
+        });
+        cx.clip(Circle::new(Point::new(40.0, 40.0), 30.0), |cx| {
+            cx.transform(Affine2::translate(10.0, 0.0), |cx| {
+                cx.layer(Layer::opacity(0.5), |cx| {
+                    cx.image(
+                        image,
+                        Rect::from_size(Size::new(80.0, 80.0)),
+                        Sampling::Linear,
+                    );
+                    cx.draw(&drawing, Affine2::IDENTITY);
+                });
+            });
+        });
+    })
+    .intrinsic_size(Size::new(80.0, 80.0))
+    .offered_label(Str::from("Dots"))
 }
 
 // ---------------------------------------------------------------------------

@@ -33,7 +33,7 @@ use crate::shape::ShapeData;
 use crate::size::LayoutSize;
 use crate::style::{BlendMode, FilterId};
 use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
-use crate::{BackdropSample, ContentChange, Picture, WorkingColor};
+use crate::{BackdropSample, Picture, WorkingColor};
 
 /// Declares [`PropKind`] and its `ALL` list from one variant list, so
 /// the list a layer removal walks can never miss a kind.
@@ -475,13 +475,7 @@ impl<T: Target> Shared<T> {
                 animating = true;
             }
             if let Some(change) = content.take_change() {
-                ops.push(Op::Layer(LayerOp::Content(
-                    *id,
-                    Some(match change {
-                        ContentChange::Replace(list) => ContentOp::Replace(list),
-                        ContentChange::Update(updates) => ContentOp::Update(updates),
-                    }),
-                )));
+                ops.push(Op::Layer(LayerOp::Content(*id, Some(change.into()))));
             }
         }
         let clear = self.clear.take();
@@ -669,16 +663,8 @@ impl<T: Target> Shared<T> {
                                     let stored = slot.content.as_mut().expect("just inserted");
                                     stored.attach(Rc::downgrade(&owner), &animated);
                                     if let Some(change) = stored.take_change() {
-                                        let content_op = match change {
-                                            ContentChange::Replace(list) => {
-                                                ContentOp::Replace(list)
-                                            }
-                                            ContentChange::Update(updates) => {
-                                                ContentOp::Update(updates)
-                                            }
-                                        };
                                         state.pending[i] =
-                                            Op::Layer(LayerOp::Content(id, Some(content_op)));
+                                            Op::Layer(LayerOp::Content(id, Some(change.into())));
                                     } else {
                                         drop_at.push(i);
                                     }

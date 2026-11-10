@@ -7,14 +7,89 @@ use std::time::Duration;
 
 use crate::kurbo::{Affine, BezPath, Circle, Rect, Stroke, Vec2};
 use crate::{
-    Animation, Command, ContentOp, Curve, Display, Draw, FontData, FontId, Frame, FrameId,
-    FrameStats, FrameTime, Glyph, GlyphRun, GlyphStyle, Group, LayerId, LinearGradient, Offscreen,
-    OffscreenFormat, Operand, Paint, Picture, Pressure, Prop, Renderer, Shadow, ShapeData,
-    SlotUpdate, SurfaceFrame, SurfaceId, SurfaceTree, WorkingColor,
+    Animation, Command, ContentOp, Curve, Display, DisplayList, Draw, Edit, FontData, FontId,
+    Frame, FrameId, FrameStats, FrameTime, Glyph, GlyphRun, GlyphStyle, Group, LayerId,
+    LinearGradient, Offscreen, OffscreenFormat, Operand, Paint, Picture, Pressure, Prop, Renderer,
+    Shadow, ShapeData, SlotUpdate, Splice, SurfaceFrame, SurfaceId, SurfaceTree, WorkingColor,
 };
 use cherenkov_oracle::image::F32Image;
 use cherenkov_oracle::metrics::assert_images_match;
 use cherenkov_record::LayerOp;
+
+/// The structural edits the equivalence run applies between its slot
+/// updates, as a region edit sends them: an inserted scope, a move of it
+/// to the end, a slot update riding with an edit, and its removal.
+fn structural_edit(list: &DisplayList, step: u32) -> Option<Edit> {
+    let inserted = || {
+        Picture::record(|c| {
+            c.transform(Affine::translate((3., 2.)), |c| {
+                c.fill(
+                    Rect::new(40., 40., 70., 60.),
+                    WorkingColor::new([0.9, 0.3, 0.1, 0.8]),
+                );
+            });
+        })
+        .display_list()
+        .clone()
+    };
+    let len = u32::try_from(list.len()).expect("the fixture fits u32");
+    let splices = match step {
+        41 => vec![Splice {
+            at: 0,
+            remove: 0,
+            insert: inserted(),
+        }],
+        // Moved: out from the front, back in at the end.
+        77 => vec![
+            Splice {
+                at: 0,
+                remove: 3,
+                insert: DisplayList::default(),
+            },
+            Splice {
+                at: len - 3,
+                remove: 0,
+                insert: inserted(),
+            },
+        ],
+        123 => vec![Splice {
+            at: len - 3,
+            remove: 3,
+            insert: DisplayList::default(),
+        }],
+        _ => return None,
+    };
+    let updates = if step == 77 {
+        vec![SlotUpdate {
+            command: len - 3,
+            value: Operand::Transform(Affine::translate((-4., 6.))),
+        }]
+    } else {
+        Vec::new()
+    };
+    Some(Edit { splices, updates })
+}
+
+/// Applies `step`'s structural edit, if any, to `list` and to the
+/// incremental surface's layer; returns the commands it dirtied — one, so
+/// the run expects the layer lowered again.
+fn apply_structural_edit<R: Renderer>(
+    renderer: &mut R,
+    surface: SurfaceId,
+    layer: LayerId,
+    list: &mut DisplayList,
+    step: u32,
+) -> u32 {
+    let Some(edit) = structural_edit(list, step) else {
+        return 0;
+    };
+    for splice in &edit.splices {
+        list.splice(splice);
+    }
+    let _ = list.apply(edit.updates.clone());
+    let _ = renderer.set_content(surface, layer, Some(ContentOp::Edit(Box::new(edit))));
+    1
+}
 
 /// A readback as an image for the visual-equivalence comparison.
 fn image(readback: &crate::Readback) -> F32Image {
@@ -85,6 +160,7 @@ where
                 let _ = renderer.set_content(ids[0], layer, Some(ContentOp::Update(updates)));
             }
         }
+        dirty_count += apply_structural_edit(renderer, ids[0], layer, &mut list, step);
         update_properties(&mut tree, layer, step);
         if step == 71 {
             size = (104, 100);
@@ -190,6 +266,7 @@ where
                 let _ = renderer.set_content(ids[0], layer, Some(ContentOp::Update(updates)));
             }
         }
+        dirty_count += apply_structural_edit(renderer, ids[0], layer, &mut list, step);
         update_properties(&mut tree, layer, step);
         if step == 71 {
             size = (104, 100);

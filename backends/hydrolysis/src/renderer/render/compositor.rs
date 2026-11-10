@@ -212,8 +212,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let _frame = self.commit_window_frame(&mut window, &target, headroom);
 
         self.applied_filter_metrics.reset();
-        let at = cherenkov::FrameTime::unpresented_at(self.frame_instant());
-        let rendered = crate::engine::engine_await!(window.surface.render(at));
+        let rendered = crate::engine::engine_await!(window.surface.render(self.frame_time()));
         self.take_applied_filter_metrics();
         self.cherenkov_window = Some(window);
         self.engine_next = Some(rendered?.into());
@@ -282,7 +281,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             window.surface.display_moved();
         }
 
-        let at = cherenkov::FrameTime::unpresented_at(self.frame_instant());
+        let at = self.frame_time();
         let rendered = self.render_presented_window(&mut window, target, |surface| {
             surface.render(at, target.display_scale)
         });
@@ -425,10 +424,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let _frame = self.commit_window_frame(&mut window, target, 1.0);
 
         self.applied_filter_metrics.reset();
-        let rendered = window
-            .surface
-            .render(cherenkov::FrameTime::unpresented_at(self.frame_instant()))
-            .await;
+        let rendered = window.surface.render(self.frame_time()).await;
         self.take_applied_filter_metrics();
         *window_slot = Some(window);
         self.engine_next = Some(rendered?.into());

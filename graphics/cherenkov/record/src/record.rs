@@ -13,7 +13,7 @@ use nami_core::Signal;
 use crate::Instant;
 use crate::animation::{AnimLanes, Animation, KeyframeAnimation, Motion, OperandTrack};
 use crate::display_list::{
-    Command, DisplayList, DisplayListView, Operand, Picture, Slot, SlotUpdate,
+    Command, DisplayList, DisplayListView, Edit, Operand, Picture, Slot, SlotUpdate, Splice,
 };
 use crate::glyph::GlyphRun;
 use crate::material::{
@@ -21,6 +21,7 @@ use crate::material::{
     MaterialShader,
 };
 use crate::paint::{ImageId, Paint, Sampling};
+use crate::region::{Parent, PendingEdit, Recorded, Region, Segment, Shift, Table};
 use crate::resource::ResourceId;
 use crate::shape::Shape;
 use crate::size::LayoutSize;
@@ -234,6 +235,7 @@ impl<T> std::fmt::Debug for Watch<T> {
 enum Destination<T> {
     Slot {
         state: Weak<LiveState>,
+        /// The command's key, which the state translates to its index.
         command: u32,
         convert: fn(T) -> Operand,
     },
@@ -257,7 +259,9 @@ impl<T: 'static> Watch<T> {
                 command,
                 convert,
             } => {
-                if let Some(state) = state.upgrade() {
+                if let Some(state) = state.upgrade()
+                    && let Some(command) = state.index_of(*command)
+                {
                     // The `Context` metadata carries the animation a bound
                     // signal was set under, exactly like a layer property's
                     // binding op does, or a keyframe track.
@@ -280,11 +284,8 @@ impl<T: 'static> Watch<T> {
                     };
                     let value = convert(context.into_value());
                     match motion {
-                        Some(motion) => state.animate(*command, value, motion),
-                        None => state.snap(SlotUpdate {
-                            command: *command,
-                            value,
-                        }),
+                        Some(motion) => state.animate(command, value, motion),
+                        None => state.snap(SlotUpdate { command, value }),
                     }
                 }
             }
@@ -777,6 +778,23 @@ pub(crate) struct LiveState {
     /// The surface the content is installed on. Detached when the content
     /// retires.
     owner: RefCell<Option<Weak<dyn LiveOwner>>>,
+    /// Set once the recording keeps a subscription or value or records a
+    /// region: something can still change the content. A constant
+    /// recording leaves it down, so installing and retiring one read
+    /// this flag only. Cleared when the content retires.
+    changeable: Cell<bool>,
+    /// The content's regions and the edits queued against its list;
+    /// `None` until a region is recorded ([`Recorder::region`]).
+    regions: RefCell<Option<Box<Table>>>,
+    /// Set by the first edit: from then on a slot's key is translated to
+    /// its index through `regions`. Until then every key is its index,
+    /// and a notification reads this flag only.
+    keyed: Cell<bool>,
+    /// Set while `regions` holds edits not yet sent, so a content without
+    /// one drains its changes with this flag read, not a borrow.
+    edited: Cell<bool>,
+    /// Set while a region records: one recording at a time takes keys.
+    recording_region: Cell<bool>,
 }
 
 impl std::fmt::Debug for LiveState {
@@ -809,6 +827,111 @@ struct AnimState {
 }
 
 impl LiveState {
+    /// The index the command recorded under `key` lies at, every queued
+    /// edit applied; `None` once an edit removed it.
+    fn index_of(&self, key: u32) -> Option<u32> {
+        if !self.keyed.get() {
+            return Some(key);
+        }
+        self.regions
+            .borrow()
+            .as_ref()
+            .and_then(|table| table.index_of(key))
+    }
+
+    /// Whether the region in `slot` of `generation` is still recorded.
+    pub(crate) fn holds(&self, slot: u32, generation: u32) -> bool {
+        self.regions
+            .borrow()
+            .as_ref()
+            .is_some_and(|table| table.holds(slot, generation))
+    }
+
+    /// A slot for a region about to record in `parent`.
+    pub(crate) fn allocate(&self, parent: Parent) -> (u32, u32) {
+        self.regions
+            .borrow_mut()
+            .as_mut()
+            .expect("a content with regions keeps their table")
+            .allocate(parent)
+    }
+
+    /// Runs a structural edit of the region table, then moves the queued
+    /// slot updates and running animations along with their commands and
+    /// wakes the owner for the frame that sends the edit.
+    pub(crate) fn edit(&self, op: impl FnOnce(&mut Table) -> Option<Shift>) {
+        let shift = op(self
+            .regions
+            .borrow_mut()
+            .as_mut()
+            .expect("a content with regions keeps their table"));
+        let Some(shift) = shift else {
+            return;
+        };
+        self.keyed.set(true);
+        self.edited.set(true);
+        self.pending.borrow_mut().retain_mut(|update| {
+            shift.index(update.command).is_some_and(|command| {
+                update.command = command;
+                true
+            })
+        });
+        if let Some(mut anim) = self.anim.take() {
+            anim.animates.retain_mut(|(command, _, _)| {
+                shift.index(*command).is_some_and(|moved| {
+                    *command = moved;
+                    true
+                })
+            });
+            anim.tracks = std::mem::take(&mut anim.tracks)
+                .into_iter()
+                .filter_map(|(slot, track)| {
+                    let command = shift.index(slot.command)?;
+                    Some((Slot { command, ..slot }, track))
+                })
+                .collect();
+            if anim.animates.is_empty() && anim.tracks.is_empty() {
+                self.needs_sample.set(false);
+            } else {
+                self.anim.set(Some(anim));
+            }
+        }
+        self.wake();
+        // What the edit replaced is released last, outside every borrow:
+        // dropping a subscription or a kept value can re-enter this content
+        // or its surface. A registration it held outlives its last drawing
+        // on the target, which frees it only once no installed content
+        // names it.
+        let retired = self
+            .regions
+            .borrow_mut()
+            .as_mut()
+            .map(|table| std::mem::take(&mut table.retired))
+            .unwrap_or_default();
+        drop(retired);
+    }
+
+    /// Keeps a subscription or value alive with the content. A region
+    /// takes what its recording kept back off the end of the list when it
+    /// closes ([`take_guards`](Self::take_guards)), so a recording pushes
+    /// here whether or not a region is open.
+    #[expect(
+        clippy::inline_always,
+        reason = "a subscription's guard push stays as inline in the record loop as dev's, \
+                  with no region test or call in it"
+    )]
+    #[inline(always)]
+    fn keep(&self, value: Box<dyn Any>) {
+        self.changeable.set(true);
+        self.guards.borrow_mut().push(value);
+    }
+
+    /// The guards kept since the list held `from`: what a closing region's
+    /// own commands kept, its nested regions having taken theirs.
+    fn take_guards(&self, from: usize) -> Vec<Box<dyn Any>> {
+        self.guards.borrow_mut().drain(from..).collect()
+    }
+
     fn push(&self, update: SlotUpdate) {
         let mut pending = self.pending.borrow_mut();
         let slot = update.slot();
@@ -989,6 +1112,49 @@ pub struct Recorder {
     /// The state of a recording opened with [`Content::record_layered`];
     /// `None` for a plain recording, which takes no material.
     layered: Option<Layered>,
+    /// The key of this recording's first command: zero for a content's
+    /// recording, the content's next free key for a region's. A plain
+    /// field, so a subscription adds it without testing for regions.
+    key_base: u32,
+    /// The region levels open around the current call, outermost first;
+    /// `None` until the recording opens one, so a recording without
+    /// regions starts and finishes with one field more than a plain one.
+    levels: Option<Vec<Frame>>,
+}
+
+/// One level of the region tree being recorded.
+struct Frame {
+    /// The region this level records; `None` for the content's top level.
+    slot: Option<u32>,
+    segments: Vec<Segment>,
+    /// Where this level's current run of plain commands began.
+    run_start: u32,
+    /// Where this level's region began.
+    start: u32,
+    /// The length of the content's guard list when this level opened: the
+    /// subscriptions and kept values of the level's own commands are the
+    /// guards after it once its nested levels have closed.
+    guards: usize,
+}
+
+impl Frame {
+    const fn new(slot: Option<u32>, start: u32, guards: usize) -> Self {
+        Self {
+            slot,
+            segments: Vec::new(),
+            run_start: start,
+            start,
+            guards,
+        }
+    }
+
+    /// Ends this level's current run of plain commands at `here`.
+    fn close_run(&mut self, here: u32) {
+        if here > self.run_start {
+            self.segments.push(Segment::Commands(here - self.run_start));
+        }
+        self.run_start = here;
+    }
 }
 
 /// A layered recording's state.
@@ -1024,6 +1190,118 @@ impl Recorder {
             size,
             depth: 0,
             layered: None,
+            key_base: 0,
+            levels: None,
+        }
+    }
+
+    /// The index the next command is recorded at.
+    fn here(&self) -> u32 {
+        Self::end_of(&self.list)
+    }
+
+    /// The index the next command recorded into `list` lands at.
+    fn end_of(list: &DisplayList) -> u32 {
+        u32::try_from(list.len()).expect("a display list holds at most u32::MAX commands")
+    }
+
+    /// Records `body` as a region: a part of the content that can later
+    /// record again, leave or move in place through the returned handle,
+    /// without the rest of the content recording again. See [`Region`].
+    ///
+    /// Regions nest, and may open inside a clip, transform or group scope.
+    ///
+    /// # Panics
+    ///
+    /// In a recording opened with [`Content::record_layered`], which is
+    /// split at its materials and has no single list to edit.
+    pub fn region(&mut self, body: impl FnOnce(&mut Self)) -> Region {
+        assert!(
+            self.layered.is_none(),
+            "a region cannot be recorded into a layered recording"
+        );
+        let here = self.here();
+        self.live.changeable.set(true);
+        let guards = self.live.guards.borrow().len();
+        let frames = self
+            .levels
+            .get_or_insert_with(|| vec![Frame::new(None, 0, 0)]);
+        let outer = frames.last_mut().expect("a recording has its own level");
+        let parent = outer.slot.map_or(Parent::Root, Parent::Region);
+        outer.close_run(here);
+        let (slot, generation) = {
+            let mut regions = self.live.regions.borrow_mut();
+            regions
+                .get_or_insert_with(|| Box::new(Table::new(self.size.clone())))
+                .allocate(parent)
+        };
+        frames.push(Frame::new(Some(slot), here, guards));
+        body(self);
+        let end = self.here();
+        let frames = self.levels.as_mut().expect("the region's level is open");
+        let mut frame = frames.pop().expect("the region's level is open");
+        frame.close_run(end);
+        let outer = frames.last_mut().expect("a recording has its own level");
+        outer.segments.push(Segment::Region(slot));
+        outer.run_start = end;
+        let kept = self.live.take_guards(frame.guards);
+        self.live
+            .regions
+            .borrow_mut()
+            .as_mut()
+            .expect("the region's table was made when it opened")
+            .fill(slot, frame.segments, end - frame.start, kept);
+        Region::new(Rc::downgrade(&self.live), slot, generation)
+    }
+
+    /// Ties `value` to what is being recorded: the innermost open region,
+    /// released when that region records again or is removed and once the
+    /// edit has reached the target, or the content itself.
+    ///
+    /// Dropping it must not change a signal the content records: the
+    /// release can run while the content's surface sends a frame.
+    pub fn keep(&mut self, value: impl Any) {
+        self.live.keep(Box::new(value));
+    }
+
+    /// Records the region in `slot` of `live` anew with `body`.
+    ///
+    /// # Panics
+    ///
+    /// While another region of the same content is recording.
+    pub(crate) fn record_region(
+        live: &Rc<LiveState>,
+        slot: u32,
+        body: impl FnOnce(&mut Self),
+    ) -> Recorded {
+        assert!(
+            !live.recording_region.replace(true),
+            "a region records while another region of its content is recording"
+        );
+        let (size, key_base) = {
+            let regions = live.regions.borrow();
+            let table = regions
+                .as_ref()
+                .expect("a content with regions keeps their table");
+            (table.size.clone(), table.key_base())
+        };
+        let guards = live.guards.borrow().len();
+        let mut recorder = Self::new(DisplayList::default(), Rc::clone(live), None, size);
+        recorder.key_base = key_base;
+        recorder.levels = Some(vec![Frame::new(Some(slot), 0, guards)]);
+        body(&mut recorder);
+        let end = recorder.here();
+        let mut frames = recorder.levels.take().expect("the region's level is open");
+        let mut frame = frames.pop().expect("the region's level is open");
+        assert!(frames.is_empty(), "every nested region closed");
+        frame.close_run(end);
+        recorder.list.trim_spare();
+        live.recording_region.set(false);
+        Recorded {
+            list: std::mem::take(&mut recorder.list),
+            segments: frame.segments,
+            kept: live.take_guards(frame.guards),
+            key_base,
         }
     }
 
@@ -1094,11 +1372,7 @@ impl Recorder {
     fn take_part(list: &mut DisplayList, live: &mut Rc<LiveState>) -> Content {
         let mut list = std::mem::take(list);
         list.trim_spare();
-        Content {
-            picture: Picture::from_list(list),
-            live: std::mem::take(live),
-            sent: false,
-        }
+        Content::new(Picture::from_list(list), std::mem::take(live))
     }
 
     /// The size the host lays the recorded layer out at, as a signal:
@@ -1114,6 +1388,11 @@ impl Recorder {
     #[must_use]
     #[inline]
     pub(crate) fn finish(mut self) -> Content {
+        // Moved out, not taken: a recording without regions then leaves
+        // no level list behind to drop.
+        if let Some(levels) = self.levels {
+            Self::finish_regions(&self.live, &self.list, levels);
+        }
         self.list.trim_spare();
         let picture = match self.picture.take() {
             Some(mut picture) => {
@@ -1122,11 +1401,22 @@ impl Recorder {
             }
             None => Picture::from_list(self.list),
         };
-        Content {
-            picture,
-            live: self.live,
-            sent: false,
-        }
+        Content::new(picture, self.live)
+    }
+
+    /// Closes the top level of a recording that opened regions: the
+    /// table learns the root's segments. What the top level kept stays
+    /// with the content's own guards.
+    fn finish_regions(live: &LiveState, list: &DisplayList, mut frames: Vec<Frame>) {
+        let mut top = frames.pop().expect("a recording has its own level");
+        assert!(frames.is_empty(), "every region closed");
+        let end = Self::end_of(list);
+        top.close_run(end);
+        live.regions
+            .borrow_mut()
+            .as_mut()
+            .expect("a recording with regions made their table")
+            .finish_root(top.segments, end);
     }
 
     /// Subscribes to a value's later changes, which update operand `convert`
@@ -1145,12 +1435,12 @@ impl Recorder {
         let guard = subscribe.start(Watch {
             destination: Destination::Slot {
                 state: Rc::downgrade(&self.live),
-                command,
+                command: self.key_base + command,
                 convert,
             },
         });
         if let Some(guard) = guard {
-            self.live.guards.borrow_mut().push(guard);
+            self.live.keep(guard);
         }
     }
 }
@@ -1406,6 +1696,89 @@ impl std::fmt::Debug for Content {
 }
 
 impl Content {
+    const fn new(picture: Picture, live: Rc<LiveState>) -> Self {
+        Self {
+            picture,
+            live,
+            sent: false,
+        }
+    }
+
+    /// Applies the region edits queued since the last call to the list,
+    /// staging each as the splices that send it. A content with no unsent
+    /// edit reads one flag.
+    #[inline]
+    fn flush_edits(&mut self) {
+        if self.live.edited.get() {
+            self.apply_edits();
+        }
+    }
+
+    /// The splices of every unsent edit, each applied to the list first;
+    /// `None` when no edit is unsent.
+    #[inline]
+    fn take_edits(&mut self) -> Option<Vec<Splice>> {
+        if !self.live.edited.get() {
+            return None;
+        }
+        self.apply_edits();
+        self.live.edited.set(false);
+        let mut regions = self.live.regions.borrow_mut();
+        let table = regions
+            .as_mut()
+            .expect("an edited content keeps its regions");
+        Some(std::mem::take(&mut table.staged))
+    }
+
+    fn apply_edits(&mut self) {
+        let edits = std::mem::take(
+            &mut self
+                .live
+                .regions
+                .borrow_mut()
+                .as_mut()
+                .expect("an edited content keeps its regions")
+                .edits,
+        );
+        let mut staged = Vec::new();
+        let list = self.picture.list_mut();
+        for PendingEdit { shift, insert } in edits {
+            match shift {
+                Shift::Replace { at, remove, .. } => {
+                    let splice = Splice { at, remove, insert };
+                    list.splice(&splice);
+                    staged.push(splice);
+                }
+                Shift::Move { from, len, to } => {
+                    // Sent as the block leaving and coming back: the
+                    // target holds no keys, only the list.
+                    let block = list.extract(from, len);
+                    let out = Splice {
+                        at: from,
+                        remove: len,
+                        insert: DisplayList::default(),
+                    };
+                    list.splice(&out);
+                    let back = Splice {
+                        at: to,
+                        remove: 0,
+                        insert: block,
+                    };
+                    list.splice(&back);
+                    staged.push(out);
+                    staged.push(back);
+                }
+            }
+        }
+        self.live
+            .regions
+            .borrow_mut()
+            .as_mut()
+            .expect("an edited content keeps its regions")
+            .staged
+            .append(&mut staged);
+    }
+
     /// Records content for a layer laid out at `size` — the [`LayoutSize`]
     /// the target owns for the layer, which the recording reads through
     /// [`Recorder::layout_size`]. This is how any host produces content.
@@ -1491,15 +1864,19 @@ impl Content {
     #[must_use]
     pub fn retire(self) -> ContentSpare {
         let Self { picture, live, .. } = self;
-        // Watchers only exist while the content carried signals; a
-        // signal-free recording never attached the sampling flag, and
-        // its sampling state needs no reset.
-        if !live.guards.borrow().is_empty() {
+        // Watchers, kept values and regions only exist while the content
+        // is changeable; a constant recording never attached the sampling
+        // flag, and neither its sampling nor its region state needs a reset.
+        if live.changeable.get() {
+            live.changeable.set(false);
             live.detach_animated();
             live.anim.set(None);
             live.needs_sample.set(false);
+            drop(live.regions.borrow_mut().take());
+            live.keyed.set(false);
+            live.edited.set(false);
+            live.guards.borrow_mut().clear();
         }
-        live.guards.borrow_mut().clear();
         live.pending.borrow_mut().clear();
         *live.owner.borrow_mut() = None;
         drop(picture);
@@ -1524,12 +1901,7 @@ impl Content {
             size.clone(),
         );
         body(&mut recorder);
-        recorder.list.trim_spare();
-        Self {
-            picture: Picture::from_list(recorder.list),
-            live: recorder.live,
-            sent: false,
-        }
+        recorder.finish()
     }
 
     /// Whether a [`sample`](Self::sample) call has work: an animated
@@ -1549,7 +1921,7 @@ impl Content {
     /// recording attaches nothing. [`retire`](Self::retire) detaches both.
     pub fn attach(&mut self, owner: Weak<dyn LiveOwner>, flag: &SampleFlag) {
         // Constant recordings need no owner or weak-count traffic.
-        if !self.live.guards.borrow().is_empty() {
+        if self.live.changeable.get() {
             *self.live.owner.borrow_mut() = Some(owner);
             self.live.attach_animated(flag);
         }
@@ -1561,6 +1933,7 @@ impl Content {
     /// directly when changes should continue to reach the engine.
     #[must_use]
     pub fn into_picture(mut self) -> Picture {
+        self.flush_edits();
         let updates = self.live.pending.take();
         if !updates.is_empty() {
             let _ = self.picture.list_mut().apply(updates);
@@ -1605,20 +1978,27 @@ impl Content {
     /// samples while it is reading the list.
     #[must_use]
     pub fn sample(&mut self, now: Instant) -> Animating {
+        // Animations start from the operands of the list as edited.
+        self.flush_edits();
         Animating(self.live.sample(now, self.picture.display_list()))
     }
 
     /// The change to send at the next commit, if any. The first call sends the
-    /// whole display list; later calls send only the slots whose signals
-    /// changed.
+    /// whole display list; later calls send the structural [`Edit`] when a
+    /// region changed, and otherwise only the slots whose signals changed.
     pub fn take_change(&mut self) -> Option<ContentChange> {
+        let splices = self.take_edits();
         let updates = self.live.pending.take();
         if !updates.is_empty() {
             let _ = self.picture.list_mut().apply(updates.iter().cloned());
         }
         if !self.sent {
+            // The whole picture carries every edit already applied to it.
             self.sent = true;
             return Some(ContentChange::Replace(self.picture.clone()));
+        }
+        if let Some(splices) = splices {
+            return Some(ContentChange::Edit(Box::new(Edit { splices, updates })));
         }
         (!updates.is_empty()).then_some(ContentChange::Update(updates))
     }
@@ -1626,6 +2006,7 @@ impl Content {
     /// The display list with every signal change received so far applied, for
     /// capturing a frame.
     pub fn snapshot(&mut self) -> &DisplayList {
+        self.flush_edits();
         let updates = self.live.pending.take();
         if !updates.is_empty() {
             let _ = self.picture.list_mut().apply(updates.iter().cloned());
@@ -1647,6 +2028,21 @@ pub enum ContentChange {
     Replace(Picture),
     /// New values for slots, sent when signals change afterwards.
     Update(Vec<SlotUpdate>),
+    /// Regions recorded, removed or moved in place, then slot updates.
+    ///
+    /// Boxed: an edit is rare, and unboxed it would double the size of
+    /// every change and [`ContentOp`](crate::ops::ContentOp) a frame sends.
+    Edit(Box<Edit>),
+}
+
+impl From<ContentChange> for crate::ops::ContentOp {
+    fn from(change: ContentChange) -> Self {
+        match change {
+            ContentChange::Replace(picture) => Self::Replace(picture),
+            ContentChange::Update(updates) => Self::Update(updates),
+            ContentChange::Edit(edit) => Self::Edit(edit),
+        }
+    }
 }
 
 #[cfg(test)]

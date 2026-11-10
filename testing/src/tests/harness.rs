@@ -18,10 +18,10 @@ use waterui::ViewExt as _;
 use waterui::app::App;
 use waterui::color::WorkingColor;
 use waterui::component::{text, vstack};
+use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
 use waterui::layout::scroll::ScrollView;
 use waterui::theme;
-use waterui_canvas::Canvas;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Environment};
@@ -275,9 +275,11 @@ fn ui_test_snapshot_renders_text_after_canvas() {
         .theme(Material3::defaults())
         .mount_offscreen(|| {
             vstack((
-                Canvas::new(|ctx| {
-                    ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                    ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+                Canvas::new(|cx| {
+                    cx.fill(
+                        Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)),
+                        Srgb::new(0.0, 0.85, 0.65).resolve(),
+                    );
                 })
                 .size(240.0, 180.0)
                 .a11y_role(waterui::accessibility::AccessibilityRole::Image)
@@ -312,9 +314,11 @@ fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
         .viewport(96, 72)
         .theme(Material3::defaults())
         .mount_offscreen(|| {
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
-                ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
+            Canvas::new(|cx| {
+                cx.fill(
+                    Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)),
+                    Srgb::new(1.0, 0.0, 0.0).resolve(),
+                );
             })
             .a11y_role(waterui::accessibility::AccessibilityRole::Image)
             .a11y_label("Canvas smoke")

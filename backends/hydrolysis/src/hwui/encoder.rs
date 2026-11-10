@@ -604,6 +604,18 @@ impl Encoder {
                 picture.apply(updates);
                 Content::Live(picture.clone())
             }
+            // A region recorded, removed or moved in place: the layer's
+            // RenderNode list records again, like after a slot update.
+            Some(ContentOp::Edit(edit)) => {
+                let Content::Live(picture) = &mut state.content else {
+                    return Err(HwuiError::Encoding {
+                        op: "commit",
+                        reason: format!("layer {} edits regions of no live content", id.raw()),
+                    });
+                };
+                picture.edit(*edit);
+                Content::Live(picture.clone())
+            }
         };
         let previous = std::mem::replace(&mut state.content, next);
         if let (Content::Live(old), Content::Live(new)) = (&previous, &state.content)
