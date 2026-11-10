@@ -263,7 +263,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let mtm = ctx.mtm();
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let host = HostView::new(mtm, Rect::ZERO);
-        let (value, step, label, value_formatter, range, _size) = config.into_parts();
+        let (value, step, label, value_formatter, range) = config.into_parts();
         let stepper = Stepper::new(mtm);
         stepper.set_range(f64::from(*range.start()), f64::from(*range.end()));
         stepper.set_step(f64::from(step.snapshot()));

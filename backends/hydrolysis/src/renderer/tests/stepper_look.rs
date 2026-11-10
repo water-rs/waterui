@@ -12,7 +12,6 @@ use cherenkov_record::ShapeData;
 use kurbo::{Rect, RoundedRect};
 use nami::{Binding, Signal as _};
 use waterui::{Color, ViewExt as _};
-use waterui_controls::ControlSize;
 use waterui_controls::stepper::stepper;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
@@ -381,8 +380,8 @@ fn measurement_equals_drawing_at_every_proposed_height() {
     }
 }
 
-/// The spec carries what the look is built from: the size, the direction and
-/// the subtree's tint.
+/// The spec carries what the look is built from: the direction and the
+/// subtree's tint.
 #[test]
 fn the_spec_carries_the_tint_and_the_structure() {
     let specs = Rc::new(RefCell::new(Vec::new()));
@@ -395,16 +394,13 @@ fn the_spec_carries_the_tint_and_the_structure() {
     let tint = Color::srgb(200, 30, 30);
     super::capture_root_window(
         &mut renderer,
-        stepper("Quantity", &Binding::container(1))
-            .size(ControlSize::Large)
-            .tint(tint.clone()),
+        stepper("Quantity", &Binding::container(1)).tint(tint.clone()),
         &env,
         Rect::new(0.0, 0.0, 400.0, 100.0),
     );
 
     let specs = specs.borrow();
     let spec = specs.first().expect("the theme was asked for the look");
-    assert_eq!(spec.size(), ControlSize::Large);
     assert_eq!(spec.direction(), LayoutDirection::LeftToRight);
     assert_eq!(
         spec.tint().resolve(&env).snapshot(),

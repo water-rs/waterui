@@ -84,7 +84,7 @@ impl<E: crate::text::TextEngine> StepperRenderState<E> {
     /// The look for the stepper's spec in `env`: the one already held when
     /// the spec is unchanged, otherwise requested again.
     fn look(&mut self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> &StepperLook {
-        let spec = stepper_spec(&self.config, env);
+        let spec = stepper_spec(env);
         if self.held(&spec).is_none() {
             let look = theme.stepper(&spec, env);
             self.look = Some((spec, look));
@@ -103,17 +103,16 @@ impl<E: crate::text::TextEngine> StepperRenderState<E> {
     /// one, or a fresh one for a measurement ahead of the render that holds
     /// it.
     fn peek(&self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> StepperLook {
-        let spec = stepper_spec(&self.config, env);
+        let spec = stepper_spec(env);
         self.held(&spec)
             .cloned()
             .unwrap_or_else(|| theme.stepper(&spec, env))
     }
 }
 
-/// The spec of the stepper `config` describes in `env`.
-fn stepper_spec(config: &StepperConfig, env: &Environment) -> StepperSpec {
+/// The spec of a stepper in `env`.
+fn stepper_spec(env: &Environment) -> StepperSpec {
     StepperSpec::new(
-        config.size(),
         waterui_core::layout::layout_direction(env).snapshot(),
         SpecTint::resolve(env),
     )
@@ -483,7 +482,7 @@ pub fn measure_stepper_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
-    let look = theme.stepper(&stepper_spec(stepper, env), env);
+    let look = theme.stepper(&stepper_spec(env), env);
     let label_size = measure_label_intrinsic(stepper.label(), state, env, theme);
     stepper_size(&look, label_size)
 }
