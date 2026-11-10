@@ -59,9 +59,8 @@ pub use gpu::{
     InputHandler, RedrawHandle, SharedGpuContext,
 };
 #[cfg(feature = "gpu")]
-pub use gradient::{
-    ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient,
-};
+pub use gradient::FlowingGradient;
+pub use gradient::{ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig};
 pub use gradient::{Gradient, GradientType, MeshGradient};
 #[cfg(feature = "gpu")]
 pub use image::image_decode;
