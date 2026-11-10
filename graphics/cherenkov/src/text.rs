@@ -171,6 +171,17 @@ impl TextLayout {
         self
     }
 
+    /// Fills `rects` beneath the text, each in its paint: the backgrounds
+    /// of styled spans, which a paragraph's runs do not carry.
+    #[must_use]
+    pub fn with_underlay(mut self, rects: impl IntoIterator<Item = (Rect, Paint)>) -> Self {
+        let under = rects
+            .into_iter()
+            .map(|(rect, paint)| TextCommand::Fill(rect, paint));
+        self.commands.splice(0..0, under);
+        self
+    }
+
     /// A layout of `commands` drawing with `fonts`, for engine tests that
     /// have no shaped paragraph.
     #[cfg(test)]

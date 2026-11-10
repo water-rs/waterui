@@ -299,13 +299,17 @@ pub trait ShaderBackend: SceneBackend {
 /// The canvas never measures: it asks, and the registration reports the
 /// box the target made.
 pub trait TextBackend: 'static {
-    /// Lays `request`'s text out and registers the result.
+    /// Lays `request`'s text out and registers the result; `None` when
+    /// the text has nothing to draw.
     ///
     /// # Errors
     ///
     /// [`ResourceError::Font`] when a font of the text cannot be used,
     /// [`ResourceError::Lost`] when the renderer is gone.
-    fn register_text(&self, request: TextRequest) -> Result<TextRegistration, ResourceError>;
+    fn register_text(
+        &self,
+        request: TextRequest,
+    ) -> Result<Option<TextRegistration>, ResourceError>;
 }
 
 /// The text a canvas asks its target to lay out, and how.
@@ -898,7 +902,7 @@ impl RecordingResources<'_> {
         text: CanvasText,
         placement: TextPlacement,
         env: Environment,
-    ) -> Result<RegisteredText, ResourceError> {
+    ) -> Result<Option<RegisteredText>, ResourceError> {
         self.resources.text(text, placement, env)
     }
 
@@ -1300,6 +1304,7 @@ impl SceneResources {
     ///
     /// Every call lays out and registers anew: a laid-out text is not
     /// shared. The registration holds the fonts the layout draws with.
+    /// `None` when the text has nothing to draw.
     ///
     /// # Errors
     ///
@@ -1310,27 +1315,28 @@ impl SceneResources {
         text: CanvasText,
         placement: TextPlacement,
         env: Environment,
-    ) -> Result<RegisteredText, ResourceError> {
+    ) -> Result<Option<RegisteredText>, ResourceError> {
         let backend = self
             .table
             .text
             .borrow()
             .clone()
             .ok_or(ResourceError::Unsupported("canvas text"))?;
-        let TextRegistration { handle, size } =
-            backend.register_text(TextRequest::new(text, placement, env))?;
-        let entry = Rc::new(Entry {
-            handle: Box::new(handle),
-            key: EntryKey::Text,
-            table: Rc::downgrade(&self.table),
-        });
-        Ok(RegisteredText {
-            layout: Registered {
-                entry,
-                marker: PhantomData,
-            },
-            size,
-        })
+        let registration = backend.register_text(TextRequest::new(text, placement, env))?;
+        Ok(registration.map(|TextRegistration { handle, size }| {
+            let entry = Rc::new(Entry {
+                handle: Box::new(handle),
+                key: EntryKey::Text,
+                table: Rc::downgrade(&self.table),
+            });
+            RegisteredText {
+                layout: Registered {
+                    entry,
+                    marker: PhantomData,
+                },
+                size,
+            }
+        }))
     }
 
     /// How many registrations the table lists across every kind — dead

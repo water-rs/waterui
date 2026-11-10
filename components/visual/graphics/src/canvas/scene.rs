@@ -326,7 +326,8 @@ impl Replay<'_, '_> {
     }
 
     /// `text` laid out in `placement` by the target and registered, in the
-    /// canvas's environment; `None` when the render thread is gone.
+    /// canvas's environment; `None` when the render thread is gone or the
+    /// text has nothing to draw.
     ///
     /// # Panics
     ///
@@ -335,7 +336,7 @@ impl Replay<'_, '_> {
     fn text(&self, text: CanvasText, placement: TextPlacement) -> Option<RegisteredText> {
         let env = self.session.shared.upgrade()?.env.clone();
         match self.resources.text(text, placement, env) {
-            Ok(registered) => Some(registered),
+            Ok(registered) => registered,
             Err(ResourceError::Lost) => None,
             Err(error) => panic!("canvas text was refused: {error}"),
         }

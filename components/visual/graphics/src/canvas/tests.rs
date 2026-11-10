@@ -511,7 +511,10 @@ mod text {
     }
 
     impl TextBackend for Fake {
-        fn register_text(&self, request: TextRequest) -> Result<TextRegistration, ResourceError> {
+        fn register_text(
+            &self,
+            request: TextRequest,
+        ) -> Result<Option<TextRegistration>, ResourceError> {
             let text = request
                 .text()
                 .get::<String>()
@@ -522,10 +525,10 @@ mod text {
                 .borrow_mut()
                 .push((placement.alignment(), placement.get_width(), text));
             self.next.set(self.next.get() + 1);
-            Ok(TextRegistration::new(
+            Ok(Some(TextRegistration::new(
                 Handle::new(Layout(TextLayoutId::new(self.next.get()))),
                 Size::new(40.0, 10.0),
-            ))
+            )))
         }
     }
 
