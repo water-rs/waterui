@@ -39,32 +39,32 @@
 #[macro_export]
 macro_rules! contract_violation {
     ($($arg:tt)*) => {
-        $crate::__private::contract_violation(
-            ::core::cfg!(debug_assertions),
-            ::core::format_args!($($arg)*),
-        )
+        $crate::__contract_violation!(::core::cfg!(debug_assertions), $($arg)*)
+    };
+}
+
+/// The body of [`contract_violation!`] with the build mode as an argument.
+/// Both arms expand at the call site, so the panic location and the log
+/// event's target, file and line are the caller's.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __contract_violation {
+    ($debug:expr, $($arg:tt)*) => {
+        if $debug {
+            ::core::panic!($($arg)*);
+        } else {
+            $crate::__private::tracing::error!($($arg)*);
+        }
     };
 }
 
 #[doc(hidden)]
 pub mod __private {
-    use core::fmt::Arguments;
-
     pub use tracing;
-
-    /// The body of [`contract_violation!`](crate::contract_violation): panics
-    /// when `debug` is set, otherwise logs.
-    #[track_caller]
-    pub fn contract_violation(debug: bool, message: Arguments<'_>) {
-        assert!(!debug, "{message}");
-        tracing::error!("{message}");
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::__private;
-
     #[test]
     #[should_panic(expected = "contract broken: 7")]
     fn contract_violation_panics_in_debug_build() {
@@ -73,6 +73,6 @@ mod tests {
 
     #[test]
     fn contract_violation_logs_in_release_build() {
-        __private::contract_violation(false, format_args!("contract broken: {}", 7));
+        crate::__contract_violation!(false, "contract broken: {}", 7);
     }
 }
