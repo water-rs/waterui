@@ -46,7 +46,7 @@
 //! every [`CapturableSurface`] call is main-thread only; `Compositor`
 //! internals run on its private serial queue.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
@@ -80,7 +80,7 @@ use objc2_metal::{
 use objc2_quartz_core::{CALayer, CAMetalLayer, CATransaction};
 
 use crate::PlatformView;
-use crate::core_animation::flush_transaction;
+use crate::core_animation::before_commit;
 use crate::geometry::Rect;
 use crate::main_queue::enqueue;
 use crate::metal::{Primaries, ShaderColor, shader_color};
@@ -2224,13 +2224,17 @@ struct Preparation {
     surfaces: HashMap<usize, Rc<SurfaceRegistration>>,
 }
 
-/// The one outer capture transaction, closed on every exit: `commit`
-/// runs explicitly as the pass's sole commit; `Drop` closes it when the
-/// pass exits early — suppression is restored (by [`SuppressionGuard`],
-/// declared after it) before that close so no suppressed state can be
-/// published. `CATransaction` has no abort: committing a restored-state
-/// transaction is the only way to end it without leaking an open
-/// transaction onto the thread's stack.
+/// A disabled-actions capture transaction, closed on every exit:
+/// `commit` closes it explicitly once every temporary mutation inside is
+/// restored; `Drop` closes it when the scope exits early — suppression is
+/// restored (by [`SuppressionGuard`], declared after it) before that
+/// close so no suppressed state can be published. `CATransaction` has no
+/// abort: committing a restored-state transaction is the only way to end
+/// it without leaking an open transaction onto the thread's stack.
+///
+/// Closing reaches the render server only when the transaction is the
+/// thread's outermost: a capture prepared inside a [`CapturePass`] nests
+/// in the pass's own guard, whose close is the turn's one publication.
 struct TransactionGuard {
     committed: bool,
 }
@@ -2243,7 +2247,7 @@ impl TransactionGuard {
         Self { committed: false }
     }
 
-    /// Performs the pass's sole commit.
+    /// Closes the transaction after its scope restored everything.
     fn commit(mut self) {
         self.committed = true;
         CATransaction::commit();
@@ -2741,6 +2745,10 @@ pub struct ViewCapture {
     on_redraw: RefCell<Option<Rc<dyn Fn()>>>,
     renderer: RefCell<NativeRenderer>,
     active: RefCell<HashMap<usize, Rc<SurfaceRegistration>>>,
+    /// Set by [`Self::shutdown`]: a [`CapturePass`] request queued before
+    /// it settles `Deferred` instead of re-joining surfaces the shutdown
+    /// already parted.
+    shut_down: Cell<bool>,
 }
 
 impl fmt::Debug for ViewCapture {
@@ -2763,6 +2771,7 @@ impl ViewCapture {
             on_redraw: RefCell::new(None),
             renderer: RefCell::new(NativeRenderer::default()),
             active: RefCell::new(HashMap::new()),
+            shut_down: Cell::new(false),
         }
     }
 
@@ -2785,8 +2794,11 @@ impl ViewCapture {
         *self.on_redraw.borrow_mut() = Some(Rc::new(redraw));
     }
 
-    /// Captures `content` into `target`; `completion` runs on the main
-    /// thread with whether the frame landed. `generation` is the caller's
+    /// Captures `content` into `target`, reading the subtree as it stands
+    /// now; `completion` runs on the main thread with whether the frame
+    /// landed. A capture a display update drives goes through a
+    /// [`CapturePass`] instead, so every such capture of one run-loop turn
+    /// shares one transaction. `generation` is the caller's
     /// context-generation token: it must come from the exact retained
     /// context `target` was allocated under — a later replacement must
     /// not relabel old storage, and a replacement that wraps the same
@@ -2862,6 +2874,7 @@ impl ViewCapture {
     /// Dropping a registration ends its external rendering — a capture
     /// that still owns one keeps it until that capture settles.
     pub fn shutdown(&self) {
+        self.shut_down.set(true);
         self.active.borrow_mut().clear();
         *self.renderer.borrow_mut() = NativeRenderer::default();
         self.compositor.discard_resources();
@@ -2880,27 +2893,37 @@ impl ViewCapture {
 
         // INVARIANT: every temporary mutation of the capture — the
         // reveal of a normally-hidden root, surface suppression, and
-        // their restoration — happens inside ONE outer disabled-actions
-        // `CATransaction`, and the sole commit runs only after every
-        // original state is back. The ordering inside is fixed:
+        // their restoration — happens inside ONE disabled-actions
+        // `CATransaction`, closed only after every original state is
+        // back. The ordering inside is fixed:
         // reveal → synchronous layout/display preparation → geometry
         // and snapshot collection — of the POST-layout tree: a pending
         // layout can resize bounds or mount a capturable child, so
         // nothing may be collected from the pre-layout tree → raster
         // allocation (still before any suppression mutation) →
         // suppression open → base draw → probe insertion → probe draws →
-        // probe removal → suppression restore → re-hide → sole commit. A normally-hidden filter-owned root is un-hidden
-        // in-model, drawn, and re-hidden before that commit: the render
-        // server never sees the revealed source tree. Nothing inside
-        // may open, commit or flush a transaction of its own: a
-        // mid-pass commit would publish the revealed or suppressed
-        // state and flicker — or leak — the on-screen tree. The guards
-        // restore exactly what they opened — synchronously before the
-        // sole commit on success, from Drop on an early exit — and the
-        // transaction closes last, so an early exit commits only the
+        // probe removal → suppression restore → re-hide → close. A
+        // normally-hidden filter-owned root is un-hidden in-model,
+        // drawn, and re-hidden before that close: the render server
+        // never sees the revealed source tree. Nothing inside may
+        // open, commit or flush a transaction of its own: a mid-pass
+        // commit would publish the revealed or suppressed state and
+        // flicker — or leak — the on-screen tree. The guards restore
+        // exactly what they opened — synchronously before the close on
+        // success, from Drop on an early exit — and the transaction
+        // closes last, so an early exit commits only the
         // already-restored model state. The layer tree itself is never
         // transformed or reparented — the destination geometry lives in
         // the context's CTM.
+        //
+        // Nothing has to reach the render server for the capture to
+        // read it: `renderInContext` draws the model tree in-process,
+        // synchronously, so the close publishes nothing the raster
+        // needs and no flush follows it. The close is a commit to the
+        // render server only when this transaction is the thread's
+        // outermost — a standalone capture; under a `CapturePass` it
+        // nests in the pass's transaction, and the one publication is
+        // the pass's close (#4074).
         let (preparation, specs) = {
             // Declared in drop order: `suppression` ends first, then
             // `restore` re-hides, then `transaction` closes — the
@@ -3010,11 +3033,10 @@ impl ViewCapture {
                 device,
                 surfaces,
             };
-            // Re-hide before the sole commit — `restore` would do it on
-            // drop, but the restore must be explicit before commit.
+            // Re-hide before the close — `restore` would do it on drop,
+            // but the restore must be explicit before commit.
             drop(restore);
             transaction.commit();
-            flush_transaction();
             (preparation, specs)
         };
         Ok((preparation, specs))
@@ -3022,8 +3044,8 @@ impl ViewCapture {
 
     /// Restores the captured content's hidden state — a plain model
     /// mutation. The caller's transaction decides when it is published;
-    /// in the capture pass that is the sole outer commit, after the
-    //  raster has already read the revealed tree.
+    /// in the capture pass that is the transaction's close, after the
+    /// raster has already read the revealed tree.
     fn set_content_hidden(&self, hidden: bool) {
         if crate::view::is_hidden(&self.content) == hidden {
             return;
@@ -3326,6 +3348,113 @@ impl ViewCapture {
             }
             command_buffer.commit();
         });
+    }
+}
+
+/// The display-driven captures of one main run-loop turn, prepared
+/// together.
+///
+/// Each animating effect view's display-link callback asks for its own
+/// capture. Preparing each on the spot closes one outermost
+/// `CATransaction` per view, so a screen of animating filtered views
+/// sends one render-server commit per view per display update, and the
+/// main thread ends up blocked sending them (#4074). A pass queues each
+/// request instead and prepares every request of the turn from one
+/// [`before_commit`] observer, inside one outer transaction: each
+/// capture's own transaction nests in it, and the outer close is the
+/// turn's single publication of the already-restored model.
+///
+/// A queued request reads the tree as it stands at the end of the turn,
+/// which is what a per-frame redraw wants. A one-shot capture that must
+/// read the tree as it is at the call — a transition's outgoing subtree
+/// — calls [`ViewCapture::capture`] directly.
+///
+/// Clones share one queue; the backend installs one per environment.
+#[derive(Clone)]
+pub struct CapturePass(Rc<PassQueue>);
+
+/// The requests a [`CapturePass`] has queued for the coming commit.
+struct PassQueue {
+    mtm: objc2::MainThreadMarker,
+    pending: RefCell<Vec<PassRequest>>,
+    /// Whether this turn's observer is registered and not yet running.
+    scheduled: Cell<bool>,
+}
+
+/// One queued [`ViewCapture::capture`] call. The capture is held weakly:
+/// a view torn down before the pass runs settles its request `Deferred`,
+/// as a capture whose owner drops mid-flight does.
+struct PassRequest {
+    capture: Weak<ViewCapture>,
+    target: Retained<ProtocolObject<dyn MTLTexture>>,
+    generation: u64,
+    completion: Box<dyn Fn(Result<(), CaptureError>) + Send>,
+}
+
+impl fmt::Debug for CapturePass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CapturePass")
+            .field("pending", &self.0.pending.borrow().len())
+            .field("scheduled", &self.0.scheduled.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CapturePass {
+    /// An empty pass on the main thread.
+    #[must_use]
+    pub fn new(mtm: objc2::MainThreadMarker) -> Self {
+        Self(Rc::new(PassQueue {
+            mtm,
+            pending: RefCell::new(Vec::new()),
+            scheduled: Cell::new(false),
+        }))
+    }
+
+    /// Queues `capture` of its content into `target` for this turn's
+    /// pass — [`ViewCapture::capture`]'s contract, run just before the
+    /// turn's commit. A request made while the pass runs — from a
+    /// capture's own layout — joins the next turn's pass.
+    pub fn capture(
+        &self,
+        capture: &Rc<ViewCapture>,
+        target: &ProtocolObject<dyn MTLTexture>,
+        generation: u64,
+        completion: impl Fn(Result<(), CaptureError>) + Send + 'static,
+    ) {
+        self.0.pending.borrow_mut().push(PassRequest {
+            capture: Rc::downgrade(capture),
+            target: target.retain(),
+            generation,
+            completion: Box::new(completion),
+        });
+        if !self.0.scheduled.replace(true) {
+            let queue = Rc::clone(&self.0);
+            before_commit(self.0.mtm, move || queue.run());
+        }
+    }
+}
+
+impl PassQueue {
+    /// Prepares every queued request inside one outer transaction and
+    /// closes it once.
+    fn run(&self) {
+        self.scheduled.set(false);
+        let requests = self.pending.take();
+        let transaction = TransactionGuard::begin();
+        for request in requests {
+            match request
+                .capture
+                .upgrade()
+                .filter(|capture| !capture.shut_down.get())
+            {
+                Some(capture) => {
+                    capture.capture(&request.target, request.generation, request.completion);
+                }
+                None => (request.completion)(Err(CaptureError::Deferred)),
+            }
+        }
+        transaction.commit();
     }
 }
 

@@ -354,7 +354,6 @@ impl AndroidCherenkovSurface {
         self.core.engine.set_band(&self.core.surface, view, target)
     }
 
-    /// Renders the committed change set at the presented frame's `time`.
     pub(crate) fn render(
         &self,
         time: cherenkov::FrameTime,
@@ -466,10 +465,9 @@ impl TextureCherenkovSurface {
         }
     }
 
-    /// Renders the committed change set at the presented frame's `time` —
-    /// the instant the engine samples its animations at — and drains
-    /// texture notifications, returning the engine's `Next` for the pump to
-    /// schedule against.
+    /// Renders the committed change set at `at`, the frame instant the pump
+    /// runs, and drains texture notifications, returning the engine's
+    /// `Next` for the pump to schedule against.
     ///
     /// The rendered texture stays held in [`Self::texture`]; the presenter
     /// samples it through [`Self::present_into`].
@@ -483,9 +481,9 @@ impl TextureCherenkovSurface {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn render(
         &mut self,
-        time: cherenkov::FrameTime,
+        at: cherenkov::FrameTime,
     ) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self.core.own(self.core.engine.render(time))?;
+        let next = self.core.own(self.core.engine.render(at))?;
         Ok(self.render_inner(next))
     }
 
@@ -498,9 +496,9 @@ impl TextureCherenkovSurface {
     )]
     pub(crate) async fn render(
         &mut self,
-        time: cherenkov::FrameTime,
+        at: cherenkov::FrameTime,
     ) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self.core.own(self.core.engine.render(time).await)?;
+        let next = self.core.own(self.core.engine.render(at).await)?;
         Ok(self.render_inner(next))
     }
 
@@ -665,9 +663,9 @@ impl WindowCherenkovSurface {
             .expect("hydrolysis renderer: engine surface display move failed");
     }
 
-    /// Renders the committed change set; the engine presents the frame
-    /// itself. Returns the engine's `Next` for the pump to schedule
-    /// against.
+    /// Renders the committed change set at `at`, the frame instant the pump
+    /// runs; the engine presents the frame itself. Returns the engine's
+    /// `Next` for the pump to schedule against.
     ///
     /// Output negotiation runs inside the render, so the probe it pushes —
     /// on the first frame, after a display move — is sampled here: a
@@ -680,10 +678,10 @@ impl WindowCherenkovSurface {
     /// to render.
     pub fn render(
         &mut self,
+        at: cherenkov::FrameTime,
         scale: f64,
-        time: cherenkov::FrameTime,
     ) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self.core.own(self.core.engine.render(time))?;
+        let next = self.core.own(self.core.engine.render(at))?;
         let (headroom, changed) = self.headroom();
         if changed {
             self.core.display(cherenkov::Display { scale, headroom });
@@ -779,9 +777,9 @@ impl DomCherenkovSurface {
     )]
     pub(crate) async fn render(
         &self,
-        time: cherenkov::FrameTime,
+        at: cherenkov::FrameTime,
     ) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        self.core.own(self.core.engine.render(time).await)
+        self.core.own(self.core.engine.render(at).await)
     }
 }
 

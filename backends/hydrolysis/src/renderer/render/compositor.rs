@@ -281,9 +281,9 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             window.surface.display_moved();
         }
 
-        let time = self.frame_time();
+        let at = self.frame_time();
         let rendered = self.render_presented_window(&mut window, target, |surface| {
-            surface.render(target.display_scale, time)
+            surface.render(at, target.display_scale)
         });
         *window_slot = Some(window);
         rendered

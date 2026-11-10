@@ -339,7 +339,7 @@ impl ScenePart {
                 SceneFrame {
                     width: size.0,
                     height: size.1,
-                    time: time.0,
+                    time: time.instant(),
                 },
             );
             let again = match update {
