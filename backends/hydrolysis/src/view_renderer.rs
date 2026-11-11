@@ -84,7 +84,7 @@ impl HydrolysisViewRenderer {
         )
     }
 
-    /// [`Self::new`] on the offscreen runtime's own `painter`: a capture
+    /// `Self::new` on the offscreen runtime's own `painter`: a capture
     /// renders on its device or CPU engine instead of opening another.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]

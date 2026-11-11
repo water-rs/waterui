@@ -2146,8 +2146,8 @@ pub fn enabled_window_buttons(closable: bool) -> winit::window::WindowButtons {
 ///
 /// This contract carries no GPU objects — a host satisfies it without a
 /// wgpu device, a presentation surface or a render thread. A Cherenkov
-/// painter's presentation attachment is the separate [`PaintedWindow`]
-/// boundary: only window types that implement it can drive the frame pump,
+/// painter's presentation attachment is the separate, crate-internal
+/// `PaintedWindow` boundary: only window types that implement it can drive the frame pump,
 /// so a host that stays `PlatformWindow`-only can never hand the runner a
 /// surface.
 pub trait PlatformWindow: 'static {
@@ -3688,7 +3688,7 @@ impl OffscreenSceneSurface {
 }
 
 /// A render target an [`OffscreenWindow`] allocates in physical pixels: the
-/// GPU painter's [`OffscreenSurface`] texture, or the CPU painter's
+/// GPU painter's `OffscreenSurface` texture, or the CPU painter's
 /// framebuffer.
 #[cfg(hydrolysis_cherenkov)]
 pub trait OffscreenTarget: 'static {
@@ -3801,10 +3801,11 @@ impl OffscreenPainter {
     /// adapter, a build with both takes the CPU painter.
     ///
     /// # Errors
-    /// [`PainterUnavailable::Gpu`] when the GPU painter was chosen and the
+    /// `PainterUnavailable::Gpu` when the GPU painter was chosen and the
     /// host has no eligible adapter, the adapter refuses the device, or the
-    /// engine cannot be created on it; [`PainterUnavailable::Cpu`] when the
-    /// CPU painter was chosen and its engine cannot start.
+    /// engine cannot be created on it; `PainterUnavailable::Cpu` when the
+    /// CPU painter was chosen and its engine cannot start. Each variant
+    /// exists only in builds with its painter.
     pub fn select() -> Result<Self, PainterUnavailable> {
         #[cfg(hydrolysis_gpu_painter)]
         let without_hardware_gpu = should_force_fallback_adapter();
@@ -3881,7 +3882,7 @@ impl OffscreenPainter {
     }
 
     /// Lets the painter release everything dropped since the last call —
-    /// the GPU device's destruction queue ([`OffscreenGpuContext::reclaim`]);
+    /// the GPU device's destruction queue (`OffscreenGpuContext::reclaim`);
     /// the CPU engine frees as it drops.
     #[cfg_attr(
         not(hydrolysis_gpu_painter),

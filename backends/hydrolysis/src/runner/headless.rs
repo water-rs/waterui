@@ -682,8 +682,8 @@ impl HeadlessRuntime {
     }
 
     /// Creates a test runtime on an already-selected [`OffscreenPainter`]
-    /// (or an [`OffscreenGpuContext`](crate::OffscreenGpuContext), which
-    /// converts into one).
+    /// (or, with the GPU painter, an `OffscreenGpuContext`, which converts
+    /// into one).
     ///
     /// A wgpu device is expensive to request and, on a runner whose only
     /// adapter is a software rasterizer, expensive to hold: a probe that builds
