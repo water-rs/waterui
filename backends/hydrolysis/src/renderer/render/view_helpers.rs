@@ -152,15 +152,26 @@ pub const fn restore_a11y_naming_scope<E: crate::text::TextEngine>(
 /// The `Env` scoping for a static [`AccessibilityState`]: a hidden state
 /// suppresses the whole subtree's emission (a constant can never un-hide), and
 /// the state is stored as a constant [`AccessibilityStateSignal`] so emission
-/// resolves one code path for static and reactive state alike.
+/// resolves one code path for static and reactive state alike. Like the
+/// reactive scope, it merges over the state an enclosing scope installed.
 pub fn a11y_scoped_env_for_state(env: &Environment, value: &AccessibilityState) -> Environment {
     let mut scoped = env.clone();
     if value.is_hidden() {
         scoped.insert(AccessibilityHidden::new(true));
     }
-    scoped.insert(AccessibilityStateSignal::new(Computed::constant(
-        value.clone(),
-    )));
+    AccessibilityStateSignal::install(&mut scoped, Computed::constant(value.clone()));
+    scoped
+}
+
+/// The `Env` scoping for a reactive [`AccessibilityStateSignal`]: the scope
+/// merges field by field over the state an enclosing scope installed, so a
+/// `.disabled(..)` inside a `.visible(..)` keeps both flags.
+pub fn a11y_scoped_env_for_state_signal(
+    env: &Environment,
+    value: &AccessibilityStateSignal,
+) -> Environment {
+    let mut scoped = env.clone();
+    AccessibilityStateSignal::install(&mut scoped, value.state().clone());
     scoped
 }
 
@@ -220,7 +231,7 @@ pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
         // node that represents the wrapped view reads it from the scope.
         AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>,
         AccessibilityState => a11y_scoped_env_for_state,
-        AccessibilityStateSignal => a11y_scoped_env::<AccessibilityStateSignal>,
+        AccessibilityStateSignal => a11y_scoped_env_for_state_signal,
     )
 }
 
@@ -577,7 +588,7 @@ fn normalize_layout_view_with_budget(
     }
     normalize_env_scoping_ignorable_metadata!(
         AccessibilityHidden, a11y_scoped_env;
-        AccessibilityStateSignal, a11y_scoped_env;
+        AccessibilityStateSignal, a11y_scoped_env_for_state_signal;
         AccessibilityState, a11y_scoped_env_for_state
     );
 
