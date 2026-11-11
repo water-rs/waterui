@@ -1167,7 +1167,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// (window logical coordinates, the space the placements are in) —
     /// `None` when no view is drawn there. The
     /// GPU band's ordered hit test asks this instead of an encoder record.
-    #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
+    #[cfg(any(test, hydrolysis_hwui, hydrolysis_cherenkov))]
     // Alive only on Android's GPU painter — HWUI asks its encoder instead.
     #[cfg_attr(
         not(all(target_os = "android", hydrolysis_gpu_painter)),
@@ -1209,7 +1209,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ///
     /// When this frame placed no platform view `view`: the caller names a
     /// view the same frame's placements bound.
-    #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
+    #[cfg(any(test, hydrolysis_hwui, hydrolysis_cherenkov))]
     #[cfg_attr(all(not(target_os = "android"), not(test)), expect(dead_code))]
     pub(crate) fn platform_view_occluded(&self, view: u64, point: kurbo::Point) -> bool {
         let placed = self
@@ -1356,7 +1356,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
     /// of them covers. Self-drawn content that registered no target never
     /// blocks a native view. Embedded targets answer their transformed
     /// bounding box, as every rect here is axis-aligned.
-    #[cfg(any(hydrolysis_hosted, hydrolysis_gpu_painter, test))]
+    #[cfg(any(hydrolysis_hosted, hydrolysis_cherenkov, test))]
     fn interactive_regions_above<'a>(
         &'a self,
         order: usize,
@@ -2873,7 +2873,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// semantic runtime's keyboard contract. Rendered runtimes keep the
     /// [`KeyboardActivation::PressRelease`] default.
     #[cfg(feature = "accessibility")]
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn use_semantic_keyboard_activation(&mut self) {
         self.hit_test.keyboard_activation = KeyboardActivation::Semantic;
     }
@@ -2884,7 +2884,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// no target is dead even when a frame happens to emit no pointer
     /// targets at all.
     #[cfg(feature = "accessibility")]
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn use_semantic_walk(&mut self) {
         self.semantic_walk = true;
     }

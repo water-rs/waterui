@@ -4623,6 +4623,7 @@ dependencies = [
  "block2 0.6.2",
  "cfg_aliases",
  "cherenkov",
+ "cherenkov-cpu",
  "cherenkov-gpu",
  "cherenkov-record",
  "console_error_panic_hook",

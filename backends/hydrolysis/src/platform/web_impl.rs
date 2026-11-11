@@ -15,7 +15,7 @@ use web_sys::{
 };
 
 use super::{
-    CursorStyle, GpuSurfaceWindow, InputConventions, InputEvent, KeyCode, KeyState, Modifiers,
+    CursorStyle, InputConventions, InputEvent, KeyCode, KeyState, Modifiers, PaintedWindow,
     PlatformWindow, PointerButton, PointerKind, PresentationSurface as _, ScrollPlatform,
     TextInputPurpose, TextInputState, TouchScrollConfig, WindowState, WuiWindow,
 };
@@ -609,7 +609,7 @@ impl PlatformWindow for BrowserWindow {
     }
 }
 
-impl GpuSurfaceWindow for BrowserWindow {
+impl PaintedWindow for BrowserWindow {
     type Presentation = BrowserSurface;
     fn surface(&mut self) -> &mut BrowserSurface {
         &mut self.surface

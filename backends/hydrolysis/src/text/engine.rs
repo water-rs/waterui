@@ -19,7 +19,7 @@ use nami::Computed;
 use crate::renderer::{FrameWorkCounters, Recording};
 
 use super::input::ResolvedTextLayoutInput;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use super::types::{Affinity, CARET_WIDTH};
 pub use super::types::{LineMetrics, TextPosition, TextSelection};
 
@@ -108,7 +108,7 @@ pub trait TextEngine: Send + Sync + 'static {
     /// # Panics
     ///
     /// When the engine does not lay text out for the Cherenkov GPU target.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     fn cherenkov_text(
         &self,
         layout: &Self::Layout,

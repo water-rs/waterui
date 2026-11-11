@@ -1,16 +1,24 @@
 use std::path::Path;
+#[cfg(feature = "gpu")]
 use std::rc::Rc;
 
+#[cfg(feature = "gpu")]
 use hydrolysis::theme::WidgetTheme;
+#[cfg(feature = "gpu")]
 use hydrolysis::{
     FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style,
     readback_texture_rgba8,
 };
+#[cfg(feature = "gpu")]
 use waterui::graphics::WorkingColor;
+#[cfg(feature = "gpu")]
 use waterui::graphics::backend::SceneViewMergeToParent;
+#[cfg(feature = "gpu")]
 use waterui::text::FontCollection;
+#[cfg(feature = "gpu")]
 use waterui_core::{AnyView, Environment, View};
 
+#[cfg(feature = "gpu")]
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 
 /// RGBA8 frame captured from a headless hydrolysis render pass.
@@ -81,12 +89,15 @@ impl Snapshot {
     }
 }
 
-/// Headless host that renders `WaterUI` views into an offscreen texture.
+/// Headless host that renders `WaterUI` views into an offscreen GPU texture.
 ///
 /// The host renders with a style — the same `hydrolysis::Style` a rendered
 /// mount takes — because a frame is a product of the view tree *and* the
 /// style package's widget theme; a style-free render exists only on the
-/// semantic pipeline, which produces no pixels.
+/// semantic pipeline, which produces no pixels. It renders on the GPU
+/// painter; an [`OffscreenApp`](crate::OffscreenApp) renders on whichever
+/// painter its runtime selected.
+#[cfg(feature = "gpu")]
 pub struct TestHost {
     env: Environment,
     /// Requested once and shared by every render this host performs. A wgpu
@@ -102,6 +113,7 @@ pub struct TestHost {
     fonts: FontCollection,
 }
 
+#[cfg(feature = "gpu")]
 impl core::fmt::Debug for TestHost {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TestHost")
@@ -111,6 +123,7 @@ impl core::fmt::Debug for TestHost {
     }
 }
 
+#[cfg(feature = "gpu")]
 impl TestHost {
     /// Creates a test host with a fixed render size, installing the style's
     /// tokens into `env` the way a rendered runtime does.
@@ -238,6 +251,7 @@ impl TestHost {
 }
 
 /// Fails the snapshot with `error` and its whole source chain.
+#[cfg(feature = "gpu")]
 fn snapshot_failed(stage: &str, error: impl core::error::Error + Send + Sync + 'static) -> ! {
     panic!(
         "waterui-testing snapshot failed {stage}: {:#}",

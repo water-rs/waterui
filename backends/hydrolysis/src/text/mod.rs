@@ -12,7 +12,7 @@ mod canvas;
 mod declared;
 mod engine;
 mod input;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod parley_engine;
 mod service;
 #[cfg(test)]
@@ -35,7 +35,7 @@ mod hwui_engine;
 
 #[cfg(any(test, hydrolysis_hwui))]
 pub use hwui_engine::HwuiTextEngine;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use parley_engine::ParleyEngine;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use parley_engine::fonts;

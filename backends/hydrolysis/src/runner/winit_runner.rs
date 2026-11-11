@@ -1303,7 +1303,7 @@ impl WinitRunner {
         let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         let closable = window.closable;
         window.arm_close_requests(&self.env);
-        let mut runtime = RuntimeWindow::new_gpu(
+        let mut runtime = RuntimeWindow::new_painted(
             window,
             platform,
             renderer,

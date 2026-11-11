@@ -5,9 +5,14 @@ pub mod cherenkov;
 pub use cherenkov::AndroidCherenkovSurface;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use cherenkov::DomCherenkovSurface;
+pub use cherenkov::EngineSurface;
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
 pub use cherenkov::WindowCherenkovSurface;
-pub use cherenkov::{EngineSurface, TextureCherenkovSurface};
-pub use cherenkov::{GpuEngine, SharedEngineState, format_output_color, shared_engine_state};
+#[cfg(hydrolysis_gpu_painter)]
+pub use cherenkov::{
+    GpuEngine, SharedEngineState, TextureCherenkovSurface, format_output_color, shared_engine_state,
+};
+#[cfg(hydrolysis_cpu_painter)]
+pub use cherenkov::{RasterCherenkovSurface, RasterEngine, RasterEngineState};
 // `macro_rules!` re-exports cap at `pub(crate)` — see cherenkov_backend.
 pub(crate) use cherenkov::{cfg_async_fn, engine_await};

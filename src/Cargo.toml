@@ -134,6 +134,9 @@ gpu = [
     "waterui-graphics/gpu",
     "dep:waterui-svg",
 ]
+# CPU rendering stack (waterui-graphics' Cherenkov engine on `cherenkov-cpu`),
+# with no wgpu.
+cpu = ["effects", "waterui-graphics/cpu"]
 # `asset!` expands image-kind assets into `waterui::media::Photo` (`ImageAsset`,
 # behind `waterui-assets`' `media` feature) and video-kind assets into
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);

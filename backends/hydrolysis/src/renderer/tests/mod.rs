@@ -1,4 +1,7 @@
 mod collection_update;
+// Suites that drive the GPU painter itself — its device, GPU-content views,
+// filters or backdrop shaders — run on builds that have it.
+#[cfg(hydrolysis_gpu_painter)]
 mod frame_work;
 mod slider_look;
 use super::*;
@@ -17,6 +20,7 @@ mod anchored_overlay;
 mod animation_slots;
 mod change_animation;
 mod chrome_primitives;
+#[cfg(hydrolysis_gpu_painter)]
 mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
@@ -32,11 +36,15 @@ mod gesture_capture;
 mod gesture_env;
 mod gesture_retention;
 mod gesture_surface;
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_direct;
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_idle;
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_input;
 mod group_opacity;
 mod image_ingest;
+#[cfg(hydrolysis_gpu_painter)]
 mod ime;
 mod interaction_state;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -54,19 +62,26 @@ mod list_row_metrics;
 mod list_table_scroll_frames;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_visibility;
+#[cfg(hydrolysis_gpu_painter)]
 mod material;
+#[cfg(hydrolysis_gpu_painter)]
 mod material_chrome;
+#[cfg(hydrolysis_gpu_painter)]
 mod material_group;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
 mod mid_flush_subview;
+#[cfg(hydrolysis_gpu_painter)]
 pub mod mirror;
 mod navigation_back;
+#[cfg(hydrolysis_gpu_painter)]
 mod navigation_layers;
 mod navigation_text_input;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
 mod opacity_binding;
+mod painted;
+#[cfg(hydrolysis_gpu_painter)]
 mod perf_full_rebuild;
 mod perf_scroll;
 #[cfg(not(target_arch = "wasm32"))]
@@ -98,6 +113,7 @@ mod text_measure_direction;
 mod text_wrap_width;
 mod toggle_glass;
 mod toggle_looks;
+#[cfg(hydrolysis_gpu_painter)]
 mod top_edge;
 mod touch_scroll;
 mod tree;
@@ -308,6 +324,7 @@ pub fn test_environment_with_scheme(
 /// The member layer ids of every backdrop membership the frame's nodes
 /// hold, flush order — including the members inside filtered groups, which
 /// the walk descends into.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     struct Members(Vec<cherenkov::LayerId>);
     impl<E: crate::text::TextEngine> mount::layers::LayerVisitor<E> for Members {
@@ -327,6 +344,7 @@ pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::Layer
     members.0
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn mounted_anchor_parent_children(
     runtime: &crate::HeadlessRuntime,
     scope: std::num::NonZeroU64,
@@ -368,6 +386,7 @@ pub fn mounted_anchor_parent_children(
     visitor.children
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     struct Inner(Vec<cherenkov::LayerId>);
     impl<E: crate::text::TextEngine> mount::layers::LayerVisitor<E> for Inner {
@@ -388,6 +407,7 @@ pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId>
 }
 
 /// The window's mount — the test renders one window.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn window_mount(
     runtime: &crate::HeadlessRuntime,
 ) -> &mount::Mount<cherenkov_gpu::Gpu, crate::text::ParleyEngine> {
@@ -400,6 +420,7 @@ pub fn window_mount(
 }
 
 /// The window's backdrop-group table — the test renders one window.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn mounts(
     runtime: &crate::HeadlessRuntime,
 ) -> &mount::backdrop::MaterialBackdropGroups<cherenkov::BackdropGroup, crate::text::ParleyEngine> {
@@ -407,6 +428,7 @@ pub fn mounts(
 }
 
 /// The engine's current backdrop-capture bytes.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
     runtime
         .renderer()
@@ -3795,6 +3817,7 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn bare_text_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -3815,6 +3838,7 @@ fn bare_text_at_window_root_renders_into_page() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn bare_str_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -3888,6 +3912,7 @@ fn resolved_text_fast_path_matches_the_recursive_measure() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn bare_str_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -4289,6 +4314,7 @@ fn a_labelled_container_that_stands_reports_its_response_rectangle() {
     );
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 fn diagnostic_gpu() -> (
     crate::platform::OffscreenGpuContext,
     cherenkov_gpu::composition::Sink,

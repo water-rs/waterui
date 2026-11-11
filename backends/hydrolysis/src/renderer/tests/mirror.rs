@@ -19,12 +19,12 @@ use crate::engine::GpuEngine;
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
 use crate::renderer::mount::backdrop::{MemberBind, MemberJoin};
-use crate::renderer::mount::layers::{LayerVisitor, NodeLayers, visit};
+use crate::renderer::mount::layers::NodeLayers;
 use crate::renderer::mount::target::{
-    LayerTarget, MaterialTerms, attach_material_shaders, install_gpu_text,
+    LayerTarget, MaterialTerms, attach_material_shaders, install_engine_text,
 };
 use crate::renderer::mount::{Mount, MountStats};
-use crate::renderer::recording::{Recording, SceneResources};
+use crate::renderer::recording::SceneResources;
 use crate::renderer::{HydrolysisRenderer, ProducerWake};
 
 /// The test target.
@@ -137,7 +137,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
     }
 
     fn install_text(host: &MirrorHost, text: &Arc<crate::text::TextService<E>>) {
-        install_gpu_text(&host.resources, &host.engine, text);
+        install_engine_text(&host.resources, &host.engine, text);
     }
 
     fn mount_gpu_content(
@@ -614,23 +614,6 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
     }
 }
 
-/// Flattens every committed run into one window-space recording.
-struct Painted(Recording);
-
-impl<E: crate::text::TextEngine> LayerVisitor<E> for Painted {
-    fn run(&mut self, world: kurbo::Affine, recording: &Recording) {
-        self.0.append(recording, world);
-    }
-
-    fn open_clip(&mut self, world: kurbo::Affine, clip: &cherenkov::ShapeData) {
-        self.0.push_clip_data(world, clip.clone());
-    }
-
-    fn close_clip(&mut self) {
-        self.0.pop_scope();
-    }
-}
-
 impl HydrolysisRenderer<crate::text::ParleyEngine> {
     /// Commits the window's host frames into the renderer's mirror mount
     /// and returns that commit's stats with the mounted layers' census.
@@ -682,12 +665,5 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         self.mirror
             .as_ref()
             .expect("hydrolysis tests: read the mirror after commit_mirror")
-    }
-
-    /// Everything the committed layers paint, in window points.
-    pub fn painted_scene(&self) -> Recording {
-        let mut painted = Painted(Recording::default());
-        visit(&self.mount_roots(), &mut painted);
-        painted.0
     }
 }

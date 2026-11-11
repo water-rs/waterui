@@ -87,6 +87,7 @@ pub async fn build_hydrolysis(
         options,
         &[],
         &[],
+        false,
     ))
     .await
 }
@@ -107,11 +108,50 @@ pub async fn build_hydrolysis_with_envs(
         options,
         extra_envs,
         &[],
+        false,
     ))
     .await
 }
 
+/// The launcher features selecting the Cherenkov render backends a desktop
+/// build compiles: `[hydrolysis] render` in `Water.toml`, or the default
+/// for `platform` — both backends when the build renders `offscreen`
+/// (`water preview`, the MCP session). A default backend the resolved
+/// framework does not declare is left out, so a revision that predates it
+/// builds as it always did; an explicit selection it does not declare is an
+/// error.
+fn render_features(
+    project: &Project,
+    launcher_manifest: &Path,
+    platform: TargetPlatform,
+    offscreen: bool,
+) -> eyre::Result<Vec<&'static str>> {
+    let selected = project
+        .manifest()
+        .hydrolysis()
+        .and_then(crate::backend::HydrolysisConfig::render);
+    let render = selected
+        .unwrap_or_else(|| crate::backend::HydrolysisRender::default_for(platform, offscreen));
+    let mut features = Vec::new();
+    for feature in render.features() {
+        if crate::templates::generated_manifest_declares(launcher_manifest, feature)? {
+            features.push(*feature);
+        } else if selected.is_some() {
+            bail!(
+                "`[hydrolysis] render` selects the `{feature}` backend, but the `hydrolysis` this \
+                 project resolves declares no `{feature}` feature. Select a backend that framework \
+                 revision supports or move to a framework revision that ships it",
+            );
+        }
+    }
+    info!(?render, ?features, offscreen, "hydrolysis render backends");
+    Ok(features)
+}
+
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables and features.
+///
+/// `offscreen` says the binary renders without a window (`water preview`,
+/// the MCP session), which selects both render backends by default.
 ///
 /// # Errors
 /// Returns an error if the platform is unsupported, the backend is missing, or Cargo fails.
@@ -121,6 +161,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
     options: BuildOptions,
     extra_envs: &[(String, OsString)],
     extra_features: &[&str],
+    offscreen: bool,
 ) -> eyre::Result<BuiltTarget> {
     if !is_hydrolysis_native_platform(platform) {
         bail!("Hydrolysis backend is only supported on macOS, Linux, and Windows");
@@ -135,6 +176,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
             backend_path.display(),
         );
     }
+    let render_features = render_features(project, &cargo_toml, platform, offscreen)?;
 
     // The managed crate is its own workspace root, so its `Cargo.lock` is
     // re-seeded from the application's lockfile before every resolution —
@@ -180,7 +222,11 @@ pub async fn build_hydrolysis_with_envs_and_features(
 
     let mut build = RustBuild::for_project(project, &backend_path, platform.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
-        .with_features(extra_features.iter().copied())
+        .with_features(
+            render_features
+                .into_iter()
+                .chain(extra_features.iter().copied()),
+        )
         .with_linkage(
             options.linkage(),
             &format!("{}/dev", project.crate_name()),

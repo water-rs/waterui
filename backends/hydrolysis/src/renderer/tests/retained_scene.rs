@@ -44,6 +44,7 @@ use super::{MinimalTestTheme, pumped_test_environment, test_environment};
 use crate::HeadlessRuntime;
 
 /// Aggregated frame-economy metrics over a run of parametric (post-trigger) frames.
+#[cfg(hydrolysis_gpu_painter)]
 #[derive(Debug, Clone, Copy, Default)]
 struct ScenarioMetrics {
     /// Number of frames pumped while the animation was active.
@@ -63,6 +64,7 @@ fn padding_list() -> impl waterui::View {
 
 /// Case A — animated **opacity at the window root** (no scroll frame at all).
 /// Legacy: rebuilds the whole scene every animation frame.
+#[cfg(hydrolysis_gpu_painter)]
 fn opacity_at_root(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
@@ -76,6 +78,7 @@ fn opacity_at_root(value: &Binding<f32>) -> AnyView {
 /// Case B — animated **opacity inside a scroll view**. The opacity is baked into
 /// the captured scroll content, so a capture cache is `animation_dependent` and
 /// bails to a full rebuild every frame.
+#[cfg(hydrolysis_gpu_painter)]
 fn opacity_in_scroll(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
@@ -87,6 +90,7 @@ fn opacity_in_scroll(value: &Binding<f32>) -> AnyView {
 /// Case A' — animated **transform (scale) at the window root** (no scroll frame).
 /// Legacy bakes root transforms and rebuilds every frame; the window retained frame
 /// must replay it without a rebuild.
+#[cfg(hydrolysis_gpu_painter)]
 fn transform_at_root(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
@@ -102,6 +106,7 @@ fn transform_at_root(value: &Binding<f32>) -> AnyView {
 /// Case C — animated **transform (scale) inside a scroll view**. This is the one
 /// case a captured-scroll path can already replay without a rebuild; it
 /// exists here as a no-regression guard for the refactor.
+#[cfg(hydrolysis_gpu_painter)]
 fn transform_in_scroll(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
@@ -150,6 +155,7 @@ impl Layout for CountingLayout {
 /// Pumps one initial structural frame, triggers an animation by moving `value`,
 /// then pumps `parametric_frames` further frames while the animation is active and
 /// records the frame economy.
+#[cfg(hydrolysis_gpu_painter)]
 fn run_scenario(
     case: &str,
     make_view: fn(&Binding<f32>) -> AnyView,
@@ -478,6 +484,7 @@ const PARAMETRIC_FRAMES: u32 = 20;
 /// dynamic opacity layer and replays through the window frame without a rebuild or
 /// re-measure. Baking the opacity into the capture instead forces a rebuild every frame.
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn opacity_at_root_never_rebuilds() {
     let metrics = run_scenario("opacity_at_root", opacity_at_root, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
@@ -495,6 +502,7 @@ fn opacity_at_root_never_rebuilds() {
 /// scroll cache without a rebuild — the case that previously forced a full rebuild
 /// (and the flashing) on every animation/scroll frame.
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn opacity_in_scroll_never_rebuilds() {
     let metrics = run_scenario("opacity_in_scroll", opacity_in_scroll, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
@@ -511,6 +519,7 @@ fn opacity_in_scroll_never_rebuilds() {
 /// Phase 2A: an animated transform at the window root replays through the retained
 /// window frame without any structural rebuild or re-measure.
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn transform_at_root_never_rebuilds() {
     let metrics = run_scenario("transform_at_root", transform_at_root, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
@@ -527,6 +536,7 @@ fn transform_at_root_never_rebuilds() {
 /// NO-REGRESSION GUARD: an animated transform inside a window-filling scroll already
 /// replays without a rebuild today. The refactor must keep it at zero rebuilds.
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn transform_in_scroll_never_rebuilds() {
     let metrics = run_scenario(
         "transform_in_scroll",

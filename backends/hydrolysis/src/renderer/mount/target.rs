@@ -223,11 +223,23 @@ impl std::fmt::Debug for FilterHandle {
             .finish_non_exhaustive()
     }
 }
+#[cfg(hydrolysis_cherenkov)]
+#[path = "engine_target.rs"]
+mod engine_target;
+
 #[cfg(hydrolysis_gpu_painter)]
 #[path = "gpu_target.rs"]
 mod gpu;
 
+#[cfg(hydrolysis_cpu_painter)]
+#[path = "cpu_target.rs"]
+mod cpu;
+
+#[cfg(hydrolysis_cpu_painter)]
+pub use cpu::RasterHost;
+#[cfg(all(test, hydrolysis_gpu_painter))]
+pub use engine_target::install_engine_text;
 #[cfg(hydrolysis_gpu_painter)]
 pub use gpu::CherenkovHost;
 #[cfg(all(test, hydrolysis_gpu_painter))]
-pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec, install_gpu_text};
+pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec};

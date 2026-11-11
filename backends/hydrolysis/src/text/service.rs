@@ -186,7 +186,7 @@ impl<E: TextEngine> TextService<E> {
     }
 
     /// `layout` as Cherenkov text; see [`TextEngine::cherenkov_text`].
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn cherenkov_text(
         &self,
         layout: &E::Layout,

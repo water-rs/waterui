@@ -397,13 +397,17 @@ impl fmt::Debug for SceneResources {
 }
 
 impl SceneResources {
-    /// Creates caches served by `engine`.
-    #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) fn new(engine: &Rc<crate::engine::GpuEngine>) -> Self {
-        Self::over(waterui_graphics::backend::SceneResources::with_shaders(
-            engine.clone(),
-            engine.clone(),
-        ))
+    /// Creates caches served by `engine`, with the registries its backend
+    /// offers (`SceneCaps`): the GPU backend registers shader paints, the
+    /// CPU backend reports them unsupported at registration.
+    #[cfg(hydrolysis_cherenkov)]
+    pub(crate) fn new<B>(engine: &Rc<cherenkov::Engine<B>>) -> Self
+    where
+        B: waterui_graphics::SceneCaps
+            + cherenkov::Uploads<cherenkov::Rgba8>
+            + cherenkov::Uploads<cherenkov::Rgba16F>,
+    {
+        Self::over(B::resources(Rc::clone(engine)))
     }
 
     /// Creates caches over the registration table `inner`.
@@ -608,7 +612,7 @@ impl Recording {
     }
 
     /// Clears all recorded commands.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn reset(&mut self) {
         self.ops.clear();
         self.open_layers = 0;
@@ -837,7 +841,7 @@ impl Recording {
     /// under, in op order — `transform` maps the clip's own rect into scene
     /// space, so `transform * clip` is the rect the scope clips to. For
     /// tests asserting clip geometry.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn clip_scopes(&self) -> impl Iterator<Item = (Affine, Rect)> {
         self.ops.iter().filter_map(|op| match op {
             Op::PushGroup {
@@ -863,7 +867,7 @@ impl Recording {
     /// Each fill op's shape bounds with the transform it was drawn under,
     /// in op order — `transform * shape` is the rect the fill paints. For
     /// tests asserting paint geometry.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn fill_bounds(&self) -> impl Iterator<Item = (Affine, Rect)> {
         self.ops.iter().filter_map(|op| match op {
             Op::LiveRect {

@@ -1,14 +1,12 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use nami::Signal;
 use waterui::cursor::CursorStyle;
 use waterui::window::Window as WuiWindow;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use waterui::window::WindowState;
-#[cfg(hydrolysis_gpu_painter)]
-use waterui_graphics::gpu::RedrawHandle;
 
 /// The output request every Hydrolysis host surface is negotiated by:
 /// the engine selects compact SDR storage and upgrades for HDR content
@@ -1900,11 +1898,11 @@ pub fn enabled_window_buttons(closable: bool) -> winit::window::WindowButtons {
 /// sync and cursor chrome.
 ///
 /// This contract carries no GPU objects — a host satisfies it without a
-/// wgpu device, a presentation surface or a render thread. The GPU
-/// painter's presentation attachment is the separate, crate-internal
-/// `GpuSurfaceWindow` boundary: only window types that implement it can
-/// drive the GPU frame pump, so a host that stays `PlatformWindow`-only
-/// can never hand the runner a wgpu surface.
+/// wgpu device, a presentation surface or a render thread. A Cherenkov
+/// painter's presentation attachment is the separate [`PaintedWindow`]
+/// boundary: only window types that implement it can drive the frame pump,
+/// so a host that stays `PlatformWindow`-only can never hand the runner a
+/// surface.
 pub trait PlatformWindow: 'static {
     /// The drawable content area in physical pixels.
     ///
@@ -2038,33 +2036,36 @@ pub trait PlatformWindow: 'static {
     fn set_cursor_style(&mut self, style: CursorStyle);
 }
 
-/// The GPU painter's presentation attachment: a [`PlatformWindow`] whose
-/// content is presented through a wgpu surface.
+/// A Cherenkov painter's presentation attachment: a [`PlatformWindow`] whose
+/// content one of the Cherenkov backends draws into its presentation.
 ///
 /// This is the compile-time painter boundary — the windowed frame pump is
-/// generic over this trait, so a GPU surface exists only where a painter
+/// generic over this trait, so a presentation exists only where a painter
 /// attached one. A host implementing only [`PlatformWindow`] has no surface
-/// to give the pump, and the GPU render path is unreachable for it.
+/// to give the pump, and the Cherenkov render path is unreachable for it.
 ///
-/// How the frame reaches the display is the associated
-/// [`PresentationSurface`] type: a [`SurfaceProvider`] — the pump acquires,
-/// renders into and presents each frame — for every surface except the
-/// macOS winit window, whose `cherenkov_gpu::WindowTarget` presents inside
-/// `Engine::render`. The acquire and present calls that kind lacks are
-/// missing from its type, not asserted away at run time.
-#[cfg(hydrolysis_gpu_painter)]
-pub trait GpuSurfaceWindow: PlatformWindow {
-    /// How this window's GPU surface presents — host-acquired, or
-    /// engine-presented on the macOS winit window.
-    type Presentation: PresentationSurface + crate::runner::window::GpuSurfaceFrame;
-    /// The GPU surface this window presents into.
+/// How the frame reaches the display is the associated `Presentation`
+/// type. On the GPU painter it is a `PresentationSurface`: a
+/// `SurfaceProvider` — the pump acquires, renders into and presents each
+/// frame — for every surface except the macOS winit window, whose
+/// `cherenkov_gpu::WindowTarget` presents inside `Engine::render`. The
+/// acquire and present calls that kind lacks are missing from its type, not
+/// asserted away at run time. On the CPU painter it is the framebuffer
+/// target (`RasterOffscreen`). The headless window's presentation is
+/// whichever of the two its runtime's `OffscreenPainter` selected.
+#[cfg(hydrolysis_cherenkov)]
+pub trait PaintedWindow: PlatformWindow {
+    /// How this window's frames are presented.
+    type Presentation: crate::runner::window::PaintedFrame;
+    /// The presentation this window renders into.
     fn surface(&mut self) -> &mut Self::Presentation;
-    /// Returns a thread-safe wake bridge for nested GPU surfaces.
+    /// Returns a thread-safe wake bridge for content the engine runs between
+    /// the renderer's own frames.
     ///
     /// Windowed platforms override this when their native window can be woken
-    /// from a `RedrawHandle`. Offscreen and single-threaded hosts may keep the
+    /// from another thread. Offscreen and single-threaded hosts may keep the
     /// default and rely on their explicit render pump.
-    fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
+    fn host_redraw_handle(&self) -> Option<crate::renderer::HostRedraw> {
         None
     }
 
@@ -2188,9 +2189,37 @@ impl OffscreenGpuContext {
     pub async fn new() -> Self {
         let (instance, adapter, backends) =
             request_instance_and_adapter("hydrolysis offscreen surface").await;
+        Self::on_adapter(&instance, &adapter, backends).await
+    }
+
+    /// Opens the context on an adapter `instance` produced over `backends` —
+    /// the tail of [`Self::new`], and of the offscreen painter selection
+    /// that probed the adapter itself.
+    ///
+    /// # Panics
+    /// Panics when the device request fails.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            clippy::arc_with_non_send_sync,
+            reason = "the context is shared by reference count on every target; on wasm the page's single-threaded event loop never crosses it with a thread, and the handles' Send/Sync bound varies with Cargo feature unification"
+        )
+    )]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            clippy::future_not_send,
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
+        )
+    )]
+    async fn on_adapter(
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        backends: wgpu::Backends,
+    ) -> Self {
         #[cfg(target_arch = "wasm32")]
         let _ = backends;
-        let generation = Self::open_device(&instance, &adapter)
+        let generation = Self::open_device(instance, adapter)
             .await
             .expect("hydrolysis offscreen surface: failed to request wgpu device");
 
@@ -2461,6 +2490,21 @@ mod adapter_selection_tests {
         assert_eq!(best_adapter_index(&candidates, true), None);
     }
 
+    #[cfg(hydrolysis_both_painters)]
+    #[test]
+    fn both_painters_take_the_gpu_only_on_a_hardware_adapter() {
+        use super::hardware_adapter_index;
+        let mixed = [
+            info(wgpu::DeviceType::Cpu),
+            info(wgpu::DeviceType::IntegratedGpu),
+        ];
+        assert_eq!(hardware_adapter_index(&mixed), Some(1));
+        // A host whose only adapter is a software rasterizer renders on
+        // the CPU painter, not through the software adapter.
+        assert_eq!(hardware_adapter_index(&[info(wgpu::DeviceType::Cpu)]), None);
+        assert_eq!(hardware_adapter_index(&[]), None);
+    }
+
     #[test]
     fn the_refusal_names_the_missing_driver_and_no_escape_hatch() {
         assert!(GPU_REQUIRED_GUIDANCE.contains("software"));
@@ -2576,9 +2620,63 @@ async fn probe_adapters(
     context: &str,
     backends: wgpu::Backends,
 ) -> (Option<wgpu::Adapter>, Vec<String>) {
-    // The ranking below decides the pick; the renderer is never handed
-    // whatever `request_adapter` returns, which skipped it and let an adapter
-    // the engine cannot drive reach the engine's shader init.
+    let (mut candidates, inspected_adapters) =
+        adapter_candidates(instance, compatible_surface, context, backends).await;
+    let best = best_adapter_index(
+        candidates.iter().map(|(info, _)| info),
+        should_force_fallback_adapter(),
+    );
+    (
+        best.map(|index| candidates.swap_remove(index).1),
+        inspected_adapters,
+    )
+}
+
+/// The best hardware adapter on `instance` over `backends`, for a build
+/// with both painters: a software adapter is never returned, because the
+/// CPU painter renders where no hardware adapter qualifies. The inspected
+/// list comes back for the selection's log.
+#[cfg(hydrolysis_both_painters)]
+#[cfg(not(target_arch = "wasm32"))]
+async fn probe_hardware_adapter(
+    instance: &wgpu::Instance,
+    context: &str,
+    backends: wgpu::Backends,
+) -> (Option<wgpu::Adapter>, Vec<String>) {
+    let (mut candidates, inspected_adapters) =
+        adapter_candidates(instance, None, context, backends).await;
+    let infos: Vec<wgpu::AdapterInfo> = candidates.iter().map(|(info, _)| info.clone()).collect();
+    (
+        hardware_adapter_index(&infos).map(|index| candidates.swap_remove(index).1),
+        inspected_adapters,
+    )
+}
+
+/// The index of the adapter a build with both painters renders on the GPU
+/// with: the one [`best_adapter_index`] ranks first, when it is hardware.
+/// Hardware outranks software there, so a software best means no hardware
+/// adapter qualified.
+#[cfg(hydrolysis_both_painters)]
+#[cfg(not(target_arch = "wasm32"))]
+fn hardware_adapter_index(infos: &[wgpu::AdapterInfo]) -> Option<usize> {
+    best_adapter_index(infos, false)
+        .filter(|&index| infos[index].device_type != wgpu::DeviceType::Cpu)
+}
+
+/// Every adapter `instance` offers over `backends` that is compatible with
+/// `compatible_surface` (any adapter, without one), each logged under
+/// `context`; and the inspected list a no-adapter refusal names.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
+async fn adapter_candidates(
+    instance: &wgpu::Instance,
+    compatible_surface: Option<&wgpu::Surface<'_>>,
+    context: &str,
+    backends: wgpu::Backends,
+) -> (Vec<(wgpu::AdapterInfo, wgpu::Adapter)>, Vec<String>) {
+    // The ranking decides the pick; the renderer is never handed whatever
+    // `request_adapter` returns, which skipped it and let an adapter the
+    // engine cannot drive reach the engine's shader init.
     let mut candidates: Vec<(wgpu::AdapterInfo, wgpu::Adapter)> = Vec::new();
     let mut inspected_adapters: Vec<String> = Vec::new();
 
@@ -2606,15 +2704,7 @@ async fn probe_adapters(
         ));
         candidates.push((info, adapter));
     }
-
-    let best = best_adapter_index(
-        candidates.iter().map(|(info, _)| info),
-        should_force_fallback_adapter(),
-    );
-    (
-        best.map(|index| candidates.swap_remove(index).1),
-        inspected_adapters,
-    )
+    (candidates, inspected_adapters)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3228,11 +3318,181 @@ impl OffscreenSceneSurface {
     }
 }
 
-/// Headless platform window backed by an offscreen texture.
-#[derive(Debug)]
+/// A render target an [`OffscreenWindow`] allocates in physical pixels: the
+/// GPU painter's [`OffscreenSurface`] texture, or the CPU painter's
+/// framebuffer.
+#[cfg(hydrolysis_cherenkov)]
+pub trait OffscreenTarget: 'static {
+    /// The target's pixel size `(width, height)`.
+    fn size(&self) -> (u32, u32);
+    /// Reallocates the target at a new pixel size.
+    fn resize(&mut self, width: u32, height: u32);
+}
+
 #[cfg(hydrolysis_gpu_painter)]
-pub struct OffscreenWindow {
-    surface: OffscreenSurface,
+impl OffscreenTarget for OffscreenSurface {
+    fn size(&self) -> (u32, u32) {
+        PresentationSurface::size(self)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        PresentationSurface::resize(self, width, height);
+    }
+}
+
+/// The CPU painter's offscreen target: the engine its frames render on and
+/// the framebuffer size.
+///
+/// The framebuffer surface itself is the renderer's, retained across frames
+/// like the GPU painter's engine texture; each frame resizes it to this size.
+#[cfg(hydrolysis_cpu_painter)]
+#[derive(Debug)]
+pub struct RasterOffscreen {
+    pub(crate) state: Rc<crate::engine::RasterEngineState>,
+    width: u32,
+    height: u32,
+}
+
+#[cfg(hydrolysis_cpu_painter)]
+impl RasterOffscreen {
+    /// A `width` x `height` target on `state`'s engine.
+    pub(crate) fn new(
+        state: Rc<crate::engine::RasterEngineState>,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            state,
+            width: width.max(1),
+            height: height.max(1),
+        }
+    }
+}
+
+#[cfg(hydrolysis_cpu_painter)]
+impl OffscreenTarget for RasterOffscreen {
+    fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.width = width.max(1);
+        self.height = height.max(1);
+    }
+}
+
+/// The painter an offscreen host renders with, chosen once per host and
+/// shared by every window it opens.
+///
+/// A build with one painter has one variant. A build with both chooses at
+/// run time, which is why this is a value and not a type parameter: the GPU
+/// when adapter selection finds a usable hardware adapter, the CPU
+/// otherwise ([`Self::select`]).
+#[cfg(all(hydrolysis_cherenkov, not(target_arch = "wasm32")))]
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum OffscreenPainter {
+    /// The GPU painter, on a device every window of the host shares.
+    #[cfg(hydrolysis_gpu_painter)]
+    Gpu(OffscreenGpuContext),
+    /// The CPU painter, on an engine every window of the host shares.
+    #[cfg(hydrolysis_cpu_painter)]
+    Cpu(Rc<crate::engine::RasterEngineState>),
+}
+
+#[cfg(all(hydrolysis_cherenkov, not(target_arch = "wasm32")))]
+impl OffscreenPainter {
+    /// Selects the painter for this host and logs the choice.
+    ///
+    /// A GPU-only build opens the adapter `WaterUI` would render an
+    /// application on and panics when there is none; a CPU-only build starts
+    /// the CPU engine. A build with both renders on the GPU when a hardware
+    /// adapter qualifies and on the CPU otherwise — a software wgpu adapter
+    /// is never chosen over the CPU painter. Setting
+    /// `WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER` renders as a host without a
+    /// hardware GPU does: a GPU-only build takes a software adapter, a build
+    /// with both takes the CPU painter.
+    #[must_use]
+    pub fn select() -> Self {
+        #[cfg(hydrolysis_gpu_painter)]
+        let without_hardware_gpu = should_force_fallback_adapter();
+        #[cfg(not(hydrolysis_gpu_painter))]
+        let without_hardware_gpu = true;
+        Self::select_with(without_hardware_gpu)
+    }
+
+    /// [`Self::select`] on a host that reports `without_hardware_gpu`: the
+    /// selection seam the environment flag drives, and tests drive directly.
+    #[must_use]
+    pub(crate) fn select_with(without_hardware_gpu: bool) -> Self {
+        #[cfg(hydrolysis_both_painters)]
+        {
+            let backends = hydrolysis_backends();
+            let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
+            let context = "hydrolysis offscreen painter";
+            let (adapter, inspected) =
+                pollster::block_on(probe_hardware_adapter(&instance, context, backends));
+            if let Some(adapter) = adapter.filter(|_| !without_hardware_gpu) {
+                log_selected_adapter(context, &adapter);
+                tracing::info!(target: "hydrolysis::gpu", "offscreen painter: GPU");
+                return Self::Gpu(pollster::block_on(OffscreenGpuContext::on_adapter(
+                    &instance, &adapter, backends,
+                )));
+            }
+            tracing::info!(
+                target: "hydrolysis::gpu",
+                without_hardware_gpu,
+                inspected = %inspected.join("; "),
+                "offscreen painter: CPU, no hardware adapter selected"
+            );
+            Self::Cpu(crate::engine::RasterEngineState::new())
+        }
+        #[cfg(all(hydrolysis_gpu_painter, not(hydrolysis_both_painters)))]
+        {
+            let _ = without_hardware_gpu;
+            tracing::info!(target: "hydrolysis::gpu", "offscreen painter: GPU");
+            Self::Gpu(pollster::block_on(OffscreenGpuContext::new()))
+        }
+        #[cfg(all(hydrolysis_cpu_painter, not(hydrolysis_both_painters)))]
+        {
+            let _ = without_hardware_gpu;
+            tracing::info!(target: "hydrolysis::gpu", "offscreen painter: CPU");
+            Self::Cpu(crate::engine::RasterEngineState::new())
+        }
+    }
+
+    /// Lets the painter release everything dropped since the last call —
+    /// the GPU device's destruction queue ([`OffscreenGpuContext::reclaim`]);
+    /// the CPU engine frees as it drops.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "the GPU variant's reclaim is not const; a CPU-only build has only the no-op arm"
+        )
+    )]
+    pub fn reclaim(&self) {
+        match self {
+            #[cfg(hydrolysis_gpu_painter)]
+            Self::Gpu(gpu) => gpu.reclaim(),
+            #[cfg(hydrolysis_cpu_painter)]
+            Self::Cpu(_) => {}
+        }
+    }
+}
+
+#[cfg(all(hydrolysis_gpu_painter, not(target_arch = "wasm32")))]
+impl From<OffscreenGpuContext> for OffscreenPainter {
+    fn from(gpu: OffscreenGpuContext) -> Self {
+        Self::Gpu(gpu)
+    }
+}
+
+/// Headless platform window backed by an offscreen render target `S`.
+#[derive(Debug)]
+#[cfg(hydrolysis_cherenkov)]
+pub struct OffscreenWindow<S> {
+    surface: S,
     scale_factor: f64,
     /// Last applied (min, max) content-size limits, recorded so tests can
     /// assert what the runner derived; offscreen surfaces have no real window
@@ -3244,17 +3504,7 @@ pub struct OffscreenWindow {
 }
 
 #[cfg(hydrolysis_gpu_painter)]
-impl OffscreenWindow {
-    #[must_use]
-    /// Creates an offscreen surface synchronously.
-    pub fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
-        Self {
-            surface: OffscreenSurface::new_blocking(width, height, format),
-            scale_factor: 1.0,
-            size_limits: None,
-        }
-    }
-
+impl OffscreenWindow<OffscreenSurface> {
     /// Creates a window on an already-requested [`OffscreenGpuContext`], so
     /// every window built on that context shares its device.
     #[must_use]
@@ -3264,8 +3514,17 @@ impl OffscreenWindow {
         height: u32,
         format: wgpu::TextureFormat,
     ) -> Self {
+        Self::new(OffscreenSurface::on_context(gpu, width, height, format))
+    }
+}
+
+#[cfg(hydrolysis_cherenkov)]
+impl<S: OffscreenTarget> OffscreenWindow<S> {
+    /// Creates a window over `surface` at scale factor 1.
+    #[must_use]
+    pub const fn new(surface: S) -> Self {
         Self {
-            surface: OffscreenSurface::on_context(gpu, width, height, format),
+            surface,
             scale_factor: 1.0,
             size_limits: None,
         }
@@ -3314,13 +3573,13 @@ impl OffscreenWindow {
     }
 
     #[must_use]
-    /// The underlying [`OffscreenSurface`].
-    pub const fn surface_ref(&self) -> &OffscreenSurface {
+    /// The underlying render target.
+    pub const fn surface_ref(&self) -> &S {
         &self.surface
     }
 
-    /// The offscreen presentation attachment the window renders into.
-    pub const fn surface(&mut self) -> &mut OffscreenSurface {
+    /// The offscreen render target the window renders into.
+    pub const fn surface(&mut self) -> &mut S {
         &mut self.surface
     }
 
@@ -3336,8 +3595,8 @@ impl OffscreenWindow {
     }
 }
 
-#[cfg(hydrolysis_gpu_painter)]
-impl PlatformWindow for OffscreenWindow {
+#[cfg(hydrolysis_cherenkov)]
+impl<S: OffscreenTarget> PlatformWindow for OffscreenWindow<S> {
     fn content_size(&self) -> (u32, u32) {
         // An offscreen window is exactly its render target.
         self.surface.size()
@@ -3410,11 +3669,14 @@ impl PlatformWindow for OffscreenWindow {
     fn set_cursor_style(&mut self, _style: CursorStyle) {}
 }
 
-#[cfg(hydrolysis_gpu_painter)]
-impl GpuSurfaceWindow for OffscreenWindow {
-    /// The GPU surface this window presents into.
-    type Presentation = OffscreenSurface;
-    fn surface(&mut self) -> &mut OffscreenSurface {
+#[cfg(hydrolysis_cherenkov)]
+impl<S> PaintedWindow for OffscreenWindow<S>
+where
+    S: OffscreenTarget + crate::runner::window::PaintedFrame,
+{
+    /// The offscreen target this window renders into.
+    type Presentation = S;
+    fn surface(&mut self) -> &mut S {
         &mut self.surface
     }
 }
@@ -3471,13 +3733,14 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, DeviceLoss, GpuSurfaceWindow, InputConventions, InputEvent, KeyCode, KeyState,
-        Modifiers, MultiClickConfig, PlatformWindow, PointerButton, PointerKind, RedrawHandle,
+        CursorStyle, DeviceLoss, InputConventions, InputEvent, KeyCode, KeyState, Modifiers,
+        MultiClickConfig, PaintedWindow, PlatformWindow, PointerButton, PointerKind,
         TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, enabled_window_buttons,
         validated_window_frame,
     };
     #[cfg(not(target_os = "macos"))]
     use super::{SurfaceError, SurfaceFrame, SurfaceProvider, reclaim_device};
+    use waterui_graphics::gpu::RedrawHandle;
 
     #[derive(Clone, Debug)]
     pub struct WinitGpuContext {
@@ -4336,7 +4599,7 @@ mod winit_impl {
     pub struct WinitWindow {
         window: Arc<NativeWindow>,
         /// The host's wake for this window, behind every
-        /// [`gpu_surface_redraw_handle`](GpuSurfaceWindow::gpu_surface_redraw_handle).
+        /// [`host_redraw_handle`](PaintedWindow::host_redraw_handle).
         wake: RedrawHandle,
         surface: WinitSurface,
         pending_surface_size: Option<PhysicalSize<u32>>,
@@ -4542,7 +4805,7 @@ mod winit_impl {
         }
 
         /// The occlusion-gated `RedrawWindow` wake both host-wake surfaces
-        /// hand out — [`GpuSurfaceWindow::gpu_surface_redraw_handle`] for
+        /// hand out — [`PaintedWindow::host_redraw_handle`] for
         /// GPU content and [`PlatformWindow::frame_wake`] for the frame
         /// signals. GPU content cannot see the window's pump state, so the
         /// occlusion report is shared as a flag: a frame request raised
@@ -5844,7 +6107,7 @@ mod winit_impl {
         }
     }
 
-    impl GpuSurfaceWindow for WinitWindow {
+    impl PaintedWindow for WinitWindow {
         /// The GPU surface this window presents into, by presentation kind.
         type Presentation = WinitSurface;
         fn surface(&mut self) -> &mut WinitSurface {
@@ -5854,8 +6117,8 @@ mod winit_impl {
             &mut self.surface
         }
 
-        fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-            Some(RedrawHandle::new(self.redraw_wake()))
+        fn host_redraw_handle(&self) -> Option<crate::renderer::HostRedraw> {
+            Some(crate::renderer::HostRedraw::new(self.redraw_wake()))
         }
 
         /// Keeps the compositor's blur-behind request in step with the
@@ -6991,7 +7254,7 @@ pub use winit_impl::WinitSurface;
 /// losses that never presented ends in the explicit unrecoverable error
 /// (water-rs/waterui#2742). Offscreen surfaces exercise the shared
 /// `RecoverableGpu` path every host's `ensure_live` runs.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 mod recovery_tests {
     use super::{
         MAX_UNPRODUCTIVE_LOSSES, OffscreenGpuContext, OffscreenSurface, PresentationSurface,

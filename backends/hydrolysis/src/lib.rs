@@ -1,16 +1,26 @@
 //! Hydrolysis backend.
 
-// An Android build needs one painter: `hwui` selects the platform `RenderNode`
-// target, `gpu` the Cherenkov GPU attachment (the two may combine). A build
-// with neither compiles no painter: the theme contract (`Style`,
-// `WidgetTheme`, tokens) stays, the renderer, runner and platform
-// implementations compile out — the bare check leg exercises exactly that
-// shape — and the build script warns on it; the generated launcher always
-// enables the resolved painter's feature.
+// A build needs a painter: `gpu` selects the Cherenkov GPU backend, `cpu` the
+// Cherenkov CPU rasterizer (the two combine: the offscreen runtime renders on
+// the GPU when the host has a usable hardware adapter and on the CPU
+// otherwise), and on Android `hwui` the platform `RenderNode` target (which
+// composes with `gpu`). A build with none compiles no painter: the theme
+// contract (`Style`, `WidgetTheme`, tokens) stays, the renderer, runner and
+// platform implementations compile out — the bare check leg exercises exactly
+// that shape — and the build script warns on it; the generated launcher
+// always enables the resolved painter features.
+
+// The winit runner presents through a wgpu surface; presenting CPU frames to
+// a window is water-rs/waterui#4064.
+#[cfg(all(feature = "winit", not(feature = "gpu"), not(target_os = "android")))]
+compile_error!(
+    "hydrolysis: the `winit` runner presents through the GPU backend — enable the `gpu` feature \
+     (windows presenting `cpu` frames are water-rs/waterui#4064)"
+);
 
 #[cfg(hydrolysis_runtime)]
 mod animation;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod engine;
 // Bare wasm reaches none of the env-driven window/console paths that call
 // these helpers.
@@ -46,7 +56,7 @@ pub mod testing;
 #[cfg(hydrolysis_runtime)]
 mod text;
 pub mod theme;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod view_renderer;
 #[cfg(hydrolysis_runtime)]
 mod widgets;
@@ -92,8 +102,8 @@ pub trait Style: theme::WidgetTheme + 'static {
 }
 /// The alpha convention a [`HeadlessSnapshot`]'s pixels read — what the
 /// producing surface presented with.
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
-pub use cherenkov_gpu::interop::OutputAlpha;
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+pub use cherenkov::OutputAlpha;
 /// The drawing vocabulary of the style contract: the `Recorder` a
 /// [`WidgetTheme`](theme::WidgetTheme) and its looks record into, `Paint`,
 /// the shapes, the colour, material and animation types, and the `kurbo`
@@ -105,6 +115,10 @@ pub use cherenkov_record as draw;
 pub use keyboard_types;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use platform::BrowserWindow;
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+pub use platform::OffscreenPainter;
+#[cfg(hydrolysis_cpu_painter)]
+pub use platform::RasterOffscreen;
 #[cfg(hydrolysis_winit)]
 pub use platform::WinitWindow;
 #[cfg(hydrolysis_runtime)]
@@ -117,9 +131,10 @@ pub use platform::{
 };
 #[cfg(hydrolysis_gpu_painter)]
 pub use platform::{
-    DeviceLoss, OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, OffscreenWindow,
-    SurfaceFrame,
+    DeviceLoss, OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, SurfaceFrame,
 };
+#[cfg(hydrolysis_cherenkov)]
+pub use platform::{OffscreenTarget, OffscreenWindow};
 #[cfg(hydrolysis_runtime)]
 pub use platform_view::{
     PlacementStretch, PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
@@ -142,19 +157,19 @@ pub use runner::init_tracing;
 pub use runner::run;
 #[cfg(hydrolysis_runtime)]
 pub use runner::{FrameCounters, FramePhases, FrameProfile};
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use runner::{SemanticPumpResult, SemanticRuntime};
 #[cfg(any(test, hydrolysis_hwui))]
 pub use text::HwuiTextEngine;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use text::ParleyEngine;
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 pub use text::fonts::native_collection;
 #[cfg(hydrolysis_runtime)]
 pub use text::{DeclaredFonts, FontFamilyResolution};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;

@@ -32,6 +32,7 @@ default = [
     "locale-list",
 ]
 gpu = ["effects", "waterui-internal/gpu"]
+cpu = ["effects", "waterui-internal/cpu"]
 effects = ["waterui-internal/effects"]
 highlight = ["waterui-internal/highlight"]
 locale-datetime = ["waterui-internal/locale-datetime"]

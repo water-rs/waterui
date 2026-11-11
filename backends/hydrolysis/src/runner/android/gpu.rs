@@ -623,7 +623,7 @@ impl PresentationSurface for AndroidSurface {
     }
 }
 
-impl crate::runner::window::GpuSurfaceFrame for AndroidSurface {
+impl crate::runner::window::PaintedFrame for AndroidSurface {
     fn render_frame(
         &mut self,
         renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
