@@ -543,7 +543,7 @@ impl WebView {
     /// });
     /// vstack((toolbar, webview))   // or hstack, or zstack — your choice
     /// ```
-    pub fn proxy_scope<V, F>(&self, content: F) -> impl View
+    pub fn proxy_scope<V, F>(&self, content: F) -> impl View + use<V, F>
     where
         V: View,
         F: FnOnce() -> V + 'static,
@@ -1305,7 +1305,7 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use super::{WebView, subscribe_navigation};
-    use waterui_core::{Binding, Signal, reactive::watcher::Context};
+    use waterui_core::{AnyView, Binding, Signal, View, reactive::watcher::Context};
     use waterui_url::Url;
 
     /// The redirect policy is a signal the web view keeps reading, not a `bool`
@@ -1323,6 +1323,23 @@ mod tests {
         assert!(!configured.snapshot());
         redirects.set(true);
         assert!(configured.snapshot());
+    }
+
+    /// `proxy_scope` clones the handle it attaches, so the controls it returns
+    /// must not borrow the web view: the documented layout moves the web view
+    /// into the same container as its controls.
+    #[test]
+    fn proxy_scope_does_not_borrow_the_web_view() {
+        fn controls_outlive_the_web_view<V: View>(
+            webview: WebView,
+            content: fn() -> V,
+        ) -> impl View {
+            let controls = webview.proxy_scope(content);
+            drop(webview);
+            controls
+        }
+
+        let _ = controls_outlive_the_web_view::<AnyView>;
     }
 
     #[derive(Clone)]
