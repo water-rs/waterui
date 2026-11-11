@@ -9256,9 +9256,9 @@ mod list_scroll {
                     u64::try_from(ms).expect("the spring's duration fits u64 milliseconds"),
                 ))
             })
-            .fold(f32::MIN, f32::max);
+            .fold(f64::MIN, f64::max);
         assert!(
-            (f64::from(peak) - 1.0) * (end - from) > 1.0,
+            (peak - 1.0) * (end - from) > 1.0,
             "the spring must overshoot the end by more than a point unclamped: peak progress {peak} from {from} to {end}"
         );
         assert!(

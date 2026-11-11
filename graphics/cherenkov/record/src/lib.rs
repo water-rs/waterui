@@ -58,8 +58,8 @@ pub use kurbo;
 pub use web_time::Instant;
 
 pub use crate::animation::{
-    Animatable, Animation, AnimationTrack, Curve, Decay, Easing, KeyframeAnimation, Keyframes,
-    Lanes, Repeat, Spring, curve_value, decay_step, settled, spring_step,
+    Animatable, Animation, AnimationTrack, CubicBezier, Curve, Decay, Easing, KeyframeAnimation,
+    Keyframes, Lanes, Repeat, Spring, Timing, curve_value, decay_step, spring_step,
 };
 pub use crate::backdrop::{
     BackdropEffect, BackdropOuter, BackdropOuterError, BackdropSample, BackdropShaderEffect,

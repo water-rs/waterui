@@ -59,6 +59,9 @@ dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
 native-test = ["dep:libtest-mimic", "dep:objc2-io-kit"]
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+# The spring and curve definition `core_animation::Timing` plays, the one
+# WaterUI core and the Cherenkov engine evaluate.
+waterui-easing.workspace = true
 block2 = "0.6"
 dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2", "block2"] }
 libc = "0.2"
