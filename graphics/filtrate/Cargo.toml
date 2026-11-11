@@ -77,6 +77,8 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 thiserror = { version = "2.0.21", optional = true }
 tracing = { version = "0.1.44", optional = true }
+# Reports a broken contract: a panic in debug, an error log in release.
+waterui-contract.workspace = true
 # Portable SIMD for the CPU kernels.
 fearless_simd = { version = "1.1", default-features = false, features = ["std"] }
 cherenkov-simd = { version = "0.0.0", path = "../cherenkov/simd", default-features = false, features = ["std"] }

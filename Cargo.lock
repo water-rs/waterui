@@ -3583,6 +3583,7 @@ dependencies = [
  "pollster 1.0.1",
  "thiserror 2.0.21",
  "tracing",
+ "waterui-contract",
  "web-time",
  "wgpu",
 ]
