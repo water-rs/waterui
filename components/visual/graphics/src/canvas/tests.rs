@@ -10,8 +10,8 @@ use super::names::Names;
 use super::paint::affine;
 use super::scene::CanvasScene;
 use super::{
-    Canvas, Circle, Drawing, ImagePattern, ImageSource, ImageStatus, Layer, LinearGradient, Paint,
-    PixelBuffer, PixelFormat, Sampling, StrokeStyle,
+    Canvas, CanvasSize, Circle, Drawing, ImagePattern, ImageSource, ImageStatus, Layer,
+    LinearGradient, Paint, PixelBuffer, PixelFormat, Sampling, StrokeStyle,
 };
 use crate::color::WorkingColor;
 use crate::draw::{self, Content, ContentChange, LayoutSize, Operand};
@@ -516,6 +516,81 @@ fn size_follows_the_box() {
     }));
     let _ = record(&mut scene);
     assert_eq!(seen.get(), Size::new(100.0, 50.0));
+}
+
+#[test]
+fn canvas_size_before_mounting_reports_the_built_size() {
+    let size = CanvasSize::new();
+    let canvas = Canvas::new(|_| {}).sized_by(size.clone());
+    let size = size.signal();
+    assert_eq!(size.snapshot(), Size::zero(), "no layout has run yet");
+    let mut scene = mount(canvas);
+    let _ = record(&mut scene);
+    assert_eq!(size.snapshot(), Size::new(100.0, 50.0));
+    let _ = update(&mut scene);
+    assert_eq!(size.snapshot(), Size::new(100.0, 50.0));
+}
+
+#[test]
+fn canvas_size_follows_a_resize() {
+    let size = CanvasSize::new();
+    let canvas = Canvas::new(|_| {}).sized_by(size.clone());
+    let size = size.signal();
+    let seen = Rc::new(Cell::new(Size::zero()));
+    let _guard = size.watch({
+        let seen = Rc::clone(&seen);
+        move |change| seen.set(*change.value())
+    });
+    let mut scene = mount(canvas);
+    let _ = record(&mut scene);
+    assert_eq!(seen.get(), Size::new(100.0, 50.0));
+
+    let (resources, _events) = null_resources();
+    let mut names = resources.recording();
+    let _ = Content::record(&LayoutSize::new(), |recorder| {
+        scene.build_scene(recorder, &mut names, 200.0, 80.0);
+    });
+    drop(names.finish());
+    assert_eq!(size.snapshot(), Size::new(200.0, 80.0));
+    assert_eq!(seen.get(), Size::new(200.0, 80.0));
+}
+
+#[test]
+fn canvas_size_is_the_signal_the_closure_reads() {
+    let inside = Rc::new(Cell::new(Size::zero()));
+    let size = CanvasSize::new();
+    let canvas = Canvas::new({
+        let inside = Rc::clone(&inside);
+        move |cx| {
+            let size = cx.size();
+            cx.keep(size.watch(move |change| inside.set(*change.value())));
+        }
+    })
+    .sized_by(size.clone());
+    let size = size.signal();
+    let mut scene = mount(canvas);
+    let _ = record(&mut scene);
+    assert_eq!(inside.get(), size.snapshot());
+    assert_eq!(inside.get(), Size::new(100.0, 50.0));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "second canvas")]
+fn a_canvas_size_given_to_two_mounted_canvases_is_reported() {
+    let size = CanvasSize::new();
+    let _first = mount(Canvas::new(|_| {}).sized_by(size.clone()));
+    let _second = mount(Canvas::new(|_| {}).sized_by(size));
+}
+
+#[test]
+fn a_canvas_size_can_be_given_again_after_its_canvas_unmounts() {
+    let size = CanvasSize::new();
+    let first = mount(Canvas::new(|_| {}).sized_by(size.clone()));
+    drop(first);
+    let mut second = mount(Canvas::new(|_| {}).sized_by(size.clone()));
+    let _ = record(&mut second);
+    assert_eq!(size.signal().snapshot(), Size::new(100.0, 50.0));
 }
 
 fn skew() -> Affine2 {

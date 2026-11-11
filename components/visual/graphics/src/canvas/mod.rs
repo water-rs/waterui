@@ -58,6 +58,7 @@ mod operand;
 mod paint;
 mod resource;
 mod scene;
+mod size;
 mod view;
 
 use alloc::boxed::Box;
@@ -85,6 +86,7 @@ pub use resource::{
     PixelFormat,
 };
 
+pub use size::CanvasSize;
 pub use view::CanvasView;
 
 /// A view drawn by vector commands.
@@ -97,6 +99,8 @@ pub struct Canvas {
     intrinsic: Computed<Option<Size>>,
     label: Computed<Option<Str>>,
     value: Computed<Option<Str>>,
+    /// The box in points, set by the mounted canvas as layout moves it.
+    size: CanvasSize,
 }
 
 impl fmt::Debug for Canvas {
@@ -113,7 +117,19 @@ impl Canvas {
             intrinsic: Computed::constant(None),
             label: Computed::constant(None),
             value: Computed::constant(None),
+            size: CanvasSize::new(),
         }
+    }
+
+    /// Lays the canvas out into `size`, which then follows its box and is
+    /// the signal [`Cx::size`] returns inside the drawing.
+    ///
+    /// Give one [`CanvasSize`] to one mounted canvas at a time; a second
+    /// concurrent mount is a contract violation.
+    #[must_use]
+    pub fn sized_by(mut self, size: CanvasSize) -> Self {
+        self.size = size;
+        self
     }
 
     /// The size the drawing naturally is, in points: an image's pixel size,
