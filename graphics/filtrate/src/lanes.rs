@@ -625,8 +625,8 @@ mod tests {
 
     use super::{LaneFilterError, LaneProgram};
     use crate::filters::{
-        BlendMode, BlendWithImage, Bloom, Blur, Brightness, ColorMatrix, GaussianBlur, Grayscale,
-        HueRotation, LumaCurve, Median3x3, OverscrollStretch, Saturation,
+        BlendMode, BlendWithImage, Bloom, Blur, Brightness, ColorMatrix, Convolution3x3,
+        GaussianBlur, Grayscale, HueRotation, LumaCurve, Median3x3, OverscrollStretch, Saturation,
     };
     use crate::{FilterImage, OperatingSpace};
 
@@ -723,6 +723,39 @@ mod tests {
             "a colour chain",
             &Brightness(-0.1f32).then(Saturation(1.3f32)),
         );
+    }
+
+    /// A stage with no CPU kernel, against its definition: the overshoot a
+    /// sharpen produces stays unclamped either way.
+    #[test]
+    fn a_convolution_matches_its_definition() {
+        let weights = [0.0f32, -1.0, 0.0, -1.0, 5.0, -1.0, 0.0, -1.0, 0.0];
+        let input = input();
+        let (width, height) = SIZE;
+        let at = |x: usize, y: usize, dx: isize, dy: isize| {
+            let x = x.saturating_add_signed(dx).min(width - 1);
+            let y = y.saturating_add_signed(dy).min(height - 1);
+            input[y * width + x]
+        };
+        let expected: Vec<[f32; 4]> = (0..width * height)
+            .map(|index| {
+                let (x, y) = (index % width, index / width);
+                let mut sum = [0.0f32; 4];
+                for (tap, weight) in weights.iter().enumerate() {
+                    let texel = at(x, y, tap.cast_signed() % 3 - 1, tap.cast_signed() / 3 - 1);
+                    for (total, value) in sum.iter_mut().zip(texel) {
+                        *total = weight.mul_add(value, *total);
+                    }
+                }
+                sum
+            })
+            .collect();
+        let actual = lanes(&Convolution3x3(weights), &input, 0, height);
+        assert!(
+            expected.as_flattened().iter().any(|&v| v < 0.0),
+            "the test image makes the sharpen undershoot"
+        );
+        metrics::assert_close(actual.as_flattened(), expected.as_flattened());
     }
 
     #[test]
