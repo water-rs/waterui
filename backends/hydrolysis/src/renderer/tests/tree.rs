@@ -1126,7 +1126,7 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
         0.0
     );
     assert!(
-        !renderer.animations_active(),
+        !renderer.motions_active(),
         "building alone must not start an entrance animation"
     );
 
@@ -1147,8 +1147,10 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
         opacity.snapshot(),
         1.0
     );
+    // The opacity is an engine-run motion (water-rs/waterui#2203): its
+    // track runs on the engine's clock, not as a host animation slot.
     assert!(
-        renderer.animations_active(),
+        renderer.motions_active(),
         "the post-bind target update must leave the entrance animation active"
     );
 }
