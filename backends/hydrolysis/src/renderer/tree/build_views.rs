@@ -75,12 +75,6 @@ impl_widget_behavior!(
     ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
 );
 impl_widget_behavior!(
-    ResolvedMorphShape,
-    crate::renderer::render_morph_shape_node,
-    crate::renderer::measure_morph_shape_node
-    ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
-);
-impl_widget_behavior!(
     Spacer,
     crate::widgets::layout::spacer::render_spacer_node,
     crate::widgets::layout::spacer::measure_spacer_node,
@@ -258,22 +252,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     pub(super) fn build_shape(
         renderer: &SemanticCore<E>,
         shape: ResolvedShape,
-        env: &Environment,
-    ) -> Self {
-        let stretch = waterui_core::NativeView::stretch_axis(&shape);
-        let shape = Rc::new(RefCell::new(shape));
-        Self::build_widget(renderer, shape, stretch, env)
-    }
-
-    /// Build a persistent morph-shape node: retain the resolved morph payload and
-    /// re-fill its interpolated path every flush. The morph progress is resolved
-    /// through the animation controller each frame — an explicit `progress` signal
-    /// is watched via `read_signal`/`resolve_owned_scalar`, and
-    /// a time-based animation drives continuous frames via `sample_morph_progress` —
-    /// so the morph stays live. Stretches to fill the proposal (`StretchAxis::Both`).
-    pub(super) fn build_morph_shape(
-        renderer: &SemanticCore<E>,
-        shape: ResolvedMorphShape,
         env: &Environment,
     ) -> Self {
         let stretch = waterui_core::NativeView::stretch_axis(&shape);

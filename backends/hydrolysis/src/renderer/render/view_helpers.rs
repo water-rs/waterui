@@ -687,7 +687,7 @@ pub fn estimate_layout_intrinsic<'a, E: crate::text::TextEngine>(
 ///
 /// Structured shape kinds resolve their normalized corner radii against the
 /// shorter side, producing circular corners — the same interpretation the
-/// morph path and the Apple backend use. Scaling the unit-space path
+/// Apple backend uses. Scaling the unit-space path
 /// non-uniformly instead (the `CustomPath` fallback) stretches corner arcs
 /// into ellipse segments on wide containers, which violates the Material
 /// corner shape (e.g. a 4dp snackbar radius smeared across a 1500px bar).
@@ -716,24 +716,6 @@ pub fn shape_kind_path(kind: ShapeKind, bounds: kurbo::Rect) -> Option<kurbo::Be
         ShapeKind::Ellipse => Some(kurbo::Ellipse::from_rect(bounds).into_path(PATH_TOLERANCE)),
         ShapeKind::CustomPath => None,
     }
-}
-
-pub fn resolved_morph_shape_to_path(
-    shape: &ResolvedMorphShape,
-    progress: f32,
-    bounds: kurbo::Rect,
-) -> kurbo::BezPath {
-    let min_side = crate::num_cast::f64_as_f32(bounds.width().min(bounds.height()).max(0.0));
-    let from = shape_kind_radii(*shape.from(), min_side);
-    let to = shape_kind_radii(*shape.to(), min_side);
-    let progress = progress.clamp(0.0, 1.0);
-    let radii = [
-        lerp(from[0], to[0], progress),
-        lerp(from[1], to[1], progress),
-        lerp(from[2], to[2], progress),
-        lerp(from[3], to[3], progress),
-    ];
-    rounded_rect_path(bounds, radii)
 }
 
 /// Per-corner radii in points, in top-left/top-right/bottom-right/bottom-left
@@ -771,9 +753,7 @@ fn shape_kind_radii(kind: ShapeKind, min_side: f32) -> [f32; 4] {
             fixed(bottom_right),
             fixed(bottom_left),
         ],
-        ShapeKind::CustomPath => {
-            panic!("hydrolysis morph shape rendering requires built-in shape kinds")
-        }
+        ShapeKind::CustomPath => panic!("a custom path has no corner radii"),
     }
 }
 
@@ -852,10 +832,6 @@ fn append_corner(
         (radius * kappa).mul_add(-end.cos(), end_point.y),
     );
     path.curve_to(c1, c2, end_point);
-}
-
-fn lerp(from: f32, to: f32, progress: f32) -> f32 {
-    (to - from).mul_add(progress, from)
 }
 
 pub fn path_commands_to_path(commands: &[PathCommand], bounds: kurbo::Rect) -> kurbo::BezPath {
