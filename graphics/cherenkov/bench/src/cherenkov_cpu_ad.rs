@@ -595,6 +595,7 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::BackdropShader,
         Feature::BackdropScale,
         Feature::BackdropLevels,
+        Feature::BackdropGaussianPyramid,
         Feature::BackdropAnchor,
         Feature::BackdropUnion,
         Feature::BackdropOuter,
@@ -1644,8 +1645,6 @@ impl Engine for Cherenkov {
                     cherenkov_cpu::present_srgb8(
                         cherenkov_cpu::detect(),
                         self.headroom,
-                        // The comparison lifts the bytes back with their
-                        // alpha, as the GPU adapter's presented texture is.
                         cherenkov::OutputAlpha::Premultiplied,
                         &rb.pixels,
                     )

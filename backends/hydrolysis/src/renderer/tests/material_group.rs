@@ -7,7 +7,7 @@
 //! canvases, or scopes never share.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "accessibility")]
@@ -40,7 +40,8 @@ use waterui_layout::stack::{VStack, hstack, vstack, zstack};
 
 use super::{
     MinimalTestTheme, capture_bytes, inner_layers, material_layers, mounted_anchor_parent_children,
-    mounts, pumped_test_environment, test_environment, test_renderer, window_mount,
+    mounts, pumped_test_environment, swap_host_surface, test_environment, test_renderer,
+    window_mount,
 };
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
@@ -533,6 +534,46 @@ fn a_display_scale_change_rebuilds_the_shared_group() {
         capture_bytes(&solo_at_1x),
         "the rebuilt group costs exactly its 1x capture"
     );
+}
+
+/// A member whose commit finds the engine surface dropped reports the
+/// contract violation and joins no group — its membership ends and the
+/// emptied group releases rather than outliving its surface; once the
+/// surface is back, the members' next commit joins them again.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "the engine surface was dropped during its commit")
+)]
+fn a_dropped_surface_leaves_the_members_unbound() {
+    let mut runtime = rendered(two_members(Material::Regular, true));
+    let layers = material_layers(&runtime);
+    assert!(mounts(&runtime).backdrop_group_id(layers[0]).is_some());
+
+    let surface = swap_host_surface(&mut runtime, Weak::new());
+    runtime.set_scale_factor(1.0);
+    pump(&mut runtime);
+    let mounts_now = mounts(&runtime);
+    assert_eq!(
+        layers
+            .iter()
+            .map(|layer| mounts_now.backdrop_group_id(*layer))
+            .collect::<Vec<_>>(),
+        vec![None, None],
+        "no member joins a group without the surface"
+    );
+    assert_eq!(mounts_now.backdrop_group_count(), 0);
+
+    swap_host_surface(&mut runtime, surface);
+    runtime.set_scale_factor(DISPLAY_SCALE);
+    pump(&mut runtime);
+    let mounts = mounts(&runtime);
+    let group = mounts.backdrop_group_id(layers[0]);
+    assert!(
+        group.is_some(),
+        "the member joins again with the surface back"
+    );
+    assert_eq!(group, mounts.backdrop_group_id(layers[1]));
 }
 
 /// An anchored overlay's own flush starts with an empty material-scope

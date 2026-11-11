@@ -38,7 +38,8 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
 
     /// Why the target's engine cannot realize backdrop shaders, or `None`
     /// when it can. A refusal makes a [`Mount`](super::Mount::new) attach
-    /// panic with it when the theme's material registry is not empty
+    /// report it as a contract violation when the theme's material registry
+    /// is not empty, and the material chrome is not drawn
     /// (water-rs/waterui#1788).
     const BACKDROP_SHADER_REFUSAL: Option<&'static str>;
 
@@ -92,11 +93,18 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
         wake: ProducerWake,
     ) -> Option<(u32, u32)>;
 
-    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> FilterId;
+    /// The filter `runtime`'s layer draws with, registering it on first
+    /// call; `None` when the backend rejected the effect (a contract
+    /// violation it has reported), leaving the layer without a filter.
+    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> Option<FilterId>;
 
     /// Registers the overscroll stretch a scroll node's inner layer draws
-    /// with; the returned handle's drop unregisters it.
-    fn stretch_filter(host: &Self::Host, filter: OverscrollStretch<Reactive>) -> FilterHandle;
+    /// with; the returned handle's drop unregisters it. `None` when the
+    /// backend rejected the filter (a contract violation it has reported).
+    fn stretch_filter(
+        host: &Self::Host,
+        filter: OverscrollStretch<Reactive>,
+    ) -> Option<FilterHandle>;
 
     /// Joins `layer` to the backdrop group `key` names, sharing the
     /// group's filtered capture with every member under the same key,
@@ -240,6 +248,6 @@ pub use cpu::RasterHost;
 #[cfg(all(test, hydrolysis_gpu_painter))]
 pub use engine_target::install_engine_text;
 #[cfg(all(test, hydrolysis_gpu_painter))]
-pub use engine_target::{attach_material_shaders, chrome_sample, chrome_spec};
+pub use engine_target::{attach_material_shaders, chrome_sample, chrome_spec, recording_scale_of};
 #[cfg(hydrolysis_gpu_painter)]
 pub use gpu::CherenkovHost;

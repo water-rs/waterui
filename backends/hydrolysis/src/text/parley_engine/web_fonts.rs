@@ -26,15 +26,15 @@ pub struct WebFonts {
 impl WebFonts {
     /// The collection a web session's first frame shapes with: every face in
     /// `fonts` registered under its declared family name, the recognized
-    /// script fallbacks installed, and `default_family` asserted present.
+    /// script fallbacks installed, and `default_family` checked present.
     ///
     /// The collection is shared (`fontique`'s shared store), so a face
     /// [`register`](Self::register)ed later reaches every copy of it — the
     /// text engine's shaping contexts included.
     ///
-    /// # Panics
-    ///
-    /// Panics if no face registers under `default_family`.
+    /// When no face registers under `default_family` — the manifest's bytes
+    /// were not font data — the failure is logged and the collection carries
+    /// the faces that did register.
     #[must_use]
     pub fn new<'a>(
         default_family: &str,
@@ -48,10 +48,11 @@ impl WebFonts {
             let registered = register_face(&mut font_cx.collection, &mut families, name, font_data);
             default_registered |= name == default_family && registered;
         }
-        assert!(
-            default_registered,
-            "hydrolysis web font manifest default family `{default_family}` did not register any fonts",
-        );
+        if !default_registered {
+            tracing::error!(
+                "hydrolysis web font manifest default family `{default_family}` did not register any fonts; the page shapes with the faces that did"
+            );
+        }
         families.install(&mut font_cx.collection);
         Self {
             collection: FontCollection::from_parley(font_cx),
@@ -70,16 +71,17 @@ impl WebFonts {
     /// shaping result made without it: the caller tells the renderer the
     /// fonts changed.
     ///
-    /// # Panics
-    ///
-    /// Panics if `font_data` holds no face.
+    /// `font_data` that holds no face is logged and leaves the collection as
+    /// it was.
     pub fn register(&mut self, name: &str, font_data: Vec<u8>) {
         self.collection.with_parley(|font_cx| {
-            assert!(
-                register_face(&mut font_cx.collection, &mut self.families, name, font_data),
-                "hydrolysis web font `{name}` holds no face"
-            );
-            self.families.install(&mut font_cx.collection);
+            if register_face(&mut font_cx.collection, &mut self.families, name, font_data) {
+                self.families.install(&mut font_cx.collection);
+            } else {
+                tracing::error!(
+                    "hydrolysis web font `{name}` holds no face; the collection is unchanged"
+                );
+            }
         });
     }
 }

@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::animation::PerpetualAnimation;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::platform::PainterUnavailable;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
@@ -11,6 +13,8 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+#[cfg(feature = "accessibility")]
+use waterui_core::contract_violation;
 
 /// The headless window's render target: the one of the runtime's
 /// [`OffscreenPainter`].
@@ -88,7 +92,7 @@ impl super::window::CapturedFrame for HeadlessSurface {
         clear_color: peniko::Color,
         display_scale: f64,
         capture: bool,
-    ) -> Result<super::window::SurfaceRenderResult, crate::platform::SurfaceError> {
+    ) -> Result<super::window::SurfaceRenderResult, super::window::FrameFailure> {
         match self {
             #[cfg(hydrolysis_gpu_painter)]
             Self::Gpu(surface) => {
@@ -109,7 +113,7 @@ impl super::window::PaintedFrame for HeadlessSurface {
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
-    ) -> Result<super::window::SurfaceRenderResult, crate::platform::SurfaceError> {
+    ) -> Result<super::window::SurfaceRenderResult, super::window::FrameFailure> {
         super::window::CapturedFrame::render_captured(
             self,
             renderer,
@@ -352,6 +356,8 @@ pub struct HeadlessPumpResult {
     content_types: AccessibilityContentTypes,
     /// The captured frame snapshot, when capture was requested.
     snapshot: Option<HeadlessSnapshot>,
+    /// The terminal failure that ended a window's rendering in this pump.
+    failure: Option<crate::renderer::FrameError>,
     #[cfg(feature = "accessibility")]
     /// The accessibility node holding UI focus.
     ui_focus: Option<accesskit::NodeId>,
@@ -416,6 +422,19 @@ impl HeadlessPumpResult {
     /// Takes the captured frame snapshot out of the result, leaving none.
     pub const fn take_snapshot(&mut self) -> Option<HeadlessSnapshot> {
         self.snapshot.take()
+    }
+
+    /// The terminal failure that ended a window's rendering in this pump —
+    /// the reason a requested snapshot is missing. A window that failed
+    /// this way never renders again.
+    #[must_use]
+    pub const fn failure(&self) -> Option<&crate::renderer::FrameError> {
+        self.failure.as_ref()
+    }
+
+    /// Takes the terminal frame failure out of the result, leaving none.
+    pub const fn take_failure(&mut self) -> Option<crate::renderer::FrameError> {
+        self.failure.take()
     }
 
     /// The accessibility node holding UI focus.
@@ -509,13 +528,16 @@ fn default_window(content: AnyViewBuilder<AnyView>) -> Window {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HeadlessRuntime {
-    #[must_use]
     /// Creates a headless runtime with `env` and the root view builder.
     ///
     /// `family_resolution` decides whether a named font family the collection
     /// cannot resolve is skipped ([`FontFamilyResolution::Lenient`]) or fails
     /// the shape naming it ([`FontFamilyResolution::Strict`]); see
     /// [`FontFamilyResolution`].
+    ///
+    /// # Errors
+    /// [`PainterUnavailable`] when the painter
+    /// [`OffscreenPainter::select`] chose cannot render on this host.
     pub fn new(
         env: Environment,
         content: AnyViewBuilder<AnyView>,
@@ -523,16 +545,16 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
         family_resolution: FontFamilyResolution,
-    ) -> Self {
-        Self::on_painter(
-            OffscreenPainter::select(),
+    ) -> Result<Self, PainterUnavailable> {
+        Ok(Self::on_painter(
+            OffscreenPainter::select()?,
             env,
             default_window(content),
             width,
             height,
             style,
             family_resolution,
-        )
+        ))
     }
 
     /// Same as [`Self::new`] around a caller-built [`Window`] — the mount the
@@ -545,7 +567,9 @@ impl HeadlessRuntime {
     /// and content reading the app's frame binding (a responsive layout, a
     /// `when()` keyed on width, a size derived from the window) agrees with the
     /// window runner for the same tree.
-    #[must_use]
+    ///
+    /// # Errors
+    /// [`PainterUnavailable`], as [`Self::new`].
     pub fn new_with_window(
         env: Environment,
         window: Window,
@@ -553,16 +577,16 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
         family_resolution: FontFamilyResolution,
-    ) -> Self {
-        Self::on_painter(
-            OffscreenPainter::select(),
+    ) -> Result<Self, PainterUnavailable> {
+        Ok(Self::on_painter(
+            OffscreenPainter::select()?,
             env,
             window,
             width,
             height,
             style,
             family_resolution,
-        )
+        ))
     }
 
     /// Renders at `scale_factor` physical pixels per logical pixel.
@@ -584,12 +608,19 @@ impl HeadlessRuntime {
     /// between monitors of different densities reports a scale change, and
     /// the runtime rebuilds its scale-dependent state — capture chains and
     /// other texel-parameterized content — for the frames after this call.
+    /// A new scale wakes the window the way a host's scale change does: the
+    /// next pump refreshes and renders at it, so the change never waits on
+    /// unrelated work to reach the scene.
     ///
-    /// # Panics
-    ///
-    /// Panics when `scale_factor` is not finite and positive.
+    /// A `scale_factor` that is not finite and positive is reported as a
+    /// contract violation and ignored: the window keeps its scale factor.
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        let before = self.runtime.platform.scale_factor();
         self.runtime.platform.set_scale_factor(scale_factor);
+        if self.runtime.platform.scale_factor().to_bits() != before.to_bits() {
+            self.runtime.request_refresh();
+            self.runtime.request_redraw();
+        }
     }
 
     /// Creates a headless runtime for `WaterUI` test hosts.
@@ -599,6 +630,10 @@ impl HeadlessRuntime {
     /// ([`FontFamilyResolution::Strict`]): a named family the collection
     /// cannot resolve fails the shape naming it, so a style package's missing
     /// fonts fail the test instead of silently substituting a face.
+    ///
+    /// # Panics
+    /// Panics when the selected painter cannot render on this host: a test
+    /// host cannot run without one.
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn new_for_tests(
@@ -609,7 +644,7 @@ impl HeadlessRuntime {
         style: impl crate::Style,
     ) -> Self {
         Self::on_painter(
-            OffscreenPainter::select(),
+            OffscreenPainter::for_tests(),
             env,
             default_window(content),
             width,
@@ -622,6 +657,10 @@ impl HeadlessRuntime {
     /// Same as [`Self::new_for_tests`] around a caller-built [`Window`], so a
     /// test can exercise window-level properties a plain content builder
     /// cannot express — a translucent [`Window::background`], for one.
+    ///
+    /// # Panics
+    /// Panics when the selected painter cannot render on this host, as
+    /// [`Self::new_for_tests`].
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn new_for_tests_with_window(
@@ -632,7 +671,7 @@ impl HeadlessRuntime {
         style: impl crate::Style,
     ) -> Self {
         Self::on_painter(
-            OffscreenPainter::select(),
+            OffscreenPainter::for_tests(),
             env,
             window,
             width,
@@ -643,8 +682,8 @@ impl HeadlessRuntime {
     }
 
     /// Creates a test runtime on an already-selected [`OffscreenPainter`]
-    /// (or an [`OffscreenGpuContext`](crate::OffscreenGpuContext), which
-    /// converts into one).
+    /// (or, with the GPU painter, an `OffscreenGpuContext`, which converts
+    /// into one).
     ///
     /// A wgpu device is expensive to request and, on a runner whose only
     /// adapter is a software rasterizer, expensive to hold: a probe that builds
@@ -915,25 +954,25 @@ impl HeadlessRuntime {
     /// row's selection) live there. Returns whether the action changed state,
     /// in which case the next pump re-emits.
     ///
-    /// # Panics
-    /// Panics when the request targets the node of a popup window that is
-    /// already closed.
+    /// A request that targets the node of a popup window that is already
+    /// closed is a contract violation by the caller: the action is declined.
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
         // Popup ranges are the shared `WINDOW_ID_STRIDE` the merge assigns.
         let target = request.target_node.0;
         let (window, request) = if target >= WINDOW_ID_STRIDE {
             let index = target / WINDOW_ID_STRIDE - 1;
-            let popup = self
+            let Some(popup) = self
                 .popup_windows
                 .get_mut(crate::num_cast::u64_as_usize(index))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "hydrolysis headless runtime: accessibility action {:?} targets closed popup \
-                         node {target}",
-                        request.action
-                    )
-                });
+            else {
+                contract_violation!(
+                    "hydrolysis headless runtime: accessibility action {:?} targets closed popup \
+                     node {target}; the action is declined",
+                    request.action
+                );
+                return false;
+            };
             let mut request = request;
             request.target_node = accesskit::NodeId(target % WINDOW_ID_STRIDE);
             (popup, request)
@@ -1330,6 +1369,11 @@ impl HeadlessRuntime {
         // on the same queue — and the popup passes below only composite their
         // snapshots into it.
         let rendered_profile = render_result.as_ref().map(|result| result.profile);
+        // A window whose surface failed for good reports it here, so a
+        // missing snapshot names its cause.
+        let mut failure = render_result
+            .as_mut()
+            .and_then(|result| result.failed.take());
         // A popup window pumps its scene the way the main window does: the
         // scene pump is where its retained tree — and with it the window's
         // accessibility update — is built. A popup that only ever rendered on
@@ -1354,6 +1398,9 @@ impl HeadlessRuntime {
                 &mut || self.local_executor.drain(),
             );
             rebuilt |= popup_result.rebuilt;
+            if failure.is_none() {
+                failure = popup_result.failed;
+            }
             if let Some(popup_snapshot) = popup_result.snapshot {
                 popup_snapshots.push((
                     popup_index,
@@ -1423,6 +1470,7 @@ impl HeadlessRuntime {
             #[cfg(feature = "accessibility")]
             content_types,
             snapshot: render_result.and_then(|result| result.snapshot),
+            failure,
             #[cfg(feature = "accessibility")]
             ui_focus: self.runtime.renderer.focused_ui_node(),
         }
@@ -1602,7 +1650,7 @@ mod generation_tests {
     };
 
     /// Replaces `runtime`'s GPU context: the platform window is rebuilt on
-    /// `gpu`'s own context id (fresh pooled `SharedEngineState`, fresh
+    /// `gpu`'s own context id (its generation's own `SharedEngineState`, fresh
     /// `SceneResources` table) while the retained `HydrolysisRenderer` and
     /// view tree — including every `Weak` table association — carry over
     /// unchanged. Returns the replaced context so the test can drop it last,
@@ -1749,7 +1797,7 @@ mod generation_tests {
         let rebuilds = Rc::new(Cell::new(0_u32));
         let installs = Rc::new(Cell::new(0_u32));
         let latest = Rc::new(RefCell::new(None));
-        let gpu_a = OffscreenGpuContext::new_blocking();
+        let gpu_a = OffscreenGpuContext::for_tests();
         let mut runtime = HeadlessRuntime::new_for_tests_on_context(
             gpu_a,
             test_environment(),
@@ -1798,7 +1846,7 @@ mod generation_tests {
             "device.destroy() delivered no device-lost callback within 10s of device polls"
         );
 
-        let gpu_b = OffscreenGpuContext::new_blocking();
+        let gpu_b = OffscreenGpuContext::for_tests();
         let _replaced = replace_gpu_context(&mut runtime, gpu_b);
 
         let mut second = runtime.pump_at(true, t0 + Duration::from_millis(16));
@@ -1870,7 +1918,8 @@ mod painter_selection_tests {
     /// the main window's surface and the readback are the CPU ones.
     #[test]
     fn a_host_without_a_hardware_gpu_renders_on_the_cpu_painter() {
-        let painter = OffscreenPainter::select_with(true);
+        let painter = OffscreenPainter::select_with(true)
+            .unwrap_or_else(|error| panic!("the CPU painter must open: {error}"));
         assert!(
             matches!(painter, OffscreenPainter::Cpu(_)),
             "a host without a hardware GPU must select the CPU painter, got {painter:?}"

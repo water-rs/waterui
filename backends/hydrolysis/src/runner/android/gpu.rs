@@ -7,7 +7,7 @@
 //! remain owned by the host.
 
 use std::fmt;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use ndk::native_window::NativeWindow;
 use raw_window_handle::{
@@ -15,7 +15,8 @@ use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WindowHandle,
 };
 
-use crate::platform::{PresentationSurface, SurfaceError};
+use crate::platform::{DeviceLostError, GpuGeneration, PresentationSurface, SurfaceError};
+use crate::runner::window::FrameFailure;
 
 /// The Android display's raw handle: the platform has one implicit default
 /// display, which `AndroidDisplayHandle` names.
@@ -153,10 +154,11 @@ impl Drop for AndroidGpuContextInner {
 /// Vulkan only — the plan of record is Cherenkov over Vulkan, so there is no
 /// runtime fallback to another GPU API: a Vulkan adapter that cannot paint
 /// is an explicit [`GpuError`] naming the adapter and the missing flags,
-/// never a switch to GLES or another painter.
+/// never a switch to GLES or another painter. Each device generation owns
+/// its Cherenkov engine, so the context lives on the host's UI thread.
 #[derive(Clone)]
 pub struct AndroidGpuContext {
-    inner: Arc<AndroidGpuContextInner>,
+    inner: Rc<AndroidGpuContextInner>,
 }
 
 impl AndroidGpuContext {
@@ -200,15 +202,15 @@ impl AndroidGpuContext {
     }
 
     /// Opens a device generation on `instance`: adapter pick, engine
-    /// device request and loss observation. A lost device's recreation
-    /// re-runs it on the lost generation's own instance, so the surfaces
-    /// the chain holds stay valid (water-rs/waterui#2742).
-    async fn open_generation(
-        instance: &wgpu::Instance,
-    ) -> Result<crate::platform::DeviceLoss, GpuError> {
+    /// device request, loss observation and the generation's engine. A
+    /// lost device's recreation re-runs it on the lost generation's own
+    /// instance, so the surfaces the chain holds stay valid
+    /// (water-rs/waterui#2742).
+    async fn open_generation(instance: &wgpu::Instance) -> Result<GpuGeneration, GpuError> {
         let adapter = Self::pick_adapter(instance).await?;
         let required_limits = crate::platform::required_device_limits(&adapter);
-        let required_features = crate::platform::required_media_features(adapter.features())
+        let required_features = crate::platform::required_media_features(&adapter)
+            .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?
             | (adapter.features()
                 & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
         // The device is opened through the engine's creation path, not
@@ -238,15 +240,24 @@ impl AndroidGpuContext {
             ))
         })?;
         let context_id = crate::platform::next_gpu_context_id();
-        Ok(crate::platform::DeviceLoss::observe(
-            cherenkov_gpu::interop::SharedDevice {
-                instance: instance.clone(),
-                adapter,
-                device,
-                queue,
-            },
-            context_id,
-        ))
+        GpuGeneration::open(
+            crate::platform::DeviceLoss::observe(
+                cherenkov_gpu::interop::SharedDevice {
+                    instance: instance.clone(),
+                    adapter,
+                    device,
+                    queue,
+                },
+                context_id,
+            ),
+            cherenkov_gpu::GpuConfig::default(),
+        )
+        .map_err(|error| {
+            GpuError::new(format!(
+                "hydrolysis android: {:#}",
+                waterui_core::Error::from(error)
+            ))
+        })
     }
 
     async fn request_async() -> Result<Self, GpuError> {
@@ -254,7 +265,7 @@ impl AndroidGpuContext {
         let instance = new_instance(wgpu::Backends::VULKAN);
         let generation = Self::open_generation(&instance).await?;
         Ok(Self {
-            inner: Arc::new(AndroidGpuContextInner {
+            inner: Rc::new(AndroidGpuContextInner {
                 gpu: crate::platform::RecoverableGpu::new(generation),
             }),
         })
@@ -267,8 +278,9 @@ pub struct AndroidSurface {
     gpu: AndroidGpuContext,
     /// The device generation this attachment renders on — a clone of the
     /// context's live generation, adopted in `ensure_live`
-    /// (water-rs/waterui#2742).
-    handles: crate::platform::DeviceLoss,
+    /// (water-rs/waterui#2742). Its engine — and the GPU pipelines in it —
+    /// survives `SurfaceHolder` teardown while this host stays alive.
+    handles: GpuGeneration,
     /// The generation the Kotlin host assigned this attachment; a stale
     /// `surfaceDestroyed` from an older `SurfaceHolder` callback is ignored.
     generation: u64,
@@ -278,8 +290,6 @@ pub struct AndroidSurface {
             crate::text::ParleyEngine,
         >,
     >,
-    /// GPU pipelines survive `SurfaceHolder` teardown while this host stays alive.
-    engine_state: Option<std::rc::Rc<crate::engine::SharedEngineState>>,
     /// The bands the engine knows of, by the placement id of the platform
     /// view each sits above, each with the engine surface it was delivered
     /// to: a rebuilt engine window gets every band again
@@ -354,7 +364,6 @@ impl AndroidSurface {
             handles,
             generation: 0,
             engine_window: None,
-            engine_state: None,
             bands_delivered: std::collections::BTreeMap::new(),
             band_commits: std::sync::mpsc::channel(),
             native_window: None,
@@ -425,58 +434,44 @@ impl AndroidSurface {
 
     /// Adopts the live device chain. The next render replaces an engine
     /// window from the lost chain before submitting any content.
-    fn ensure_live(&mut self) {
+    ///
+    /// # Errors
+    /// The terminal [`DeviceLostError`] once the context's recovery budget
+    /// ran out.
+    fn ensure_live(&mut self) -> Result<(), DeviceLostError> {
         let gpu = self.gpu.clone();
-        let handles = gpu.inner.gpu.ensure_live(|instance| {
+        self.handles = gpu.inner.gpu.ensure_live(|instance| {
             pollster::block_on(AndroidGpuContext::open_generation(instance))
                 .map_err(|error| error.0)
-        });
-        if handles.gpu_context().context_id != self.handles.gpu_context().context_id {
-            self.engine_state = None;
-        }
-        self.handles = handles;
+        })?;
+        Ok(())
     }
 
+    /// The frame's render target and the attached window it presents
+    /// through; `None` while no native window is attached.
     fn render_targets(
         &mut self,
         display_scale: f64,
         base_color: cherenkov_record::WorkingColor,
-    ) -> (
+    ) -> Option<(
         crate::renderer::FrameRenderTarget<'_>,
         crate::platform::EngineAndroidTarget<'_>,
-    ) {
-        let context = self.handles.gpu_context();
-        let state = self.engine_state.get_or_insert_with(|| {
-            crate::engine::shared_engine_state(
-                context.context_id,
-                &context.shared_device.adapter,
-                context.shared_device.clone(),
-            )
-        });
-        (
-            crate::renderer::FrameRenderTarget {
-                adapter: &context.shared_device.adapter,
-                device: &context.shared_device.device,
-                device_loss: self.handles.clone(),
-                gpu_context_id: context.context_id,
-                shared_device: context.shared_device.clone(),
+    )> {
+        let lease = self.native_window.as_ref()?;
+        Some((
+            crate::renderer::FrameRenderTarget::new(
+                &self.handles,
                 display_scale,
-                width: self.width,
-                height: self.height,
+                (self.width, self.height),
                 base_color,
-            },
+            ),
             crate::platform::EngineAndroidTarget {
-                state,
-                window: &self
-                    .native_window
-                    .as_ref()
-                    .expect("attached Android window")
-                    .window,
+                window: &lease.window,
                 window_slot: &mut self.engine_window,
                 transparent: self.transparent,
                 band_commits: &self.band_commits.0,
             },
-        )
+        ))
     }
 
     /// Sets or clears the band presenting the content above the embedded
@@ -488,10 +483,21 @@ impl AndroidSurface {
         let Some(window) = self.engine_window.as_ref() else {
             return;
         };
-        window
+        // A gone render thread is not recoverable here: the band stays
+        // undelivered, and the next frame's render reports the same loss
+        // through its own terminal outcome.
+        if let Err(error) = window
             .surface
             .set_band(view, band.map(BandAttachment::target))
-            .expect("hydrolysis android: engine render thread is gone");
+        {
+            tracing::error!(
+                target: "waterui::hydrolysis::android",
+                view,
+                %error,
+                "the engine render thread is gone; the band is not delivered"
+            );
+            return;
+        }
         if band.is_some() {
             self.bands_delivered.insert(view, window.surface.id());
         }
@@ -590,10 +596,6 @@ impl Drop for AndroidSurface {
 }
 
 impl PresentationSurface for AndroidSurface {
-    fn adapter(&self) -> &wgpu::Adapter {
-        &self.handles.gpu_context().shared_device.adapter
-    }
-
     fn device(&self) -> &wgpu::Device {
         &self.handles.gpu_context().shared_device.device
     }
@@ -602,7 +604,7 @@ impl PresentationSurface for AndroidSurface {
         &self.handles.gpu_context().shared_device.queue
     }
 
-    fn device_loss(&self) -> &crate::platform::DeviceLoss {
+    fn generation(&self) -> &GpuGeneration {
         &self.handles
     }
 
@@ -618,8 +620,8 @@ impl PresentationSurface for AndroidSurface {
         }
     }
 
-    fn ensure_live(&mut self) {
-        Self::ensure_live(self);
+    fn ensure_live(&mut self) -> Result<(), DeviceLostError> {
+        Self::ensure_live(self)
     }
 }
 
@@ -629,18 +631,19 @@ impl crate::runner::window::PaintedFrame for AndroidSurface {
         renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
-    ) -> Result<crate::runner::window::SurfaceRenderResult, SurfaceError> {
+    ) -> Result<crate::runner::window::SurfaceRenderResult, FrameFailure> {
         let started = std::time::Instant::now();
-        self.ensure_live();
-        if self.handles.is_lost() || !self.is_attached() {
-            return Err(SurfaceError::Lost);
+        Self::ensure_live(self)?;
+        if self.handles.loss().is_lost() || !self.is_attached() {
+            return Err(SurfaceError::Lost.into());
         }
-        let (target, engine_target) =
-            self.render_targets(display_scale, crate::renderer::working_color(clear_color));
-        renderer
-            .render_android_frame(&target, engine_target)
-            .unwrap_or_else(|error| panic!("hydrolysis android: engine render failed: {error:#}"));
-        self.device_loss().note_frame_presented();
+        let Some((target, engine_target)) =
+            self.render_targets(display_scale, crate::renderer::working_color(clear_color))
+        else {
+            return Err(SurfaceError::Lost.into());
+        };
+        renderer.render_android_frame(&target, engine_target)?;
+        self.handles.loss().note_frame_presented();
         Ok(crate::runner::window::SurfaceRenderResult::engine_presented(started.elapsed()))
     }
 }

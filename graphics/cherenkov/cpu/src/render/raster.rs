@@ -268,15 +268,24 @@ fn capture_rows(
             let last = ((k1 as f64 - 0.5) * s / d - 0.5).floor().max(0.0) as usize + 2;
             *slot = (first.clamp(gy0, gy1), last.min(gy1));
         }
-        // Level-k texel `r` reads level `k−1` texels `{2r, 2r+1}` — each
-        // level's kept rows must cover the deeper level's parents,
-        // folding down into the level-0 window the capture keeps.
+        // Level-k texel `r` reads level `k−1` texels `{2r, 2r+1}` — or
+        // `2r − 2 ..= 2r + 3` of a Gaussian pyramid, clamped to the
+        // region's rows — each level's kept rows must cover the deeper
+        // level's parents, folding down into the level-0 window the
+        // capture keeps.
+        let (before, after) = match item.pyramid {
+            cherenkov::CapturePyramid::Box => (0, 0),
+            cherenkov::CapturePyramid::Gaussian => (2, 2),
+        };
         for k in (1..item.levels as usize).rev() {
             let (r0, r1) = levels[k - 1];
             if r0 >= r1 {
                 continue;
             }
-            let (lo, hi) = (2 * r0, (2 * r1).min(ty1.div_ceil(1 << (k - 1))));
+            let (lo, hi) = (
+                (2 * r0).saturating_sub(before).max(ty0 >> (k - 1)),
+                (2 * r1 + after).min(ty1.div_ceil(1 << (k - 1))),
+            );
             if k == 1 {
                 kept = (kept.0.min(lo), kept.1.max(hi));
             } else {
@@ -3361,7 +3370,14 @@ fn capture_pyramid(
             let src: &[[f32; 4]] = levels
                 .last()
                 .map_or_else(|| canvas, |prev| prev.buf.as_slice());
-            reduce_rows(src, sw, (src_y0, gy0 + sh), (r0, r1), &mut dst);
+            match item.pyramid {
+                cherenkov::CapturePyramid::Box => {
+                    reduce_rows(src, sw, (src_y0, gy0 + sh), (r0, r1), &mut dst);
+                }
+                cherenkov::CapturePyramid::Gaussian => {
+                    reduce_rows_gaussian(src, sw, (src_y0, gy0, gy0 + sh), (r0, r1), &mut dst);
+                }
+            }
         }
         src_y0 = r0;
         gy0 >>= 1;
@@ -3413,6 +3429,41 @@ fn reduce_rows(
             }
             let n = ((y1 - y0 + 1) * (x1 - x0 + 1)) as f32;
             dst[(r - r0) * dw + x] = [acc[0] / n, acc[1] / n, acc[2] / n, acc[3] / n];
+        }
+    }
+}
+
+/// Rows `r0..r1` of the next Gaussian pyramid level into `dst`: texel
+/// `(x, r)` is `Σ_{a, b ∈ 0..=5} w[a]·w[b]·src(2x − 2 + a, 2r − 2 + b)`
+/// with `w = [1, 5, 10, 10, 5, 1] / 32`, row and column indices clamped to the
+/// source level's grid — rows `grid_start..grid_end`, `sw` columns —
+/// values unclamped. `src` holds the source rows from `src_y0` on.
+fn reduce_rows_gaussian(
+    src: &[[f32; 4]],
+    sw: usize,
+    (src_y0, grid_start, grid_end): (usize, usize, usize),
+    (r0, r1): (usize, usize),
+    dst: &mut [[f32; 4]],
+) {
+    const W: [f32; 6] = [0.03125, 0.15625, 0.3125, 0.3125, 0.15625, 0.03125];
+    let dw = sw.div_ceil(2);
+    for r in r0..r1 {
+        for x in 0..dw {
+            let mut acc = [0f32; 4];
+            for (b, wy) in W.iter().enumerate() {
+                let row = (2 * r + b)
+                    .saturating_sub(2)
+                    .clamp(grid_start, grid_end - 1);
+                for (a, wx) in W.iter().enumerate() {
+                    let col = (2 * x + a).saturating_sub(2).min(sw - 1);
+                    let c = src[(row - src_y0) * sw + col];
+                    let weight = wx * wy;
+                    for (s, v) in acc.iter_mut().zip(c) {
+                        *s = weight.mul_add(v, *s);
+                    }
+                }
+            }
+            dst[(r - r0) * dw + x] = acc;
         }
     }
 }
@@ -4554,6 +4605,41 @@ mod tests {
         assert_texel(dst[4], mean(&[(2, 4), (3, 4)]));
         // The corner: the single texel present.
         assert_texel(dst[5], texel(4, 4));
+    }
+
+    /// The Gaussian reduction weights `2x − 2 ..= 2x + 3` by `2r − 2 ..=
+    /// 2r + 3` with `[1, 5, 10, 10, 5, 1] / 32`, indices clamped to the
+    /// grid — checked against the footprint written out per texel.
+    #[test]
+    fn gaussian_pyramid_weights_a_clamped_six_by_six_footprint() {
+        // A 5×5 source level, all rows kept (a Gaussian level row `r`
+        // reads rows `2r − 2 ..= 2r + 3`): level rows 1..3.
+        let src: Vec<[f32; 4]> = (0..5)
+            .flat_map(|y| (0..5).map(move |x| texel(x, y)))
+            .collect();
+        let mut dst = vec![[0.0; 4]; 2 * 3];
+        super::reduce_rows_gaussian(&src, 5, (0, 0, 5), (1, 3), &mut dst);
+        let weight = |a: usize| [1.0_f32, 5.0, 10.0, 10.0, 5.0, 1.0][a] / 32.0;
+        for (r, x) in [(1_usize, 0_usize), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)] {
+            let mut expected = [0.0_f32; 4];
+            for b in 0..6 {
+                for a in 0..6 {
+                    let tx = u8::try_from((2 * x + a).saturating_sub(2).min(4)).expect("clamped");
+                    let ty = u8::try_from((2 * r + b).saturating_sub(2).min(4)).expect("clamped");
+                    for (e, v) in expected.iter_mut().zip(texel(tx, ty)) {
+                        *e = f32::mul_add(weight(a) * weight(b), v, *e);
+                    }
+                }
+            }
+            // f32 sums of up to 36 weighted terms of magnitude ≤ 16:
+            // a relative tolerance of 1e-5 sits far above the rounding.
+            for (a, e) in dst[(r - 1) * 3 + x].iter().zip(expected) {
+                assert!(
+                    (a - e).abs() <= 1e-5 * e.abs().max(1.0),
+                    "texel ({x}, {r}): {a}, expected {e}"
+                );
+            }
+        }
     }
 
     /// `composite_span` and `composite_solid` produce the scalar

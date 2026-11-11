@@ -16,6 +16,7 @@ use std::rc::Rc;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui_core::Environment;
 use waterui_core::Native;
+use waterui_core::contract_violation;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 
@@ -34,7 +35,12 @@ impl ProgressLook {
             ProgressStyle::Linear => Self::Linear(theme.linear_progress(spec, env)),
             ProgressStyle::Circular => Self::Indicator(theme.circular_progress(spec, env)),
             ProgressStyle::Loading => Self::Indicator(theme.loading_indicator(spec, env)),
-            _ => panic!("hydrolysis ProgressStyle variant is not implemented"),
+            style => {
+                contract_violation!(
+                    "hydrolysis ProgressStyle variant {style:?} is not implemented; the indicator is drawn as a linear bar"
+                );
+                Self::Linear(theme.linear_progress(spec, env))
+            }
         }
     }
 

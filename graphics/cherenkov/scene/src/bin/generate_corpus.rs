@@ -30,11 +30,12 @@ use cherenkov_scene::kurbo::{
     Vec2,
 };
 use cherenkov_scene::{
-    BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Color, ColorSpace,
-    Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, Group, GroupItem,
-    ImageColorSpace, ImageEncoding, ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live,
-    Motion, MotionAnimation, NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash,
-    Sampling, Scene, SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
+    BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, BlendSpace, CapturePyramid,
+    Color, ColorSpace, Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, Group,
+    GroupItem, ImageColorSpace, ImageEncoding, ImagePaint, LayerBuilder, LayerFilter,
+    LinearGradient, Live, Motion, MotionAnimation, NormalizedCoord, Paint, Projection,
+    RadialGradient, ResourceHash, Sampling, Scene, SceneBuilder, SceneError, Shape, StrokeStyle,
+    SweepGradient,
 };
 use fontique::FontWeight;
 use parley::{
@@ -7539,6 +7540,67 @@ fn run(root: &Path) -> Result<(), SceneError> {
         l.layer(|m| {
             m.clip(Shape::RoundedRect(RoundedRect::new(
                 104.0, 112.0, 244.0, 236.0, 20.0,
+            )));
+            m.backdrop(1);
+            m.backdrop_effect(BackdropEffectSpec::Level {
+                depth: 8.0,
+                edge_level: 2.5,
+                interior_level: 2.5,
+            });
+        });
+    });
+
+    // A full-scale capture reduced into five Gaussian levels over
+    // one-pixel stripes on a three-pixel period, the detail a box
+    // pyramid aliases into ripple: the `[1, 5, 10, 10, 5, 1] / 32` reduction
+    // keeps level 1 free of the beat a 2×2 mean shows. The first member
+    // covers the surface — the capture's region is the whole grid, so
+    // every reduction clamps at the surface's own edge — and ramps level
+    // 0 at its edge to level 4 at its core; the second holds a fixed
+    // trilinear read at level 2.5.
+    corpus.scene_setup("backdrop-levels-gaussian", 256, 256, white, |b| {
+        b.backdrop_group(BackdropGroup {
+            pyramid: CapturePyramid::Gaussian,
+            ..BackdropGroup::new(1, Vec::new(), 1.0, 5)
+        });
+        let l = &mut b.root();
+        for i in 0..86 {
+            let x0 = 3.0 * f64::from(i);
+            l.fill(
+                Shape::rect(x0, 0.0, x0 + 1.0, 256.0),
+                solid(srgb(0.04, 0.04, 0.05)),
+            );
+            l.fill(
+                Shape::rect(x0 + 1.0, 0.0, x0 + 3.0, 256.0),
+                solid(srgb(0.96, 0.96, 0.96)),
+            );
+        }
+        l.fill(
+            Shape::circle(64.0, 200.0, 36.0),
+            solid(srgb(0.9, 0.12, 0.12)),
+        );
+        l.fill(
+            Shape::circle(192.0, 56.0, 28.0),
+            solid(srgb(0.12, 0.7, 0.2)),
+        );
+        l.fill(
+            Shape::circle(224.0, 224.0, 24.0),
+            solid(srgb(0.12, 0.3, 0.9)),
+        );
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                0.0, 0.0, 256.0, 256.0, 24.0,
+            )));
+            m.backdrop(1);
+            m.backdrop_effect(BackdropEffectSpec::Level {
+                depth: 64.0,
+                edge_level: 0.0,
+                interior_level: 4.0,
+            });
+        });
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                96.0, 96.0, 224.0, 224.0, 20.0,
             )));
             m.backdrop(1);
             m.backdrop_effect(BackdropEffectSpec::Level {

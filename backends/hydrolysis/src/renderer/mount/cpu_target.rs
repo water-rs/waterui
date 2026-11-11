@@ -2,17 +2,20 @@
 //! the GPU target drives, on `cherenkov-cpu`'s rasterizer.
 //!
 //! What a CPU cannot realize without a device is refused at mount, naming the
-//! view and the missing GPU: GPU content and external GPU frames. A theme's
-//! backdrop shaders run on the CPU backend's lane executor, through the same
-//! material and chrome groups as on the GPU target, and so does a filtered
-//! view's filter: its composed stages run on the raster's bands. A filtered
-//! view the raster cannot run — an arbitrary GPU effect, or a declared output
-//! size — is refused at mount with the reason.
+//! view and the missing GPU: GPU content, external GPU frames and hosted
+//! platform content. A theme's backdrop shaders run on the CPU backend's
+//! lane executor, through the same material and chrome groups as on the GPU
+//! target, and so does a filtered view's filter: its composed stages run on
+//! the raster's bands. A filtered view the raster cannot run — an arbitrary
+//! GPU effect, or a declared output size — is refused at mount with the
+//! reason. Each refusal is a contract violation — a debug build panics, a
+//! release build logs it and the refused content is not drawn.
 
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use cherenkov_record::{FilterId, Layer, Transaction};
+use waterui_core::contract_violation;
 use waterui_graphics::backend::Reactive;
 use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
 
@@ -72,6 +75,19 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         install_engine_text(&host.resources, &host.engine, text);
     }
 
+    /// Hosted platform content is presented by the GPU engine's host
+    /// presentation; the CPU framebuffer has no platform object to place.
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
+    fn mount_hosted(
+        _tx: &mut Transaction<'_, Self>,
+        _layer: &Layer,
+        _runtime: &crate::hosted::HostedRuntime,
+        _size: kurbo::Size,
+    ) -> bool {
+        crate::renderer::unsupported_gpu_device_view("hosted platform content", NO_GPU);
+        false
+    }
+
     #[cfg(hydrolysis_gpu)]
     fn mount_gpu_content(
         _host: &RasterHost,
@@ -94,21 +110,27 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         crate::renderer::unsupported_gpu_device_view("ExternalFrameView", NO_GPU);
+        None
     }
 
-    fn filter(host: &RasterHost, runtime: &mut FilteredRuntime) -> FilterId {
-        runtime.filter(|source| {
-            let effect = source.into_cpu().unwrap_or_else(|error| {
-                panic!(
-                    "hydrolysis: a filtered view cannot run on the Cherenkov CPU backend: {error}"
-                )
-            });
-            FilterHandle::new(host.engine.effect(effect))
+    fn filter(host: &RasterHost, runtime: &mut FilteredRuntime) -> Option<FilterId> {
+        runtime.filter(|source| match source.into_cpu() {
+            Ok(effect) => Some(FilterHandle::new(host.engine.effect(effect))),
+            Err(error) => {
+                contract_violation!(
+                    "hydrolysis: a filtered view cannot run on the Cherenkov CPU backend: {error}; \
+                     the layer draws without its filter"
+                );
+                None
+            }
         })
     }
 
-    fn stretch_filter(host: &RasterHost, filter: OverscrollStretch<Reactive>) -> FilterHandle {
-        FilterHandle::new(host.engine.filter(filter))
+    fn stretch_filter(
+        host: &RasterHost,
+        filter: OverscrollStretch<Reactive>,
+    ) -> Option<FilterHandle> {
+        Some(FilterHandle::new(host.engine.filter(filter)))
     }
 
     fn mount_material(

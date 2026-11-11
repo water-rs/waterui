@@ -59,14 +59,14 @@ pub use kurbo;
 pub use web_time::Instant;
 
 pub use crate::animation::{
-    Animatable, Animation, AnimationTrack, Curve, Decay, Easing, KeyframeAnimation, Keyframes,
-    Lanes, Repeat, Spring, curve_value, decay_step, settled, spring_step,
+    Animatable, Animation, AnimationTrack, CubicBezier, Curve, Decay, Easing, KeyframeAnimation,
+    Keyframes, Lanes, Repeat, Spring, Timing, curve_value, decay_step, spring_step,
 };
 pub use crate::backdrop::{
     BackdropEffect, BackdropOuter, BackdropOuterError, BackdropSample, BackdropShaderEffect,
     BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
-    CaptureLevelsError, CaptureScale, CaptureScaleError, ColorMatrix, LevelRamp, LevelRampError,
-    RecordingScale, RecordingScaleError, Refraction, Rim,
+    CaptureLevelsError, CapturePyramid, CaptureScale, CaptureScaleError, ColorMatrix, LevelRamp,
+    LevelRampError, RecordingScale, RecordingScaleError, Refraction, Rim,
 };
 pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,

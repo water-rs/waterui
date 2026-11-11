@@ -12,14 +12,17 @@ use std::time::Duration;
 
 use kurbo::{Affine, Point, Rect, Stroke, Vec2};
 use waterui_contract::contract_violation;
+use waterui_easing::SETTLE_TOLERANCE;
+pub use waterui_easing::{CubicBezier, Spring, Timing};
 
 use crate::Instant;
 use crate::display_list::Operand;
 
 /// Per-lane storage for an [`Animatable`] value.
 ///
-/// Implemented by `[f64; 1]`, `[f64; 2]` and `[f64; 6]`.
-pub trait Lanes: Copy + Send + 'static {
+/// Implemented by `[f64; 1]`, `[f64; 2]` and `[f64; 6]`; the slice views
+/// hand the lanes to the shared evaluator.
+pub trait Lanes: Copy + Send + 'static + AsRef<[f64]> + AsMut<[f64]> {
     /// The number of lanes.
     const N: usize;
     /// Lane `i`.
@@ -261,6 +264,17 @@ impl Animation {
         }
         Some(self)
     }
+
+    /// The shared evaluator's form of a spring or a curve; `None` for a
+    /// [`Decay`], which only the engine runs.
+    #[must_use]
+    pub const fn timing(&self) -> Option<Timing> {
+        match self {
+            Self::Spring(spring) => Some(Timing::Spring(*spring)),
+            Self::Curve(curve) => Some(curve.timing()),
+            Self::Decay(_) => None,
+        }
+    }
 }
 
 impl From<Spring> for Animation {
@@ -278,61 +292,6 @@ impl From<Curve> for Animation {
 impl From<Decay> for Animation {
     fn from(decay: Decay) -> Self {
         Self::Decay(decay)
-    }
-}
-
-/// A damped oscillator: `response` is the period in seconds, `damping` the
-/// damping ratio (`1` is critically damped).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Spring {
-    /// The oscillation period in seconds.
-    pub response: f64,
-    /// The damping ratio; `1` is critically damped.
-    pub damping: f64,
-}
-
-impl Spring {
-    /// A smooth, critically damped spring.
-    #[must_use]
-    pub const fn smooth() -> Self {
-        Self {
-            response: 0.5,
-            damping: 1.0,
-        }
-    }
-
-    /// A spring with slight overshoot.
-    #[must_use]
-    pub const fn snappy() -> Self {
-        Self {
-            response: 0.5,
-            damping: 0.85,
-        }
-    }
-
-    /// A spring with visible bounce.
-    #[must_use]
-    pub const fn bouncy() -> Self {
-        Self {
-            response: 0.5,
-            damping: 0.7,
-        }
-    }
-
-    /// A spring from physical parameters (unit mass), as `WaterUI`'s `Spring`
-    /// carries.
-    #[must_use]
-    pub fn from_physics(stiffness: f64, damping: f64) -> Self {
-        // Unit mass: ω0 = sqrt(stiffness), ζ = damping / (2 ω0).
-        let w0 = stiffness.max(0.0).sqrt();
-        Self {
-            response: if w0 > 0.0 {
-                2.0 * std::f64::consts::PI / w0
-            } else {
-                f64::MAX
-            },
-            damping: if w0 > 0.0 { damping / (2.0 * w0) } else { 1.0 },
-        }
     }
 }
 
@@ -392,6 +351,22 @@ impl Curve {
             duration,
         }
     }
+
+    /// The timing curve the control points describe, in the shared
+    /// evaluator's terms.
+    #[must_use]
+    pub const fn timing_curve(&self) -> CubicBezier {
+        CubicBezier::new(self.p1.x, self.p1.y, self.p2.x, self.p2.y)
+    }
+
+    /// The curve over its duration, in the shared evaluator's terms.
+    #[must_use]
+    pub const fn timing(&self) -> Timing {
+        Timing::Curve {
+            curve: self.timing_curve(),
+            duration: self.duration.as_secs_f64(),
+        }
+    }
 }
 
 /// An exponential deceleration, starting at `velocity` and slowing at
@@ -434,169 +409,21 @@ impl Decay {
 /// the spring's rest position. Returns `(position, velocity)` lanes.
 #[must_use]
 pub fn spring_step<L: Lanes>(from: L, velocity: L, target: L, spring: &Spring, dt: f64) -> (L, L) {
-    let w0 = 2.0 * std::f64::consts::PI / spring.response;
-    let zeta = spring.damping;
     let mut pos = L::zero();
     let mut vel = L::zero();
     for i in 0..L::N {
-        let d0 = from.get(i) - target.get(i);
-        let v0 = velocity.get(i);
-        let (x, v) = spring_lane(d0, v0, w0, zeta, dt);
+        let (x, v) = spring.sample(from.get(i) - target.get(i), velocity.get(i), dt);
         pos.set(i, target.get(i) + x);
         vel.set(i, v);
     }
     (pos, vel)
 }
 
-/// One lane of the damped oscillator: initial `offset` from the target,
-/// initial `velocity`, angular frequency `omega` and damping `ratio`,
-/// evaluated `dt` seconds in. Returns `(position, velocity)`.
-fn spring_lane(offset: f64, velocity: f64, omega: f64, ratio: f64, dt: f64) -> (f64, f64) {
-    const EPS: f64 = 1e-9;
-    if (ratio - 1.0).abs() < EPS {
-        // Critically damped: x = e^-ωt (d0 + (v0 + ω d0) t).
-        let pos_coeff = velocity;
-        let slope = omega.mul_add(offset, pos_coeff);
-        let decay = (-omega * dt).exp();
-        let factor = slope.mul_add(dt, offset);
-        (
-            decay * factor,
-            decay * (omega * factor).mul_add(-1.0, slope),
-        )
-    } else if ratio < 1.0 {
-        // Underdamped.
-        let wd = omega * ratio.mul_add(-ratio, 1.0).sqrt();
-        let coeff_a = offset;
-        let coeff_b = (ratio * omega).mul_add(offset, velocity) / wd;
-        let decay = (-ratio * omega * dt).exp();
-        let (sin, cos) = (wd * dt).sin_cos();
-        (
-            decay * coeff_a.mul_add(cos, coeff_b * sin),
-            decay
-                * ((ratio * omega).mul_add(coeff_b, coeff_a * wd).mul_add(
-                    -sin,
-                    (coeff_b * wd).mul_add(cos, -(ratio * omega * coeff_a) * cos),
-                )),
-        )
-    } else {
-        // Overdamped.
-        let root = omega * ratio.mul_add(ratio, -1.0).sqrt();
-        let rate_a = -(ratio * omega) + root;
-        let rate_b = -(ratio * omega) - root;
-        let coeff_b = (rate_a.mul_add(-offset, velocity)) / (rate_b - rate_a);
-        let coeff_a = offset - coeff_b;
-        (
-            coeff_a.mul_add((rate_a * dt).exp(), coeff_b * (rate_b * dt).exp()),
-            (coeff_a * rate_a).mul_add((rate_a * dt).exp(), coeff_b * rate_b * (rate_b * dt).exp()),
-        )
-    }
-}
-
-/// Whether a spring's lanes have settled at `target`: every lane within
-/// `1e-3` of the target and slower than `1e-3` per second.
-#[must_use]
-pub fn settled<L: Lanes>(pos: L, velocity: L, target: L) -> bool {
-    pos.near(&target, 1e-3) && velocity.max_abs() < 1e-3
-}
-
-/// Evaluates a cubic Bézier `y(x⁻¹(t))` on `[0, 1]`² at parameter `t`
-/// (already normalized to `[0, 1]`).
+/// Evaluates the curve's timing `y(x⁻¹(t))` at normalized time `t`,
+/// through the shared evaluator.
 #[must_use]
 pub fn curve_value(curve: &Curve, t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    if t <= 0.0 {
-        return 0.0;
-    }
-    if t >= 1.0 {
-        return 1.0;
-    }
-    let (x1, y1) = (curve.p1.x, curve.p1.y);
-    let (x2, y2) = (curve.p2.x, curve.p2.y);
-    let bx = |u: f64| -> f64 {
-        let v = 1.0 - u;
-        (3.0 * v * v * u).mul_add(x1, (3.0 * v * u * u).mul_add(x2, u * u * u))
-    };
-    let dbx = |u: f64| -> f64 {
-        let v = 1.0 - u;
-        (3.0 * v * v).mul_add(
-            x1,
-            (6.0 * v * u).mul_add(x2 - x1, (3.0 * u * u).mul_add(1.0 - x2, 0.0)),
-        )
-    };
-    // Invert x(u) = t for u: Newton iterations, falling back to bisection
-    // on a bracket when the slope vanishes or Newton leaves it.
-    let mut u = t;
-    let mut lo = 0.0;
-    let mut hi = 1.0;
-    for _ in 0..8 {
-        let err = bx(u) - t;
-        if err.abs() < 1e-6 {
-            break;
-        }
-        if err > 0.0 {
-            hi = u;
-        } else {
-            lo = u;
-        }
-        let slope = dbx(u);
-        u = if slope.abs() > 1e-6 {
-            (u - err / slope).clamp(lo, hi)
-        } else {
-            f64::midpoint(lo, hi)
-        };
-    }
-    let v = 1.0 - u;
-    (3.0 * v * v * u).mul_add(y1, (3.0 * v * u * u).mul_add(y2, u * u * u))
-}
-
-/// The slope `de/dt` of [`curve_value`] at normalized `t`: `y′(u)/x′(u)`.
-/// Returns 0 at the endpoints and where the inversion stalls.
-#[must_use]
-pub fn curve_slope(curve: &Curve, t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    if t <= 0.0 || t >= 1.0 {
-        return 0.0;
-    }
-    let (x1, y1) = (curve.p1.x, curve.p1.y);
-    let (x2, y2) = (curve.p2.x, curve.p2.y);
-    let bx = |u: f64| -> f64 {
-        let v = 1.0 - u;
-        (3.0 * v * v * u).mul_add(x1, (3.0 * v * u * u).mul_add(x2, u * u * u))
-    };
-    let mut u = t;
-    let mut lo = 0.0;
-    let mut hi = 1.0;
-    for _ in 0..8 {
-        let err = bx(u) - t;
-        if err.abs() < 1e-6 {
-            break;
-        }
-        if err > 0.0 {
-            hi = u;
-        } else {
-            lo = u;
-        }
-        let v = 1.0 - u;
-        let slope = (3.0 * v * v).mul_add(
-            x1,
-            (6.0 * v * u).mul_add(x2 - x1, (3.0 * u * u).mul_add(1.0 - x2, 0.0)),
-        );
-        u = if slope.abs() > 1e-6 {
-            (u - err / slope).clamp(lo, hi)
-        } else {
-            f64::midpoint(lo, hi)
-        };
-    }
-    let v = 1.0 - u;
-    let dy = (3.0 * v * v).mul_add(
-        y1,
-        (6.0 * v * u).mul_add(y2 - y1, (3.0 * u * u).mul_add(1.0 - y2, 0.0)),
-    );
-    let dx = (3.0 * v * v).mul_add(
-        x1,
-        (6.0 * v * u).mul_add(x2 - x1, (3.0 * u * u).mul_add(1.0 - x2, 0.0)),
-    );
-    if dx.abs() < 1e-9 { 0.0 } else { dy / dx }
+    curve.timing_curve().value(t)
 }
 
 /// The position and velocity of an exponential decay `dt` seconds in:
@@ -610,8 +437,9 @@ pub fn decay_step<L: Lanes>(from: L, velocity: L, deceleration: f64, dt: f64) ->
 
 /// The closed-form evaluation a running track and its host share:
 /// `(position, velocity, done)` in lane space `dt` seconds after the
-/// track's start. A settled spring reports its target exactly; a curve
-/// reports its velocity so a retarget can inherit it.
+/// track's start. Springs and curves evaluate through the shared
+/// evaluator, as `WaterUI`'s core does: a done track reports its target
+/// exactly, and a curve reports its velocity so a retarget can inherit it.
 pub(crate) fn eval_lanes<L: Lanes>(
     from: L,
     velocity: L,
@@ -619,33 +447,23 @@ pub(crate) fn eval_lanes<L: Lanes>(
     animation: &Animation,
     dt: f64,
 ) -> (L, L, bool) {
-    match animation {
-        Animation::Spring(spring) => {
-            let (pos, vel) = spring_step(from, velocity, target, spring, dt);
-            if settled(pos, vel, target) {
-                (target, L::zero(), true)
-            } else {
-                (pos, vel, false)
-            }
-        }
-        Animation::Curve(curve) => {
-            let duration = curve.duration.as_secs_f64();
-            let t01 = if duration <= 0.0 { 1.0 } else { dt / duration };
-            let delta = target.sub(&from);
-            let pos = from.add_scaled(&delta, curve_value(curve, t01));
-            // v = Δ·e′(t)/duration so a retarget can inherit it.
-            let vel = if duration > 0.0 {
-                delta.scale(curve_slope(curve, t01) / duration)
-            } else {
-                L::zero()
-            };
-            (pos, vel, t01 >= 1.0)
-        }
-        Animation::Decay(decay) => {
-            let (pos, vel) = decay_step(from, velocity, decay.deceleration, dt);
-            (pos, vel, vel.max_abs() < 1e-3)
-        }
+    if let Animation::Decay(decay) = animation {
+        let (pos, vel) = decay_step(from, velocity, decay.deceleration, dt);
+        return (pos, vel, vel.max_abs() <= SETTLE_TOLERANCE);
     }
+    let timing = animation
+        .timing()
+        .expect("every animation but a decay has a shared timing");
+    let (mut pos, mut vel) = (L::zero(), L::zero());
+    let done = timing.sample_lanes(
+        from.as_ref(),
+        velocity.as_ref(),
+        target.as_ref(),
+        dt,
+        pos.as_mut(),
+        vel.as_mut(),
+    );
+    (pos, vel, done)
 }
 
 /// The total distance a decay covers from `velocity`: `|v| / k`.
@@ -729,10 +547,12 @@ impl Easing {
     /// second.
     fn progress(&self, local: f64, span: f64) -> (f64, f64) {
         match self {
-            Self::Curve(curve) => (curve_value(curve, local), curve_slope(curve, local) / span),
+            Self::Curve(curve) => {
+                let (value, slope) = curve.timing_curve().sample(local);
+                (value, slope / span)
+            }
             Self::Spring(spring) => {
-                let omega = 2.0 * std::f64::consts::PI / spring.response;
-                let (offset, rate) = spring_lane(-1.0, 0.0, omega, spring.damping, local * span);
+                let (offset, rate) = spring.sample(-1.0, 0.0, local * span);
                 (1.0 + offset, rate)
             }
         }
@@ -1358,7 +1178,6 @@ impl OperandTrack {
         let n = self.from.len();
         let mut pos = vec![0.0; n].into_boxed_slice();
         let mut vel = vec![0.0; n].into_boxed_slice();
-        let mut running = true;
         let animation = match &self.motion {
             Motion::Animation(animation) => animation,
             Motion::Keyframes(keyframes) => {
@@ -1375,47 +1194,18 @@ impl OperandTrack {
                 return (self.target.clone(), false);
             }
         };
-        match animation {
-            Animation::Spring(spring) => {
-                let w0 = 2.0 * std::f64::consts::PI / spring.response;
-                let mut settled = true;
-                for i in 0..n {
-                    let (x, v) = spring_lane(
-                        self.from[i] - self.target_lanes[i],
-                        self.velocity[i],
-                        w0,
-                        spring.damping,
-                        dt,
-                    );
-                    pos[i] = self.target_lanes[i] + x;
-                    vel[i] = v;
-                    settled &= (pos[i] - self.target_lanes[i]).abs() < 1e-3 && vel[i].abs() < 1e-3;
-                }
-                // A settled spring reports its target exactly.
-                if settled {
-                    pos.clone_from(&self.target_lanes);
-                    vel.iter_mut().for_each(|v| *v = 0.0);
-                    running = false;
-                }
-            }
-            Animation::Curve(curve) => {
-                let duration = curve.duration.as_secs_f64();
-                let t01 = if duration <= 0.0 { 1.0 } else { dt / duration };
-                let value = curve_value(curve, t01);
-                let slope = if duration <= 0.0 {
-                    0.0
-                } else {
-                    curve_slope(curve, t01) / duration
-                };
-                for i in 0..n {
-                    let delta = self.target_lanes[i] - self.from[i];
-                    pos[i] = delta.mul_add(value, self.from[i]);
-                    vel[i] = delta * slope;
-                }
-                running = t01 < 1.0;
-            }
-            Animation::Decay(_) => unreachable!("a recorded operand never takes a Decay"),
-        }
+        let timing = animation
+            .timing()
+            .expect("a recorded operand never takes a Decay");
+        // A done track reports its target exactly.
+        let running = !timing.sample_lanes(
+            &self.from,
+            &self.velocity,
+            &self.target_lanes,
+            dt,
+            &mut pos,
+            &mut vel,
+        );
         let operand = self.target.with_lanes(&pos);
         self.last = Some((time, pos, vel));
         (operand, running)
@@ -1610,8 +1400,7 @@ mod tests {
             .then(0.5, spring, 1.0)
             .then(0.5, Curve::linear(interval), 0.0)
             .then(1.0, spring, 1.0);
-        let omega = 2.0 * std::f64::consts::PI / spring.response;
-        let step = |seconds: f64| 1.0 + spring_lane(-1.0, 0.0, omega, spring.damping, seconds).0;
+        let step = |seconds: f64| 1.0 + spring.sample(-1.0, 0.0, seconds).0;
         let at = |seconds: f64| {
             keyframes
                 .sample(Duration::from_secs_f64(seconds), Repeat::Forever)

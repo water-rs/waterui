@@ -54,8 +54,8 @@ impl SceneBuilder {
     }
 
     /// Declare a backdrop group from its description — `id`, capture
-    /// `scale`, `filters`, pyramid `levels`, and optionally an `anchor`
-    /// layer id and a `union` field ([`BackdropGroup::new`] covers the
+    /// `scale`, `filters`, pyramid `levels`, and optionally a `pyramid`
+    /// kind, an `anchor` layer id and a `union` field ([`BackdropGroup::new`] covers the
     /// plain form); layers sample it via [`LayerBuilder::backdrop`].
     pub fn backdrop_group(&mut self, group: BackdropGroup) -> &mut Self {
         self.scene.backdrop_groups.push(group);

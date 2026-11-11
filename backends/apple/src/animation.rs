@@ -19,34 +19,31 @@ use waterui::animation::ChangeAnimation;
 #[cfg(watcher_animation)]
 use waterui::reactive::watcher::Metadata;
 
-/// The kit timing `animation` plays under.
+/// The kit timing `animation` plays under: its shared timing, the one core
+/// and the Cherenkov engine evaluate.
 ///
-/// `Default` parses to the 0.25s ease-in-out bezier the FFI spells the
-/// system animation as; `Bezier` carries the curve's own duration and
-/// control points; `Spring` forwards stiffness and damping to a spring
-/// primitive (`UISpringTimingParameters` on iOS, `CASpringAnimation` on
-/// macOS).
+/// `Default` is the 0.25s ease-in-out bezier core defines it as; `Bezier`
+/// carries the curve's own duration and control points; `Spring` hands the
+/// shared spring to a spring primitive (`UISpringTimingParameters` on iOS,
+/// `CASpringAnimation` on macOS), which takes its stiffness, damping
+/// coefficient and settling duration from it.
 #[cfg(platform_timing)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the control points are authored as f32 and widen to f64 exactly, so they narrow back exactly"
+)]
 pub fn timing(animation: &Animation) -> Timing {
-    match animation.clone().validated() {
-        Animation::Default => Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Animation::Bezier {
+    match animation.clone().validated().timing() {
+        waterui::easing::Timing::Curve { curve, duration } => Timing::Bezier {
             duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        } => Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
+            control_points: [
+                curve.x1 as f32,
+                curve.y1 as f32,
+                curve.x2 as f32,
+                curve.y2 as f32,
+            ],
         },
-        Animation::Spring { stiffness, damping } => Timing::Spring {
-            stiffness: f64::from(stiffness),
-            damping: f64::from(damping),
-        },
+        waterui::easing::Timing::Spring(spring) => Timing::Spring(spring),
     }
 }
 
@@ -70,9 +67,7 @@ pub fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'stati
 #[cfg(frame_progress)]
 pub fn progress(animation: &Animation) -> Rc<dyn Fn(f64) -> f64> {
     let animation = animation.clone().validated();
-    Rc::new(move |elapsed| {
-        f64::from(animation.progress(core::time::Duration::from_secs_f64(elapsed)))
-    })
+    Rc::new(move |elapsed| animation.progress(core::time::Duration::from_secs_f64(elapsed)))
 }
 
 #[cfg(all(test, platform_timing))]
@@ -112,19 +107,18 @@ mod tests {
         );
     }
 
-    /// `Animation::Spring` forwards stiffness and damping to a spring
-    /// primitive unchanged.
+    /// `Animation::Spring` hands the platform primitive the shared spring,
+    /// whose stiffness and damping coefficient are the authored ones.
     #[test]
     fn spring_maps_stiffness_and_damping() {
-        assert_eq!(
-            timing(&Animation::Spring {
-                stiffness: 120.0,
-                damping: 14.0,
-            }),
-            Timing::Spring {
-                stiffness: 120.0,
-                damping: 14.0,
-            }
-        );
+        let Timing::Spring(spring) = timing(&Animation::Spring {
+            stiffness: 120.0,
+            damping: 14.0,
+        }) else {
+            panic!("a spring plays as a spring");
+        };
+        assert_eq!(spring, waterui::easing::Spring::from_physics(120.0, 14.0));
+        assert!((spring.stiffness() - 120.0).abs() < 1e-9);
+        assert!((spring.damping_coefficient() - 14.0).abs() < 1e-9);
     }
 }

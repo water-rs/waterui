@@ -4,6 +4,7 @@ use waterui::navigation::{
     NavigationTransitionFrame as ResolvedNavigationTransitionFrame, NavigationTransitionLayer,
     RetainedNavigationTransition,
 };
+use waterui_core::contract_violation;
 
 /// How a transition presents its two pages this frame.
 pub enum NavigationPresentation {
@@ -62,18 +63,24 @@ fn material_shared_axis_x_frame(
     viewport_width: f64,
     fade_through_threshold: f32,
 ) -> ResolvedNavigationTransitionFrame {
-    assert!(
-        viewport_width > 0.0,
-        "navigation shared-axis viewport width must be positive"
-    );
-    assert!(
-        slide_distance >= 0.0 && slide_distance.is_finite(),
-        "navigation shared-axis slide distance must be finite and non-negative"
-    );
-    assert!(
-        (0.0..1.0).contains(&fade_through_threshold),
-        "navigation fade-through threshold must be in 0.0..1.0"
-    );
+    if viewport_width <= 0.0 {
+        contract_violation!(
+            "navigation shared-axis viewport width must be positive; the pages show without a transition"
+        );
+        return ResolvedNavigationTransitionFrame::IDENTITY;
+    }
+    if !(slide_distance >= 0.0 && slide_distance.is_finite()) {
+        contract_violation!(
+            "navigation shared-axis slide distance must be finite and non-negative; the pages show without a transition"
+        );
+        return ResolvedNavigationTransitionFrame::IDENTITY;
+    }
+    if !(0.0..1.0).contains(&fade_through_threshold) {
+        contract_violation!(
+            "navigation fade-through threshold must be in 0.0..1.0; the pages show without a transition"
+        );
+        return ResolvedNavigationTransitionFrame::IDENTITY;
+    }
     let slide_fraction = crate::num_cast::f64_as_f32(slide_distance / viewport_width);
     let direction = match direction {
         NavigationTransitionDirection::Push => -1.0,
@@ -166,6 +173,20 @@ mod tests {
         assert_near(end.outgoing().opacity(), 0.0);
         assert_near(end.incoming().offset_x(), 0.0);
         assert_near(end.incoming().opacity(), 1.0);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "viewport width must be positive")
+    )]
+    fn a_zero_viewport_shows_the_pages_without_a_transition() {
+        let frame =
+            material_shared_axis_x_frame(0.5, NavigationTransitionDirection::Push, 30.0, 0.0, 0.35);
+        assert_near(frame.outgoing().offset_x(), 0.0);
+        assert_near(frame.outgoing().opacity(), 1.0);
+        assert_near(frame.incoming().offset_x(), 0.0);
+        assert_near(frame.incoming().opacity(), 1.0);
     }
 
     #[test]

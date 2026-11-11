@@ -48,7 +48,7 @@ use nami::Computed;
 use waterui_controls::menu::{Menu, ResolvedMenuItem, resolve_menu_bar_items};
 use waterui_core::Environment;
 
-use crate::renderer::{MISSING_MENU_SHORTCUT_REGISTRY, MenuShortcutRegistry};
+use crate::renderer::menu_shortcut_registry;
 
 /// Resolves `menu_bar` against `env` and registers its command chords as
 /// an app-scoped source on the window-shared registry (the app `env` is
@@ -62,8 +62,10 @@ pub fn register_menu_bar<E: crate::text::TextEngine>(
     env: &Environment,
 ) -> Computed<Vec<ResolvedMenuItem>> {
     let items = resolve_menu_bar_items(menu_bar, env);
-    env.get::<MenuShortcutRegistry<E>>()
-        .expect(MISSING_MENU_SHORTCUT_REGISTRY)
-        .register_menu_bar(items.clone(), env.clone());
+    if let Some(registry) =
+        menu_shortcut_registry::<E>(env, "the menu bar's chords are not registered")
+    {
+        registry.register_menu_bar(items.clone(), env.clone());
+    }
     items
 }

@@ -187,7 +187,7 @@ fn set_fallbacks(
     }
     assert!(
         collection.set_fallbacks(key, combined.iter().copied()),
-        "hydrolysis font loader attempted to install an untracked script fallback"
+        "every key the loader installs is a fixed script fallback key the collection tracks"
     );
 }
 
@@ -302,10 +302,9 @@ fn staged_fonts_dir(resources: &waterui_core::ResourceContext) -> std::path::Pat
 /// contract: a debug build panics, a release build logs it and loads only the
 /// declared and system fonts.
 ///
-/// # Panics
-///
-/// Panics if the fonts directory or a declared font file cannot be read,
-/// naming the path.
+/// A fonts directory, a directory entry or a declared font file that cannot
+/// be read is logged naming the path and skipped: the collection carries the
+/// fonts that did load.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn native_collection(env: &waterui_core::Environment) -> FontCollection {
@@ -321,24 +320,30 @@ pub fn native_collection(env: &waterui_core::Environment) -> FontCollection {
     #[cfg(not(target_os = "android"))]
     let mut font_cx = parley::FontContext::new();
     if let Some(root) = root.filter(|root| root.is_dir()) {
-        let entries = std::fs::read_dir(&root).unwrap_or_else(|error| {
-            panic!(
-                "hydrolysis native font loader failed to read `{}`: {error}",
-                root.display()
-            )
-        });
-        for entry in entries {
-            let entry = entry.unwrap_or_else(|error| {
-                panic!(
-                    "hydrolysis native font loader failed to read an entry in `{}`: {error}",
-                    root.display()
-                )
-            });
-            let path = entry.path();
-            if !is_font_file(&path) {
-                continue;
+        match std::fs::read_dir(&root) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(error) => {
+                            tracing::error!(
+                                "hydrolysis native font loader failed to read an entry in `{}`: {error}; the entry is skipped",
+                                root.display()
+                            );
+                            continue;
+                        }
+                    };
+                    let path = entry.path();
+                    if !is_font_file(&path) {
+                        continue;
+                    }
+                    register_font_file(&mut font_cx, &mut resource_fonts, &path);
+                }
             }
-            register_font_file(&mut font_cx, &mut resource_fonts, &path);
+            Err(error) => tracing::error!(
+                "hydrolysis native font loader failed to read `{}`: {error}; the staged fonts are not loaded",
+                root.display()
+            ),
         }
     }
     if let Some(declared) = env.get::<DeclaredFonts>() {
@@ -361,25 +366,27 @@ fn register_font_file(
     use parley::fontique::Blob;
     use std::sync::Arc;
 
-    let font_data = std::fs::read(path).unwrap_or_else(|error| {
-        panic!(
-            "hydrolysis native font loader failed to read `{}`: {error}",
-            path.display()
-        )
-    });
+    let font_data = match std::fs::read(path) {
+        Ok(font_data) => font_data,
+        Err(error) => {
+            tracing::error!(
+                "hydrolysis native font loader failed to read `{}`: {error}; the font is not loaded",
+                path.display()
+            );
+            return;
+        }
+    };
     let families = font_cx
         .collection
         .register_fonts(Blob::new(Arc::new(font_data)), None);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_else(|| {
-            panic!(
-                "hydrolysis native font loader found a font path without UTF-8 file name: `{}`",
-                path.display()
-            )
-        });
-    resource_fonts.classify(file_name, &families);
+    if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
+        resource_fonts.classify(file_name, &families);
+    } else {
+        tracing::error!(
+            "hydrolysis native font loader found a font path without UTF-8 file name: `{}`; its families join no script fallback",
+            path.display()
+        );
+    }
     tracing::debug!(
         target: "waterui::hydrolysis::fonts",
         path = %path.display(),

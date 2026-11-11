@@ -3,6 +3,7 @@
 use super::*;
 use crate::renderer::mount::RetainedScopes;
 use crate::renderer::transformed_rect;
+use waterui_core::contract_violation;
 
 #[cfg(feature = "accessibility")]
 use crate::theme::InteractionFocusBinding;
@@ -1482,7 +1483,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             return match action {
                 AccessibilityAction::Focus => self.set_keyboard_focus_node(None, false),
                 AccessibilityAction::Click => false,
-                _ => panic!("hydrolysis accessibility root does not support action {action:?}"),
+                _ => declined_action("root", action),
             };
         }
         let Some(target) = self.accessibility.actions.get(&target_node).cloned() else {
@@ -1492,16 +1493,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             // had any. Focus still lands when advertised; any action the node
             // does not advertise is rejected as unhandled. An *advertised*
             // action without a registered target is a widget bug.
-            let node = self
+            let Some(node) = self
                 .accessibility
                 .nodes
                 .iter()
                 .find_map(|(id, node)| (*id == target_node).then_some(node))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "hydrolysis accessibility action {action:?} targets unknown node {target_node:?}"
-                    )
-                });
+            else {
+                contract_violation!(
+                    "hydrolysis accessibility action {action:?} targets unknown node {target_node:?}; the action is declined"
+                );
+                return false;
+            };
             if action == AccessibilityAction::Focus
                 && node.supports_action(AccessibilityAction::Focus)
             {
@@ -1517,9 +1519,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             AccessibilityActionTarget::Activate { action: activation } => match action {
                 AccessibilityAction::Click => (activation.borrow_mut())(self, env),
                 AccessibilityAction::Focus => true,
-                _ => {
-                    panic!("hydrolysis accessibility activation does not support action {action:?}")
-                }
+                _ => declined_action("activation", action),
             },
             AccessibilityActionTarget::Toggle { binding } => match action {
                 AccessibilityAction::Click => {
@@ -1528,7 +1528,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     true
                 }
                 AccessibilityAction::Focus => true,
-                _ => panic!("hydrolysis accessibility toggle does not support action {action:?}"),
+                _ => declined_action("toggle", action),
             },
             AccessibilityActionTarget::Slider { value, range, step } => {
                 handle_accessibility_slider_action(
@@ -1632,7 +1632,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     extension,
                     target_node,
                 ),
-                _ => panic!("hydrolysis accessibility list row does not support action {action:?}"),
+                _ => declined_action("list row", action),
             },
         };
         if changed && focus_action {
@@ -2521,11 +2521,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         env: &Environment,
         remaining: usize,
     ) -> Option<String> {
-        assert!(
-            (remaining != 0),
-            "hydrolysis accessibility label extraction exceeded recursion budget for {}",
-            view.name()
-        );
+        if remaining == 0 {
+            contract_violation!(
+                "hydrolysis accessibility label extraction exceeded recursion budget for {}; the node has no extracted label",
+                view.name()
+            );
+            return None;
+        }
         let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
         if let Some(content) = passthrough_content(view) {
             return self.accessibility_label_from_view_with_budget(
@@ -2703,10 +2705,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 }
 
 #[cfg(feature = "accessibility")]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
-)]
 fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> AccessibilityNodeRole {
     match role {
         AccessibilityRole::Button => AccessibilityNodeRole::Button,
@@ -2739,8 +2737,31 @@ fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> Accessibilit
         AccessibilityRole::Option => AccessibilityNodeRole::ListBoxOption,
         AccessibilityRole::Group => AccessibilityNodeRole::Group,
         AccessibilityRole::Dialog => AccessibilityNodeRole::Dialog,
-        _ => panic!("hydrolysis accessibility role variant is not implemented"),
+        other => {
+            contract_violation!(
+                "hydrolysis accessibility role variant {other:?} is not implemented; the node reports an unknown role"
+            );
+            AccessibilityNodeRole::Unknown
+        }
     }
+}
+
+/// Declines an accessibility action the `target` does not support.
+#[cfg(feature = "accessibility")]
+fn declined_action(target: &str, action: AccessibilityAction) -> bool {
+    contract_violation!(
+        "hydrolysis accessibility {target} does not support action {action:?}; the action is declined"
+    );
+    false
+}
+
+/// Declines an accessibility action whose payload is not the `expected` data.
+#[cfg(feature = "accessibility")]
+fn declined_action_data(target: &str, action: AccessibilityAction, expected: &str) -> bool {
+    contract_violation!(
+        "hydrolysis accessibility {target} {action:?} requires {expected} data; the action is declined"
+    );
+    false
 }
 
 /// One accessibility scroll step in logical pixels. Assistive-tech scroll
@@ -2763,9 +2784,9 @@ fn handle_accessibility_scroll_action<E: crate::text::TextEngine>(
     }
     let step = ACCESSIBILITY_SCROLL_STEP;
     // `Axis` is `#[non_exhaustive]`: a variant hydrolysis does not know is a
-    // framework bug and must panic; a direction a known axis does not serve
-    // is a declined action and reports `false`. A supported direction is
-    // handled whether or not the scroll could still move.
+    // contract violation and declines the action; a direction a known axis
+    // does not serve is likewise declined and reports `false`. A supported
+    // direction is handled whether or not the scroll could still move.
     let delta = match axis {
         ScrollAxis::Horizontal => match action {
             AccessibilityAction::ScrollLeft => Some((step, 0.0)),
@@ -2784,7 +2805,12 @@ fn handle_accessibility_scroll_action<E: crate::text::TextEngine>(
             AccessibilityAction::ScrollDown => Some((0.0, -step)),
             _ => None,
         },
-        _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        other => {
+            contract_violation!(
+                "scroll axis variant {other:?} is not supported by hydrolysis; the action is declined"
+            );
+            None
+        }
     };
     match delta {
         Some((dx, dy)) => {
@@ -2802,10 +2828,12 @@ pub fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     let start = *range.start();
     let end = *range.end();
     let span = end - start;
-    assert!(
-        span > 0.0,
-        "hydrolysis accessibility slider requires range start < end"
-    );
+    if span.is_nan() || span <= 0.0 {
+        contract_violation!(
+            "hydrolysis accessibility slider requires range start < end; the slider has no accessibility step"
+        );
+        return 0.0;
+    }
     span / 100.0
 }
 
@@ -2825,21 +2853,21 @@ fn handle_accessibility_slider_action(
     if matches!(action, AccessibilityAction::Focus) {
         return true;
     }
-    assert!(
-        step > 0.0,
-        "hydrolysis accessibility slider requires positive step"
-    );
+    if step.is_nan() || step <= 0.0 {
+        contract_violation!(
+            "hydrolysis accessibility slider requires positive step; the action is declined"
+        );
+        return false;
+    }
     let previous = value.snapshot().clamp(start, end);
     let next = match action {
         AccessibilityAction::Increment => (previous + step).min(end),
         AccessibilityAction::Decrement => (previous - step).max(start),
         AccessibilityAction::SetValue => match data {
             Some(AccessibilityActionData::NumericValue(target)) => target.clamp(start, end),
-            _ => {
-                panic!("hydrolysis accessibility slider SetValue requires NumericValue data")
-            }
+            _ => return declined_action_data("slider", action, "NumericValue"),
         },
-        _ => panic!("hydrolysis accessibility slider does not support action {action:?}"),
+        _ => return declined_action("slider", action),
     };
     if (next - previous).abs() > f64::EPSILON {
         value.set(next);
@@ -2864,10 +2892,12 @@ fn handle_accessibility_stepper_action(
         return true;
     }
     let step_value = step.snapshot();
-    assert!(
-        (step_value > 0),
-        "hydrolysis accessibility stepper requires positive step"
-    );
+    if step_value <= 0 {
+        contract_violation!(
+            "hydrolysis accessibility stepper requires positive step; the action is declined"
+        );
+        return false;
+    }
     let previous = value.snapshot().clamp(start, end);
     let next = match action {
         AccessibilityAction::Increment => previous.saturating_add(step_value).min(end),
@@ -2878,14 +2908,17 @@ fn handle_accessibility_stepper_action(
                 rounded.clamp(start, end)
             }
             Some(AccessibilityActionData::Value(ref text)) => {
-                let parsed = text
-                    .parse::<i32>()
-                    .expect("hydrolysis accessibility stepper SetValue text must parse as i32");
+                let Ok(parsed) = text.parse::<i32>() else {
+                    contract_violation!(
+                        "hydrolysis accessibility stepper SetValue text {text:?} must parse as i32; the action is declined"
+                    );
+                    return false;
+                };
                 parsed.clamp(start, end)
             }
-            _ => panic!("hydrolysis accessibility stepper SetValue requires numeric data"),
+            _ => return declined_action_data("stepper", action, "numeric"),
         },
-        _ => panic!("hydrolysis accessibility stepper does not support action {action:?}"),
+        _ => return declined_action("stepper", action),
     };
     if next != previous {
         value.set(next);
@@ -2929,15 +2962,19 @@ fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
         AccessibilityAction::Focus => true,
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
-                panic!("hydrolysis accessibility date picker SetValue requires Value data");
+                return declined_action_data("date picker", action, "Value");
             };
-            let parsed = ty.parse_value(text.as_ref()).unwrap_or_else(|error| {
-                panic!(
-                    "hydrolysis accessibility date picker could not parse value {:?} with format {}: {error}",
-                    text,
-                    ty.format_string(),
-                )
-            });
+            let parsed = match ty.parse_value(text.as_ref()) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    contract_violation!(
+                        "hydrolysis accessibility date picker could not parse value {:?} with format {}: {error}; the action is declined",
+                        text,
+                        ty.format_string(),
+                    );
+                    return false;
+                }
+            };
             let previous = value.snapshot().clamp(*range.start(), *range.end());
             let next = parsed.clamp(*range.start(), *range.end());
             if next != previous {
@@ -2945,7 +2982,7 @@ fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
             }
             true
         }
-        _ => panic!("hydrolysis accessibility date picker does not support action {action:?}"),
+        _ => declined_action("date picker", action),
     }
 }
 
@@ -2965,32 +3002,34 @@ fn handle_accessibility_text_field_action<E: crate::text::TextEngine>(
         }
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
-                panic!("hydrolysis accessibility text field SetValue requires Value data");
+                return declined_action_data("text field", action, "Value");
             };
             let normalized = normalized_insert_text(text.as_ref(), line_limit);
-            assert!(
-                !(exceeds_line_limit(normalized.as_str(), line_limit)),
-                "hydrolysis accessibility text field SetValue exceeds line_limit {line_limit:?}"
-            );
+            if exceeds_line_limit(normalized.as_str(), line_limit) {
+                contract_violation!(
+                    "hydrolysis accessibility text field SetValue exceeds line_limit {line_limit:?}; the action is declined"
+                );
+                return false;
+            }
             value.set(StyledStr::plain(normalized));
             true
         }
         AccessibilityAction::ReplaceSelectedText => {
             let Some(AccessibilityActionData::Value(text)) = data else {
-                panic!(
-                    "hydrolysis accessibility text field ReplaceSelectedText requires Value data"
-                );
+                return declined_action_data("text field", action, "Value");
             };
             let normalized = normalized_insert_text(text.as_ref(), line_limit);
             let mut plain = value.snapshot().to_plain().to_string();
-            assert!(
-                apply_text_insert(&mut plain, normalized.as_str(), line_limit),
-                "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {line_limit:?}"
-            );
+            if !apply_text_insert(&mut plain, normalized.as_str(), line_limit) {
+                contract_violation!(
+                    "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {line_limit:?}; the action is declined"
+                );
+                return false;
+            }
             value.set(StyledStr::plain(plain));
             true
         }
-        _ => panic!("hydrolysis accessibility text field does not support action {action:?}"),
+        _ => declined_action("text field", action),
     }
 }
 
@@ -3009,7 +3048,7 @@ fn handle_accessibility_secure_field_action<E: crate::text::TextEngine>(
         }
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
-                panic!("hydrolysis accessibility secure field SetValue requires Value data");
+                return declined_action_data("secure field", action, "Value");
             };
             let normalized = normalized_insert_text(text.as_ref(), Some(1));
             let mut next = FormSecure::default();
@@ -3019,21 +3058,21 @@ fn handle_accessibility_secure_field_action<E: crate::text::TextEngine>(
         }
         AccessibilityAction::ReplaceSelectedText => {
             let Some(AccessibilityActionData::Value(text)) = data else {
-                panic!(
-                    "hydrolysis accessibility secure field ReplaceSelectedText requires Value data"
-                );
+                return declined_action_data("secure field", action, "Value");
             };
             let mut plain = value.snapshot().expose().to_owned();
-            assert!(
-                apply_text_insert(&mut plain, text.as_ref(), Some(1)),
-                "hydrolysis accessibility secure field ReplaceSelectedText exceeds line_limit 1"
-            );
+            if !apply_text_insert(&mut plain, text.as_ref(), Some(1)) {
+                contract_violation!(
+                    "hydrolysis accessibility secure field ReplaceSelectedText exceeds line_limit 1; the action is declined"
+                );
+                return false;
+            }
             let mut next = FormSecure::default();
             next.set(plain);
             value.set(next);
             true
         }
-        _ => panic!("hydrolysis accessibility secure field does not support action {action:?}"),
+        _ => declined_action("secure field", action),
     }
 }
 
@@ -3050,7 +3089,7 @@ fn handle_accessibility_picker_select_action(
             }
             true
         }
-        _ => panic!("hydrolysis accessibility picker select does not support action {action:?}"),
+        _ => declined_action("picker select", action),
     }
 }
 

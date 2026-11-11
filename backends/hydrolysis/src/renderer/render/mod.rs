@@ -15,10 +15,10 @@ mod state;
 mod subview;
 mod view_helpers;
 
+#[cfg(hydrolysis_cherenkov)]
+pub use compositor::FrameError;
 #[cfg(hydrolysis_cpu_painter)]
 pub use compositor::FrameGeometry;
-#[cfg(hydrolysis_gpu_painter)]
-pub use compositor::HydrolysisRenderTarget;
 #[cfg(hydrolysis_cpu_painter)]
 pub use compositor::RasterWindow;
 #[cfg(hydrolysis_gpu_painter)]

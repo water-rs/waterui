@@ -6,7 +6,7 @@
 //! `render_to_rgba` and `waterui-testing`'s snapshots — never by the
 //! interactive frame loop, which stays GPU-resident end to end.
 
-use crate::platform::{OffscreenSurface, PresentationSurface};
+use crate::platform::{DeviceLostError, OffscreenSurface, PresentationSurface};
 
 /// wgpu's `COPY_BYTES_PER_ROW_ALIGNMENT`: texture-copy rows pad to 256 bytes.
 const COPY_BYTES_PER_ROW_ALIGNMENT: u64 = 256;
@@ -16,11 +16,8 @@ const COPY_BYTES_PER_ROW_ALIGNMENT: u64 = 256;
 #[non_exhaustive]
 pub enum ReadbackError {
     /// The surface's device was lost, so the texture holds no rendered frame.
-    #[error("the GPU device was lost: {reason}")]
-    DeviceLost {
-        /// The reason the driver gave for the loss.
-        reason: String,
-    },
+    #[error(transparent)]
+    DeviceLost(#[from] DeviceLostError),
     /// Waiting for the copy into the readback buffer failed.
     #[error("waiting for the readback copy failed")]
     Poll(#[source] wgpu::PollError),
@@ -106,8 +103,8 @@ pub fn readback_surface_texture_rgba8(
     });
 
     let polled = device.poll(wgpu::PollType::wait_indefinitely());
-    if let Some(reason) = surface.device_loss().reason() {
-        return Err(ReadbackError::DeviceLost { reason });
+    if let Some(lost) = surface.device_loss().lost_error() {
+        return Err(lost.into());
     }
     polled.map_err(ReadbackError::Poll)?;
     receiver

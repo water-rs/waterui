@@ -16,14 +16,14 @@ hydrolysis-m3 = "0.2"
 use waterui_testing::{Role, SemanticApp, UiBuilder};
 
 // Mounting form: the macro mounts a no-arg view function.
-#[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
+#[waterui::test(login_view, theme = hydrolysis_m3::Material3::defaults(), viewport = (360, 320))]
 fn login_flow(app: &mut SemanticApp) {
     app.query().role(Role::BUTTON).label("Login").tap();
     app.query().label("Welcome").assert_exists();
 }
 
 // Manual-mount form: the test owns Bindings the view closes over.
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test]
 fn stepper_updates(ui: UiBuilder) {
     let value = Binding::i32(2);
     let value_for_view = value.clone();

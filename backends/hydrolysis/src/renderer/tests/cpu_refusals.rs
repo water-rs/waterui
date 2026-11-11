@@ -24,8 +24,10 @@ use crate::{HeadlessRuntime, OffscreenPainter};
 /// Mounts `view` on the CPU painter, whichever painters the build has, and
 /// renders one frame.
 fn render_on_cpu(view: impl Fn() -> AnyView + 'static, theme: MinimalTestTheme) {
+    let painter = OffscreenPainter::open_cpu()
+        .unwrap_or_else(|error| panic!("the CPU painter must open: {error}"));
     let mut runtime = HeadlessRuntime::new_for_tests_on_context(
-        OffscreenPainter::Cpu(crate::engine::RasterEngineState::new()),
+        painter,
         pumped_test_environment(),
         AnyViewBuilder::<AnyView>::new(view),
         64,
@@ -53,14 +55,14 @@ impl ExternalFrameSource for NoFrames {
 
 #[test]
 #[cfg_attr(
-    hydrolysis_gpu,
+    all(debug_assertions, hydrolysis_gpu),
     should_panic(
         expected = "hydrolysis: GpuContentView needs a GPU device, but this runtime renders on the \
                     Cherenkov CPU backend"
     )
 )]
 #[cfg_attr(
-    not(hydrolysis_gpu),
+    all(debug_assertions, not(hydrolysis_gpu)),
     should_panic(
         expected = "hydrolysis: GpuContentView needs a GPU device, but this Hydrolysis build has \
                     no GPU painter"
@@ -75,14 +77,14 @@ fn gpu_content_is_refused_by_name() {
 
 #[test]
 #[cfg_attr(
-    hydrolysis_gpu,
+    all(debug_assertions, hydrolysis_gpu),
     should_panic(
         expected = "hydrolysis: ExternalFrameView needs a GPU device, but this runtime renders on \
                     the Cherenkov CPU backend"
     )
 )]
 #[cfg_attr(
-    not(hydrolysis_gpu),
+    all(debug_assertions, not(hydrolysis_gpu)),
     should_panic(
         expected = "hydrolysis: ExternalFrameView needs a GPU device, but this Hydrolysis build \
                     has no GPU painter"

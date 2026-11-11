@@ -40,7 +40,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
 use crate::animation::engine_animation;
-use crate::draw::{curve_value, settled, spring_step};
 
 /// Values crossing the render-thread boundary, mirroring the engine's
 /// `RenderTransfer` marker so `effects` builds without it.
@@ -324,69 +323,54 @@ impl ParamGuards {
     }
 }
 
-/// A Cherenkov animation driving a scalar filter parameter.
+/// A Cherenkov animation driving a scalar filter parameter from rest,
+/// evaluated through the shared evaluator exactly as core and the engine
+/// evaluate it.
 struct AnimationInterpolator(crate::draw::Animation);
 
-const SPRING_STEP: f64 = 1.0 / 240.0;
-const SPRING_STEP_NANOS: u128 = 1_000_000_000 / 240;
-const SPRING_LIMIT: Duration = Duration::from_secs(10);
-
-#[allow(clippy::cast_possible_truncation)]
 impl AnimationInterpolator {
-    fn spring_at(
-        spring: &crate::draw::Spring,
-        from: f32,
-        to: f32,
-        elapsed: Duration,
-    ) -> (f64, bool) {
-        let (mut pos, mut velocity) = ([f64::from(from)], [0.0]);
-        let target = [f64::from(to)];
-        let steps = (elapsed.min(SPRING_LIMIT).as_nanos() / SPRING_STEP_NANOS) + 1;
-        for _ in 0..steps {
-            (pos, velocity) = spring_step(pos, velocity, target, spring, SPRING_STEP);
-            if settled(pos, velocity, target) {
-                return (target[0], true);
-            }
-        }
-        (pos[0], false)
+    /// The parameter `elapsed` after it left `from` at rest for `to`, and
+    /// whether the animation is done there; a decay lands at once.
+    fn sample(&self, from: f32, to: f32, elapsed: Duration) -> (f64, bool) {
+        let Some(timing) = self.0.timing() else {
+            return (f64::from(to), true);
+        };
+        let (mut position, mut rate) = ([0.0], [0.0]);
+        let done = timing.sample_lanes(
+            &[f64::from(from)],
+            &[0.0],
+            &[f64::from(to)],
+            elapsed.as_secs_f64(),
+            &mut position,
+            &mut rate,
+        );
+        (position[0], done)
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 impl Interpolator for AnimationInterpolator {
+    /// A curve's duration; for a spring, the time a unit step from rest
+    /// takes to settle for good, as `Animation::duration` reports it.
     fn duration(&self) -> Duration {
         match &self.0 {
             crate::draw::Animation::Curve(curve) => curve.duration,
-            crate::draw::Animation::Spring(_) => SPRING_LIMIT,
+            crate::draw::Animation::Spring(spring) => spring
+                .unit_settling_duration()
+                .expect("`engine_animation` validates its spring, which settles in finite time"),
             crate::draw::Animation::Decay(_) => Duration::ZERO,
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a filter parameter is an f32; the evaluator works in f64"
+    )]
     fn interpolate(&self, from: f32, to: f32, elapsed: Duration) -> f32 {
-        match &self.0 {
-            crate::draw::Animation::Curve(curve) => {
-                let t = if curve.duration.is_zero() {
-                    1.0
-                } else {
-                    (elapsed.as_secs_f64() / curve.duration.as_secs_f64()).min(1.0)
-                };
-                let k = curve_value(curve, t);
-                (f64::from(to) - f64::from(from)).mul_add(k, f64::from(from)) as f32
-            }
-            crate::draw::Animation::Spring(spring) => {
-                Self::spring_at(spring, from, to, elapsed).0 as f32
-            }
-            crate::draw::Animation::Decay(_) => to,
-        }
+        self.sample(from, to, elapsed).0 as f32
     }
 
     fn is_complete(&self, elapsed: Duration) -> bool {
-        match &self.0 {
-            crate::draw::Animation::Spring(spring) => {
-                elapsed >= SPRING_LIMIT || Self::spring_at(spring, 0.0, 1.0, elapsed).1
-            }
-            _ => elapsed >= self.duration(),
-        }
+        self.sample(0.0, 1.0, elapsed).1
     }
 }
 
@@ -2083,7 +2067,7 @@ mod tests {
     use super::{
         AnimationInterpolator, Brightness, ColorStage, FilterLink, FilterParam as _, FilterSignal,
         FilterViewExt as _, FilteredView, GaussianBlur, OutputSize, ParamGuards, Placed,
-        SPRING_LIMIT, SpatialStage, StageCollector,
+        SpatialStage, StageCollector,
     };
     use crate::animation::engine_animation;
     use core::time::Duration;
@@ -2533,13 +2517,22 @@ mod tests {
 
     #[test]
     fn animation_spring_uses_engine_physics() {
-        let interpolator = AnimationInterpolator(engine_animation(&Animation::spring(200.0, 15.0)));
-        assert_eq!(interpolator.duration(), SPRING_LIMIT);
+        let animation = Animation::spring(200.0, 15.0);
+        let interpolator = AnimationInterpolator(engine_animation(&animation));
+        // The filter runs the spring core defines, for as long as core does.
+        assert_eq!(interpolator.duration(), animation.duration());
         let early = interpolator.interpolate(0.0, 1.0, Duration::from_millis(30));
         assert!(
             early > 0.0 && early < 1.0,
             "spring progresses without snapping, got {early}"
         );
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the interpolator answers in f32"
+        )]
+        let core = animation.progress(Duration::from_millis(30)) as f32;
+        assert_eq!(early.to_bits(), core.to_bits());
         assert!(!interpolator.is_complete(Duration::from_millis(30)));
+        assert!(interpolator.is_complete(animation.duration()));
     }
 }

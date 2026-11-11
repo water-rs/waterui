@@ -893,6 +893,7 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::BackdropShader,
         Feature::BackdropScale,
         Feature::BackdropLevels,
+        Feature::BackdropGaussianPyramid,
         Feature::BackdropAnchor,
         Feature::BackdropUnion,
         Feature::BackdropOuter,

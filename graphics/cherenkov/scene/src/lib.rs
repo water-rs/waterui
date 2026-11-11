@@ -30,7 +30,7 @@ mod text;
 #[doc(hidden)]
 pub mod corpus;
 
-pub use backdrop::{BackdropEffectSpec, BackdropFilter, BackdropGroup};
+pub use backdrop::{BackdropEffectSpec, BackdropFilter, BackdropGroup, CapturePyramid};
 pub use builder::{LayerBuilder, SceneBuilder};
 pub use color::{Color, ColorSpace};
 pub use draw::{

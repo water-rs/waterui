@@ -105,9 +105,10 @@ pub trait TextEngine: Send + Sync + 'static {
     ///
     /// The error `font` returns.
     ///
-    /// # Panics
-    ///
-    /// When the engine does not lay text out for the Cherenkov GPU target.
+    /// An engine that does not lay text out for the Cherenkov targets is
+    /// used on them against its contract: that is reported and the text
+    /// registers as [`cherenkov::ResourceError::Unsupported`], so the canvas
+    /// draws without it.
     #[cfg(hydrolysis_cherenkov)]
     fn cherenkov_text(
         &self,
@@ -117,22 +118,29 @@ pub trait TextEngine: Send + Sync + 'static {
         ) -> Result<cherenkov::Font, cherenkov::ResourceError>,
     ) -> Result<cherenkov::TextLayout, cherenkov::ResourceError> {
         let _ = (layout, font);
-        panic!("hydrolysis: this text engine does not lay text out for the Cherenkov GPU target");
+        waterui_core::contract_violation!(
+            "this text engine does not lay text out for the Cherenkov targets; the text is not registered"
+        );
+        Err(cherenkov::ResourceError::Unsupported(
+            "text layout on the Cherenkov targets",
+        ))
     }
 
     /// The lease on the platform layout `layout` is: how the HWUI target
     /// draws the text a canvas names. `None` for a layout of no text.
     ///
-    /// # Panics
-    ///
-    /// When the engine does not lay text out on the platform.
+    /// An engine that does not lay text out on the platform is used on it
+    /// against its contract: that is reported and the text draws as none.
     #[cfg(any(test, hydrolysis_hwui))]
     fn platform_text(
         &self,
         layout: &Self::Layout,
     ) -> Option<std::sync::Arc<crate::hwui::text::TextLayoutResource>> {
         let _ = layout;
-        panic!("hydrolysis: this text engine does not lay text out on the HWUI platform");
+        waterui_core::contract_violation!(
+            "this text engine does not lay text out on the HWUI platform; the text draws as none"
+        );
+        None
     }
 
     /// The collection the engine shapes with gained faces: drops every
@@ -149,15 +157,18 @@ pub trait TextEngine: Send + Sync + 'static {
 /// carry. A test host resolves strictly: the style package a test mounts
 /// names the families its design assumes, so a family that is neither
 /// installed on the host nor provided by a declared font file
-/// ([`crate::DeclaredFonts`]) is a missing declaration — the shape panics
-/// naming the family instead of silently measuring a substitute face.
+/// ([`crate::DeclaredFonts`]) is a missing declaration — the shape reports
+/// it as a contract violation naming the family (a debug build panics, a
+/// release build logs and resolves the entry leniently) instead of silently
+/// measuring a substitute face.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FontFamilyResolution {
     /// An unresolved named family falls through to the next list entry.
     #[default]
     Lenient,
-    /// An unresolved named family panics, naming the family.
+    /// An unresolved named family is a contract violation, naming the
+    /// family.
     Strict,
 }
 

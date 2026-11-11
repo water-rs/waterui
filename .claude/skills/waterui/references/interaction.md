@@ -6,9 +6,11 @@
 - Tap shortcuts
 - Gesture recognizers
 - Combining gestures
+- Which view receives a press
 - Hover
 - Pointer cursor
 - Drag and drop
+- Key handling
 - Reactive pressed/hover visuals
 - Reporting a control's state
 - Selected controls
@@ -47,9 +49,11 @@ text("Simple Tap")
     .state(&taps)
 ```
 
-Siblings: `.on_tap_gesture_count(2, handler)` for a fixed tap count, and — behind the
-`std` cargo feature, which is not among the defaults — `.on_tap_haptic(intensity,
-handler)` / `.on_tap_haptic_default(handler)` to pair the tap with haptic feedback. Use
+Siblings: `.on_tap_gesture(handler)` (alias of `.on_tap`), `.on_tap_gesture_count(2,
+handler)` for a fixed tap count, `.on_long_press_gesture(milliseconds, handler)`, and —
+behind the `std` cargo feature, which is not among the defaults — `.on_tap_haptic(intensity,
+handler)` / `.on_tap_haptic_default(handler)` and `.on_long_press_haptic(..)` /
+`.on_long_press_haptic_default(..)` to pair the gesture with haptic feedback. Use
 `.on_tap` for tappable *content*; use `button(..)` when the
 thing is semantically a button — the button brings platform chrome and the `BUTTON`
 accessibility role.
@@ -77,6 +81,19 @@ Two argument types are traps:
 `MagnificationGesture::new(initial_scale)` and `RotationGesture::new(initial_angle)`
 complete the set. All gesture structs are `#[non_exhaustive]` — construct them only
 through these constructors.
+
+A recognized gesture's payload is read in the handler with `Use<TapEvent>`,
+`Use<LongPressEvent>`, `Use<DragEvent>` (`location()`, `translation()`, `velocity()`,
+`phase()`), `Use<MagnificationEvent>` or `Use<RotationEvent>`, all from
+`waterui::gesture`. Pointer motion inside a view is `.event(Event::HoverMove, handler)`,
+whose handler reads the local pointer `location()` with `Use<HoverEvent>` (both from
+`waterui::event`); `.on_hover_enter` / `.on_hover_exit` carry no `HoverEvent`, so
+`Use<HoverEvent>` fails to extract there.
+
+`.gesture(g, handler)` is shorthand for `.gesture_observer(GestureObserver::new(g,
+handler))` (`GestureObserver` from `waterui::gesture`). Use `.gesture_observer(..)` when
+the observer is built or stored separately; `GestureObserver::builder(g).action(handler)`
+is the equivalent builder form.
 
 `.buttons(..)` restricts tap, long-press, and drag recognizers to a `PointerButtons`
 mask (default `PRIMARY`). A recognizer activates only when the pressing
@@ -107,6 +124,18 @@ view.gesture(
 
 Note in passing: `Binding::container("Waiting…")` infers `Binding<&'static str>`, which is
 a perfectly good status-string binding — `text!("{status}")` accepts it directly.
+
+## Which view receives a press
+
+Hit testing is pass-through: only views with a press handler (`.on_tap`, `.gesture`,
+`.draggable`) or inherent interactivity (a button, slider, field) capture a press;
+layout containers, `Spacer` and plain content do not. The topmost interactive view
+under the pointer wins, so an `.on_tap` on a child shadows an `.on_tap` on its ancestor
+and a row-level handler never fires where a tappable child covers the pointer.
+Recognizers attached to the *same* view combine as above. `.hittable(false)` (or a
+signal of `bool`) makes a view and everything inside it transparent to presses without
+changing how it draws; `.disabled(..)` does the same and also gives every control in the
+subtree its disabled look and accessibility state.
 
 ## Hover
 
@@ -220,9 +249,11 @@ search_panel()
 ```
 
 - Return `Ignored`, never a missing `Handled` — `Ignored` is what keeps the key bubbling.
-- `press.modifiers` is a `keyboard_types::Modifiers` bitset (`Modifiers::SHIFT`,
-  `Modifiers::CONTROL`, `Modifiers::ALT`, `Modifiers::META`); `press.code` is the
-  physical `Code`, `press.repeat` marks auto-repeat.
+- `KeyPress` exposes accessors: `press.key()` is the layout-aware `&Key`,
+  `press.code()` the physical `Code` (layout-independent bindings match this),
+  `press.modifiers()` a `Modifiers` bitset (`Modifiers::SHIFT`, `CONTROL`, `ALT`,
+  `META`), `press.repeat()` marks auto-repeat. `Key`, `Code`, `Modifiers` and
+  `NamedKey` are all in `waterui::key`.
 - `field("Search", &query).on_submit(handler)` fires on Return in a line-limited
   field; with no line limit Return inserts a newline and never submits.
 
@@ -254,8 +285,8 @@ them — clone only when a finished signal is consumed twice, as `.scale(x, y)` 
 
 ## Reporting a control's state
 
-`.on_hover_enter`/`.on_hover_exit` report the pointer position of *that* modifier's
-view. When chrome lives around a control it does not own — a floating surface's
+`.on_hover_enter`/`.on_hover_exit` report the pointer entering and leaving *that*
+modifier's view. When chrome lives around a control it does not own — a floating surface's
 shadow, a chip's outline, a split button's half — ask the backend for the whole
 interaction state instead: `.interaction_state(&binding)` writes the
 `InteractionState` of the outermost interactive control at or inside the view it

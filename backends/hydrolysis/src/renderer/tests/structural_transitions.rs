@@ -331,15 +331,23 @@ fn a_declaration_behind_erasure_is_owned_by_the_conditional() {
 /// A declaration beneath a modifier is not the root of the branch, so no
 /// structural site claims it: the first frame fails and names the fix.
 #[test]
-#[should_panic(expected = "move `.transition(...)` outward so it is the outermost modifier")]
-fn a_declaration_beneath_a_modifier_is_rejected() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "move `.transition(...)` outward so it is the outermost modifier")
+)]
+fn a_declaration_beneath_a_modifier_is_reported_and_drawn_without_the_transition() {
     let mut runtime = runtime(|| {
         AnyView::new(vstack((when(Binding::container(true), || {
             transitioned("padded", RED, PropertyTransition::opacity())
                 .padding_with(EdgeInsets::all(8.0))
         }),)))
     });
-    let _ = frame(&mut runtime, Instant::now());
+    let snapshot = frame(&mut runtime, Instant::now());
+    assert_eq!(
+        centre_pixel(&snapshot, Rect::new(0.0, 0.0, 400.0, 56.0)),
+        [220, 40, 40, 255],
+        "the padded swatch is still drawn"
+    );
 }
 
 /// A conditional at a collection row's root is that row's one member: when

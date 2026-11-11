@@ -71,7 +71,13 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for WebView {
             LayoutSize::new(0.0, 0.0)
         }
         #[cfg(not(hydrolysis_system_webview))]
-        crate::renderer::unsupported_webview()
+        {
+            waterui_core::contract_violation!(
+                "{}; the web view measures as zero",
+                crate::renderer::UNSUPPORTED_WEBVIEW
+            );
+            LayoutSize::zero()
+        }
     }
 }
 

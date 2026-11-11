@@ -45,6 +45,18 @@ pub fn highlight_text(
         })
 }
 
+/// Lowercases an ASCII identifier at compile time.
+const fn ascii_lowercase<const N: usize>(s: &str) -> [u8; N] {
+    let bytes = s.as_bytes();
+    let mut out = [0; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = bytes[i].to_ascii_lowercase();
+        i += 1;
+    }
+    out
+}
+
 macro_rules! languages {
     ($($ident:ident => $ext:literal),* $(,)?) => {
         /// Supported programming languages for syntax highlighting.
@@ -71,8 +83,12 @@ macro_rules! languages {
             pub const fn token(&self) -> &'static str {
                 match self {
                     $(Self::$ident => const {
-                        const fn to_lower(s: &str) -> &str { s }
-                        to_lower(stringify!($ident))
+                        const BYTES: [u8; stringify!($ident).len()] =
+                            ascii_lowercase(stringify!($ident));
+                        match core::str::from_utf8(&BYTES) {
+                            Ok(token) => token,
+                            Err(_) => panic!("ASCII-lowercased identifier is valid UTF-8"),
+                        }
                     },)*
                 }
             }

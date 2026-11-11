@@ -1,0 +1,15 @@
+[package]
+name = "waterui-easing"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+description = "Cubic Bézier timing and physical spring evaluation shared by WaterUI and the Cherenkov engine"
+keywords = ["animation", "easing", "spring", "bezier", "waterui"]
+categories = ["graphics", "mathematics"]
+
+[lints]
+workspace = true

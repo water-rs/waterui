@@ -461,10 +461,13 @@ fn a_fling_whose_scroll_view_is_hidden_by_a_tab_switch_mid_fling_ends_with_it() 
 /// parameters cannot receive a touch press: the renderer panics and
 /// names the requirement instead of silently dropping the gesture.
 #[test]
-#[should_panic(
-    expected = "hydrolysis: a touch press arrived but the platform window reported no touch_scroll_config"
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "hydrolysis: a touch press arrived but the platform window reported no touch_scroll_config"
+    )
 )]
-fn a_touch_press_without_a_touch_scroll_config_panics() {
+fn a_touch_press_without_a_touch_scroll_config_is_reported_and_does_not_scroll() {
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         AnyViewBuilder::<AnyView>::new(|| AnyView::new(tall_stack())),
@@ -476,6 +479,19 @@ fn a_touch_press_without_a_touch_scroll_config_panics() {
     let _ = runtime.pump_at(false, start);
     runtime.push_input_event(touch_down(200.0, 300.0));
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    runtime.push_input_event(touch_move(200.0, 100.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(32));
+    runtime.push_input_event(touch_up(200.0, 100.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(48));
+    assert!(
+        !runtime.renderer().has_active_touch_fling(),
+        "the press arms no scroll, so nothing flings"
+    );
+    assert_eq!(
+        offset_y_at(&runtime, 200.0, 300.0),
+        Some(0.0),
+        "the press arms no scroll, so the content stays put"
+    );
 }
 
 /// A touch press waits out the touch delay before it begins; a target

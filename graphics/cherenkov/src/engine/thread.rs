@@ -3,8 +3,6 @@
 //! frame time, renders, and answers with [`Next`] and the [`FrameStats`].
 
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -357,16 +355,16 @@ pub fn run<B: Backend>(
     config: B::Config,
     rx: &Receiver<Message<B>>,
     retire_rx: &Receiver<crate::message::ResOp<B>>,
-    init_reply: &Sender<Result<(B::Info, crate::ImageLimits), EngineError>>,
+    init_reply: &crate::transport::Reply<Result<(B::Info, crate::ImageLimits), EngineError>>,
 ) {
     let (mut renderer, info) = match B::init(config) {
         Ok(pair) => pair,
         Err(error) => {
-            let _ = init_reply.send(Err(error));
+            init_reply.send(Err(error));
             return;
         }
     };
-    let _ = init_reply.send(Ok((info, renderer.image_limits())));
+    init_reply.send(Ok((info, renderer.image_limits())));
     let mut surfaces: FxHashMap<SurfaceId, SurfaceState> = FxHashMap::default();
     let mut resources = Resources::<B>::default();
     let mut next_frame = 0u64;
@@ -440,7 +438,7 @@ fn apply_message<B: Backend>(
             waker,
             reply,
         } => {
-            let _ = reply.send(create_surface::<B>(renderer, surfaces, id, target, waker));
+            reply.send(create_surface::<B>(renderer, surfaces, id, target, waker));
         }
         Message::ResizeSurface { id, size } => {
             resize_surface::<B>(renderer, surfaces, id, size);
@@ -480,12 +478,7 @@ fn apply_message<B: Backend>(
             let result = render::<B>(renderer, surfaces, resources, id, time, &mut commits);
             // This frame's queued retirements belong to its batch.
             drain_retire::<B>(retire_rx, renderer);
-            let sender = reply.clone();
-            let _ = sender.send(crate::message::RenderReply {
-                result,
-                commits,
-                sender: reply,
-            });
+            reply.send(crate::message::RenderReply { result, commits });
         }
         Message::FinishTimings { reply } => {
             let _ = reply.send(renderer.finish_timings());
@@ -494,10 +487,8 @@ fn apply_message<B: Backend>(
             let _ = reply.send(renderer.readback(surface));
         }
         Message::Memory { reply } => {
-            let sender = reply.clone();
-            let _ = sender.send(crate::message::MemoryReply {
+            reply.send(crate::message::MemoryReply {
                 usage: renderer.memory(),
-                sender: reply,
             });
         }
         Message::Trim(pressure) => renderer.trim(pressure),

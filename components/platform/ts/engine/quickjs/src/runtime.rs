@@ -138,7 +138,13 @@ impl QuickJsRuntime {
         self.context.with(|ctx| {
             self.depth.set(self.depth.get() + 1);
             let _depth = DepthGuard(&self.depth);
-            f(ctx)
+            let result = f(ctx.clone());
+            // The outermost entry owns the job queue: the Promise reactions
+            // the script queued run before control returns to the host, so
+            // an `await` continuation completes as on every other engine.
+            // A failing job's exception is cleared by `execute_pending_job`.
+            while ctx.execute_pending_job() {}
+            result
         })
     }
 

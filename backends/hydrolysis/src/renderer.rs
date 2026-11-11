@@ -63,7 +63,7 @@ pub use mount::{Dirty, NodeCell, NodeCore, Placement, PlacementClock, ProducerKe
 use mount::{HitClasses, HitGate, ScopeDelta};
 pub use native_measure::*;
 #[cfg(test)]
-pub use recording::assert_well_formed_image;
+pub use recording::check_well_formed_image;
 #[cfg(hydrolysis_cherenkov)]
 pub use recording::{Glyph, GlyphRun};
 pub use recording::{Recording, working_color};
@@ -89,10 +89,10 @@ pub use interaction_layers::*;
 pub use lifecycle::lazy;
 pub use lifecycle::*;
 pub use navigation::*;
+#[cfg(hydrolysis_cherenkov)]
+pub use render::FrameError;
 #[cfg(hydrolysis_gpu_painter)]
 pub use render::FrameRenderTarget;
-#[cfg(hydrolysis_gpu_painter)]
-pub use render::HydrolysisRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
 pub use render::{

@@ -3,6 +3,7 @@ use crate::renderer::{
     normalize_layout_view,
 };
 use std::rc::Rc;
+use waterui_core::contract_violation;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{Environment, Native};
@@ -18,9 +19,12 @@ fn measure_dynamic<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let identity = dynamic.identity();
-    state
+    if !state
         .measurement
-        .begin_dynamic_measurement(identity, proposal);
+        .begin_dynamic_measurement(identity, proposal)
+    {
+        return ViewDimensions::new(LayoutSize::zero());
+    }
     let measure_content = |slot: &mut Option<waterui_core::AnyView>, state: &mut HydroState<E>| {
         slot.take().map(|content| {
             let normalized = normalize_layout_view(content, env);
@@ -37,7 +41,10 @@ fn measure_dynamic<E: crate::text::TextEngine>(
     let dimensions = match initial {
         Some(Some(dimensions)) => dimensions,
         Some(None) => {
-            panic!("hydrolysis Dynamic measurement requires an initial view before layout")
+            contract_violation!(
+                "hydrolysis Dynamic measurement requires an initial view before layout; the node measures as zero"
+            );
+            ViewDimensions::new(LayoutSize::zero())
         }
         None => {
             match dynamic.with_connected_pending_view_mut(|slot| measure_content(slot, state)) {
@@ -57,9 +64,10 @@ fn measure_dynamic<E: crate::text::TextEngine>(
                         .measurement
                         .dynamic_dimensions(identity, proposal)
                         .unwrap_or_else(|| {
-                            panic!(
-                                "hydrolysis Dynamic measurement found a connected dynamic node missing from the retained registry"
-                            )
+                            contract_violation!(
+                                "hydrolysis Dynamic measurement found a connected dynamic node missing from the retained registry; the node measures as zero"
+                            );
+                            ViewDimensions::new(LayoutSize::zero())
                         }),
                 },
             }

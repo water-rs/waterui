@@ -7,6 +7,7 @@ use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
     NavigationTransitionDirection,
 };
+use waterui_core::contract_violation;
 use waterui_core::id::Id;
 
 pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
@@ -549,10 +550,12 @@ impl<E: crate::text::TextEngine> NavigationInteractivePop<E> {
     /// breach. Returns whether the stored progress changed. A pop that has
     /// already left the dragging phase ignores the report.
     pub(crate) fn set_progress(&mut self, progress: f64) -> bool {
-        assert!(
-            progress.is_finite(),
-            "interactive navigation progress must be finite"
-        );
+        if !progress.is_finite() {
+            contract_violation!(
+                "interactive navigation progress must be finite; the report is ignored"
+            );
+            return false;
+        }
         if !matches!(self.phase, NavigationInteractivePopPhase::Dragging) {
             return false;
         }
@@ -659,14 +662,8 @@ impl<E: crate::text::TextEngine> NavigationTransitionState<E> {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn eased_progress(progress: f64, motion: NavigationMotion) -> f64 {
-    f64::from(
-        motion
-            .transition_easing
-            .ease(progress as f32)
-            .clamp(0.0, 1.0),
-    )
+    motion.transition_easing.ease(progress).clamp(0.0, 1.0)
 }
 
 impl<E: crate::text::TextEngine> CustomNavigationController for HydroNavigationController<E> {
@@ -1294,10 +1291,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             &mut record.page.destinations
         };
         let previous = elements.insert(id, element);
-        assert!(
-            previous.is_none(),
-            "navigation transition id {id:?} was declared more than once in one page"
-        );
+        if previous.is_some() {
+            contract_violation!(
+                "navigation transition id {id:?} was declared more than once in one page; the later declaration is the one matched"
+            );
+        }
     }
 }
 

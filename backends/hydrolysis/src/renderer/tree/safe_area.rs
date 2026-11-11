@@ -23,6 +23,7 @@ use core::cell::{Cell, RefCell};
 use core::ops::Range;
 
 use waterui_core::animation::Animation;
+use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutDirection, Rect, Size};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
@@ -1065,7 +1066,12 @@ impl ScrollSurfaceArea {
         let (offset, viewport, inset) = match axis {
             ScrollAxis::Vertical => (metrics.offset_y, metrics.viewport_height, extension.top),
             ScrollAxis::Horizontal => (metrics.offset_x, metrics.viewport_width, extension.leading),
-            other => panic!("hydrolysis scroll surface: unsupported span axis {other:?}"),
+            other => {
+                contract_violation!(
+                    "hydrolysis scroll surface: unsupported span axis {other:?}; the visible span is empty"
+                );
+                return 0.0..0.0;
+            }
         };
         (offset - inset)..(offset - inset + viewport)
     }

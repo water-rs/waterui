@@ -19,6 +19,7 @@ use std::rc::Rc;
 use crate::theme::{RadioIndicatorState, RadioSelectionMotion};
 use nami::watcher::Context;
 use waterui_core::animation::{Animation, AnimationTrack, ChangeAnimation};
+use waterui_core::contract_violation;
 
 use crate::time::Instant;
 
@@ -197,10 +198,11 @@ impl AnimationController {
     /// target), the track snaps to it without animating — the watcher that
     /// owns the handle is responsible for animated transitions. Each bind
     /// advances the slot generation, so handles from earlier frames become
-    /// inert. Panics if `key` is not a scalar-scope key.
-    /// # Panics
+    /// inert.
     ///
-    /// Panics if `key` was created with a scope that does not match this animation binding.
+    /// A `key` that is not a scalar-scope key is a contract violation by the
+    /// caller: it is reported and binds the slot all the same, since slots are
+    /// keyed by the whole key.
     pub fn bind_scalar(
         &mut self,
         key: AnimationKey,
@@ -208,10 +210,11 @@ impl AnimationController {
         now: Instant,
         refresh: RefreshRange,
     ) -> AnimatedScalarHandle {
-        assert!(
-            key.scope == AnimationKeyScope::RendererLocalScalar,
-            "animation scalar key used with mismatched scope"
-        );
+        if key.scope != AnimationKeyScope::RendererLocalScalar {
+            contract_violation!(
+                "animation scalar key used with mismatched scope; the slot is bound anyway"
+            );
+        }
         self.active_slots.insert(key);
         self.note_key(key);
         let slot = self.slots.entry(key).or_insert_with(|| AnimatedScalarSlot {
@@ -234,10 +237,10 @@ impl AnimationController {
     /// per-frame input: re-binding with the same target does not restart the
     /// in-flight animation, while a new target starts one from the current
     /// sampled value (no snapping). A slot created on first bind starts at
-    /// `target` directly. Panics if `key` is not a scalar-scope key.
-    /// # Panics
+    /// `target` directly.
     ///
-    /// Panics if `key` was created with a scope that does not match this animation binding.
+    /// A `key` that is not a scalar-scope key is a contract violation by the
+    /// caller: it is reported and binds the slot all the same.
     pub fn bind_scalar_target(
         &mut self,
         key: AnimationKey,
@@ -245,10 +248,11 @@ impl AnimationController {
         animation: Animation,
         now: Instant,
     ) -> AnimatedScalarHandle {
-        assert!(
-            key.scope == AnimationKeyScope::RendererLocalScalar,
-            "animation scalar target key used with mismatched scope"
-        );
+        if key.scope != AnimationKeyScope::RendererLocalScalar {
+            contract_violation!(
+                "animation scalar target key used with mismatched scope; the slot is bound anyway"
+            );
+        }
         self.active_slots.insert(key);
         self.note_key(key);
         let slot = self.slots.entry(key).or_insert_with(|| AnimatedScalarSlot {
@@ -268,10 +272,11 @@ impl AnimationController {
     /// A selection change starts the choreography described by `motion`:
     /// selecting grows the inner dot from zero while fading dot opacity and
     /// outer ring color in; deselecting fades them out without shrinking the
-    /// dot. Panics if `key` is not a radio-indicator-scope key.
-    /// # Panics
+    /// dot.
     ///
-    /// Panics if `key` was created with a scope that does not match this animation binding.
+    /// A `key` that is not a radio-indicator-scope key is a contract
+    /// violation by the caller: it is reported and binds the slot all the
+    /// same.
     pub fn bind_radio_indicator(
         &mut self,
         key: AnimationKey,
@@ -279,10 +284,11 @@ impl AnimationController {
         motion: &RadioSelectionMotion,
         now: Instant,
     ) -> RadioIndicatorState {
-        assert!(
-            key.scope == AnimationKeyScope::RadioIndicator,
-            "animation radio indicator key used with mismatched scope"
-        );
+        if key.scope != AnimationKeyScope::RadioIndicator {
+            contract_violation!(
+                "animation radio indicator key used with mismatched scope; the slot is bound anyway"
+            );
+        }
         self.active_radio_indicator_slots.insert(key);
         self.note_key(key);
         let slot =
@@ -375,13 +381,12 @@ impl AnimationController {
 
     /// Pops the scope opened by [`begin_animation_scope`](Self::begin_animation_scope).
     ///
-    /// # Panics
-    ///
-    /// Panics when no scope is open.
+    /// Ending with no scope open is a contract violation by the caller: it
+    /// is reported and nothing is popped.
     pub fn end_animation_scope(&mut self) {
-        self.scope_stack
-            .pop()
-            .expect("end_animation_scope without a matching begin");
+        if self.scope_stack.pop().is_none() {
+            contract_violation!("end_animation_scope without a matching begin; no scope is popped");
+        }
     }
 
     /// Attributes `key` to every open scope; called by each `bind_*`.
@@ -622,6 +627,30 @@ mod tests {
 
     const fn radio_key(identity: usize) -> AnimationKey {
         AnimationKey::test_radio_indicator(identity)
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "animation scalar key used with mismatched scope")
+    )]
+    fn a_scalar_bind_with_a_radio_key_is_reported_and_still_binds() {
+        let mut controller = AnimationController::default();
+        let start = Instant::now();
+        let handle = controller.bind_scalar(radio_key(1), 0.5, start, RATE_FAST);
+        assert_eq!(handle.sample(start), 0.5);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "end_animation_scope without a matching begin")
+    )]
+    fn ending_an_unopened_scope_is_reported_and_pops_nothing() {
+        let mut controller = AnimationController::default();
+        controller.end_animation_scope();
+        controller.begin_animation_scope(1);
+        controller.end_animation_scope();
     }
 
     #[test]

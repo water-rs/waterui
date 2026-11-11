@@ -23,8 +23,9 @@ fn media_time(start: Instant) -> f64 {
     }
 }
 
-/// Builds a scalar animation in absolute property units. Unit mass gives
-/// exactly the engine oscillator: k = (2π/response)², c = 2ζ√k.
+/// Builds a scalar animation in absolute property units. Unit mass with the
+/// spring's own stiffness and damping coefficient gives exactly the engine
+/// oscillator.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "CAMediaTimingFunction stores f32 controls"
@@ -44,10 +45,9 @@ pub(super) fn build(value: Scalar, path: &NSString) -> Retained<CABasicAnimation
         }
         Animation::Spring(spring) => {
             let animation = CASpringAnimation::animationWithKeyPath(Some(path));
-            let omega = std::f64::consts::TAU / spring.response;
             animation.setMass(1.0);
-            animation.setStiffness(omega * omega);
-            animation.setDamping(2.0 * spring.damping * omega);
+            animation.setStiffness(spring.stiffness());
+            animation.setDamping(spring.damping_coefficient());
             animation.setAllowsOverdamping(true);
             let distance = value.target - value.from;
             animation.setInitialVelocity(if distance == 0.0 {

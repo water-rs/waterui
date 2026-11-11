@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use cherenkov_record::{FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction};
 
+use waterui_core::contract_violation;
 use waterui_graphics::backend::HeldResources;
 
 use super::backdrop::{
@@ -613,8 +614,9 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> CommitCx<'_, '_, '_, T, E> {
 impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     /// The mount binds to a target whose engine realizes materials.
     /// `registry` is the theme's `MaterialRegistry`: a target that refuses
-    /// backdrop shaders ([`LayerTarget::BACKDROP_SHADER_REFUSAL`]) panics on
-    /// this attach with its reason when the registry is not empty
+    /// backdrop shaders ([`LayerTarget::BACKDROP_SHADER_REFUSAL`]) reports
+    /// its reason on this attach when the registry is not empty, and its
+    /// material chrome is not drawn
     /// (water-rs/waterui#1788).
     pub fn new(
         shared: Rc<RefCell<Shared<T>>>,
@@ -623,9 +625,10 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
         if let Some(refusal) = T::BACKDROP_SHADER_REFUSAL
             && !registry.is_empty()
         {
-            panic!(
-                "hydrolysis materials: the theme registered the backdrop shaders {}, but {refusal} \
-                 — the material chrome would have nothing to draw with",
+            contract_violation!(
+                "hydrolysis materials: the theme registered the backdrop shaders {}, but {refusal}; \
+                 the material chrome is not drawn; attach the theme to a GPU engine or register \
+                 no shaders",
                 registry
                     .shaders()
                     .map(|(key, _)| format!("{key:?}"))
@@ -1090,7 +1093,7 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
     } = program;
     let filter = filter
         .as_ref()
-        .map(|runtime| T::filter(cx.host, &mut runtime.borrow_mut()));
+        .and_then(|runtime| T::filter(cx.host, &mut runtime.borrow_mut()));
     let clip = material.as_ref().map_or_else(
         || clip.clone(),
         |request| Some(ShapeData::of(&request.bounds)),
@@ -1248,7 +1251,7 @@ fn lower_inner<T: LayerTarget<E>, E: crate::text::TextEngine>(
             match &mut layers.inner_stretch {
                 Some(stretch) => stretch.show(shown, world),
                 None => {
-                    layers.inner_stretch = Some(StretchFilter::new::<T, E>(cx.host, shown, world));
+                    layers.inner_stretch = StretchFilter::new::<T, E>(cx.host, shown, world);
                 }
             }
             layers.inner_stretch.as_ref().map(StretchFilter::id)
@@ -2303,8 +2306,8 @@ fn visit_list<E: crate::text::TextEngine>(
 /// is fully transparent holds no membership: the group belongs to its
 /// visible members.
 ///
-/// An unregistered shader or capture class panics here — at install —
-/// naming the key.
+/// An unregistered shader or capture class is reported here — at install —
+/// naming the key, and the member draws no chrome.
 fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     chrome: &ChromeMaterial,
@@ -2336,21 +2339,12 @@ fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     // recording stored.
     cx.tx[&member.layer].clip(chrome.material.shape().rebound());
     member.chrome = Some(chrome.clone());
-    if chrome.visible {
-        let registry = &T::material_terms(cx.host).registry;
-        let class = chrome.material.capture();
-        let params = *registry.capture_class(class).unwrap_or_else(|| {
-            panic!(
-                "hydrolysis materials: capture class {class:?} is not registered; the theme \
-                 declares its classes through `WidgetTheme::register_backdrop_shaders`"
-            )
-        });
-        let shader = chrome.material.shader();
-        assert!(
-            registry.shader(shader).is_some(),
-            "hydrolysis materials: backdrop shader {shader:?} is not registered; the theme \
-             declares its shaders through `WidgetTheme::register_backdrop_shaders`"
-        );
+    let registered = if chrome.visible {
+        chrome_terms::<T, E>(cx.host, chrome)
+    } else {
+        None
+    };
+    if let Some((class, params)) = registered {
         let key = ChromeGroupKey::new(
             member.layer.id(),
             chrome.material.scope(),
@@ -2386,6 +2380,43 @@ fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     members.len() - 1
 }
 
+/// The capture class and its terms `chrome` draws with, or `None` after a
+/// reported violation when the theme's registry lacks the class or shader
+/// the material names, or the engine holds no handle for the shader.
+fn chrome_terms<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    host: &T::Host,
+    chrome: &ChromeMaterial,
+) -> Option<(
+    cherenkov_record::CaptureClass,
+    cherenkov_record::MaterialCapture,
+)> {
+    let terms = T::material_terms(host);
+    let class = chrome.material.capture();
+    let Some(params) = terms.registry.capture_class(class).copied() else {
+        contract_violation!(
+            "hydrolysis materials: capture class {class:?} is not registered; the theme \
+             declares its classes through `WidgetTheme::register_backdrop_shaders`; the member draws no chrome"
+        );
+        return None;
+    };
+    let shader = chrome.material.shader();
+    if terms.registry.shader(shader).is_none() {
+        contract_violation!(
+            "hydrolysis materials: backdrop shader {shader:?} is not registered; the theme \
+             declares its shaders through `WidgetTheme::register_backdrop_shaders`; the member draws no chrome"
+        );
+        return None;
+    }
+    if !terms.shaders.contains_key(&shader) {
+        contract_violation!(
+            "hydrolysis materials: backdrop shader {shader:?} is registered but has no handle \
+             on this engine; the member draws no chrome"
+        );
+        return None;
+    }
+    Some((class, params))
+}
+
 /// The member's own binding payload (water-rs/waterui#1788): the
 /// shader's engine handle and its live effect — the terms the group table
 /// stores on the member's entry so a group rebuild rebinds each member's
@@ -2397,13 +2428,7 @@ fn chrome_member_payload<T: LayerTarget<E>, E: crate::text::TextEngine>(
     let shader = T::material_terms(host)
         .shaders
         .get(&chrome.material.shader())
-        .unwrap_or_else(|| {
-            panic!(
-                "hydrolysis materials: backdrop shader {:?} is registered but has no handle \
-                 on this engine — a theme's registry is registered at engine attach",
-                chrome.material.shader(),
-            )
-        })
+        .expect("`chrome_terms` checked that the engine holds a handle for the shader")
         .clone();
     super::backdrop::ChromeMemberPayload {
         shader,

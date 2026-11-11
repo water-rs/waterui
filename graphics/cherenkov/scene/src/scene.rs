@@ -105,6 +105,9 @@ pub enum Feature {
     BackdropScale,
     /// A backdrop group captures a blur pyramid (`levels > 1`).
     BackdropLevels,
+    /// A backdrop group reduces its pyramid with the Gaussian kernel
+    /// (`BackdropGroup::pyramid`).
+    BackdropGaussianPyramid,
     /// A backdrop group anchors its capture at a named layer
     /// ([`BackdropGroup::anchor`]).
     BackdropAnchor,
@@ -216,6 +219,9 @@ impl Scene {
             }
             if group.levels > 1 {
                 f.insert(Feature::BackdropLevels);
+            }
+            if group.pyramid != crate::CapturePyramid::Box {
+                f.insert(Feature::BackdropGaussianPyramid);
             }
             if group.anchor.is_some() {
                 f.insert(Feature::BackdropAnchor);

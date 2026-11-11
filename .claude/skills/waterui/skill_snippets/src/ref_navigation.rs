@@ -24,7 +24,7 @@ pub enum SettingsRoute {
     Appearance,
 }
 
-/// Glue: blocks 3, 4 and 7 name `MailRoute` outside the module that declares
+/// Glue: blocks 3, 4, 5 and 8 name `MailRoute` outside the module that declares
 /// it, so they get an identical file-scope copy rather than a `pub` added to
 /// the snippet's own `enum MailRoute { .. }` line.
 #[derive(Clone, PartialEq, Eq)]
@@ -62,20 +62,19 @@ fn now_playing_bar() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Tabs" — rust block 1/13
+// navigation.md § "## Tabs" — rust block 1/16
 // ---------------------------------------------------------------------------
 // navigation.md writes `mdi::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_01() -> impl View {
-    use waterui::id::SelfId;
     use waterui::navigation::tab_style;
-    use waterui::reactive::collection::List;
-    use waterui::views::ForEach;
 
     fn inbox_stack() -> impl View {
         text("inbox stack")
     }
     let unread_count = Binding::i32(3);
+
+    use waterui::{id::SelfId, reactive::collection::List, views::ForEach};
 
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     enum Pane {
@@ -86,38 +85,25 @@ pub fn navigation_block_01() -> impl View {
     }
 
     let pane = binding(Pane::Inbox);
-
-    // Tabs takes any `Views` collection keyed by the selection's type:
-    // `ForEach` over a `List` of `SelfId`s makes each pane variant the tab's
-    // identity; a fixed set can also be `vec![Tab::new(..), ..]` with a
-    // `Binding<usize>` selecting by position.
-    let tabs = std::collections::BTreeMap::from([
-        (
-            Pane::Inbox,
-            Tab::container(label("Inbox").icon(mdi::inbox()), inbox_stack).badge(unread_count),
-        ),
-        (
-            Pane::Library,
-            Tab::container(label("Library").icon(mdi::image_album()), library_split),
-        ),
-        (
-            Pane::Settings,
-            Tab::container(label("Settings").icon(mdi::cog()), settings_stack),
-        ),
-        (
-            Pane::Search,
-            Tab::container(label("Search").icon(mdi::magnify()), search_stack)
-                .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
-        ),
-    ]);
     let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
+
     Tabs::new(
         &pane,
-        ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
-            tabs.get(&pane.into_inner())
-                .expect("a keyed tab collection reports a tab for every id")
-                .clone()
-        }),
+        ForEach::new(
+            List::from(panes.to_vec()),
+            move |pane: SelfId<Pane>| match *pane {
+                Pane::Inbox => Tab::container(label("Inbox").icon(mdi::inbox()), inbox_stack)
+                    .badge(unread_count.clone()),
+                Pane::Library => {
+                    Tab::container(label("Library").icon(mdi::image_album()), library_split)
+                }
+                Pane::Settings => {
+                    Tab::container(label("Settings").icon(mdi::cog()), settings_stack)
+                }
+                Pane::Search => Tab::container(label("Search").icon(mdi::magnify()), search_stack)
+                    .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
+            },
+        ),
     )
     .style(tab_style::automatic())
     .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown) // iOS 26 collapses the bar while scrolling; ignored elsewhere
@@ -125,7 +111,31 @@ pub fn navigation_block_01() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Navigation stacks and routes" — rust block 2/13
+// navigation.md § "## Tabs" (prose): a fixed `vec![Tab..]` selected by a
+// `Binding<usize>`, `.enabled(..)`, `Tab::new`, the other tab styles and the
+// `TabBarMinimizeBehavior` variants. Not counted as a rust block.
+// ---------------------------------------------------------------------------
+pub fn navigation_tabs_prose() -> impl View {
+    use waterui::navigation::tab_style;
+
+    let selected = binding(0_usize);
+    let _ = TabBarMinimizeBehavior::Automatic;
+    let _ = TabBarMinimizeBehavior::Never;
+    let _ = TabBarMinimizeBehavior::OnScrollUp;
+    let _ = Tabs::new(
+        &selected,
+        vec![Tab::new("Raw", || NavigationView::new("Raw", text("raw")))],
+    )
+    .style(tab_style::sidebar());
+    Tabs::new(
+        &selected,
+        vec![Tab::container(label("Library"), library_split).enabled(true)],
+    )
+    .style(tab_style::tab_bar())
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Navigation stacks and routes" — rust block 2/16
 // ---------------------------------------------------------------------------
 pub mod navigation_block_02 {
     use super::{Mail, compose_page, inbox_root, message_detail};
@@ -154,7 +164,7 @@ pub mod navigation_block_02 {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Navigation stacks and routes" — rust block 3/13
+// navigation.md § "## Navigation stacks and routes" — rust block 3/16
 // Listing: a declarative link, then an imperative handler closure.
 // ---------------------------------------------------------------------------
 pub fn navigation_block_03() {
@@ -189,22 +199,70 @@ pub fn navigation_extractor_spellings_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Going back, and destination lifecycle" — rust block 4/13
+// navigation.md § "## Navigation stacks and routes" (prose): the other
+// `Navigator` and `NavigationPath` operations, and a route-free
+// `NavigationLink::new` inside `NavigationStack::new`.
+// Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
-    mail.send_draft();
-    let _ = navigator.pop(); // returns Option<T> and is #[must_use] — bind it
+pub fn navigation_path_operations_prose(navigator: Navigator<MailRoute>) -> impl View {
+    navigator.pop_n(2);
+    navigator.clear();
+    navigator.pop_to_root();
+    navigator.replace([MailRoute::Compose, MailRoute::Message(1)]);
+
+    let path = NavigationPath::from(vec![MailRoute::Compose]);
+    path.push(MailRoute::Message(2));
+    let _ = path.pop();
+    path.pop_n(1);
+    path.clear();
+    path.replace([MailRoute::Compose]);
+    let _ = (path.len(), path.is_empty(), path.snapshot());
+    path.truncate(0);
+
+    NavigationStack::new(inbox_root(Mail)).transition(navigation_transition::automatic())
+}
+
+pub fn navigation_route_free_link_prose() -> impl View {
+    let _ = NavigationLink::new("Details", || message_detail(Mail, 1));
+    NavigationStack::new(inbox_root(Mail))
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Going back, and destination lifecycle" — rust block 5/13
+// navigation.md § "## Navigation stacks and routes" — rust block 4/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_05() -> impl View {
+pub fn navigation_block_04() {
+    use waterui::Url;
+
+    let path = NavigationPath::<MailRoute>::new();
+    let router = NavigationRouter::new(path.clone())
+        .route(|url| (url.path() == "/compose").then(|| vec![MailRoute::Compose]));
+
+    let opened = router.open(&Url::new("waterui://app/compose"));
+    let _ = opened;
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Going back, and destination lifecycle" — rust block 5/16
+// ---------------------------------------------------------------------------
+pub fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
+    mail.send_draft();
+    navigator.pop(); // returns the popped route as Option<T>, `None` at the root
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Going back, and destination lifecycle" — rust block 6/16
+// ---------------------------------------------------------------------------
+pub fn navigation_block_06() -> impl View {
+    // Glue: the page body before `.title(..)` makes it a `NavigationView`;
+    // block 2's `message_detail` is the titled destination built from it.
+    fn message_body(_mail: Mail, _id: u64) -> impl View {
+        vstack((text("message"), Divider))
+    }
     let mail = Mail;
     let id = 7_u64;
     let subject = Binding::container(Str::from("Re: hello"));
 
-    message_detail(mail.clone(), id)
+    message_body(mail.clone(), id)
         .title(text!("{subject}"))
         .on_navigation_appear({
             let mail = mail.clone();
@@ -213,9 +271,9 @@ pub fn navigation_block_05() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Bar chrome on a destination" — rust block 6/13
+// navigation.md § "## Bar chrome on a destination" — rust block 7/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_06() -> NavigationView {
+pub fn navigation_block_07() -> NavigationView {
     fn message_list_page(mail: Mail) -> NavigationView {
         let query = Binding::container(Str::from(""));
         let can_leave = Binding::bool(true);
@@ -243,15 +301,31 @@ pub fn navigation_block_06() -> NavigationView {
 pub fn navigation_view_new_prose() {
     let _ = NavigationView::new("Inbox", vstack((text("a"), Divider)));
     let _ = vstack((text("a"), Divider)).title("Inbox").inline_title();
+    let _ = navigation("Inbox", vstack((text("a"), Divider)));
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Toolbars" — rust block 7/13
+// navigation.md § "## Bar chrome on a destination" (prose): the rest of the
+// destination's chrome. Not counted as a rust block.
+// ---------------------------------------------------------------------------
+pub fn navigation_bar_chrome_prose() -> NavigationView {
+    let visible = Binding::bool(true);
+
+    message_list(Mail)
+        .title("Inbox")
+        .navigation_title_display_mode(NavigationTitleDisplayMode::Medium)
+        .navigation_bar_visibility(visible)
+        .navigation_bar_color(Color::srgb(0, 0, 0))
+        .on_navigation_pop(|| ())
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Toolbars" — rust block 8/16
 // A bare method fragment; applied to a navigation destination receiver.
 // ---------------------------------------------------------------------------
 // navigation.md writes `mdi::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
-pub fn navigation_block_07() -> NavigationView {
+pub fn navigation_block_08() -> NavigationView {
     use waterui::navigation::{
         NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
     };
@@ -289,6 +363,11 @@ pub fn navigation_toolbar_prose() {
         button("Item").action(|| ()),
     )]);
 
+    let _ = NavigationToolbarItem::action(
+        NavigationToolbarPlacement::SecondaryAction,
+        label("Share"),
+        || (),
+    );
     let _ = NavigationToolbarPlacement::PrimaryAction;
     let _ = NavigationToolbarPlacement::SecondaryAction;
     let _ = NavigationToolbarPlacement::Confirmation;
@@ -300,10 +379,10 @@ pub fn navigation_toolbar_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Transitions" — rust block 8/13
+// navigation.md § "## Transitions" — rust block 9/16
 // Method-fragment listing applied to a navigation destination receiver.
 // ---------------------------------------------------------------------------
-pub fn navigation_block_08() {
+pub fn navigation_block_09() {
     use waterui::id::Id;
     use waterui::navigation::navigation_transition;
 
@@ -318,10 +397,10 @@ pub fn navigation_block_08() {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Transitions" — rust block 9/13
+// navigation.md § "## Transitions" — rust block 10/16
 // Listing: the two halves of a matched zoom.
 // ---------------------------------------------------------------------------
-pub fn navigation_block_09() {
+pub fn navigation_block_10() {
     use waterui::id::Id;
 
     // The prose spells out the construction: `Id::try_from(index_i32 + 1)`.
@@ -337,9 +416,9 @@ pub fn navigation_block_09() {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Split views" — rust block 10/13
+// navigation.md § "## Split views" — rust block 11/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_10() -> impl View {
+pub fn navigation_block_11() -> impl View {
     use waterui::navigation::{ColumnWidth, split_style};
 
     #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -370,13 +449,49 @@ pub fn navigation_block_10() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 11/14
+// navigation.md § "## Split views" (prose): `three_column`,
+// `.column_visibility(..)` and the other split styles. Not counted as a rust
+// block.
+// ---------------------------------------------------------------------------
+pub fn navigation_split_prose() -> impl View {
+    use waterui::navigation::{NavigationSplitColumnVisibility, NavigationSplitView, split_style};
+
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Section {
+        Recents,
+    }
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Item {
+        First,
+    }
+
+    let sidebar_selection: Binding<Option<Section>> = binding(Some(Section::Recents));
+    let content_selection: Binding<Option<Item>> = binding(Some(Item::First));
+
+    let _ = NavigationSplitView::new(&sidebar_selection, text("sidebar"), |_: Section| {
+        vstack((text("detail"), Divider)).title("Detail")
+    })
+    .style(split_style::automatic())
+    .style(split_style::balanced());
+
+    NavigationSplitView::three_column(
+        &sidebar_selection,
+        &content_selection,
+        text("sidebar"),
+        |_: Section| vstack((text("content"), Divider)).title("Content"),
+        |_: Item| vstack((text("detail"), Divider)).title("Detail"),
+    )
+    .column_visibility(NavigationSplitColumnVisibility::DoubleColumn)
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Windows" — rust block 12/16
 // ---------------------------------------------------------------------------
 #[expect(
     clippy::redundant_closure,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn navigation_block_11(env: Environment) -> App {
+pub fn navigation_block_12(env: Environment) -> App {
     fn scene() -> impl View {
         text("scene")
     }
@@ -408,13 +523,16 @@ pub fn navigation_block_11(env: Environment) -> App {
 // the three `WindowBackground` variants, `.icon(..)` with a `WindowIcon` or a
 // `Binding<Option<WindowIcon>>`, `set_icon(..)`, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
-// `.level(..)` / `.resize_increments(..)`, the `WindowState` variants, and the
-// `WindowHandle` controls. Not counted as a rust block.
+// `.level(..)` / `.resize_increments(..)`, `.title(..)`, `.placement(..)`,
+// `.activation(..)`, `.app_id(..)` / `.instance_name(..)`, the `closable` and
+// `attention` fields, the `WindowState` variants, and the `WindowHandle`
+// controls. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
     use waterui::window::{
-        UserAttention, Window, WindowBackground, WindowIcon, WindowLevel, WindowState, WindowStyle,
+        Activation, Monitor, MonitorSelector, UserAttention, Window, WindowBackground, WindowIcon,
+        WindowLevel, WindowState, WindowStyle,
     };
 
     let state = binding::<WindowState>(WindowState::default());
@@ -455,6 +573,28 @@ pub fn navigation_window_builder_prose() {
     window.handle().set_icon(icon);
     window.handle().set_icon(None);
 
+    let mut window = Window::new("W", binding(WindowState::Closed), || text("c"))
+        .title("Renamed")
+        .icon(None::<WindowIcon>)
+        .placement(MonitorSelector::Pointer, |monitor: &Monitor| {
+            Rect::new(
+                monitor.visible_frame().origin(),
+                Size::new(monitor.visible_frame().width(), 320.0),
+            )
+        })
+        .activation(Activation::OnClick)
+        .app_id("cool.lexo.terminal")
+        .instance_name("dropdown");
+    window.closable = false;
+    window.attention.set(Some(UserAttention::Critical));
+    window.handle().focus();
+    let _ = (
+        MonitorSelector::Primary,
+        MonitorSelector::Focused,
+        Activation::OnShow,
+        Activation::Never,
+    );
+
     let _ = WindowStyle::FullSizeContentView;
     let _ = WindowState::Normal;
     let _ = WindowState::Closed;
@@ -464,9 +604,9 @@ pub fn navigation_window_builder_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 12/14
+// navigation.md § "## Windows" — rust block 13/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_12() -> impl View {
+pub fn navigation_block_13() -> impl View {
     use waterui::window::WindowState;
 
     let window_state = binding::<WindowState>(WindowState::default());
@@ -477,9 +617,9 @@ pub fn navigation_block_12() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 13/14
+// navigation.md § "## Windows" — rust block 14/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_13() -> waterui::window::Window {
+pub fn navigation_block_14() -> waterui::window::Window {
     fn editor_content() -> impl View {
         text("editor")
     }
@@ -507,9 +647,9 @@ pub fn navigation_block_13() -> waterui::window::Window {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows that open and close" — rust block 14/14
+// navigation.md § "## Windows that open and close" — rust block 15/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_14() -> impl View {
+pub fn navigation_block_15() -> impl View {
     fn inspector_content() -> impl View {
         text("inspector")
     }
@@ -527,4 +667,32 @@ pub fn navigation_block_14() -> impl View {
             .style(WindowStyle::Titled)
             .resizable(true)
     })
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Resident apps and windows on demand" — rust block 16/16
+// ---------------------------------------------------------------------------
+pub fn navigation_block_16(env: Environment) -> App {
+    fn scratch_content() -> impl View {
+        text("scratch")
+    }
+
+    use waterui::app::{App, LastWindowPolicy, QuitReply};
+    use waterui::window::{Window, WindowState};
+
+    fn app(env: Environment) -> App {
+        App::new_with_windows(Vec::<Window>::new(), env)
+            .on_last_window_closed(LastWindowPolicy::StayResident)
+            .on_quit_request(|| async { QuitReply::Quit })
+            .on_terminate(|| async {})
+            .menu_bar(Menu::new(
+                "App",
+                "New Window".action(|env: Environment| {
+                    Window::new("Scratch", binding(WindowState::Normal), scratch_content)
+                        .show(&env);
+                }),
+            ))
+    }
+
+    app(env)
 }

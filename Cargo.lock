@@ -1667,10 +1667,12 @@ name = "cherenkov"
 version = "0.0.0"
 dependencies = [
  "arc-swap",
+ "async-channel",
  "cherenkov-oracle",
  "cherenkov-record",
  "crossbeam-channel",
  "filtrate-core",
+ "futures-lite",
  "gloo-timers 0.4.0",
  "kurbo",
  "libm",
@@ -1858,6 +1860,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "waterui-contract",
+ "waterui-easing",
  "web-time",
 ]
 
@@ -2155,6 +2158,7 @@ dependencies = [
  "objc2-web-kit",
  "oslog",
  "tracing",
+ "waterui-easing",
  "wgpu",
  "wgpu-hal",
 ]
@@ -2167,7 +2171,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -12646,6 +12650,7 @@ dependencies = [
  "block2 0.6.2",
  "blocking",
  "cfg_aliases",
+ "cherenkov",
  "cherenkov-oracle",
  "cocoa-ui",
  "cookie",
@@ -13030,6 +13035,7 @@ dependencies = [
  "suiteki",
  "thiserror 2.0.21",
  "waterui-contract",
+ "waterui-easing",
  "waterui-macros",
 ]
 
@@ -13039,6 +13045,10 @@ version = "0.5.1"
 dependencies = [
  "waterui-internal",
 ]
+
+[[package]]
+name = "waterui-easing"
+version = "0.5.1"
 
 [[package]]
 name = "waterui-form"
@@ -13701,7 +13711,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=dev#32a950955e29e70aba57348ab531fa21f6408b29"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#5a9a47c9df0c6c19e27dfc35c6d930b894668bc5"
 dependencies = [
  "async-channel",
  "executor-core",
