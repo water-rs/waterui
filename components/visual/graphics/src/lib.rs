@@ -20,15 +20,11 @@ mod scene;
 #[cfg(feature = "gpu")]
 pub mod shader_paint;
 
-/// The recorder vocabulary this crate records with: `Recorder`, `Draw`,
-/// `Content`, `Paint`, `Shape`, the colour types and the plain resource ids.
-/// Always available — it carries no engine.
-pub use cherenkov_record as draw;
-
-/// The engine this crate records for, re-exported so consumers that own an
-/// engine name the same `Engine`, `Surface` and backend types.
-#[cfg(feature = "cherenkov")]
-pub use cherenkov;
+// Crate-internal short paths: the recorder vocabulary this crate records
+// with and the scene module's submodules. They are public only through
+// [`backend`].
+use cherenkov_record as draw;
+use scene::{scene_view, source};
 
 #[cfg(feature = "effects")]
 pub use effects::filter_view;
@@ -68,55 +64,8 @@ pub use input::{
 };
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use offscreen::{OffscreenError, OffscreenImage, OffscreenRenderer, OffscreenSize};
-pub use scene::picture::{Picture, PictureRecording, PictureSource};
-#[cfg(feature = "cherenkov")]
-pub use scene::resources::SceneCaps;
-pub use scene::resources::{
-    Handle, HeldResources, PlainId, RecordingResources, Registered, RegisteredText, ResourceHandle,
-    SceneBackend, SceneResources, ShaderBackend, TextBackend, TextRegistration, TextRequest,
-};
-pub use scene::scene_view::{
-    SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, SceneView, SceneViewMergeToParent,
-    invalidate_on_change, resolve_scene_proposal, scene_stretch_axis,
-};
-pub use scene::source::{
-    FontSource, Format, ImageColorSpace, ImageData, ImageFormat, ResourceError, Rgba8, Rgba16F,
-    ShaderLanguage, ShaderSource,
-};
-pub use scene::{picture, resources, scene_view, source};
 #[cfg(feature = "gpu")]
 pub use shader_paint::ShaderPaintView;
 /// Color types and conversion utilities.
 pub use waterui_color as color;
 pub use waterui_color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
-
-/// The CPU raster backend behind [`OffscreenRenderer::cpu`].
-#[cfg(feature = "cpu")]
-pub use cherenkov_cpu;
-/// The CPU picture rasteriser used by hosts whose image views take bitmaps.
-#[cfg(feature = "cpu")]
-pub use scene::raster;
-
-/// The GPU backend for hosts that own a retained engine.
-#[cfg(feature = "gpu")]
-pub use cherenkov_gpu;
-
-/// The filter library `.filter(F)` and `.effect(E)` take, re-exported so a
-/// filter written against it is the one the engine runs.
-#[cfg(feature = "effects")]
-pub use filtrate;
-
-/// The application-supplied post-process shader `.effect(..)` applies, its
-/// parameter bound, and the error its construction returns.
-#[cfg(feature = "gpu")]
-pub use filtrate::{SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError};
-
-/// The exact `wgpu` this build links, re-exported so applications implementing
-/// [`GpuContent`] cannot end up with a version-mismatched `wgpu`.
-#[cfg(feature = "gpu")]
-pub use wgpu;
-
-/// Plain-bytes casts for the uniform/vertex data [`GpuContent`] writes to GPU
-/// buffers, re-exported so a content author uses one version of it.
-#[cfg(feature = "gpu")]
-pub use bytemuck;

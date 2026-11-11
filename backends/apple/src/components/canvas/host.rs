@@ -158,7 +158,10 @@ impl Host {
         };
         if scale.to_bits() != self.scale.get().to_bits() {
             self.scale.set(scale);
-            if let Some(tree) = self.tree.borrow_mut().take() {
+            // Taken in its own statement: the `RefMut` must be gone before
+            // `install` borrows the slot again.
+            let previous = self.tree.borrow_mut().take();
+            if let Some(tree) = previous {
                 let rebuilt = Tree::new(tree.list(), self.ctx());
                 tree.root().removeFromSuperlayer();
                 self.install(rebuilt);

@@ -611,6 +611,30 @@ impl CaptureLevels {
     }
 }
 
+/// How a backdrop group reduces its capture level `k − 1` into level `k`.
+///
+/// [`CapturePyramid::Box`] is the exact 2×2 mean [`CaptureLevels`]
+/// describes. [`CapturePyramid::Gaussian`] reduces with the separable
+/// binomial kernel `w = [1, 5, 10, 10, 5, 1] / 32` centred on that 2×2 box:
+/// level `k` texel `(i, j)` is
+/// `Σ_{a, b ∈ 0..=5} w[a]·w[b]·L[k−1](2i − 2 + a, 2j − 2 + b)` with source
+/// indices clamped to the source level's extent and values unclamped.
+/// Each reduction adds 5/4 of a source texel² of variance per axis, so
+/// level `k` is the capture under a kernel of variance
+/// `5 · (4^k − 1) / 12` level-0 texels². Level extents, grid alignment and the capture region
+/// are those of the box pyramid. `backdrop_sample_level` and the `Level`
+/// effect read either pyramid alike; `backdrop_sample_blur`
+/// ([`BackdropShaderSource`]) is defined only on a Gaussian pyramid.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CapturePyramid {
+    /// Exact 2×2 box means.
+    #[default]
+    Box,
+    /// The `[1, 5, 10, 10, 5, 1] / 32` binomial kernel.
+    Gaussian,
+}
+
 /// How a backdrop group captures and combines its members.
 ///
 /// Used by the engine's `Surface::backdrop_group` and
@@ -625,6 +649,7 @@ impl CaptureLevels {
 pub struct BackdropSpec {
     scale: CaptureScale,
     levels: CaptureLevels,
+    pyramid: CapturePyramid,
     anchor: Option<crate::LayerId>,
     union: Option<BackdropUnion>,
     blend_space: BlendSpace,
@@ -640,6 +665,7 @@ impl BackdropSpec {
         Self {
             scale,
             levels,
+            pyramid: CapturePyramid::Box,
             anchor: None,
             union: None,
             blend_space: BlendSpace::Linear,
@@ -687,6 +713,13 @@ impl BackdropSpec {
         }
     }
 
+    /// A group reducing its capture levels as `pyramid` says (the default
+    /// is [`CapturePyramid::Box`]).
+    #[must_use]
+    pub const fn pyramid(self, pyramid: CapturePyramid) -> Self {
+        Self { pyramid, ..self }
+    }
+
     /// The capture scale `s`.
     #[must_use]
     pub const fn scale(self) -> CaptureScale {
@@ -697,6 +730,13 @@ impl BackdropSpec {
     #[must_use]
     pub const fn levels(self) -> CaptureLevels {
         self.levels
+    }
+
+    /// How the group's pyramid is reduced ([`CapturePyramid::Box`] unless
+    /// [`BackdropSpec::pyramid`] set it).
+    #[must_use]
+    pub const fn capture_pyramid(self) -> CapturePyramid {
+        self.pyramid
     }
 
     /// The anchor layer, when the group is anchored; `None` under the
@@ -770,6 +810,28 @@ impl From<CaptureScale> for BackdropSpec {
 /// the read is bilinear at `q · s / 2^k` on `k = floor(level)` and
 /// `k = ceil(level)`, mixed by `fract(level)`; `backdrop_sample` is the
 /// level-0 read. The return value is premultiplied and written unclamped.
+///
+/// On a group whose pyramid is [`CapturePyramid::Gaussian`],
+/// `fn backdrop_sample_blur(q: vec2<f32>, sigma: f32) -> vec4<f32>` is the
+/// capture, bilinearly interpolated, convolved with a Gaussian, at device
+/// point `q`: a kernel of mean `q` and variance `sigma²` level-0 capture
+/// texels² per axis. Bilinear interpolation alone has variance 1/6 texel²,
+/// so the Gaussian's variance is `max(sigma² − 1/6, 0)`, and at
+/// `sigma ≤ 1/√6` the read is `backdrop_sample`. With
+/// `V(k) = 5 · (4^k − 1) / 12` the variance of level `k`, the read takes the
+/// deepest level `k` with `V(k) + 4^k / 6 ≤ sigma²` — the deepest whose
+/// bilinear read is not already wider than the kernel — and cross-fades from
+/// level `k − 1` over the first quarter level-`k` texel² of that level's
+/// residual variance above 1/6. `sigma` clamps to
+/// `sqrt(V(top) + (23/12) · 4^top)` for the deepest level `top`.
+///
+/// A read at level `k` touches level-0 texels up to `4.5 · 2^k` from the
+/// sample point, and the capture region is not padded for it: a shader's
+/// declared `reach` must cover its largest blur read's footprint, else the
+/// read clamps at the region's edge. A shader that reaches it composited
+/// over a group whose pyramid
+/// is [`CapturePyramid::Box`] fails the frame, as an unregistered shader
+/// does; the function is never read from another pyramid.
 #[derive(Clone, Debug)]
 pub struct BackdropShaderSource {
     /// The fragment source, without the backend's prelude.
@@ -804,7 +866,7 @@ impl BackdropShaderSource {
 mod tests {
     use super::{
         BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError,
-        CaptureScale, CaptureScaleError, RecordingScale, RecordingScaleError,
+        CapturePyramid, CaptureScale, CaptureScaleError, RecordingScale, RecordingScaleError,
     };
 
     #[test]
@@ -890,5 +952,14 @@ mod tests {
         assert_eq!(spec.levels().get(), 4);
         assert!(BackdropSpec::FULL.scale().is_full());
         assert_eq!(BackdropSpec::FULL.levels(), CaptureLevels::ONE);
+    }
+
+    #[test]
+    fn backdrop_spec_defaults_to_a_box_pyramid() {
+        assert_eq!(CapturePyramid::default(), CapturePyramid::Box);
+        assert_eq!(BackdropSpec::FULL.capture_pyramid(), CapturePyramid::Box);
+        let gaussian = BackdropSpec::FULL.pyramid(CapturePyramid::Gaussian);
+        assert_eq!(gaussian.capture_pyramid(), CapturePyramid::Gaussian);
+        assert_eq!(gaussian.pyramid(CapturePyramid::Box), BackdropSpec::FULL);
     }
 }

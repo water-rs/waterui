@@ -74,6 +74,7 @@ fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
                 MaterialCapture {
                     scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
                     levels: CaptureLevels::new(2).expect("2 is a valid level count"),
+                    pyramid: cherenkov::CapturePyramid::Box,
                     grouping: MaterialGrouping::Shared,
                     blend_space: cherenkov::BlendSpace::Linear,
                 },
@@ -83,6 +84,7 @@ fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
                 MaterialCapture {
                     scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
                     levels: CaptureLevels::ONE,
+                    pyramid: cherenkov::CapturePyramid::Box,
                     grouping: MaterialGrouping::Solo,
                     blend_space: cherenkov::BlendSpace::Linear,
                 },
@@ -102,6 +104,7 @@ fn union_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
         MaterialCapture {
             scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
             levels: CaptureLevels::ONE,
+            pyramid: cherenkov::CapturePyramid::Box,
             grouping: MaterialGrouping::Union {
                 smoothing: UnionSmoothing::new(UNION_SMOOTHING)
                     .expect("the test smoothing is valid"),
@@ -908,6 +911,7 @@ fn a_scopes_chrome_classes_capture_beneath_its_anchor() {
             MaterialCapture {
                 scale: CaptureScale::FULL,
                 levels: CaptureLevels::ONE,
+                pyramid: cherenkov::CapturePyramid::Box,
                 grouping: MaterialGrouping::Shared,
                 blend_space: cherenkov::BlendSpace::Linear,
             },
@@ -1055,6 +1059,7 @@ fn a_capture_classes_blend_space_reaches_its_group() {
         MaterialCapture {
             scale: CaptureScale::FULL,
             levels: CaptureLevels::ONE,
+            pyramid: cherenkov::CapturePyramid::Box,
             grouping: MaterialGrouping::Solo,
             blend_space: cherenkov::BlendSpace::SrgbEncoded,
         },
@@ -1433,6 +1438,7 @@ fn a_union_smoothing_that_overflows_device_pixels_leaves_the_member_unbound() {
                 MaterialCapture {
                     scale: CaptureScale::FULL,
                     levels: CaptureLevels::ONE,
+                    pyramid: cherenkov::CapturePyramid::Box,
                     grouping: MaterialGrouping::Union {
                         smoothing: UnionSmoothing::new(1e38).expect("finite and positive"),
                     },

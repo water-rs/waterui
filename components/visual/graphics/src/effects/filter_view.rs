@@ -54,13 +54,24 @@ impl<T: Send + ?Sized> RenderTransfer for T {}
 pub trait RenderTransfer {}
 #[cfg(target_arch = "wasm32")]
 impl<T: ?Sized> RenderTransfer for T {}
+/// The built-in filters `.filter(F)` takes, by their `filtrate` names.
+pub use filtrate::filters;
 pub use filtrate::filters::{BlendMode, TransitionDirection};
 use filtrate::{
-    AnimatedCallback, AnimatedTarget, AuxData, AuxImage, Chain, ColorStage, Filter, FilterExt as _,
+    AnimatedCallback, AnimatedTarget, AuxData, AuxImage, Chain, ColorStage, FilterExt as _,
     FilterLink, FilterParam, ImageVisitor, Interpolator, LinkVisitor, ParamArray, Placed,
     SignalVisitor, SpatialStage, StageCollector, WatchGuard,
 };
-pub use filtrate::{FilterImage, LutImage};
+/// What writing a custom effect for `.effect(E)` names: the `Effect` trait,
+/// the contexts it runs with and the results it returns, and the
+/// application-supplied shader effect with its parameter bound and error.
+#[cfg(feature = "gpu")]
+pub use filtrate::{
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
+    RetainedMemory, SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError, TextureViews,
+};
+/// The trait `.filter(F)` requires of a filter.
+pub use filtrate::{Filter, FilterImage, LutImage};
 #[cfg(feature = "gpu")]
 use nami::SignalExt;
 use nami::{Signal, signal::IntoComputed};

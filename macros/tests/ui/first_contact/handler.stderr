@@ -11,9 +11,9 @@ error[E0277]: this handler's parameters cannot be extracted from the environment
 note: required by a bound in `waterui::component::Button::<Action>::action`
  --> $WORKSPACE/components/foundation/controls/src/button.rs
   |
-  |     pub fn action<F, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
+  |     pub fn action<F, Args>(
   |            ------ required by a bound in this associated function
-  |     where
+...
   |         F: Handler<Args, ()> + 'static,
   |            ^^^^^^^^^^^^^^^^^ required by this bound in `Button::<Action>::action`
 
@@ -28,8 +28,8 @@ error[E0277]: this handler's parameters cannot be extracted from the environment
 note: required by a bound in `waterui::component::Button::<Action>::action`
  --> $WORKSPACE/components/foundation/controls/src/button.rs
   |
-  |     pub fn action<F, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
+  |     pub fn action<F, Args>(
   |            ------ required by a bound in this associated function
-  |     where
+...
   |         F: Handler<Args, ()> + 'static,
   |            ^^^^^^^^^^^^^^^^^ required by this bound in `Button::<Action>::action`

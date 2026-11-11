@@ -362,7 +362,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
 }
 
 /// The spec a chrome group of `key` is created with at display `scale`:
-/// the class's capture scale, levels and member blend space, its union
+/// the class's capture scale, levels, pyramid and member blend space, its union
 /// field converted at `scale`, and — for a scoped group — its scope's
 /// anchor layer, beneath which it captures like a material group
 /// (water-rs/waterui#2097).
@@ -375,8 +375,9 @@ pub fn chrome_spec(
     scale: f64,
     key: ChromeGroupKey,
 ) -> Result<cherenkov::BackdropSpec, Unbound> {
-    let mut spec =
-        cherenkov::BackdropSpec::new(params.scale, params.levels).blend_space(params.blend_space);
+    let mut spec = cherenkov::BackdropSpec::new(params.scale, params.levels)
+        .pyramid(params.pyramid)
+        .blend_space(params.blend_space);
     if let Some(anchor) = key.anchor() {
         spec = spec.anchor(anchor);
     }
