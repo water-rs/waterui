@@ -590,15 +590,20 @@ where
     /// Captures `bounds`, resolved against the current length, from the
     /// live collection.
     fn capture(data: &C, bounds: (Bound<usize>, Bound<usize>), generator: Rc<F>) -> Self {
-        let range = resolve_range(bounds.0, bounds.1, data.count());
-        let items: Rc<[C::Item]> = data.with_range(range.clone(), |items| Rc::from(items));
+        let mut range = resolve_range(bounds.0, bounds.1, data.count());
         let ids: Rc<[C::Id]> = range
             .clone()
-            .map(|index| {
-                data.get_id(index)
-                    .expect("a collection must report an id inside its reported length")
-            })
+            .map_while(|index| data.get_id(index))
             .collect();
+        if ids.len() < range.len() {
+            crate::contract_violation!(
+                "a collection reported {} rows but an id for only {} of them: the snapshot keeps the rows that have an id",
+                range.len(),
+                ids.len()
+            );
+            range.end = range.start + ids.len();
+        }
+        let items: Rc<[C::Item]> = data.with_range(range.clone(), |items| Rc::from(items));
         Self {
             items,
             ids,
@@ -1191,6 +1196,53 @@ mod tests {
             _watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
         ) -> Self::Guard {
         }
+    }
+
+    /// A collection that reports three rows but an id for only the first two.
+    #[derive(Clone)]
+    struct MissingId(List<TestItem>);
+
+    impl Collection for MissingId {
+        type Item = TestItem;
+        type Id = i32;
+        type Guard = <List<TestItem> as Collection>::Guard;
+
+        fn get_item(&self, index: usize) -> Option<Self::Item> {
+            self.0.get_item(index)
+        }
+
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+
+        fn with_range<R>(
+            &self,
+            range: impl RangeBounds<usize>,
+            f: impl FnOnce(&[Self::Item]) -> R,
+        ) -> R {
+            self.0.with_range(range, f)
+        }
+
+        fn get_id(&self, index: usize) -> Option<Self::Id> {
+            (index < 2).then(|| self.0.get_id(index)).flatten()
+        }
+
+        fn watch(
+            &self,
+            range: impl RangeBounds<usize>,
+            watcher: impl Fn(Context<&[Self::Item]>, &CollectionChange) + 'static,
+        ) -> Self::Guard {
+            self.0.watch(range, watcher)
+        }
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "an id for only 2 of them"))]
+    fn a_collection_missing_an_id_snapshots_the_rows_that_have_one() {
+        let views = ForEach::new(MissingId(items(&[1, 2, 3])), |_item| ());
+        let snapshot = views.snapshot();
+        assert_eq!(snapshot.range(), 0..2);
+        assert_eq!(ids_in(&snapshot, 0..3), vec![1, 2]);
     }
 
     #[test]

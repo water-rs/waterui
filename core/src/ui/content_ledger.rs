@@ -112,7 +112,7 @@ impl ContentLedger {
         let id = state.next_id.get();
         state.next_id.set(
             id.checked_add(1)
-                .expect("content ledger token ids overflowed"),
+                .expect("a u64 token counter advancing by one per entry does not overflow"),
         );
         state.owed.borrow_mut().insert(
             id,

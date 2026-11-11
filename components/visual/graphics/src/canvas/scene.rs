@@ -438,9 +438,8 @@ impl CanvasScene {
             intrinsic,
             label,
             value,
-            size,
         } = canvas;
-        let shared = Shared::new(env.clone(), size);
+        let shared = Shared::new(env.clone());
         let mut cx = Cx::new(Rc::clone(&shared));
         body(&mut cx);
         let root = Part::new(cx.finish());

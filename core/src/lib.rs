@@ -112,8 +112,10 @@ pub use foundation::resources::ResourceContext;
 
 /// Capture standalone resource roots once when creating an application environment.
 ///
-/// # Panics
-/// Panics if the native executable's location cannot be determined.
+/// # Contract
+/// When the native executable's location cannot be determined a debug build
+/// panics, and a release build logs the error and installs a context rooted
+/// at `waterui_assets` and `fonts` in the working directory.
 #[doc(hidden)]
 // On wasm32 or without std the whole body below collapses to a no-op, so
 // the function is const-eligible only under those cfgs.
@@ -124,10 +126,13 @@ pub use foundation::resources::ResourceContext;
 pub fn install_application_resources(env: &mut Environment) {
     #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
     if env.get::<ResourceContext>().is_none() {
-        env.insert(
-            ResourceContext::application()
-                .expect("application resources require an executable path"),
-        );
+        let context = ResourceContext::application().unwrap_or_else(|error| {
+            contract_violation!(
+                "application resources could not be located ({error}); resolving them against the working directory"
+            );
+            ResourceContext::new("waterui_assets", "fonts")
+        });
+        env.insert(context);
     }
     #[cfg(any(not(feature = "std"), target_arch = "wasm32"))]
     let _ = env;

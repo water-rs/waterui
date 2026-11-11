@@ -705,16 +705,20 @@ impl<T> ColorSlotValue<T> {
 }
 
 /// Resolves a color slot by looking up the signal installed by the backend or theme.
+///
+/// A slot the backend or theme never installed breaks the contract: a debug
+/// build panics, and a release build logs the error and resolves opaque black.
 fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<WorkingColor> {
-    env.get::<ColorSlotValue<T>>()
-        .unwrap_or_else(|| {
-            panic!(
-                "WaterUI color token `{}` is not installed in the environment",
+    env.get::<ColorSlotValue<T>>().map_or_else(
+        || {
+            crate::contract_violation!(
+                "WaterUI color token `{}` is not installed in the environment, so it resolves opaque black",
                 core::any::type_name::<T>()
-            )
-        })
-        .signal
-        .clone()
+            );
+            Computed::constant(WorkingColor::BLACK)
+        },
+        |slot| slot.signal.clone(),
+    )
 }
 
 // ============================================================================
@@ -723,12 +727,19 @@ fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<WorkingColor> {
 
 /// Returns the current color scheme signal from the environment.
 ///
-/// # Panics
+/// # Contract
 ///
-/// Panics when the active backend or theme has not installed a color scheme.
+/// A backend or theme that has not installed a color scheme breaks the
+/// contract: a debug build panics, and a release build logs the error and
+/// returns the light scheme.
 #[must_use]
 pub fn current_color_scheme(env: &Environment) -> Computed<ColorScheme> {
-    installed_color_scheme(env).expect("WaterUI color scheme is not installed in the environment")
+    installed_color_scheme(env).unwrap_or_else(|| {
+        crate::contract_violation!(
+            "WaterUI color scheme is not installed in the environment, so it is the light scheme"
+        );
+        Computed::constant(ColorScheme::default())
+    })
 }
 
 /// Returns the color-scheme signal installed by the active backend or theme.
@@ -941,6 +952,21 @@ mod tests {
     use waterui_graphics::color::{AccentColor, Color, Working};
 
     use super::*;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "resolves opaque black"))]
+    fn an_uninstalled_color_slot_resolves_opaque_black() {
+        let env = Environment::new();
+        let resolved = color::Foreground.resolve(&env).snapshot();
+        assert_eq!(resolved.components, WorkingColor::BLACK.components);
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "so it is the light scheme"))]
+    fn an_uninstalled_color_scheme_is_light() {
+        let scheme = current_color_scheme(&Environment::new()).snapshot();
+        assert_eq!(scheme, ColorScheme::Light);
+    }
 
     #[test]
     fn tint_resolves_to_the_nearest_tint_else_the_accent() {

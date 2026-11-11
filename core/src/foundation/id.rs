@@ -123,13 +123,14 @@ impl<T: Ord + Clone> MappingInner<T> {
 
     /// Registers a new value in the mapping and returns its assigned ID.
     pub fn register(&mut self, value: T) -> Id {
-        let id = Id(NonZeroI32::new(self.counter).expect("counter should not be zero"));
+        let id = Id(NonZeroI32::new(self.counter)
+            .expect("the counter starts at 1 and only increases, so it is never zero"));
         self.to_id.insert(value.clone(), id);
         self.from_id.insert(id, value);
         self.counter = self
             .counter
             .checked_add(1)
-            .expect("counter should not overflow");
+            .expect("a mapping registers fewer than i32::MAX values");
         id
     }
 
@@ -207,7 +208,9 @@ impl<T: Ord + Clone> Mapping<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the provided `Id` does not correspond to any value in the mapping.
+    /// A write of an `Id` the mapping never issued is a broken contract of the
+    /// writer: a debug build panics, a release build drops the write and the
+    /// source keeps its value.
     #[must_use]
     pub fn binding(&self, source: &Binding<T>) -> Binding<Id>
     where
@@ -219,11 +222,13 @@ impl<T: Ord + Clone> Mapping<T> {
             source,
             move |value| mapping.to_id(value),
             move |binding, value| {
-                binding.set(
-                    mapping2
-                        .to_data(value)
-                        .expect("Invalid binding mapping : Data not found"),
-                );
+                let Some(data) = mapping2.to_data(value) else {
+                    crate::contract_violation!(
+                        "Invalid binding mapping: {value:?} was never issued by the mapping, so the write is dropped"
+                    );
+                    return;
+                };
+                binding.set(data);
             },
         )
     }
@@ -235,7 +240,9 @@ impl<T: Ord + Clone> Mapping<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the provided `Id` does not correspond to any value in the mapping.
+    /// A write of an `Id` the mapping never issued is a broken contract of the
+    /// writer: a debug build panics, a release build drops the write and the
+    /// source keeps its value.
     #[must_use]
     pub fn optional_binding(&self, source: &Binding<Option<T>>) -> Binding<Option<Id>>
     where
@@ -247,12 +254,54 @@ impl<T: Ord + Clone> Mapping<T> {
             source,
             move |value| value.map(|value| mapping.to_id(value)),
             move |binding, value| {
-                binding.set(value.map(|value| {
-                    mapping2
-                        .to_data(value)
-                        .expect("Invalid optional binding mapping : Data not found")
-                }));
+                let data = match value {
+                    Some(id) => {
+                        let Some(data) = mapping2.to_data(id) else {
+                            crate::contract_violation!(
+                                "Invalid optional binding mapping: {id:?} was never issued by the mapping, so the write is dropped"
+                            );
+                            return;
+                        };
+                        Some(data)
+                    }
+                    None => None,
+                };
+                binding.set(data);
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Id, Mapping};
+    use nami::{Binding, Signal as _};
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Invalid binding mapping: Id(")
+    )]
+    fn writing_an_unissued_id_keeps_the_source_value() {
+        let mapping = Mapping::new();
+        let source: Binding<i32> = Binding::container(5);
+        mapping.to_id(5);
+        let ids = mapping.binding(&source);
+        ids.set(Id::try_from(99).unwrap());
+        assert_eq!(source.snapshot(), 5);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Invalid optional binding mapping: Id(")
+    )]
+    fn writing_an_unissued_optional_id_keeps_the_source_value() {
+        let mapping = Mapping::new();
+        let source: Binding<Option<i32>> = Binding::container(Some(5));
+        mapping.to_id(5);
+        let ids = mapping.optional_binding(&source);
+        ids.set(Some(Id::try_from(99).unwrap()));
+        assert_eq!(source.snapshot(), Some(5));
     }
 }
