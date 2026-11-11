@@ -288,7 +288,7 @@ impl TabsController {
         let controllers = self
             .viewControllers()
             .expect("tabs are installed at construction");
-        let Some(controller) = controllers.get(index) else {
+        let Some(controller) = controllers.iter().nth(index) else {
             waterui_contract::contract_violation!(
                 "tab index {index} is out of range for {} tabs; no item is answered",
                 controllers.len()

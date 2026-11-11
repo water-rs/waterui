@@ -98,7 +98,7 @@ const fn buffering_event(buffering: &mut bool, empty: bool, waiting: bool) -> Op
 const DUCK_SCALE: f32 = 0.2;
 
 /// Maps the content mode onto the layer gravity.
-const fn gravity(mode: ContentMode) -> VideoGravity {
+fn gravity(mode: ContentMode) -> VideoGravity {
     match mode {
         ContentMode::Fit => VideoGravity::ResizeAspect,
         ContentMode::Fill => VideoGravity::ResizeAspectFill,
@@ -127,7 +127,7 @@ fn supported_mode(mode: ContentMode) -> ContentMode {
 
 /// The stretch axis the leaf reports, identical to `NativeView::stretch_axis`
 /// on the payloads (spherical never reaches here — it is flattened at render).
-const fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
+fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
     match mode {
         ContentMode::Fit => StretchAxis::Horizontal,
         ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
