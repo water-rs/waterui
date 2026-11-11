@@ -1671,6 +1671,7 @@ dependencies = [
  "cherenkov-record",
  "crossbeam-channel",
  "filtrate-core",
+ "gloo-timers 0.4.0",
  "kurbo",
  "libm",
  "nami",
@@ -2159,7 +2160,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -4717,7 +4718,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#a46e53101b7c2e4bd96acf25d7c03ce885828aca"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#b3a2f4590c6df2459b3c0407c7acee3b689ea9a9"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -13176,15 +13177,13 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=dev#5fd33037f929f42f0d2913998c782fa4cbd258a0"
+source = "git+https://github.com/water-rs/image?branch=dev#6a725427a4151b33cc7c2a817bfb74312c2c58df"
 dependencies = [
- "executor-core",
  "half",
  "image",
  "mp4-atom",
  "num-traits",
  "thiserror 2.0.21",
- "tracing",
  "waterkit-codec",
  "waterui-core",
  "waterui-graphics",

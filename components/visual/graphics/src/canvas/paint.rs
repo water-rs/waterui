@@ -4,6 +4,7 @@
 //! ([`WorkingColor`]). A theme colour ([`Color`]) is accepted wherever a
 //! paint operand is, and stays bound to the environment it resolves in.
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use nami::impl_constant;
@@ -434,13 +435,55 @@ pub enum Paint {
     Mesh(MeshGradient),
     /// An [`ImagePattern`].
     Image(ImagePattern),
+    /// Another paint placed through a transform.
+    Transformed(TransformedPaint),
+}
+
+/// A paint placed through a transform.
+///
+/// The transform moves the paint's own coordinate space (gradient endpoints,
+/// mesh vertices, pattern origin) into the shape's space. Geometry, stroke
+/// width and dashes are unaffected, so a transformed radial gradient becomes
+/// an ellipse while the shape it fills stays where it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransformedPaint {
+    /// The paint being placed.
+    pub paint: Arc<Paint>,
+    /// Maps the paint's coordinates into the shape's space.
+    pub transform: Affine2,
+}
+
+impl TransformedPaint {
+    /// `paint` placed through `transform`.
+    #[must_use]
+    pub fn new(paint: impl Into<Paint>, transform: Affine2) -> Self {
+        Self {
+            paint: Arc::new(paint.into()),
+            transform,
+        }
+    }
 }
 
 impl Paint {
+    /// This paint placed through `transform`, which maps the paint's
+    /// coordinates into the shape's space.
+    ///
+    /// The identity returns the paint unchanged. Transforming an already
+    /// transformed paint nests it, so the new transform applies after the
+    /// existing one (composition on the left).
+    #[must_use]
+    pub fn transformed(self, transform: Affine2) -> Self {
+        if transform == Affine2::IDENTITY {
+            return self;
+        }
+        Self::Transformed(TransformedPaint::new(self, transform))
+    }
+
     /// The image this paint samples, if any.
-    pub(crate) const fn image(&self) -> Option<&ImageSource> {
+    pub(crate) fn image(&self) -> Option<&ImageSource> {
         match self {
             Self::Image(pattern) => Some(&pattern.image),
+            Self::Transformed(inner) => inner.paint.image(),
             _ => None,
         }
     }
@@ -460,6 +503,10 @@ impl Paint {
                 extend_x: pattern.extend_x.lower(),
                 extend_y: pattern.extend_y.lower(),
                 sampling: pattern.sampling.lower(),
+            }),
+            Self::Transformed(inner) => draw::Paint::Transformed(draw::TransformedPaint {
+                paint: Arc::new(inner.paint.lower(names)?),
+                transform: affine(inner.transform),
             }),
         })
     }
@@ -484,6 +531,7 @@ paint_from!(
     ConicGradient => Conic,
     MeshGradient => Mesh,
     ImagePattern => Image,
+    TransformedPaint => Transformed,
 );
 
 /// How a stroke ends an open subpath.

@@ -23,7 +23,7 @@ use core::time::Duration;
 use std::any::Any;
 use std::rc::Rc;
 
-use cherenkov_record::{Live, Paint, Recorder};
+use cherenkov_record::{KeyframeAnimation, Keyframes, Live, Paint, Recorder, Repeat};
 use kurbo::{Point, Rect, Size, Vec2};
 use nami::Signal;
 use nami::signal::IntoComputed;
@@ -234,7 +234,11 @@ pub struct Driven<T, V = ()> {
     follows: Option<Follows>,
     motion: Option<Motion>,
     value_motion: Option<ValueMotionOf<V>>,
+    repeating: Option<Repeating>,
 }
+
+/// The track a repeating value runs, built for the frame it records on.
+type Repeating = Rc<dyn Fn(Rect) -> KeyframeAnimation>;
 
 /// The value motion of a change to a given value.
 type ValueMotionOf<V> = Rc<dyn Fn(&V) -> ValueMotion>;
@@ -246,6 +250,7 @@ impl<T, V> Clone for Driven<T, V> {
             follows: self.follows.clone(),
             motion: self.motion.clone(),
             value_motion: self.value_motion.clone(),
+            repeating: self.repeating.clone(),
         }
     }
 }
@@ -256,6 +261,7 @@ impl<T, V> core::fmt::Debug for Driven<T, V> {
             .field("follows", &self.follows.is_some())
             .field("motion", &self.motion)
             .field("value_motion", &self.value_motion.is_some())
+            .field("repeating", &self.repeating.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -269,6 +275,72 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             follows: None,
             motion: None,
             value_motion: None,
+            repeating: None,
+        }
+    }
+
+    /// A value that runs the `keyframes` of the frame its part records on,
+    /// under `repeat`, once the part is recorded, whatever the other inputs.
+    ///
+    /// The engine samples the track on its own clock: a running indicator
+    /// records nothing, walks no tree and does no Hydrolysis work per frame,
+    /// until its part records again. The value at rest is the track's first
+    /// one. The track's values must share one lane layout, and be of the
+    /// type the operand records: a [`ShapeData`](cherenkov_record::ShapeData)
+    /// for a shape, a [`Paint`], a [`Stroke`](cherenkov_record::Stroke).
+    #[must_use]
+    pub fn repeating(keyframes: impl Fn(Rect) -> Keyframes<T> + 'static, repeat: Repeat) -> Self
+    where
+        T: Clone,
+    {
+        let keyframes = Rc::new(keyframes);
+        Self {
+            target: Rc::new({
+                let keyframes = Rc::clone(&keyframes);
+                move |inputs| keyframes(inputs.frame).first().clone()
+            }),
+            follows: None,
+            motion: None,
+            value_motion: None,
+            repeating: Some(Rc::new(move |frame| {
+                KeyframeAnimation::new(keyframes(frame), repeat)
+            })),
+        }
+    }
+
+    /// A [repeating](Self::repeating) value whose keyframes are built from
+    /// `signal`'s current value, and run again from their start whenever the
+    /// signal changes: a track made of theme tokens follows a colour-scheme
+    /// or application override on the running indicator.
+    #[must_use]
+    pub fn repeating_following<O: Clone + 'static>(
+        signal: impl IntoComputed<O>,
+        keyframes: impl Fn(&O, Rect) -> Keyframes<T> + 'static,
+        repeat: Repeat,
+    ) -> Self
+    where
+        T: Clone,
+    {
+        let source = signal.into_computed();
+        let watched = source.clone();
+        let keyframes = Rc::new(keyframes);
+        Self {
+            target: Rc::new({
+                let (source, keyframes) = (source.clone(), Rc::clone(&keyframes));
+                move |inputs| {
+                    source.with_ref(|value| keyframes(value, inputs.frame).first().clone())
+                }
+            }),
+            follows: Some(Rc::new(move |notify: Notify| -> Box<dyn Any> {
+                Box::new(watched.watch(move |context: Context<O>| {
+                    notify(ChangeAnimation::of(context.metadata()).animation());
+                }))
+            })),
+            motion: None,
+            value_motion: None,
+            repeating: Some(Rc::new(move |frame| {
+                source.with_ref(|value| KeyframeAnimation::new(keyframes(value, frame), repeat))
+            })),
         }
     }
 
@@ -300,6 +372,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             })),
             motion: None,
             value_motion: None,
+            repeating: None,
         }
     }
 
@@ -345,6 +418,13 @@ impl<T: 'static, V: 'static> Driven<T, V> {
         self.value_motion.as_ref().map(|motion| motion(value))
     }
 
+    /// The track the engine runs this value along once its part records on
+    /// `frame`, when it is [`repeating`](Self::repeating).
+    #[cfg(hydrolysis_runtime)]
+    pub(crate) fn get_repeating(&self, frame: Rect) -> Option<KeyframeAnimation> {
+        self.repeating.as_ref().map(|track| track(frame))
+    }
+
     /// Calls `notify` with each change's animation whenever a signal this
     /// value follows changes; the returned guard keeps the subscription.
     /// `None` when the value follows no signal.
@@ -369,13 +449,23 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     /// This value passed through `f`, following the same signals with the
     /// same motion.
     #[cfg(hydrolysis_runtime)]
+    ///
+    /// # Panics
+    ///
+    /// Panics on a [repeating](Self::repeating) value: its track holds
+    /// values of the source type.
     pub(crate) fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> Driven<U, V> {
+        assert!(
+            self.repeating.is_none(),
+            "a repeating value cannot be mapped: its keyframes hold the source type"
+        );
         let target = Rc::clone(&self.target);
         Driven {
             target: Rc::new(move |inputs| f(target(inputs))),
             follows: self.follows.clone(),
             motion: self.motion.clone(),
             value_motion: self.value_motion.clone(),
+            repeating: None,
         }
     }
 }
@@ -463,6 +553,10 @@ mod realized {
     pub trait Retarget<V> {
         fn retarget(&self, inputs: &Inputs<'_, V>, change: Change<'_>);
         fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>>;
+
+        /// Starts the track a repeating value runs once its part has
+        /// recorded on `frame`; every other value has none.
+        fn run(&self, _frame: kurbo::Rect) {}
     }
 
     /// A realized set: a factory for the tuple of [`Live`](cherenkov_record::Live)
@@ -539,10 +633,21 @@ impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V
         };
         self.operand
             .set(self.driven.target(inputs), animation.as_ref());
+        // A plain change replaces a running track, so a signal the track is
+        // built from changing — or the frame — starts the new one.
+        if matches!(change, Change::Animated(_)) {
+            self.run(inputs.frame);
+        }
     }
 
     fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>> {
         self.driven.subscribe(notify)
+    }
+
+    fn run(&self, frame: Rect) {
+        if let Some(track) = self.driven.get_repeating(frame) {
+            self.operand.run(&track);
+        }
     }
 }
 
@@ -551,7 +656,7 @@ impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V
 /// type ties it to its declaration with no index lookup.
 ///
 /// Implemented for `()` — a part that reads no driven value — and for tuples
-/// of one to six `Driven`s over the same value type.
+/// of one to eight `Driven`s over the same value type.
 pub trait DrivenSet<V>: sealed::Sealed {
     /// The tuple of live handles the recording closure receives.
     type Live;
@@ -609,6 +714,8 @@ driven_set!(A 0, B 1, C 2);
 driven_set!(A 0, B 1, C 2, D 3);
 driven_set!(A 0, B 1, C 2, D 3, E 4);
 driven_set!(A 0, B 1, C 2, D 3, E 4, F 5);
+driven_set!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+driven_set!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
 
 type RecordCustom<L> = Rc<dyn Fn(&mut Recorder, Rect, L)>;
 
@@ -624,6 +731,9 @@ type RecordCustom<L> = Rc<dyn Fn(&mut Recorder, Rect, L)>;
 pub struct Custom<V, D: DrivenSet<V>> {
     driven: D,
     record: RecordCustom<D::Live>,
+    /// The rotation stages, innermost first: each track with its first
+    /// angle, the layer's rotation at rest.
+    rotations: Vec<(KeyframeAnimation, f64)>,
     value: PhantomData<fn(&V)>,
 }
 
@@ -631,6 +741,7 @@ impl<V, D: DrivenSet<V> + core::fmt::Debug> core::fmt::Debug for Custom<V, D> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Custom")
             .field("driven", &self.driven)
+            .field("rotations", &self.rotations.len())
             .finish_non_exhaustive()
     }
 }
@@ -640,6 +751,7 @@ impl<V, D: DrivenSet<V> + Clone> Clone for Custom<V, D> {
         Self {
             driven: self.driven.clone(),
             record: Rc::clone(&self.record),
+            rotations: self.rotations.clone(),
             value: PhantomData,
         }
     }
@@ -652,8 +764,30 @@ impl<V, D: DrivenSet<V>> Custom<V, D> {
         Self {
             driven,
             record: Rc::new(record),
+            rotations: Vec::new(),
             value: PhantomData,
         }
+    }
+
+    /// Turns the part's whole layer about the centre of its frame, along
+    /// `keyframes` — the unwrapped angle in radians, clockwise — under
+    /// `repeat`.
+    ///
+    /// The engine runs the track on the layer's rotation property: the part
+    /// records once, and a spinning part records nothing and does no
+    /// Hydrolysis work per frame. Use it for the motion of the part as a
+    /// whole; a [`Driven::repeating`] value moves one operand of the
+    /// recording.
+    ///
+    /// Calling it again adds a stage outside the ones before it: the part
+    /// turns about the same centre by the sum of its stages, each repeating
+    /// on its own period, as nested rotating layers do.
+    #[must_use]
+    pub fn rotating(mut self, keyframes: Keyframes<f64>, repeat: Repeat) -> Self {
+        let rest = *keyframes.first();
+        self.rotations
+            .push((KeyframeAnimation::new(keyframes, repeat), rest));
+        self
     }
 }
 
@@ -662,16 +796,50 @@ impl<V, D: DrivenSet<V>> Custom<V, D> {
 pub struct RealizedCustom<V> {
     record: RecordRealized,
     pub(crate) drivens: Vec<Rc<dyn Retarget<V>>>,
+    rotations: Vec<LayerRotation>,
 }
 
 #[cfg(hydrolysis_runtime)]
 type RecordRealized = Box<dyn Fn(&mut Recorder, Rect)>;
 
+/// The rotation a part's layer runs: its operand, the track and where the
+/// layer turns about.
+#[cfg(hydrolysis_runtime)]
+#[derive(Clone)]
+pub struct LayerRotation {
+    operand: Operand<f64>,
+    track: KeyframeAnimation,
+}
+
+#[cfg(hydrolysis_runtime)]
+impl LayerRotation {
+    /// The rotation property's live angle.
+    pub(crate) fn live(&self) -> Live<f64> {
+        self.operand.live()
+    }
+
+    /// Starts the track along the layer's property, which must be bound to
+    /// [`Self::live`] already.
+    pub(crate) fn run(&self) {
+        self.operand.run(&self.track);
+    }
+}
+
 #[cfg(hydrolysis_runtime)]
 impl<V> RealizedCustom<V> {
-    /// Records the part on `frame`.
+    /// Records the part on `frame`, then starts the tracks of its repeating
+    /// values: the recording has subscribed to every operand by then.
     pub(crate) fn record(&self, recorder: &mut Recorder, frame: Rect) {
         (self.record)(recorder, frame);
+        for driven in &self.drivens {
+            driven.run(frame);
+        }
+    }
+
+    /// The part's rotation stages, innermost first; none when it does not
+    /// turn.
+    pub(crate) fn rotations(&self) -> &[LayerRotation] {
+        &self.rotations
     }
 }
 
@@ -693,6 +861,14 @@ where
         RealizedCustom {
             record: Box::new(move |recorder, frame| record(recorder, frame, live())),
             drivens,
+            rotations: self
+                .rotations
+                .iter()
+                .map(|(track, rest)| LayerRotation {
+                    operand: Operand::new(*rest),
+                    track: track.clone(),
+                })
+                .collect(),
         }
     }
 }

@@ -1453,6 +1453,9 @@ pub struct GpuRenderer {
     /// Window of every native GPU wait and the deadline of every browser
     /// wait; see [`GpuConfig::wait_timeout`].
     wait_timeout: Duration,
+    /// How long the coverage generation scratch outlives the last frame
+    /// that needed it; see [`GpuConfig::scratch_idle`].
+    scratch_idle: Duration,
     /// The queue's retirement frontier; every native wait reads it between
     /// windows to tell a slow queue (still retiring) from a wedged one.
     tracker: Arc<SubmissionTracker>,
@@ -3140,6 +3143,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             frame_pass_count: 0,
             pass_meta: Vec::new(),
             wait_timeout: config.wait_timeout,
+            scratch_idle: config.scratch_idle,
             tracker: Arc::new(SubmissionTracker::default()),
             diag: config.alloc_diag.clone(),
             config,
@@ -3493,6 +3497,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         frame_pass_count: 0,
         pass_meta: Vec::new(),
         wait_timeout: config.wait_timeout,
+        scratch_idle: config.scratch_idle,
         tracker: Arc::new(SubmissionTracker::default()),
         diag: config.alloc_diag.clone(),
         config,
@@ -4498,6 +4503,14 @@ impl Renderer for GpuRenderer {
         self.planes
             .get(&surface)
             .map_or(&[], |planes| planes::SystemPlanes::owned_animations(planes))
+    }
+
+    fn idle_release_deadline(&self) -> Option<cherenkov::Instant> {
+        self.gpu_cov.idle_deadline(self.scratch_idle)
+    }
+
+    fn release_idle(&mut self, now: cherenkov::Instant) {
+        self.gpu_cov.release_idle(now, self.scratch_idle);
     }
 
     fn memory(&self) -> MemoryUsage {
@@ -7559,7 +7572,7 @@ impl GpuRenderer {
     ) {
         // The frame's GPU coverage context restarts with its lowers
         // (issue #2543).
-        self.gpu_cov.begin_frame();
+        self.gpu_cov.begin_frame(cherenkov::Instant::now());
         let rasters: Vec<&glyph::PendingRaster> = results
             .iter()
             .filter_map(|r| r.as_ref().ok())

@@ -14,10 +14,11 @@
 //! indirect arguments from `draws`, whose count words arrive through
 //! 4-byte buffer copies.
 
-use cherenkov::RenderError;
+use cherenkov::{Instant, RenderError};
 use rustc_hash::FxHashMap;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
 use wgpu::util::DeviceExt;
 
 use crate::render::bindings;
@@ -325,6 +326,11 @@ pub struct GpuCoverage {
     args_layout: Option<wgpu::BindGroupLayout>,
     pipes: Option<Pipes>,
     buffers: Option<Buffers>,
+    /// The time of the commit in progress, [`GpuCoverage::begin_frame`]'s.
+    frame_time: Option<Instant>,
+    /// The time of the last commit that needed the generation scratch; the
+    /// idle interval is measured from it ([`GpuCoverage::idle_deadline`]).
+    scratch_used: Option<Instant>,
 }
 
 /// One generation record of a miss: the bound of the rows it generates,
@@ -502,6 +508,8 @@ impl GpuCoverage {
             args_layout: None,
             pipes: None,
             buffers: None,
+            frame_time: None,
+            scratch_used: None,
         }
     }
 
@@ -512,7 +520,8 @@ impl GpuCoverage {
     /// failed or retried commit can never leave a block whose kernels
     /// did not run for a later frame to replay (water-rs/waterui#3081).
     /// The holes they leave are the compaction rule's input.
-    pub fn begin_frame(&mut self) {
+    pub fn begin_frame(&mut self, now: Instant) {
+        self.frame_time = Some(now);
         self.epoch += 1;
         self.paths.clear();
         self.batch = Batch::default();
@@ -645,11 +654,10 @@ impl GpuCoverage {
         // The generation scratch outlives the frame that sized it, so the
         // next generating frame reuses it instead of allocating its own
         // (water-rs/waterui#4174): a buffer of a size no frame outgrows is
-        // allocated once. A submitted frame that generated nothing means
-        // the engine has stopped generating coverage, and releases it.
-        if !self.has_misses() {
-            self.buffers = None;
-        }
+        // allocated once. A frame that generates nothing neither needs nor
+        // releases it: it is released once no frame has needed it for an
+        // idle interval ([`Self::release_idle`]), so an application that
+        // alternates replaying and generating keeps one set.
         if !self.encoded {
             return;
         }
@@ -1261,12 +1269,31 @@ impl GpuCoverage {
         ));
     }
 
+    /// When the generation scratch is due for release: the idle `interval`
+    /// after the last commit that needed it, `None` while none is held (or
+    /// when the interval never elapses).
+    pub fn idle_deadline(&self, interval: Duration) -> Option<Instant> {
+        self.buffers.as_ref()?;
+        self.scratch_used?.checked_add(interval)
+    }
+
+    /// Releases the generation scratch when no commit has needed it for
+    /// `interval` as of `now`. The retained arena is output, not scratch,
+    /// and stays.
+    pub fn release_idle(&mut self, now: Instant, interval: Duration) {
+        if self.idle_deadline(interval).is_some_and(|due| now >= due) {
+            self.buffers = None;
+            self.scratch_used = None;
+        }
+    }
+
     pub fn trim(&mut self) {
         self.entries.clear();
         self.compaction = None;
         self.live_words = 0;
         self.undrawn_bytes = 0;
         self.buffers = None;
+        self.scratch_used = None;
         self.uploads.clear();
         self.draws_buffer = None;
         self.arena.trim();
@@ -1370,6 +1397,7 @@ impl GpuCoverage {
                 "GPU coverage input exceeds device buffer limit",
             ));
         }
+        self.scratch_used = self.frame_time;
         let previous = self.buffers.as_ref();
         let limit = self.limit.bytes;
         // Tests read the buffers back; the runtime never does.
@@ -2441,7 +2469,7 @@ mod tests {
         }
         let path = crate::render::path::prepare_gpu(&elements, Affine::IDENTITY, (64.0, 64.0));
         let mut frame = uncapped(&device);
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         frame
             .draw(
                 &device,
@@ -2483,7 +2511,7 @@ mod tests {
             return;
         };
         let mut frame = uncapped(&device);
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         frame
             .draw(
                 &device,
@@ -2524,7 +2552,7 @@ mod tests {
             return;
         };
         let mut probe = uncapped(&device);
-        probe.begin_frame();
+        probe.begin_frame(Instant::now());
         probe
             .draw(
                 &device,
@@ -2538,7 +2566,7 @@ mod tests {
             ..wgpu::Limits::default()
         };
         let mut frame = GpuCoverage::with_limits(&small, None, u64::MAX);
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         assert!(
             frame
                 .draw(
@@ -2557,7 +2585,7 @@ mod tests {
             ..wgpu::Limits::default()
         };
         let mut frame = GpuCoverage::with_limits(&between, None, u64::MAX);
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         frame
             .draw(
                 &device,
@@ -2605,13 +2633,13 @@ mod tests {
             output_bytes + 64 < frame.limit.bytes,
             "both retained outputs fit"
         );
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         frame.draw(&device, first).expect("first road fits");
         frame
             .draw(&device, second)
             .expect("individually admitted roads share bounded scratch");
         assert_eq!(frame.batches.len(), 1, "two dispatch batches");
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         frame
             .draw(&device, first)
             .expect("first road after abandoned commit");
@@ -2653,7 +2681,7 @@ mod tests {
             "a generating frame retains its scratch"
         );
         assert_eq!(frame.uploads.len(), 0);
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         frame.draw(&device, first).expect("first cache hit");
         frame.draw(&device, second).expect("second cache hit");
         assert!(!frame.has_misses(), "both batches remain cached");
@@ -2671,8 +2699,8 @@ mod tests {
         assert_eq!(replay[0], words[2], "cached coverage preserves draw counts");
         frame.submitted();
         assert!(
-            frame.buffers.is_none(),
-            "a frame that generates nothing releases generation scratch"
+            frame.buffers.is_some(),
+            "a frame that generates nothing leaves release to the idle interval"
         );
     }
 
@@ -2758,7 +2786,7 @@ mod tests {
             "a road's scratch outgrows the limit"
         );
         frame.limit.bytes = block;
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         for draw in &draws {
             frame
                 .draw(&device, draw)
@@ -2836,7 +2864,7 @@ mod tests {
              {per_batch} of per-batch data"
         );
         let mut whole = uncapped(&device);
-        whole.begin_frame();
+        whole.begin_frame(Instant::now());
         for draw in &draws {
             whole.draw(&device, draw).expect("road fits uncapped");
             assert_eq!(whole.entries[&draw.key].slices, 1, "uncapped is unsliced");
@@ -2859,7 +2887,7 @@ mod tests {
         };
         let mut frame = uncapped(&device);
         frame.limit.bytes = std::mem::size_of::<GpuStrokeRecord>() as u64;
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         for (index, path) in road_paths().into_iter().enumerate() {
             let draw = GpuDraw::new(index as u64 + 1, 0, Affine::IDENTITY, path, (1024, 768));
             assert!(frame.draw(&device, &draw).is_err(), "an unfittable road");
@@ -2867,15 +2895,29 @@ mod tests {
         assert_eq!(frame.paths.len(), 0, "refused before appending a path");
     }
 
+    /// Handles to the retained scratch buffers, compared by identity.
+    fn scratch(frame: &GpuCoverage) -> [wgpu::Buffer; 7] {
+        let buffers = frame.buffers.as_ref().expect("scratch retained");
+        [
+            buffers.elements.clone(),
+            buffers.paths.clone(),
+            buffers.segments.clone(),
+            buffers.coverage.clone(),
+            buffers.strokes.clone(),
+            buffers.args.clone(),
+            buffers.work.clone(),
+        ]
+    }
+
     /// Admitted roads are never sliced: they run in the batches the
     /// binding limit and the per-batch cap alone require, where the
     /// allocator's block size once split them. The frame's scratch
     /// outlives its submit: a later generating frame
     /// of the same size reuses the very buffers, one that needs more
-    /// replaces them, and a submitted frame that generates nothing
-    /// releases them (water-rs/waterui#4174).
+    /// replaces them, and they are released once no frame has needed
+    /// them for the idle interval (water-rs/waterui#4174, #4193).
     #[test]
-    fn generation_scratch_is_retained_until_nothing_generates() {
+    fn generation_scratch_is_released_after_the_idle_interval() {
         let Some((device, queue, delivery)) = delivery_device() else {
             return;
         };
@@ -2889,18 +2931,6 @@ mod tests {
             .collect();
         let moved = |draw: &GpuDraw, content| {
             GpuDraw::new(content, 0, Affine::IDENTITY, draw.path.clone(), (1024, 768))
-        };
-        let scratch = |frame: &GpuCoverage| {
-            let buffers = frame.buffers.as_ref().expect("scratch retained");
-            [
-                buffers.elements.clone(),
-                buffers.paths.clone(),
-                buffers.segments.clone(),
-                buffers.coverage.clone(),
-                buffers.strokes.clone(),
-                buffers.args.clone(),
-                buffers.work.clone(),
-            ]
         };
         let mut frame = uncapped(&device);
         // The smaller road first, so the larger one outgrows its scratch.
@@ -2920,27 +2950,57 @@ mod tests {
         } else {
             (&draws[1], &draws[0])
         };
+        // The clock is injected: each frame starts a `step` after the last.
+        let interval = Duration::from_secs(1);
+        let step = Duration::from_millis(400);
+        let start = Instant::now();
         let first = [moved(small, 10)];
-        coverage_frame(&mut frame, gpu, &[&first[0]]);
+        coverage_frame(&mut frame, gpu, &[&first[0]], start);
         let retained = scratch(&frame);
         let bytes = frame.bytes();
+        assert_eq!(
+            frame.idle_deadline(interval),
+            Some(start + interval),
+            "the deadline is an idle interval after the generating frame"
+        );
         // The same work at new placements misses again: nothing allocates.
         let second = [moved(small, 11)];
-        coverage_frame(&mut frame, gpu, &[&second[0]]);
+        coverage_frame(&mut frame, gpu, &[&second[0]], start + step);
         assert_eq!(scratch(&frame), retained, "an equal frame reuses scratch");
         assert_eq!(frame.bytes(), bytes, "and holds no more");
+        assert_eq!(
+            frame.idle_deadline(interval),
+            Some(start + step + interval),
+            "a generating frame defers the deadline"
+        );
         // A frame needing more grows what it needs.
         let (a, b) = (moved(small, 12), moved(large, 13));
-        coverage_frame(&mut frame, gpu, &[&a, &b]);
+        coverage_frame(&mut frame, gpu, &[&a, &b], start + step * 2);
         assert!(frame.bytes() > bytes, "a larger frame grows scratch");
         let grown = scratch(&frame);
         assert_ne!(grown, retained, "a larger frame replaces what it outgrew");
         // A smaller frame afterwards keeps the larger buffers.
-        coverage_frame(&mut frame, gpu, &[&moved(small, 14)]);
+        coverage_frame(&mut frame, gpu, &[&moved(small, 14)], start + step * 3);
         assert_eq!(scratch(&frame), grown, "scratch never shrinks while used");
-        // Nothing generates: replaying a resident entry releases it all.
-        coverage_frame(&mut frame, gpu, &[&moved(small, 14)]);
-        assert!(frame.buffers.is_none(), "an idle frame releases scratch");
+        let last = start + step * 3;
+        // A frame that only replays neither releases nor defers.
+        coverage_frame(&mut frame, gpu, &[&moved(small, 14)], last + step);
+        assert_eq!(scratch(&frame), grown, "a replaying frame keeps scratch");
+        assert_eq!(frame.idle_deadline(interval), Some(last + interval));
+        // No frame follows: scratch survives until the interval elapses.
+        frame.release_idle(last + Duration::from_millis(999), interval);
+        assert_eq!(
+            scratch(&frame),
+            grown,
+            "released only once the idle time is up"
+        );
+        frame.release_idle(last + interval, interval);
+        assert!(frame.buffers.is_none(), "an idle interval releases scratch");
+        assert_eq!(
+            frame.idle_deadline(interval),
+            None,
+            "nothing is left to release"
+        );
         assert_eq!(
             frame.bytes(),
             frame.arena().map_or(0, wgpu::Buffer::size)
@@ -2949,7 +3009,7 @@ mod tests {
             "only the arena and draw list remain"
         );
         let mut whole = uncapped(&device);
-        whole.begin_frame();
+        whole.begin_frame(Instant::now());
         for draw in &draws {
             whole.draw(&device, draw).expect("road fits");
             assert_eq!(whole.entries[&draw.key].slices, 1, "the road is whole");
@@ -2972,7 +3032,7 @@ mod tests {
         ),
     ) {
         let mut probe = uncapped(device);
-        probe.begin_frame();
+        probe.begin_frame(Instant::now());
         probe
             .generate(device, draw, std::slice::from_ref(slice))
             .expect("a slice draws alone");
@@ -3184,8 +3244,9 @@ mod tests {
             crate::render::shaders::ShaderDelivery,
         ),
         draws: &[&GpuDraw],
+        at: Instant,
     ) -> Vec<u32> {
-        frame.begin_frame();
+        frame.begin_frame(at);
         for draw in draws {
             frame.touch(draw.key);
         }
@@ -3225,7 +3286,7 @@ mod tests {
         let paths = road_paths();
         let words = |path: &crate::render::path::GpuPath| {
             let mut probe = GpuCoverage::with_limits(&device.limits(), None, 0);
-            probe.begin_frame();
+            probe.begin_frame(Instant::now());
             let draw = GpuDraw::new(1, 0, Affine::IDENTITY, path.clone(), (1024, 768));
             probe.draw(&device, &draw).expect("road draw fits");
             probe.entries[&draw.key].words
@@ -3243,13 +3304,13 @@ mod tests {
             |content| GpuDraw::new(content, 0, Affine::IDENTITY, moving.clone(), (1024, 768));
         // A zero undrawn budget evicts each step's placement at the next.
         let mut frame = GpuCoverage::new(&device, None, 0, super::super::PipelineCache::default());
-        let first = coverage_frame(&mut frame, gpu, &[&step(100), &still]);
+        let first = coverage_frame(&mut frame, gpu, &[&step(100), &still], Instant::now());
         assert!(first.iter().all(|&count| count > 0), "both roads emit");
         let arena = frame.arena().expect("sized arena").clone();
         let generation = frame.arena_generation();
         let base = frame.entries[&still.key].base;
         for content in 101..105 {
-            let counts = coverage_frame(&mut frame, gpu, &[&step(content), &still]);
+            let counts = coverage_frame(&mut frame, gpu, &[&step(content), &still], Instant::now());
             assert_eq!(counts, first, "every step emits what the first did");
             assert_eq!(
                 frame.arena_generation(),
@@ -3619,7 +3680,7 @@ mod tests {
             .chain(miters.chunks(1))
         {
             let mut frame = uncapped(&device);
-            frame.begin_frame();
+            frame.begin_frame(Instant::now());
             let mut kept = Vec::new();
             for (path, stroke) in chunk {
                 let raster = Affine::translate((8.0, 8.0))

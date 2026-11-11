@@ -12,7 +12,7 @@ use waterui::ViewExt as _;
 use waterui::animation::Animation;
 use waterui::graphics::canvas::{
     BlendMode, Canvas, Cap, Circle, ConicGradient, Cx, Ellipse, ImagePattern, ImageSource, Join,
-    Layer, LinearGradient, MeshGradient, Path, PixelBuffer, PixelFormat, RadialGradient,
+    Layer, LinearGradient, MeshGradient, Paint, Path, PixelBuffer, PixelFormat, RadialGradient,
     RoundedRect, Sampling, Shadow, StrokeStyle,
 };
 use waterui::graphics::color::WorkingColor;
@@ -354,6 +354,85 @@ fn canvas_scope_records_its_region_again() {
     app.snapshot()
         .save_png(output("scope_after.png"))
         .expect("the scope snapshot is writable");
+}
+
+/// `paint` in a frame centred on `(x, y)`: a non-uniform scale, a rotation,
+/// then the move to the cell, each nested outside the one before.
+fn placed(paint: impl Into<Paint>, x: f32, y: f32) -> Paint {
+    paint
+        .into()
+        .transformed(Affine2::scale(1.8, 0.6))
+        .transformed(Affine2::rotate(0.5))
+        .transformed(Affine2::translate(x, y))
+}
+
+/// Linear, radial and mesh gradients, each placed through a transform, on a
+/// fill (top row) and a thick stroke (bottom row).
+fn transformed_paints(cx: &mut Cx) {
+    for (column, x) in [60.0_f32, 180.0, 300.0].into_iter().enumerate() {
+        for (row, y) in [60.0_f32, 170.0].into_iter().enumerate() {
+            let paint = match column {
+                0 => Paint::from(
+                    LinearGradient::new(Point::new(-50.0, 0.0), Point::new(50.0, 0.0))
+                        .stop(0.0, rgb(1.0, 0.2, 0.2))
+                        .stop(1.0, rgb(0.2, 0.3, 1.0)),
+                ),
+                1 => Paint::from(
+                    RadialGradient::new(Point::zero(), 50.0)
+                        .stop(0.0, rgb(1.0, 1.0, 1.0))
+                        .stop(1.0, rgb(0.1, 0.6, 0.2)),
+                ),
+                _ => Paint::from(MeshGradient::new(
+                    1,
+                    1,
+                    vec![
+                        Point::new(-50.0, -50.0),
+                        Point::new(50.0, -50.0),
+                        Point::new(-50.0, 50.0),
+                        Point::new(50.0, 50.0),
+                    ],
+                    vec![
+                        rgb(1.0, 0.0, 0.0),
+                        rgb(0.0, 1.0, 0.0),
+                        rgb(0.0, 0.0, 1.0),
+                        rgb(1.0, 1.0, 0.0),
+                    ],
+                )),
+            };
+            let paint = placed(paint, x, y);
+            if row == 0 {
+                cx.fill(rect(x - 50.0, y - 50.0, 100.0, 100.0), paint);
+            } else {
+                cx.stroke(
+                    rect(x - 42.0, y - 42.0, 84.0, 84.0),
+                    StrokeStyle::new(16.0),
+                    paint,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn canvas_transformed_paints_move_the_paint_and_not_the_shape() {
+    let mut app = ui()
+        .viewport(360, 240)
+        .theme(Material3::defaults())
+        .mount_offscreen(|| {
+            Canvas::new(|cx| {
+                cx.fill(cx.size().map(Rect::from_size), rgb(0.08, 0.08, 0.1));
+                transformed_paints(cx);
+            })
+            .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+            .a11y_label("Transformed paints")
+        });
+    app.query()
+        .role(Role::IMAGE)
+        .label("Transformed paints")
+        .assert_exists();
+    app.snapshot()
+        .save_png(output("transformed_paints.png"))
+        .expect("the transformed paint snapshot is writable");
 }
 
 #[test]
