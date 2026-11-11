@@ -194,7 +194,7 @@ tree. Interactions panic when the semantic action is unavailable, and waits
 pump until a concrete condition or quiescence instead of sleeping.
 
 ```rust
-#[waterui::test(settings_view, theme = hydrolysis_m3::install)]
+#[waterui::test(settings_view, theme = hydrolysis_m3::Material3::defaults())]
 fn toggles_sync(app: &mut SemanticApp) {
     app.query().label("Sync").tap();
     app.query().label("Enabled").assert_exists();
