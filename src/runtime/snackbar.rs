@@ -46,8 +46,8 @@ use waterui_controls::{Button, ButtonStyle, button, label};
 use waterui_core::animation::Animation;
 use waterui_core::extract::State;
 use waterui_core::handler::{
-    AnyViewBuilder, BoxedEventAction, EventHandler, Handler, SharedAction, boxed_event_handler,
-    shared_action,
+    AnyViewBuilder, BoxedEventAction, EventHandler, Handler, ReportExtraction, SharedAction,
+    boxed_event_handler, shared_action,
 };
 use waterui_core::id::Identifiable;
 use waterui_core::plugin::Plugin;
@@ -376,7 +376,7 @@ struct DismissalCallback(Rc<RefCell<BoxedEventAction<SnackbarDismissReason>>>);
 
 impl DismissalCallback {
     fn call(&self, reason: SnackbarDismissReason, env: &waterui_core::Environment) {
-        (self.0.borrow_mut())(reason, env);
+        (self.0.borrow_mut())(reason, env).report_extraction();
     }
 }
 
@@ -955,7 +955,7 @@ impl StackedSnackbarView {
             )
             .style(ButtonStyle::Borderless)
             .action(move |env: waterui_core::Environment| {
-                let () = action.handler.call(&captured_env.layered_on(&env));
+                action.handler.run(&captured_env.layered_on(&env));
                 manager.dismiss_presentation(id, SnackbarDismissReason::Action);
             })
         });

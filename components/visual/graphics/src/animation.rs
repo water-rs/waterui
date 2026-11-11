@@ -10,6 +10,7 @@ use waterui_core::easing::EasingCurve;
 /// such a change with a framework animation converts it here.
 #[must_use]
 pub fn engine_animation(animation: &Animation) -> crate::draw::Animation {
+    let animation = animation.clone().validated();
     match animation.curve() {
         EasingCurve::CubicBezier(x1, y1, x2, y2) => {
             crate::draw::Animation::Curve(crate::draw::Curve::bezier(

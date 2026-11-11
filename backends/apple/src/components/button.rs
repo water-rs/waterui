@@ -19,7 +19,7 @@ use waterui::component::button::{ButtonConfig, ButtonStyle};
 use waterui::reactive::Computed;
 use waterui::text::StyledStr;
 use waterui_backend_core::{AnyView, Environment};
-use waterui_core::handler::BoxedAction;
+use waterui_core::handler::{BoxedAction, ReportExtraction};
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
@@ -264,7 +264,7 @@ fn wire_action(
 ) {
     #[cfg(target_os = "macos")]
     leaf.keep(ActionTarget::new(button.control(), move |_| {
-        (action.borrow_mut())(&env);
+        (action.borrow_mut())(&env).report_extraction();
     }));
 
     #[cfg(target_os = "ios")]
@@ -273,7 +273,7 @@ fn wire_action(
             button.control(),
             platform::ControlEvents::TOUCH_UP_INSIDE,
             move |_| {
-                (action.borrow_mut())(&env);
+                (action.borrow_mut())(&env).report_extraction();
             },
         ));
     }

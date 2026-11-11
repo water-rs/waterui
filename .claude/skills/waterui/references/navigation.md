@@ -286,7 +286,8 @@ The `Window` builder, precisely:
   setting the binding (or `window.handle().set_background(..)`) re-applies it to the
   open window, e.g. to switch between opaque, a translucent colour and a material.
 - `.icon(..)` — a `WindowIcon` (`WindowIcon::new(width, height, rgba)`, straight-alpha
-  RGBA8 pixels) or a `Binding<Option<WindowIcon>>`; `None`, the default, keeps the
+  RGBA8 pixels; it returns a `Result`, an error for an empty icon or a buffer that is not
+  `width * height * 4` bytes) or a `Binding<Option<WindowIcon>>`; `None`, the default, keeps the
   application icon. Reactive like the style: `window.handle().set_icon(..)` swaps it on
   the open window. Only platforms with a per-window icon show it (X11 and Windows);
   Wayland, macOS, iOS and Android always show the application icon.

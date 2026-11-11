@@ -25,7 +25,7 @@ use core::{
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_controls::{ButtonStyle, IntoLabel, button};
-use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, boxed_action};
+use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, ReportExtraction, boxed_action};
 use waterui_core::{
     AnyView, Environment, Error, IgnorableMetadata, IntoSignal, Metadata, Native, NativeView,
     Retain, SerialDispatch, Str, View, env::use_env, extract::ExtractionState, extract::Extractor,
@@ -168,7 +168,7 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn attempt_pop(&mut self, env: &Environment) -> bool {
         if let Some(handler) = &mut self.pop_attempted {
-            handler(env);
+            handler(env).report_extraction();
         }
         self.pop_enabled.snapshot()
     }
@@ -177,7 +177,7 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn appeared(&mut self, env: &Environment) {
         if let Some(handler) = &mut self.appear {
-            handler(env);
+            handler(env).report_extraction();
         }
     }
 
@@ -185,7 +185,7 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn disappeared(&mut self, env: &Environment) {
         if let Some(handler) = &mut self.disappear {
-            handler(env);
+            handler(env).report_extraction();
         }
     }
 
@@ -193,7 +193,7 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn popped(&mut self, env: &Environment) {
         if let Some(handler) = &mut self.pop {
-            handler(env);
+            handler(env).report_extraction();
         }
     }
 }

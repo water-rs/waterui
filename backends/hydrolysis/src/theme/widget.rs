@@ -95,7 +95,7 @@ impl ModalInteraction {
 
     /// Dispatches the modal Escape action.
     pub fn handle_escape(&self, env: &waterui_core::Environment) {
-        self.escape_action.call(env);
+        self.escape_action.run(env);
     }
 }
 

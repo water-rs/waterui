@@ -1748,7 +1748,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let Some((action, env)) = submit else {
             return false;
         };
-        action.call(&env);
+        action.run(&env);
         true
     }
 

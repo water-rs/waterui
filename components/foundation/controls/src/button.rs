@@ -195,7 +195,7 @@ use fmt::Debug;
 
 use alloc::boxed::Box;
 use executor_core::spawn_local;
-use waterui_core::handler::{BoxedAction, Handler};
+use waterui_core::handler::{BoxedAction, ExtractionError, Handler, ReportExtraction};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, impl_debug};
 use waterui_text::IntoText;
@@ -411,7 +411,7 @@ impl ButtonStyle {
 
 fn render_button_config<Action>(button: Button<Action>) -> ButtonConfig
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     ButtonConfig {
         // A button label stays one truncated line — the SwiftUI and Material
@@ -429,7 +429,7 @@ where
 
 impl<Action> View for Button<Action>
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
         let config = render_button_config(self);
@@ -460,7 +460,7 @@ impl ViewConfiguration for ButtonConfig {
 
 impl<Action> ConfigurableView for Button<Action>
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     type Config = ButtonConfig;
 
@@ -544,7 +544,10 @@ impl<Action: Clone> Clone for Button<Action> {
     }
 }
 
-impl Button<fn(&Environment)> {
+/// The action of a button that has none configured yet.
+pub type NoAction = fn(&Environment) -> Result<(), ExtractionError>;
+
+impl Button<NoAction> {
     /// Creates a new button with the specified semantic label.
     ///
     /// The button has no action by default. Use [`action`](Self::action) or
@@ -651,7 +654,10 @@ impl<Action> Button<Action> {
     /// # }
     /// ```
     #[must_use]
-    pub fn action<F, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
+    pub fn action<F, Args>(
+        self,
+        action: F,
+    ) -> Button<impl FnMut(&Environment) -> Result<(), ExtractionError>>
     where
         F: Handler<Args, ()> + 'static,
     {
@@ -690,24 +696,41 @@ impl<Action> Button<Action> {
     /// });
     /// # }
     /// ```
-    pub fn action_async<F, Fut, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
+    pub fn action_async<F, Fut, Args>(
+        self,
+        action: F,
+    ) -> Button<impl FnMut(&Environment) -> Result<(), ExtractionError>>
     where
         F: Handler<Args, Fut> + 'static,
         Fut: Future<Output = ()> + 'static,
     {
         let mut action = action;
-        self.action(move |env: Environment| {
-            spawn_local(action.call(&env)).detach();
-        })
+        Button {
+            label: self.label,
+            // A failed extraction means the action does not run: no future is
+            // spawned, and the failure travels to the button's dispatcher.
+            action: move |env: &Environment| {
+                spawn_local(action.call(env)?).detach();
+                Ok(())
+            },
+            style: self.style,
+            size: self.size,
+        }
     }
 }
 
 /// No-op action for buttons without a configured action.
-const fn noop(_env: &Environment) {}
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature is the button action's"
+)]
+const fn noop(_env: &Environment) -> Result<(), ExtractionError> {
+    Ok(())
+}
 
 impl<Action> From<Button<Action>> for crate::menu::Command
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     fn from(value: Button<Action>) -> Self {
         let Button {
@@ -716,13 +739,15 @@ where
             style: _,
             size: _,
         } = value;
-        Self::builder(label).action(move |env: Environment| action(&env))
+        Self::builder(label).action(move |env: Environment| {
+            action(&env).report_extraction();
+        })
     }
 }
 
 impl<Action> From<Button<Action>> for crate::menu::MenuItem
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     fn from(value: Button<Action>) -> Self {
         Self::Command(value.into())
@@ -750,7 +775,7 @@ where
 /// button("Click me").action(|| {});
 /// # }
 /// ```
-pub fn button(label: impl IntoLabel) -> Button<fn(&Environment)> {
+pub fn button(label: impl IntoLabel) -> Button<NoAction> {
     Button::new(label.into_label())
 }
 

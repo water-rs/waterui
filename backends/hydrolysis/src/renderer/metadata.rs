@@ -5,6 +5,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::frame::ScopeClip;
+use waterui_core::handler::ReportExtraction as _;
 
 /// The claim a tap gesture registered for the wrapped view: the node it
 /// stands for, the environment it was registered under — carrying the naming
@@ -358,7 +359,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         Rc::new(RefCell::new(
             move |_renderer: &mut crate::renderer::SemanticCore<E>, runtime_env: &Environment| {
                 let action_env = captured_env.layered_on(runtime_env);
-                action.borrow_mut()(&action_env);
+                action.borrow_mut()(&action_env).report_extraction();
                 true
             },
         ))
@@ -531,7 +532,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let action = Rc::clone(&effect.action);
         let mut layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
             let action_env = captured_env.layered_on(runtime_env);
-            action.borrow_mut()(&action_env);
+            action.borrow_mut()(&action_env)
         });
 
         if matches!(effect.gesture, Gesture::Tap(_))
@@ -598,7 +599,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     press_slot,
                     chrome.keyboard_focusable(),
                     move |_renderer, _point, runtime_env| {
-                        layered_action(runtime_env);
+                        layered_action(runtime_env).report_extraction();
                         false
                     },
                 );

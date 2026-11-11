@@ -1228,7 +1228,7 @@ impl ScrollState {
         }
         self.programmatic = Some(ScrollAnimation {
             token,
-            animation,
+            animation: animation.validated(),
             started: now,
             from_x: self.offset_x,
             from_y: self.offset_y,

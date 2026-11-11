@@ -604,7 +604,7 @@ impl Command {
             semantic_label,
             icon,
             action: shared_action(move |env: Environment| {
-                action.call(&captured_env.layered_on(&env));
+                action.run(&captured_env.layered_on(&env));
             }),
             disabled: Disabled::resolve(env, self.disabled),
             selected: self.selected,
@@ -895,7 +895,7 @@ impl MenuView for Divider {
 
 impl<Action> MenuView for Button<Action>
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), waterui_core::handler::ExtractionError> + 'static,
 {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
         Computed::constant(vec![self.into()])
@@ -1730,8 +1730,8 @@ mod tests {
             .state(&count);
         let resolved = command.resolve(&Environment::default());
 
-        resolved.action.call(&Environment::default());
-        resolved.action.call(&Environment::default());
+        resolved.action.run(&Environment::default());
+        resolved.action.run(&Environment::default());
 
         assert_eq!(count.get(), 2);
     }

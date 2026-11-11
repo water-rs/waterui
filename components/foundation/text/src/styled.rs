@@ -14,7 +14,7 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 use waterui_color::{Color, SurfaceVariantColor};
 use waterui_core::{
     Environment, Str, View,
-    handler::{EventHandler, SharedAction},
+    handler::{EventHandler, ReportExtraction, SharedAction},
 };
 
 /// A set of text attributes for rich text formatting.
@@ -211,7 +211,7 @@ impl TapSpan {
 
     /// Invokes the span's action against the given environment.
     pub fn activate(&self, env: &Environment) {
-        self.action.call(env);
+        self.action.run(env);
     }
 }
 
@@ -460,7 +460,7 @@ impl StyledStr {
         }
         let payload = payload.into_computed();
         let action = SharedAction::new(move |env: Environment| {
-            handler.call(payload.snapshot(), &env);
+            handler.call(payload.snapshot(), &env).report_extraction();
         });
         self.tap_spans = alloc::vec![TapSpan {
             range: 0..end,

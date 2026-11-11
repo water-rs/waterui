@@ -15,9 +15,9 @@ use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
-    env::{With, use_env},
+    env::{UseEnv, With},
     extract::State,
-    handler::{EventHandler, Handler, HandlerOnce},
+    handler::{EventHandler, Handler, HandlerOnce, ReportExtraction},
     layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
     metadata::MetadataKey,
     plugin::Plugin,
@@ -900,7 +900,7 @@ pub trait ViewExt: View + Sized {
         let mut action = action;
         self.gesture(TapGesture::new(), move |env: Environment| {
             trigger_impact_haptic(intensity);
-            action.call(&env);
+            action.call(&env).report_extraction();
         })
     }
 
@@ -929,7 +929,7 @@ pub trait ViewExt: View + Sized {
             LongPressGesture::new(minimum_duration_ms),
             move |env: Environment| {
                 trigger_impact_haptic(intensity);
-                action.call(&env);
+                action.call(&env).report_extraction();
             },
         )
     }
@@ -1318,7 +1318,8 @@ pub trait ViewExt: View + Sized {
 
     /// Installs a plugin into the environment.
     fn install(self, plugin: impl Plugin) -> impl View {
-        use_env(move |mut env: Environment| {
+        UseEnv::new(move |env: &Environment| {
+            let mut env = env.clone();
             plugin.install(&mut env);
             Metadata::new(self, env)
         })
@@ -1485,7 +1486,8 @@ pub trait ViewExt: View + Sized {
         let hittable_value = is_disabled.map(|d| !d);
         let scope = is_disabled;
 
-        use_env(move |mut env: Environment| {
+        UseEnv::new(move |env: &Environment| {
+            let mut env = env.clone();
             waterui_core::interaction::Disabled::install(&mut env, scope);
             Metadata::new(
                 self.a11y_state_signal(accessibility_state)
