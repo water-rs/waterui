@@ -450,7 +450,7 @@ pub(super) fn multiply(a: Rows, b: Rows) -> Rows {
     clippy::cast_possible_truncation,
     reason = "a RenderNode stores its properties as f32"
 )]
-const fn narrow(value: f64) -> f32 {
+pub(super) const fn narrow(value: f64) -> f32 {
     value as f32
 }
 
