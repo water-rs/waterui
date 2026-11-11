@@ -179,6 +179,20 @@ pub fn backdrop_effect_text(user: &str, union: bool) -> Cow<'static, str> {
     format!("{head}{tail}\n{user}").into()
 }
 
+/// Whether the validated effect module's entry points reach the
+/// prelude's `backdrop_sample_blur`, which reads a Gaussian pyramid only.
+/// Compaction drops every function no entry point reaches, so the
+/// function survives exactly when the user's `backdrop_effect` (called
+/// from the engine's member composite) reaches it.
+#[must_use]
+pub fn reads_backdrop_blur(mut module: naga::Module) -> bool {
+    naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
+    module
+        .functions
+        .iter()
+        .any(|(_, function)| function.name.as_deref() == Some("backdrop_sample_blur"))
+}
+
 /// Parses and validates WGSL `text` on the caller thread, with the
 /// engine's capability floor. Errors carry naga's diagnostic against the
 /// text.
