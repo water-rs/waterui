@@ -62,6 +62,15 @@ pub enum ListSelection<Id: 'static> {
     Multiple(Binding<BTreeSet<Id>>),
 }
 
+/// Reports a selection write naming a tag the list never handed out — a
+/// backend wrote back something other than what [`ListRowTags`] gave it. A
+/// debug build panics, and a release build logs the error and drops the tag.
+fn report_foreign_tag() {
+    crate::contract_violation!(
+        "a list selection tag was not taken from the list's rows, so the write ignores it"
+    );
+}
+
 impl<Id: 'static> fmt::Debug for ListSelection<Id> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(core::any::type_name::<Self>())
@@ -84,10 +93,17 @@ impl ListSelection<ListTagId> {
             {
                 let from = values.clone();
                 move |binding, erased: Option<ListTagId>| {
-                    binding.set(erased.map(|tag| {
-                        from.to_data(tag.into_raw())
-                            .expect("a list selection tag was not taken from the list's rows")
-                    }));
+                    let selected = match erased {
+                        Some(tag) => {
+                            let Some(value) = from.to_data(tag.into_raw()) else {
+                                report_foreign_tag();
+                                return;
+                            };
+                            Some(value)
+                        }
+                        None => None,
+                    };
+                    binding.set(selected);
                 }
             },
         ))
@@ -114,9 +130,12 @@ impl ListSelection<ListTagId> {
                 binding.set(
                     erased
                         .into_iter()
-                        .map(|tag| {
-                            from.to_data(tag.into_raw())
-                                .expect("a list selection tag was not taken from the list's rows")
+                        .filter_map(|tag| {
+                            let value = from.to_data(tag.into_raw());
+                            if value.is_none() {
+                                report_foreign_tag();
+                            }
+                            value
                         })
                         .collect(),
                 );
@@ -191,9 +210,12 @@ impl<Id: 'static + Ord + Clone> RowTags<Id> {
         let tag_of = self.tag_of;
         ListRowTags {
             tag_of: Rc::new(move |row| {
-                let id = ids.to_data(row).unwrap_or_else(|| {
-                    panic!("list row id {row:?} was never reported by the list")
-                });
+                let Some(id) = ids.to_data(row) else {
+                    crate::contract_violation!(
+                        "list row id {row:?} was never reported by the list, so it carries no tag"
+                    );
+                    return None;
+                };
                 tag_of(&id)
             }),
         }
@@ -230,9 +252,11 @@ impl ListRowTags {
     /// The tag row `row` is selected by, or `None` when the row is not
     /// selectable.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// Panics if `row` is not an id the list's contents reported.
+    /// A `row` the list's contents never reported breaks the contract: a
+    /// debug build panics, and a release build logs the error and answers
+    /// `None`.
     #[must_use]
     pub fn tag(&self, row: RawId) -> Option<ListTagId> {
         (self.tag_of)(row)
@@ -242,5 +266,50 @@ impl ListRowTags {
     /// contents minted, so the tags answer the ids the backend sees.
     pub(crate) fn rekeyed(self, ids: &Mapping<RawId>) -> Self {
         RowTags::from_erased(self).erased(ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::collections::BTreeSet;
+
+    use nami::{Binding, Signal as _};
+    use waterui_core::id::{Id as RawId, Mapping};
+
+    use super::{ListSelection, ListTagId};
+
+    fn foreign_tag() -> ListTagId {
+        ListTagId::new(RawId::try_from(99).expect("99 is not zero"))
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "was not taken from the list's rows")
+    )]
+    fn a_single_selection_write_of_a_foreign_tag_keeps_the_selection() {
+        let selection: Binding<Option<i32>> = Binding::container(Some(1));
+        let values = Mapping::new();
+        let ListSelection::Single(erased) = ListSelection::single(&selection, &values) else {
+            unreachable!("`single` builds a single selection");
+        };
+        erased.set(Some(foreign_tag()));
+        assert_eq!(selection.snapshot(), Some(1));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "was not taken from the list's rows")
+    )]
+    fn a_multiple_selection_write_drops_foreign_tags() {
+        let selection: Binding<BTreeSet<i32>> = Binding::container(BTreeSet::new());
+        let values = Mapping::new();
+        let known = ListTagId::new(values.to_id(7));
+        let ListSelection::Multiple(erased) = ListSelection::multiple(&selection, &values) else {
+            unreachable!("`multiple` builds a multiple selection");
+        };
+        erased.set(BTreeSet::from([known, foreign_tag()]));
+        assert_eq!(selection.snapshot(), BTreeSet::from([7]));
     }
 }

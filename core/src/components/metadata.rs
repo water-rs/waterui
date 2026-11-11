@@ -18,7 +18,8 @@ use crate::{AnyView, Environment, View};
 /// Represents a view that carries additional metadata of type `T`.
 ///
 /// This struct allows attaching arbitrary data to a view component. The metadata
-/// is expected to be handled by a renderer, and will panic if not properly caught.
+/// is expected to be handled by a renderer. When a renderer does not catch it,
+/// a debug build panics and a release build logs the error and renders nothing.
 ///
 /// Metadata is transparent for layout system, it is not a native view.
 #[derive(Debug)]
@@ -48,9 +49,9 @@ impl<T: MetadataKey> Metadata<T> {
     }
 
     #[cold]
-    fn panic_not_caught() {
-        panic!(
-            "The metadata `{}` is not caught by your renderer. If the metadata is not essential, use `IgnorableMetadata<T>`.",
+    fn report_not_caught() {
+        crate::contract_violation!(
+            "The metadata `{}` is not caught by your renderer, so it renders nothing. If the metadata is not essential, use `IgnorableMetadata<T>`.",
             type_name::<Self>()
         );
     }
@@ -58,7 +59,7 @@ impl<T: MetadataKey> Metadata<T> {
 
 impl<T: MetadataKey> View for Metadata<T> {
     fn body(self, _env: &Environment) -> impl View {
-        Self::panic_not_caught();
+        Self::report_not_caught();
     }
 
     /// Metadata is transparent for layout: the wrapper never changes how the
@@ -126,5 +127,22 @@ impl Retain {
         Self {
             _value: Box::new(value),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Probe;
+    impl MetadataKey for Probe {}
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "is not caught by your renderer")
+    )]
+    fn metadata_nobody_caught_renders_nothing() {
+        let _ = Metadata::new((), Probe).body(&Environment::new());
     }
 }

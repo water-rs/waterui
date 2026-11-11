@@ -6,6 +6,7 @@
 //! the variable means the same thing everywhere.
 
 use tracing_subscriber::EnvFilter;
+use waterui_core::contract_violation;
 
 /// The environment variable a launcher sets to name the level the application
 /// logs at — `water run --logs <level>` writes it.
@@ -26,8 +27,10 @@ pub fn log_requested() -> bool {
 /// otherwise [`LOG_LEVEL_ENV`] names the level (`error` when unset) and the
 /// graphics stack stays at `error`.
 ///
-/// # Panics
-/// Panics when [`LOG_LEVEL_ENV`] is not a valid `tracing` level.
+/// # Contract
+/// A [`LOG_LEVEL_ENV`] that is not a valid `tracing` level breaks the
+/// launcher's contract: a debug build panics, and a release build runs at the
+/// `error` level.
 #[must_use]
 pub fn env_filter() -> EnvFilter {
     filter(
@@ -41,8 +44,15 @@ fn filter(rust_log: Option<&str>, level: Option<&str>) -> EnvFilter {
         return filter;
     }
     let level = level.unwrap_or("error");
-    EnvFilter::try_new(format!("{level},{GRAPHICS_DIRECTIVES}"))
-        .unwrap_or_else(|error| panic!("{LOG_LEVEL_ENV}={level:?} is not a tracing level: {error}"))
+    EnvFilter::try_new(format!("{level},{GRAPHICS_DIRECTIVES}")).unwrap_or_else(|error| {
+        contract_violation!("{LOG_LEVEL_ENV}={level:?} is not a tracing level: {error}");
+        error_filter()
+    })
+}
+
+/// The filter of the `error` level, with the graphics stack at `error`.
+fn error_filter() -> EnvFilter {
+    EnvFilter::new(format!("error,{GRAPHICS_DIRECTIVES}"))
 }
 
 #[cfg(test)]
@@ -72,8 +82,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "is not a tracing level")]
-    fn invalid_level_panics() {
-        let _ = filter(None, Some("loud=="));
+    #[cfg_attr(debug_assertions, should_panic(expected = "is not a tracing level"))]
+    fn invalid_level_runs_at_error() {
+        let filter = filter(None, Some("loud==")).to_string();
+        assert_eq!(filter, super::error_filter().to_string());
     }
 }
