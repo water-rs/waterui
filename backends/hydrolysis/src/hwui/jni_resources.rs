@@ -9,6 +9,7 @@ use jni::signature::{Primitive, ReturnType};
 
 use super::jni::{JniObject, Method};
 use super::platform::{AgslUniform, BitmapUpload, FontReader, ResourcePlatform};
+use super::profile::FrameStats;
 use super::{Encoder, HwuiResources};
 
 const VOID: ReturnType = ReturnType::Primitive(Primitive::Void);
@@ -52,7 +53,7 @@ impl HwuiResources {
         sink: &JObject<'_>,
         encoder: &Encoder,
     ) -> Result<Self, String> {
-        let platform = JniResources::new(env, sink)?;
+        let platform = JniResources::new(env, sink, encoder.stats())?;
         Ok(Self::new(
             Box::new(platform),
             encoder.registry().clone(),
@@ -68,8 +69,12 @@ impl JniResources {
     ///
     /// A description when a method is missing or the device's bitmap limit
     /// cannot be read.
-    pub fn new(env: &mut jni::Env<'_>, sink: &JObject<'_>) -> Result<Self, String> {
-        let sink = JniObject::new(env, sink, "RenderNodeSink")?;
+    pub fn new(
+        env: &mut jni::Env<'_>,
+        sink: &JObject<'_>,
+        stats: &FrameStats,
+    ) -> Result<Self, String> {
+        let sink = JniObject::new(env, sink, "RenderNodeSink", stats)?;
         let limit = sink.method(env, "maxBitmapDimension", "()I")?;
         let font_bytes = sink.method(env, "registerFontBytes", "(ILjava/nio/ByteBuffer;I)V")?;
         let system_font = sink.method(
@@ -116,6 +121,7 @@ impl ResourcePlatform for JniResources {
         if data.is_empty() {
             return Err("the font data is empty".to_owned());
         }
+        self.sink.stats().font_registration();
         self.sink.call(self.font_bytes, 4, |env, object, method| {
             // SAFETY: the buffer views `data` for this call only; Kotlin
             // reads it once, copying it into Java-owned memory.
@@ -147,6 +153,7 @@ impl ResourcePlatform for JniResources {
         let id = int("the font id", id)?;
         let mut outcome = Ok(());
         let ttc_index = self.ttc_index;
+        self.sink.stats().font_registration();
         self.sink.call(self.system_font, 8, |env, object, method| {
             let name = env.new_string(family)?;
             // SAFETY: `(ILjava/lang/String;)Ljava/nio/ByteBuffer;`.

@@ -53,6 +53,7 @@ mod jni_resources;
 mod kotlin;
 mod lower;
 mod platform;
+mod profile;
 mod protocol;
 mod resources;
 pub mod text;
@@ -70,6 +71,7 @@ pub use encoder::{Encoder, Frame, HostEntry, PlatformViewBinding, Recycle};
 pub use jni_painter::JniPainter;
 mod surface;
 pub use platform::HwuiResources;
+pub use profile::FrameStats;
 pub use surface::HwuiSurface;
 
 /// The HWUI render target. It samples projective layers

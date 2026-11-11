@@ -29,6 +29,8 @@ mod effects;
 mod frame;
 mod frame_work;
 #[cfg(feature = "frame-profile")]
+mod frame_stage_times;
+#[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
 mod gpu_profile;
 mod identity;
 mod input;
@@ -55,9 +57,9 @@ pub use effects::*;
 pub use frame::*;
 pub use frame_work::FrameWorkCounters;
 #[cfg(feature = "frame-profile")]
-pub use gpu_profile::GpuFrameProfiler;
-#[cfg(feature = "frame-profile")]
-pub use gpu_profile::{FrameStageTimes, GpuIdentity};
+pub use frame_stage_times::FrameStageTimes;
+#[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
+pub use gpu_profile::{GpuFrameProfiler, GpuIdentity};
 pub use identity::*;
 pub use mount::{Dirty, NodeCell, NodeCore, Placement, PlacementClock, ProducerKey};
 use mount::{HitClasses, HitGate, ScopeDelta};

@@ -7,6 +7,7 @@ use jni::Env;
 use jni::objects::{JFloatArray, JObject, JValue};
 use jni::signature::{Primitive, ReturnType};
 
+use crate::hwui::FrameStats;
 use crate::hwui::HwuiError;
 use crate::hwui::jni::{JniObject, Method};
 
@@ -65,8 +66,13 @@ impl JniTextProvider {
     ///
     /// [`HwuiError::Text`] when the JVM, a global reference or a method of
     /// the provider is unavailable.
-    pub fn new(env: &mut Env<'_>, provider: &JObject<'_>) -> Result<Self, HwuiError> {
-        let provider = JniObject::new(env, provider, "HwuiTextProvider").map_err(text_error)?;
+    pub fn new(
+        env: &mut Env<'_>,
+        provider: &JObject<'_>,
+        stats: &FrameStats,
+    ) -> Result<Self, HwuiError> {
+        let provider =
+            JniObject::new(env, provider, "HwuiTextProvider", stats).map_err(text_error)?;
         let mut method =
             |name, signature| provider.method(env, name, signature).map_err(text_error);
         Ok(Self {
@@ -109,6 +115,7 @@ impl JniTextProvider {
                 "HwuiTextProvider.registerFont: face index {index} is outside an int"
             ))
         })?;
+        self.provider.stats().font_registration();
         self.provider
             .call(self.register_font, QUERY_FRAME, |env, provider, method| {
                 let family = env.new_string(family)?;

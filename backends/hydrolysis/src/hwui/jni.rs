@@ -11,12 +11,15 @@ use jni::sys::jvalue;
 use jni::vm::AttachConfig;
 use jni::{Env, JavaVM, jni_sig, jni_str};
 
+use super::profile::FrameStats;
+
 /// A Kotlin object the HWUI target calls into.
 pub struct JniObject {
     vm: JavaVM,
     object: Global<JObject<'static>>,
     class: Global<JClass<'static>>,
     owner: &'static str,
+    stats: FrameStats,
 }
 
 impl fmt::Debug for JniObject {
@@ -47,7 +50,8 @@ impl From<jni::errors::Error> for Failure {
 }
 
 impl JniObject {
-    /// A client of `object`, an instance of the Kotlin class `owner` names.
+    /// A client of `object`, an instance of the Kotlin class `owner` names;
+    /// each call it makes counts into `stats`.
     ///
     /// # Errors
     ///
@@ -56,6 +60,7 @@ impl JniObject {
         env: &mut Env<'_>,
         object: &JObject<'_>,
         owner: &'static str,
+        stats: &FrameStats,
     ) -> Result<Self, String> {
         let failed = |what: &str, error: jni::errors::Error| format!("{owner}: {what}: {error}");
         let vm = env
@@ -75,7 +80,13 @@ impl JniObject {
             object,
             class,
             owner,
+            stats: stats.clone(),
         })
+    }
+
+    /// The counters this client's calls feed.
+    pub const fn stats(&self) -> &FrameStats {
+        &self.stats
     }
 
     /// The method `name` with the JNI signature `signature`.
@@ -128,6 +139,7 @@ impl JniObject {
         capacity: usize,
         call: impl FnOnce(&mut Env<'_>, &JObject<'static>, Method) -> jni::errors::Result<R>,
     ) -> Result<R, String> {
+        self.stats.jni_call();
         let named = |detail: String| format!("{}.{}: {detail}", self.owner, method.name);
         let result: Result<R, Failure> = self.vm.attach_current_thread_with_config(
             AttachConfig::default,

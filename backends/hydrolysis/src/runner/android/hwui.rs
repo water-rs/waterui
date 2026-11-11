@@ -78,8 +78,9 @@ impl HwuiWindow {
         // The window starts parked: `set_host_attached` and metrics unhide
         // it the way the GPU band's surface attach does.
         surface.set_hidden(true);
-        let provider = crate::hwui::text::JniTextProvider::new(env, &text_object)
-            .map_err(|e| JniError(e.to_string()))?;
+        let provider =
+            crate::hwui::text::JniTextProvider::new(env, &text_object, surface.encoder().stats())
+                .map_err(|e| JniError(e.to_string()))?;
         let text = crate::text::HwuiTextEngine::new(
             std::sync::Arc::new(provider),
             surface.encoder().text_layouts().clone(),
@@ -90,7 +91,7 @@ impl HwuiWindow {
             crate::hwui::HwuiResources::over_jni(env, &sink_object, surface.encoder())
                 .map_err(JniError)?,
         );
-        let painter = JniPainter::new(env, peer).map_err(JniError)?;
+        let painter = JniPainter::new(env, peer, surface.encoder().stats()).map_err(JniError)?;
         let (mount, host) = renderer.mount_hwui(&surface, resources, effect_wake);
         Ok((
             Self {
@@ -147,6 +148,7 @@ impl HwuiWindow {
         self.painter
             .replay(frame.words(), frame.clear())
             .map_err(JniError)?;
+        self.surface.encoder().stats().report();
         sync_platform_input(runtime);
         if runtime.renderer.take_redraw_request() || animating || self.surface.has_pending() {
             runtime.request_redraw();
