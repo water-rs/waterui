@@ -634,19 +634,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// a recording — is still running as of the last presented frame.
     ///
     /// The engine samples these itself, so they are work for the settle
-    /// queries only and never schedule a host frame.
-    #[cfg(hydrolysis_gpu_painter)]
+    /// queries only and never schedule a host frame. A build without the
+    /// engine never fills them, so they stay at rest.
     pub(crate) const fn engine_tracks_active(&self, perpetual: PerpetualAnimation) -> bool {
         match perpetual {
             PerpetualAnimation::Counts => self.engine_tracks.finite || self.engine_tracks.perpetual,
             PerpetualAnimation::Ignored => self.engine_tracks.finite,
         }
-    }
-
-    /// No engine runs tracks under a painter without the engine.
-    #[cfg(not(hydrolysis_gpu_painter))]
-    pub(crate) const fn engine_tracks_active(&self, _perpetual: PerpetualAnimation) -> bool {
-        false
     }
 
     pub fn animations_active(&self) -> bool {
