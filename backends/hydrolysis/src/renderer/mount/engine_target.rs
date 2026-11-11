@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use cherenkov_record::{Layer, ResourceError, Transaction};
 use rustc_hash::FxHashMap;
+use waterui_core::contract_violation;
 use waterui_graphics::backend::filtrate::Filter;
 use waterui_graphics::backend::{Handle, TextBackend, TextRegistration, TextRequest};
 
@@ -87,8 +88,8 @@ impl super::FilterRegistration for cherenkov::Filter {
 /// result. The body of both Cherenkov targets'
 /// [`mount_material`](super::LayerTarget::mount_material).
 ///
-/// # Panics
-/// Panics when `surface` was dropped during its own commit.
+/// A `surface` dropped during its own commit is a contract violation: the
+/// layer joins no backdrop group.
 #[expect(
     clippy::too_many_arguments,
     reason = "the target's mount step forwarded whole; bundling them obscures the target contract"
@@ -108,9 +109,15 @@ pub fn mount_material_group<B, E>(
         + cherenkov::BackdropRuns<<MaterialChain as Filter>::Kind, MaterialChain>,
     E: crate::text::TextEngine,
 {
-    let surface = surface
-        .upgrade()
-        .expect("hydrolysis material: the engine surface was dropped during its commit");
+    let Some(surface) = surface.upgrade() else {
+        contract_violation!(
+            "hydrolysis material: the engine surface was dropped during its commit; \
+             the layer joins no backdrop group"
+        );
+        groups.clear(layer.id());
+        tx[layer].clear_backdrop();
+        return;
+    };
     groups.join(
         tx,
         key,
@@ -131,7 +138,7 @@ pub fn mount_material_group<B, E>(
                 // A `.material_group()` scope's groups capture beneath
                 // its anchor layer (water-rs/waterui#2097).
                 let spec = key.anchor.map_or(spec, |anchor| spec.anchor(anchor));
-                surface.backdrop_group(runtime.chain(scale), spec)
+                Ok(surface.backdrop_group(runtime.chain(scale), spec))
             },
             |tx: &mut Transaction<'_, B>,
              member: &Layer,
@@ -139,6 +146,7 @@ pub fn mount_material_group<B, E>(
              group: &cherenkov::BackdropGroup,
              _scale: f64| {
                 tx[member].backdrop(group.sample());
+                Ok(())
             },
         ),
         bind,

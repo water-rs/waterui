@@ -18,7 +18,7 @@ use nami::{Computed, collection::Collection};
 use waterui_core::View;
 use waterui_layout::{
     LazyContainer,
-    scroll::scroll,
+    scroll::{scroll, scroll_horizontal},
     stack::{HStackLayout, VStackLayout},
 };
 
@@ -63,12 +63,12 @@ impl Lazy {
         ))
     }
 
-    /// Creates a lazy horizontal stack wrapped in a scroll view.
+    /// Creates a lazy horizontal stack wrapped in a horizontal scroll view.
     ///
     /// Views are reconstructed on-demand as they become visible,
     /// making this suitable for large collections.
     pub fn hstack<V: View>(contents: impl Views<View = V> + 'static) -> impl View {
-        scroll(LazyContainer::new(HStackLayout::default(), contents))
+        scroll_horizontal(LazyContainer::new(HStackLayout::default(), contents))
     }
 
     /// Creates a lazy horizontal stack with custom spacing, wrapped in a scroll view.
@@ -76,7 +76,7 @@ impl Lazy {
         spacing: f32,
         contents: impl Views<View = V> + 'static,
     ) -> impl View {
-        scroll(LazyContainer::new(
+        scroll_horizontal(LazyContainer::new(
             HStackLayout {
                 spacing: Computed::constant(spacing),
                 ..Default::default()

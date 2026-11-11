@@ -1386,13 +1386,12 @@ impl ScrollState {
         };
         let elapsed = now.saturating_duration_since(run.started);
         let complete = run.animation.is_complete(elapsed);
-        let progress = f64::from(run.animation.progress(elapsed));
+        let progress = run.animation.progress(elapsed);
         let (from_x, from_y, target_x, target_y) =
             (run.from_x, run.from_y, run.target_x, run.target_y);
-        // At `is_complete` the eased progress is exactly 1.0 for every curve
-        // (`Animation::progress` clamps the phase to [0, 1] and each curve
-        // pins t = 1), but the target is applied directly so the landing
-        // stays bit-exact.
+        // At `is_complete` the eased progress is exactly 1.0 (a curve has
+        // run its duration, a spring has settled and reports its rest), but
+        // the target is applied directly so the landing stays bit-exact.
         let (offset_x, offset_y) = if complete {
             self.clamped(target_x, target_y)
         } else {

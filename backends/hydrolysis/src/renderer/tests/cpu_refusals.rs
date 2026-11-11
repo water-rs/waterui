@@ -7,6 +7,10 @@
 //! refuses it at measure and node build. Shader effects (filtered views) and
 //! a theme's backdrop shaders are refused until the CPU backend realizes
 //! them (water-rs/waterui#4065), which retires those two tests.
+//!
+//! Each refusal is a contract violation: a debug build panics with it, which
+//! these tests read; a release build logs it and the frame renders without
+//! the refused content.
 
 use cherenkov_record::{BackdropShaderSource, MaterialShader};
 use waterui::graphics::Color;
@@ -24,8 +28,10 @@ use crate::{HeadlessRuntime, OffscreenPainter};
 /// Mounts `view` on the CPU painter, whichever painters the build has, and
 /// renders one frame.
 fn render_on_cpu(view: impl Fn() -> AnyView + 'static, theme: MinimalTestTheme) {
+    let painter = OffscreenPainter::open_cpu()
+        .unwrap_or_else(|error| panic!("the CPU painter must open: {error}"));
     let mut runtime = HeadlessRuntime::new_for_tests_on_context(
-        OffscreenPainter::Cpu(crate::engine::RasterEngineState::new()),
+        painter,
         pumped_test_environment(),
         AnyViewBuilder::<AnyView>::new(view),
         64,
@@ -53,14 +59,14 @@ impl ExternalFrameSource for NoFrames {
 
 #[test]
 #[cfg_attr(
-    hydrolysis_gpu,
+    all(debug_assertions, hydrolysis_gpu),
     should_panic(
         expected = "hydrolysis: GpuContentView needs a GPU device, but this runtime renders on the \
                     Cherenkov CPU backend"
     )
 )]
 #[cfg_attr(
-    not(hydrolysis_gpu),
+    all(debug_assertions, not(hydrolysis_gpu)),
     should_panic(
         expected = "hydrolysis: GpuContentView needs a GPU device, but this Hydrolysis build has \
                     no GPU painter"
@@ -75,14 +81,14 @@ fn gpu_content_is_refused_by_name() {
 
 #[test]
 #[cfg_attr(
-    hydrolysis_gpu,
+    all(debug_assertions, hydrolysis_gpu),
     should_panic(
         expected = "hydrolysis: ExternalFrameView needs a GPU device, but this runtime renders on \
                     the Cherenkov CPU backend"
     )
 )]
 #[cfg_attr(
-    not(hydrolysis_gpu),
+    all(debug_assertions, not(hydrolysis_gpu)),
     should_panic(
         expected = "hydrolysis: ExternalFrameView needs a GPU device, but this Hydrolysis build \
                     has no GPU painter"
@@ -96,9 +102,12 @@ fn an_external_frame_is_refused_by_name() {
 }
 
 #[test]
-#[should_panic(
-    expected = "a filtered view runs a shader effect, which the Cherenkov CPU backend does not \
-                realize yet (water-rs/waterui#4065)"
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "a filtered view runs a shader effect, which the Cherenkov CPU backend does not \
+                    realize yet (water-rs/waterui#4065)"
+    )
 )]
 fn a_filtered_view_is_refused_until_cpu_shader_effects() {
     render_on_cpu(
@@ -114,9 +123,12 @@ fn a_filtered_view_is_refused_until_cpu_shader_effects() {
 }
 
 #[test]
-#[should_panic(
-    expected = "the theme registered the backdrop shaders MaterialShader(0), but the Cherenkov \
-                CPU backend does not realize backdrop shaders yet (water-rs/waterui#4065)"
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "the theme registered the backdrop shaders MaterialShader(0), but the Cherenkov \
+                    CPU backend does not realize backdrop shaders yet (water-rs/waterui#4065)"
+    )
 )]
 fn a_theme_with_backdrop_shaders_is_refused_until_cpu_backdrop_shaders() {
     let chrome = ChromePlan {

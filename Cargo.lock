@@ -1667,10 +1667,12 @@ name = "cherenkov"
 version = "0.0.0"
 dependencies = [
  "arc-swap",
+ "async-channel",
  "cherenkov-oracle",
  "cherenkov-record",
  "crossbeam-channel",
  "filtrate-core",
+ "futures-lite",
  "gloo-timers 0.4.0",
  "kurbo",
  "libm",
@@ -1856,6 +1858,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "waterui-contract",
+ "waterui-easing",
  "web-time",
 ]
 
@@ -2153,6 +2156,7 @@ dependencies = [
  "objc2-web-kit",
  "oslog",
  "tracing",
+ "waterui-easing",
  "wgpu",
  "wgpu-hal",
 ]
@@ -12644,6 +12648,7 @@ dependencies = [
  "block2 0.6.2",
  "blocking",
  "cfg_aliases",
+ "cherenkov",
  "cherenkov-oracle",
  "cocoa-ui",
  "cookie",
@@ -13028,6 +13033,7 @@ dependencies = [
  "suiteki",
  "thiserror 2.0.21",
  "waterui-contract",
+ "waterui-easing",
  "waterui-macros",
 ]
 
@@ -13037,6 +13043,10 @@ version = "0.5.1"
 dependencies = [
  "waterui-internal",
 ]
+
+[[package]]
+name = "waterui-easing"
+version = "0.5.1"
 
 [[package]]
 name = "waterui-form"

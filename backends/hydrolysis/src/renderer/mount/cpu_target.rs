@@ -2,16 +2,19 @@
 //! the GPU target drives, on `cherenkov-cpu`'s rasterizer.
 //!
 //! What a CPU cannot realize without a device is refused at mount, naming the
-//! view and the missing GPU: GPU content and external GPU frames. Shader
-//! effects and backdrop shaders are not realized on the CPU backend yet
-//! (water-rs/waterui#4065): a filtered view panics at mount, and the mount
-//! refuses a theme that registers backdrop shaders at attach.
+//! view and the missing GPU: GPU content, external GPU frames and hosted
+//! platform content. Shader effects and backdrop shaders are not realized on
+//! the CPU backend yet (water-rs/waterui#4065): a filtered view is refused at
+//! mount, and the mount refuses a theme that registers backdrop shaders at
+//! attach. Each refusal is a contract violation — a debug build panics, a
+//! release build logs it and the refused content is not drawn.
 
 use std::convert::Infallible;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use cherenkov_record::{FilterId, Layer, Transaction};
+use waterui_core::contract_violation;
 use waterui_graphics::backend::Reactive;
 use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
 
@@ -50,9 +53,10 @@ pub struct RasterHost {
     /// The engine surface backdrop groups allocate on. Held weakly so the
     /// host never extends the surface past its window.
     pub surface: Weak<cherenkov::Surface<cherenkov_cpu::Raster>>,
-    /// The theme's material terms: always the empty registry, which the
-    /// mount's attach assertion guarantees for a target without backdrop
-    /// shaders.
+    /// The theme's material terms: the theme's registry with no shader
+    /// handles, since this target has no backdrop shaders — the mount's
+    /// attach reports a registry that names any, and a chrome member then
+    /// finds no handle and draws no chrome.
     pub materials: MaterialTerms<Infallible>,
 }
 
@@ -78,6 +82,19 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         install_engine_text(&host.resources, &host.engine, text);
     }
 
+    /// Hosted platform content is presented by the GPU engine's host
+    /// presentation; the CPU framebuffer has no platform object to place.
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
+    fn mount_hosted(
+        _tx: &mut Transaction<'_, Self>,
+        _layer: &Layer,
+        _runtime: &crate::hosted::HostedRuntime,
+        _size: kurbo::Size,
+    ) -> bool {
+        crate::renderer::unsupported_gpu_device_view("hosted platform content", NO_GPU);
+        false
+    }
+
     #[cfg(hydrolysis_gpu)]
     fn mount_gpu_content(
         _host: &RasterHost,
@@ -100,17 +117,22 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         crate::renderer::unsupported_gpu_device_view("ExternalFrameView", NO_GPU);
+        None
     }
 
-    fn filter(_host: &RasterHost, _runtime: &mut FilteredRuntime) -> FilterId {
-        panic!(
+    fn filter(_host: &RasterHost, _runtime: &mut FilteredRuntime) -> Option<FilterId> {
+        contract_violation!(
             "hydrolysis: a filtered view runs a shader effect, which the Cherenkov CPU backend \
-             does not realize yet (water-rs/waterui#4065)"
+             does not realize yet (water-rs/waterui#4065); the layer draws without its filter"
         );
+        None
     }
 
-    fn stretch_filter(host: &RasterHost, filter: OverscrollStretch<Reactive>) -> FilterHandle {
-        FilterHandle::new(host.engine.filter(filter))
+    fn stretch_filter(
+        host: &RasterHost,
+        filter: OverscrollStretch<Reactive>,
+    ) -> Option<FilterHandle> {
+        Some(FilterHandle::new(host.engine.filter(filter)))
     }
 
     fn mount_material(
@@ -159,9 +181,9 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         payload: impl FnOnce() -> ChromeMemberPayload<Infallible>,
         _bind: MemberBind,
     ) {
-        // A chrome member exists only for a registered capture class, and
-        // the mount refused a non-empty registry at attach; the shader its
-        // payload names has no value on this target.
+        // A chrome member is bound only once `chrome_terms` found its
+        // shader's handle, and this target's shader map is always empty;
+        // the shader its payload names has no value on this target.
         match payload().shader {}
     }
 }

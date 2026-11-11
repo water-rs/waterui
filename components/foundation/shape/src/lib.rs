@@ -939,16 +939,7 @@ impl FilledShape {
     #[allow(clippy::needless_pass_by_value)]
     pub fn new(shape: impl Shape, fill: impl Into<Color>) -> Self {
         Self {
-            kind: ShapeKind::CustomPath,
-            commands: shape.path().into_iter().collect(),
-            fill: fill.into(),
-        }
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn with_kind(kind: ShapeKind, shape: impl Shape, fill: impl Into<Color>) -> Self {
-        Self {
-            kind,
+            kind: shape.shape_kind(),
             commands: shape.path().into_iter().collect(),
             fill: fill.into(),
         }
@@ -1010,7 +1001,7 @@ impl View for FilledShape {
 pub trait ShapeExt: Shape + Sized {
     /// Fills the shape with the specified color.
     fn fill(self, color: impl Into<Color>) -> FilledShape {
-        FilledShape::with_kind(self.shape_kind(), self, color)
+        FilledShape::new(self, color)
     }
 
     /// Creates a morphing filled shape from this shape to another built-in shape.
@@ -1047,6 +1038,18 @@ impl ShapeExt for Path {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filled_shape_new_keeps_kind() {
+        let via_fill = Capsule.fill(Color::srgb(255, 0, 0));
+        let via_new = FilledShape::new(Capsule, Color::srgb(255, 0, 0));
+        assert!(matches!(via_fill.kind(), ShapeKind::Capsule));
+        assert!(
+            matches!(via_new.kind(), ShapeKind::Capsule),
+            "FilledShape::new(Capsule, c) lost the kind: got CustomPath = {}",
+            matches!(via_new.kind(), ShapeKind::CustomPath)
+        );
+    }
 
     #[test]
     fn rounded_rectangle_radius_is_clamped() {

@@ -145,7 +145,7 @@ use window::{advance_runtime, handle_input_events};
     all(not(target_arch = "wasm32"), not(target_os = "android")),
     all(target_arch = "wasm32", feature = "web")
 ))]
-use window::render_window;
+use window::{WindowFrame, render_window};
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 use window::{FrameReader, render_window_with_capture};
@@ -189,6 +189,13 @@ pub use window::HeadlessSnapshot;
 #[cfg(hydrolysis_winit)]
 pub use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(target_os = "android")
+))]
+use waterui_core::contract_violation;
 
 use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
@@ -304,16 +311,25 @@ fn offscreen_scale_factor() -> f64 {
     let Some(raw) = std::env::var_os(VARIABLE) else {
         return DEFAULT;
     };
-    let raw = raw
-        .to_str()
-        .unwrap_or_else(|| panic!("{VARIABLE} must be valid UTF-8"));
-    let parsed: f64 = raw
-        .parse()
-        .unwrap_or_else(|error| panic!("{VARIABLE} must be a number, got {raw:?}: {error}"));
-    assert!(
-        parsed.is_finite() && parsed > 0.0,
-        "{VARIABLE} must be finite and positive, got {parsed}"
-    );
+    let Some(raw) = raw.to_str() else {
+        contract_violation!("{VARIABLE} must be valid UTF-8; the scale stays {DEFAULT}");
+        return DEFAULT;
+    };
+    let parsed = match raw.parse::<f64>() {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            contract_violation!(
+                "{VARIABLE} must be a number, got {raw:?}: {error}; the scale stays {DEFAULT}"
+            );
+            return DEFAULT;
+        }
+    };
+    if !(parsed.is_finite() && parsed > 0.0) {
+        contract_violation!(
+            "{VARIABLE} must be finite and positive, got {parsed}; the scale stays {DEFAULT}"
+        );
+        return DEFAULT;
+    }
     parsed
 }
 
@@ -355,6 +371,26 @@ fn install_headless_window_managers<E: crate::text::TextEngine>(
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<E>, _>(MenuShortcutRegistry::default);
 }
 
+/// The exit status of an app that cannot start because the host has no GPU
+/// Hydrolysis can render on.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+const GPU_UNAVAILABLE_EXIT_CODE: i32 = 1;
+
+/// Ends a native app whose host has no GPU Hydrolysis can render on — no
+/// usable device or engine (or, for an offscreen host on the CPU painter, a
+/// CPU engine that cannot start), or a first window whose surface failed for
+/// good before it ever presented: the app cannot show anything, so the error is
+/// logged and the process exits with a failure status instead of running
+/// without a window.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+fn exit_without_gpu(error: impl core::error::Error + Send + Sync + 'static) -> ! {
+    tracing::error!(
+        "{:#}; the app does not start",
+        waterui_core::Error::from(error)
+    );
+    std::process::exit(GPU_UNAVAILABLE_EXIT_CODE)
+}
+
 // The headless offscreen `run` never exists on Android: `hydrolysis::run`
 // must not silently dispatch an app to the one-shot offscreen pump there.
 // The Android host's entry point is `runner::android` — a missing `run` is a
@@ -371,6 +407,9 @@ fn install_headless_window_managers<E: crate::text::TextEngine>(
 /// `app` is a factory, not a built value: the subscriber and executors are
 /// installed before it runs, so events the application emits while building
 /// its `App` reach the log (water-rs/waterui#2513).
+///
+/// When the host has no GPU Hydrolysis can render on, the error is logged and
+/// the process exits with a failure status.
 ///
 /// # Panics
 /// Panics when the seeded environment lost its `MenuShortcutRegistry`.
@@ -441,7 +480,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     // assembled environment — the theme tokens, hooks and font collection a
     // window's subtree resolves — so it must be installed last
     // (water-rs/waterui#2703).
-    let painter = OffscreenPainter::select();
+    let painter = OffscreenPainter::select().unwrap_or_else(|error| exit_without_gpu(error));
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::on_painter(
             &painter,
@@ -472,7 +511,13 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         renderer.set_window_closable(window.closable);
         let mut runtime =
             RuntimeWindow::new_painted(window, platform, renderer, render_diagnostics_config, &env);
-        render_window(&mut runtime, &env, &mut || local_executor.drain());
+        // The one offscreen frame is the window's only one: a surface that
+        // failed for good has shown nothing and never can.
+        if let WindowFrame::Failed(error) =
+            render_window(&mut runtime, &env, &mut || local_executor.drain())
+        {
+            exit_without_gpu(error);
+        }
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
     }
 }

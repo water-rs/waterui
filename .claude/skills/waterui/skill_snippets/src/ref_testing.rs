@@ -27,7 +27,7 @@ fn content(_state: DemoState) -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// testing.md § "## `#[preview]`" — rust block 1/13
+// testing.md § "## `#[preview]`" — rust block 1/15
 // ---------------------------------------------------------------------------
 use waterui::preview;
 
@@ -60,7 +60,7 @@ pub mod gated {
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## `#[waterui::test]`" — rust block 2/13 (mounting form)
+    // testing.md § "## `#[waterui::test]`" — rust block 2/15 (mounting form)
     //
     // Semantic: no `theme =`, so the macro mounts the GPU-free semantic
     // runtime.
@@ -74,7 +74,7 @@ pub mod gated {
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## `#[waterui::test]`" — rust block 3/13 (manual-mount form)
+    // testing.md § "## `#[waterui::test]`" — rust block 3/15 (manual-mount form)
     // -----------------------------------------------------------------------
     use waterui_testing::UiBuilder;
 
@@ -97,11 +97,13 @@ pub mod gated {
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## Querying the accessibility tree" — rust block 4/13
+    // testing.md § "## Querying the accessibility tree" — rust block 4/15
     //
     // One chain. Compiled, never called.
     // -----------------------------------------------------------------------
     pub fn testing_block_04(app: &mut SemanticApp, handle: waterui_testing::ElementRef) {
+        use waterui_testing::ContentType;
+
         app.query()
             .role(Role::SWITCH)
             .label("Wi-Fi") // or .label_contains("Wi-")
@@ -110,20 +112,24 @@ pub mod gated {
             .enabled(true)
             .selected(true)
             .checked(true)
+            .mixed()
             .expanded(true)
             .busy(false)
             .hidden(false)
             .value("42") // or .value_contains("4")
+            .placeholder("Search") // or .placeholder_contains("Sea")
+            .content_type(ContentType::EmailAddress)
             .assert_exists();
 
-        // The three "or" alternatives named in the trailing comments.
+        // The "or" alternatives named in the trailing comments.
         app.query().label_contains("Wi-").assert_exists();
         app.query().children_of(&handle).assert_exists();
         app.query().value_contains("4").assert_exists();
+        app.query().placeholder_contains("Sea").assert_exists();
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## Querying the accessibility tree" — rust block 5/13
+    // testing.md § "## Querying the accessibility tree" — rust block 5/15
     //
     // A terminator listing. The `-> bool` / `-> ElementRef` / `-> ElementSet` /
     // `-> Option<ElementRef>` arrows are prose annotations, not Rust, so each
@@ -143,13 +149,14 @@ pub mod gated {
         let timeout = Duration::from_secs(2);
         let _: bool = app.query().wait_for_existence(timeout);
         let _: bool = app.query().wait_for_nonexistence(timeout);
+        let _: bool = app.query().wait_for_value_eq("Done", timeout);
 
         // The prose's own instruction: wrap them in `assert!`.
         assert!(app.query().label("Done").wait_for_existence(timeout));
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## Interacting" — rust block 6/13
+    // testing.md § "## Interacting" — rust block 6/15
     //
     // The semantic actions: accessibility actions on a located element, on
     // every runtime. Compiled, never called.
@@ -166,7 +173,7 @@ pub mod gated {
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## Interacting" — rust block 7/13
+    // testing.md § "## Interacting" — rust block 7/15
     //
     // The pointer gestures: rendered sessions only, so the receiver is the
     // headless runtime. Compiled, never called.
@@ -196,7 +203,7 @@ pub mod gated {
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## Interacting" — rust block 8/13 (session input, semantic)
+    // testing.md § "## Interacting" — rust block 8/15 (session input, semantic)
     // -----------------------------------------------------------------------
     pub fn testing_block_08(app: &mut SemanticApp) {
         let modifiers = waterui_testing::Modifiers::default();
@@ -205,29 +212,65 @@ pub mod gated {
         app.press_named_key("Tab");
         app.press_named_key_with("Tab", modifiers);
         app.press_character_key_with("a", modifiers);
+    }
 
-        let key = waterui_testing::KeyCode::Named("Shift".to_string());
+    // -----------------------------------------------------------------------
+    // testing.md § "## Interacting" — rust block 9/15 (held keys)
+    // -----------------------------------------------------------------------
+    pub fn testing_block_09(app: &mut SemanticApp) {
+        use waterui_testing::KeyCode;
+
+        let modifiers = waterui_testing::Modifiers::default();
+
+        let key = KeyCode::Named("Shift".to_string());
         app.key_down(key.clone(), modifiers);
         app.key_up(key, modifiers);
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## Interacting" — rust block 9/13 (session input, rendered)
+    // testing.md § "## Interacting" — rust block 10/15 (session input, rendered)
     // -----------------------------------------------------------------------
-    pub fn testing_block_09(app: &mut SemanticApp<waterui_testing::HeadlessRuntime>) {
+    pub fn testing_block_10(app: &mut SemanticApp<waterui_testing::HeadlessRuntime>) {
         let (x, y) = (10.0_f32, 20.0_f32);
         let (dx, dy) = (0.0_f32, -24.0_f32);
         let is_line_delta = false;
+        let path = "drop.txt"; // glue: the file the drop calls name
 
         app.tap_at(x, y);
         app.scroll_at(x, y, dx, dy, is_line_delta);
         app.hover_at(x, y);
+        app.secondary_click_at(x, y);
+        app.pointer_down_at(x, y);
+        app.pointer_up_at(x, y);
+        app.magnify_at(x, y, 1.5);
+        app.hover_files_at(x, y, [path]);
+        app.drop_files_at(x, y, [path]);
+        app.cancel_files_hover();
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## Waiting" — rust block 10/13
+    // testing.md § "## Interacting" (prose): the `queue_*` twins of the
+    // rendered session-input calls. Not counted as a rust block.
     // -----------------------------------------------------------------------
-    pub fn testing_block_10(app: &mut SemanticApp) {
+    pub fn testing_queue_twins_prose(app: &mut SemanticApp<waterui_testing::HeadlessRuntime>) {
+        let (x, y) = (10.0_f32, 20.0_f32);
+        let path = "drop.txt";
+
+        app.queue_scroll_at(x, y, 0.0, -24.0, false);
+        app.queue_hover_at(x, y);
+        app.queue_pointer_down_at(x, y);
+        app.queue_pointer_up_at(x, y);
+        app.queue_magnify_at(x, y, 1.5);
+        app.queue_hover_files_at(x, y, [path]);
+        app.queue_drop_files_at(x, y, [path]);
+        app.queue_cancel_files_hover();
+        app.queue_secondary_click(x, y);
+    }
+
+    // -----------------------------------------------------------------------
+    // testing.md § "## Waiting" — rust block 11/15
+    // -----------------------------------------------------------------------
+    pub fn testing_block_11(app: &mut SemanticApp) {
         use waterui_testing::{Selector, WaitOptions};
 
         let timeout = Duration::from_secs(2);
@@ -254,7 +297,7 @@ pub mod gated {
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## Visual tests and snapshots" — rust block 11/13
+    // testing.md § "## Visual tests and snapshots" — rust block 12/15
     // -----------------------------------------------------------------------
     use waterui_testing::OffscreenApp;
 
@@ -265,17 +308,17 @@ pub mod gated {
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## Visual tests and snapshots" — rust block 12/13
+    // testing.md § "## Visual tests and snapshots" — rust block 13/15
     // Compiled, never called: it would write a PNG to /tmp.
     // -----------------------------------------------------------------------
-    pub fn testing_block_12(app: &mut OffscreenApp) {
-        let shot = app.snapshot(); // pumps a frame; Snapshot { rgba8, width, height }
+    pub fn testing_block_13(app: &mut OffscreenApp) {
+        let shot = app.snapshot(); // pumps a frame; shot.width(), shot.height(), shot.rgba8()
         shot.save_png("/tmp/my_view.png")
             .expect("snapshot must be writable");
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## `#[waterui::bench]` and `water bench`" — rust block 13/13
+    // testing.md § "## `#[waterui::bench]` and `water bench`" — rust block 14/15
     // -----------------------------------------------------------------------
     use waterui_testing::PerfApp;
 
@@ -308,5 +351,69 @@ pub mod gated {
             run.pointer_up(10.0, 10.0);
             let _ = run.app();
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // testing.md § "## Waiting" (prose): the `bool` / `WaitResult` return
+    // types, `wait_for_ui_focus` and `assert_value_eq`. Not counted as a rust
+    // block.
+    // -----------------------------------------------------------------------
+    pub fn testing_waiting_prose(app: &mut SemanticApp) {
+        use waterui_testing::{Selector, WaitOptions, WaitResult};
+
+        let timeout = Duration::from_secs(2);
+        let selector = Selector::default().label("Done");
+
+        let _: bool = app.wait_for_existence(&selector, timeout);
+        let _: bool = app.wait_for_nonexistence(&selector, timeout);
+        let _: bool = app.wait_for_value_eq(&selector, "Done", timeout);
+        let _: WaitResult = app.wait_for(
+            &[app.expect_value_eq(selector.clone(), "Done")],
+            WaitOptions::new(timeout),
+        );
+        let _: bool = app.wait_for_ui_focus(&selector, timeout);
+        app.assert_value_eq(&selector, "Done");
+    }
+
+    // -----------------------------------------------------------------------
+    // testing.md § "## Visual tests and snapshots" (prose): the snapshot
+    // accessors, `scale_factor`, and the builder form of `mount_app`. Not
+    // counted as a rust block.
+    // -----------------------------------------------------------------------
+    pub fn testing_snapshot_prose(app: &mut OffscreenApp, window_app: waterui::app::App) {
+        let shot = app.snapshot();
+        let _: (u32, u32, &[u8]) = (shot.width(), shot.height(), shot.rgba8());
+
+        let _ = waterui_testing::ui()
+            .theme(hydrolysis_m3::Material3::defaults())
+            .viewport(390, 844)
+            .scale_factor(2.0)
+            .environment(waterui::Environment::new())
+            .mount_app(window_app);
+    }
+
+    // -----------------------------------------------------------------------
+    // testing.md § "## `#[waterui::bench]` and `water bench`" — rust block
+    // 15/15 (manual form). In its own module: the block's `use` would collide
+    // with block 3's `UiBuilder` import.
+    // -----------------------------------------------------------------------
+    pub mod bench_manual {
+        use waterui::prelude::*;
+
+        use waterui_testing::{PerfReport, Styled, UiBuilder};
+
+        #[waterui::bench(theme = hydrolysis_m3::Material3::defaults(), max_rebuild_ratio = 0.2)]
+        fn counter_updates(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) -> PerfReport {
+            let value = Binding::i32(0);
+            let for_view = value.clone();
+            ui.perf_with(
+                move || stepper("Count", &for_view),
+                |perf| {
+                    perf.measure("increment", |run| {
+                        run.app().query().label("Count").increment();
+                    });
+                },
+            )
+        }
     }
 }

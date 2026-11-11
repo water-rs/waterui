@@ -24,8 +24,7 @@ use waterui_core::interaction::Disabled;
 use waterui_core::layout::StretchAxis;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
-    AnyView, Environment, Metadata, NativeView, View, env::use_env, id::Identifiable,
-    views::ForEach,
+    AnyView, Environment, Metadata, NativeView, View, env::use_env, views::ForEach,
 };
 use waterui_graphics::color::{AccentColor, AccentForegroundColor, Color, ForegroundColor};
 use waterui_layout::frame::Frame;

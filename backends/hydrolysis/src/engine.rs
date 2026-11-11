@@ -9,9 +9,7 @@ pub use cherenkov::EngineSurface;
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
 pub use cherenkov::WindowCherenkovSurface;
 #[cfg(hydrolysis_gpu_painter)]
-pub use cherenkov::{
-    GpuEngine, SharedEngineState, TextureCherenkovSurface, format_output_color, shared_engine_state,
-};
+pub use cherenkov::{GpuEngine, SharedEngineState, TextureCherenkovSurface, format_output_color};
 #[cfg(hydrolysis_cpu_painter)]
 pub use cherenkov::{RasterCherenkovSurface, RasterEngine, RasterEngineState};
 // `macro_rules!` re-exports cap at `pub(crate)` — see cherenkov_backend.

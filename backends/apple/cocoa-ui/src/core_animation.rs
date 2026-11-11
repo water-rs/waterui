@@ -211,21 +211,19 @@ pub enum Timing {
         /// The curve's two control points, `[x1, y1, x2, y2]`.
         control_points: [f32; 4],
     },
-    /// A physically driven spring.
-    Spring {
-        /// Spring stiffness.
-        stiffness: f64,
-        /// Spring damping.
-        damping: f64,
-    },
+    /// A physical spring on a unit mass: the definition `WaterUI` core and
+    /// the Cherenkov engine evaluate, whose stiffness, damping coefficient
+    /// and settling duration every platform animator here takes.
+    Spring(waterui_easing::Spring),
 }
 
 /// Runs `body` while `timing` plays its animatable changes: a
 /// `UIViewPropertyAnimator` on iOS, an `NSAnimationContext` group on macOS.
 ///
 /// The curve the animator plays: `UICubicTimingParameters` for `Bezier`,
-/// a mass-1 `UISpringTimingParameters` for `Spring` (the animator's
-/// `duration` argument is unused there; the spring's physics sets it).
+/// a mass-1 `UISpringTimingParameters` with the spring's stiffness and
+/// damping coefficient for `Spring` (the animator's `duration` argument is
+/// unused there; the spring's physics sets it).
 ///
 /// # Panics
 ///
@@ -266,14 +264,14 @@ pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
                     ),
                 ),
             ),
-            Timing::Spring { stiffness, damping } => (
+            Timing::Spring(spring) => (
                 0.0,
                 ProtocolObject::from_retained(
                     UISpringTimingParameters::initWithMass_stiffness_damping_initialVelocity(
                         UISpringTimingParameters::alloc(mtm),
                         1.0,
-                        stiffness,
-                        damping,
+                        spring.stiffness(),
+                        spring.damping_coefficient(),
                         CGVector::new(0.0, 0.0),
                     ),
                 ),
@@ -290,9 +288,9 @@ pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
 
 /// Runs `body` while `timing` plays its animatable changes.
 ///
-/// A spring has no authored duration in `UIKit`; `NSAnimationContext` wants
-/// one, so it is estimated from the stiffness and damping and clamped the
-/// way the framework consumer's spring timing expects.
+/// `NSAnimationContext` has no spring curve and wants a duration, so a
+/// spring runs for its own settling duration: the time a unit step from rest
+/// takes to settle, as `WaterUI`'s `Animation::duration` reports it.
 #[cfg(target_os = "macos")]
 pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
     match timing {
@@ -300,10 +298,7 @@ pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
             duration,
             control_points,
         } => animate(duration, Some(control_points), body),
-        Timing::Spring { stiffness, damping } => {
-            let estimated = 2.0 * (1.0 / stiffness).sqrt() * damping;
-            animate(estimated.clamp(0.1, 2.0), None, body);
-        }
+        Timing::Spring(spring) => animate(spring.settling_duration(-1.0, 0.0), None, body),
     }
 }
 
@@ -392,14 +387,15 @@ pub fn animate_sublayer_transform(
             // SAFETY: `CAAnimation` is `CABasicAnimation`'s superclass.
             unsafe { Retained::cast_unchecked(basic) }
         }
-        Timing::Spring { stiffness, damping } => {
+        Timing::Spring(parameters) => {
             let spring =
                 CASpringAnimation::animationWithKeyPath(Some(ns_string!("sublayerTransform")));
             spring.setMass(1.0);
-            spring.setStiffness(stiffness);
-            spring.setDamping(damping);
+            spring.setStiffness(parameters.stiffness());
+            spring.setDamping(parameters.damping_coefficient());
+            spring.setAllowsOverdamping(true);
             spring.setInitialVelocity(0.0);
-            spring.setDuration(spring.settlingDuration());
+            spring.setDuration(parameters.settling_duration(-1.0, 0.0));
             // SAFETY: the values are `NSValue` objects — `AnyObject`s.
             unsafe {
                 spring.setFromValue(Some(&from_value));

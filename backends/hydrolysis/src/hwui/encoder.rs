@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use cherenkov_record::color::WorkingColor;
-use cherenkov_record::kurbo::{Affine, Point, Rect, Vec2};
+use cherenkov_record::kurbo::{Affine, Rect, Vec2};
 use cherenkov_record::tree::Sampling;
 use cherenkov_record::{
     BlendMode, ChangeSet, ContentOp, LayerId, LayerNode, LayerOp, Op as TreeOp, Picture, Realize,
@@ -691,7 +691,7 @@ impl Encoder {
         pending.reset();
         self.pending = pending;
         layers?;
-        self.resolve_effect_origins(time)?;
+        self.resolve_effect_poses(time)?;
         self.registry.drain_releases(&mut self.buffer)?;
         let layers = &self.layers;
         self.text_layouts.drain_releases(&mut self.buffer, |raw| {
@@ -860,39 +860,49 @@ impl Encoder {
     }
 
     /// Tells every effect that draws in window device pixels (the overscroll
-    /// stretch) where its node's top-left corner sits there, and redefines
-    /// the effects that moved: the node's origin is the layer's extent
-    /// origin carried through the layer's world transform, which only the
-    /// encoder knows once the frame's layers are settled.
+    /// stretch) where its node's own pixels land in device pixels, and
+    /// redefines the effects that moved. Only the encoder knows that map
+    /// once the frame's layers are settled: the layer's world transform
+    /// after its extent origin.
+    ///
+    /// The node's own pixels are where the platform runs its `RenderEffect`:
+    /// HWUI rasterizes an effect node into a layer the node's own width by
+    /// height (`SkiaGpuPipeline::createOrUpdateLayer`), filters that
+    /// snapshot in its pixels (`SkImages::MakeWithFilter` in
+    /// `RenderNodeDrawable::drawContent`), and draws the result through the
+    /// node's whole transform, density included. The frame therefore keeps
+    /// none of the world's scale: one carried in a scaled space spans more
+    /// than the viewport in the snapshot, and the warp pulls content from
+    /// inside the clip past it.
+    ///
+    /// A node whose world transform is singular draws nothing and keeps its
+    /// last definition.
     ///
     /// # Errors
     ///
-    /// [`HwuiError::Unsupported`] when the world transform is not a
-    /// translation and scale: the platform filters in a scale-only layer
-    /// space, in which the stretch's device-space frame no longer holds.
-    fn resolve_effect_origins(&mut self, time: cherenkov_record::Instant) -> Result<(), HwuiError> {
+    /// [`HwuiError::Unsupported`] when the world transform is projective:
+    /// the stretch's frame is an affine map, which a perspective cannot
+    /// carry into the node's pixels.
+    fn resolve_effect_poses(&mut self, time: cherenkov_record::Instant) -> Result<(), HwuiError> {
         let mut moved = false;
         for (&raw, state) in &self.layers {
             let Some(wire) = state.sent.effect.filter(|wire| *wire != u32::MAX) else {
                 continue;
             };
-            if !self.effects.takes_origin(wire) {
+            if !self.effects.takes_pose(wire) {
                 continue;
             }
-            let world = flat_affine(self.world_rows(LayerId::new(raw))?)
-                .filter(|world| {
-                    let [_, b, c, _, _, _] = world.as_coeffs();
-                    b == 0.0 && c == 0.0
-                })
-                .ok_or_else(|| HwuiError::Unsupported {
+            let world = flat_affine(self.world_rows(LayerId::new(raw))?).ok_or_else(|| {
+                HwuiError::Unsupported {
                     layer: raw,
-                    what: "draws an overscroll stretch under a rotated, skewed or projective pose"
-                        .to_owned(),
-                })?;
-            let origin = world * Point::new(f64::from(state.origin[0]), f64::from(state.origin[1]));
-            moved |= self
-                .effects
-                .set_origin(wire, [f32_of(origin.x), f32_of(origin.y)]);
+                    what: "draws an overscroll stretch under a projective pose".to_owned(),
+                }
+            })?;
+            let node =
+                world * Affine::translate((f64::from(state.origin[0]), f64::from(state.origin[1])));
+            if node.determinant() != 0.0 {
+                moved |= self.effects.set_pose(wire, node);
+            }
         }
         if moved {
             self.content_animating |= self.effects.encode(time, &mut self.buffer)?;

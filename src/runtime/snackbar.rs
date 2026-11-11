@@ -49,7 +49,6 @@ use waterui_core::handler::{
     AnyViewBuilder, BoxedEventAction, EventHandler, Handler, ReportExtraction, SharedAction,
     boxed_event_handler, shared_action,
 };
-use waterui_core::id::Identifiable;
 use waterui_core::plugin::Plugin;
 use waterui_core::views::ForEach;
 use waterui_core::{SignalExt, View};

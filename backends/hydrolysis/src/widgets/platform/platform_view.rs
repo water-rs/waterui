@@ -8,12 +8,13 @@
 //! real child onto the virtual tree instead of projecting a duplicate).
 //!
 //! Reaching this leaf on a runner that installed no sink means the host
-//! cannot embed native children — a programmer error, and it panics at node
-//! build naming the missing piece.
+//! cannot embed native children — a contract violation reported at node build
+//! naming the missing piece; the leaf is then built empty.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use waterui_core::contract_violation;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 
@@ -59,21 +60,30 @@ pub struct PlatformViewRenderState {
 }
 
 impl PlatformViewRenderState {
-    /// The sink the runner installed, or the unsupported-realization panic
-    /// the missing-realization contract demands.
-    fn sink_from(env: &Environment) -> PlatformViewSink {
-        env.get::<PlatformViewSink>()
-            .cloned()
-            .unwrap_or_else(|| crate::renderer::unsupported_platform_view())
+    /// The sink the runner installed. A runner that installed none cannot
+    /// embed native children: that is a contract violation, reported here, and
+    /// the leaf is not mounted (`None`).
+    fn sink_from(env: &Environment) -> Option<PlatformViewSink> {
+        let sink = env.get::<PlatformViewSink>().cloned();
+        if sink.is_none() {
+            contract_violation!(
+                "PlatformView is unsupported on this runner because no PlatformViewSink is \
+                 installed; a host that embeds native views (the Android runner) inserts one \
+                 into the window environment at session create; the platform view is not mounted"
+            );
+        }
+        sink
     }
 
-    pub fn from_config(view: &PlatformView, env: &Environment) -> Self {
-        let sink = Self::sink_from(env);
-        Self {
+    /// The leaf for `view`, or `None` (reported) when the runner installed no
+    /// [`PlatformViewSink`].
+    pub fn from_config(view: &PlatformView, env: &Environment) -> Option<Self> {
+        let sink = Self::sink_from(env)?;
+        Some(Self {
             id: sink.next_id(),
             source: PlacementSource::Factory(view.kind().into()),
             sink,
-        }
+        })
     }
 
     /// A leaf whose placement mounts the native view the host registered
@@ -82,16 +92,20 @@ impl PlatformViewRenderState {
     ///
     /// Only the Android system-WebView bridge creates these today.
     #[cfg(hydrolysis_android_system_webview)]
-    pub fn from_instance(instance: u64, owner: Rc<dyn core::any::Any>, env: &Environment) -> Self {
-        let sink = Self::sink_from(env);
-        Self {
+    pub fn from_instance(
+        instance: u64,
+        owner: Rc<dyn core::any::Any>,
+        env: &Environment,
+    ) -> Option<Self> {
+        let sink = Self::sink_from(env)?;
+        Some(Self {
             id: sink.next_id(),
             source: PlacementSource::Instance {
                 id: instance,
                 _owner: owner,
             },
             sink,
-        }
+        })
     }
 }
 
@@ -150,4 +164,28 @@ pub fn render_platform_view_node<E: crate::text::TextEngine>(
         Rc::clone(&state.sink.table),
         PlatformViewPlacement::new(state.id, state.source.wire()),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlatformViewRenderState;
+    use crate::platform_view::{PlatformView, PlatformViewSink};
+    use waterui_core::Environment;
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "no PlatformViewSink is installed")
+    )]
+    fn a_runner_without_a_sink_is_reported_and_mounts_no_leaf() {
+        let env = Environment::new();
+        assert!(PlatformViewRenderState::from_config(&PlatformView::new("map"), &env).is_none());
+    }
+
+    #[test]
+    fn a_runner_with_a_sink_mounts_the_leaf() {
+        let mut env = Environment::new();
+        env.insert(PlatformViewSink::new());
+        assert!(PlatformViewRenderState::from_config(&PlatformView::new("map"), &env).is_some());
+    }
 }

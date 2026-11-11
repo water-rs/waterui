@@ -268,7 +268,7 @@ impl SubView for SliderSubView {
 /// The `ValueAnimation` the watcher's metadata calls for: `None`, for a
 /// change that names no animation or disables it, applies the change
 /// directly. `Spring` has no `AppKit` equivalent — `WuiSlider` runs it as a
-/// timed animation of an estimated duration, matching
+/// timed animation of the spring's settling duration, matching
 /// `withPlatformAnimation`.
 fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
     match ChangeAnimation::of(metadata)
@@ -287,9 +287,8 @@ fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
             duration: duration.as_secs_f64(),
             control_points: [x1, y1, x2, y2],
         }),
-        Some(Animation::Spring { stiffness, damping }) => {
-            let estimated = 2.0 * (1.0 / f64::from(stiffness)).sqrt() * f64::from(damping);
-            Some(ValueAnimation::Duration(estimated.clamp(0.1, 2.0)))
+        Some(spring @ Animation::Spring { .. }) => {
+            Some(ValueAnimation::Duration(spring.duration().as_secs_f64()))
         }
     }
 }
@@ -529,15 +528,19 @@ mod tests {
                 control_points: [0.1, 0.2, 0.3, 0.4],
             })
         );
-        // Spring estimates a clamped duration: 2*sqrt(1/s)*d in [0.1, 2.0].
+        // A spring runs for its own settling duration.
         let spring = value_animation(&Metadata::new().with(Animation::Spring {
             stiffness: 170.0,
             damping: 15.0,
         }));
         match spring {
-            Some(ValueAnimation::Duration(d)) => {
-                assert!((0.1..=2.0).contains(&d));
-            }
+            Some(ValueAnimation::Duration(d)) => assert_eq!(
+                d.to_bits(),
+                Animation::spring(170.0, 15.0)
+                    .duration()
+                    .as_secs_f64()
+                    .to_bits()
+            ),
             other => panic!("expected a timed duration for spring, got {other:?}"),
         }
     }

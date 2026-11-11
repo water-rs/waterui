@@ -17,6 +17,7 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal};
 use waterui::navigation::tab::{NativeTabStyle, Tab, TabIcon, TabsLayout};
 use waterui_controls::label::LabelDisplayMode;
+use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
@@ -143,17 +144,23 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
             self.tabs.drain(..).map(|tab| (tab.tag, tab)).collect();
         let mut tabs = Vec::with_capacity(snapshot.len());
         for index in 0..snapshot.len() {
-            let tag = snapshot
-                .get_id(index)
-                .expect("a collection snapshot reports an id for every index");
-            let tab = old.remove(&tag).unwrap_or_else(|| {
-                TabRenderState::from_tab(
-                    tag,
-                    snapshot
-                        .get_view(index)
-                        .expect("a collection snapshot reports a view for every index"),
-                )
-            });
+            let Some(tag) = snapshot.get_id(index) else {
+                contract_violation!(
+                    "hydrolysis Tabs: tab {index} has no id although it is in the snapshot's range; the tab is skipped"
+                );
+                continue;
+            };
+            let tab = if let Some(tab) = old.remove(&tag) {
+                tab
+            } else {
+                let Some(view) = snapshot.get_view(index) else {
+                    contract_violation!(
+                        "hydrolysis Tabs: tab {index} failed to materialize although it is in the snapshot's range; the tab is skipped"
+                    );
+                    continue;
+                };
+                TabRenderState::from_tab(tag, view)
+            };
             tabs.push(tab);
         }
         self.tabs = tabs;
@@ -213,18 +220,20 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
     }
 
     /// The selected tab's index, or `None` when the set is empty. A
-    /// selection naming no tab of a non-empty set fails as it always has.
+    /// selection naming no tab of a non-empty set is a contract violation by
+    /// the app, reported; no tab is then selected (`None`).
     fn selected_index(&self, selected_id: Id) -> Option<usize> {
         if self.tabs.is_empty() {
             return None;
         }
         let selected_id = self.pending_selection.get().unwrap_or(selected_id);
-        Some(
-            self.tabs
-                .iter()
-                .position(|tab| tab.tag == selected_id)
-                .unwrap_or_else(|| panic!("hydrolysis Tabs selection is not present in tabs")),
-        )
+        let index = self.tabs.iter().position(|tab| tab.tag == selected_id);
+        if index.is_none() {
+            contract_violation!(
+                "hydrolysis Tabs selection is not present in tabs; no tab is selected"
+            );
+        }
+        index
     }
 
     /// Each tab's live badge count, read through `renderer` so a change

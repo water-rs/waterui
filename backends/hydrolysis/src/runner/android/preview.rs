@@ -20,13 +20,15 @@ static PREVIEW_ENTRY: OnceLock<fn()> = OnceLock::new();
 /// Registers the preview the instrumentation runs. Called once, from the
 /// launcher cdylib's `JNI_OnLoad` in preview mode.
 ///
-/// # Panics
-/// Panics when called a second time.
+/// Calling it a second time breaks the contract: a debug build panics and a
+/// release build logs the violation and keeps the first preview.
 pub fn register_preview(entry: fn()) {
-    assert!(
-        PREVIEW_ENTRY.set(entry).is_ok(),
-        "register_preview called twice — each JNI_OnLoad registers exactly one preview"
-    );
+    if PREVIEW_ENTRY.set(entry).is_err() {
+        waterui_core::contract_violation!(
+            "register_preview called twice — each JNI_OnLoad registers exactly one preview; \
+             the first preview is kept"
+        );
+    }
 }
 
 /// Schema handshake plus the shared process setup. A library built against a

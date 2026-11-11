@@ -18,6 +18,7 @@ use waterui_controls::label::Label;
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
+use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{
     HorizontalAlignment, ProposalSize, Size as LayoutSize, StretchAxis, ViewDimensions,
@@ -118,19 +119,13 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
         let menu_open = Rc::clone(&state.menu_open);
         let disabled = renderer.read_signal(&widget_disabled(env));
         let items = renderer.read_signal(picker.items());
-        assert!(
-            !(items.is_empty()),
-            "hydrolysis picker requires at least one item"
-        );
+        if !has_items(&items) {
+            return;
+        }
         match picker.style() {
             PickerStyle::Automatic | PickerStyle::Menu => {
                 let selected = renderer.read_signal(picker.selection());
-                let selected_index = items
-                    .iter()
-                    .position(|item| item.tag == selected)
-                    .unwrap_or_else(|| {
-                        panic!("hydrolysis picker selection is not present in picker items")
-                    });
+                let selected_index = selected_item_index(&items, selected);
                 let mut option_labels = Vec::with_capacity(items.len());
                 let mut max_item_text_height: f64 = 0.0;
                 for item in &items {
@@ -145,7 +140,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                     max_item_text_height = max_item_text_height.max(f64::from(label_size.height));
                     option_labels.push(label);
                 }
-                let selected_text = option_labels[selected_index].clone();
+                let selected_text = selected_option_text(&option_labels, selected_index);
                 let mut node = AccessibilityNode::new(
                     crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                         env,
@@ -464,7 +459,9 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                     }
                 }
             }
-            _ => panic!("hydrolysis PickerStyle variant is not implemented"),
+            style => contract_violation!(
+                "hydrolysis PickerStyle variant {style:?} is not implemented; the picker exposes no accessibility node"
+            ),
         }
     }
     #[cfg(not(feature = "accessibility"))]
@@ -542,10 +539,9 @@ pub fn render_picker_parts<E: crate::text::TextEngine>(
         )
     };
     let items = ctx.renderer_mut().read_signal(&items_signal);
-    assert!(
-        !(items.is_empty()),
-        "hydrolysis picker requires at least one item"
-    );
+    if !has_items(&items) {
+        return;
+    }
     match style {
         PickerStyle::Automatic | PickerStyle::Menu => {
             render_menu_picker(ctx, state, selection, items, env);
@@ -556,8 +552,44 @@ pub fn render_picker_parts<E: crate::text::TextEngine>(
         PickerStyle::Segmented => {
             render_segmented_picker(ctx, state, selection, items, env);
         }
-        _ => panic!("hydrolysis PickerStyle variant is not implemented"),
+        style => contract_violation!(
+            "hydrolysis PickerStyle variant {style:?} is not implemented; the picker is not drawn"
+        ),
     }
+}
+
+/// Whether the picker has an item to show. A picker without items is a
+/// contract violation by the app, reported; the picker then draws and exposes
+/// nothing.
+fn has_items(items: &[PickerItem<Id>]) -> bool {
+    let has_items = !items.is_empty();
+    if !has_items {
+        contract_violation!(
+            "hydrolysis picker requires at least one item; the picker is not drawn"
+        );
+    }
+    has_items
+}
+
+/// The index of the item `selected` tags. A selection that tags no item is a
+/// contract violation by the app, reported; the picker then shows no
+/// selected text.
+fn selected_item_index(items: &[PickerItem<Id>], selected: Id) -> Option<usize> {
+    let index = items.iter().position(|item| item.tag == selected);
+    if index.is_none() {
+        contract_violation!(
+            "hydrolysis picker selection is not present in picker items; the picker shows no selected text"
+        );
+    }
+    index
+}
+
+/// The text of the selected option, empty when nothing is selected.
+fn selected_option_text<T: Clone + Default>(texts: &[T], selected: Option<usize>) -> T {
+    selected
+        .and_then(|index| texts.get(index))
+        .cloned()
+        .unwrap_or_default()
 }
 
 pub const fn menu_picker_row_height(max_item_text_height: f64, metrics: PickerMetrics) -> f64 {
@@ -607,10 +639,7 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
     // registry is Rc-pruned, so re-registering the same handle each frame is a no-op.
     let menu_open = Rc::clone(&owner.borrow().menu_open);
     ctx.renderer_mut().register_picker_menu(&menu_open);
-    let selected_index = items
-        .iter()
-        .position(|item| item.tag == selected)
-        .unwrap_or_else(|| panic!("hydrolysis picker selection is not present in picker items"));
+    let selected_index = selected_item_index(&items, selected);
     let mut option_texts = Vec::with_capacity(items.len());
     let mut max_item_text_height: f64 = 0.0;
     for item in &items {
@@ -626,7 +655,7 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
         max_item_text_height = max_item_text_height.max(f64::from(size.height));
         option_texts.push(plain);
     }
-    let selected_text = option_texts[selected_index].clone();
+    let selected_text = selected_option_text(&option_texts, selected_index);
     let row_height = menu_picker_row_height(max_item_text_height, metrics);
     let entries = items
         .iter()
@@ -1123,10 +1152,15 @@ pub fn emit_picker_accessibility<E: crate::text::TextEngine>(
 
 #[cfg(test)]
 mod tests {
-    use super::{menu_picker_content_rects, radio_group_label_area, segmented_label_area};
+    use super::{
+        has_items, menu_picker_content_rects, radio_group_label_area, segmented_label_area,
+        selected_item_index, selected_option_text,
+    };
     use crate::theme::PickerMetrics;
     use kurbo::Rect;
+    use waterui_core::id::Id;
     use waterui_core::layout::Size;
+    use waterui_form::picker::PickerItem;
 
     fn metrics() -> PickerMetrics {
         PickerMetrics {
@@ -1232,5 +1266,49 @@ mod tests {
             (None, 14.0)
         );
         assert_eq!(segmented_label_area(bounds, 0.0, 96.0), (None, bounds));
+    }
+
+    fn item(tag: i32, text: &'static str) -> PickerItem<Id> {
+        PickerItem::new(Id::try_from(tag).unwrap(), waterui_text::Text::new(text))
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "picker requires at least one item")
+    )]
+    fn a_picker_without_items_is_reported_and_draws_nothing() {
+        assert!(!has_items(&[]));
+    }
+
+    #[test]
+    fn a_picker_with_items_is_not_reported() {
+        assert!(has_items(&[item(1, "a")]));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "selection is not present in picker items")
+    )]
+    fn a_selection_naming_no_item_is_reported_and_shows_no_text() {
+        let items = [item(1, "a"), item(2, "b")];
+        let index = selected_item_index(&items, Id::try_from(3).unwrap());
+        assert_eq!(index, None);
+        assert_eq!(
+            selected_option_text(&["a".to_owned(), "b".to_owned()], index),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_selection_naming_an_item_shows_its_text() {
+        let items = [item(1, "a"), item(2, "b")];
+        let index = selected_item_index(&items, Id::try_from(2).unwrap());
+        assert_eq!(index, Some(1));
+        assert_eq!(
+            selected_option_text(&["a".to_owned(), "b".to_owned()], index),
+            "b"
+        );
     }
 }

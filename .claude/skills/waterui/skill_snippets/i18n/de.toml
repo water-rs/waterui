@@ -7,3 +7,8 @@
 "$about_blurb" = "WaterUI ist ein plattformuebergreifendes UI-Framework."
 
 "I have {#count} passport stamp" = { one = "Ich habe {count} Passstempel", other = "Ich habe {count} Passstempel" }
+
+"Open#menu" = "Öffnen"
+"Open#file" = "Datei öffnen"
+
+"{#files} in {#folders}" = { one_one = "{files} Datei in {folders} Ordner", one_other = "{files} Datei in {folders} Ordnern", other_one = "{files} Dateien in {folders} Ordner", other_other = "{files} Dateien in {folders} Ordnern" }

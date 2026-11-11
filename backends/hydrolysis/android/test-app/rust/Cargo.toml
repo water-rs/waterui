@@ -22,6 +22,7 @@ default = ["gpu"]
 gpu = ["hydrolysis/gpu", "waterui/gpu"]
 hwui = ["hydrolysis/hwui"]
 filter-probe = []
+stretch-probe = []
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

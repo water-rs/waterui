@@ -9,7 +9,7 @@ use waterui_text::FontCollection;
 
 #[cfg(hydrolysis_gpu_painter)]
 use crate::platform::{
-    DeviceLoss, OffscreenGpuContext, OffscreenSurface, PresentationSurface as _, SurfaceFrame,
+    GpuGeneration, OffscreenGpuContext, OffscreenSurface, PresentationSurface as _, SurfaceFrame,
 };
 #[cfg(hydrolysis_gpu_painter)]
 use crate::readback::readback_texture_rgba8;
@@ -122,8 +122,11 @@ impl HydrolysisViewRenderer {
 }
 
 /// Ensures `cell`'s offscreen surface exists at `width`×`height` — on
-/// `context` when given — acquires its next frame and returns the GPU
-/// handles the capture renders through.
+/// `context` when given, on a device of its own otherwise — acquires its
+/// next frame and returns the GPU handles the capture renders through.
+///
+/// A host without a usable GPU or a device lost beyond recovery fails the
+/// capture with [`RenderError::Gpu`].
 #[cfg(hydrolysis_gpu_painter)]
 #[expect(
     clippy::future_not_send,
@@ -134,19 +137,14 @@ async fn acquire_frame(
     cell: &RefCell<Option<OffscreenSurface>>,
     width: u32,
     height: u32,
-) -> (
-    SurfaceFrame,
-    wgpu::Adapter,
-    wgpu::Device,
-    wgpu::Queue,
-    DeviceLoss,
-    wgpu::TextureFormat,
-) {
+) -> Result<AcquiredFrame, RenderError> {
     if cell.borrow().is_none() {
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let offscreen = match context {
             Some(gpu) => OffscreenSurface::on_context(gpu.clone(), width, height, format),
-            None => OffscreenSurface::new(width, height, format).await,
+            None => OffscreenSurface::new(width, height, format)
+                .await
+                .map_err(render_failure)?,
         };
         *cell.borrow_mut() = Some(offscreen);
     }
@@ -159,16 +157,14 @@ async fn acquire_frame(
         .as_mut()
         .expect("hydrolysis view renderer surface must initialize before rendering");
     surface.resize(width, height);
-    let frame = surface.acquire();
-    (
-        frame,
-        surface.adapter().clone(),
-        surface.device().clone(),
-        surface.queue().clone(),
-        surface.device_loss().clone(),
-        surface.format(),
-    )
+    let frame = surface.acquire().map_err(render_failure)?;
+    Ok((frame, surface.generation().clone(), surface.format()))
 }
+
+/// An acquired capture frame, the device generation it renders through and
+/// the frame's format.
+#[cfg(hydrolysis_gpu_painter)]
+type AcquiredFrame = (SurfaceFrame, GpuGeneration, wgpu::TextureFormat);
 
 impl CustomViewRenderer for HydrolysisViewRenderer {
     #[expect(
@@ -243,20 +239,14 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
         let rgba_data = match &self.target {
             #[cfg(hydrolysis_gpu_painter)]
             CaptureTarget::Gpu { context, surface } => {
-                let (frame, adapter, device, queue, device_loss, format) =
-                    acquire_frame(context.as_ref(), surface, width, height).await;
-                crate::engine::engine_await!(renderer.render_scene_to_texture(
-                    crate::renderer::HydrolysisRenderTarget {
-                        adapter: &adapter,
-                        device: &device,
-                        queue: &queue,
-                        device_loss,
-                        texture: frame.texture(),
-                        format,
-                        width,
-                        height,
-                        base_color: cherenkov_record::WorkingColor::TRANSPARENT,
-                    }
+                let (frame, generation, format) =
+                    acquire_frame(context.as_ref(), surface, width, height).await?;
+                crate::engine::engine_await!(renderer.render_generation_to_texture(
+                    &generation,
+                    frame.texture(),
+                    format,
+                    (width, height),
+                    cherenkov_record::WorkingColor::TRANSPARENT,
                 ))
                 .map_err(render_failure)?;
                 renderer.frame_work_counters_mut().gpu_submissions += 1;

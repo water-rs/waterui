@@ -69,7 +69,7 @@ fn state_change(metadata: &Metadata) -> StateChange {
 
 /// The `StateChange` the metadata asks for, `withPlatformAnimation`'s table:
 /// a bezier becomes an implicit group under its curve, a spring an implicit
-/// group under its clamped estimate.
+/// group lasting the spring's settling duration.
 #[cfg(target_os = "macos")]
 fn state_change(metadata: &Metadata) -> StateChange {
     match ChangeAnimation::of(metadata).animation() {
@@ -88,13 +88,10 @@ fn state_change(metadata: &Metadata) -> StateChange {
             seconds: duration.as_secs_f64(),
             control_points: Some((x1, y1, x2, y2)),
         },
-        Some(Animation::Spring { stiffness, damping }) => {
-            let estimate = 2.0 * f64::sqrt(1.0 / f64::from(stiffness)) * f64::from(damping);
-            StateChange::Implicit {
-                seconds: estimate.clamp(0.1, 2.0),
-                control_points: None,
-            }
-        }
+        Some(spring @ Animation::Spring { .. }) => StateChange::Implicit {
+            seconds: spring.duration().as_secs_f64(),
+            control_points: None,
+        },
     }
 }
 
@@ -352,7 +349,8 @@ mod tests {
                     stiffness: 170.0,
                     damping: 15.0,
                 },
-                2.0,
+                // The spring runs for its own settling duration.
+                Animation::spring(170.0, 15.0).duration().as_secs_f64(),
                 None,
             ),
         ];
