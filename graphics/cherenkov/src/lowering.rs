@@ -394,6 +394,16 @@ impl<T> Default for Realization<T> {
     }
 }
 
+/// What one [`Content::prepare`] did and found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Prepared {
+    /// Source commands lowered by this call.
+    pub commands: u32,
+    /// Whether the prepared operations open a picture scope, which happens
+    /// only where the compiler preserved a picture boundary.
+    pub pictures: bool,
+}
+
 /// One layer's display list, accumulated dirty commands, and retained output.
 #[derive(Debug)]
 pub struct Content<O, E> {
@@ -479,19 +489,6 @@ impl<O: Operation, E> Content<O, E> {
             .map(|lowered| (lowered.ops.as_slice(), self.list.display_list()))
     }
 
-    /// Whether the prepared operations open a picture scope, which happens
-    /// only where the compiler preserved a picture boundary.
-    ///
-    /// # Panics
-    /// When the content has not been prepared.
-    #[must_use]
-    pub const fn has_pictures(&self) -> bool {
-        self.lowered
-            .as_ref()
-            .expect("content was prepared")
-            .pictures
-    }
-
     /// Discard compiled resource references after image `id`'s pixels were
     /// replaced behind the same id. Lowering resolves an image's dimensions,
     /// and on some backends its storage, into the retained operations, so
@@ -538,15 +535,16 @@ impl<O: Operation, E> Content<O, E> {
         self.dirty.union(self.list.apply(updates));
     }
 
-    /// Resolve dirty source commands; return the number lowered.
+    /// Resolve dirty source commands.
     ///
     /// # Errors
     /// Propagates the backend compiler's error.
     ///
     /// # Panics
     /// When the command count exceeds u32.
-    pub fn prepare<C: Compiler<Op = O>>(&mut self, compiler: &mut C) -> Result<u32, C::Error> {
+    pub fn prepare<C: Compiler<Op = O>>(&mut self, compiler: &mut C) -> Result<Prepared, C::Error> {
         let count;
+        let pictures;
         if self.rebuild
             && let Some(lowered) = &mut self.lowered
         {
@@ -555,13 +553,18 @@ impl<O: Operation, E> Content<O, E> {
                 .resize_with(lowered.ops.len(), Realization::default);
             self.dirty = Dirty::default();
             self.rebuild = false;
-            return Ok(
-                u32::try_from(self.list.display_list().len()).expect("command count fits u32")
-            );
+            return Ok(Prepared {
+                commands: u32::try_from(self.list.display_list().len())
+                    .expect("command count fits u32"),
+                pictures: lowered.pictures,
+            });
         }
         if let Some(lowered) = &mut self.lowered {
             if self.dirty.is_empty() {
-                return Ok(0);
+                return Ok(Prepared {
+                    commands: 0,
+                    pictures: lowered.pictures,
+                });
             }
             if let Some(patches) = lowered.patch(self.list.display_list(), &self.dirty, compiler)? {
                 for range in patches {
@@ -577,16 +580,21 @@ impl<O: Operation, E> Content<O, E> {
                 count =
                     u32::try_from(self.list.display_list().len()).expect("command count fits u32");
             }
+            pictures = lowered.pictures;
         } else {
             let lowered = Lowered::full(self.list.display_list(), compiler)?;
             self.emissions
                 .resize_with(lowered.ops.len(), Realization::default);
+            pictures = lowered.pictures;
             self.lowered = Some(lowered);
             count = u32::try_from(self.list.display_list().len()).expect("command count fits u32");
         }
         self.dirty = Dirty::default();
         self.rebuild = false;
-        Ok(count)
+        Ok(Prepared {
+            commands: count,
+            pictures,
+        })
     }
 
     /// The prepared ops and their independently mutable device realizations.

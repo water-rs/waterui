@@ -7216,11 +7216,14 @@ impl GpuRenderer {
             }
             let mut lowered = Lowered::default();
             for content in surf.layers.values_mut() {
-                lowered.commands += content.retained.prepare(&mut prepared::Lowerer {
-                    fonts: &self.fonts,
-                    images: &self.images,
-                    pending: &mut lowered.pending,
-                })?;
+                lowered.commands += content
+                    .retained
+                    .prepare(&mut prepared::Lowerer {
+                        fonts: &self.fonts,
+                        images: &self.images,
+                        pending: &mut lowered.pending,
+                    })?
+                    .commands;
             }
             if lowered.commands != 0 {
                 prepared.insert(sf.id, lowered);

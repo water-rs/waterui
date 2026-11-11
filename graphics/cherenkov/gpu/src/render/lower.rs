@@ -2364,13 +2364,13 @@ impl<'a> Lowering<'a> {
     ) -> Result<bool, RenderError> {
         let mut pictures = false;
         for content in caches.values_mut() {
-            let changed = content.retained.prepare(&mut super::prepared::Lowerer {
+            let prepared = content.retained.prepare(&mut super::prepared::Lowerer {
                 fonts: glyphs.fonts,
                 images: glyphs.images,
                 pending: &mut self.pending,
             })?;
-            self.commands_lowered += changed;
-            pictures |= content.retained.has_pictures();
+            self.commands_lowered += prepared.commands;
+            pictures |= prepared.pictures;
         }
         Ok(pictures)
     }
