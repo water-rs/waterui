@@ -170,17 +170,23 @@ impl CloseRequest {
     /// closes the window while it builds its question leaves that question
     /// stale, and it is dropped unasked.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When the machine was never armed — the window was never realized, or
-    /// its platform has no window close request (Android, `UIKit`, web).
+    /// A machine that was never armed — the window was never realized, or its
+    /// platform has no window close request (Android, `UIKit`, web) — breaks
+    /// the contract: a debug build panics, and a release build logs the error
+    /// and drops the request.
     pub(crate) fn request(&self) {
         let (mut hook, env) = {
             let mut shared = self.inner.borrow_mut();
-            let armed = shared.armed.as_ref().expect(
-                "a close request was filed for a window that was never realized, or whose \
-                 platform has no window close request (Android, UIKit, web)",
-            );
+            let Some(armed) = shared.armed.as_ref() else {
+                crate::contract_violation!(
+                    "a close request was filed for a window that was never realized, or whose \
+                     platform has no window close request (Android, UIKit, web); \
+                     the request is dropped"
+                );
+                return;
+            };
             if !armed.closable
                 || matches!(shared.phase, Phase::Asking(_))
                 || shared.window_state.snapshot() == WindowState::Closed
@@ -417,8 +423,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "never realized")]
-    fn a_handle_request_before_realization_panics() {
-        window().handle().request_close();
+    #[cfg_attr(debug_assertions, should_panic(expected = "never realized"))]
+    fn a_handle_request_before_realization_is_dropped() {
+        let window = window();
+        window.handle().request_close();
+        assert_eq!(window.state.snapshot(), WindowState::Normal);
     }
 }

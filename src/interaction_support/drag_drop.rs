@@ -225,8 +225,8 @@ impl DragPayload {
 
     fn expect_value<T: Transferable>(&self) -> &T {
         self.downcast_ref().unwrap_or_else(|| {
-            panic!(
-                "drag payload of kind {:?} does not hold a {}",
+            unreachable!(
+                "`DragPayload::new` derives the kind from the stored type, so a payload of kind {:?} holds a {}",
                 self.kind,
                 core::any::type_name::<T>()
             )
@@ -340,17 +340,20 @@ impl DropDestination {
 
     /// Delivers a dropped payload to the handler.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// Panics if this destination does not [accept](Self::accepts) `payload`;
-    /// a backend delivers only accepted drags.
+    /// A backend delivers only accepted drags. A payload this destination does
+    /// not [accept](Self::accepts) breaks the contract: a debug build panics,
+    /// and a release build logs the error and drops the payload.
     pub fn deliver(&mut self, payload: DragPayload, env: &Environment) {
-        assert!(
-            self.accepts(&payload),
-            "drop destination accepting {:?} was delivered a {:?} payload",
-            self.accepted_kind,
-            payload.kind()
-        );
+        if !self.accepts(&payload) {
+            crate::contract_violation!(
+                "drop destination accepting {:?} was delivered a {:?} payload, which is dropped",
+                self.accepted_kind,
+                payload.kind()
+            );
+            return;
+        }
         (self.on_drop)(payload, env);
     }
 
@@ -457,5 +460,28 @@ impl DropDestinationExt for Metadata<DropDestination> {
     fn on_exit(mut self, handler: impl FnMut() + 'static) -> Self {
         self.value = self.value.on_exit(handler);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::rc::Rc;
+    use core::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "was delivered a"))]
+    fn delivering_an_unaccepted_payload_drops_it() {
+        let delivered = Rc::new(Cell::new(false));
+        let mut destination = DropDestination::new({
+            let delivered = Rc::clone(&delivered);
+            move |_: Str| delivered.set(true)
+        });
+        destination.deliver(
+            DragPayload::new(Files::new(core::iter::empty())),
+            &Environment::new(),
+        );
+        assert!(!delivered.get());
     }
 }

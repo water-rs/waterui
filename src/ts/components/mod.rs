@@ -425,7 +425,7 @@ fn navigation(
                 attributes.value(),
                 ForEach::new(nami::collection::List::from(ids), move |id: SelfId<Str>| {
                     tabs.get(&id.into_inner())
-                        .expect("a keyed tab collection reports a tab for every id")
+                        .expect("the ids are built from the keys of this same `tabs` map, so every id has its tab")
                         .clone()
                 }),
             ))
@@ -624,16 +624,19 @@ impl<T: 'static> Carried<T> {
 }
 
 impl<T: 'static> View for Carried<T> {
-    /// # Panics
+    /// # Contract
     ///
-    /// Always: a carrier is taken by its parent, never realized. Reaching here
-    /// means the element was written somewhere its parent cannot see it.
+    /// A carrier is taken by its parent, never realized. Reaching here with
+    /// the value still in it means the element was written somewhere its
+    /// parent cannot see it: a debug build panics, and a release build logs
+    /// the error and renders nothing.
     fn body(self, _env: &Environment) -> impl View {
-        assert!(
-            self.0.borrow().is_none(),
-            "this element is a piece of the component that contains it, and was written outside \
-             one: a <Column> belongs in a <Table> and a <Tab> in a <Tabs>"
-        );
+        if self.0.borrow().is_some() {
+            crate::contract_violation!(
+                "this element is a piece of the component that contains it, and was written outside \
+                 one: a <Column> belongs in a <Table> and a <Tab> in a <Tabs>; it renders nothing"
+            );
+        }
         // A carrier its parent already emptied renders nothing, which is what
         // it always was: the value went to the parent, and nothing is left to
         // draw at the position the child occupied.
@@ -658,4 +661,18 @@ fn options(options: &Computed<Vec<PickerOption>>) -> Computed<Vec<PickerItem<Str
                 .collect()
         })
         .computed()
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_core::{AnyView, Environment, View};
+
+    use super::Carried;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "written outside"))]
+    fn a_carrier_nobody_took_renders_nothing() {
+        let body = Carried::new(1_u32).body(&Environment::new());
+        assert!(AnyView::new(body).is::<()>());
+    }
 }

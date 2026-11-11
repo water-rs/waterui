@@ -707,7 +707,8 @@ impl SnackbarManager {
     ///
     /// # Panics
     ///
-    /// Panics if the snackbar presentation id counter overflows.
+    /// Panics if the snackbar presentation id counter overflows, which takes
+    /// more than `u64::MAX` snackbars.
     pub fn show(&self, snackbar: Snackbar) {
         let duration = snackbar.duration;
         let position = snackbar.position;
@@ -716,7 +717,7 @@ impl SnackbarManager {
             state.next_id = state
                 .next_id
                 .checked_add(1)
-                .expect("Snackbar presentation id overflow");
+                .expect("a u64 id advancing once per shown snackbar does not overflow");
             state.next_id
         };
         let item = ActiveSnackbar {
