@@ -244,11 +244,15 @@ impl MorphAnimation {
     }
 
     /// The eased progress `elapsed` after the animation started.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the morph progress is an f32 operand; the eased cycle lies in [0, 1]"
+    )]
     fn sample(self, elapsed: Duration) -> f32 {
         if self.duration.is_zero() {
             return 1.0;
         }
-        let raw = elapsed.as_secs_f32() / self.duration.as_secs_f32();
+        let raw = elapsed.as_secs_f64() / self.duration.as_secs_f64();
         let cycle = if self.repeat {
             let base = raw.fract();
             // The cycle index is a whole number: odd cycles run backwards.
@@ -260,7 +264,7 @@ impl MorphAnimation {
         } else {
             raw.clamp(0.0, 1.0)
         };
-        self.easing.ease(cycle).clamp(0.0, 1.0)
+        self.easing.ease(cycle).clamp(0.0, 1.0) as f32
     }
 }
 

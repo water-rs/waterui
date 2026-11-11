@@ -659,14 +659,8 @@ impl<E: crate::text::TextEngine> NavigationTransitionState<E> {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn eased_progress(progress: f64, motion: NavigationMotion) -> f64 {
-    f64::from(
-        motion
-            .transition_easing
-            .ease(progress as f32)
-            .clamp(0.0, 1.0),
-    )
+    motion.transition_easing.ease(progress).clamp(0.0, 1.0)
 }
 
 impl<E: crate::text::TextEngine> CustomNavigationController for HydroNavigationController<E> {

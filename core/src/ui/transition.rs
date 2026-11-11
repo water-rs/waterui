@@ -671,13 +671,17 @@ pub struct TransitionState {
 
 impl TransitionState {
     /// Advances by the host frame delta; returns whether another frame is needed.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the absence value is an f32 binding; the eased progress lies in [0, 1]"
+    )]
     pub fn advance(&mut self, delta: Duration) -> bool {
         self.elapsed = self.elapsed.saturating_add(delta);
         let completed = self.is_complete();
         let eased = if completed {
             1.0
         } else {
-            self.animation.progress(self.elapsed).clamp(0.0, 1.0)
+            self.animation.progress(self.elapsed).clamp(0.0, 1.0) as f32
         };
         self.progress.set(match self.phase {
             TransitionPhase::Insertion => 1.0 - eased,
