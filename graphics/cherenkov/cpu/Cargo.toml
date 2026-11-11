@@ -15,9 +15,9 @@ categories = ["graphics", "rendering", "embedded"]
 testing = []
 # Firmware rasterization trades geometry rescans for band-bounded bin scratch.
 bounded-bins = []
-# Backdrop effect shaders, run on `cherenkov-shader`'s lane executor. It
-# brings naga's WGSL front end, so firmware builds that draw no user
-# shaders leave it out.
+# Shader paints and backdrop effect shaders, run on `cherenkov-shader`'s
+# lane executor. It brings naga's WGSL front end, so firmware builds that
+# draw no user shaders leave it out.
 shaders = ["dep:cherenkov-shader"]
 
 [dependencies]

@@ -272,6 +272,41 @@ impl cherenkov::BackdropShaders for Raster {
     }
 }
 
+// Shader paints render on the lane executor into an image per use, which
+// the draw then samples (`render::shader`).
+#[cfg(feature = "shaders")]
+impl cherenkov::ShaderPaintCapability for Raster {
+    fn validate_shader(source: &cherenkov::ShaderSource) -> Result<(), cherenkov::ResourceError> {
+        render::shader::PaintProgram::compile(source).map(drop)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_shader(
+        renderer: &mut Self::Renderer,
+        id: cherenkov::ShaderId,
+        source: cherenkov::ShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        let program = render::shader::PaintProgram::compile(&source)?;
+        renderer.shader_paints.add(id.raw(), program);
+        Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn add_shader(
+        renderer: &mut Self::Renderer,
+        id: cherenkov::ShaderId,
+        source: cherenkov::ShaderSource,
+    ) -> impl core::future::Future<Output = Result<(), cherenkov::ResourceError>> {
+        let result = render::shader::PaintProgram::compile(&source)
+            .map(|program| renderer.shader_paints.add(id.raw(), program));
+        core::future::ready(result)
+    }
+
+    fn remove_shader(renderer: &mut Self::Renderer, id: cherenkov::ShaderId) {
+        renderer.shader_paints.remove(id.raw());
+    }
+}
+
 impl cherenkov::Target for Raster {
     type Queue = cherenkov::EngineQueue<Self>;
     type Install = cherenkov::InstallOp<Self>;

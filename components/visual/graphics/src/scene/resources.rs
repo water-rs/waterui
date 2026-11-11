@@ -548,7 +548,11 @@ impl SceneCaps for cherenkov_gpu::Gpu {
 }
 
 #[cfg(feature = "cpu")]
-impl SceneCaps for cherenkov_cpu::Raster {}
+impl SceneCaps for cherenkov_cpu::Raster {
+    fn resources(engine: Rc<cherenkov::Engine<Self>>) -> SceneResources {
+        SceneResources::with_shaders(engine.clone(), engine)
+    }
+}
 
 /// One live registration: the target's handle, erased to its kind, plus the
 /// table entry that dedupes it. Dropping it takes the entry out of the

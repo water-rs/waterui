@@ -40,6 +40,7 @@ mod message;
 mod resource;
 mod surface;
 mod text;
+pub mod wgsl;
 #[cfg(feature = "workers")]
 pub mod workers;
 

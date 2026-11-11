@@ -282,19 +282,16 @@ fn main() {
     // The working-space ↔ sRGB conversion every colour-converting module
     // shares: filtrate-core's `space::WGSL`, rendered from the same
     // constants as the CPU conversion. It precedes `shared.wgsl` (and so
-    // every module built on it), `present.wgsl`, `space_convert.wgsl` and
-    // the `color.wgsl` producer prelude. Every module spec lands in
-    // `OUT_DIR` below; the `shared` prelude and the `color` prelude, which
-    // the runtime and the tests compose with their own sources, land there
-    // too, so nothing can drift from what this script compiles.
+    // every module built on it), `present.wgsl` and `space_convert.wgsl`;
+    // the producer and shader-paint preludes are `cherenkov::wgsl`'s. Every
+    // module spec lands in `OUT_DIR` below; the `shared` prelude, which the
+    // runtime and the tests compose with their own sources, lands there too,
+    // so nothing can drift from what this script compiles.
     let space = filtrate_core::space::WGSL;
     let shared = format!("{space}\n{shared}");
     let present = format!("{space}\n{present}");
     let space_convert = format!("{space}\n{space_convert}");
-    let color = format!("{space}\n{}", read("color"));
-    for (name, text) in [("shared", &shared), ("color", &color)] {
-        std::fs::write(out_dir.join(format!("{name}.wgsl")), text).unwrap();
-    }
+    std::fs::write(out_dir.join("shared.wgsl"), &shared).unwrap();
 
     // The union member cap the WGSL fold is compiled against:
     // `union_cap::UNION_MAX_MEMBERS` prepended like `VARIANT`, so the

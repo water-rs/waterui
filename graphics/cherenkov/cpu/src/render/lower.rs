@@ -791,6 +791,14 @@ pub struct Lowering<'a, 'b> {
     /// The renderer's worker pool: the coverage masks and convolutions
     /// below install their parallel work on it, never the global pool.
     pool: &'a rayon::ThreadPool,
+    /// The registered shader paints a draw's shader leaf renders through;
+    /// `None` renders none (a shader leaf is then an error).
+    #[cfg(feature = "shaders")]
+    pub shader_paints: Option<&'a mut super::shader::ShaderPaints>,
+    /// Whether a draw this lowering realized renders an animated shader
+    /// paint: its surface then renders again every frame.
+    #[cfg(feature = "shaders")]
+    pub animated_shaders: bool,
 }
 
 /// Reusable state for anchor planning and capture emission, owned by the
@@ -1439,6 +1447,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
             projected: FxHashMap::default(),
             level,
             pool,
+            #[cfg(feature = "shaders")]
+            shader_paints: None,
+            #[cfg(feature = "shaders")]
+            animated_shaders: false,
         }
     }
 
@@ -2710,9 +2722,23 @@ impl<'a, 'b> Lowering<'a, 'b> {
         compose.height = self.height;
         compose.transform = self.transform;
         compose.clip = self.clip.clone();
+        #[cfg(feature = "shaders")]
+        {
+            compose.shader_paints = self.shader_paints.as_deref_mut();
+        }
         compose.realize(op, carried)?;
         self.glyphs.append(&mut compose.glyphs);
         self.glyphs_rasterized += compose.glyphs_rasterized;
+        // An animated shader paint renders again next frame: its emission
+        // is never reused.
+        #[cfg(feature = "shaders")]
+        let reusable = !compose.animated_shaders;
+        #[cfg(not(feature = "shaders"))]
+        let reusable = true;
+        #[cfg(feature = "shaders")]
+        {
+            self.animated_shaders |= compose.animated_shaders;
+        }
         self.items.extend_from_slice(&items);
         super::damage::record_rows(
             &mut self.damage_rows,
@@ -2721,7 +2747,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.height,
         );
         cache.data = Some(Emission::Draw(self.device_data(items)));
-        cache.valid = true;
+        cache.valid = reusable;
         Ok(true)
     }
 
@@ -2736,6 +2762,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 paint,
             } => {
                 self.transform *= *local;
+                #[cfg(feature = "shaders")]
+                let shaded = self.shaded(paint, shape.bounds())?;
+                #[cfg(feature = "shaders")]
+                let paint = &*shaded;
                 self.fill(shape, paint, carried);
                 Ok(())
             }
@@ -2746,6 +2776,15 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 paint,
             } => {
                 self.transform *= *local;
+                // The GPU backend's stroke bounds: the shape's, grown by
+                // half the stroke width.
+                #[cfg(feature = "shaders")]
+                let shaded = {
+                    let half = stroke.width / 2.0;
+                    self.shaded(paint, shape.bounds().inflate(half, half))?
+                };
+                #[cfg(feature = "shaders")]
+                let paint = &*shaded;
                 self.stroke(shape, stroke, paint, carried);
                 Ok(())
             }
@@ -2773,6 +2812,53 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
             _ => unreachable!("scope is composed, never realized as a leaf"),
         }
+    }
+
+    /// `paint` with its shader leaf rendered for a draw over shape-local
+    /// `bounds` under the current transform, through the registered
+    /// shader paints ([`PaintData::render_shaders`]).
+    #[cfg(feature = "shaders")]
+    fn shaded<'p>(
+        &mut self,
+        paint: &'p PaintData,
+        bounds: Rect,
+    ) -> Result<std::borrow::Cow<'p, PaintData>, RenderError> {
+        if !paint.has_shader() {
+            return Ok(std::borrow::Cow::Borrowed(paint));
+        }
+        let paints = self
+            .shader_paints
+            .as_deref_mut()
+            .ok_or(RenderError::Unsupported(names::SHADER))?;
+        let pool = self.pool;
+        let mut any_animated = false;
+        let rendered = paint.render_shaders(bounds, self.transform, &mut |leaf, size| {
+            let (image, animated) = paints.image(leaf.shader, &leaf.uniforms, size, pool)?;
+            any_animated |= animated;
+            Ok(image)
+        })?;
+        self.animated_shaders |= any_animated;
+        Ok(rendered.map_or(std::borrow::Cow::Borrowed(paint), std::borrow::Cow::Owned))
+    }
+
+    /// `paint` for a glyph run: a shader leaf covers the run's ink boxes,
+    /// as on the GPU backend ([`super::glyph::ink_bounds`]).
+    #[cfg(feature = "shaders")]
+    fn shaded_glyphs<'p>(
+        &mut self,
+        run: &GlyphRun,
+        paint: &'p PaintData,
+    ) -> Result<std::borrow::Cow<'p, PaintData>, RenderError> {
+        if !paint.has_shader() {
+            return Ok(std::borrow::Cow::Borrowed(paint));
+        }
+        let font = self
+            .fonts
+            .get(&run.font.raw())
+            .ok_or_else(|| RenderError::Font(format!("unregistered font {:?}", run.font)))?;
+        // A run without ink draws nothing: any bounds do.
+        let bounds = super::glyph::ink_bounds(&font.data, run, self.transform)?.unwrap_or_default();
+        self.shaded(paint, bounds)
     }
 
     /// `Fill`: a flattened polygon of edges in the shape's frame, placed in
@@ -3042,6 +3128,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         if matches!(run.style, GlyphStyle::Stroke(_)) {
             return Err(RenderError::Unsupported(names::GLYPH_STROKE));
         }
+        #[cfg(feature = "shaders")]
+        let shaded = self.shaded_glyphs(run, paint)?;
+        #[cfg(feature = "shaders")]
+        let paint = &*shaded;
         let paint = paint.transformed(self.transform.inverse());
         let [a, b, c, d, ..] = self.transform.as_coeffs();
         let matrix = [a as f32, b as f32, c as f32, d as f32];
