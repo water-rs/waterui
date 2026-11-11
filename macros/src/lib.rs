@@ -2279,10 +2279,15 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let run_closure = bench_args.view.as_ref().map_or_else(
         || {
+            // The manual form's declared return type is the report's type, so
+            // the import the author's signature names is the one in use.
+            let syn::ReturnType::Type(_, report_type) = &input_fn.sig.output else {
+                unreachable!("validate_bench_fn rejects a manual bench that returns nothing");
+            };
             quote! {
                 |__waterui_bench_config| {
                     let #arg_pattern: #arg_type = #builder;
-                    let __waterui_bench_report: #testing_path::PerfReport = #fn_body;
+                    let __waterui_bench_report: #report_type = #fn_body;
                     __waterui_bench_report
                 }
             }
