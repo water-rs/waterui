@@ -388,7 +388,7 @@ impl Encoder {
         let root = tree.root();
         let registry = SharedRegistry::new();
         let effects = Effects::new(registry.clone());
-        let stats = FrameStats::default();
+        let stats = FrameStats::new();
         let mut encoder = Self {
             tree,
             buffer: CommandBuffer::new(),

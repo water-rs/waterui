@@ -47,6 +47,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -112,12 +113,16 @@ def start_launcher(serial: str, package: str, env: dict) -> None:
     same intent for the generated Hydrolysis host and the Compose reference,
     so neither depends on the other's activity name. `env` reaches the app as
     `waterui.env.*` string extras."""
-    args = [
-        "shell", "am", "start", "-S",
+    resolved = e2e.adb_out(
+        serial, "shell", "cmd", "package", "resolve-activity", "--brief",
         "-a", "android.intent.action.MAIN",
         "-c", "android.intent.category.LAUNCHER",
-        "-p", package,
-    ]
+        package,
+    ).decode("utf-8", "replace").strip().splitlines()
+    component = resolved[-1].strip() if resolved else ""
+    if not component.startswith(package + "/"):
+        sys.exit(f"{package} has no launcher activity: {resolved}")
+    args = ["shell", "am", "start", "-S", "-n", component]
     for key, value in env.items():
         args += ["--es", f"waterui.env.{key}", value]
     output = e2e.adb_out(serial, *args).decode("utf-8", "replace")
@@ -137,6 +142,14 @@ _FLING = {
 # UiObject.scroll moves the content, so the finger travels the other way.
 _SCROLL_FINGER = {"down": "up", "up": "down", "left": "right", "right": "left"}
 FLING_MS = 120
+
+
+def prepare_display(serial: str) -> None:
+    """Wakes the display and clears the lock screen and notification shade, so
+    the app under test owns the focused window the settle check demands."""
+    metrics.adb(serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+    metrics.adb(serial, "shell", "wm", "dismiss-keyguard")
+    metrics.adb(serial, "shell", "cmd", "statusbar", "collapse")
 
 
 def display_size(serial: str) -> tuple[int, int]:
@@ -169,18 +182,18 @@ def replay_journey(serial: str, steps: list[dict], size: tuple[int, int]) -> lis
                 direction = _SCROLL_FINGER[direction]
             fx0, fy0, fx1, fy1 = _FLING[direction]
             for _ in range(step.get("times", 1)):
-                e2e.adb(
+                metrics.adb(
                     serial, "shell", "input", "swipe",
                     str(int(width * fx0)), str(int(height * fy0)),
                     str(int(width * fx1)), str(int(height * fy1)),
                     str(FLING_MS),
                 )
         elif op == "back":
-            e2e.adb(serial, "shell", "input", "keyevent", "4")
+            metrics.adb(serial, "shell", "input", "keyevent", "4")
         elif op == "key":
-            e2e.adb(serial, "shell", "input", "keyevent", str(step["code"]))
+            metrics.adb(serial, "shell", "input", "keyevent", str(step["code"]))
         elif op == "home":
-            e2e.adb(serial, "shell", "input", "keyevent", "3")
+            metrics.adb(serial, "shell", "input", "keyevent", "3")
         elif op == "repeat":
             for _ in range(step.get("times", 1)):
                 unsupported += replay_journey(serial, step["steps"], size)
@@ -214,6 +227,7 @@ def launch_and_capture(
     )
     poll_s = fixture.get("poll_interval_ms", defaults["poll_interval_ms"]) / 1000
 
+    prepare_display(serial)
     e2e.install_apk(serial, str(apk))
     e2e.force_stop(serial, package)
     if painter is None:
@@ -228,9 +242,9 @@ def launch_and_capture(
         result_profile = {}
     # Reset the frame statistics and the log so the round counts only its
     # own frames and painter lines.
-    e2e.adb(serial, "shell", "dumpsys", "gfxinfo", package, "reset")
+    metrics.adb(serial, "shell", "dumpsys", "gfxinfo", package, "reset")
     frame_profile.clear_logcat(serial)
-    launch_ms = e2e.device_now_ms(serial)
+    launch_at = time.monotonic()
     start_launcher(serial, package, fixture_env(fixture, defaults))
     watch = e2e.ProcessWatch(serial, package)
     result: dict = {
@@ -241,7 +255,7 @@ def launch_and_capture(
 
     anr: list[str] = []
     foreign: list[str] = []
-    settled, frame, first_content_ms = e2e.wait_for_settle(
+    settled, frame, first_content_at = e2e.wait_for_settle(
         serial,
         settle_s,
         poll_s,
@@ -254,8 +268,10 @@ def launch_and_capture(
         result["anr"] = anr
     if foreign:
         result["foreign_focus"] = foreign[-1]
-    if first_content_ms is not None:
-        result["first_content_ms"] = int(first_content_ms - launch_ms)
+    if first_content_at is not None:
+        # Both instants are host monotonic seconds; the resolution is the
+        # settle poll interval, so this orients the round, it does not gate.
+        result["first_content_ms"] = int((first_content_at - launch_at) * 1000)
 
     if frame is not None:
         (out / "capture.png").write_bytes(frame)
@@ -694,7 +710,13 @@ def debug_keystore() -> Path:
 
 
 def package_hydrolysis(
-    water: str, waterui: Path, fixture: dict, painter: str, frame_profile_build: bool
+    water: str,
+    waterui: Path,
+    fixture: dict,
+    painter: str,
+    frame_profile_build: bool,
+    debug: bool,
+    log: Path,
 ) -> Path:
     """Builds one fixture's Hydrolysis APK through `water package` and returns
     the artifact it reports, unsigned."""
@@ -705,19 +727,26 @@ def package_hydrolysis(
         "--painter", painter,
         "--arch", "arm64",
         "--path", str(project),
-        "--unsigned", "--yes",
+        "--yes",
+        # A release package is left unsigned for `sign_with_debug_keystore`;
+        # a debug package is signed by the CLI.
+        *(["--debug"] if debug else ["--unsigned"]),
     ]
     with contextlib.ExitStack() as stack:
         if frame_profile_build:
             stack.enter_context(frame_profile_manifest(project, waterui / "Cargo.lock"))
-        print("water:", " ".join(cmd[1:]), flush=True)
-        done = subprocess.run(cmd, capture_output=True, text=True)
-    sys.stdout.write(done.stdout)
-    sys.stderr.write(done.stderr)
+        # The build's output goes to a log as it runs, so a long cold build
+        # can be followed and a failure read in full.
+        log.parent.mkdir(parents=True, exist_ok=True)
+        print("water:", " ".join(cmd[1:]), f"(log: {log})", flush=True)
+        with open(log, "w") as sink:
+            done = subprocess.run(cmd, stdout=sink, stderr=subprocess.STDOUT)
+    output = log.read_text()
     if done.returncode != 0:
+        sys.stdout.write(output)
         sys.exit(f"water package failed for {project} ({painter}): exit {done.returncode}")
     ansi = re.compile(r"\x1b\[[0-9;]*m")
-    match = re.search(r"Packaged at (\S+\.apk)", ansi.sub("", done.stdout + done.stderr))
+    match = re.search(r"Packaged at (\S+\.apk)", ansi.sub("", output))
     if match is None:
         sys.exit(f"water package reported no .apk artifact for {project}")
     return Path(match.group(1))
@@ -763,15 +792,22 @@ def cmd_build_hydrolysis(args: argparse.Namespace) -> int:
             if fixture["mode"] == "skip":
                 sys.exit(f"{name} is a documented skip: {fixture['reason']}")
             built = package_hydrolysis(
-                args.water, waterui, fixture, painter, args.frame_profile
+                args.water, waterui, fixture, painter, args.frame_profile,
+                args.debug, out_dir / "logs" / f"{painter}-{name}.water.log",
             )
             dst = out_dir / painter / f"{name}.apk"
-            sign_with_debug_keystore(built, dst)
+            if args.debug:
+                print("DEBUG build: its size and speed are not measurements")
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(built, dst)
+            else:
+                sign_with_debug_keystore(built, dst)
             manifest["apks"][f"{painter}/{name}"] = {
                 "path": str(dst),
                 "apk_bytes": dst.stat().st_size,
                 "painter": painter,
                 "frame_profile": args.frame_profile,
+                "profile": "debug" if args.debug else "release",
             }
             print(f"built {painter}/{name}: {dst.stat().st_size} bytes -> {dst}")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -792,12 +828,25 @@ def cmd_generate_profile(args: argparse.Namespace) -> int:
     """
     project = BENCH_DIR / "reference"
     task = ":app:generateSuiteReleaseBaselineProfile"
-    extra = []
+    # The producer needs the suite package as `targetAppId`. With plugin 1.5.0
+    # a run that passed only a `-Pandroid.testInstrumentationRunnerArguments.*`
+    # property failed with "targetAppId not passed", so it is passed here.
+    extra = [
+        "-Pandroid.testInstrumentationRunnerArguments.targetAppId="
+        + package_for_fixture("suite")
+    ]
     if args.fixture:
         extra.append(
             "-Pandroid.testInstrumentationRunnerArguments.fixtures="
             + ",".join(args.fixture)
         )
+    if args.max_iterations is not None:
+        extra += [
+            "-Pandroid.testInstrumentationRunnerArguments.maxIterations="
+            f"{args.max_iterations}",
+            "-Pandroid.testInstrumentationRunnerArguments.stableIterations="
+            f"{min(3, args.max_iterations)}",
+        ]
     print("gradle:", task, *extra)
     _gradle(task, *extra, project=project)
     generated = project / "app/src/suiteRelease/generated/baselineProfiles"
@@ -809,8 +858,22 @@ def cmd_generate_profile(args: argparse.Namespace) -> int:
 
 
 def compile_with_profile(serial: str, package: str) -> None:
-    """Forces the profile-guided compilation `BaselineProfileMode.Require`
-    expects, once at install and outside any measured window."""
+    """Installs the APK's baseline profile and forces the profile-guided
+    compilation `BaselineProfileMode.Require` expects, once at install and
+    outside any measured window.
+
+    `cmd package compile -m speed-profile` only has a profile to compile
+    against after ProfileInstaller moved the APK's into ART's profile
+    directory, which the broadcast asks of the app's own receiver.
+    """
+    broadcast = metrics.adb_out(
+        serial, "shell", "am", "broadcast",
+        "-a", "androidx.profileinstaller.action.INSTALL_PROFILE",
+        "-n", f"{package}/androidx.profileinstaller.ProfileInstallReceiver",
+    ).decode("utf-8", "replace")
+    # ProfileInstaller.RESULT_INSTALL_SUCCESS / RESULT_ALREADY_INSTALLED.
+    if not re.search(r"result=(1|2)\b", broadcast):
+        sys.exit(f"{package}: ProfileInstaller did not install the profile: {broadcast.strip()}")
     out = metrics.adb_out(
         serial, "shell", "cmd", "package", "compile",
         "-f", "-m", "speed-profile", package,
@@ -1067,6 +1130,10 @@ def main() -> int:
                                   help="build with the `frame-profile` feature so "
                                        "the HWUI painter logs its per-frame counters "
                                        "— an attribution build, not a measured one")
+    build_hydrolysis.add_argument("--debug", action="store_true",
+                                  help="build the unoptimized profile, for a "
+                                       "plumbing smoke run on a loaded host — "
+                                       "never a measured build")
     build_hydrolysis.add_argument("--out", default=str(BENCH_DIR / "out" / "hydrolysis"))
     build_hydrolysis.set_defaults(func=cmd_build_hydrolysis)
 
@@ -1076,6 +1143,8 @@ def main() -> int:
     )
     generate.add_argument("--fixture", action="append", default=None,
                           help="journey subset to profile (repeatable; default all)")
+    generate.add_argument("--max-iterations", type=int, default=None,
+                          help="bound on the collection loop (library default 15)")
     generate.set_defaults(func=cmd_generate_profile)
 
     verify = sub.add_parser(

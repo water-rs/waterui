@@ -53,8 +53,14 @@ class BaselineProfileGenerator {
         require(fixtures.isNotEmpty()) {
             "no journey matches fixtures=$requested"
         }
+        // `maxIterations` / `stableIterations` bound the collection loop; the
+        // library defaults (15 / 3) run every journey up to fifteen times.
+        val maxIterations = args.getString("maxIterations")?.toIntOrNull() ?: 15
+        val stableIterations = args.getString("stableIterations")?.toIntOrNull() ?: 3
         baselineProfileRule.collect(
             packageName = packageName,
+            maxIterations = maxIterations,
+            stableIterations = stableIterations,
             includeInStartupProfile = true,
         ) {
             pressHome()

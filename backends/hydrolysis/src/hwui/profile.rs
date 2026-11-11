@@ -30,6 +30,12 @@ mod counting {
     pub struct FrameStats(Arc<Counts>);
 
     impl FrameStats {
+        /// Counters at zero.
+        #[must_use]
+        pub fn new() -> Self {
+            Self::default()
+        }
+
         /// One call into the JVM.
         pub fn jni_call(&self) {
             self.0.jni_calls.fetch_add(1, Ordering::Relaxed);
@@ -82,6 +88,12 @@ mod counting {
     pub struct FrameStats;
 
     impl FrameStats {
+        /// The compiled-out handle.
+        #[must_use]
+        pub const fn new() -> Self {
+            Self
+        }
+
         /// One call into the JVM.
         pub const fn jni_call(&self) {}
 
