@@ -1,8 +1,8 @@
 //! Optional component tracks. Layers using only Affine allocate none of these.
 
 use super::{
-    Affine, Animation, Instant, KeyframeProp, LayerKeyframes, LayerNode, Prop, Track, Vec2,
-    set_prop,
+    Affine, Instant, KeyframeProp, LayerKeyframes, LayerNode, Prop, Track, Vec2, set_prop,
+    without_decay,
 };
 use crate::animation::Animatable;
 
@@ -127,10 +127,7 @@ pub(super) fn sample<T: Animatable>(
 macro_rules! property {
     ($method:ident, $field:ident, $track:ident, $ty:ty) => {
         pub(super) fn $method(&mut self, prop: Prop<$ty>) {
-            assert!(
-                !matches!(prop.animation, Some(Animation::Decay(_))),
-                "Decay is only legal on scroll_offset"
-            );
+            let prop = without_decay(prop);
             let component = self
                 .components
                 .get_or_insert_with(|| Box::new(Components::new(self.transform)));

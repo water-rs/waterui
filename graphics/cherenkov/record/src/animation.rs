@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use kurbo::{Affine, Point, Rect, Stroke, Vec2};
+use waterui_contract::contract_violation;
 
 use crate::Instant;
 use crate::display_list::Operand;
@@ -245,6 +246,21 @@ pub enum Animation {
     Curve(Curve),
     /// An exponential deceleration; scroll `scroll_offset` only.
     Decay(Decay),
+}
+
+impl Animation {
+    /// The animation, or `None` for a [`Decay`], which animates only
+    /// `scroll_offset`: a property or operand that takes one anywhere else
+    /// is a contract violation, and its change lands without animation.
+    pub(crate) fn except_decay(self) -> Option<Self> {
+        if matches!(self, Self::Decay(_)) {
+            contract_violation!(
+                "Decay is only legal on scroll_offset; the change is applied without animation"
+            );
+            return None;
+        }
+        Some(self)
+    }
 }
 
 impl From<Spring> for Animation {
@@ -726,14 +742,17 @@ impl Easing {
 impl<T> Keyframes<T> {
     /// A track whose cycle lasts `duration`, starting at `first`.
     ///
-    /// # Panics
-    /// Panics on a zero `duration`.
+    /// # Contract
+    /// A zero `duration` is a contract violation; the cycle then lasts one
+    /// nanosecond.
     #[must_use]
-    pub fn new(duration: Duration, first: T) -> Self {
-        assert!(
-            !duration.is_zero(),
-            "a keyframe cycle needs a non-zero duration"
-        );
+    pub fn new(mut duration: Duration, first: T) -> Self {
+        if duration.is_zero() {
+            contract_violation!(
+                "a keyframe cycle needs a non-zero duration; it lasts one nanosecond"
+            );
+            duration = Duration::from_nanos(1);
+        }
         Self {
             duration,
             first,
@@ -744,17 +763,21 @@ impl<T> Keyframes<T> {
     /// Appends `value` at normalized time `at`, reached from the previous
     /// value along `easing`: a [`Curve`] or a [`Spring`].
     ///
-    /// # Panics
-    /// Panics when `at` is outside `[0, 1]` or before the previous value's
-    /// time.
+    /// # Contract
+    /// A time outside `[0, 1]`, before the previous value's time, or not a
+    /// number is a contract violation; the value is then placed at the
+    /// nearest time the order allows.
     #[must_use]
-    pub fn then(mut self, at: f64, easing: impl Into<Easing>, value: T) -> Self {
+    pub fn then(mut self, mut at: f64, easing: impl Into<Easing>, value: T) -> Self {
         let previous = self.segments.last().map_or(0.0, |segment| segment.at);
-        assert!(
-            (previous..=1.0).contains(&at),
-            "keyframe time {at} must lie in [{previous}, 1]: keyframes are appended in time order \
-             within one cycle"
-        );
+        if !(previous..=1.0).contains(&at) {
+            let placed = at.max(previous).min(1.0);
+            contract_violation!(
+                "keyframe time {at} must lie in [{previous}, 1]: keyframes are appended in time \
+                 order within one cycle; the value is placed at {placed}"
+            );
+            at = placed;
+        }
         self.segments.push(Segment {
             at,
             easing: easing.into(),
@@ -782,22 +805,22 @@ impl<T: AnimLanes + Clone> Keyframes<T> {
     /// host can place the track's values on its own clock. `None` once a
     /// finite repeat has run all its cycles.
     ///
-    /// # Panics
-    /// Panics when a value does not share the first value's lane layout.
+    /// # Contract
+    /// A value that does not share the first value's lane layout is a
+    /// contract violation; the track then has no value: `None`.
     #[must_use]
     pub fn sample(&self, elapsed: Duration, repeat: Repeat) -> Option<T> {
-        let lanes = self.lanes(repeat);
+        let lanes = self.lanes(repeat)?;
         let mut pos = vec![0.0; lanes.width].into_boxed_slice();
         lanes
             .eval(elapsed.as_secs_f64(), |lane, value, _| pos[lane] = value)
             .then(|| lanes.layout.with_lanes(&pos))
     }
 
-    /// The track in lane space, repeating under `repeat`.
-    ///
-    /// # Panics
-    /// Panics when a value does not share the first value's lane layout.
-    pub(crate) fn lanes(&self, repeat: Repeat) -> KeyframeLanes<T> {
+    /// The track in lane space, repeating under `repeat`; `None` when a
+    /// value does not share the first value's lane layout (see
+    /// [`KeyframeLanes::new`]).
+    pub(crate) fn lanes(&self, repeat: Repeat) -> Option<KeyframeLanes<T>> {
         KeyframeLanes::new(
             self.first.clone(),
             self.segments
@@ -884,11 +907,14 @@ impl KeyframeAnimation {
     /// The track in operand lanes, each value converted the way the slot
     /// converts its signal's values.
     ///
-    /// # Panics
-    /// Panics when the track's values are not the slot's `T`, or when a
-    /// value does not share the first value's lane layout.
-    pub(crate) fn operands<T: 'static>(&self, convert: fn(T) -> Operand) -> KeyframeLanes<Operand> {
-        let typed = self.typed::<T>();
+    /// `None`, after a contract violation, when the track's values are not
+    /// the slot's `T` or a value does not share the first value's lane
+    /// layout.
+    pub(crate) fn operands<T: 'static>(
+        &self,
+        convert: fn(T) -> Operand,
+    ) -> Option<KeyframeLanes<Operand>> {
+        let typed = self.typed::<T>()?;
         let keyframes = &typed.keyframes;
         KeyframeLanes::new(
             convert((typed.clone)(&keyframes.first)),
@@ -906,10 +932,10 @@ impl KeyframeAnimation {
 
     /// The track as a layer property of type `T` runs it.
     ///
-    /// # Panics
-    /// Panics when the track's values are not `T`.
-    pub(crate) fn property<T: 'static>(&self) -> (Keyframes<T>, Repeat) {
-        let typed = self.typed::<T>();
+    /// `None`, after a contract violation, when the track's values are not
+    /// `T`.
+    pub(crate) fn property<T: 'static>(&self) -> Option<(Keyframes<T>, Repeat)> {
+        let typed = self.typed::<T>()?;
         let keyframes = &typed.keyframes;
         let values = Keyframes {
             duration: keyframes.duration,
@@ -924,22 +950,22 @@ impl KeyframeAnimation {
                 })
                 .collect(),
         };
-        (values, typed.repeat)
+        Some((values, typed.repeat))
     }
 
-    /// The typed payload for a binding whose values are `T`.
-    ///
-    /// # Panics
-    /// Panics when the track's values are not `T`.
-    fn typed<T: 'static>(&self) -> &Typed<T> {
-        self.track.downcast_ref::<Typed<T>>().unwrap_or_else(|| {
-            panic!(
+    /// The typed payload for a binding whose values are `T`. A track of
+    /// another type is a contract violation: the change lands without it.
+    fn typed<T: 'static>(&self) -> Option<&Typed<T>> {
+        let typed = self.track.downcast_ref::<Typed<T>>();
+        if typed.is_none() {
+            contract_violation!(
                 "a keyframe track of `{}` reached a binding of `{}`: attach the track to the \
-                 operand's or property's own signal",
+                 operand's or property's own signal; the change is applied without the track",
                 self.value_type,
                 std::any::type_name::<T>()
-            )
-        })
+            );
+        }
+        typed
     }
 }
 
@@ -960,38 +986,48 @@ pub(crate) struct KeyframeLanes<V> {
 }
 
 impl<V: AnimLanes> KeyframeLanes<V> {
-    /// # Panics
-    /// Panics when a value does not share `first`'s lane layout.
+    /// `None` when a value has no lane decomposition or does not share
+    /// `first`'s lane layout: a contract violation, reported, after which
+    /// the keyframes do not run.
     pub(crate) fn new(
         first: V,
         segments: impl ExactSizeIterator<Item = (f64, Easing, V)>,
         duration: Duration,
         repeat: Repeat,
-    ) -> Self {
-        let mut lanes = first
-            .anim_lanes(&first)
-            .expect("a keyframe value needs a lane decomposition to interpolate")
-            .into_vec();
+    ) -> Option<Self> {
+        let Some(first_lanes) = first.anim_lanes(&first) else {
+            contract_violation!(
+                "a keyframe value needs a lane decomposition to interpolate; the keyframes do \
+                 not run"
+            );
+            return None;
+        };
+        let mut lanes = first_lanes.into_vec();
         let width = lanes.len();
         lanes.reserve(width * segments.len());
-        let segments = segments
-            .map(|(at, easing, value)| {
-                let value_lanes = value
-                    .anim_lanes(&first)
-                    .filter(|value_lanes| value_lanes.len() == width)
-                    .expect("every keyframe value must share the first value's lane layout");
-                lanes.extend_from_slice(&value_lanes);
-                (at, easing)
-            })
-            .collect();
-        Self {
+        let mut kept = Vec::with_capacity(segments.len());
+        for (at, easing, value) in segments {
+            let Some(value_lanes) = value
+                .anim_lanes(&first)
+                .filter(|value_lanes| value_lanes.len() == width)
+            else {
+                contract_violation!(
+                    "every keyframe value must share the first value's lane layout; the \
+                     keyframes do not run"
+                );
+                return None;
+            };
+            lanes.extend_from_slice(&value_lanes);
+            kept.push((at, easing));
+        }
+        Some(Self {
             layout: first,
-            segments,
+            segments: kept.into_boxed_slice(),
             lanes: lanes.into_boxed_slice(),
             width,
             duration: duration.as_secs_f64(),
             repeat,
-        }
+        })
     }
 }
 
@@ -1596,22 +1632,56 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "keyframes are appended in time order")]
-    fn keyframes_out_of_order_panic() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "keyframes are appended in time order")
+    )]
+    fn keyframes_out_of_order_are_placed_at_the_previous_time() {
         let unit = Duration::from_secs(1);
-        let _ = Keyframes::new(unit, at_x(0.0))
+        let keyframes = Keyframes::new(unit, at_x(0.0))
             .then(0.5, Curve::linear(unit), at_x(1.0))
-            .then(0.25, Curve::linear(unit), at_x(2.0));
+            .then(0.25, Curve::linear(unit), at_x(2.0))
+            .then(f64::NAN, Curve::linear(unit), at_x(3.0))
+            .then(7.0, Curve::linear(unit), at_x(4.0));
+        let times: Vec<f64> = keyframes
+            .segments
+            .iter()
+            .map(|segment| segment.at)
+            .collect();
+        assert_eq!(times, [0.5, 0.5, 0.5, 1.0]);
     }
 
     #[test]
-    #[should_panic(expected = "share the first value's lane layout")]
-    fn keyframes_without_shared_lanes_panic() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a keyframe cycle needs a non-zero duration")
+    )]
+    fn a_zero_duration_cycle_lasts_one_nanosecond() {
+        let keyframes = Keyframes::new(Duration::ZERO, at_x(0.0));
+        assert_eq!(keyframes.duration(), Duration::from_nanos(1));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "share the first value's lane layout")
+    )]
+    fn keyframes_without_shared_lanes_have_no_value() {
         let unit = Duration::from_secs(1);
         let dashed = Stroke::new(1.0).with_dashes(0.0, [2.0, 2.0]);
         let keyframes =
             Keyframes::new(unit, Stroke::new(1.0)).then(1.0, Curve::linear(unit), dashed);
-        let _ = keyframes.sample(Duration::ZERO, Repeat::ONCE);
+        assert_eq!(keyframes.sample(Duration::ZERO, Repeat::ONCE), None);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Decay is only legal on scroll_offset")
+    )]
+    fn a_decay_is_refused_for_anything_but_a_scroll_offset() {
+        let decay = Decay::new(Vec2::new(0.0, 100.0));
+        assert_eq!(Animation::from(decay).except_decay(), None);
     }
 
     #[test]

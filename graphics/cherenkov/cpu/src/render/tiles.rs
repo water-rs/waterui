@@ -5,6 +5,8 @@ pub use intervals::Boundary;
 
 use std::sync::Arc;
 
+use waterui_contract::contract_violation;
+
 use super::raster::Edge;
 
 /// The allocation unit of the retained layout: eight bytes.
@@ -36,8 +38,18 @@ impl Fixed {
     )]
     pub fn new(pixels: [f64; 2]) -> Self {
         let units = pixels.map(|v| (v * 65536.0).round() as i64);
+        let whole = |v: i64| {
+            i32::try_from(v >> 16).unwrap_or_else(|_| {
+                let clamped = if v < 0 { i32::MIN } else { i32::MAX };
+                contract_violation!(
+                    "placement {} px does not fit i32 pixels; it is clamped to {clamped}",
+                    v >> 16
+                );
+                clamped
+            })
+        };
         Self {
-            whole: units.map(|v| i32::try_from(v >> 16).expect("placement fits i32 pixels")),
+            whole: units.map(whole),
             fraction: units.map(|v| v as u16),
         }
     }
@@ -253,11 +265,13 @@ fn split(e: &Edge, mut emit: impl FnMut(i16, i16, QEdge)) {
         // Quantization can flatten a piece; horizontal edges carry no
         // area and drop out as in `flatten_edges`.
         if q.y0 != q.y1 {
-            emit(
-                i16::try_from(txi).expect("frame-space tile index exceeds ±32767"),
-                i16::try_from(tyi).expect("frame-space tile index exceeds ±32767"),
-                q,
-            );
+            match (i16::try_from(txi), i16::try_from(tyi)) {
+                (Ok(txi), Ok(tyi)) => emit(txi, tyi, q),
+                _ => contract_violation!(
+                    "frame-space tile index ({txi}, {tyi}) exceeds ±32767; \
+                     the edge piece is dropped"
+                ),
+            }
         }
         if inside {
             break;
@@ -544,6 +558,27 @@ mod tests {
 
     fn tiled(input: &[Edge]) -> EdgeTiles {
         EdgeTiles::new(&mut EdgeScratch::default(), input.iter().copied())
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "placement 1000000000000 px does not fit i32 pixels")
+    )]
+    fn a_placement_beyond_i32_pixels_is_clamped() {
+        let at = Fixed::new([1.0e12, -1.0e12]);
+        assert_eq!(at.whole, [i32::MAX, i32::MIN]);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "tile index (3937007, 0) exceeds ±32767")
+    )]
+    fn an_edge_beyond_the_tile_index_range_is_dropped() {
+        let far = 5.0e8;
+        let tiles = tiled(&[edge(far, 0.0, far, 10.0)]);
+        assert!(tiles.is_empty());
     }
 
     #[test]

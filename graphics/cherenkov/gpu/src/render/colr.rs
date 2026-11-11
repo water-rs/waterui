@@ -802,7 +802,8 @@ mod mesh_interpolation_key_tests {
                 kurbo::Point::new(1., 1.),
             ],
             vec![cherenkov::WorkingColor::WHITE; 4],
-        );
+        )
+        .expect("one patch, four vertices");
         let smooth = linear
             .clone()
             .interpolation(cherenkov::MeshColorInterpolation::Smoothstep);

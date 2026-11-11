@@ -9,6 +9,7 @@ use std::rc::{Rc, Weak};
 
 use kurbo::{Affine, Rect, Stroke};
 use nami_core::Signal;
+use waterui_contract::contract_violation;
 
 use crate::Instant;
 use crate::animation::{AnimLanes, Animation, KeyframeAnimation, Motion, OperandTrack};
@@ -296,14 +297,22 @@ impl<T: 'static> Watch<T> {
                     } else {
                         let animation = metadata.try_get::<Animation>();
                         metadata.try_get::<KeyframeAnimation>().map_or_else(
-                            || animation.map(Motion::Animation),
+                            || {
+                                animation
+                                    .and_then(Animation::except_decay)
+                                    .map(Motion::Animation)
+                            },
                             |keyframes| {
-                                assert!(
-                                    animation.is_none(),
-                                    "a change carries an `Animation` or a `KeyframeAnimation`, \
-                                     never both"
-                                );
-                                Some(Motion::Keyframes(Box::new(keyframes.operands(*convert))))
+                                if animation.is_some() {
+                                    contract_violation!(
+                                        "a change carries an `Animation` or a \
+                                         `KeyframeAnimation`, never both; the `Animation` is \
+                                         ignored"
+                                    );
+                                }
+                                keyframes
+                                    .operands(*convert)
+                                    .map(|lanes| Motion::Keyframes(Box::new(lanes)))
                             },
                         )
                     };
@@ -852,6 +861,21 @@ struct AnimState {
 }
 
 impl LiveState {
+    /// Claims the content's one region recording, to be released by
+    /// [`Recorder::record_region`]. Recording a region while another of the
+    /// content is recording is a contract violation, reported here, and the
+    /// claim fails: the caller records nothing.
+    pub(crate) fn begin_region_recording(&self) -> bool {
+        if self.recording_region.replace(true) {
+            contract_violation!(
+                "a region records while another region of its content is recording; the \
+                 recording is dropped"
+            );
+            return false;
+        }
+        true
+    }
+
     /// The index the command recorded under `key` lies at, every queued
     /// edit applied; `None` once an edit removed it.
     fn index_of(&self, key: u32) -> Option<u32> {
@@ -980,8 +1004,8 @@ impl LiveState {
     /// retargets the slot's track from the operand's then-current value.
     ///
     /// # Panics
-    /// Panics on a `Decay` animation, the same invariant `scroll_offset`'s
-    /// siblings hold.
+    /// Panics on a `Decay` animation: the caller filters it out with
+    /// [`Animation::except_decay`].
     fn animate(&self, command: u32, target: Operand, motion: Motion) {
         assert!(
             !matches!(motion, Motion::Animation(Animation::Decay(_))),
@@ -1251,15 +1275,24 @@ impl Recorder {
     ///
     /// Regions nest, and may open inside a clip, transform or group scope.
     ///
+    /// # Contract
+    ///
+    /// A recording opened with [`Content::record_layered`] is split at its
+    /// materials and has no single list to edit, so a region there is a
+    /// contract violation: `body` does not run and the returned handle is
+    /// not recorded.
+    ///
     /// # Panics
     ///
-    /// In a recording opened with [`Content::record_layered`], which is
-    /// split at its materials and has no single list to edit.
+    /// Only when the recorder's own region levels are broken, which the
+    /// recorder maintains.
     pub fn region(&mut self, body: impl FnOnce(&mut Self)) -> Region {
-        assert!(
-            self.layered.is_none(),
-            "a region cannot be recorded into a layered recording"
-        );
+        if self.layered.is_some() {
+            contract_violation!(
+                "a region cannot be recorded into a layered recording; the region is dropped"
+            );
+            return Region::gone();
+        }
         let here = self.here();
         self.live.changeable.set(true);
         let guards = self.live.guards.borrow().len();
@@ -1304,20 +1337,13 @@ impl Recorder {
         self.live.keep(Box::new(value));
     }
 
-    /// Records the region in `slot` of `live` anew with `body`.
-    ///
-    /// # Panics
-    ///
-    /// While another region of the same content is recording.
+    /// Records the region in `slot` of `live` anew with `body`, then
+    /// releases the claim [`LiveState::begin_region_recording`] made.
     pub(crate) fn record_region(
         live: &Rc<LiveState>,
         slot: u32,
         body: impl FnOnce(&mut Self),
     ) -> Recorded {
-        assert!(
-            !live.recording_region.replace(true),
-            "a region records while another region of its content is recording"
-        );
         let (size, key_base) = {
             let regions = live.regions.borrow();
             let table = regions
@@ -1357,11 +1383,12 @@ impl Recorder {
     /// the recording but reach the realized member, so a change updates
     /// it with no re-recording. See [`crate::material`].
     ///
-    /// # Panics
-    /// - in a recording not opened with [`Content::record_layered`];
-    /// - inside a [`clip`](Draw::clip), [`transform`](Draw::transform) or
-    ///   [`group`](Draw::group) scope: a material is allowed only at the
-    ///   top level of a layered recording.
+    /// # Contract
+    /// A material is allowed only at the top level of a recording opened
+    /// with [`Content::record_layered`], outside every
+    /// [`clip`](Draw::clip), [`transform`](Draw::transform) and
+    /// [`group`](Draw::group) scope. Anywhere else it is a contract
+    /// violation, and the material is dropped.
     pub fn backdrop_material<S: Shape>(
         &mut self,
         shape: impl Into<Live<S>>,
@@ -1377,16 +1404,20 @@ impl Recorder {
             ..
         } = self
         else {
-            panic!(
+            contract_violation!(
                 "a backdrop material can only be recorded into a recording opened with \
-                 `Content::record_layered`"
+                 `Content::record_layered`; the material is dropped"
             );
+            return;
         };
-        assert!(
-            *depth == 0,
-            "a backdrop material can only be recorded at the top level of a layered recording, \
-             outside every clip, transform and group scope"
-        );
+        if *depth != 0 {
+            contract_violation!(
+                "a backdrop material can only be recorded at the top level of a layered \
+                 recording, outside every clip, transform and group scope; the material is \
+                 dropped"
+            );
+            return;
+        }
         // Built before the part is taken: a panic in the caller's
         // conversions leaves the recording unchanged.
         let shape = shape.into().map(Shape::into_data).into_shared();
@@ -2723,12 +2754,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "attach the track to the operand's or property's own signal")]
-    fn a_keyframe_track_of_another_type_panics() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "attach the track to the operand's or property's own signal")
+    )]
+    fn a_keyframe_track_of_another_type_lands_the_change_without_it() {
         let paint = Driven::new(solid(0., 0., 0.));
-        let _content = Content::record(&LayoutSize::new(), |c| {
-            c.fill(Rect::new(0., 0., 10., 10.), paint.clone());
-        });
+        let (mut content, _) = counted(&paint);
+        let _ = content.take_change();
         // The slot converts `Paint`s: a track of `WorkingColor`s is not its.
         let unit = std::time::Duration::from_millis(100);
         let colours = Keyframes::new(unit, WorkingColor::new([0., 0., 0., 1.])).then(
@@ -2740,6 +2773,107 @@ mod tests {
             solid(1., 1., 1.),
             nami_core::watcher::Metadata::new().with(KeyframeAnimation::new(colours, Repeat::ONCE)),
         );
+        assert_eq!(
+            content.sample(Instant::now()),
+            Animating::IDLE,
+            "no track runs"
+        );
+        assert_eq!(sampled(&mut content), Operand::Paint(solid(1., 1., 1.)));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "never both; the `Animation` is ignored")
+    )]
+    fn an_animation_beside_a_keyframe_track_is_ignored() {
+        let paint = Driven::new(solid(0., 0., 0.));
+        let (mut content, _) = counted(&paint);
+        let _ = content.take_change();
+        let curve = Animation::from(Curve::linear(std::time::Duration::from_millis(100)));
+        paint.set(
+            solid(1., 1., 1.),
+            nami_core::watcher::Metadata::new()
+                .with(curve)
+                .with(KeyframeAnimation::new(paint_cycle(), Repeat::Forever)),
+        );
+        assert!(content.sample(Instant::now()).is_animating());
+        assert_eq!(sampled(&mut content), Operand::Paint(solid(1., 0., 0.)));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Decay is only legal on scroll_offset")
+    )]
+    fn a_decay_on_an_operand_lands_the_change_without_animation() {
+        let paint = Driven::new(solid(0., 0., 0.));
+        let (mut content, _) = counted(&paint);
+        let _ = content.take_change();
+        let decay = Animation::from(crate::Decay::new(kurbo::Vec2::new(0., 100.)));
+        paint.set(
+            solid(1., 1., 1.),
+            nami_core::watcher::Metadata::new().with(decay),
+        );
+        assert_eq!(content.sample(Instant::now()), Animating::IDLE);
+        assert_eq!(sampled(&mut content), Operand::Paint(solid(1., 1., 1.)));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a region cannot be recorded into a layered recording")
+    )]
+    fn a_region_in_a_layered_recording_is_dropped() {
+        let mut region = None;
+        let ran = Rc::new(Cell::new(false));
+        let _ = Content::record_layered(&LayoutSize::new(), crate::MaterialScope::SOLO, |r| {
+            region = Some(r.region(|_| ran.set(true)));
+        });
+        assert!(!ran.get(), "the body does not run");
+        assert!(!region.expect("a handle").is_recorded());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(
+            expected = "a region records while another region of its content is recording"
+        )
+    )]
+    fn recording_a_region_inside_another_drops_the_inner_recording() {
+        let mut outer = None;
+        let mut content = Content::record(&LayoutSize::new(), |c| {
+            c.fill(Rect::new(0., 0., 1., 1.), solid(0., 0., 0.));
+            outer = Some(c.region(|_| {}));
+        });
+        let _ = content.take_change();
+        let outer = outer.expect("a region");
+        let ran = Cell::new(false);
+        let mut inner = None;
+        outer.record(|_| inner = Some(outer.insert(0, |_| ran.set(true))));
+        assert!(!ran.get(), "the nested body does not run");
+        assert!(!inner.expect("a handle").is_recorded());
+        assert!(
+            outer.is_recorded(),
+            "the outer recording finished and is released"
+        );
+    }
+
+    #[test]
+    fn inserting_into_a_gone_region_returns_a_gone_region() {
+        let mut region = None;
+        let mut content = Content::record(&LayoutSize::new(), |c| {
+            region = Some(c.region(|_| {}));
+        });
+        let _ = content.take_change();
+        let region = region.expect("a region");
+        region.remove();
+        assert!(!region.is_recorded());
+        let ran = Cell::new(false);
+        let child = region.insert(0, |_| ran.set(true));
+        assert!(!ran.get());
+        assert!(!child.is_recorded());
     }
 
     #[test]

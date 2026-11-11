@@ -1447,6 +1447,7 @@ pub fn transform_paint(paint: Paint, transform: Option<Affine>) -> Paint {
                 mesh.points().iter().map(|p| transform * *p).collect(),
                 mesh.colors().to_vec(),
             )
+            .expect("a transformed mesh keeps the grid of the valid mesh it came from")
             .interpolation(mesh.interpolation_mode()),
         ),
         Paint::Image(mut pattern) => {
@@ -1526,6 +1527,7 @@ mod tests {
                 WorkingColor::BLACK,
             ],
         )
+        .expect("one patch, four vertices")
         .interpolation(MeshColorInterpolation::Smoothstep);
         let Paint::Mesh(transformed) =
             transform_paint(Paint::Mesh(mesh), Some(Affine::translate((4.0, 2.0))))

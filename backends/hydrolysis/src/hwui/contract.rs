@@ -271,6 +271,7 @@ fn mesh(columns: u32, rows: u32) -> MeshGradient {
         }
     }
     MeshGradient::new(columns, rows, points, colors)
+        .expect("the loops push one vertex per grid corner for a non-empty grid")
 }
 
 /// A dashed stroke of a variation instance of [`glyph_run`]'s font: a
@@ -996,7 +997,7 @@ fn a_folded_mesh_patch_is_refused_naming_it() {
     let picture = Picture::record(|r| {
         r.fill(
             Rect::new(0.0, 0.0, 10.0, 10.0),
-            Paint::Mesh(MeshGradient::new(1, 1, points, colors)),
+            Paint::Mesh(MeshGradient::new(1, 1, points, colors).expect("one patch, four vertices")),
         );
     });
     let error = single_layer_log(picture).expect_err("a bow-tie patch has no bilinear inverse");

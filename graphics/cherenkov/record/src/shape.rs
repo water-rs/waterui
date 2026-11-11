@@ -439,7 +439,12 @@ impl crate::animation::AnimLanes for ShapeData {
             )),
             Self::Path { elements, rule } => {
                 let mut lanes = lanes.iter().copied();
-                let mut point = || Point::new(lanes.next().unwrap(), lanes.next().unwrap());
+                let mut point = || {
+                    Point::new(
+                        lanes.next().expect("lanes hold an x for every path point"),
+                        lanes.next().expect("lanes hold a y for every path point"),
+                    )
+                };
                 let elements = elements
                     .iter()
                     .map(|el| match el {
