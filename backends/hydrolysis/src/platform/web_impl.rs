@@ -366,11 +366,44 @@ pub struct BrowserWindow {
     /// Held for its lifetime: the observer keeps reporting only while
     /// both halves are alive. `None` when the browser refused to create it:
     /// the root is then never reported off-screen.
-    _intersection_observer: Option<(
-        web_sys::IntersectionObserver,
-        Closure<dyn FnMut(js_sys::Array, web_sys::IntersectionObserver)>,
-    )>,
+    _intersection_observer: Option<RootIntersectionObserver>,
     _listeners: Vec<Closure<dyn FnMut(Event)>>,
+}
+
+/// The observer reporting whether the root is on screen, and the callback
+/// it calls: the observer reports only while both are alive.
+type RootIntersectionObserver = (
+    web_sys::IntersectionObserver,
+    Closure<dyn FnMut(js_sys::Array, web_sys::IntersectionObserver)>,
+);
+
+/// Observes whether `root` intersects the viewport: each report sets
+/// `offscreen` and calls `occlusion_wake`. `None` when the browser refused
+/// to create the observer — reported, and the root is then never reported
+/// off-screen.
+fn observe_root_intersection(
+    root: &HtmlElement,
+    offscreen: Rc<Cell<bool>>,
+    occlusion_wake: Rc<dyn Fn()>,
+) -> Option<RootIntersectionObserver> {
+    let callback: Closure<dyn FnMut(js_sys::Array, web_sys::IntersectionObserver)> =
+        Closure::wrap(Box::new(
+            move |entries: js_sys::Array, _observer: web_sys::IntersectionObserver| {
+                for entry in entries.iter() {
+                    let entry = entry.unchecked_into::<web_sys::IntersectionObserverEntry>();
+                    offscreen.set(!entry.is_intersecting());
+                }
+                occlusion_wake();
+            },
+        ));
+    browser_call(
+        web_sys::IntersectionObserver::new(callback.as_ref().unchecked_ref()),
+        "create the IntersectionObserver; the root is never reported off-screen",
+    )
+    .map(|observer| {
+        observer.observe(root);
+        (observer, callback)
+    })
 }
 
 impl core::fmt::Debug for BrowserWindow {
@@ -471,28 +504,8 @@ impl BrowserWindow {
         // view, or `display:none`'d by the app's own minimized state. The
         // IntersectionObserver is the public API that reports it.
         let offscreen = Rc::new(Cell::new(false));
-        let intersection_observer = {
-            let offscreen = offscreen.clone();
-            let callback: Closure<dyn FnMut(js_sys::Array, web_sys::IntersectionObserver)> =
-                Closure::wrap(Box::new(
-                    move |entries: js_sys::Array, _observer: web_sys::IntersectionObserver| {
-                        for entry in entries.iter() {
-                            let entry =
-                                entry.unchecked_into::<web_sys::IntersectionObserverEntry>();
-                            offscreen.set(!entry.is_intersecting());
-                        }
-                        occlusion_wake();
-                    },
-                ));
-            browser_call(
-                web_sys::IntersectionObserver::new(callback.as_ref().unchecked_ref()),
-                "create the IntersectionObserver; the root is never reported off-screen",
-            )
-            .map(|observer| {
-                observer.observe(&root);
-                (observer, callback)
-            })
-        };
+        let intersection_observer =
+            observe_root_intersection(&root, offscreen.clone(), occlusion_wake);
 
         Ok(Self {
             host_window: browser_window,

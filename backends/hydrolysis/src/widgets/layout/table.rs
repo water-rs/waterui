@@ -22,6 +22,7 @@ use accesskit::{
 };
 use nami::Signal;
 use waterui::component::table::{TableColumn, TableConfig};
+#[cfg(feature = "accessibility")]
 use waterui_core::contract_violation;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::{ViewSnapshot, Views};

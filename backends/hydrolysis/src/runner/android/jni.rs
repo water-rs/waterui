@@ -1223,7 +1223,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibil
     guard_val(&mut env, false, |env| {
         let text = get_string(env, &text)?;
         super::accessibility::perform_action(
-            &mut session!(session_ptr),
+            &mut *session!(session_ptr),
             virtual_view_id,
             action,
             arg1,
@@ -1242,7 +1242,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
     session_ptr: jlong,
 ) -> JString<'local> {
     guard_string(&mut env, |_env| {
-        Ok(Some(super::platform_views::placements_json(&session!(
+        Ok(Some(super::platform_views::placements_json(&*session!(
             session_ptr
         ))?))
     })

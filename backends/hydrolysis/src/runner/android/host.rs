@@ -878,7 +878,7 @@ impl ExecutorWake {
                             ?error,
                             "executor wake: the local-reference frame around the drain could not be pushed"
                         );
-                        0
+                        false
                     });
                 tracing::debug!(
                     target: "waterui::hydrolysis::android",

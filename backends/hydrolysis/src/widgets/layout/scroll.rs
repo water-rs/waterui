@@ -9,6 +9,7 @@ use accesskit::{
 use std::rc::Rc;
 use waterui_core::Environment;
 use waterui_core::Native;
+#[cfg(feature = "accessibility")]
 use waterui_core::contract_violation;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize};
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollView};

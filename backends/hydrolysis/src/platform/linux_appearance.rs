@@ -170,12 +170,16 @@ mod portal {
     struct StepFailed {
         /// What the client was doing.
         step: &'static str,
-        error: zbus::Error,
+        /// Boxed: `zbus::Error` is large, and every step's `Result` carries it.
+        error: Box<zbus::Error>,
     }
 
     /// Names the step a portal call belongs to, so a failure reports it.
     fn step<T>(result: zbus::Result<T>, step: &'static str) -> Result<T, StepFailed> {
-        result.map_err(|error| StepFailed { step, error })
+        result.map_err(|error| StepFailed {
+            step,
+            error: Box::new(error),
+        })
     }
 
     /// The one task the whole client is: connect, subscribe, read once,
